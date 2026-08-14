@@ -320,6 +320,10 @@ pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
         let equipment = equipment_value
             .as_object()
             .ok_or_else(|| format!("Character {number} equipment must be an object"))?;
+
+        if let Some(issue) = character_ability_issue(character) {
+            return Err(format!("Character {number} {issue}"));
+        }
         for slot in equipment.keys() {
             if !SLOTS.iter().any(|(known, _, _)| known == slot) {
                 return Err(format!(
@@ -391,6 +395,119 @@ pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(super) fn character_ability_issue(
+    character: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    let subclass_hash = character
+        .get("equipment")?
+        .as_object()?
+        .get("subclass")?
+        .as_object()?
+        .get("definition_hash")
+        .and_then(parse_unsigned_value)?;
+    let (subclass_name, middle_super) = shadowkeep_subclass_rules(subclass_hash)?;
+
+    for (key, range, label) in [
+        ("movement_ability", 4..=6, "movement ability"),
+        ("grenade_ability", 7..=9, "grenade ability"),
+        ("class_ability", 2..=3, "class ability"),
+    ] {
+        if let Some(value) = character.get(key).and_then(Value::as_u64)
+            && !range.contains(&value)
+        {
+            return Some(format!(
+                "has an unsupported {label} entry {value} for {subclass_name}"
+            ));
+        }
+    }
+
+    let (Some(super_ability), Some(melee_ability)) = (
+        character.get("super_ability").and_then(Value::as_u64),
+        character.get("melee_ability").and_then(Value::as_u64),
+    ) else {
+        return None;
+    };
+    let supported = [(10, 11), (10, 15), (middle_super, 21)];
+    (!supported.contains(&(super_ability, melee_ability))).then(|| {
+        format!(
+            "has an unsupported super and melee combination ({super_ability}/{melee_ability}) for {subclass_name}; expected 10/11, 10/15, or {middle_super}/21"
+        )
+    })
+}
+
+pub(super) fn repair_known_ability_pairs(document: &mut Value) -> usize {
+    let Some(characters) = document
+        .pointer_mut("/state/characters")
+        .and_then(Value::as_array_mut)
+    else {
+        return 0;
+    };
+
+    let mut repaired = 0;
+    for character in characters {
+        let Some(character) = character.as_object_mut() else {
+            continue;
+        };
+        let Some(subclass_hash) = character
+            .get("equipment")
+            .and_then(Value::as_object)
+            .and_then(|equipment| equipment.get("subclass"))
+            .and_then(Value::as_object)
+            .and_then(|subclass| subclass.get("definition_hash"))
+            .and_then(parse_unsigned_value)
+        else {
+            continue;
+        };
+        let Some((_, middle_super)) = shadowkeep_subclass_rules(subclass_hash) else {
+            continue;
+        };
+        let (Some(super_ability), Some(melee_ability)) = (
+            character.get("super_ability").and_then(Value::as_u64),
+            character.get("melee_ability").and_then(Value::as_u64),
+        ) else {
+            continue;
+        };
+        let supported = [(10, 11), (10, 15), (middle_super, 21)];
+        if supported.contains(&(super_ability, melee_ability)) {
+            continue;
+        }
+
+        // The melee entry identifies the tree for every Shadowkeep subclass.
+        // Prefer it when recovering a mismatched pair, then use a distinctive
+        // middle-tree super as a fallback before returning to the top tree.
+        let corrected = match melee_ability {
+            11 => (10, 11),
+            15 => (10, 15),
+            21 => (middle_super, 21),
+            _ if super_ability == 20 => (middle_super, 21),
+            _ => (10, 11),
+        };
+        character.insert("super_ability".into(), Value::from(corrected.0));
+        character.insert("melee_ability".into(), Value::from(corrected.1));
+        repaired += 1;
+    }
+    repaired
+}
+
+fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, u64)> {
+    Some(match subclass_hash {
+        // Arcstrider and Sentinel route their guard supers through the
+        // attunement selected by the melee entry while retaining entry 10.
+        0x4F91_DC97 => ("Arcstrider", 10),
+        0xC99B_33E9 => ("Sentinel", 10),
+        // The other seven Shadowkeep subclasses carry a distinct middle-tree
+        // super at entry 20.
+        0xB055_4739 => ("Striker", 20),
+        0xB920_CE9A => ("Sunbreaker", 20),
+        0xD8B8_D1FC => ("Gunslinger", 20),
+        0xC048_3D8B => ("Nightstalker", 20),
+        0xCF88_FEA5 => ("Dawnblade", 20),
+        0x686A_154A => ("Stormcaller", 20),
+        0xE7BC_88B0 => ("Voidwalker", 20),
+        _ => return None,
+    })
 }
 
 pub(super) fn preferences_path() -> Option<PathBuf> {

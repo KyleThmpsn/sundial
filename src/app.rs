@@ -31,12 +31,7 @@ const MAX_SETTINGS_BYTES: usize = 64 * 1024 - 1;
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
-const DISPLAY_VERSION: &str = concat!(
-    "v",
-    env!("CARGO_PKG_VERSION_MAJOR"),
-    ".",
-    env!("CARGO_PKG_VERSION_MINOR")
-);
+const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
 const WEAPON_SLOTS: &[&str] = &["kinetic", "energy", "heavy"];
 const GENERATED_INSTANCE_SOID_START: u64 = 0x4000_0000_0000_0001;
@@ -251,6 +246,10 @@ impl SundialApp {
             self.set_status(format!("Not saved: {error}"), true);
             return;
         }
+        let repaired_ability_pairs = repair_known_ability_pairs(&mut self.document);
+        if repaired_ability_pairs > 0 {
+            self.dirty = true;
+        }
         let current_warning = validate_document(&self.document).err();
         let detected_warning = self
             .source_warning
@@ -277,17 +276,25 @@ impl SundialApp {
                 self.persisted_document = self.document.clone();
                 self.source_warning = current_warning;
                 self.dirty = false;
+                let repair_note = match repaired_ability_pairs {
+                    0 => String::new(),
+                    1 => " Corrected one invalid ability pairing.".to_owned(),
+                    count => format!(" Corrected {count} invalid ability pairings."),
+                };
                 if let (Some(warning), Some(safety_backup)) = (detected_warning, safety_backup) {
                     self.set_status(
                         format!(
-                            "Saved after detecting an unexpected setting ({warning}). The untouched source is at {}. Backup: {}",
+                            "Saved after detecting an unexpected setting ({warning}).{repair_note} The untouched source is at {}. Backup: {}",
                             safety_backup.display(),
                             backup.display()
                         ),
                         true,
                     );
                 } else {
-                    self.set_status(format!("Saved. Backup: {}", backup.display()), false);
+                    self.set_status(
+                        format!("Saved.{repair_note} Backup: {}", backup.display()),
+                        false,
+                    );
                 }
             }
             Err(error) => {

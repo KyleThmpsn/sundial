@@ -11,7 +11,8 @@ use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 
 use crate::class_items;
 
-const CACHE_SCHEMA: u32 = 30;
+const CACHE_SCHEMA: u32 = 31;
+const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const NO_PLUG_SOURCE: u32 = 0x811C_9DC5;
 
@@ -96,6 +97,7 @@ pub struct SocketDef {
 #[derive(Serialize, Deserialize)]
 struct CatalogCache {
     schema: u32,
+    sundial_version: String,
     fingerprint: String,
     items: Vec<ItemDef>,
     names: HashMap<u64, String>,
@@ -143,7 +145,10 @@ impl Catalog {
         if !force && cache_is_current(&cache_path) {
             if let Ok(raw) = fs::read(&cache_path) {
                 if let Ok(cache) = serde_json::from_slice::<CatalogCache>(&raw) {
-                    if cache.schema == CACHE_SCHEMA && cache.fingerprint == fingerprint {
+                    if cache.schema == CACHE_SCHEMA
+                        && cache.sundial_version == SUNDIAL_VERSION
+                        && cache.fingerprint == fingerprint
+                    {
                         report(CatalogProgress {
                             message: "Loaded the local catalog",
                             completed: 1,
@@ -165,6 +170,7 @@ impl Catalog {
         let plug_pools = intern_socket_pools(&mut items, &names)?;
         let cache = CatalogCache {
             schema: CACHE_SCHEMA,
+            sundial_version: SUNDIAL_VERSION.into(),
             fingerprint,
             items,
             names,
@@ -292,11 +298,16 @@ pub fn cache_is_current(path: &Path) -> bool {
     let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
-    let mut prefix = [0u8; 64];
+    let mut prefix = [0u8; 128];
     let Ok(read) = file.read(&mut prefix) else {
         return false;
     };
-    String::from_utf8_lossy(&prefix[..read]).contains(&format!("\"schema\":{CACHE_SCHEMA}"))
+    cache_header_is_current(&String::from_utf8_lossy(&prefix[..read]))
+}
+
+fn cache_header_is_current(prefix: &str) -> bool {
+    prefix.contains(&format!("\"schema\":{CACHE_SCHEMA}"))
+        && prefix.contains(&format!("\"sundial_version\":\"{SUNDIAL_VERSION}\""))
 }
 
 fn intern_socket_pools(
@@ -765,11 +776,11 @@ fn parse_attunements(
                 let entry = entries.get(index)?;
                 (entry.plug_source == source).then(|| entry.choice.clone())
             });
-            // The top and bottom paths still select the base super lane at
-            // entry 10; their named super modifiers are ordinary path nodes
-            // activated by the shared plug source. The Forsaken middle path
-            // carries a genuinely different super at entry 20.
-            let super_ability = if path_index == 2 {
+            // The top and bottom paths select the base super lane at entry 10.
+            // Most Forsaken middle paths carry a distinct super at entry 20,
+            // but Arcstrider and Sentinel route their guard super through the
+            // path selected by the melee entry and keep the base super lane.
+            let super_ability = if path_index == 2 && !middle_path_uses_base_super(list_index) {
                 matching_super
             } else {
                 entries.get(10).map(|entry| entry.choice.clone())
@@ -791,6 +802,10 @@ fn parse_attunements(
             })
         })
         .collect()
+}
+
+const fn middle_path_uses_base_super(list_index: u16) -> bool {
+    matches!(list_index, 1 | 6)
 }
 
 fn socket_allowed_hashes(
@@ -1197,6 +1212,67 @@ mod tests {
         );
         assert_eq!(paths[1].super_abilities[0].name, "Entry 10");
         assert_eq!(paths[2].super_abilities[0].entry, 20);
+    }
+
+    #[test]
+    fn all_shadowkeep_attunements_use_the_native_super_and_melee_entries() {
+        let mut entries = (0..24)
+            .map(|entry| ParsedAbilityEntry {
+                choice: AbilityChoice {
+                    entry,
+                    name: format!("Entry {entry}"),
+                },
+                plug_source: NO_PLUG_SOURCE,
+                group: u8::MAX,
+            })
+            .collect::<Vec<_>>();
+        for (range, source) in [(11..15, 1), (15..19, 2), (20..24, 3)] {
+            for index in range {
+                entries[index].plug_source = source;
+                entries[index].group = 3;
+            }
+        }
+
+        for (list_index, middle_super) in [
+            (1, 10),
+            (2, 20),
+            (3, 20),
+            (5, 20),
+            (6, 10),
+            (7, 20),
+            (9, 20),
+            (10, 20),
+            (11, 20),
+        ] {
+            let paths = parse_attunements(
+                &entries,
+                &["Top".into(), "Bottom".into(), "Middle".into()],
+                list_index,
+            );
+            let pairs = paths
+                .iter()
+                .map(|path| (path.super_abilities[0].entry, path.melee.entry))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                pairs,
+                vec![(10, 11), (10, 15), (middle_super, 21)],
+                "socket list {list_index}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_cache_requires_the_current_sundial_version() {
+        assert!(cache_header_is_current(&format!(
+            "{{\"schema\":{CACHE_SCHEMA},\"sundial_version\":\"{SUNDIAL_VERSION}\"}}"
+        )));
+        assert!(!cache_header_is_current(&format!(
+            "{{\"schema\":{CACHE_SCHEMA},\"sundial_version\":\"older\"}}"
+        )));
+        assert!(!cache_header_is_current(&format!(
+            "{{\"schema\":{},\"sundial_version\":\"{SUNDIAL_VERSION}\"}}",
+            CACHE_SCHEMA - 1
+        )));
     }
 
     #[test]

@@ -114,9 +114,30 @@ impl SundialApp {
             .cloned()
             .collect();
         let mut selected_subclass = None::<ItemDef>;
+        let stored_warning = self
+            .source_warning
+            .as_deref()
+            .filter(|warning| {
+                warning.starts_with(&format!("Character {} ", index + 1))
+                    && (warning.contains("ability") || warning.contains("super and melee"))
+            })
+            .map(str::to_owned);
+        let ability_warning = character
+            .as_object()
+            .and_then(character_ability_issue)
+            .or(stored_warning);
 
         ui.heading(format!("Character {}", index + 1));
         ui.label(egui::RichText::new(soid).monospace().weak());
+        if let Some(warning) = ability_warning {
+            ui.add_space(6.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 190, 80),
+                format!(
+                    "Warning: {warning}. This can prevent Sunrise from loading the character. Choose supported abilities below and save before launching."
+                ),
+            );
+        }
         ui.add_space(8.0);
         egui::Grid::new("character_fields")
             .num_columns(2)
@@ -350,6 +371,12 @@ impl SundialApp {
         ui.add_space(14.0);
         ui.heading("Equipped loadout");
         ui.label("Search by item name or 0x hash. Choosing an item also installs its package-default plugs.");
+        ui.label(
+            egui::RichText::new(
+                "Some character changes may leave the character-select preview appearing to load, while the in-game model still reflects them.",
+            )
+            .weak(),
+        );
         ui.checkbox(
             &mut self.allow_unsafe_plugs,
             "Allow any plug matching the socket type (unsafe)",

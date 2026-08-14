@@ -177,6 +177,131 @@ fn character_validation_accepts_sunrise_native_forms() {
 }
 
 #[test]
+fn all_shadowkeep_ability_combinations_validate() {
+    let subclasses = [
+        (0xB055_4739_u64, 20),
+        (0xB920_CE9A, 20),
+        (0xC99B_33E9, 10),
+        (0xD8B8_D1FC, 20),
+        (0x4F91_DC97, 10),
+        (0xC048_3D8B, 20),
+        (0xCF88_FEA5, 20),
+        (0x686A_154A, 20),
+        (0xE7BC_88B0, 20),
+    ];
+
+    for (subclass_hash, middle_super) in subclasses {
+        for movement in 4..=6 {
+            for grenade in 7..=9 {
+                for class_ability in 2..=3 {
+                    for (super_ability, melee_ability) in [(10, 11), (10, 15), (middle_super, 21)] {
+                        let document = character_with_abilities(
+                            subclass_hash,
+                            movement,
+                            grenade,
+                            super_ability,
+                            melee_ability,
+                            class_ability,
+                        );
+                        assert_eq!(validate_characters(&document), Ok(()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn guard_subclasses_reject_entry_twenty_as_the_super() {
+    for subclass_hash in [0x4F91_DC97, 0xC99B_33E9] {
+        let document = character_with_abilities(subclass_hash, 6, 8, 20, 21, 3);
+        assert!(validate_characters(&document).is_err());
+        let warning = document
+            .pointer("/state/characters/0")
+            .and_then(Value::as_object)
+            .and_then(character_ability_issue)
+            .unwrap();
+        assert!(warning.contains("unsupported super and melee combination (20/21)"));
+        assert!(warning.contains("expected 10/11, 10/15, or 10/21"));
+    }
+}
+
+#[test]
+fn every_known_super_and_melee_pair_is_valid_after_save_repair() {
+    let subclasses = [
+        (0xB055_4739_u64, 20),
+        (0xB920_CE9A, 20),
+        (0xC99B_33E9, 10),
+        (0xD8B8_D1FC, 20),
+        (0x4F91_DC97, 10),
+        (0xC048_3D8B, 20),
+        (0xCF88_FEA5, 20),
+        (0x686A_154A, 20),
+        (0xE7BC_88B0, 20),
+    ];
+
+    for (subclass_hash, middle_super) in subclasses {
+        let supported = [(10, 11), (10, 15), (middle_super, 21)];
+        for super_ability in 0..=63 {
+            for melee_ability in 0..=63 {
+                let mut document =
+                    character_with_abilities(subclass_hash, 6, 8, super_ability, melee_ability, 3);
+                document["future_data"] = serde_json::json!({"keep": true});
+
+                let repaired = repair_known_ability_pairs(&mut document);
+                let was_supported = supported.contains(&(super_ability, melee_ability));
+                assert_eq!(repaired, usize::from(!was_supported));
+                assert_eq!(validate_characters(&document), Ok(()));
+                assert_eq!(
+                    document.pointer("/future_data/keep"),
+                    Some(&Value::Bool(true))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unknown_subclasses_keep_loose_ability_validation() {
+    let mut document = character_with_abilities(0x1234_5678, 12, 13, 14, 15, 16);
+    assert_eq!(validate_characters(&document), Ok(()));
+    let original = document.clone();
+    assert_eq!(repair_known_ability_pairs(&mut document), 0);
+    assert_eq!(document, original);
+}
+
+fn character_with_abilities(
+    subclass_hash: u64,
+    movement: u64,
+    grenade: u64,
+    super_ability: u64,
+    melee: u64,
+    class_ability: u64,
+) -> Value {
+    serde_json::json!({
+        "state": {
+            "characters": [{
+                "soid": "0x1",
+                "movement_ability": movement,
+                "grenade_ability": grenade,
+                "super_ability": super_ability,
+                "melee_ability": melee,
+                "class_ability": class_ability,
+                "equipment": {
+                    "subclass": {
+                        "instance_soid": "0x2",
+                        "definition_hash": format_hash(subclass_hash),
+                        "level": 0,
+                        "quantity": 1,
+                        "plugs": []
+                    }
+                }
+            }]
+        }
+    })
+}
+
+#[test]
 fn character_validation_keeps_sunrise_limits() {
     let mut document = serde_json::json!({
         "state": {

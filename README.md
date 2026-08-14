@@ -55,12 +55,12 @@ The catalog is stored at:
 
 `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json`
 
-Sundial automatically rebuilds it if the installed package files change. You
-can also rebuild it manually from the **Paths** screen.
+Sundial automatically rebuilds it after an app update or if the installed
+package files change. You can also rebuild it manually from the **Paths** screen.
 
 ## Usage
 
-Download `sundial.exe` or `Sundial-v0.2-windows-x86_64.zip` from the GitHub
+Download `sundial.exe` or `Sundial-v0.2.1-windows-x86_64.zip` from the GitHub
 [Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
 build it yourself from source using the instructions below.
 
