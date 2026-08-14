@@ -19,17 +19,13 @@ mod game_settings;
 mod storage;
 use catalog::{AbilityChoice, Catalog as Manifest, CatalogProgress, ItemDef};
 
-const SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
+const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
+const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
 const MAX_SETTINGS_BYTES: usize = 64 * 1024 - 1;
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
-const DISPLAY_VERSION: &str = concat!(
-    "v",
-    env!("CARGO_PKG_VERSION_MAJOR"),
-    ".",
-    env!("CARGO_PKG_VERSION_MINOR")
-);
+const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
 
 const SLOTS: &[(&str, &str, u64)] = &[
@@ -59,11 +55,58 @@ enum ViewMode {
     Paths,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsLayout {
+    Root,
+    BinX64,
+}
+
+impl SettingsLayout {
+    const ALL: [Self; 2] = [Self::Root, Self::BinX64];
+
+    const fn relative_path(self) -> &'static str {
+        match self {
+            Self::Root => ROOT_SETTINGS_RELATIVE_PATH,
+            Self::BinX64 => BIN_X64_SETTINGS_RELATIVE_PATH,
+        }
+    }
+
+    const fn preference_value(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::BinX64 => "bin_x64",
+        }
+    }
+
+    fn from_preference(value: &str) -> Option<Self> {
+        match value {
+            "root" => Some(Self::Root),
+            "bin_x64" => Some(Self::BinX64),
+            _ => None,
+        }
+    }
+}
+
+enum SettingsPathResolution {
+    Found(SettingsLayout, PathBuf),
+    Missing,
+    Ambiguous,
+}
+
+#[derive(Clone)]
+struct InstallSelection {
+    install_path: PathBuf,
+    preferred_layout: Option<SettingsLayout>,
+}
+
 struct SundialApp {
     settings_path: PathBuf,
+    settings_layout: SettingsLayout,
     install_path: PathBuf,
     manifest: Manifest,
     document: Value,
+    persisted_document: Value,
+    source_warning: Option<String>,
     class_armor_defaults: HashMap<u64, HashMap<String, Value>>,
     selected_character: usize,
     searches: HashMap<String, String>,
@@ -83,30 +126,40 @@ struct SundialApp {
     dirty: bool,
     status: String,
     status_is_error: bool,
+    pending_install_choice: Option<PathBuf>,
 }
 
 impl SundialApp {
-    fn new(settings_path: PathBuf, install_path: PathBuf) -> Result<Self, String> {
-        Self::new_with_progress(settings_path, install_path, |_| {})
+    fn new(
+        settings_path: PathBuf,
+        settings_layout: SettingsLayout,
+        install_path: PathBuf,
+    ) -> Result<Self, String> {
+        Self::new_with_progress(settings_path, settings_layout, install_path, |_| {})
     }
 
     fn new_with_progress(
         settings_path: PathBuf,
+        settings_layout: SettingsLayout,
         install_path: PathBuf,
         report: impl FnMut(CatalogProgress),
     ) -> Result<Self, String> {
+        let document = load_json(&settings_path)?;
         let cache = catalog_path().ok_or("Could not locate Sundial's local catalog folder")?;
         let manifest = Manifest::load_or_scan_with_progress(&install_path, cache, false, report)?;
-        let document = load_json(&settings_path)?;
-        validate_document(&document, &manifest)?;
+        let source_warning = validate_document(&document).err();
         let class_armor_defaults = collect_class_armor_defaults(&document);
         let raw_json = serde_json::to_string_pretty(&document)
             .map_err(|e| format!("Could not display settings JSON: {e}"))?;
+        let persisted_document = document.clone();
         Ok(Self {
             settings_path,
+            settings_layout,
             install_path,
             manifest,
             document,
+            persisted_document,
+            source_warning: source_warning.clone(),
             class_armor_defaults,
             selected_character: 0,
             searches: HashMap::new(),
@@ -115,7 +168,7 @@ impl SundialApp {
             allow_unsafe_plugs: false,
             show_dummy_items: false,
             view_mode: ViewMode::Characters,
-            game_settings_tab: game_settings::Tab::Controls,
+            game_settings_tab: game_settings::Tab::Player,
             key_binding_search: String::new(),
             raw_json,
             logo: None,
@@ -124,42 +177,98 @@ impl SundialApp {
             exit_confirmation_open: false,
             exit_confirmed: false,
             dirty: false,
-            status: "Ready".to_owned(),
-            status_is_error: false,
+            status: source_warning.as_ref().map_or_else(
+                || "Ready".to_owned(),
+                |warning| {
+                    format!(
+                        "Loaded with an unexpected setting: {warning}. A safety copy will be created beside settings.json before saving"
+                    )
+                },
+            ),
+            status_is_error: source_warning.is_some(),
+            pending_install_choice: None,
         })
     }
 
     fn reload(&mut self) {
-        match load_json(&self.settings_path).and_then(|doc| {
-            validate_document(&doc, &self.manifest)?;
-            Ok(doc)
-        }) {
+        match load_json(&self.settings_path) {
             Ok(doc) => {
+                let warning = validate_document(&doc).err();
                 self.class_armor_defaults = collect_class_armor_defaults(&doc);
+                self.persisted_document = doc.clone();
                 self.document = doc;
+                self.source_warning.clone_from(&warning);
                 self.selected_character = self
                     .selected_character
                     .min(self.character_count().saturating_sub(1));
                 self.clear_picker_state();
                 self.sync_raw_json();
                 self.dirty = false;
-                self.set_status("Reloaded settings.json", false);
+                if let Some(warning) = warning {
+                    self.set_status(
+                        format!(
+                            "Reloaded with an unexpected setting: {warning}. A safety copy will be created beside settings.json before saving"
+                        ),
+                        true,
+                    );
+                } else {
+                    self.set_status("Reloaded settings.json", false);
+                }
             }
             Err(error) => self.set_status(error, true),
         }
     }
 
     fn save(&mut self) {
-        if let Err(error) = validate_document(&self.document, &self.manifest) {
+        if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Not saved: {error}"), true);
             return;
         }
+        let current_warning = validate_document(&self.document).err();
+        let detected_warning = self
+            .source_warning
+            .clone()
+            .or_else(|| current_warning.clone());
+        let safety_backup = if detected_warning.is_some() {
+            match create_adjacent_backup(&self.settings_path) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    self.set_status(
+                        format!(
+                            "Not saved: the file contains an unexpected setting and its safety copy could not be created: {error}"
+                        ),
+                        true,
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         match save_json(&self.settings_path, &self.document) {
             Ok(backup) => {
+                self.persisted_document = self.document.clone();
+                self.source_warning = current_warning;
                 self.dirty = false;
-                self.set_status(format!("Saved. Backup: {}", backup.display()), false);
+                if let (Some(warning), Some(safety_backup)) = (detected_warning, safety_backup) {
+                    self.set_status(
+                        format!(
+                            "Saved after detecting an unexpected setting ({warning}). The untouched source is at {}. Backup: {}",
+                            safety_backup.display(),
+                            backup.display()
+                        ),
+                        true,
+                    );
+                } else {
+                    self.set_status(format!("Saved. Backup: {}", backup.display()), false);
+                }
             }
-            Err(error) => self.set_status(error, true),
+            Err(error) => {
+                let suffix = safety_backup.map_or_else(String::new, |path| {
+                    format!(" The untouched source is at {}.", path.display())
+                });
+                self.set_status(format!("{error}{suffix}"), true);
+            }
         }
     }
 
@@ -177,6 +286,7 @@ impl SundialApp {
             .map_err(|e| format!("Could not create Sundial's preferences folder: {e}"))?;
         let preferences = serde_json::json!({
             "install": self.install_path,
+            "settings_layout": self.settings_layout.preference_value(),
         });
         let encoded = serde_json::to_vec_pretty(&preferences)
             .map_err(|e| format!("Could not encode Sundial's preferences: {e}"))?;
@@ -204,30 +314,59 @@ impl SundialApp {
         else {
             return;
         };
+        match resolve_settings_path(&path, None) {
+            SettingsPathResolution::Found(layout, settings_path) => {
+                self.load_install(path, settings_path, layout);
+            }
+            SettingsPathResolution::Missing => {
+                self.set_status(missing_settings_message(&path), true);
+            }
+            SettingsPathResolution::Ambiguous => {
+                self.pending_install_choice = Some(path);
+            }
+        }
+    }
+
+    fn load_install(
+        &mut self,
+        path: PathBuf,
+        settings_path: PathBuf,
+        settings_layout: SettingsLayout,
+    ) {
         let Some(cache) = catalog_path() else {
             self.set_status("Could not locate Sundial's local catalog folder", true);
             return;
         };
-        let settings_path = settings_path_for_install(&path);
-        match Manifest::load_or_scan(&path, cache, false).and_then(|manifest| {
-            let document = load_json(&settings_path)?;
-            validate_document(&document, &manifest)?;
-            Ok((manifest, document))
+        match load_json(&settings_path).and_then(|document| {
+            Manifest::load_or_scan(&path, cache, false).map(|manifest| (manifest, document))
         }) {
             Ok((manifest, document)) => {
+                let warning = validate_document(&document).err();
                 self.install_path = path;
                 self.settings_path = settings_path;
+                self.settings_layout = settings_layout;
                 self.manifest = manifest;
                 self.class_armor_defaults = collect_class_armor_defaults(&document);
+                self.persisted_document = document.clone();
                 self.document = document;
+                self.source_warning.clone_from(&warning);
                 self.selected_character = 0;
                 self.clear_picker_state();
                 self.sync_raw_json();
                 self.dirty = false;
                 match self.save_paths() {
-                    Ok(()) => {
-                        self.set_status("Shadowkeep install and Sunrise settings loaded", false);
-                    }
+                    Ok(()) => match warning {
+                        Some(warning) => self.set_status(
+                            format!(
+                                "Install loaded with an unexpected setting: {warning}. A safety copy will be created beside settings.json before saving"
+                            ),
+                            true,
+                        ),
+                        None => self.set_status(
+                            "Shadowkeep install and Sunrise settings loaded",
+                            false,
+                        ),
+                    },
                     Err(error) => self.set_status(
                         format!(
                             "Install loaded, but its location could not be remembered: {error}"
@@ -293,12 +432,7 @@ impl SundialApp {
         );
         equipped.insert(
             "plugs".into(),
-            Value::Array(
-                item.default_plugs
-                    .iter()
-                    .map(|plug| plug.clone().map_or(Value::Null, Value::String))
-                    .collect(),
-            ),
+            Value::Array(default_plug_values(&item.default_plugs)),
         );
         self.dirty = true;
         self.set_status(format!("Equipped {}", item.name), false);
@@ -309,15 +443,19 @@ impl SundialApp {
         character: usize,
         slot: &str,
         socket_index: usize,
+        default_plugs: &[Option<String>],
         hash: Option<u64>,
     ) {
-        let Some(plugs) = self
+        let Some(plugs_value) = self
             .characters_mut()
             .and_then(|chars| chars.get_mut(character))
             .and_then(|ch| ch.pointer_mut(&format!("/equipment/{slot}/plugs")))
-            .and_then(Value::as_array_mut)
         else {
-            self.set_status(format!("Missing plugs array for {slot}"), true);
+            self.set_status(format!("Missing plugs value for {slot}"), true);
+            return;
+        };
+        let Some(plugs) = materialize_authored_plugs(plugs_value, default_plugs) else {
+            self.set_status(format!("Invalid plugs value for {slot}"), true);
             return;
         };
         while plugs.len() <= socket_index {
@@ -336,18 +474,25 @@ impl SundialApp {
 
     fn apply_raw_json(&mut self) {
         match serde_json::from_str::<Value>(&self.raw_json) {
-            Ok(document) => match validate_document(&document, &self.manifest) {
-                Ok(()) => {
-                    self.document = document;
-                    self.selected_character = self
-                        .selected_character
-                        .min(self.character_count().saturating_sub(1));
-                    self.clear_picker_state();
-                    self.dirty = true;
+            Ok(document) => {
+                let warning = validate_document(&document).err();
+                self.document = document;
+                self.selected_character = self
+                    .selected_character
+                    .min(self.character_count().saturating_sub(1));
+                self.clear_picker_state();
+                self.dirty = true;
+                if let Some(warning) = warning {
+                    self.set_status(
+                        format!(
+                            "Advanced JSON applied with an unexpected setting: {warning}. Saving will first create settings.json.bak beside the source"
+                        ),
+                        true,
+                    );
+                } else {
                     self.set_status("Advanced JSON applied; click Save to write it", false);
                 }
-                Err(error) => self.set_status(format!("JSON not applied: {error}"), true),
-            },
+            }
             Err(error) => self.set_status(
                 format!(
                     "JSON syntax error at line {}, column {}: {error}",
@@ -365,9 +510,8 @@ impl SundialApp {
         };
         let soid = character
             .get("soid")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_owned();
+            .and_then(parse_unsigned_value)
+            .map_or_else(|| "Unknown".to_owned(), format_hash);
         let mut race = character.get("race").and_then(Value::as_u64).unwrap_or(0);
         let mut gender = character.get("gender").and_then(Value::as_u64).unwrap_or(0);
         let mut class_type = character.get("class").and_then(Value::as_u64).unwrap_or(0);
@@ -394,8 +538,7 @@ impl SundialApp {
         let original_class_type = class_type;
         let mut current_subclass_hash = character
             .pointer("/equipment/subclass/definition_hash")
-            .and_then(Value::as_str)
-            .and_then(parse_hash);
+            .and_then(parse_unsigned_value);
         let mut abilities = current_subclass_hash
             .and_then(|hash| self.manifest.get_for_bucket(hash, 3_284_755_031))
             .map(|item| item.abilities.clone())
@@ -670,14 +813,23 @@ impl SundialApp {
             if slot == "subclass" {
                 continue;
             }
-            let current_hash_text = self
+            let current_hash_value = self
                 .characters()
                 .and_then(|chars| chars.get(character_index))
                 .and_then(|ch| ch.pointer(&format!("/equipment/{slot}/definition_hash")))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            let current = parse_hash(&current_hash_text)
+                .cloned();
+            let current_hash = current_hash_value.as_ref().and_then(parse_unsigned_value);
+            let current_hash_text = current_hash.map_or_else(
+                || {
+                    current_hash_value
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .unwrap_or("<missing>")
+                        .to_owned()
+                },
+                format_hash,
+            );
+            let current = current_hash
                 .and_then(|hash| self.manifest.get_for_bucket(hash, bucket))
                 .cloned();
             let valid = current.as_ref().is_some_and(|item| {
@@ -775,21 +927,24 @@ impl SundialApp {
                     }
 
                     if let Some(item) = &current {
-                        let current_plugs = self
+                        let plugs_value = self
                             .characters()
                             .and_then(|chars| chars.get(character_index))
-                            .and_then(|ch| ch.pointer(&format!("/equipment/{slot}/plugs")))
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
+                            .and_then(|ch| ch.pointer(&format!("/equipment/{slot}/plugs")));
+                        let (current_plugs, native_defaults) =
+                            displayed_plugs(plugs_value, &item.default_plugs);
                         if !item.sockets.is_empty() || !current_plugs.is_empty() {
-                            ui.collapsing(format!("Plugs ({})", current_plugs.len()), |ui| {
+                            let title = if native_defaults {
+                                format!("Plugs ({}, native defaults)", current_plugs.len())
+                            } else {
+                                format!("Plugs ({})", current_plugs.len())
+                            };
+                            ui.collapsing(title, |ui| {
                                 let socket_count = item.sockets.len().max(current_plugs.len());
                                 for socket_index in 0..socket_count {
                                     let current_hash = current_plugs
                                         .get(socket_index)
-                                        .and_then(Value::as_str)
-                                        .and_then(parse_hash);
+                                        .and_then(parse_unsigned_value);
                                     let allowed = item
                                         .sockets
                                         .get(socket_index)
@@ -921,6 +1076,7 @@ impl SundialApp {
                                                 character_index,
                                                 slot,
                                                 socket_index,
+                                                &item.default_plugs,
                                                 hash,
                                             );
                                             ui.memory_mut(egui::Memory::close_popup);
@@ -952,14 +1108,17 @@ struct StartupApp {
     progress: CatalogProgress,
     error: Option<String>,
     logo: Option<egui::TextureHandle>,
+    pending_settings_choice: Option<PathBuf>,
 }
 
 impl StartupApp {
-    fn new(install_path: Option<PathBuf>) -> Self {
+    fn new(selection: Option<InstallSelection>) -> Self {
         let mut app = Self {
             editor: None,
             receiver: None,
-            install_path,
+            install_path: selection
+                .as_ref()
+                .map(|selection| selection.install_path.clone()),
             progress: CatalogProgress {
                 message: "Waiting for a Shadowkeep installation…",
                 completed: 0,
@@ -967,19 +1126,43 @@ impl StartupApp {
             },
             error: None,
             logo: None,
+            pending_settings_choice: None,
         };
-        if let Some(path) = app.install_path.clone() {
-            app.begin_loading(path);
+        if let Some(selection) = selection {
+            app.begin_loading(selection.install_path, selection.preferred_layout);
         }
         app
     }
 
-    fn begin_loading(&mut self, install_path: PathBuf) {
-        let settings_path = settings_path_for_install(&install_path);
+    fn begin_loading(&mut self, install_path: PathBuf, preferred_layout: Option<SettingsLayout>) {
+        self.install_path = Some(install_path.clone());
+        self.receiver = None;
+        self.error = None;
+        self.pending_settings_choice = None;
+        match resolve_settings_path(&install_path, preferred_layout) {
+            SettingsPathResolution::Found(layout, settings_path) => {
+                self.begin_loading_at(install_path, settings_path, layout);
+            }
+            SettingsPathResolution::Missing => {
+                self.error = Some(missing_settings_message(&install_path));
+            }
+            SettingsPathResolution::Ambiguous => {
+                self.pending_settings_choice = Some(install_path);
+            }
+        }
+    }
+
+    fn begin_loading_at(
+        &mut self,
+        install_path: PathBuf,
+        settings_path: PathBuf,
+        settings_layout: SettingsLayout,
+    ) {
         let (sender, receiver) = mpsc::channel();
         self.install_path = Some(install_path.clone());
         self.receiver = Some(receiver);
         self.error = None;
+        self.pending_settings_choice = None;
         self.progress = CatalogProgress {
             message: "Starting the local catalog…",
             completed: 0,
@@ -987,10 +1170,14 @@ impl StartupApp {
         };
         thread::spawn(move || {
             let progress_sender = sender.clone();
-            let result =
-                SundialApp::new_with_progress(settings_path, install_path, move |progress| {
+            let result = SundialApp::new_with_progress(
+                settings_path,
+                settings_layout,
+                install_path,
+                move |progress| {
                     let _ = progress_sender.send(StartupEvent::Progress(progress));
-                });
+                },
+            );
             let _ = sender.send(StartupEvent::Finished(Box::new(result)));
         });
     }
@@ -1002,7 +1189,7 @@ impl StartupApp {
             dialog = dialog.set_directory(path);
         }
         if let Some(path) = dialog.pick_folder() {
-            self.begin_loading(path);
+            self.begin_loading(path, None);
         }
     }
 
@@ -1016,7 +1203,7 @@ impl StartupApp {
                 StartupEvent::Progress(progress) => self.progress = progress,
                 StartupEvent::Finished(result) => match *result {
                     Ok(mut editor) => {
-                        editor.logo = self.logo.clone();
+                        editor.logo.clone_from(&self.logo);
                         if let Err(error) = editor.save_paths() {
                             editor.set_status(
                                 format!(
@@ -1056,6 +1243,42 @@ impl StartupApp {
                             ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
                             ui.add_space(18.0);
 
+                            if let Some(install_path) = self.pending_settings_choice.clone() {
+                                ui.heading("Choose Sunrise settings");
+                                ui.add_space(6.0);
+                                ui.label("Two existing settings.json files were found. Choose the one Project Sunrise uses for this installation.");
+                                ui.add_space(14.0);
+                                for layout in SettingsLayout::ALL {
+                                    let path = settings_path_for_install(&install_path, layout);
+                                    if ui
+                                        .add_sized(
+                                            [400.0, 34.0],
+                                            egui::Button::new(format!(
+                                                "Use {}",
+                                                layout.relative_path()
+                                            )),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.begin_loading_at(
+                                            install_path.clone(),
+                                            path.clone(),
+                                            layout,
+                                        );
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(path.display().to_string())
+                                            .weak()
+                                            .small(),
+                                    );
+                                    ui.add_space(8.0);
+                                }
+                                if ui.button("Choose another folder").clicked() {
+                                    self.choose_install();
+                                }
+                                return;
+                            }
+
                             if let Some(error) = self.error.clone() {
                                 ui.colored_label(
                                     egui::Color32::LIGHT_RED,
@@ -1070,7 +1293,7 @@ impl StartupApp {
                                     }
                                     if let Some(path) = self.install_path.clone() {
                                         if ui.button("Try again").clicked() {
-                                            self.begin_loading(path);
+                                            self.begin_loading(path, None);
                                         }
                                     }
                                 });
@@ -1369,6 +1592,41 @@ impl eframe::App for SundialApp {
                 });
         }
 
+        if let Some(install_path) = self.pending_install_choice.clone() {
+            let mut open = true;
+            let mut selected = None;
+            egui::Window::new("Choose Sunrise settings")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.set_width(500.0);
+                    ui.label("Two existing settings.json files were found. Choose the one Project Sunrise uses for this installation.");
+                    ui.add_space(10.0);
+                    for layout in SettingsLayout::ALL {
+                        let path = settings_path_for_install(&install_path, layout);
+                        if ui
+                            .button(format!("Use {}", layout.relative_path()))
+                            .clicked()
+                        {
+                            selected = Some((layout, path.clone()));
+                        }
+                        ui.label(
+                            egui::RichText::new(path.display().to_string())
+                                .weak()
+                                .small(),
+                        );
+                        ui.add_space(8.0);
+                    }
+                });
+            if let Some((layout, path)) = selected {
+                self.pending_install_choice = None;
+                self.load_install(install_path, path, layout);
+            } else if !open {
+                self.pending_install_choice = None;
+            }
+        }
+
         if self.reload_confirmation_open {
             let mut open = true;
             let mut discard = false;
@@ -1497,21 +1755,24 @@ fn restore_class_armor(
     };
     let mut changed = false;
     for &slot in ARMOR_SLOTS {
-        let Some(mut replacement) = defaults.get(slot).cloned() else {
+        let Some(replacement) = defaults.get(slot) else {
             continue;
         };
-        let instance_soid = equipment
-            .get(slot)
-            .and_then(Value::as_object)
-            .and_then(|item| item.get("instance_soid"))
-            .cloned();
-        if let (Some(replacement), Some(instance_soid)) =
-            (replacement.as_object_mut(), instance_soid)
-        {
-            replacement.insert("instance_soid".into(), instance_soid);
+        let Some(replacement) = replacement.as_object() else {
+            continue;
+        };
+        let Some(existing) = equipment.get(slot).and_then(Value::as_object) else {
+            continue;
+        };
+        let mut merged = existing.clone();
+        for (key, value) in replacement {
+            if key != "instance_soid" {
+                merged.insert(key.clone(), value.clone());
+            }
         }
-        if equipment.get(slot) != Some(&replacement) {
-            equipment.insert(slot.into(), replacement);
+        let merged = Value::Object(merged);
+        if equipment.get(slot) != Some(&merged) {
+            equipment.insert(slot.into(), merged);
             changed = true;
         }
     }
@@ -1650,10 +1911,58 @@ fn parse_hash(text: &str) -> Option<u64> {
     u64::from_str_radix(digits, 16).ok()
 }
 
+fn parse_unsigned_value(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(parse_hash))
+}
+
+fn default_plug_values(defaults: &[Option<String>]) -> Vec<Value> {
+    defaults
+        .iter()
+        .map(|plug| plug.clone().map_or(Value::Null, Value::String))
+        .collect()
+}
+
+fn displayed_plugs(plugs: Option<&Value>, defaults: &[Option<String>]) -> (Vec<Value>, bool) {
+    match plugs {
+        Some(Value::Array(plugs)) => (plugs.clone(), false),
+        Some(Value::Null) => (default_plug_values(defaults), true),
+        _ => (Vec::new(), false),
+    }
+}
+
+fn materialize_authored_plugs<'a>(
+    plugs: &'a mut Value,
+    defaults: &[Option<String>],
+) -> Option<&'a mut Vec<Value>> {
+    if plugs.is_null() {
+        *plugs = Value::Array(default_plug_values(defaults));
+    }
+    plugs.as_array_mut()
+}
+
 fn load_json(path: &Path) -> Result<Value, String> {
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let raw = fs::read_to_string(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            format!(
+                "No Project Sunrise settings.json was found in the selected installation. Expected: {}. Choose the Destiny 2 Shadowkeep folder containing destiny2.exe and the bin folder, and confirm Project Sunrise is installed there",
+                path.display()
+            )
+        } else {
+            format!("Could not read {}: {error}", path.display())
+        }
+    })?;
     serde_json::from_str(&raw).map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))
+}
+
+fn verify_source_unchanged(path: &Path, expected: &Value) -> Result<(), String> {
+    let current = load_json(path)?;
+    if current == *expected {
+        Ok(())
+    } else {
+        Err("settings.json changed outside Sundial after it was loaded. Reload before saving so newer data is not overwritten".into())
+    }
 }
 
 fn save_json(path: &Path, document: &Value) -> Result<PathBuf, String> {
@@ -1735,6 +2044,50 @@ fn create_backup(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn create_adjacent_backup(source: &Path) -> Result<PathBuf, String> {
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", source.display()))?
+        .to_string_lossy();
+    let destination = source.with_file_name(format!("{file_name}.bak"));
+    let source_contents = fs::read(source)
+        .map_err(|e| format!("Could not read {} for backup: {e}", source.display()))?;
+
+    if destination.exists() {
+        let existing = fs::read(&destination)
+            .map_err(|e| format!("Could not read {}: {e}", destination.display()))?;
+        if existing == source_contents {
+            return Ok(destination);
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Could not create backup timestamp: {e}"))?
+            .as_nanos();
+        let archived = source.with_file_name(format!("{file_name}.bak.previous-{timestamp}"));
+        create_backup(&destination, &archived)?;
+        storage::replace_file(&destination, &source_contents).map_err(|e| {
+            format!(
+                "Could not update {} after preserving its previous contents at {}: {e}",
+                destination.display(),
+                archived.display()
+            )
+        })?;
+    } else {
+        create_backup(source, &destination)?;
+    }
+
+    let copied = fs::read(&destination)
+        .map_err(|e| format!("Could not verify {}: {e}", destination.display()))?;
+    if copied != source_contents {
+        return Err(format!(
+            "The safety copy at {} did not match the source",
+            destination.display()
+        ));
+    }
+    Ok(destination)
+}
+
 fn encode_settings(document: &Value) -> Result<String, String> {
     fn write_value(value: &Value, indent: usize, output: &mut String) -> Result<(), String> {
         match value {
@@ -1773,45 +2126,52 @@ fn encode_settings(document: &Value) -> Result<String, String> {
     Ok(output)
 }
 
-fn validate_document(document: &Value, manifest: &Manifest) -> Result<(), String> {
+fn validate_document(document: &Value) -> Result<(), String> {
     game_settings::validate(document)?;
-    let characters = document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
+    validate_characters(document)
+}
+
+fn validate_characters(document: &Value) -> Result<(), String> {
+    const MAX_CHARACTERS: usize = 3;
+    const MAX_PLUGS: usize = 12;
+    const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
+
+    let Some(characters_value) = document.pointer("/state/characters") else {
+        return Ok(());
+    };
+    let characters = characters_value
+        .as_array()
         .ok_or("state.characters must be an array")?;
-    if characters.is_empty() {
-        return Err("state.characters is empty".into());
+    if characters.len() > MAX_CHARACTERS {
+        return Err(format!(
+            "state.characters cannot contain more than {MAX_CHARACTERS} characters"
+        ));
     }
     for (character_index, character) in characters.iter().enumerate() {
         let number = character_index + 1;
-        let class_type = character
-            .get("class")
-            .and_then(Value::as_u64)
-            .filter(|value| *value <= 2)
-            .ok_or_else(|| format!("Character {number} has an invalid class"))?;
+        let character = character
+            .as_object()
+            .ok_or_else(|| format!("Character {number} must be an object"))?;
         character
-            .get("race")
-            .and_then(Value::as_u64)
-            .filter(|value| *value <= 2)
-            .ok_or_else(|| format!("Character {number} has an invalid race"))?;
-        character
-            .get("gender")
-            .and_then(Value::as_u64)
-            .filter(|value| *value <= 1)
-            .ok_or_else(|| format!("Character {number} has an invalid gender"))?;
-        character
-            .get("level")
-            .and_then(Value::as_u64)
-            .filter(|level| (1..=50).contains(level))
-            .ok_or_else(|| format!("Character {number} must have a level from 1 to 50"))?;
-        let soid = character
             .get("soid")
-            .and_then(Value::as_str)
-            .and_then(parse_hash)
+            .and_then(parse_unsigned_value)
+            .filter(|soid| *soid != 0)
             .ok_or_else(|| format!("Character {number} has an invalid SOID"))?;
-        if soid == 0 {
-            return Err(format!("Character {number} has a zero SOID"));
-        }
+
+        let optional_bounded = |key: &str, label: &str, maximum: u64| {
+            let Some(value) = character.get(key) else {
+                return Ok(());
+            };
+            value
+                .as_u64()
+                .filter(|value| *value <= maximum)
+                .map(|_| ())
+                .ok_or_else(|| format!("Character {number} has an invalid {label}"))
+        };
+        optional_bounded("class", "class", 2)?;
+        optional_bounded("race", "race", 2)?;
+        optional_bounded("gender", "gender", 1)?;
+        optional_bounded("level", "level (expected 0 to 255)", u8::MAX.into())?;
         for (key, label) in [
             ("movement_ability", "movement ability"),
             ("grenade_ability", "grenade ability"),
@@ -1819,44 +2179,43 @@ fn validate_document(document: &Value, manifest: &Manifest) -> Result<(), String
             ("melee_ability", "melee ability"),
             ("class_ability", "class ability"),
         ] {
-            character
-                .get(key)
-                .and_then(Value::as_u64)
-                .filter(|value| *value <= 63)
-                .ok_or_else(|| format!("Character {number} has an invalid {label}"))?;
+            optional_bounded(key, label, 63)?;
         }
-        let equipment = character
-            .get("equipment")
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("Character {number} has no equipment object"))?;
-        for &(slot, label, bucket) in SLOTS {
-            let equipped = equipment
-                .get(slot)
-                .and_then(Value::as_object)
-                .ok_or_else(|| format!("Character {number} is missing {label}"))?;
-            let hash_text = equipped
-                .get("definition_hash")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("Character {number} {label} has no definition hash"))?;
-            let hash = parse_hash(hash_text)
-                .ok_or_else(|| format!("Character {number} {label} has an invalid hex hash"))?;
-            let item = manifest.get_for_bucket(hash, bucket).ok_or_else(|| {
-                format!("Character {number} {label} hash {hash_text} is absent from the installed package catalog")
-            })?;
-            if item.bucket_hash != bucket {
-                return Err(format!("Character {number} {label} contains {}", item.name));
-            }
-            if item.class_type != 3 && item.class_type != class_type {
+
+        let Some(equipment_value) = character.get("equipment") else {
+            continue;
+        };
+        let equipment = equipment_value
+            .as_object()
+            .ok_or_else(|| format!("Character {number} equipment must be an object"))?;
+        for slot in equipment.keys() {
+            if !SLOTS.iter().any(|(known, _, _)| known == slot) {
                 return Err(format!(
-                    "Character {number} ({}) cannot equip {} in {label}",
-                    class_name(class_type),
-                    item.name
+                    "Character {number} has an unknown equipment slot: {slot}"
                 ));
             }
+        }
+        for &(slot, label, _) in SLOTS {
+            let Some(equipped_value) = equipment.get(slot) else {
+                continue;
+            };
+            if equipped_value.is_null() {
+                continue;
+            }
+            let equipped = equipped_value
+                .as_object()
+                .ok_or_else(|| format!("Character {number} {label} must be an object or null"))?;
+            equipped
+                .get("definition_hash")
+                .and_then(parse_unsigned_value)
+                .filter(|hash| u32::try_from(*hash).is_ok() && *hash != NO_DEFINITION_HASH)
+                .ok_or_else(|| {
+                    format!("Character {number} {label} has an invalid definition hash")
+                })?;
             equipped
                 .get("instance_soid")
-                .and_then(Value::as_str)
-                .and_then(parse_hash)
+                .and_then(parse_unsigned_value)
+                .filter(|soid| *soid != 0)
                 .ok_or_else(|| {
                     format!("Character {number} {label} has an invalid instance SOID")
                 })?;
@@ -1870,14 +2229,30 @@ fn validate_document(document: &Value, manifest: &Manifest) -> Result<(), String
                 .and_then(Value::as_i64)
                 .filter(|quantity| (1..=i64::from(i32::MAX)).contains(quantity))
                 .ok_or_else(|| format!("Character {number} {label} has an invalid quantity"))?;
-            let plugs = equipped
-                .get("plugs")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("Character {number} {label} plugs must be an array"))?;
-            for plug in plugs {
-                if !plug.is_null() && plug.as_str().and_then(parse_hash).is_none() {
+
+            match equipped.get("plugs") {
+                Some(Value::Null) => {}
+                Some(Value::Array(plugs)) => {
+                    if plugs.len() > MAX_PLUGS {
+                        return Err(format!(
+                            "Character {number} {label} cannot contain more than {MAX_PLUGS} plugs"
+                        ));
+                    }
+                    for plug in plugs {
+                        if !plug.is_null()
+                            && !parse_unsigned_value(plug).is_some_and(|hash| {
+                                u32::try_from(hash).is_ok() && hash != NO_DEFINITION_HASH
+                            })
+                        {
+                            return Err(format!(
+                                "Character {number} {label} contains an invalid plug hash"
+                            ));
+                        }
+                    }
+                }
+                _ => {
                     return Err(format!(
-                        "Character {number} {label} contains an invalid plug hash"
+                        "Character {number} {label} plugs must be null or an array"
                     ));
                 }
             }
@@ -1898,21 +2273,64 @@ fn catalog_path() -> Option<PathBuf> {
         .map(|path| path.join("Sundial").join("catalog").join("d2sk-86657.json"))
 }
 
-fn settings_path_for_install(install: &Path) -> PathBuf {
-    install.join(SETTINGS_RELATIVE_PATH)
+fn settings_path_for_install(install: &Path, layout: SettingsLayout) -> PathBuf {
+    install.join(layout.relative_path())
 }
 
-fn saved_install() -> Option<PathBuf> {
+fn resolve_settings_path(
+    install: &Path,
+    preferred_layout: Option<SettingsLayout>,
+) -> SettingsPathResolution {
+    if let Some(layout) = preferred_layout {
+        let path = settings_path_for_install(install, layout);
+        if path.is_file() {
+            return SettingsPathResolution::Found(layout, path);
+        }
+    }
+
+    let existing = SettingsLayout::ALL
+        .into_iter()
+        .filter_map(|layout| {
+            let path = settings_path_for_install(install, layout);
+            path.is_file().then_some((layout, path))
+        })
+        .collect::<Vec<_>>();
+    match existing.as_slice() {
+        [] => SettingsPathResolution::Missing,
+        [(layout, path)] => SettingsPathResolution::Found(*layout, path.clone()),
+        _ => SettingsPathResolution::Ambiguous,
+    }
+}
+
+fn missing_settings_message(install: &Path) -> String {
+    let root = settings_path_for_install(install, SettingsLayout::Root);
+    let bin_x64 = settings_path_for_install(install, SettingsLayout::BinX64);
+    format!(
+        "No Project Sunrise settings.json was found in the selected installation. Checked {} and {}. Choose the Destiny 2 Shadowkeep folder containing destiny2.exe and confirm Project Sunrise is installed there",
+        root.display(),
+        bin_x64.display()
+    )
+}
+
+fn saved_install() -> Option<InstallSelection> {
     let path = preferences_path()?;
     let raw = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&raw).ok()?;
-    value
+    let install_path = value
         .get("install")
         .and_then(Value::as_str)
-        .map(PathBuf::from)
+        .map(PathBuf::from)?;
+    let preferred_layout = value
+        .get("settings_layout")
+        .and_then(Value::as_str)
+        .and_then(SettingsLayout::from_preference);
+    Some(InstallSelection {
+        install_path,
+        preferred_layout,
+    })
 }
 
-fn parse_args() -> (Option<PathBuf>, bool) {
+fn parse_args() -> (Option<InstallSelection>, bool) {
     let mut install = saved_install();
     let mut check_only = false;
     let mut args = env::args().skip(1);
@@ -1920,7 +2338,10 @@ fn parse_args() -> (Option<PathBuf>, bool) {
         match arg.as_str() {
             "--install" => {
                 if let Some(value) = args.next() {
-                    install = Some(value.into());
+                    install = Some(InstallSelection {
+                        install_path: value.into(),
+                        preferred_layout: None,
+                    });
                 }
             }
             "--check" => check_only = true,
@@ -1930,9 +2351,19 @@ fn parse_args() -> (Option<PathBuf>, bool) {
     (install, check_only)
 }
 
-fn check_install(install_path: PathBuf) -> Result<String, String> {
-    let settings_path = settings_path_for_install(&install_path);
-    let app = SundialApp::new(settings_path, install_path)?;
+fn check_install(selection: InstallSelection) -> Result<String, String> {
+    let install_path = selection.install_path;
+    let (settings_layout, settings_path) = match resolve_settings_path(
+        &install_path,
+        selection.preferred_layout,
+    ) {
+        SettingsPathResolution::Found(layout, path) => (layout, path),
+        SettingsPathResolution::Missing => return Err(missing_settings_message(&install_path)),
+        SettingsPathResolution::Ambiguous => {
+            return Err("Two Sunrise settings.json files were found; open Sundial and choose which one Project Sunrise uses".into());
+        }
+    };
+    let app = SundialApp::new(settings_path, settings_layout, install_path)?;
     let encoded_size = encode_settings(&app.document)?.len() + 1;
     Ok(format!(
         "Valid: {} characters, {} compatible local catalog items loaded, save size {} bytes",
@@ -1943,13 +2374,13 @@ fn check_install(install_path: PathBuf) -> Result<String, String> {
 }
 
 fn main() -> eframe::Result {
-    let (install_path, check_only) = parse_args();
+    let (install, check_only) = parse_args();
     if check_only {
-        let Some(install_path) = install_path else {
+        let Some(selection) = install else {
             eprintln!("Sundial: --check requires a saved install or --install <folder>");
             std::process::exit(2);
         };
-        match check_install(install_path) {
+        match check_install(selection) {
             Ok(summary) => println!("{summary}"),
             Err(error) => {
                 eprintln!("Sundial: {error}");
@@ -1972,7 +2403,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(StartupApp::new(install_path)))
+            Ok(Box::new(StartupApp::new(install)))
         }),
     )
 }
@@ -2011,14 +2442,158 @@ mod tests {
         assert_eq!(format_hash(0x123), "0x00000123");
         assert_eq!(parse_hash("E516CF40"), None);
         assert_eq!(parse_hash("0xnope"), None);
+        assert_eq!(parse_unsigned_value(&Value::from(42)), Some(42));
+        assert_eq!(
+            parse_unsigned_value(&Value::String("0x0000002A".into())),
+            Some(42)
+        );
     }
 
     #[test]
-    fn settings_path_is_derived_from_install() {
+    fn sunrise_native_plugs_are_displayed_and_materialized_on_edit() {
+        let defaults = vec![Some("0x0000002A".into()), None, Some("0x0000002B".into())];
+        let mut plugs = Value::Null;
+
+        let (displayed, native_defaults) = displayed_plugs(Some(&plugs), &defaults);
+        assert!(native_defaults);
         assert_eq!(
-            settings_path_for_install(Path::new("game")),
-            PathBuf::from("game").join(SETTINGS_RELATIVE_PATH)
+            displayed,
+            serde_json::json!(["0x0000002A", null, "0x0000002B"])
+                .as_array()
+                .unwrap()
+                .clone()
         );
+
+        let authored = materialize_authored_plugs(&mut plugs, &defaults).unwrap();
+        authored[1] = Value::String("0x0000002C".into());
+        assert_eq!(
+            plugs,
+            serde_json::json!(["0x0000002A", "0x0000002C", "0x0000002B"])
+        );
+    }
+
+    #[test]
+    fn character_validation_accepts_sunrise_native_forms() {
+        let document = serde_json::json!({
+            "state": {
+                "characters": [{
+                    "soid": 1,
+                    "level": 67,
+                    "equipment": {
+                        "kinetic": {
+                            "instance_soid": "0x0000000000000002",
+                            "definition_hash": 42,
+                            "level": 106,
+                            "quantity": 1,
+                            "plugs": null
+                        },
+                        "energy": {
+                            "instance_soid": 3,
+                            "definition_hash": "0x0000002B",
+                            "level": 106,
+                            "quantity": 1,
+                            "plugs": [null, 44, "0x0000002D"]
+                        },
+                        "heavy": null
+                    }
+                }]
+            }
+        });
+
+        assert_eq!(validate_characters(&document), Ok(()));
+    }
+
+    #[test]
+    fn character_validation_keeps_sunrise_limits() {
+        let mut document = serde_json::json!({
+            "state": {
+                "characters": [{
+                    "soid": "0x1",
+                    "level": 256,
+                    "equipment": {}
+                }]
+            }
+        });
+        assert!(validate_characters(&document).is_err());
+
+        *document.pointer_mut("/state/characters/0/level").unwrap() = Value::from(255);
+        document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap()["kinetic"] = serde_json::json!({
+            "instance_soid": "0x2",
+            "definition_hash": "0x2A",
+            "level": 106,
+            "quantity": 1,
+            "plugs": [null, null, null, null, null, null, null, null, null, null, null, null, null]
+        });
+        assert!(validate_characters(&document).is_err());
+    }
+
+    #[test]
+    fn settings_paths_are_derived_from_install() {
+        assert_eq!(
+            settings_path_for_install(Path::new("game"), SettingsLayout::Root),
+            PathBuf::from("game").join(ROOT_SETTINGS_RELATIVE_PATH)
+        );
+        assert_eq!(
+            settings_path_for_install(Path::new("game"), SettingsLayout::BinX64),
+            PathBuf::from("game").join(BIN_X64_SETTINGS_RELATIVE_PATH)
+        );
+    }
+
+    #[test]
+    fn settings_resolution_uses_the_only_existing_file_and_never_creates_one() {
+        let directory = TestDirectory::new();
+        assert!(matches!(
+            resolve_settings_path(&directory.0, None),
+            SettingsPathResolution::Missing
+        ));
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
+
+        let root = settings_path_for_install(&directory.0, SettingsLayout::Root);
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        fs::write(&root, b"{}\n").unwrap();
+
+        assert!(matches!(
+            resolve_settings_path(&directory.0, None),
+            SettingsPathResolution::Found(SettingsLayout::Root, path) if path == root
+        ));
+    }
+
+    #[test]
+    fn settings_resolution_requires_a_choice_when_both_files_exist() {
+        let directory = TestDirectory::new();
+        let root = settings_path_for_install(&directory.0, SettingsLayout::Root);
+        let bin_x64 = settings_path_for_install(&directory.0, SettingsLayout::BinX64);
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        fs::create_dir_all(bin_x64.parent().unwrap()).unwrap();
+        fs::write(&root, b"{\"layout\":\"root\"}\n").unwrap();
+        fs::write(&bin_x64, b"{\"layout\":\"bin\"}\n").unwrap();
+
+        assert!(matches!(
+            resolve_settings_path(&directory.0, None),
+            SettingsPathResolution::Ambiguous
+        ));
+        assert!(matches!(
+            resolve_settings_path(&directory.0, Some(SettingsLayout::BinX64)),
+            SettingsPathResolution::Found(SettingsLayout::BinX64, path) if path == bin_x64
+        ));
+        assert_eq!(fs::read_to_string(root).unwrap(), "{\"layout\":\"root\"}\n");
+        assert_eq!(
+            fs::read_to_string(bin_x64).unwrap(),
+            "{\"layout\":\"bin\"}\n"
+        );
+    }
+
+    #[test]
+    fn loading_a_missing_selected_settings_file_never_creates_it() {
+        let directory = TestDirectory::new();
+        let settings = settings_path_for_install(&directory.0, SettingsLayout::BinX64);
+
+        let error = load_json(&settings).unwrap_err();
+
+        assert!(error.contains("No Project Sunrise settings.json was found"));
+        assert!(!settings.exists());
     }
 
     #[test]
@@ -2138,6 +2713,51 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_settings_get_an_exact_adjacent_backup_without_losing_an_older_one() {
+        let directory = TestDirectory::new();
+        let settings = directory.0.join("settings.json");
+        let original = b"{\"unexpected\":1}\n";
+        let newer = b"{\"unexpected\":2}\n";
+        fs::write(&settings, original).unwrap();
+
+        let adjacent = create_adjacent_backup(&settings).unwrap();
+        assert_eq!(adjacent, directory.0.join("settings.json.bak"));
+        assert_eq!(fs::read(&adjacent).unwrap(), original);
+
+        fs::write(&settings, newer).unwrap();
+        assert_eq!(create_adjacent_backup(&settings).unwrap(), adjacent);
+        assert_eq!(fs::read(&adjacent).unwrap(), newer);
+        let archived = fs::read_dir(&directory.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("settings.json.bak.previous-")
+                })
+            })
+            .unwrap();
+        assert_eq!(fs::read(archived).unwrap(), original);
+    }
+
+    #[test]
+    fn external_settings_changes_are_detected_before_saving() {
+        let directory = TestDirectory::new();
+        let settings = directory.0.join("settings.json");
+        let loaded = serde_json::json!({"state": {"characters": [1, 2, 3]}});
+        let newer = serde_json::json!({"state": {"characters": [1, 2, 3], "new": true}});
+        fs::write(&settings, serde_json::to_vec(&loaded).unwrap()).unwrap();
+
+        assert_eq!(verify_source_unchanged(&settings, &loaded), Ok(()));
+        fs::write(&settings, serde_json::to_vec(&newer).unwrap()).unwrap();
+
+        let error = verify_source_unchanged(&settings, &loaded).unwrap_err();
+        assert!(error.contains("changed outside Sundial"));
+        assert_eq!(load_json(&settings).unwrap(), newer);
+    }
+
+    #[test]
     fn oversized_settings_are_rejected_before_a_backup_or_write() {
         let directory = TestDirectory::new();
         let settings = directory.0.join("settings.json");
@@ -2152,7 +2772,7 @@ mod tests {
     }
 
     #[test]
-    fn class_armor_reset_preserves_destination_instance_ids() {
+    fn class_armor_reset_preserves_destination_data() {
         let document = serde_json::json!({
             "state": { "characters": [{
                 "class": 1,
@@ -2168,7 +2788,11 @@ mod tests {
         let defaults = collect_class_armor_defaults(&document);
         let mut destination = serde_json::json!({
             "equipment": {
-                "helmet": { "instance_soid": "destination-helmet", "definition_hash": "old" },
+                "helmet": {
+                    "instance_soid": "destination-helmet",
+                    "definition_hash": "old",
+                    "future_item_data": { "keep": [1, 2, 3] }
+                },
                 "gauntlets": { "instance_soid": "destination-arms", "definition_hash": "old" },
                 "chest": { "instance_soid": "destination-chest", "definition_hash": "old" },
                 "legs": { "instance_soid": "destination-legs", "definition_hash": "old" },
@@ -2191,6 +2815,10 @@ mod tests {
         assert_eq!(
             destination.pointer("/equipment/helmet/level"),
             Some(&Value::from(106))
+        );
+        assert_eq!(
+            destination.pointer("/equipment/helmet/future_item_data"),
+            Some(&serde_json::json!({ "keep": [1, 2, 3] }))
         );
     }
 }

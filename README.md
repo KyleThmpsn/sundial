@@ -13,9 +13,10 @@ in every slot, if you want! Enable unsafe plug selection to show every plug
 matching a socket type, but be aware that unsupported combinations may break
 items, corrupt a loadout, or crash Destiny 2. (Never forget the Craftening!)
 
-Edit the default controls, audio, display, interface, and social settings from a
-dedicated Game settings page. Project Sunrise applies these settings when
-loading into Destiny 2, and Sundial limits values to the accepted ranges.
+Edit the player name and default controls, audio, display, interface, and social
+settings from a dedicated Game settings page. Project Sunrise applies these
+settings when loading into Destiny 2, and Sundial limits guided values to the
+accepted ranges.
 
 Sundial reads the Destiny 2 Shadowkeep packages already installed on your PC to
 provide searchable and browsable choices for each equipment slot, subclass
@@ -28,6 +29,8 @@ Sundial is designed for:
 
 - Project Sunrise 0.1 (Destiny 2 Shadowkeep build `86657.20.08.23`)
 
+Project Sunrise 0.2 has not yet been tested.
+
 Support for future Project Sunrise releases is yet to be determined. Changes to
 the settings schema are likely to break compatibility.
 
@@ -39,10 +42,12 @@ the settings schema are likely to break compatibility.
 - Display-only dummy items hidden by default, with an option to show them
 - Plug and perk selection for supported item sockets
 - Automatic subclass, ability, and armor defaults when changing class
+- Player name editing using Project Sunrise's supported persona format
 - Guided controls for supported game settings
 - Simple JSON editor for settings not covered by the guided interface
-- Validation before saving
+- Warnings for unexpected values without stripping unrecognized JSON data
 - Automatic timestamped backups in `%LOCALAPPDATA%\Sundial\backups`
+- A same-folder `settings.json.bak` safety copy before saving unexpected data
 - A locally cached package catalog for faster startup after the first scan
 
 The catalog is stored at:
@@ -62,6 +67,10 @@ On first launch, select the root of the Destiny 2 installation you use for
 Project Sunrise. Sundial only reads the game's package files. It writes the
 selected Sunrise settings file and stores its own cache, preferences, and
 backups under `%LOCALAPPDATA%\Sundial`.
+
+Sundial recognizes `Sunrise\settings.json` and
+`bin\x64\Sunrise\settings.json`. If both exist, it asks which file Project
+Sunrise uses and remembers that choice.
 
 Before each save, Sundial validates the document and creates a backup. Unrelated
 JSON fields are preserved, and arrays are encoded compactly to keep the file
@@ -109,6 +118,12 @@ a loadout, or crash Destiny 2.
 
 Sundial creates a timestamped backup before every save. Backups are stored in
 `%LOCALAPPDATA%\Sundial\backups`.
+
+### Why does `settings.json` look shorter after saving?
+
+Sundial writes arrays compactly to stay within Project Sunrise's 64 KiB
+settings limit. This reduces the file's line count without removing its data.
+Fields Sundial does not edit are preserved.
 
 ## Credits and licensing
 

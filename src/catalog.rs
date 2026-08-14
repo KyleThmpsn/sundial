@@ -849,16 +849,12 @@ const fn super_entry_indices(list_index: u16) -> &'static [usize] {
         2 => &[10, 13, 14, 17, 18, 20],
         // Nightstalker
         3 => &[10, 13, 18, 20],
-        // Striker
-        5 => &[10, 14, 18, 20],
-        // Sentinel
-        6 => &[10, 14, 18, 20],
+        // Striker, Sentinel, and Voidwalker
+        5 | 6 | 10 => &[10, 14, 18, 20],
         // Sunbreaker
         7 => &[10, 13, 14, 18, 20],
         // Dawnblade
         9 => &[10, 16, 17, 18, 20],
-        // Voidwalker
-        10 => &[10, 14, 18, 20],
         // Stormcaller
         11 => &[10, 12, 14, 16, 20],
         _ => &[10, 20],

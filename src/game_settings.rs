@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Tab {
+    Player,
     Controls,
     Audio,
     Display,
@@ -157,6 +158,7 @@ pub(super) fn draw_page(
     ui.label("Edit the settings replicated to Destiny 2 by Project Sunrise.");
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(tab, Tab::Player, "Player");
         ui.selectable_value(tab, Tab::Controls, "Controls");
         ui.selectable_value(tab, Tab::Audio, "Audio");
         ui.selectable_value(tab, Tab::Display, "Display");
@@ -170,6 +172,26 @@ pub(super) fn draw_page(
     });
     ui.separator();
 
+    egui::ScrollArea::vertical()
+        .show(ui, |ui| match *tab {
+            Tab::Player => draw_player(ui, document),
+            Tab::Controls => draw_account_settings(ui, document, draw_controls),
+            Tab::Audio => draw_account_settings(ui, document, draw_audio),
+            Tab::Display => draw_account_settings(ui, document, draw_display),
+            Tab::Interface => draw_account_settings(ui, document, draw_interface),
+            Tab::Social => draw_account_settings(ui, document, draw_social),
+            Tab::KeyBindings => draw_account_settings(ui, document, |ui, settings| {
+                draw_key_bindings(ui, settings, binding_search)
+            }),
+        })
+        .inner
+}
+
+fn draw_account_settings(
+    ui: &mut egui::Ui,
+    document: &mut Value,
+    draw: impl FnOnce(&mut egui::Ui, &mut Map<String, Value>) -> bool,
+) -> bool {
     let Some(settings) = document
         .pointer_mut("/state/account/settings")
         .and_then(Value::as_object_mut)
@@ -180,17 +202,62 @@ pub(super) fn draw_page(
         );
         return false;
     };
+    draw(ui, settings)
+}
 
-    egui::ScrollArea::vertical()
-        .show(ui, |ui| match tab {
-            Tab::Controls => draw_controls(ui, settings),
-            Tab::Audio => draw_audio(ui, settings),
-            Tab::Display => draw_display(ui, settings),
-            Tab::Interface => draw_interface(ui, settings),
-            Tab::Social => draw_social(ui, settings),
-            Tab::KeyBindings => draw_key_bindings(ui, settings, binding_search),
-        })
-        .inner
+fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
+    ui.heading("Player");
+    ui.label("Change the player name shown by Project Sunrise in Destiny 2.");
+    ui.add_space(8.0);
+
+    let Some(value) = document.pointer("/steam/user/persona_name") else {
+        ui.colored_label(
+            egui::Color32::LIGHT_RED,
+            "This settings.json has no steam.user.persona_name field.",
+        );
+        return false;
+    };
+    let Some(current) = value.as_str() else {
+        ui.colored_label(
+            egui::Color32::LIGHT_RED,
+            "steam.user.persona_name must be text.",
+        );
+        return false;
+    };
+
+    let mut edited = current.to_owned();
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut edited)
+            .desired_width(360.0)
+            .char_limit(63),
+    );
+    ui.label(egui::RichText::new(format!("{}/63", edited.len())).weak());
+    ui.label("Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
+
+    if !response.changed() {
+        return false;
+    }
+
+    set_player_name(document, &edited)
+}
+
+fn valid_player_name(name: &str) -> Option<&str> {
+    (!name.is_empty() && name.len() <= 63 && name.bytes().all(|byte| (0x20..=0x7e).contains(&byte)))
+        .then_some(name)
+}
+
+fn set_player_name(document: &mut Value, name: &str) -> bool {
+    let Some(name) = valid_player_name(name) else {
+        return false;
+    };
+    let Some(value) = document.pointer_mut("/steam/user/persona_name") else {
+        return false;
+    };
+    if !value.is_string() || value.as_str() == Some(name) {
+        return false;
+    }
+    *value = Value::String(name.to_owned());
+    true
 }
 
 fn group_mut<'a>(
@@ -920,14 +987,10 @@ fn exact_integer(values: &Map<String, Value>, key: &str, expected: u64) -> Resul
 fn float_range(
     values: &Map<String, Value>,
     key: &str,
-    minimum: f64,
-    maximum: f64,
+    minimum: f32,
+    maximum: f32,
 ) -> Result<(), String> {
-    let value = values
-        .get(key)
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| format!("Game setting {key} must be a number"))?;
+    let value = float32(values, key)?;
     if (minimum..=maximum).contains(&value) {
         Ok(())
     } else {
@@ -937,16 +1000,26 @@ fn float_range(
     }
 }
 
-fn exact_float(values: &Map<String, Value>, key: &str, expected: f64) -> Result<(), String> {
-    let value = values
-        .get(key)
-        .and_then(Value::as_f64)
-        .ok_or_else(|| format!("Game setting {key} must be a number"))?;
+fn exact_float(values: &Map<String, Value>, key: &str, expected: f32) -> Result<(), String> {
+    let value = float32(values, key)?;
     if value.to_bits() == expected.to_bits() {
         Ok(())
     } else {
         Err(format!("Game setting {key} must remain {expected}"))
     }
+}
+
+// Sunrise stores these values as float, so validation intentionally uses the
+// same f64-to-f32 conversion after serde_json parses the JSON number.
+#[allow(clippy::cast_possible_truncation)]
+fn float32(values: &Map<String, Value>, key: &str) -> Result<f32, String> {
+    let value = values
+        .get(key)
+        .and_then(Value::as_f64)
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("Game setting {key} must be a number"))?;
+    Ok(value)
 }
 
 fn bool_fields(
@@ -979,5 +1052,53 @@ fn input_code(binding: &Map<String, Value>, label: &str, half: &str) -> Result<(
             "Key binding {label} {half} must be unassigned or between 0 and {}",
             u16::MAX
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_validation_matches_sunrise_float_storage() {
+        let values = serde_json::json!({
+            "calibration": 10000.0001,
+            "ads": 1.500_000_01
+        });
+        let values = values.as_object().unwrap();
+
+        assert_eq!(exact_float(values, "calibration", 10_000.0), Ok(()));
+        assert_eq!(float_range(values, "ads", 0.5, 1.5), Ok(()));
+    }
+
+    #[test]
+    fn player_name_matches_sunrise_persona_format() {
+        assert_eq!(valid_player_name("Player"), Some("Player"));
+        assert!(valid_player_name(&"x".repeat(63)).is_some());
+        assert_eq!(valid_player_name(""), None);
+        assert_eq!(valid_player_name(&"x".repeat(64)), None);
+        assert_eq!(valid_player_name("Guardian\n"), None);
+        assert_eq!(valid_player_name("Guardián"), None);
+    }
+
+    #[test]
+    fn player_name_edit_preserves_every_other_json_value() {
+        let mut document = serde_json::json!({
+            "steam": {
+                "user": {
+                    "persona_name": "Player",
+                    "future_user_setting": { "keep": [1, 2, 3] }
+                },
+                "future_steam_setting": true
+            },
+            "unknown_top_level_data": { "also_keep": "untouched" }
+        });
+        let mut expected = document.clone();
+        *expected.pointer_mut("/steam/user/persona_name").unwrap() =
+            Value::String("Guardian".into());
+
+        assert!(set_player_name(&mut document, "Guardian"));
+
+        assert_eq!(document, expected);
     }
 }
