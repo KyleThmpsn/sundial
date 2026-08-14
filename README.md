@@ -1,6 +1,6 @@
 # [Sundial](https://github.com/kylethmpsn/sundial)
 
-<img src="assets/sundial.png" alt="Sundial logo" width="160">
+<img src="assets/sundial-alt.png" alt="Sundial logo" width="160">
 
 Sundial is a quick, simple GUI for editing
 [Project Sunrise](https://github.com/stanuwu/Sunrise)'s characters, loadouts,
@@ -11,12 +11,12 @@ Ghost shells, Sparrows, ships, emblems, character properties, and more. You can
 also adjust the plugs and perks installed on supported items... or equip exotics
 in every slot, if you want! Enable unsafe plug selection to show every plug
 matching a socket type, but be aware that unsupported combinations may break
-items, corrupt a loadout, or crash Destiny 2. (Never forget the Craftening!)
+items, corrupt the loadout, or crash Destiny 2. (Never forget the Craftening!)
 
-Edit the player name and default controls, audio, display, interface, and social
-settings from a dedicated Game settings page. Project Sunrise applies these
-settings when loading into Destiny 2, and Sundial limits guided values to the
-accepted ranges.
+Edit the player name, named key bindings, and default controls, audio, display,
+interface, and social settings from a dedicated Game settings page. Project
+Sunrise applies these settings when loading into Destiny 2, and Sundial limits
+guided values to the accepted ranges.
 
 Sundial reads the Destiny 2 Shadowkeep packages already installed on your PC to
 provide searchable and browsable choices for each equipment slot, subclass
@@ -27,39 +27,40 @@ game files. Sundial does not bundle a manifest database or any Destiny assets.
 
 Sundial is designed for:
 
-- Project Sunrise 0.1 (Destiny 2 Shadowkeep build `86657.20.08.23`)
+- Project Sunrise 0.1, 0.2, and 0.2.1 (Destiny 2 Shadowkeep build `86657.20.08.23`)
 
-Project Sunrise 0.2 has not yet been tested.
-
-Support for future Project Sunrise releases is yet to be determined. Changes to
-the settings schema are likely to break compatibility.
+Sundial handles the known differences between Sunrise settings schemas.
+Newer schemas display a warning and may be opened with caution, but future
+compatibility is not guaranteed.
+Named key-binding editing is available for schema 3 (Sunrise 0.2). Other schemas
+are shown read-only on that page.
 
 ## Features
 
-- Named controls for character class, race, gender, subclass, and attunement
-- Attunement-aware super, melee, and perk choices
-- Search and browse for valid equipment in each slot
-- Display-only dummy items hidden by default, with an option to show them
-- Plug and perk selection for supported item sockets
+- Guided character properties, subclasses, attunements, and attunement-aware
+  ability choices
+- Search and browse for equipment, plugs, and perks, with options to show dummy
+  items or equip plugs not normally allowed on an item
+- Remove equipped weapons completely (great for screenshots!)
 - Automatic subclass, ability, and armor defaults when changing class
-- Player name editing using Project Sunrise's supported persona format
-- Guided controls for supported game settings
-- Simple JSON editor for settings not covered by the guided interface
-- Warnings for unexpected values without stripping unrecognized JSON data
-- Automatic timestamped backups in `%LOCALAPPDATA%\Sundial\backups`
-- A same-folder `settings.json.bak` safety copy before saving unexpected data
-- A locally cached package catalog for faster startup after the first scan
+- Player name editing, initial support for named key-binding editing, and guided
+  controls for supported game settings
+- A simple JSON editor for anything not covered by the guided interface
+- Preservation of unrecognized data, with warnings and extra safety copies for
+  unexpected settings
+- Automatic backups, version-matched Sunrise default restoration, and a locally
+  cached catalog for faster startup
 
 The catalog is stored at:
 
 `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json`
 
-Sundial automatically rebuilds if the installed package files change. You
+Sundial automatically rebuilds it if the installed package files change. You
 can also rebuild it manually from the **Paths** screen.
 
 ## Usage
 
-Download `Sundial.exe` from the GitHub
+Download `sundial.exe` or `Sundial-v0.2-windows-x86_64.zip` from the GitHub
 [Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
 build it yourself from source using the instructions below.
 
@@ -72,17 +73,20 @@ Sundial recognizes `Sunrise\settings.json` and
 `bin\x64\Sunrise\settings.json`. If both exist, it asks which file Project
 Sunrise uses and remembers that choice.
 
-Before each save, Sundial validates the document and creates a backup. Unrelated
-JSON fields are preserved, and arrays are encoded compactly to keep the file
-below the 64 KiB settings limit.
+Before each save, Sundial confirms the source file has not changed and creates
+a timestamped backup. Unexpected files also receive a same-folder
+`settings.json.bak` safety copy. Unrelated JSON fields are preserved, and arrays
+are encoded compactly to keep the file below the settings size limit.
 
 ## Building from source
 
-Build and run the release version with Rust/Cargo:
+Build the standalone executable with Rust/Cargo:
 
 ```powershell
-cargo run --release --bin sundial
+cargo build --release
 ```
+
+The executable is written to `target\release\sundial.exe`.
 
 ## Frequently asked questions
 
@@ -93,9 +97,9 @@ for Project Sunrise to load them.
 
 ### Can I use Sundial with the current live version of Destiny 2?
 
-No. Sundial is designed for Project Sunrise 0.1 and Destiny 2 Shadowkeep build
-`86657.20.08.23`. Select only the Shadowkeep installation used with Project
-Sunrise.
+No. Sundial is designed for Project Sunrise 0.1, 0.2, and 0.2.1 with Destiny 2
+Shadowkeep build `86657.20.08.23`. Select only the Shadowkeep installation used
+with Project Sunrise.
 
 ### Why does the first launch take longer?
 
@@ -112,18 +116,19 @@ The resulting catalog is cached locally on your PC.
 
 It shows every discovered plug matching a socket type instead of only the
 normally supported choices. Unsupported combinations may break an item, corrupt
-a loadout, or crash Destiny 2.
+the loadout, or crash Destiny 2.
 
 ### Can I undo a change after saving?
 
 Sundial creates a timestamped backup before every save. Backups are stored in
-`%LOCALAPPDATA%\Sundial\backups`.
+`%LOCALAPPDATA%\Sundial\backups`. Unexpected files also receive a
+`settings.json.bak` beside the original.
 
 ### Why does `settings.json` look shorter after saving?
 
-Sundial writes arrays compactly to stay within Project Sunrise's 64 KiB
-settings limit. This reduces the file's line count without removing its data.
-Fields Sundial does not edit are preserved.
+Sundial writes arrays compactly to stay within Project Sunrise's settings size
+limit. This reduces the file's line count without removing its data. Fields
+Sundial does not edit are preserved.
 
 ## Credits and licensing
 

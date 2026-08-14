@@ -1,6 +1,51 @@
 use eframe::egui;
 use serde_json::{Map, Value};
 
+#[derive(Default)]
+pub(super) struct KeyBindingUiState {
+    action_search: String,
+    picker: BindingPickerState,
+}
+
+impl KeyBindingUiState {
+    pub(super) fn clear_pickers(&mut self) {
+        self.picker = BindingPickerState::default();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BindingModifier {
+    #[default]
+    None,
+    Shift,
+    Control,
+    Alt,
+}
+
+impl BindingModifier {
+    const ALL: [(Self, &'static str); 4] = [
+        (Self::None, "None"),
+        (Self::Shift, "Shift"),
+        (Self::Control, "Ctrl"),
+        (Self::Alt, "Alt"),
+    ];
+
+    const fn input_name(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Shift => Some("shift"),
+            Self::Control => Some("control"),
+            Self::Alt => Some("alt"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct BindingPickerState {
+    query: String,
+    modifier: BindingModifier,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Tab {
     Player,
@@ -10,6 +55,47 @@ pub(super) enum Tab {
     Interface,
     Social,
     KeyBindings,
+}
+
+// Retained for testing a possible Project Sunrise PR; this may never become a supported feature.
+const FIELD_OF_VIEW_EDITING_AVAILABLE: bool = false;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSchema {
+    Version2,
+    Version3,
+}
+
+impl SettingsSchema {
+    fn from_document(document: &Value) -> Result<Self, String> {
+        match schema_version(document) {
+            Some(2) => Ok(Self::Version2),
+            Some(3) => Ok(Self::Version3),
+            Some(version) => Err(format!(
+                "Project Sunrise settings schema version {version} has not been tested with this Sundial release"
+            )),
+            None => Err("Project Sunrise settings schema version is missing or invalid".into()),
+        }
+    }
+
+    const fn key_binding_format(self) -> KeyBindingFormat {
+        match self {
+            Self::Version2 => KeyBindingFormat::Numeric,
+            Self::Version3 => KeyBindingFormat::Named,
+        }
+    }
+}
+
+pub(super) fn schema_version(document: &Value) -> Option<u64> {
+    document.get("version").and_then(Value::as_u64)
+}
+
+pub(super) fn future_schema_version(document: &Value) -> Option<u64> {
+    schema_version(document).filter(|version| *version > 3)
+}
+
+fn key_bindings_editable(document: &Value) -> bool {
+    schema_version(document) == Some(3)
 }
 
 const BUTTON_LAYOUTS: &[(u64, &str)] = &[
@@ -152,8 +238,9 @@ pub(super) fn draw_page(
     ui: &mut egui::Ui,
     document: &mut Value,
     tab: &mut Tab,
-    binding_search: &mut String,
+    key_bindings: &mut KeyBindingUiState,
 ) -> bool {
+    let bindings_editable = key_bindings_editable(document);
     ui.heading("Game settings");
     ui.label("Edit the settings replicated to Destiny 2 by Project Sunrise.");
     ui.add_space(8.0);
@@ -164,11 +251,12 @@ pub(super) fn draw_page(
         ui.selectable_value(tab, Tab::Display, "Display");
         ui.selectable_value(tab, Tab::Interface, "Interface");
         ui.selectable_value(tab, Tab::Social, "Social");
-        ui.add_enabled_ui(false, |ui| {
-            ui.selectable_value(tab, Tab::KeyBindings, "Key bindings")
-        })
-        .inner
-        .on_hover_text("Key-name mapping is still in progress.");
+        ui.selectable_value(tab, Tab::KeyBindings, "Key bindings")
+            .on_hover_text(if bindings_editable {
+                "Edit named key bindings used by Sunrise schema 3."
+            } else {
+                "Key bindings are shown read-only for this settings schema."
+            });
     });
     ui.separator();
 
@@ -181,7 +269,7 @@ pub(super) fn draw_page(
             Tab::Interface => draw_account_settings(ui, document, draw_interface),
             Tab::Social => draw_account_settings(ui, document, draw_social),
             Tab::KeyBindings => draw_account_settings(ui, document, |ui, settings| {
-                draw_key_bindings(ui, settings, binding_search)
+                draw_key_bindings(ui, settings, key_bindings, bindings_editable)
             }),
         })
         .inner
@@ -442,6 +530,9 @@ fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
             changed |= integer_slider(ui, values, "brightness", "Brightness", 0, 6);
             changed |= boolean(ui, values, "show_fps", "Show FPS");
             changed |= choice(ui, values, "hdr_mode", "HDR mode", HDR_MODES);
+            if FIELD_OF_VIEW_EDITING_AVAILABLE && values.contains_key("field_of_view") {
+                changed |= integer_slider(ui, values, "field_of_view", "Field of view", 55, 105);
+            }
             fixed(ui, values, "calibration_primary", "Renderer calibration");
             fixed(
                 ui,
@@ -608,31 +699,42 @@ fn draw_social(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
 
 fn draw_key_bindings(
     ui: &mut egui::Ui,
-    settings: &Map<String, Value>,
-    search: &mut String,
+    settings: &mut Map<String, Value>,
+    state: &mut KeyBindingUiState,
+    editable: bool,
 ) -> bool {
-    let Some(bindings) = settings.get("key_bindings").and_then(Value::as_object) else {
+    let Some(bindings) = settings
+        .get_mut("key_bindings")
+        .and_then(Value::as_object_mut)
+    else {
         missing_group(ui, "key bindings");
         return false;
     };
     ui.heading("Key bindings");
-    ui.label("Key binding editing is not available yet while Sundial's key-name mapping is being completed.");
+    if editable {
+        ui.label("Choose a primary and secondary input for each action. Changes apply after Destiny 2 is fully restarted.");
+    } else {
+        ui.label(
+            "Guided editing is available for Sunrise schema 3. These bindings are shown read-only.",
+        );
+    }
     ui.add_space(6.0);
     ui.add(
-        egui::TextEdit::singleline(search)
+        egui::TextEdit::singleline(&mut state.action_search)
             .hint_text("Search actions…")
             .desired_width(320.0),
     );
     ui.add_space(8.0);
-    let needle = search.trim().to_lowercase();
+    let needle = state.action_search.trim().to_lowercase();
+    let mut changed = false;
     egui::Grid::new("game_key_bindings_grid")
         .num_columns(3)
         .spacing([18.0, 8.0])
         .striped(true)
         .show(ui, |ui| {
             ui.strong("Action");
-            ui.strong("Primary input ID");
-            ui.strong("Secondary input ID");
+            ui.strong("Primary");
+            ui.strong("Secondary");
             ui.end_row();
             let mut visible = 0usize;
             for &(key, label) in ACTIONS {
@@ -644,23 +746,141 @@ fn draw_key_bindings(
                 }
                 visible += 1;
                 ui.label(label);
-                let Some(binding) = bindings.get(key).and_then(Value::as_object) else {
+                let Some(binding) = bindings.get_mut(key).and_then(Value::as_object_mut) else {
                     ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
                     ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
                     ui.end_row();
                     continue;
                 };
-                binding_label(ui, binding.get("primary"));
-                binding_label(ui, binding.get("secondary"));
+                if editable {
+                    changed |=
+                        binding_picker(ui, state, key, "primary", binding.get_mut("primary"));
+                    changed |=
+                        binding_picker(ui, state, key, "secondary", binding.get_mut("secondary"));
+                } else {
+                    binding_label(ui, binding.get("primary"));
+                    binding_label(ui, binding.get("secondary"));
+                }
                 ui.end_row();
             }
             if visible == 0 {
                 ui.label(egui::RichText::new("No matching actions").weak());
                 ui.end_row();
             }
-            false
-        })
-        .inner
+        });
+    changed
+}
+
+fn binding_picker(
+    ui: &mut egui::Ui,
+    state: &mut KeyBindingUiState,
+    action: &str,
+    half: &str,
+    value: Option<&mut Value>,
+) -> bool {
+    let Some(value) = value else {
+        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        return false;
+    };
+
+    let (label, valid) = binding_value_label(value);
+    let label = if valid {
+        egui::RichText::new(label)
+    } else {
+        egui::RichText::new(label).color(egui::Color32::LIGHT_RED)
+    };
+    let popup_id = ui.make_persistent_id(("key-binding-picker", action, half));
+    let button = ui.add_sized(
+        [220.0, ui.spacing().interact_size.y],
+        egui::Button::new(label),
+    );
+    if button.clicked() {
+        state.picker = BindingPickerState {
+            query: String::new(),
+            modifier: value
+                .as_str()
+                .and_then(modified_input)
+                .map_or(BindingModifier::None, |(modifier, _)| {
+                    binding_modifier(modifier)
+                }),
+        };
+        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+    }
+
+    let picker = &mut state.picker;
+    let mut selection = None::<Option<String>>;
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &button,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(400.0);
+            ui.label(egui::RichText::new("Modifier").strong());
+            ui.horizontal_wrapped(|ui| {
+                for (modifier, label) in BindingModifier::ALL {
+                    ui.selectable_value(&mut picker.modifier, modifier, label);
+                }
+            });
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut picker.query)
+                    .hint_text("Search key names…")
+                    .desired_width(380.0),
+            );
+            ui.separator();
+
+            let current = value.as_str().map(trim_input_name);
+            let needle = picker.query.trim().to_lowercase();
+            egui::ScrollArea::vertical()
+                .min_scrolled_height(300.0)
+                .max_height(400.0)
+                .show(ui, |ui| {
+                    if ui.selectable_label(value.is_null(), "Unassigned").clicked() {
+                        selection = Some(None);
+                    }
+                    ui.separator();
+
+                    let mut visible = 0usize;
+                    for &key in NAMED_INPUTS {
+                        let display = display_input_name(key);
+                        if !needle.is_empty()
+                            && !key.to_lowercase().contains(&needle)
+                            && !display.to_lowercase().contains(&needle)
+                        {
+                            continue;
+                        }
+                        visible += 1;
+                        let input = picker
+                            .modifier
+                            .input_name()
+                            .map_or_else(|| key.to_owned(), |modifier| format!("{modifier}+{key}"));
+                        debug_assert!(valid_named_input(&input));
+                        if ui
+                            .selectable_label(
+                                current.is_some_and(|current| current.eq_ignore_ascii_case(&input)),
+                                display,
+                            )
+                            .clicked()
+                        {
+                            selection = Some(Some(input));
+                        }
+                    }
+                    if visible == 0 {
+                        ui.label(egui::RichText::new("No matching keys found").weak());
+                    }
+                });
+        },
+    );
+
+    let Some(selection) = selection else {
+        return false;
+    };
+    let Ok(changed) = set_named_binding_value(value, selection.as_deref()) else {
+        return false;
+    };
+    ui.memory_mut(egui::Memory::close_popup);
+    changed
 }
 
 fn boolean(ui: &mut egui::Ui, values: &mut Map<String, Value>, key: &str, label: &str) -> bool {
@@ -839,12 +1059,15 @@ fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
         ui.label(egui::RichText::new("Unassigned").weak());
     } else if let Some(code) = value.as_u64() {
         ui.add_enabled(false, egui::Label::new(code.to_string()));
+    } else if let Some(name) = value.as_str() {
+        ui.add_enabled(false, egui::Label::new(name));
     } else {
         ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
     }
 }
 
 pub(super) fn validate(document: &Value) -> Result<(), String> {
+    let schema = SettingsSchema::from_document(document)?;
     let settings = document
         .pointer("/state/account/settings")
         .and_then(Value::as_object)
@@ -888,6 +1111,9 @@ pub(super) fn validate(document: &Value) -> Result<(), String> {
     range(display, "brightness", 0, 6)?;
     bool_fields(display, "display", &["show_fps"])?;
     range(display, "hdr_mode", 0, 1)?;
+    if FIELD_OF_VIEW_EDITING_AVAILABLE {
+        optional_range(display, "field_of_view", 55, 105)?;
+    }
     exact_float(display, "calibration_primary", 10_000.0)?;
     exact_float(display, "calibration_alpha", 0.0)?;
 
@@ -926,14 +1152,22 @@ pub(super) fn validate(document: &Value) -> Result<(), String> {
     range(social, "clan_chat_join_mode", 0, 1)?;
     range(social, "chat_auto_hide_mode", 0, 1)?;
 
+    validate_key_bindings(settings, schema)
+}
+
+fn validate_key_bindings(
+    settings: &Map<String, Value>,
+    schema: SettingsSchema,
+) -> Result<(), String> {
     let bindings = group(settings, "key_bindings")?;
+    let binding_format = schema.key_binding_format();
     for &(key, label) in ACTIONS {
         let binding = bindings
             .get(key)
             .and_then(Value::as_object)
             .ok_or_else(|| format!("Key binding {label} must be an object"))?;
-        input_code(binding, label, "primary")?;
-        input_code(binding, label, "secondary")?;
+        input_code(binding, label, "primary", binding_format)?;
+        input_code(binding, label, "secondary", binding_format)?;
     }
     Ok(())
 }
@@ -963,6 +1197,19 @@ fn range(values: &Map<String, Value>, key: &str, minimum: u64, maximum: u64) -> 
         Err(format!(
             "Game setting {key} must be between {minimum} and {maximum}"
         ))
+    }
+}
+
+fn optional_range(
+    values: &Map<String, Value>,
+    key: &str,
+    minimum: u64,
+    maximum: u64,
+) -> Result<(), String> {
+    if values.contains_key(key) {
+        range(values, key, minimum, maximum)
+    } else {
+        Ok(())
     }
 }
 
@@ -1037,21 +1284,286 @@ fn bool_fields(
     Ok(())
 }
 
-fn input_code(binding: &Map<String, Value>, label: &str, half: &str) -> Result<(), String> {
+// These are the decoded input names accepted by Sunrise schemas 3 (Project
+// Sunrise 0.2 and 0.2.1). Sunrise's raw table contains both its backslash name
+// and its JSON-escaped spelling; serde represents the usable value as one
+// decoded backslash, leaving 120 logical choices here. Matching is ASCII
+// case-insensitive, just like Sunrise.
+const NAMED_INPUTS: &[&str; 120] = &[
+    "escape",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "print screen",
+    "scroll lock",
+    "pause",
+    "`",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "0",
+    "-",
+    "=",
+    "backspace",
+    "tab",
+    "q",
+    "w",
+    "e",
+    "r",
+    "t",
+    "y",
+    "u",
+    "i",
+    "o",
+    "p",
+    "[",
+    "]",
+    r"\",
+    "caps lock",
+    "a",
+    "s",
+    "d",
+    "f",
+    "g",
+    "h",
+    "j",
+    "k",
+    "l",
+    ";",
+    "'",
+    "return",
+    "left shift",
+    "z",
+    "x",
+    "c",
+    "v",
+    "b",
+    "n",
+    "m",
+    ",",
+    ".",
+    "/",
+    "right shift",
+    "left control",
+    "left windows",
+    "left alt",
+    "space",
+    "right alt",
+    "right windows",
+    "menu",
+    "right control",
+    "up",
+    "down",
+    "left",
+    "right",
+    "insert",
+    "home",
+    "page up",
+    "delete",
+    "end",
+    "page down",
+    "num lock",
+    "keypad /",
+    "keypad *",
+    "keypad 0",
+    "keypad 1",
+    "keypad 2",
+    "keypad 3",
+    "keypad 4",
+    "keypad 5",
+    "keypad 6",
+    "keypad 7",
+    "keypad 8",
+    "keypad 9",
+    "keypad -",
+    "keypad +",
+    "keypad enter",
+    "keypad .",
+    "<",
+    "shift",
+    "control",
+    "key_windows",
+    "alt",
+    "left mouse button",
+    "middle mouse button",
+    "right mouse button",
+    "extra mouse button 1",
+    "extra mouse button 2",
+    "mouse wheel up",
+    "mouse wheel down",
+    "unused",
+    "ctrl",
+    "left ctrl",
+    "right ctrl",
+];
+
+const MODIFIER_INPUTS: &[&str; 12] = &[
+    "left shift",
+    "right shift",
+    "shift",
+    "left control",
+    "right control",
+    "control",
+    "ctrl",
+    "left ctrl",
+    "right ctrl",
+    "left alt",
+    "right alt",
+    "alt",
+];
+
+fn trim_input_name(name: &str) -> &str {
+    name.trim_matches([' ', '\t'])
+}
+
+fn matches_input_name(candidate: &str, names: &[&str]) -> bool {
+    names
+        .iter()
+        .any(|name| candidate.eq_ignore_ascii_case(name))
+}
+
+fn modified_input(name: &str) -> Option<(&str, &str)> {
+    let name = trim_input_name(name);
+    if name.is_empty() || matches_input_name(name, NAMED_INPUTS) {
+        return None;
+    }
+    let separator = name.find(['+', '-'])?;
+    let modifier = trim_input_name(&name[..separator]);
+    let key = trim_input_name(&name[separator + 1..]);
+    (matches_input_name(modifier, MODIFIER_INPUTS) && matches_input_name(key, NAMED_INPUTS))
+        .then_some((modifier, key))
+}
+
+fn valid_named_input(name: &str) -> bool {
+    let name = trim_input_name(name);
+    !name.is_empty() && (matches_input_name(name, NAMED_INPUTS) || modified_input(name).is_some())
+}
+
+fn binding_modifier(name: &str) -> BindingModifier {
+    if matches_input_name(name, &["left shift", "right shift", "shift"]) {
+        BindingModifier::Shift
+    } else if matches_input_name(
+        name,
+        &[
+            "left control",
+            "right control",
+            "control",
+            "ctrl",
+            "left ctrl",
+            "right ctrl",
+        ],
+    ) {
+        BindingModifier::Control
+    } else if matches_input_name(name, &["left alt", "right alt", "alt"]) {
+        BindingModifier::Alt
+    } else {
+        BindingModifier::None
+    }
+}
+
+fn display_input_part(name: &str) -> String {
+    name.replace('_', " ")
+        .split(' ')
+        .map(|word| {
+            let mut characters = word.chars();
+            characters.next().map_or_else(String::new, |first| {
+                first.to_ascii_uppercase().to_string() + characters.as_str()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn display_input_name(name: &str) -> String {
+    modified_input(name).map_or_else(
+        || display_input_part(trim_input_name(name)),
+        |(modifier, key)| {
+            format!(
+                "{} + {}",
+                display_input_part(modifier),
+                display_input_part(key)
+            )
+        },
+    )
+}
+
+fn binding_value_label(value: &Value) -> (String, bool) {
+    if value.is_null() {
+        ("Unassigned".into(), true)
+    } else if let Some(name) = value.as_str() {
+        if valid_named_input(name) {
+            (display_input_name(name), true)
+        } else {
+            (format!("Invalid: {name}"), false)
+        }
+    } else {
+        ("Invalid value".into(), false)
+    }
+}
+
+fn set_named_binding_value(value: &mut Value, input: Option<&str>) -> Result<bool, String> {
+    if let Some(input) = input
+        && !valid_named_input(input)
+    {
+        return Err(format!("Unsupported Sunrise key name: {input}"));
+    }
+    let replacement = input.map_or(Value::Null, |input| Value::String(input.into()));
+    if *value == replacement {
+        return Ok(false);
+    }
+    *value = replacement;
+    Ok(true)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyBindingFormat {
+    Numeric,
+    Named,
+}
+
+fn input_code(
+    binding: &Map<String, Value>,
+    label: &str,
+    half: &str,
+    format: KeyBindingFormat,
+) -> Result<(), String> {
     let Some(value) = binding.get(half) else {
         return Err(format!("Key binding {label} is missing its {half} value"));
     };
-    if value.is_null()
-        || value
-            .as_u64()
-            .is_some_and(|code| u16::try_from(code).is_ok())
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "Key binding {label} {half} must be unassigned or between 0 and {}",
+    if value.is_null() {
+        return Ok(());
+    }
+    match format {
+        KeyBindingFormat::Numeric
+            if value
+                .as_u64()
+                .is_some_and(|code| u16::try_from(code).is_ok()) =>
+        {
+            Ok(())
+        }
+        KeyBindingFormat::Named if value.as_str().is_some_and(valid_named_input) => Ok(()),
+        KeyBindingFormat::Numeric => Err(format!(
+            "Key binding {label} {half} must be unassigned or between 0 and {} for Sunrise 0.1",
             u16::MAX
-        ))
+        )),
+        KeyBindingFormat::Named => Err(format!(
+            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise 0.2"
+        )),
     }
 }
 
@@ -1100,5 +1612,186 @@ mod tests {
         assert!(set_player_name(&mut document, "Guardian"));
 
         assert_eq!(document, expected);
+    }
+
+    #[test]
+    fn key_binding_forms_follow_sunrise_schema_versions() {
+        assert_eq!(
+            SettingsSchema::Version2.key_binding_format(),
+            KeyBindingFormat::Numeric
+        );
+        assert_eq!(
+            SettingsSchema::Version3.key_binding_format(),
+            KeyBindingFormat::Named
+        );
+
+        let numeric = serde_json::json!({"primary": 109, "secondary": null});
+        let numeric = numeric.as_object().unwrap();
+        assert_eq!(
+            input_code(numeric, "Fire", "primary", KeyBindingFormat::Numeric),
+            Ok(())
+        );
+        assert!(input_code(numeric, "Fire", "primary", KeyBindingFormat::Named).is_err());
+
+        let named = serde_json::json!({"primary": "left mouse button", "secondary": null});
+        let named = named.as_object().unwrap();
+        assert_eq!(
+            input_code(named, "Fire", "primary", KeyBindingFormat::Named),
+            Ok(())
+        );
+        assert!(input_code(named, "Fire", "primary", KeyBindingFormat::Numeric).is_err());
+        assert_eq!(
+            input_code(named, "Fire", "secondary", KeyBindingFormat::Named),
+            Ok(())
+        );
+
+        let numeric_max = serde_json::json!({"primary": 65535, "secondary": null});
+        let numeric_max = numeric_max.as_object().unwrap();
+        assert_eq!(
+            input_code(numeric_max, "Fire", "primary", KeyBindingFormat::Numeric),
+            Ok(())
+        );
+        let numeric_too_large = serde_json::json!({"primary": 65536, "secondary": null});
+        assert!(
+            input_code(
+                numeric_too_large.as_object().unwrap(),
+                "Fire",
+                "primary",
+                KeyBindingFormat::Numeric
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn named_key_binding_validation_matches_sunrise() {
+        for valid in [
+            "left mouse button",
+            "A",
+            "\tCTRL + keypad -\t",
+            "right alt-page down",
+            r"\",
+        ] {
+            assert!(valid_named_input(valid), "expected {valid:?} to be valid");
+        }
+
+        for invalid in [
+            "not-a-key",
+            "left windows+a",
+            "shift+ctrl+a",
+            "shift+",
+            "a+b",
+            "\nA\n",
+            r"\\",
+        ] {
+            assert!(
+                !valid_named_input(invalid),
+                "expected {invalid:?} to be invalid"
+            );
+        }
+
+        let invalid = serde_json::json!({"primary": "not-a-key", "secondary": null});
+        assert!(
+            input_code(
+                invalid.as_object().unwrap(),
+                "Fire",
+                "primary",
+                KeyBindingFormat::Named
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn key_binding_editing_is_schema_3_only() {
+        assert!(!key_bindings_editable(&serde_json::json!({"version": 2})));
+        assert!(key_bindings_editable(&serde_json::json!({"version": 3})));
+        assert!(!key_bindings_editable(&serde_json::json!({"version": 4})));
+        assert!(!key_bindings_editable(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn every_picker_choice_is_accepted_by_sunrise() {
+        for &key in NAMED_INPUTS {
+            assert!(valid_named_input(key), "direct key {key:?}");
+            for modifier in ["shift", "control", "alt"] {
+                let input = format!("{modifier}+{key}");
+                assert!(valid_named_input(&input), "modified key {input:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn named_binding_edits_only_replace_the_selected_value() {
+        let mut binding = serde_json::json!({
+            "primary": "not-a-key",
+            "secondary": null,
+            "future_binding_data": { "keep": [1, 2, 3] }
+        });
+
+        let untouched = binding.clone();
+        assert!(
+            set_named_binding_value(binding.pointer_mut("/primary").unwrap(), Some("not-a-key"))
+                .is_err()
+        );
+        assert_eq!(binding, untouched);
+
+        assert_eq!(
+            set_named_binding_value(binding.pointer_mut("/primary").unwrap(), Some("control+a")),
+            Ok(true)
+        );
+        assert_eq!(
+            binding,
+            serde_json::json!({
+                "primary": "control+a",
+                "secondary": null,
+                "future_binding_data": { "keep": [1, 2, 3] }
+            })
+        );
+        assert_eq!(
+            set_named_binding_value(binding.pointer_mut("/primary").unwrap(), Some("control+a")),
+            Ok(false)
+        );
+        assert_eq!(
+            set_named_binding_value(binding.pointer_mut("/primary").unwrap(), None),
+            Ok(true)
+        );
+        assert!(binding.pointer("/primary").unwrap().is_null());
+        assert_eq!(
+            binding.pointer("/future_binding_data/keep"),
+            Some(&serde_json::json!([1, 2, 3]))
+        );
+    }
+
+    #[test]
+    fn only_newer_schema_versions_require_a_confirmation() {
+        assert_eq!(schema_version(&serde_json::json!({"version": 3})), Some(3));
+        assert_eq!(schema_version(&serde_json::json!({"version": "3"})), None);
+        assert_eq!(
+            future_schema_version(&serde_json::json!({"version": 2})),
+            None
+        );
+        assert_eq!(
+            future_schema_version(&serde_json::json!({"version": 3})),
+            None
+        );
+        assert_eq!(
+            future_schema_version(&serde_json::json!({"version": 4})),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn future_field_of_view_validation_accepts_stock_and_supported_values() {
+        let stock = Map::new();
+        assert_eq!(optional_range(&stock, "field_of_view", 55, 105), Ok(()));
+
+        let patched = serde_json::json!({"field_of_view": 85});
+        let patched = patched.as_object().unwrap();
+        assert_eq!(optional_range(patched, "field_of_view", 55, 105), Ok(()));
+
+        let invalid = serde_json::json!({"field_of_view": 106});
+        let invalid = invalid.as_object().unwrap();
+        assert!(optional_range(invalid, "field_of_view", 55, 105).is_err());
     }
 }
