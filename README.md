@@ -118,6 +118,35 @@ It shows every discovered plug matching a socket type instead of only the
 normally supported choices. Unsupported combinations may break an item, corrupt
 the loadout, or crash Destiny 2.
 
+### Why does an ornament show as equipped but not appear in game?
+
+Sundial can equip an ornament plug correctly even when Sunrise shows the base
+item model in game. Sunrise 0.2.1 applies shader and material overrides from
+plugs, but does not apply every ornament's model replacement. This is why
+shaders generally work while an ornament may appear equipped in menus without
+changing the in-game model.
+
+### Why does Destiny 2 send me to character creation?
+
+Sunrise may do this when a character contains an invalid or incompatible
+configuration, especially a mismatched subclass, attunement, super, or melee
+combination. Fully exit Destiny 2, open the file in Sundial, and save it again;
+Sundial repairs the known ability pairings during save. If the problem remains,
+reselect that character's class, subclass, and attunement before saving.
+
+If all else fails, use **Paths > Restore Sunrise defaults**. Sundial preserves
+the current file as `settings.json.bak` and as a timestamped backup before
+restoring it. Earlier save backups are also available under
+`%LOCALAPPDATA%\Sundial\backups`.
+
+### What should I do if I find a weird edge case?
+
+Please send me a copy of the affected `settings.json` if you are comfortable
+sharing it. There are many possible character and loadout combinations that
+cannot all be anticipated, and a real example may help reproduce the problem
+and fix it for future releases. You can reach me on Discord or Twitter/X at
+`kylethmpsn`.
+
 ### Can I undo a change after saving?
 
 Sundial creates a timestamped backup before every save. Backups are stored in
