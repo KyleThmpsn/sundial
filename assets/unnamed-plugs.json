@@ -1,0 +1,1588 @@
+{
+  "schema": 2,
+  "source_url": "https://docs.google.com/spreadsheets/d/1U2DNRla6--q8PbU41QcqT2ku50hq5ew8uxy7r1tKe4c/edit",
+  "snapshot_date": "2026-08-15",
+  "manifest_version": "86657.20.08.23.1800-9",
+  "plugs": [
+    {
+      "hash": "0x00011D37",
+      "name": "1 Discipline / 9 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x01045049",
+      "name": "Void Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x01BE642F",
+      "name": "5 Mobility / 10 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x01E90FE0",
+      "name": "1 Discipline / 11 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x0409DCAB",
+      "name": "10 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x056CABAD",
+      "name": "5 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x06E7437E",
+      "name": "1 Discipline / 11 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x07A77A22",
+      "name": "5 Mobility / 5 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x080A66A5",
+      "name": "6 Discipline / 1 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x087262F3",
+      "name": "6 Mobility / 1 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x0A751EA5",
+      "name": "8 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x0A8BCDE9",
+      "name": "7 Mobility / 1 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x0B33CEFA",
+      "name": "13 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x0C2E93B1",
+      "name": "1 Discipline / 7 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x0DAC1EF5",
+      "name": "1 Mobility / 10 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x0E196BEF",
+      "name": "6 Mobility / 7 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x0F8A2F00",
+      "name": "Void Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F01",
+      "name": "Void Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F04",
+      "name": "Void Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F05",
+      "name": "Void Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F06",
+      "name": "Void Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F07",
+      "name": "Void Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F0A",
+      "name": "Void Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F8A2F0B",
+      "name": "Void Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x0F9A966D",
+      "name": "8 Mobility / 1 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x12C2040F",
+      "name": "5 Mobility / 1 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x13E2F159",
+      "name": "5 Mobility / 8 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x13EFAFB3",
+      "name": "Arc Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x18E810E1",
+      "name": "6 Discipline / 1 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x1A64B0C1",
+      "name": "1 Mobility / 5 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x1C980A79",
+      "name": "1 Mobility / 10 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x1FD8E408",
+      "name": "13 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x207DD924",
+      "name": "Solar Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x22D33790",
+      "name": "5 Discipline / 10 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x236B4CA8",
+      "name": "1 Discipline / 8 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x2399CB63",
+      "name": "1 Discipline / 8 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x251525AF",
+      "name": "7 Mobility / 1 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x25477E9B",
+      "name": "1 Discipline / 6 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x26605164",
+      "name": "6 Mobility / 1 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x270F00E0",
+      "name": "Solar Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x292D2029",
+      "name": "1 Mobility / 5 Resilience / 10 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x2A1D3CF3",
+      "name": "8 Discipline / 1 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x2B772607",
+      "name": "1 Discipline / 5 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x2D2125EA",
+      "name": "11 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x2E0DCBD6",
+      "name": "9 Mobility / 6 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x2F3EB57A",
+      "name": "5 Discipline / 1 Intellect / 11 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x2FE50649",
+      "name": "6 Mobility / 1 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x30145D51",
+      "name": "1 Mobility / 7 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x310CBDF2",
+      "name": "Solar Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF3",
+      "name": "Solar Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF4",
+      "name": "Solar Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF5",
+      "name": "Solar Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF6",
+      "name": "Solar Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF7",
+      "name": "Solar Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF8",
+      "name": "Solar Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x310CBDF9",
+      "name": "Solar Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F0",
+      "name": "Solar Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F1",
+      "name": "Solar Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F4",
+      "name": "Solar Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F5",
+      "name": "Solar Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F6",
+      "name": "Solar Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723F7",
+      "name": "Solar Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723FA",
+      "name": "Solar Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x31F723FB",
+      "name": "Solar Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x35B44F6B",
+      "name": "7 Discipline / 1 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x35C43C10",
+      "name": "Arc Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x37661C63",
+      "name": "5 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x38B44C93",
+      "name": "5 Discipline / 5 Intellect / 10 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x397215ED",
+      "name": "1 Discipline / 8 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x39CBE5E4",
+      "name": "1 Mobility / 11 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x39D35669",
+      "name": "7 Discipline / 1 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x3A242CAF",
+      "name": "8 Discipline / 6 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x3B0448CF",
+      "name": "1 Mobility / 1 Resilience / 15 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x3B2CC013",
+      "name": "5 Discipline / 9 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x3BB05607",
+      "name": "8 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x40D3E5B2",
+      "name": "7 Mobility / 8 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x4100FFB2",
+      "name": "13 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x43CBFBA7",
+      "name": "8 Discipline / 7 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x44F7EA75",
+      "name": "1 Mobility / 5 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x4632ED4A",
+      "name": "1 Discipline / 5 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x488F4B07",
+      "name": "8 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x48E6E396",
+      "name": "1 Mobility / 1 Resilience / 13 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x497CEF38",
+      "name": "1 Mobility / 5 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x4A2FB04F",
+      "name": "5 Discipline / 8 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4B17DC9B",
+      "name": "6 Discipline / 8 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4C5F7594",
+      "name": "5 Mobility / 1 Resilience / 11 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x4C627CE7",
+      "name": "1 Discipline / 7 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4C958CDF",
+      "name": "6 Discipline / 9 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4D87686E",
+      "name": "6 Discipline / 9 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4DAF9C4C",
+      "name": "1 Mobility / 1 Resilience / 13 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x4ED40AFE",
+      "name": "5 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x4F30017E",
+      "name": "1 Mobility / 14 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x50BBE7A2",
+      "name": "1 Mobility / 13 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x51AA7CFD",
+      "name": "1 Discipline / 6 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x53EBCCF3",
+      "name": "5 Discipline / 10 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x53ED7C7D",
+      "name": "1 Mobility / 8 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x5538F18D",
+      "name": "1 Mobility / 15 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x57FDDF4D",
+      "name": "6 Mobility / 1 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x596CDC91",
+      "name": "10 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x5AA0833B",
+      "name": "1 Discipline / 1 Intellect / 10 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x5AFCB5DB",
+      "name": "9 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x5B6DBBDB",
+      "name": "5 Mobility / 9 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x5BC993F1",
+      "name": "8 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x5C9EF362",
+      "name": "1 Discipline / 1 Intellect / 13 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x5D13C381",
+      "name": "1 Discipline / 10 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x5D9D8350",
+      "name": "9 Discipline / 6 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x62B5CE8D",
+      "name": "1 Mobility / 6 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x67A15B0B",
+      "name": "6 Discipline / 7 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x68043200",
+      "name": "Arc Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68043201",
+      "name": "Arc Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68043204",
+      "name": "Arc Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68043205",
+      "name": "Arc Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68043206",
+      "name": "Arc Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68043207",
+      "name": "Arc Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x6804320A",
+      "name": "Arc Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x6804320B",
+      "name": "Arc Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x68890D49",
+      "name": "1 Mobility / 6 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x69814A64",
+      "name": "14 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x69B41A27",
+      "name": "1 Mobility / 8 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x6B381153",
+      "name": "1 Mobility / 6 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x6BB6C22D",
+      "name": "5 Discipline / 5 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x6C3C01B7",
+      "name": "10 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x6ECCBE11",
+      "name": "1 Mobility / 8 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x71D295B5",
+      "name": "7 Discipline / 6 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x72406A17",
+      "name": "5 Mobility / 1 Resilience / 10 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x758B897D",
+      "name": "8 Discipline / 1 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x771412C1",
+      "name": "1 Mobility / 6 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x7763FF63",
+      "name": "8 Mobility / 7 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x777F01A7",
+      "name": "1 Discipline / 7 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x78880016",
+      "name": "Void Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x7C4144C2",
+      "name": "1 Discipline / 13 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x7E24FA86",
+      "name": "1 Mobility / 7 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x7E5CAD2A",
+      "name": "5 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x7F2022AD",
+      "name": "5 Discipline / 1 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x801095CA",
+      "name": "1 Mobility / 11 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x80999D4D",
+      "name": "8 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x80A3CCF1",
+      "name": "9 Discipline / 6 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x818B1497",
+      "name": "8 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8288F478",
+      "name": "1 Discipline / 1 Intellect / 13 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x82A50C8C",
+      "name": "5 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x841A61EF",
+      "name": "Arc Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x84E4AB33",
+      "name": "9 Mobility / 6 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x84F0FD41",
+      "name": "1 Discipline / 5 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x85480BD0",
+      "name": "11 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x860BBF14",
+      "name": "Solar Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF15",
+      "name": "Solar Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF18",
+      "name": "Solar Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF19",
+      "name": "Solar Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF1A",
+      "name": "Solar Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF1B",
+      "name": "Solar Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF1C",
+      "name": "Solar Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF1E",
+      "name": "Solar Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x860BBF1F",
+      "name": "Solar Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x8634E8D3",
+      "name": "1 Discipline / 5 Intellect / 10 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x86D0ECD5",
+      "name": "1 Discipline / 8 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x86FA685A",
+      "name": "11 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x8737ED10",
+      "name": "1 Discipline / 1 Intellect / 14 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x8856AD83",
+      "name": "9 Mobility / 1 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8951340D",
+      "name": "7 Discipline / 1 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x8ADC1C88",
+      "name": "1 Discipline / 13 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x8D7F89DB",
+      "name": "5 Mobility / 5 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8E4940CA",
+      "name": "6 Mobility / 9 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8F034F70",
+      "name": "5 Mobility / 11 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8F8571A7",
+      "name": "1 Mobility / 5 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x8FC3C547",
+      "name": "7 Mobility / 1 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x90147C17",
+      "name": "8 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x9015254F",
+      "name": "1 Discipline / 6 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x91104AF5",
+      "name": "6 Mobility / 1 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x9173CBD1",
+      "name": "8 Mobility / 6 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x950D14E7",
+      "name": "1 Discipline / 8 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x95D3673E",
+      "name": "Empty Energy 0",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x96F5367F",
+      "name": "7 Mobility / 6 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x9739A311",
+      "name": "1 Mobility / 1 Resilience / 10 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x97B3C119",
+      "name": "7 Mobility / 6 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x998E0F48",
+      "name": "1 Mobility / 1 Resilience / 11 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x99D7BB33",
+      "name": "1 Mobility / 7 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x9B0337A6",
+      "name": "11 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0x9B0D97B9",
+      "name": "Solar Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0x9B1442B8",
+      "name": "7 Discipline / 1 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x9B643545",
+      "name": "10 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0x9ED71E8C",
+      "name": "5 Discipline / 11 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xA07F6B2C",
+      "name": "5 Discipline / 5 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xA10B701C",
+      "name": "11 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xA4D6D964",
+      "name": "Void Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xA502D0AF",
+      "name": "Solar Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xA5158320",
+      "name": "8 Mobility / 1 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xA758717F",
+      "name": "5 Discipline / 1 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xA81461CE",
+      "name": "1 Discipline / 1 Intellect / 11 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xAAE6BB59",
+      "name": "9 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xAAF72D96",
+      "name": "1 Mobility / 9 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xAB7EECBC",
+      "name": "1 Discipline / 15 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xAEB702B0",
+      "name": "1 Discipline / 5 Intellect / 11 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB02B7152",
+      "name": "8 Discipline / 7 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB17358C4",
+      "name": "1 Mobility / 13 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xB189316A",
+      "name": "14 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xB2FFE5D4",
+      "name": "Void Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5D5",
+      "name": "Void Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5D8",
+      "name": "Void Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5D9",
+      "name": "Void Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5DA",
+      "name": "Void Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5DB",
+      "name": "Void Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5DC",
+      "name": "Void Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5DE",
+      "name": "Void Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB2FFE5DF",
+      "name": "Void Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB34C1DF5",
+      "name": "5 Discipline / 5 Intellect / 10 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB3E10A23",
+      "name": "15 Discipline / 1 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB4028C40",
+      "name": "Solar Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C41",
+      "name": "Solar Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C42",
+      "name": "Solar Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C43",
+      "name": "Solar Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C45",
+      "name": "Solar Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C46",
+      "name": "Solar Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C47",
+      "name": "Solar Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C4C",
+      "name": "Solar Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB4028C4D",
+      "name": "Solar Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xB45D3F38",
+      "name": "8 Discipline / 1 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB46E6441",
+      "name": "8 Mobility / 1 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xB584848F",
+      "name": "1 Discipline / 5 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB6727DE9",
+      "name": "1 Discipline / 6 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xB71DF4D2",
+      "name": "7 Mobility / 1 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xB8E2FE54",
+      "name": "1 Discipline / 6 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xBAE01BEB",
+      "name": "5 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xBBA94725",
+      "name": "1 Mobility / 9 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xBC573A0F",
+      "name": "5 Mobility / 8 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xBEA70AB4",
+      "name": "1 Mobility / 6 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xC09AB916",
+      "name": "Arc Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xC30B17F3",
+      "name": "6 Discipline / 1 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xC6A8D7D1",
+      "name": "8 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xC730B540",
+      "name": "6 Discipline / 1 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xC7732D02",
+      "name": "9 Mobility / 1 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xC7B52441",
+      "name": "5 Discipline / 1 Intellect / 10 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xC87323A2",
+      "name": "1 Discipline / 7 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xC971ED0F",
+      "name": "1 Mobility / 9 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xCB163B2D",
+      "name": "10 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xCBE1EA39",
+      "name": "5 Mobility / 1 Resilience / 8 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xCC42A33F",
+      "name": "1 Mobility / 7 Resilience / 6 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xCC87E0B0",
+      "name": "9 Discipline / 1 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xCCDC7E00",
+      "name": "Arc Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E01",
+      "name": "Arc Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E02",
+      "name": "Arc Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E03",
+      "name": "Arc Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E06",
+      "name": "Arc Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E07",
+      "name": "Arc Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E0C",
+      "name": "Arc Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCCDC7E0D",
+      "name": "Arc Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCEB68035",
+      "name": "1 Discipline / 10 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xCF220B48",
+      "name": "7 Discipline / 8 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xCF921051",
+      "name": "Arc Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921052",
+      "name": "Arc Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921053",
+      "name": "Arc Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921054",
+      "name": "Arc Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921055",
+      "name": "Arc Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921056",
+      "name": "Arc Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921057",
+      "name": "Arc Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921058",
+      "name": "Arc Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xCF921059",
+      "name": "Arc Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD08B27C1",
+      "name": "9 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xD125CFD9",
+      "name": "7 Discipline / 6 Intellect / 7 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xD3E10D89",
+      "name": "5 Mobility / 1 Resilience / 9 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xD576F4DF",
+      "name": "6 Mobility / 9 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xD9B8DD40",
+      "name": "Void Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD41",
+      "name": "Void Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD44",
+      "name": "Void Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD45",
+      "name": "Void Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD46",
+      "name": "Void Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD47",
+      "name": "Void Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD4A",
+      "name": "Void Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xD9B8DD4B",
+      "name": "Void Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xDC98950D",
+      "name": "5 Discipline / 8 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xE04EF5B9",
+      "name": "5 Discipline / 1 Intellect / 9 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xE0AD1DB2",
+      "name": "1 Discipline / 9 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xE1DA2E9B",
+      "name": "1 Discipline / 9 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xE3792657",
+      "name": "1 Mobility / 5 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xE6302247",
+      "name": "7 Mobility / 8 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xE92D2525",
+      "name": "5 Mobility / 5 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xE95BB926",
+      "name": "8 Mobility / 7 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xEB03B38D",
+      "name": "1 Mobility / 8 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xEB2C1AC5",
+      "name": "9 Discipline / 1 Intellect / 6 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xEBCADC18",
+      "name": "11 Mobility / 1 Resilience / 5 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xEC9C59F4",
+      "name": "13 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xED00CA1B",
+      "name": "9 Discipline / 5 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xEDABF75B",
+      "name": "10 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xEDF9957B",
+      "name": "6 Discipline / 1 Intellect / 8 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xEE9309E5",
+      "name": "6 Mobility / 8 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xF148E760",
+      "name": "Arc Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E762",
+      "name": "Arc Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E763",
+      "name": "Arc Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E764",
+      "name": "Arc Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E765",
+      "name": "Arc Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E766",
+      "name": "Arc Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E767",
+      "name": "Arc Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E768",
+      "name": "Arc Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF148E769",
+      "name": "Arc Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xF2D2471A",
+      "name": "1 Discipline / 14 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xF375296A",
+      "name": "1 Mobility / 1 Resilience / 14 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xF37F6509",
+      "name": "1 Discipline / 5 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xF5C25735",
+      "name": "6 Discipline / 7 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xF9682AD7",
+      "name": "1 Discipline / 1 Intellect / 15 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xFA296826",
+      "name": "Void Energy 8",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA296827",
+      "name": "Void Energy 9",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA296828",
+      "name": "Void Energy 6",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA296829",
+      "name": "Void Energy 7",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA29682A",
+      "name": "Void Energy 4",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA29682B",
+      "name": "Void Energy 5",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA29682C",
+      "name": "Void Energy 2",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA29682D",
+      "name": "Void Energy 3",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFA29682F",
+      "name": "Void Energy 1",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFAB6CDE3",
+      "name": "1 Discipline / 15 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xFBC4E5A1",
+      "name": "6 Mobility / 7 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xFC039F80",
+      "name": "1 Mobility / 8 Resilience / 7 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xFC8C48E0",
+      "name": "5 Discipline / 1 Intellect / 5 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xFD3D71DA",
+      "name": "1 Mobility / 5 Resilience / 11 Recovery",
+      "type_name": "Top Stat Allocation"
+    },
+    {
+      "hash": "0xFD655E67",
+      "name": "7 Discipline / 6 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xFE2F01CD",
+      "name": "Void Energy 10",
+      "type_name": "Armor Energy"
+    },
+    {
+      "hash": "0xFF63986D",
+      "name": "7 Discipline / 8 Intellect / 1 Strength",
+      "type_name": "Bottom Stat Allocation"
+    },
+    {
+      "hash": "0xFF7B15B9",
+      "name": "15 Mobility / 1 Resilience / 1 Recovery",
+      "type_name": "Top Stat Allocation"
+    }
+  ]
+}

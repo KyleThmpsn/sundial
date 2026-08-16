@@ -1,10 +1,10 @@
 fn main() {
-    println!("cargo:rerun-if-changed=assets/sundial.ico");
+    println!("cargo:rerun-if-changed=assets/sundial-alt.ico");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut resource = winresource::WindowsResource::new();
         resource
-            .set_icon("assets/sundial.ico")
+            .set_icon("assets/sundial-alt.ico")
             .set("ProductName", "Sundial")
             .set(
                 "FileDescription",

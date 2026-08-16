@@ -285,7 +285,7 @@ fn draw_account_settings(
         .and_then(Value::as_object_mut)
     else {
         ui.colored_label(
-            egui::Color32::LIGHT_RED,
+            ui.visuals().error_fg_color,
             "This settings.json has no state.account.settings object.",
         );
         return false;
@@ -300,14 +300,14 @@ fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
 
     let Some(value) = document.pointer("/steam/user/persona_name") else {
         ui.colored_label(
-            egui::Color32::LIGHT_RED,
+            ui.visuals().error_fg_color,
             "This settings.json has no steam.user.persona_name field.",
         );
         return false;
     };
     let Some(current) = value.as_str() else {
         ui.colored_label(
-            egui::Color32::LIGHT_RED,
+            ui.visuals().error_fg_color,
             "steam.user.persona_name must be text.",
         );
         return false;
@@ -357,7 +357,7 @@ fn group_mut<'a>(
 
 fn missing_group(ui: &mut egui::Ui, name: &str) {
     ui.colored_label(
-        egui::Color32::LIGHT_RED,
+        ui.visuals().error_fg_color,
         format!("The {name} settings group is missing or malformed."),
     );
 }
@@ -710,7 +710,7 @@ fn draw_key_bindings(
         missing_group(ui, "key bindings");
         return false;
     };
-    ui.heading("Key bindings");
+    ui.heading("Key bindings (Experimental)");
     if editable {
         ui.label("Choose a primary and secondary input for each action. Changes apply after Destiny 2 is fully restarted.");
     } else {
@@ -747,8 +747,8 @@ fn draw_key_bindings(
                 visible += 1;
                 ui.label(label);
                 let Some(binding) = bindings.get_mut(key).and_then(Value::as_object_mut) else {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
-                    ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+                    ui.colored_label(ui.visuals().error_fg_color, "Missing");
+                    ui.colored_label(ui.visuals().error_fg_color, "Missing");
                     ui.end_row();
                     continue;
                 };
@@ -779,7 +779,7 @@ fn binding_picker(
     value: Option<&mut Value>,
 ) -> bool {
     let Some(value) = value else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
         return false;
     };
 
@@ -787,7 +787,7 @@ fn binding_picker(
     let label = if valid {
         egui::RichText::new(label)
     } else {
-        egui::RichText::new(label).color(egui::Color32::LIGHT_RED)
+        egui::RichText::new(label).color(ui.visuals().error_fg_color)
     };
     let popup_id = ui.make_persistent_id(("key-binding-picker", action, half));
     let button = ui.add_sized(
@@ -893,10 +893,10 @@ fn boolean(ui: &mut egui::Ui, values: &mut Map<String, Value>, key: &str, label:
                 changed = true;
             }
         } else {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+            ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
         }
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
     changed
@@ -931,10 +931,10 @@ fn choice(
                 *value = Value::from(current);
             }
         } else {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+            ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
         }
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
     changed
@@ -960,10 +960,10 @@ fn integer_slider(
                 changed = true;
             }
         } else {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+            ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
         }
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
     changed
@@ -994,10 +994,10 @@ fn offset_slider(
                 changed = true;
             }
         } else {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+            ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
         }
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
     changed
@@ -1030,10 +1030,10 @@ fn float_slider(
                 }
             }
         } else {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+            ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
         }
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
     changed
@@ -1045,14 +1045,14 @@ fn fixed(ui: &mut egui::Ui, values: &Map<String, Value>, key: &str, label: &str)
         ui.add_enabled(false, egui::Label::new(value.to_string()))
             .on_hover_text("Project Sunrise requires this exact value.");
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
     }
     ui.end_row();
 }
 
 fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
     let Some(value) = value else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Missing");
+        ui.colored_label(ui.visuals().error_fg_color, "Missing");
         return;
     };
     if value.is_null() {
@@ -1062,7 +1062,7 @@ fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
     } else if let Some(name) = value.as_str() {
         ui.add_enabled(false, egui::Label::new(name));
     } else {
-        ui.colored_label(egui::Color32::LIGHT_RED, "Invalid value");
+        ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
     }
 }
 

@@ -1,10 +1,21 @@
 use std::{
+    path::PathBuf,
     sync::mpsc::{self, Receiver},
     thread,
     time::Duration,
 };
 
-use super::*;
+use eframe::egui;
+
+use crate::{catalog::CatalogProgress, game_settings};
+
+use super::{
+    DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, SettingsLayout,
+    SettingsPathResolution, SundialApp, draw_future_schema_warning, load_logo_texture,
+    settings::{
+        load_json, missing_settings_message, resolve_settings_path, settings_path_for_install,
+    },
+};
 
 enum StartupEvent {
     Progress(CatalogProgress),
@@ -20,10 +31,14 @@ pub(super) struct StartupApp {
     logo: Option<egui::TextureHandle>,
     pending_settings_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
+    really_unsafe_warning_acknowledged: bool,
 }
 
 impl StartupApp {
-    pub(super) fn new(selection: Option<InstallSelection>) -> Self {
+    pub(super) fn new(
+        selection: Option<InstallSelection>,
+        really_unsafe_warning_acknowledged: bool,
+    ) -> Self {
         let mut app = Self {
             editor: None,
             receiver: None,
@@ -39,6 +54,7 @@ impl StartupApp {
             logo: None,
             pending_settings_choice: None,
             pending_future_schema: None,
+            really_unsafe_warning_acknowledged,
         };
         if let Some(selection) = selection {
             app.begin_loading(selection.install_path, selection.preferred_layout);
@@ -95,6 +111,7 @@ impl StartupApp {
         settings_layout: SettingsLayout,
     ) {
         let (sender, receiver) = mpsc::channel();
+        let really_unsafe_warning_acknowledged = self.really_unsafe_warning_acknowledged;
         self.install_path = Some(install_path.clone());
         self.receiver = Some(receiver);
         self.error = None;
@@ -111,6 +128,7 @@ impl StartupApp {
                 settings_path,
                 settings_layout,
                 install_path,
+                really_unsafe_warning_acknowledged,
                 move |progress| {
                     let _ = progress_sender.send(StartupEvent::Progress(progress));
                 },
@@ -141,7 +159,7 @@ impl StartupApp {
                 StartupEvent::Finished(result) => match *result {
                     Ok(mut editor) => {
                         editor.logo.clone_from(&self.logo);
-                        if let Err(error) = editor.save_paths() {
+                        if let Err(error) = editor.save_preferences() {
                             editor.set_status(
                                 format!(
                                     "Loaded successfully, but the install location could not be remembered: {error}"
@@ -237,7 +255,7 @@ impl StartupApp {
 
                             if let Some(error) = self.error.clone() {
                                 ui.colored_label(
-                                    egui::Color32::LIGHT_RED,
+                                    ui.visuals().error_fg_color,
                                     "Could not load that installation",
                                 );
                                 ui.add_space(6.0);
@@ -283,12 +301,7 @@ impl StartupApp {
                             ui.spinner();
                             ui.strong(self.progress.message);
                             ui.add_space(10.0);
-                            let progress = if self.progress.total > 0 {
-                                self.progress.completed as f32 / self.progress.total as f32
-                            } else {
-                                0.0
-                            };
-                            let mut bar = egui::ProgressBar::new(progress)
+                            let mut bar = egui::ProgressBar::new(self.progress.fraction())
                                 .desired_width(400.0)
                                 .corner_radius(egui::CornerRadius::same(3));
                             if self.progress.total > 0 {

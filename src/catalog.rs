@@ -9,12 +9,18 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 
-use crate::class_items;
+use crate::{class_items, unnamed_plugs};
 
-const CACHE_SCHEMA: u32 = 31;
+const CACHE_SCHEMA: u32 = 35;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
+const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
+const STAT_STRING_MAP_CLASS: u32 = 0x8080_5CC9;
 const NO_PLUG_SOURCE: u32 = 0x811C_9DC5;
+const INVESTMENT_STAT_DESCRIPTOR: usize = 0x2C0;
+const INVESTMENT_STAT_ROW_SIZE: usize = 40;
+const STAT_STRING_MAP_INDEX: usize = 59;
+const STAT_STRING_ROW_SIZE: usize = 36;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CatalogProgress {
@@ -29,6 +35,15 @@ impl CatalogProgress {
             message,
             completed: 0,
             total: 0,
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn fraction(self) -> f32 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.completed as f32 / self.total as f32
         }
     }
 }
@@ -84,9 +99,17 @@ struct ParsedAbilityEntry {
     group: u8,
 }
 
+struct ScannedCatalog {
+    items: Vec<ItemDef>,
+    names: HashMap<u64, String>,
+    type_names: HashMap<u64, String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SocketDef {
     pub socket_type: u16,
+    #[serde(default)]
+    pub label: String,
     #[serde(default)]
     pub pool: u32,
     #[serde(default)]
@@ -101,16 +124,19 @@ struct CatalogCache {
     fingerprint: String,
     items: Vec<ItemDef>,
     names: HashMap<u64, String>,
+    type_names: HashMap<u64, String>,
     plug_pools: Vec<Vec<u64>>,
 }
 
 pub struct Catalog {
     pub items: Vec<ItemDef>,
     pub names: HashMap<u64, String>,
+    type_names: HashMap<u64, String>,
     pub cache_path: PathBuf,
     pub loaded_from_cache: bool,
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
+    all_plug_options: Vec<u64>,
 }
 
 impl ItemDef {
@@ -128,11 +154,17 @@ impl ItemDef {
     }
 }
 
-impl Catalog {
-    pub fn load_or_scan(install: &Path, cache_path: PathBuf, force: bool) -> Result<Self, String> {
-        Self::load_or_scan_with_progress(install, cache_path, force, |_| {})
+impl SocketDef {
+    pub fn display_label(&self, index: usize) -> String {
+        if self.label.is_empty() {
+            format!("Socket {}", index + 1)
+        } else {
+            format!("{}. {}", index + 1, self.label)
+        }
     }
+}
 
+impl Catalog {
     pub fn load_or_scan_with_progress(
         install: &Path,
         cache_path: PathBuf,
@@ -157,6 +189,7 @@ impl Catalog {
                         return Ok(Self::finish(
                             cache.items,
                             cache.names,
+                            cache.type_names,
                             cache.plug_pools,
                             cache_path,
                             true,
@@ -165,15 +198,26 @@ impl Catalog {
                 }
             }
         }
-        let (mut items, names) = scan_packages(install, &mut report)?;
+        let ScannedCatalog {
+            mut items,
+            mut names,
+            mut type_names,
+        } = scan_packages(install, &mut report)?;
         report(CatalogProgress::stage("Optimizing the local catalog…"));
+        unnamed_plugs::apply_to_catalog(&mut names, &mut type_names);
         let plug_pools = intern_socket_pools(&mut items, &names)?;
+        let type_names = plug_pools
+            .iter()
+            .flatten()
+            .filter_map(|hash| type_names.get(hash).cloned().map(|name| (*hash, name)))
+            .collect();
         let cache = CatalogCache {
             schema: CACHE_SCHEMA,
             sundial_version: SUNDIAL_VERSION.into(),
             fingerprint,
             items,
             names,
+            type_names,
             plug_pools,
         };
         if let Some(parent) = cache_path.parent() {
@@ -193,6 +237,7 @@ impl Catalog {
         Ok(Self::finish(
             cache.items,
             cache.names,
+            cache.type_names,
             cache.plug_pools,
             cache_path,
             false,
@@ -201,11 +246,16 @@ impl Catalog {
 
     fn finish(
         mut items: Vec<ItemDef>,
-        names: HashMap<u64, String>,
-        plug_pools: Vec<Vec<u64>>,
+        mut names: HashMap<u64, String>,
+        mut type_names: HashMap<u64, String>,
+        mut plug_pools: Vec<Vec<u64>>,
         cache_path: PathBuf,
         loaded_from_cache: bool,
     ) -> Self {
+        unnamed_plugs::apply_to_catalog(&mut names, &mut type_names);
+        for pool in &mut plug_pools {
+            sort_plug_options(pool, &names);
+        }
         let mut socket_type_options = HashMap::<u16, Vec<u64>>::new();
         for item in &items {
             for socket in &item.sockets {
@@ -218,23 +268,20 @@ impl Catalog {
             }
         }
         for options in socket_type_options.values_mut() {
-            options.sort_unstable();
-            options.dedup();
-            options.sort_by_key(|hash| {
-                names
-                    .get(hash)
-                    .map(|name| name.to_lowercase())
-                    .unwrap_or_default()
-            });
+            sort_plug_options(options, &names);
         }
+        let mut all_plug_options = plug_pools.iter().flatten().copied().collect();
+        sort_plug_options(&mut all_plug_options, &names);
         items.sort_by_key(|item| item.name.to_lowercase());
         Self {
             items,
             names,
+            type_names,
             cache_path,
             loaded_from_cache,
             plug_pools,
             socket_type_options,
+            all_plug_options,
         }
     }
 
@@ -279,6 +326,10 @@ impl Catalog {
         format!("{name}  ({})", format_hash(hash))
     }
 
+    pub fn plug_type_name(&self, hash: u64) -> Option<&str> {
+        self.type_names.get(&hash).map(String::as_str)
+    }
+
     pub fn socket_options(&self, socket: &SocketDef) -> &[u64] {
         self.plug_pools
             .get(socket.pool as usize)
@@ -292,6 +343,19 @@ impl Catalog {
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
+
+    pub fn all_plug_options(&self) -> &[u64] {
+        &self.all_plug_options
+    }
+}
+
+fn sort_plug_options(options: &mut Vec<u64>, names: &HashMap<u64, String>) {
+    options.sort_unstable();
+    options.dedup();
+    options.sort_by_cached_key(|hash| {
+        let name = names.get(hash).map_or("", String::as_str).trim();
+        (name.is_empty(), name.to_lowercase(), *hash)
+    });
 }
 
 pub fn cache_is_current(path: &Path) -> bool {
@@ -395,7 +459,7 @@ fn install_fingerprint(install: &Path) -> Result<String, String> {
 fn scan_packages(
     install: &Path,
     report: &mut dyn FnMut(CatalogProgress),
-) -> Result<(Vec<ItemDef>, HashMap<u64, String>), String> {
+) -> Result<ScannedCatalog, String> {
     report(CatalogProgress::stage(
         "Opening the installed game packages…",
     ));
@@ -428,6 +492,12 @@ fn scan_packages(
     let mut localized_cache = HashMap::<u32, HashMap<u32, String>>::new();
     report(CatalogProgress::stage("Reading subclass ability names…"));
     let ability_displays = scan_ability_displays(&manager, &localized_tags, &mut localized_cache);
+    let stat_names = scan_stat_names(
+        &manager,
+        &globals_data,
+        &localized_tags,
+        &mut localized_cache,
+    );
     let root = manager
         .read_tag(TagHash(u32_at(&globals_data, 16)?))
         .map_err(|e| format!("Could not read investment root: {e}"))?;
@@ -459,6 +529,7 @@ fn scan_packages(
         })
         .collect();
     let mut names = HashMap::new();
+    let mut type_names = HashMap::new();
     let mut items = Vec::new();
     let mut item_socket_lists = Vec::<(usize, u16)>::new();
     let mut plug_category_by_hash = HashMap::<u64, u32>::new();
@@ -496,7 +567,7 @@ fn scan_packages(
         let Ok(string_thing) = manager.read_tag(string_tag) else {
             continue;
         };
-        let name = resolve_string(
+        let mut name = resolve_string(
             &manager,
             &localized_tags,
             &mut localized_cache,
@@ -504,10 +575,14 @@ fn scan_packages(
             0x84,
         )
         .unwrap_or_default();
-        if name.trim().is_empty() {
-            continue;
+        let mut derived_masterwork_name = false;
+        if name == "Masterwork"
+            && let Some(label) = masterwork_label(&item, &stat_names)
+        {
+            name = label;
+            derived_masterwork_name = true;
         }
-        let type_name = resolve_string(
+        let mut type_name = resolve_string(
             &manager,
             &localized_tags,
             &mut localized_cache,
@@ -515,7 +590,23 @@ fn scan_packages(
             0x90,
         )
         .unwrap_or_default();
-        names.entry(hash).or_insert_with(|| name.clone());
+        if name.trim().is_empty() {
+            let Some((derived_name, derived_type_name)) =
+                stat_allocation_labels(&item, &stat_names)
+            else {
+                continue;
+            };
+            name = derived_name;
+            derived_type_name.clone_into(&mut type_name);
+        }
+        if !type_name.trim().is_empty() {
+            type_names.entry(hash).or_insert_with(|| type_name.clone());
+        }
+        if derived_masterwork_name {
+            names.insert(hash, name.clone());
+        } else {
+            names.entry(hash).or_insert_with(|| name.clone());
+        }
         if let Ok(category) = u32_at(&item, 392) {
             if category != 0 && category != u32::MAX {
                 plug_category_by_hash.insert(hash, category);
@@ -561,6 +652,7 @@ fn scan_packages(
                             allowed.dedup();
                             sockets.push(SocketDef {
                                 socket_type,
+                                label: String::new(),
                                 pool: 0,
                                 allowed,
                             });
@@ -633,6 +725,7 @@ fn scan_packages(
             socket.allowed.dedup();
         }
     }
+    infer_socket_plug_types(&items, &names, &mut type_names);
     let tracker_plugs = [2_285_418_970, 2_302_094_943, 38_912_240];
     for item in &mut items {
         for socket in &mut item.sockets {
@@ -643,6 +736,22 @@ fn scan_packages(
                 socket.allowed.sort_unstable();
                 socket.allowed.dedup();
             }
+        }
+    }
+    for item in &mut items {
+        for (socket_index, socket) in item.sockets.iter_mut().enumerate() {
+            let default = item
+                .default_plugs
+                .get(socket_index)
+                .and_then(Option::as_deref)
+                .and_then(parse_hash);
+            socket.label = infer_socket_label(
+                socket.socket_type,
+                default,
+                &socket.allowed,
+                &names,
+                &type_names,
+            );
         }
     }
     let list_table = manager
@@ -676,7 +785,160 @@ fn scan_packages(
             }
         }
     }
-    Ok((items, names))
+    Ok(ScannedCatalog {
+        items,
+        names,
+        type_names,
+    })
+}
+
+fn infer_socket_label(
+    socket_type: u16,
+    default: Option<u64>,
+    allowed: &[u64],
+    names: &HashMap<u64, String>,
+    type_names: &HashMap<u64, String>,
+) -> String {
+    if let Some(label) = verified_socket_label(socket_type) {
+        return label.into();
+    }
+
+    if let Some(label) = default.and_then(|hash| socket_label_for_plug(hash, names, type_names)) {
+        return label;
+    }
+
+    let mut counts = HashMap::<String, usize>::new();
+    for &hash in allowed {
+        if let Some(label) = socket_label_for_plug(hash, names, type_names) {
+            *counts.entry(label).or_default() += 1;
+        }
+    }
+    if let Some((label, count)) =
+        counts
+            .iter()
+            .max_by(|(left_label, left_count), (right_label, right_count)| {
+                left_count
+                    .cmp(right_count)
+                    .then_with(|| right_label.cmp(left_label))
+            })
+        && count.saturating_mul(2) >= counts.values().sum()
+    {
+        return label.clone();
+    }
+
+    String::new()
+}
+
+fn verified_socket_label(socket_type: u16) -> Option<&'static str> {
+    match socket_type {
+        29..=43 => Some("Armor Masterwork"),
+        // Shadowkeep's public manifest categorizes these as GHOST SHELL PERKS;
+        // individual perk definitions use the overly generic type "Intrinsic".
+        51 => Some("Ghost Perk"),
+        62 => Some("Sparrow Perk"),
+        483 => Some("Weapon Masterwork"),
+        518 => Some("Kill Tracker"),
+        520 => Some("Armor Tier"),
+        676 => Some("Stat Allocation"),
+        678 | 679 => Some("Armor Energy Upgrade"),
+        760 | 761 => Some("Top Stat Allocation"),
+        762 | 763 => Some("Bottom Stat Allocation"),
+        _ => None,
+    }
+}
+
+fn inferred_plug_type_for_socket(socket_type: u16) -> Option<&'static str> {
+    match socket_type {
+        29..=43 => Some("Armor Masterwork"),
+        51 => Some("Ghost Perk"),
+        520 => Some("Armor Tier"),
+        678 | 679 => Some("Armor Energy"),
+        760 | 761 => Some("Top Stat Allocation"),
+        762 | 763 => Some("Bottom Stat Allocation"),
+        _ => None,
+    }
+}
+
+fn infer_socket_plug_types(
+    items: &[ItemDef],
+    names: &HashMap<u64, String>,
+    type_names: &mut HashMap<u64, String>,
+) {
+    for item in items {
+        for (socket_index, socket) in item.sockets.iter().enumerate() {
+            let Some(type_name) = inferred_plug_type_for_socket(socket.socket_type) else {
+                continue;
+            };
+            let default = item
+                .default_plugs
+                .get(socket_index)
+                .and_then(Option::as_deref)
+                .and_then(parse_hash);
+            for hash in socket.allowed.iter().copied().chain(default) {
+                if socket.socket_type == 51 {
+                    // "Intrinsic" is not useful here and is inconsistent with the
+                    // manifest's Ghost Shell Perks socket category.
+                    type_names.insert(hash, type_name.into());
+                } else {
+                    type_names.entry(hash).or_insert_with(|| type_name.into());
+                }
+            }
+        }
+    }
+
+    for (&hash, name) in names {
+        if name.trim().eq_ignore_ascii_case("Empty Mod Socket") {
+            type_names.entry(hash).or_insert_with(|| "Armor Mod".into());
+        }
+    }
+}
+
+fn socket_label_for_plug(
+    hash: u64,
+    names: &HashMap<u64, String>,
+    type_names: &HashMap<u64, String>,
+) -> Option<String> {
+    let name = names.get(&hash).map_or("", String::as_str).trim();
+    let lower_name = name.to_ascii_lowercase();
+    if lower_name == "default shader" {
+        return Some("Shader".into());
+    }
+    if lower_name.contains("ornament") {
+        return Some("Ornament".into());
+    }
+    if lower_name == "no projection" {
+        return Some("Ghost Projection".into());
+    }
+    if lower_name == "default effect" {
+        return Some("Transmat Effect".into());
+    }
+    if lower_name.contains("tracker") {
+        return Some("Kill Tracker".into());
+    }
+    if lower_name.contains("catalyst") {
+        return Some("Catalyst".into());
+    }
+    if lower_name.starts_with("tier ") && lower_name.ends_with(" weapon")
+        || lower_name.starts_with("masterwork:")
+    {
+        return Some("Weapon Masterwork".into());
+    }
+    if lower_name.starts_with("tier ") && lower_name.ends_with(" armor") {
+        return Some("Armor Tier".into());
+    }
+    if matches!(lower_name.as_str(), "upgrade armor" | "change energy type") {
+        return Some("Armor Energy Upgrade".into());
+    }
+
+    let type_name = type_names.get(&hash).map_or("", String::as_str).trim();
+    if type_name.is_empty() || type_name == "Restore Defaults" {
+        return None;
+    }
+    if type_name.contains("Ornament") {
+        Some("Ornament".into())
+    } else {
+        Some(type_name.into())
+    }
 }
 
 fn parse_abilities(list: &[u8], display: &AbilityDisplayData, list_index: u16) -> AbilityOptions {
@@ -983,6 +1245,90 @@ fn resolve_localized_hash(
     None
 }
 
+fn scan_stat_names(
+    manager: &PackageManager,
+    globals: &[u8],
+    localized_tags: &[TagHash],
+    localized_cache: &mut HashMap<u32, HashMap<u32, String>>,
+) -> Vec<String> {
+    let tag_offset = 16 + STAT_STRING_MAP_INDEX * 16;
+    let Ok(tag) = u32_at(globals, tag_offset) else {
+        return Vec::new();
+    };
+    let Ok(table) = manager.read_tag(TagHash(tag)) else {
+        return Vec::new();
+    };
+    let Ok((count, rows, class)) = array_at(&table, 8) else {
+        return Vec::new();
+    };
+    if class != STAT_STRING_MAP_CLASS || count > 256 {
+        return Vec::new();
+    }
+    (0..count)
+        .map(|index| {
+            resolve_string(
+                manager,
+                localized_tags,
+                localized_cache,
+                &table,
+                rows + index * STAT_STRING_ROW_SIZE + 4,
+            )
+            .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn stat_allocation_labels(item: &[u8], stat_names: &[String]) -> Option<(String, &'static str)> {
+    let (count, rows, class) = array_at(item, INVESTMENT_STAT_DESCRIPTOR).ok()?;
+    if class != INVESTMENT_STAT_CLASS || count != 3 {
+        return None;
+    }
+
+    let mut stats = [(0_usize, 0_u32); 3];
+    for (row_index, stat) in stats.iter_mut().enumerate() {
+        let row = rows.checked_add(row_index.checked_mul(INVESTMENT_STAT_ROW_SIZE)?)?;
+        *stat = (
+            usize::from(u16_at(item, row).ok()?),
+            u32_at(item, row + 4).ok()?,
+        );
+    }
+
+    let (expected_indexes, type_name) = if stats.iter().all(|(index, _)| (3..=5).contains(index)) {
+        ([3, 4, 5], "Top Stat Allocation")
+    } else if stats.iter().all(|(index, _)| (6..=8).contains(index)) {
+        ([6, 7, 8], "Bottom Stat Allocation")
+    } else {
+        return None;
+    };
+
+    let mut parts = Vec::with_capacity(3);
+    for expected_index in expected_indexes {
+        let value = stats
+            .iter()
+            .find_map(|(index, value)| (*index == expected_index).then_some(*value))?;
+        if value == 0 || value > 100 {
+            return None;
+        }
+        let stat_name = stat_names.get(expected_index)?.trim();
+        if stat_name.is_empty() {
+            return None;
+        }
+        parts.push(format!("{value} {stat_name}"));
+    }
+
+    Some((parts.join(" / "), type_name))
+}
+
+fn masterwork_label(item: &[u8], stat_names: &[String]) -> Option<String> {
+    let (count, rows, class) = array_at(item, INVESTMENT_STAT_DESCRIPTOR).ok()?;
+    if class != INVESTMENT_STAT_CLASS || !(1..=4).contains(&count) {
+        return None;
+    }
+    let primary_stat = usize::from(u16_at(item, rows).ok()?);
+    let name = stat_names.get(primary_stat)?.trim();
+    (!name.is_empty()).then(|| format!("Masterwork: {name}"))
+}
+
 fn resolve_string(
     manager: &PackageManager,
     tags: &[TagHash],
@@ -1156,7 +1502,7 @@ const fn bucket_hash(bucket: u8) -> Option<u64> {
     })
 }
 
-fn format_hash(hash: u64) -> String {
+pub(crate) fn format_hash(hash: u64) -> String {
     format!("0x{hash:08X}")
 }
 fn parse_hash(text: &str) -> Option<u64> {
@@ -1273,6 +1619,222 @@ mod tests {
             "{{\"schema\":{},\"sundial_version\":\"{SUNDIAL_VERSION}\"}}",
             CACHE_SCHEMA - 1
         )));
+    }
+
+    #[test]
+    fn really_unsafe_options_include_every_discovered_plug_once() {
+        let names = HashMap::from([
+            (1, "Zeta".to_owned()),
+            (2, "Alpha".to_owned()),
+            (3, "Beta".to_owned()),
+        ]);
+        let catalog = Catalog::finish(
+            Vec::new(),
+            names,
+            HashMap::new(),
+            vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
+            PathBuf::new(),
+            false,
+        );
+
+        assert_eq!(catalog.all_plug_options(), &[2, 3, 1, 4]);
+        assert_eq!(catalog.plug_pools[1], [3, 1, 4]);
+    }
+
+    #[test]
+    fn socket_labels_use_plug_semantics_and_keep_safe_fallbacks() {
+        let names = HashMap::from([
+            (1, "Default Shader".to_owned()),
+            (2, "Celestial Nighthawk Ornament".to_owned()),
+            (3, "Telesto Catalyst".to_owned()),
+        ]);
+        let type_names = HashMap::from([
+            (1, "Restore Defaults".to_owned()),
+            (2, "Hunter Universal Ornament".to_owned()),
+        ]);
+
+        assert_eq!(
+            infer_socket_label(180, Some(1), &[1], &names, &type_names),
+            "Shader"
+        );
+        assert_eq!(
+            infer_socket_label(384, None, &[2], &names, &type_names),
+            "Ornament"
+        );
+        assert_eq!(
+            infer_socket_label(443, Some(3), &[3], &names, &type_names),
+            "Catalyst"
+        );
+        assert_eq!(
+            infer_socket_label(65535, None, &[], &names, &type_names),
+            ""
+        );
+        assert_eq!(
+            infer_socket_label(
+                62,
+                None,
+                &[4],
+                &names,
+                &HashMap::from([(4, "Ghost Module".into())])
+            ),
+            "Sparrow Perk"
+        );
+        assert_eq!(
+            infer_socket_label(29, None, &[], &names, &type_names),
+            "Armor Masterwork"
+        );
+        assert_eq!(
+            infer_socket_label(51, None, &[], &names, &type_names),
+            "Ghost Perk"
+        );
+        assert_eq!(
+            infer_socket_label(520, None, &[], &names, &type_names),
+            "Armor Tier"
+        );
+        assert_eq!(
+            infer_socket_label(676, None, &[], &names, &type_names),
+            "Stat Allocation"
+        );
+        assert_eq!(
+            infer_socket_label(678, None, &[], &names, &type_names),
+            "Armor Energy Upgrade"
+        );
+        assert_eq!(
+            infer_socket_label(760, None, &[], &names, &type_names),
+            "Top Stat Allocation"
+        );
+        assert_eq!(
+            infer_socket_label(763, None, &[], &names, &type_names),
+            "Bottom Stat Allocation"
+        );
+        assert_eq!(
+            socket_label_for_plug(
+                4,
+                &HashMap::from([(4, "Upgrade Armor".into())]),
+                &HashMap::new()
+            )
+            .as_deref(),
+            Some("Armor Energy Upgrade")
+        );
+    }
+
+    #[test]
+    fn unnamed_armor_stat_plugs_use_their_local_investment_values() {
+        let mut item = vec![0_u8; 0x300 + INVESTMENT_STAT_ROW_SIZE * 3];
+        let count = 3_u64;
+        item[INVESTMENT_STAT_DESCRIPTOR..INVESTMENT_STAT_DESCRIPTOR + 8]
+            .copy_from_slice(&count.to_le_bytes());
+        item[INVESTMENT_STAT_DESCRIPTOR + 8..INVESTMENT_STAT_DESCRIPTOR + 16]
+            .copy_from_slice(&(0x28_i64).to_le_bytes());
+        item[0x2F0..0x2F8].copy_from_slice(&count.to_le_bytes());
+        item[0x2F8..0x2FC].copy_from_slice(&INVESTMENT_STAT_CLASS.to_le_bytes());
+
+        for (row, stat_index, value) in [(0, 5_u16, 7_u32), (1, 3, 13), (2, 4, 1)] {
+            let offset = 0x300 + row * INVESTMENT_STAT_ROW_SIZE;
+            item[offset..offset + 2].copy_from_slice(&stat_index.to_le_bytes());
+            item[offset + 4..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let stat_names = vec![
+            String::new(),
+            String::new(),
+            String::new(),
+            "Mobility".into(),
+            "Resilience".into(),
+            "Recovery".into(),
+        ];
+
+        assert_eq!(
+            stat_allocation_labels(&item, &stat_names),
+            Some((
+                "13 Mobility / 1 Resilience / 7 Recovery".into(),
+                "Top Stat Allocation"
+            ))
+        );
+    }
+
+    #[test]
+    fn armor_socket_types_fill_only_missing_plug_types() {
+        let items = vec![ItemDef {
+            hash: 10,
+            name: "Test armor".into(),
+            type_name: "Helmet".into(),
+            bucket_hash: 3_448_274_439,
+            class_type: 3,
+            default_plugs: vec![Some("0x00000001".into())],
+            sockets: vec![SocketDef {
+                socket_type: 520,
+                allowed: vec![2],
+                ..SocketDef::default()
+            }],
+            abilities: AbilityOptions::default(),
+        }];
+        let names = HashMap::from([(3, "Empty Mod Socket".into())]);
+        let mut type_names = HashMap::from([(2, "Specific local type".into())]);
+
+        infer_socket_plug_types(&items, &names, &mut type_names);
+
+        assert_eq!(type_names[&1], "Armor Tier");
+        assert_eq!(type_names[&2], "Specific local type");
+        assert_eq!(type_names[&3], "Armor Mod");
+    }
+
+    #[test]
+    fn ghost_perk_socket_replaces_the_generic_intrinsic_type() {
+        let items = vec![ItemDef {
+            hash: 10,
+            name: "Test Ghost".into(),
+            type_name: "Ghost Shell".into(),
+            bucket_hash: 4_023_194_814,
+            class_type: 3,
+            default_plugs: vec![Some("0x00000001".into())],
+            sockets: vec![SocketDef {
+                socket_type: 51,
+                allowed: vec![2],
+                ..SocketDef::default()
+            }],
+            abilities: AbilityOptions::default(),
+        }];
+        let mut type_names =
+            HashMap::from([(1, "Intrinsic".to_owned()), (2, "Intrinsic".to_owned())]);
+
+        infer_socket_plug_types(&items, &HashMap::new(), &mut type_names);
+
+        assert_eq!(type_names[&1], "Ghost Perk");
+        assert_eq!(type_names[&2], "Ghost Perk");
+    }
+
+    #[test]
+    fn socket_display_labels_preserve_the_native_position() {
+        let named = SocketDef {
+            label: "Barrel".into(),
+            ..SocketDef::default()
+        };
+        let unnamed = SocketDef::default();
+
+        assert_eq!(named.display_label(1), "2. Barrel");
+        assert_eq!(unnamed.display_label(1), "Socket 2");
+    }
+
+    #[test]
+    fn masterwork_labels_use_the_primary_local_stat_name() {
+        const ROW_SIZE: usize = 48;
+        let mut item = vec![0_u8; 0x300 + ROW_SIZE * 2];
+        let count = 2_u64;
+        item[INVESTMENT_STAT_DESCRIPTOR..INVESTMENT_STAT_DESCRIPTOR + 8]
+            .copy_from_slice(&count.to_le_bytes());
+        item[INVESTMENT_STAT_DESCRIPTOR + 8..INVESTMENT_STAT_DESCRIPTOR + 16]
+            .copy_from_slice(&(0x28_i64).to_le_bytes());
+        item[0x2F0..0x2F8].copy_from_slice(&count.to_le_bytes());
+        item[0x2F8..0x2FC].copy_from_slice(&INVESTMENT_STAT_CLASS.to_le_bytes());
+        item[0x300..0x302].copy_from_slice(&2_u16.to_le_bytes());
+        item[0x300 + ROW_SIZE..0x302 + ROW_SIZE].copy_from_slice(&1_u16.to_le_bytes());
+        let stat_names = vec![String::new(), "Impact".into(), "Charge Time".into()];
+
+        assert_eq!(
+            masterwork_label(&item, &stat_names).as_deref(),
+            Some("Masterwork: Charge Time")
+        );
+        assert_eq!(masterwork_label(&item, &stat_names[..2]), None);
     }
 
     #[test]

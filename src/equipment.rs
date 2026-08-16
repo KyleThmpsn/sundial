@@ -1,6 +1,36 @@
-use crate::catalog;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
-use super::*;
+use eframe::egui;
+use serde_json::Value;
+
+use crate::{
+    catalog::{self, AbilityChoice, ItemDef, format_hash},
+    game_settings,
+};
+
+use super::{
+    ARMOR_SLOTS, ConfirmationDialog, GENERATED_INSTANCE_SOID_START, ITEM_PICKER_MAX_HEIGHT,
+    ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode,
+    SLOTS, SundialApp, WEAPON_SLOTS, settings::character_ability_issue,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativePlugDefault {
+    Plug(u64),
+    Empty,
+}
+
+impl NativePlugDefault {
+    const fn value(self) -> Option<u64> {
+        match self {
+            Self::Plug(hash) => Some(hash),
+            Self::Empty => None,
+        }
+    }
+}
 
 impl SundialApp {
     fn select_item(&mut self, character: usize, slot: &str, item: &ItemDef) {
@@ -37,6 +67,7 @@ impl SundialApp {
         character: usize,
         slot: &str,
         socket_index: usize,
+        socket_label: &str,
         default_plugs: &[Option<String>],
         hash: Option<u64>,
     ) {
@@ -57,7 +88,7 @@ impl SundialApp {
         }
         plugs[socket_index] = hash.map(format_hash).map_or(Value::Null, Value::String);
         self.dirty = true;
-        self.set_status(format!("Updated {slot} socket {}", socket_index + 1), false);
+        self.set_status(format!("Updated {slot} {socket_label}"), false);
     }
 
     pub(super) fn draw_character_fields(&mut self, ui: &mut egui::Ui, index: usize) {
@@ -132,7 +163,7 @@ impl SundialApp {
         if let Some(warning) = ability_warning {
             ui.add_space(6.0);
             ui.colored_label(
-                egui::Color32::from_rgb(255, 190, 80),
+                        ui.visuals().warn_fg_color,
                 format!(
                     "Warning: {warning}. This can prevent Sunrise from loading the character. Choose supported abilities below and save before launching."
                 ),
@@ -377,19 +408,52 @@ impl SundialApp {
             )
             .weak(),
         );
-        ui.checkbox(
-            &mut self.allow_unsafe_plugs,
-            "Allow any plug matching the socket type (unsafe)",
-        );
+        let mut requested_plug_selection_mode = self.plug_selection_mode;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Plug choices:");
+            ui.radio_value(
+                &mut requested_plug_selection_mode,
+                PlugSelectionMode::Supported,
+                "Supported only",
+            );
+            ui.radio_value(
+                &mut requested_plug_selection_mode,
+                PlugSelectionMode::MatchingSocketType,
+                "Matching socket type (unsafe)",
+            );
+            ui.radio_value(
+                &mut requested_plug_selection_mode,
+                PlugSelectionMode::AnyPlug,
+                "Any plug (really unsafe)",
+            );
+        });
+        if requested_plug_selection_mode != self.plug_selection_mode {
+            if requested_plug_selection_mode == PlugSelectionMode::AnyPlug
+                && !self.really_unsafe_warning_acknowledged
+            {
+                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
+            } else {
+                self.plug_selection_mode = requested_plug_selection_mode;
+            }
+        }
         ui.checkbox(&mut self.show_dummy_items, "Show dummy items")
             .on_hover_text(
                 "Includes display-only definitions that cannot normally be obtained in the game.",
             );
-        if self.allow_unsafe_plugs {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 190, 80),
-                "Warning: unsupported plug combinations may break items, corrupt the loadout, or crash Sunrise/Destiny 2.",
-            );
+        match self.plug_selection_mode {
+            PlugSelectionMode::Supported => {}
+            PlugSelectionMode::MatchingSocketType => {
+                ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                    "Warning: unsupported plug combinations may break items, corrupt the loadout, or crash Sunrise/Destiny 2.",
+                );
+            }
+            PlugSelectionMode::AnyPlug => {
+                ui.colored_label(
+                            ui.visuals().error_fg_color,
+                    "Danger: every discovered plug is available for every socket, greatly increasing the chance that the game will not load or will crash.",
+                );
+            }
         }
         ui.add_space(6.0);
 
@@ -445,14 +509,17 @@ impl SundialApp {
                                 }
                                 None => {
                                     ui.colored_label(
-                                        egui::Color32::LIGHT_RED,
+                                    ui.visuals().error_fg_color,
                                         format!("Unknown item {current_hash_text}"),
                                     );
                                 }
                             }
                         }
                         if !valid {
-                            ui.colored_label(egui::Color32::LIGHT_RED, "invalid for slot/class");
+                                ui.colored_label(
+                                    ui.visuals().error_fg_color,
+                                    "invalid for slot/class",
+                                );
                         }
                     });
                     let key = format!("{character_index}:{slot}");
@@ -464,13 +531,13 @@ impl SundialApp {
                                 .desired_width(ui.available_width()),
                         )
                     };
+                    let item_popup_id = ui.make_persistent_id("item-browser");
                     if picker_response.clicked() || picker_response.changed() {
-                        self.browsing.insert(key.clone());
+                        ui.memory_mut(|memory| memory.open_popup(item_popup_id));
                     }
-                    let query_value = self.searches.get(&key).cloned().unwrap_or_default();
-                    let is_browsing = self.browsing.contains(&key);
-                    if !query_value.trim().is_empty() || is_browsing {
-                        let candidates = if is_browsing {
+                    if ui.memory(|memory| memory.is_popup_open(item_popup_id)) {
+                        let query_value = self.searches.get(&key).cloned().unwrap_or_default();
+                        let candidates = if query_value.trim().is_empty() {
                             self.manifest
                                 .browse(bucket, class_type, self.show_dummy_items)
                         } else {
@@ -494,18 +561,37 @@ impl SundialApp {
                             .collect();
                         let show_empty_weapon = WEAPON_SLOTS.contains(&slot)
                             && (query_value.trim().is_empty() || "empty weapon".contains(&needle));
-                        if results.is_empty() && !show_empty_weapon {
-                            ui.label(
-                                egui::RichText::new("No compatible installed items found").weak(),
-                            );
-                        } else {
-                            egui::Frame::popup(ui.style())
-                                .inner_margin(6.0)
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
+                        let row_height = ui.spacing().interact_size.y;
+                        let picker_height = picker_list_height(
+                            results.len() + usize::from(show_empty_weapon),
+                            row_height,
+                            ITEM_PICKER_MIN_HEIGHT,
+                            ITEM_PICKER_MAX_HEIGHT,
+                        );
+                        let popup_direction =
+                            popup_direction(ui.ctx().screen_rect(), picker_response.rect);
+                        let mut empty_requested = false;
+                        let mut selected_item = None;
+                        egui::popup::popup_above_or_below_widget(
+                            ui,
+                            item_popup_id,
+                            &picker_response,
+                            popup_direction,
+                            egui::PopupCloseBehavior::CloseOnClickOutside,
+                            |ui| {
+                                ui.set_min_width(picker_response.rect.width());
+                                if results.is_empty() && !show_empty_weapon {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "No compatible installed items found",
+                                        )
+                                        .weak(),
+                                    );
+                                } else {
                                     egui::ScrollArea::vertical()
-                                        .max_height(400.0)
-                                        .auto_shrink([false, true])
+                                        .min_scrolled_height(picker_height)
+                                        .max_height(picker_height)
+                                        .auto_shrink([false, false])
                                         .show(ui, |ui| {
                                             if show_empty_weapon {
                                                 if ui
@@ -515,10 +601,8 @@ impl SundialApp {
                                                     )
                                                     .clicked()
                                                 {
-                                                    self.empty_weapon(character_index, slot);
-                                                    self.searches
-                                                        .insert(key.clone(), String::new());
-                                                    self.browsing.remove(&key);
+                                                    empty_requested = true;
+                                                    ui.memory_mut(egui::Memory::close_popup);
                                                 }
                                                 ui.separator();
                                             }
@@ -527,14 +611,20 @@ impl SundialApp {
                                                     .selectable_label(false, item.label())
                                                     .clicked()
                                                 {
-                                                    self.select_item(character_index, slot, &item);
-                                                    self.searches
-                                                        .insert(key.clone(), String::new());
-                                                    self.browsing.remove(&key);
+                                                    selected_item = Some(item);
+                                                    ui.memory_mut(egui::Memory::close_popup);
                                                 }
                                             }
                                         });
-                                });
+                                }
+                            },
+                        );
+                        if empty_requested {
+                            self.empty_weapon(character_index, slot);
+                            self.searches.insert(key.clone(), String::new());
+                        } else if let Some(item) = selected_item {
+                            self.select_item(character_index, slot, &item);
+                            self.searches.insert(key.clone(), String::new());
                         }
                     }
 
@@ -553,20 +643,26 @@ impl SundialApp {
                             };
                             ui.collapsing(title, |ui| {
                                 let socket_count = item.sockets.len().max(current_plugs.len());
+                                // A plug's array index is part of the Sunrise save schema.
+                                // Keep sockets in that exact order even when a label is unknown.
                                 for socket_index in 0..socket_count {
                                     let current_hash = current_plugs
                                         .get(socket_index)
                                         .and_then(parse_unsigned_value);
+                                    let native_default =
+                                        native_plug_default(&item.default_plugs, socket_index);
                                     let allowed = item
                                         .sockets
                                         .get(socket_index)
-                                        .map(|socket| {
-                                            if self.allow_unsafe_plugs {
-                                                self.manifest
-                                                    .socket_type_options(socket.socket_type)
-                                                    .to_vec()
-                                            } else {
-                                                self.manifest.socket_options(socket).to_vec()
+                                        .map(|socket| match self.plug_selection_mode {
+                                            PlugSelectionMode::Supported => {
+                                                self.manifest.socket_options(socket)
+                                            }
+                                            PlugSelectionMode::MatchingSocketType => self
+                                                .manifest
+                                                .socket_type_options(socket.socket_type),
+                                            PlugSelectionMode::AnyPlug => {
+                                                self.manifest.all_plug_options()
                                             }
                                         })
                                         .unwrap_or_default();
@@ -583,114 +679,268 @@ impl SundialApp {
                                         .cloned()
                                         .unwrap_or_default();
                                     let searchable = allowed.len() > 12;
+                                    let show_plug_types =
+                                        self.plug_selection_mode == PlugSelectionMode::AnyPlug;
+                                    let mut selection = None::<Option<u64>>;
+                                    let socket_label = item
+                                        .sockets
+                                        .get(socket_index)
+                                        .map_or_else(
+                                            || format!("Socket {}", socket_index + 1),
+                                            |socket| socket.display_label(socket_index),
+                                        );
                                     ui.horizontal(|ui| {
-                                        ui.label(format!("Socket {}", socket_index + 1));
+                                        const SOCKET_LABEL_WIDTH: f32 = 132.0;
+                                        const RESET_BUTTON_WIDTH: f32 = 54.0;
+
+                                        let row_height = ui.spacing().interact_size.y;
+                                        let spacing = ui.spacing().item_spacing.x;
+                                        let plug_width = (ui.available_width()
+                                            - SOCKET_LABEL_WIDTH
+                                            - RESET_BUTTON_WIDTH
+                                            - spacing * 2.0)
+                                            .max(160.0);
+                                        let screen = ui.ctx().screen_rect();
+                                        let popup_width = (plug_width + 140.0)
+                                            .clamp(440.0, 680.0)
+                                            .min((screen.width() - 24.0).max(320.0));
+
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(SOCKET_LABEL_WIDTH, row_height),
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(&socket_label).truncate(),
+                                                )
+                                            },
+                                        );
                                         let popup_id = ui.make_persistent_id(format!(
                                             "plug-browser:{character_index}:{slot}:{socket_index}"
                                         ));
-                                        let button = ui.add_sized(
-                                            [500.0, ui.spacing().interact_size.y],
-                                            egui::Button::new(current_label),
-                                        );
+                                        let button = ui
+                                            .allocate_ui_with_layout(
+                                                egui::vec2(plug_width, row_height),
+                                                egui::Layout::left_to_right(egui::Align::Center)
+                                                    .with_main_align(egui::Align::Min),
+                                                |ui| {
+                                                    ui.add(
+                                                        egui::Button::new(current_label)
+                                                            .truncate()
+                                                            .min_size(egui::vec2(
+                                                                plug_width,
+                                                                row_height,
+                                                            )),
+                                                    )
+                                                },
+                                            )
+                                            .inner;
                                         if button.clicked() {
                                             ui.memory_mut(|memory| memory.toggle_popup(popup_id));
                                         }
-                                        let mut selection = None::<Option<u64>>;
-                                        egui::popup::popup_below_widget(
+                                        let popup_direction = popup_direction(screen, button.rect);
+                                        egui::popup::popup_above_or_below_widget(
                                             ui,
                                             popup_id,
                                             &button,
+                                            popup_direction,
                                             egui::PopupCloseBehavior::CloseOnClickOutside,
                                             |ui| {
-                                                ui.set_min_width(500.0);
+                                                ui.set_min_width(popup_width);
                                                 if searchable {
                                                     ui.add(
                                                         egui::TextEdit::singleline(&mut plug_query)
                                                             .hint_text(
                                                                 "Search plug name or hex hash…",
                                                             )
-                                                            .desired_width(480.0),
+                                                            .desired_width(popup_width - 20.0),
                                                     );
                                                     ui.separator();
                                                 }
-                                                egui::ScrollArea::vertical()
-                                                    .min_scrolled_height(PLUG_PICKER_MIN_HEIGHT)
-                                                    .max_height(PLUG_PICKER_MAX_HEIGHT)
-                                                    .show(ui, |ui| {
-                                                        if ui
-                                                            .selectable_label(
-                                                                current_hash.is_none(),
-                                                                "None",
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            selection = Some(None);
-                                                        }
-                                                        if let Some(hash) = current_hash {
-                                                            if !allowed.contains(&hash)
-                                                                && ui
-                                                                    .selectable_label(
-                                                                        true,
-                                                                        format!(
-                                                                            "{}  (custom/current)",
-                                                                            self.manifest
-                                                                                .plug_label(hash)
-                                                                        ),
-                                                                    )
-                                                                    .clicked()
-                                                            {
-                                                                selection = Some(Some(hash));
-                                                            }
-                                                        }
-                                                        let needle =
-                                                            plug_query.trim().to_lowercase();
-                                                        let mut visible = 0usize;
-                                                        for &hash in &allowed {
-                                                            let label =
-                                                                self.manifest.plug_label(hash);
-                                                            if !needle.is_empty()
-                                                                && !label
+                                                if ui
+                                                    .selectable_label(
+                                                        current_hash.is_none(),
+                                                        "None",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    selection = Some(None);
+                                                }
+                                                if let Some(hash) = current_hash
+                                                    && !allowed.contains(&hash)
+                                                    && ui
+                                                        .selectable_label(
+                                                            true,
+                                                            format!(
+                                                                "{}  (custom/current)",
+                                                                self.manifest.plug_label(hash)
+                                                            ),
+                                                        )
+                                                        .clicked()
+                                                {
+                                                    selection = Some(Some(hash));
+                                                }
+                                                ui.separator();
+                                                let needle = plug_query.trim().to_lowercase();
+                                                let visible: Cow<'_, [u64]> = if needle.is_empty() {
+                                                    Cow::Borrowed(allowed)
+                                                } else {
+                                                    Cow::Owned(
+                                                        allowed
+                                                            .iter()
+                                                            .copied()
+                                                            .filter(|hash| {
+                                                                self.manifest
+                                                                    .plug_label(*hash)
                                                                     .to_lowercase()
                                                                     .contains(&needle)
-                                                                && !format_hash(hash)
-                                                                    .to_lowercase()
-                                                                    .contains(&needle)
-                                                            {
-                                                                continue;
-                                                            }
-                                                            visible += 1;
-                                                            if ui
-                                                                .selectable_label(
-                                                                    current_hash == Some(hash),
-                                                                    label,
-                                                                )
-                                                                .clicked()
-                                                            {
-                                                                selection = Some(Some(hash));
-                                                            }
-                                                        }
-                                                        if searchable && visible == 0 {
-                                                            ui.label(
-                                                                egui::RichText::new(
-                                                                    "No matching plugs found",
-                                                                )
-                                                                .weak(),
-                                                            );
-                                                        }
-                                                    });
+                                                                    || show_plug_types
+                                                                        && self
+                                                                            .manifest
+                                                                            .plug_type_name(*hash)
+                                                                            .is_some_and(|name| {
+                                                                                name.to_lowercase()
+                                                                                    .contains(&needle)
+                                                                            })
+                                                            })
+                                                            .collect(),
+                                                    )
+                                                };
+                                                if visible.is_empty() {
+                                                    ui.label(
+                                                        egui::RichText::new(if searchable {
+                                                            "No matching plugs found"
+                                                        } else {
+                                                            "No plugs available"
+                                                        })
+                                                        .weak(),
+                                                    );
+                                                } else {
+                                                    let row_height = ui.spacing().interact_size.y;
+                                                    let picker_height = picker_list_height(
+                                                        visible.len(),
+                                                        row_height,
+                                                        PLUG_PICKER_MIN_HEIGHT,
+                                                        PLUG_PICKER_MAX_HEIGHT,
+                                                    );
+                                                    egui::ScrollArea::vertical()
+                                                        .min_scrolled_height(picker_height)
+                                                        .max_height(picker_height)
+                                                        .auto_shrink([false, false])
+                                                        .show_rows(
+                                                            ui,
+                                                            row_height,
+                                                            visible.len(),
+                                                            |ui, rows| {
+                                                                for index in rows {
+                                                                    let hash = visible[index];
+                                                                    let option_width =
+                                                                        ui.available_width();
+                                                                    let plug_type = if show_plug_types {
+                                                                        self.manifest
+                                                                            .plug_type_name(hash)
+                                                                            .unwrap_or_default()
+                                                                    } else {
+                                                                        ""
+                                                                    };
+                                                                    let clicked = ui
+                                                                        .allocate_ui_with_layout(
+                                                                            egui::vec2(
+                                                                                option_width,
+                                                                                row_height,
+                                                                            ),
+                                                                            egui::Layout::left_to_right(
+                                                                                egui::Align::Center,
+                                                                            )
+                                                                            .with_main_align(
+                                                                                egui::Align::Min,
+                                                                            ),
+                                                                            |ui| {
+                                                                                ui.add(
+                                                                                    egui::Button::new(
+                                                                                        self.manifest
+                                                                                            .plug_label(hash),
+                                                                                    )
+                                                                                    .shortcut_text(
+                                                                                        egui::RichText::new(
+                                                                                            plug_type,
+                                                                                        )
+                                                                                        .text_style(
+                                                                                            egui::TextStyle::Button,
+                                                                                        )
+                                                                                        .weak(),
+                                                                                    )
+                                                                                    .selected(
+                                                                                        current_hash
+                                                                                            == Some(hash),
+                                                                                    )
+                                                                                    .frame(false)
+                                                                                    .truncate()
+                                                                                    .min_size(
+                                                                                        egui::vec2(
+                                                                                            option_width,
+                                                                                            row_height,
+                                                                                        ),
+                                                                                    ),
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                        .inner
+                                                                        .clicked();
+                                                                    if clicked {
+                                                                        selection =
+                                                                            Some(Some(hash));
+                                                                    }
+                                                                }
+                                                            },
+                                                        );
+                                                }
                                             },
                                         );
-                                        if let Some(hash) = selection {
-                                            self.select_plug(
-                                                character_index,
-                                                slot,
-                                                socket_index,
-                                                &item.default_plugs,
-                                                hash,
-                                            );
+                                        if selection.is_some() {
+                                            ui.memory_mut(egui::Memory::close_popup);
+                                        }
+
+                                        let reset_enabled = native_default
+                                            .is_some_and(|default| current_hash != default.value());
+                                        let reset = ui.add_enabled(
+                                            reset_enabled,
+                                            egui::Button::new("Reset").min_size(egui::vec2(
+                                                RESET_BUTTON_WIDTH,
+                                                row_height,
+                                            )),
+                                        );
+                                        let reset_tooltip = match native_default {
+                                            Some(NativePlugDefault::Plug(hash)) => format!(
+                                                "Restore this socket's native default: {}",
+                                                self.manifest.plug_label(hash)
+                                            ),
+                                            Some(NativePlugDefault::Empty) => {
+                                                "Restore this socket's native default: None"
+                                                    .to_owned()
+                                            }
+                                            None => "No native default is available for this socket"
+                                                .to_owned(),
+                                        };
+                                        let reset = if reset_enabled {
+                                            reset.on_hover_text(reset_tooltip)
+                                        } else {
+                                            reset.on_disabled_hover_text(reset_tooltip)
+                                        };
+                                        if reset.clicked() {
+                                            selection = native_default.map(NativePlugDefault::value);
                                             ui.memory_mut(egui::Memory::close_popup);
                                         }
                                     });
+                                    if let Some(hash) = selection {
+                                        self.select_plug(
+                                            character_index,
+                                            slot,
+                                            socket_index,
+                                            &socket_label,
+                                            &item.default_plugs,
+                                            hash,
+                                        );
+                                    }
                                     if searchable {
                                         self.plug_searches.insert(plug_search_key, plug_query);
                                     }
@@ -874,9 +1124,8 @@ pub(super) fn default_ability_values(
     };
     let movement = match class_type {
         0 if settings_schema.is_some_and(|version| version >= 3) => 6,
-        0 => 5,
+        0 | 2 => 5,
         1 => 6,
-        2 => 5,
         _ => 4,
     };
     (
@@ -895,10 +1144,6 @@ pub(super) const fn class_name(class_type: u64) -> &'static str {
         2 => "Warlock",
         _ => "Invalid class",
     }
-}
-
-pub(super) fn format_hash(hash: u64) -> String {
-    format!("0x{hash:08X}")
 }
 
 pub(super) fn parse_hash(text: &str) -> Option<u64> {
@@ -1062,7 +1307,7 @@ pub(super) fn set_weapon_slot_empty(
         .and_then(Value::as_object_mut)
         .ok_or("The selected character has no equipment object")?;
     match equipment.get(slot) {
-        Some(Value::Object(_)) | Some(Value::Null) | None => {
+        Some(Value::Object(_) | Value::Null) | None => {
             equipment.insert(slot.into(), Value::Null);
             Ok(())
         }
@@ -1092,4 +1337,38 @@ pub(super) fn materialize_authored_plugs<'a>(
         *plugs = Value::Array(default_plug_values(defaults));
     }
     plugs.as_array_mut()
+}
+
+pub(super) fn picker_list_height(
+    row_count: usize,
+    row_height: f32,
+    min_height: f32,
+    max_height: f32,
+) -> f32 {
+    let content_height = row_count as f32 * row_height;
+    if content_height < min_height {
+        content_height.max(row_height)
+    } else {
+        content_height.min(max_height)
+    }
+}
+
+fn popup_direction(screen: egui::Rect, anchor: egui::Rect) -> egui::AboveOrBelow {
+    let room_above = (anchor.top() - screen.top()).max(0.0);
+    let room_below = (screen.bottom() - anchor.bottom()).max(0.0);
+    if room_below >= room_above {
+        egui::AboveOrBelow::Below
+    } else {
+        egui::AboveOrBelow::Above
+    }
+}
+
+pub(super) fn native_plug_default(
+    defaults: &[Option<String>],
+    socket_index: usize,
+) -> Option<NativePlugDefault> {
+    match defaults.get(socket_index)? {
+        Some(hash) => parse_hash(hash).map(NativePlugDefault::Plug),
+        None => Some(NativePlugDefault::Empty),
+    }
 }

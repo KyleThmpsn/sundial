@@ -1,8 +1,26 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use crate::catalog;
+use crate::catalog::{self, AbilityChoice, format_hash};
 
 use super::*;
+use super::{
+    equipment::{
+        NativePlugDefault, collect_class_armor_defaults, default_ability_values,
+        default_subclass_name, displayed_plugs, equip_definition, materialize_authored_plugs,
+        native_plug_default, parse_hash, parse_unsigned_value, picker_list_height,
+        restore_class_armor, selected_attunement_index, set_weapon_slot_empty,
+    },
+    settings::{
+        character_ability_issue, create_adjacent_backup, encode_settings, load_json,
+        normalize_sunrise_version, repair_known_ability_pairs, resolve_settings_path,
+        save_json_with_backup_root, settings_path_for_install, sunrise_version_from_schema,
+        validate_characters, verify_source_unchanged,
+    },
+};
 
 static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -42,6 +60,24 @@ fn check_mode_rejects_documents_that_the_gui_loads_with_a_warning() {
 }
 
 #[test]
+fn sunrise_versions_are_normalized_for_display() {
+    assert_eq!(normalize_sunrise_version("0.2.1.0"), Some("0.2.1".into()));
+    assert_eq!(normalize_sunrise_version("0.2.0.0"), Some("0.2".into()));
+    assert_eq!(normalize_sunrise_version("0.1.0.0"), Some("0.1".into()));
+    assert_eq!(normalize_sunrise_version(" 1.4.2 "), Some("1.4.2".into()));
+    assert_eq!(normalize_sunrise_version("0"), None);
+    assert_eq!(normalize_sunrise_version("not-a-version"), None);
+}
+
+#[test]
+fn sunrise_schema_fallback_does_not_overclaim_an_ambiguous_release() {
+    assert_eq!(sunrise_version_from_schema(Some(2)), "0.1");
+    assert_eq!(sunrise_version_from_schema(Some(3)), "0.2 or 0.2.1");
+    assert_eq!(sunrise_version_from_schema(Some(4)), "Unknown");
+    assert_eq!(sunrise_version_from_schema(None), "Unknown");
+}
+
+#[test]
 fn hashes_are_strict_hex_and_normalized() {
     assert_eq!(parse_hash("0xE516CF40"), Some(0xE516_CF40));
     assert_eq!(parse_hash("0Xe516cf40"), Some(0xE516_CF40));
@@ -76,6 +112,29 @@ fn sunrise_native_plugs_are_displayed_and_materialized_on_edit() {
         plugs,
         serde_json::json!(["0x0000002A", "0x0000002C", "0x0000002B"])
     );
+}
+
+#[test]
+fn long_picker_lists_get_a_real_scroll_viewport() {
+    assert_eq!(picker_list_height(500, 24.0, 320.0, 420.0), 420.0);
+    assert_eq!(picker_list_height(14, 24.0, 320.0, 420.0), 336.0);
+    assert_eq!(picker_list_height(2, 24.0, 320.0, 420.0), 48.0);
+}
+
+#[test]
+fn native_socket_defaults_distinguish_explicit_empty_from_unusable_values() {
+    let defaults = vec![Some("0x0000002A".into()), None, Some("invalid".into())];
+
+    assert_eq!(
+        native_plug_default(&defaults, 0),
+        Some(NativePlugDefault::Plug(42))
+    );
+    assert_eq!(
+        native_plug_default(&defaults, 1),
+        Some(NativePlugDefault::Empty)
+    );
+    assert_eq!(native_plug_default(&defaults, 2), None);
+    assert_eq!(native_plug_default(&defaults, 3), None);
 }
 
 #[test]
@@ -337,6 +396,26 @@ fn settings_paths_are_derived_from_install() {
         settings_path_for_install(Path::new("game"), SettingsLayout::BinX64),
         PathBuf::from("game").join(BIN_X64_SETTINGS_RELATIVE_PATH)
     );
+}
+
+#[test]
+fn preferences_round_trip_install_layout_and_safety_acknowledgement() {
+    let preferences = Preferences {
+        install: Some(PathBuf::from(r"F:\Destiny2\Shadowkeep")),
+        settings_layout: Some(SettingsLayout::BinX64.preference_value().to_owned()),
+        really_unsafe_warning_acknowledged: true,
+    };
+
+    let encoded = serde_json::to_vec(&preferences).unwrap();
+    let decoded: Preferences = serde_json::from_slice(&encoded).unwrap();
+    let selection = decoded.install_selection().unwrap();
+
+    assert_eq!(
+        selection.install_path,
+        PathBuf::from(r"F:\Destiny2\Shadowkeep")
+    );
+    assert!(selection.preferred_layout == Some(SettingsLayout::BinX64));
+    assert!(decoded.really_unsafe_warning_acknowledged);
 }
 
 #[test]

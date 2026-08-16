@@ -1,4 +1,207 @@
-use super::*;
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use serde_json::Value;
+
+use crate::{game_settings, storage};
+
+use super::{
+    MAX_SETTINGS_BYTES, Preferences, SLOTS, SettingsLayout, SettingsPathResolution,
+    equipment::parse_unsigned_value,
+};
+
+const SUNRISE_MODULE_RELATIVE_PATH: &str = r"bin\x64\steam_api64.dll";
+const MAX_VERSION_INFO_BYTES: u32 = 1024 * 1024;
+const VERSION_INFO_SIGNATURE: u32 = 0xFEEF_04BD;
+
+pub(super) fn detect_sunrise_version(install_path: &Path, document: &Value) -> String {
+    if let Some(version) = installed_sunrise_module_version(install_path) {
+        return version;
+    }
+    sunrise_version_from_schema(game_settings::schema_version(document))
+}
+
+pub(super) fn sunrise_version_from_schema(schema: Option<u64>) -> String {
+    match schema {
+        Some(2) => "0.1".into(),
+        Some(3) => "0.2 or 0.2.1".into(),
+        Some(_) | None => "Unknown".into(),
+    }
+}
+
+fn installed_sunrise_module_version(install_path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW};
+
+    let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
+    let wide_path = module_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut ignored = 0_u32;
+    // SAFETY: `wide_path` is a valid NUL-terminated UTF-16 path and `ignored` is writable.
+    let size = unsafe { GetFileVersionInfoSizeW(wide_path.as_ptr(), &raw mut ignored) };
+    if size == 0 || size > MAX_VERSION_INFO_BYTES {
+        return None;
+    }
+    let mut version_info = vec![0_u8; usize::try_from(size).ok()?];
+    // SAFETY: The output buffer is valid for the exact size returned by Windows.
+    if unsafe {
+        GetFileVersionInfoW(
+            wide_path.as_ptr(),
+            0,
+            size,
+            version_info.as_mut_ptr().cast(),
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    let is_sunrise = ["ProductName", "FileDescription"]
+        .into_iter()
+        .filter_map(|key| query_version_string(&version_info, key))
+        .any(|value| value.trim().eq_ignore_ascii_case("Sunrise"));
+    if !is_sunrise {
+        return None;
+    }
+    query_product_version(&version_info)
+}
+
+fn query_version_string(version_info: &[u8], key: &str) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
+
+    let mut tables = version_string_tables(version_info);
+    if !tables.contains(&(0x0409, 1200)) {
+        tables.push((0x0409, 1200));
+    }
+    for (language, code_page) in tables {
+        let sub_block = format!(r"\StringFileInfo\{language:04X}{code_page:04X}\{key}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let mut value = std::ptr::null_mut();
+        let mut length = 0_u32;
+        // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
+        if unsafe {
+            VerQueryValueW(
+                version_info.as_ptr().cast(),
+                sub_block.as_ptr(),
+                &raw mut value,
+                &raw mut length,
+            )
+        } == 0
+            || value.is_null()
+            || length == 0
+        {
+            continue;
+        }
+        // SAFETY: A successful string query returns `length` UTF-16 units inside `version_info`.
+        let units = unsafe { std::slice::from_raw_parts(value.cast::<u16>(), length as usize) };
+        let units = units.strip_suffix(&[0]).unwrap_or(units);
+        if let Ok(value) = String::from_utf16(units) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn version_string_tables(version_info: &[u8]) -> Vec<(u16, u16)> {
+    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
+
+    let sub_block = r"\VarFileInfo\Translation"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut value = std::ptr::null_mut();
+    let mut length = 0_u32;
+    // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
+    if unsafe {
+        VerQueryValueW(
+            version_info.as_ptr().cast(),
+            sub_block.as_ptr(),
+            &raw mut value,
+            &raw mut length,
+        )
+    } == 0
+        || value.is_null()
+        || length < 4
+    {
+        return Vec::new();
+    }
+    // SAFETY: A successful translation query returns `length` bytes inside `version_info`.
+    let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
+    bytes
+        .chunks_exact(4)
+        .map(|entry| {
+            (
+                u16::from_ne_bytes([entry[0], entry[1]]),
+                u16::from_ne_bytes([entry[2], entry[3]]),
+            )
+        })
+        .collect()
+}
+
+fn query_product_version(version_info: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{VS_FIXEDFILEINFO, VerQueryValueW};
+
+    let root = ['\\' as u16, 0];
+    let mut value = std::ptr::null_mut();
+    let mut length = 0_u32;
+    // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
+    if unsafe {
+        VerQueryValueW(
+            version_info.as_ptr().cast(),
+            root.as_ptr(),
+            &raw mut value,
+            &raw mut length,
+        )
+    } == 0
+        || value.is_null()
+        || (length as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+    {
+        return None;
+    }
+    // SAFETY: The root query returned at least one complete fixed-version structure. An
+    // unaligned read avoids relying on the alignment of the opaque Windows-owned block.
+    let fixed = unsafe { value.cast::<VS_FIXEDFILEINFO>().read_unaligned() };
+    if fixed.dwSignature != VERSION_INFO_SIGNATURE {
+        return None;
+    }
+    normalize_sunrise_version(&format!(
+        "{}.{}.{}.{}",
+        fixed.dwProductVersionMS >> 16,
+        fixed.dwProductVersionMS & 0xFFFF,
+        fixed.dwProductVersionLS >> 16,
+        fixed.dwProductVersionLS & 0xFFFF,
+    ))
+}
+
+pub(super) fn normalize_sunrise_version(version: &str) -> Option<String> {
+    let mut components = version
+        .trim()
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if components.len() < 2 || components.len() > 4 {
+        return None;
+    }
+    while components.len() > 2 && components.last() == Some(&0) {
+        components.pop();
+    }
+    Some(
+        components
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+}
 
 pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Value, String> {
     use std::os::windows::ffi::OsStrExt;
@@ -13,7 +216,7 @@ pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Val
     const DEFAULT_SETTINGS_RESOURCE: *const u16 = 101usize as *const u16;
     const RESOURCE_DATA_TYPE: *const u16 = 10usize as *const u16;
 
-    let module_path = install_path.join(r"bin\x64\steam_api64.dll");
+    let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
     let wide_path: Vec<u16> = module_path
         .as_os_str()
         .encode_wide()
@@ -491,7 +694,7 @@ pub(super) fn repair_known_ability_pairs(document: &mut Value) -> usize {
     repaired
 }
 
-fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, u64)> {
+const fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, u64)> {
     Some(match subclass_hash {
         // Arcstrider and Sentinel route their guard supers through the
         // attunement selected by the melee entry while retaining entry 10.
@@ -561,20 +764,9 @@ pub(super) fn missing_settings_message(install: &Path) -> String {
     )
 }
 
-pub(super) fn saved_install() -> Option<InstallSelection> {
-    let path = preferences_path()?;
-    let raw = fs::read_to_string(path).ok()?;
-    let value = serde_json::from_str::<Value>(&raw).ok()?;
-    let install_path = value
-        .get("install")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)?;
-    let preferred_layout = value
-        .get("settings_layout")
-        .and_then(Value::as_str)
-        .and_then(SettingsLayout::from_preference);
-    Some(InstallSelection {
-        install_path,
-        preferred_layout,
-    })
+pub(super) fn load_preferences() -> Preferences {
+    preferences_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
 }
