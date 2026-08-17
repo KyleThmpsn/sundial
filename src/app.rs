@@ -25,24 +25,32 @@ mod settings;
 use settings::{
     catalog_path, create_adjacent_backup, detect_sunrise_version, encode_settings,
     load_installed_sunrise_defaults, load_json, load_preferences, missing_settings_message,
-    preferences_path, repair_known_ability_pairs, resolve_settings_path, save_json,
-    settings_path_for_install, validate_document, verify_source_unchanged,
+    preferences_path, prepare_settings, repair_known_ability_pairs, resolve_settings_path,
+    save_json, settings_path_for_install, validate_document, verify_source_unchanged,
 };
+
+#[path = "json_editor.rs"]
+mod json_editor;
+use json_editor::JsonEditorState;
 
 #[path = "equipment.rs"]
 mod equipment;
 use equipment::{class_name, collect_class_armor_defaults};
 
+#[path = "inventory.rs"]
+mod inventory;
+
+#[path = "inventory_page.rs"]
+mod inventory_page;
+
 const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
 const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
-const MAX_SETTINGS_BYTES: usize = 64 * 1024 - 1;
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
 const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
 const WEAPON_SLOTS: &[&str] = &["kinetic", "energy", "heavy"];
-const GENERATED_INSTANCE_SOID_START: u64 = 0x4000_0000_0000_0001;
 const ITEM_PICKER_MIN_HEIGHT: f32 = 320.0;
 const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
@@ -70,6 +78,8 @@ const SLOTS: &[(&str, &str, u64)] = &[
 #[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
     Characters,
+    ProfileInventory,
+    CharacterInventory,
     GameSettings,
     AdvancedJson,
     Paths,
@@ -216,6 +226,9 @@ struct SundialApp {
     game_settings_tab: game_settings::Tab,
     key_binding_ui: game_settings::KeyBindingUiState,
     raw_json: String,
+    raw_json_document: Value,
+    json_editor: JsonEditorState,
+    json_editor_window_open: bool,
     logo: Option<egui::TextureHandle>,
     about_open: bool,
     update_check: UpdateCheck,
@@ -251,8 +264,8 @@ impl SundialApp {
         let source_warning = validate_document(&document).err();
         let sunrise_version = detect_sunrise_version(&install_path, &document);
         let class_armor_defaults = collect_class_armor_defaults(&document);
-        let raw_json = serde_json::to_string_pretty(&document)
-            .map_err(|e| format!("Could not display settings JSON: {e}"))?;
+        let raw_json = encode_settings_for_editor(&document)?;
+        let raw_json_document = document.clone();
         let persisted_document = document.clone();
         Ok(Self {
             settings_path,
@@ -274,6 +287,9 @@ impl SundialApp {
             game_settings_tab: game_settings::Tab::Player,
             key_binding_ui: game_settings::KeyBindingUiState::default(),
             raw_json,
+            raw_json_document,
+            json_editor: JsonEditorState::default(),
+            json_editor_window_open: false,
             logo: None,
             about_open: false,
             update_check: UpdateCheck::default(),
@@ -325,10 +341,10 @@ impl SundialApp {
         }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Not saved: {error}"), true);
-            return;
+            return false;
         }
         let repaired_ability_pairs = repair_known_ability_pairs(&mut self.document);
         if repaired_ability_pairs > 0 {
@@ -349,45 +365,82 @@ impl SundialApp {
                         ),
                         true,
                     );
-                    return;
+                    return false;
                 }
             }
         } else {
             None
         };
         match save_json(&self.settings_path, &self.document) {
-            Ok(backup) => {
+            Ok(result) => {
+                let safe_to_close = !result.exceeds_size_limit;
                 self.persisted_document = self.document.clone();
                 self.source_warning = current_warning;
                 self.dirty = false;
+                self.sync_raw_json();
                 let repair_note = match repaired_ability_pairs {
                     0 => String::new(),
                     1 => " Corrected one invalid ability pairing.".to_owned(),
                     count => format!(" Corrected {count} invalid ability pairings."),
                 };
+                let size_note = settings_size_note(&result);
                 if let (Some(warning), Some(safety_backup)) = (detected_warning, safety_backup) {
                     self.set_status(
                         format!(
-                            "Saved after detecting an unexpected setting ({warning}).{repair_note} The untouched source is at {}. Backup: {}",
+                            "Saved after detecting an unexpected setting ({warning}).{repair_note}{size_note} The untouched source is at {}. Backup: {}",
                             safety_backup.display(),
-                            backup.display()
+                            result.backup.display()
                         ),
                         true,
                     );
                 } else {
                     self.set_status(
-                        format!("Saved.{repair_note} Backup: {}", backup.display()),
-                        false,
+                        format!(
+                            "Saved.{repair_note}{size_note} Backup: {}",
+                            result.backup.display()
+                        ),
+                        result.exceeds_size_limit,
                     );
                 }
+                safe_to_close
             }
             Err(error) => {
                 let suffix = safety_backup.map_or_else(String::new, |path| {
                     format!(" The untouched source is at {}.", path.display())
                 });
                 self.set_status(format!("{error}{suffix}"), true);
+                false
             }
         }
+    }
+
+    fn save_all_edits(&mut self) -> bool {
+        if self.json_editor.has_unapplied_changes() && !self.apply_raw_json() {
+            return false;
+        }
+        self.save()
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        has_pending_edits(self.dirty, self.json_editor.has_unapplied_changes())
+    }
+
+    fn select_view(&mut self, view: ViewMode) {
+        if self.view_mode == view {
+            return;
+        }
+        if self.view_mode == ViewMode::AdvancedJson
+            && !self.json_editor_window_open
+            && self.json_editor.has_unapplied_changes()
+            && !self.apply_raw_json()
+        {
+            return;
+        }
+        if view == ViewMode::AdvancedJson {
+            self.sync_raw_json_if_stale();
+            self.json_editor.restore_location_next_draw();
+        }
+        self.view_mode = view;
     }
 
     fn reset_to_sunrise_defaults(&mut self) {
@@ -413,7 +466,8 @@ impl SundialApp {
             }
         };
         match save_json(&self.settings_path, &default_document) {
-            Ok(backup) => {
+            Ok(result) => {
+                let size_note = settings_size_note(&result);
                 self.document = default_document;
                 self.persisted_document = self.document.clone();
                 self.refresh_sunrise_version();
@@ -427,11 +481,11 @@ impl SundialApp {
                 self.dirty = false;
                 self.set_status(
                     format!(
-                        "Restored the defaults bundled with the installed Project Sunrise. Original: {}. Backup: {}",
+                        "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}",
                         adjacent_backup.display(),
-                        backup.display()
+                        result.backup.display()
                     ),
-                    false,
+                    result.exceeds_size_limit,
                 );
             }
             Err(error) => self.set_status(
@@ -478,7 +532,7 @@ impl SundialApp {
     }
 
     fn choose_install(&mut self, ctx: &egui::Context) {
-        if self.dirty {
+        if self.has_unsaved_changes() {
             self.set_status(
                 "Save or reload your changes before choosing another installation",
                 true,
@@ -678,7 +732,14 @@ impl SundialApp {
                     };
                     match (task.kind, *result) {
                         (CatalogTaskKind::LoadInstall(pending), Ok(manifest)) => {
-                            self.apply_install_load(pending, manifest);
+                            if self.has_unsaved_changes() {
+                                self.set_status(
+                                    "Install not loaded because settings changed while its catalog was loading. Save or reload the current settings, then choose the installation again.",
+                                    true,
+                                );
+                            } else {
+                                self.apply_install_load(pending, manifest);
+                            }
                         }
                         (CatalogTaskKind::Rebuild, Ok(manifest)) => {
                             self.manifest = manifest;
@@ -728,41 +789,166 @@ impl SundialApp {
         self.characters().map_or(0, <[Value]>::len)
     }
 
+    fn draw_character_tabs(&mut self, ui: &mut egui::Ui) {
+        let character_tabs = self
+            .characters()
+            .map(|characters| {
+                characters
+                    .iter()
+                    .enumerate()
+                    .map(|(index, character)| {
+                        let class_type =
+                            character.get("class").and_then(Value::as_u64).unwrap_or(99);
+                        (
+                            index,
+                            format!("Character {} · {}", index + 1, class_name(class_type)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            for (index, label) in character_tabs {
+                if ui
+                    .selectable_label(self.selected_character == index, label)
+                    .clicked()
+                {
+                    self.selected_character = index;
+                }
+            }
+        });
+    }
+
     fn sync_raw_json(&mut self) {
-        if let Ok(raw_json) = serde_json::to_string_pretty(&self.document) {
+        if let Ok(raw_json) = encode_settings_for_editor(&self.document) {
             self.raw_json = raw_json;
+            self.raw_json_document = self.document.clone();
+            self.json_editor.mark_synced();
+            self.json_editor.restore_location_next_draw();
         }
     }
 
-    fn apply_raw_json(&mut self) {
+    fn sync_raw_json_if_stale(&mut self) {
+        if !self.json_editor.has_unapplied_changes() && self.raw_json_document != self.document {
+            self.sync_raw_json();
+        }
+    }
+
+    fn apply_raw_json(&mut self) -> bool {
+        self.apply_raw_json_with_status(true)
+    }
+
+    fn apply_raw_json_silently(&mut self) -> bool {
+        self.apply_raw_json_with_status(false)
+    }
+
+    fn apply_raw_json_with_status(&mut self, report_status: bool) -> bool {
         match serde_json::from_str::<Value>(&self.raw_json) {
             Ok(document) => {
                 let warning = validate_document(&document).err();
+                let changed = document != self.document;
+                self.raw_json_document = document.clone();
                 self.document = document;
                 self.selected_character = self
                     .selected_character
                     .min(self.character_count().saturating_sub(1));
                 self.clear_picker_state();
-                self.dirty = true;
-                if let Some(warning) = warning {
+                self.dirty |= changed;
+                if report_status {
+                    if let Some(warning) = warning {
+                        self.set_status(
+                            format!(
+                                "Advanced JSON applied with an unexpected setting: {warning}. Saving will first create settings.json.bak beside the source"
+                            ),
+                            true,
+                        );
+                    } else {
+                        self.set_status("Advanced JSON applied; click Save to write it", false);
+                    }
+                }
+                self.json_editor.mark_synced();
+                true
+            }
+            Err(error) => {
+                if report_status {
                     self.set_status(
                         format!(
-                            "Advanced JSON applied with an unexpected setting: {warning}. Saving will first create settings.json.bak beside the source"
+                            "JSON syntax error at line {}, column {}: {error}",
+                            error.line(),
+                            error.column()
                         ),
                         true,
                     );
-                } else {
-                    self.set_status("Advanced JSON applied; click Save to write it", false);
                 }
+                false
             }
-            Err(error) => self.set_status(
-                format!(
-                    "JSON syntax error at line {}, column {}: {error}",
-                    error.line(),
-                    error.column()
-                ),
-                true,
-            ),
+        }
+    }
+
+    fn handle_json_editor_response(&mut self, response: json_editor::JsonEditorResponse) {
+        if response.save {
+            let _ = self.save_all_edits();
+        }
+        if response.reset {
+            self.sync_raw_json();
+            self.set_status("JSON editor reset to current settings", false);
+        }
+        if response.toggle_window {
+            self.json_editor_window_open = !self.json_editor_window_open;
+            self.json_editor.restore_location_next_draw();
+            if !self.json_editor_window_open {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
+        }
+    }
+
+    fn draw_json_editor_window(&mut self, ctx: &egui::Context) {
+        if !self.json_editor_window_open {
+            return;
+        }
+
+        self.sync_raw_json_if_stale();
+        let (response, close_requested) = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("sundial_json_editor"),
+            egui::ViewportBuilder::default()
+                .with_title("Sundial — All settings (JSON)")
+                .with_inner_size([960.0, 720.0])
+                .with_min_inner_size([640.0, 420.0]),
+            |child_ctx, class| {
+                let close_requested = child_ctx.input(|input| input.viewport().close_requested());
+                let mut response = json_editor::JsonEditorResponse::default();
+                if class == egui::ViewportClass::Embedded {
+                    egui::Window::new("All settings (JSON)")
+                        .id(egui::Id::new("embedded_json_editor_window"))
+                        .default_size([960.0, 720.0])
+                        .show(child_ctx, |ui| {
+                            response = json_editor::draw(
+                                ui,
+                                &mut self.raw_json,
+                                &mut self.json_editor,
+                                true,
+                            );
+                        });
+                } else {
+                    egui::CentralPanel::default().show(child_ctx, |ui| {
+                        response =
+                            json_editor::draw(ui, &mut self.raw_json, &mut self.json_editor, true);
+                    });
+                }
+                (response, close_requested)
+            },
+        );
+
+        self.handle_json_editor_response(response);
+        if self.json_editor.has_unapplied_changes() {
+            let _ = self.apply_raw_json_silently();
+        }
+        if close_requested {
+            self.json_editor_window_open = false;
+            self.json_editor.restore_location_next_draw();
+            if self.json_editor.has_unapplied_changes() {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
         }
     }
 }
@@ -777,7 +963,7 @@ impl eframe::App for SundialApp {
             _ => None,
         };
         if ctx.input(|input| input.viewport().close_requested())
-            && self.dirty
+            && self.has_unsaved_changes()
             && !self.exit_confirmed
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -786,20 +972,20 @@ impl eframe::App for SundialApp {
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if self.dirty {
+                if self.has_unsaved_changes() {
                     ui.label(
                         egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color),
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(self.dirty, egui::Button::new("Save"))
+                        .add_enabled(self.has_unsaved_changes(), egui::Button::new("Save"))
                         .clicked()
                     {
-                        self.save();
+                        let _ = self.save_all_edits();
                     }
                     if ui.button("Reload").clicked() {
-                        if self.dirty {
+                        if self.has_unsaved_changes() {
                             self.confirmation = Some(ConfirmationDialog::Reload);
                         } else {
                             self.reload();
@@ -822,13 +1008,31 @@ impl eframe::App for SundialApp {
                     )
                     .clicked()
                 {
-                    self.view_mode = ViewMode::Characters;
+                    self.select_view(ViewMode::Characters);
+                }
+                if ui
+                    .selectable_label(
+                        self.view_mode == ViewMode::ProfileInventory,
+                        "Profile inventory",
+                    )
+                    .clicked()
+                {
+                    self.select_view(ViewMode::ProfileInventory);
+                }
+                if ui
+                    .selectable_label(
+                        self.view_mode == ViewMode::CharacterInventory,
+                        "Character inventory",
+                    )
+                    .clicked()
+                {
+                    self.select_view(ViewMode::CharacterInventory);
                 }
                 if ui
                     .selectable_label(self.view_mode == ViewMode::GameSettings, "Game settings")
                     .clicked()
                 {
-                    self.view_mode = ViewMode::GameSettings;
+                    self.select_view(ViewMode::GameSettings);
                 }
                 if ui
                     .selectable_label(
@@ -837,16 +1041,13 @@ impl eframe::App for SundialApp {
                     )
                     .clicked()
                 {
-                    if self.view_mode != ViewMode::AdvancedJson {
-                        self.sync_raw_json();
-                    }
-                    self.view_mode = ViewMode::AdvancedJson;
+                    self.select_view(ViewMode::AdvancedJson);
                 }
                 if ui
                     .selectable_label(self.view_mode == ViewMode::Paths, "Paths")
                     .clicked()
                 {
-                    self.view_mode = ViewMode::Paths;
+                    self.select_view(ViewMode::Paths);
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.horizontal(|ui| {
@@ -880,41 +1081,48 @@ impl eframe::App for SundialApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.json_editor_window_open
+                && self.json_editor.has_unapplied_changes()
+                && matches!(
+                    self.view_mode,
+                    ViewMode::Characters
+                        | ViewMode::ProfileInventory
+                        | ViewMode::CharacterInventory
+                        | ViewMode::GameSettings
+                )
+            {
+                ui.heading("Finish the JSON edit");
+                ui.label(
+                    "The detached editor currently contains invalid JSON. Fix or reset it before using guided settings.",
+                );
+                return;
+            }
             match self.view_mode {
                 ViewMode::Characters => {
-                    let character_tabs = self
-                        .characters()
-                        .map(|characters| {
-                            characters
-                                .iter()
-                                .enumerate()
-                                .map(|(index, character)| {
-                                    let class_type = character
-                                        .get("class")
-                                        .and_then(Value::as_u64)
-                                        .unwrap_or(99);
-                                    (index, format!("Character {} · {}", index + 1, class_name(class_type)))
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    ui.horizontal_wrapped(|ui| {
-                        for (index, label) in character_tabs {
-                            if ui
-                                .selectable_label(self.selected_character == index, label)
-                                .clicked()
-                            {
-                                self.selected_character = index;
-                            }
-                        }
-                    });
+                    self.draw_character_tabs(ui);
                     ui.separator();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let index = self.selected_character;
-                        self.draw_character_fields(ui, index);
-                        self.draw_equipment(ui, index);
-                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt(("character_editor_scroll", self.selected_character))
+                        .show(ui, |ui| {
+                            let index = self.selected_character;
+                            let character_editable =
+                                inventory::schema_mode(&self.document).can_mutate_equipment();
+                            ui.add_enabled_ui(character_editable, |ui| {
+                                self.draw_character_fields(ui, index, character_editable)
+                            });
+                            if !character_editable {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Character and equipment controls are disabled for this settings schema.",
+                                    )
+                                    .weak(),
+                                );
+                            }
+                            self.draw_equipment(ui, index);
+                        });
                 }
+                ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
+                ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
                     if game_settings::draw_page(
                         ui,
@@ -927,26 +1135,23 @@ impl eframe::App for SundialApp {
                     }
                 }
                 ViewMode::AdvancedJson => {
-                    ui.horizontal(|ui| {
+                    if self.json_editor_window_open {
                         ui.heading("All settings");
-                        if ui.button("Apply JSON").clicked() {
-                            self.apply_raw_json();
+                        ui.label("The JSON editor is open in a separate window.");
+                        if ui.button("Dock in main window").clicked() {
+                            self.json_editor_window_open = false;
+                            self.json_editor.restore_location_next_draw();
                         }
-                        if ui.button("Reset editor").clicked() {
-                            self.sync_raw_json();
-                            self.set_status("JSON editor reset to current settings", false);
-                        }
-                    });
-                    ui.label("Edit any setting below, then Apply JSON. Save writes applied changes to disk.");
-                    ui.add_space(6.0);
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.raw_json)
-                                .code_editor()
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(40),
+                    } else {
+                        self.sync_raw_json_if_stale();
+                        let response = json_editor::draw(
+                            ui,
+                            &mut self.raw_json,
+                            &mut self.json_editor,
+                            false,
                         );
-                    });
+                        self.handle_json_editor_response(response);
+                    }
                 }
                 ViewMode::Paths => {
                     ui.heading("Paths");
@@ -1003,6 +1208,8 @@ impl eframe::App for SundialApp {
             }
         });
 
+        self.draw_json_editor_window(ctx);
+
         if self.about_open {
             let logo = self
                 .logo
@@ -1055,7 +1262,7 @@ impl eframe::App for SundialApp {
                     ui.add_space(12.0);
                     ui.separator();
                     ui.add_space(8.0);
-                    ui.label("Built for Project Sunrise 0.1, 0.2, and 0.2.1.");
+                    ui.label("Built for Project Sunrise 0.1 through 0.3.1.");
                     ui.hyperlink_to("Project Sunrise on GitHub", SUNRISE_URL);
                     ui.add_space(6.0);
                     ui.label("Local Destiny package parsing is powered by tiger-pkg.");
@@ -1301,8 +1508,8 @@ impl eframe::App for SundialApp {
             self.confirmation = (!save_and_exit && !discard_and_exit && !cancel)
                 .then_some(ConfirmationDialog::Exit);
             if save_and_exit {
-                self.save();
-                if !self.dirty {
+                let safe_to_close = self.save_all_edits();
+                if !self.has_unsaved_changes() && safe_to_close {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -1312,6 +1519,41 @@ impl eframe::App for SundialApp {
             }
         }
     }
+}
+
+fn settings_size_note(result: &settings::SaveJsonResult) -> String {
+    let limit = settings_size_label(result.size_limit_bytes);
+    if result.exceeds_size_limit {
+        format!(
+            " Warning: the compacted file is {} bytes, above this Sunrise schema's {limit} settings limit, and may not load.",
+            result.encoded_bytes,
+        )
+    } else if result.compacted {
+        format!(
+            " Sunrise-style formatting exceeded this schema's {limit} limit, so Sundial compacted the file to {} bytes.",
+            result.encoded_bytes,
+        )
+    } else {
+        String::new()
+    }
+}
+
+const fn has_pending_edits(document_dirty: bool, json_unapplied: bool) -> bool {
+    document_dirty || json_unapplied
+}
+
+fn settings_size_label(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    if bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{} KiB", bytes / KIB)
+    }
+}
+
+fn encode_settings_for_editor(document: &Value) -> Result<String, String> {
+    encode_settings(document).map(|encoded| encoded.replace("\r\n", "\n"))
 }
 
 fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
@@ -1386,13 +1628,24 @@ fn check_install(selection: InstallSelection) -> Result<String, String> {
     };
     let app = SundialApp::new(settings_path, settings_layout, install_path)?;
     validate_for_check(&app.document)?;
-    let encoded_size = encode_settings(&app.document)?.len() + 1;
+    let prepared = prepare_settings(&app.document)?;
+    let size_note = if prepared.exceeds_size_limit {
+        format!(
+            " (warning: still above {} after compaction)",
+            settings_size_label(prepared.size_limit_bytes)
+        )
+    } else if prepared.compacted {
+        " (compacted from Sunrise's readable layout)".to_owned()
+    } else {
+        String::new()
+    };
     Ok(format!(
-        "Valid: Project Sunrise {}, {} characters, {} compatible local catalog items loaded, save size {} bytes",
+        "Valid: Project Sunrise {}, {} characters, {} compatible local catalog items loaded, save size {} bytes{}",
         app.sunrise_version,
         app.character_count(),
         app.manifest.items.len(),
-        encoded_size
+        prepared.encoded_bytes,
+        size_note
     ))
 }
 

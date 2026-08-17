@@ -1,0 +1,2044 @@
+//! Guided editing for account profile items and per-character inventory.
+//!
+//! The page intentionally renders snapshots and applies typed actions from `inventory`; it never
+//! reaches into the document with ad-hoc JSON pointers. Shared item controls live in
+//! `equipment::item_editor`, while this module owns inventory-specific policy such as scope and
+//! bucket-capacity checks.
+
+use std::{cmp::Reverse, collections::HashMap};
+
+use eframe::egui;
+
+use crate::catalog::{
+    InventoryDefinition, InventoryMetadata, InventoryScope, ItemDef, format_hash,
+};
+
+use super::{
+    ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT,
+    PlugSelectionMode, SundialApp,
+    equipment::{
+        EquipmentSlotCard, EquippedItemSnapshot, equipped_item_snapshots, inferred_item_level,
+        item_editor::{
+            DefinitionChoice, DefinitionPickerChoices, DefinitionSummary, ItemEditorAction,
+            ItemHeader, NativePlugDefault, NumericItemFields, PickerHeight, PlugChoice,
+            PlugPickerSnapshot, draw_item_header_with_trailing,
+        },
+        native_plug_default, parse_hash, parse_unsigned_value,
+    },
+    inventory::{
+        self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, InventoryItemAction,
+        InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, NewInventoryItem,
+        ProfileItemAction, ProfileItemSnapshot, SchemaMode, set_inventory_locked_flag,
+    },
+};
+
+const PROFILE_CARD_MIN_WIDTH: f32 = 320.0;
+const CHARACTER_CARD_MIN_WIDTH: f32 = 420.0;
+
+#[derive(Clone)]
+struct ResolvedDefinition {
+    name: String,
+    metadata: InventoryMetadata,
+    item: Option<ItemDef>,
+}
+
+struct BucketUsage {
+    counts: HashMap<u8, usize>,
+    unresolved_count: usize,
+    occupancy_complete: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BucketKey {
+    scope: InventoryScope,
+    native_id: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InventoryItemUiId {
+    character_index: usize,
+    instance_soid: u64,
+    duplicate_ordinal: Option<usize>,
+}
+
+struct ItemBucket<T> {
+    key: BucketKey,
+    label: String,
+    capacity: Option<u16>,
+    addable: bool,
+    items: Vec<T>,
+}
+
+#[derive(Clone)]
+enum CharacterInventoryEntry {
+    Equipped(EquippedItemSnapshot),
+    Stored {
+        snapshot: InventoryItemSnapshot,
+        ui_identity: InventoryItemUiId,
+    },
+}
+
+impl CharacterInventoryEntry {
+    fn definition_hash(&self) -> Option<u64> {
+        match self {
+            Self::Equipped(snapshot) => snapshot.definition_hash,
+            Self::Stored { snapshot, .. } => Some(u64::from(snapshot.definition_hash)),
+        }
+    }
+}
+
+impl SundialApp {
+    pub(super) fn draw_profile_inventory_page(&mut self, ui: &mut egui::Ui) {
+        let mode = inventory::schema_mode(&self.document);
+        ui.heading("Profile inventory");
+        ui.label(
+            "Items shared by the account and available to every character. Profile inventory is supported by every Sunrise settings schema Sundial can edit.",
+        );
+        draw_schema_notice(ui, mode, InventoryPageKind::Profile);
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .id_salt("profile-inventory-page")
+            .show(ui, |ui| self.draw_profile_items_section(ui, mode));
+    }
+
+    pub(super) fn draw_character_inventory_page(&mut self, ui: &mut egui::Ui) {
+        let mode = inventory::schema_mode(&self.document);
+        ui.heading("Character inventory");
+        ui.label(
+            "Items stored separately for each character, with equipped items shown in their native buckets.",
+        );
+        draw_schema_notice(ui, mode, InventoryPageKind::Character);
+        ui.add_space(4.0);
+        self.draw_character_inventory_section(ui, mode);
+    }
+
+    fn draw_profile_items_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
+        let snapshots = match inventory::profile_items(&self.document) {
+            Ok(items) => items,
+            Err(error) => {
+                draw_section_error(ui, &error.to_string());
+                return;
+            }
+        };
+        let items = snapshots.unwrap_or_default();
+        let profile_item_count = items.len();
+        let editable = mode.can_mutate_profile_items();
+        let capacity = mode.profile_item_capacity();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Shared items");
+            let count = capacity.map_or_else(
+                || format!("{} items", items.len()),
+                |capacity| format!("{} / {capacity}", items.len()),
+            );
+            ui.label(egui::RichText::new(count).weak());
+        });
+        ui.label("Stackable profile-scoped definitions only.");
+
+        let bucket_usage = self.profile_bucket_usage(&items);
+        let account_ready = inventory::profile_item_target_exists(&self.document).unwrap_or(false);
+        if !editable {
+            ui.label(
+                egui::RichText::new("Profile-item editing is disabled for this schema.").weak(),
+            );
+        } else if capacity.is_some_and(|capacity| items.len() >= capacity) {
+            ui.label(egui::RichText::new("The profile-item array is full for this schema.").weak());
+        } else if !account_ready {
+            ui.label(
+                egui::RichText::new(
+                    "Add controls require an existing state.account object; existing rows remain visible.",
+                )
+                .weak(),
+            );
+        } else if bucket_usage.unresolved_count > 0 {
+            draw_unresolved_bucket_warning(ui);
+        }
+        ui.add_space(4.0);
+
+        let candidate_buckets = distinct_candidate_buckets(
+            self.manifest
+                .profile_item_candidates("")
+                .map(|definition| *definition.metadata),
+        );
+        let mut groups = self.group_items_by_bucket(
+            items,
+            |item| Some(u64::from(item.definition_hash)),
+            InventoryScope::Profile,
+        );
+        add_candidate_buckets(&mut groups, candidate_buckets, InventoryScope::Profile);
+        if groups.is_empty() {
+            ui.label(egui::RichText::new("No profile inventory buckets are available.").weak());
+            return;
+        }
+
+        let mut pending = None;
+        for group in groups {
+            let title = bucket_header_label(&group, &bucket_usage, InventoryScope::Profile);
+            let picker_key = format!(
+                "profile-items:add:{}:{}",
+                scope_id(group.key.scope),
+                group.key.native_id
+            );
+            let array_has_room = capacity.is_some_and(|capacity| profile_item_count < capacity);
+            let bucket_has_room =
+                group.addable && bucket_key_has_room(group.key, group.capacity, &bucket_usage);
+            let can_add = editable
+                && account_ready
+                && array_has_room
+                && bucket_usage.occupancy_complete
+                && bucket_has_room;
+            let repaint_context = ui.ctx().clone();
+            let mut toggle_header = false;
+            let mut open_picker = false;
+            let mut header = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id((
+                    "profile-items-bucket",
+                    scope_id(group.key.scope),
+                    group.key.native_id,
+                )),
+                true,
+            )
+            .show_header(ui, |ui| {
+                toggle_header = ui
+                    .add(
+                        egui::Label::new(egui::RichText::new(&title).strong())
+                            .sense(egui::Sense::click()),
+                    )
+                    .clicked();
+                if group.addable {
+                    let response = ui.add_enabled(can_add, egui::Button::new("+").small());
+                    let tooltip = bucket_add_tooltip(
+                        can_add,
+                        editable,
+                        account_ready,
+                        array_has_room,
+                        bucket_usage.occupancy_complete,
+                        bucket_has_room,
+                        &group.label,
+                    );
+                    let response = if can_add {
+                        response.on_hover_text(tooltip)
+                    } else {
+                        response.on_disabled_hover_text(tooltip)
+                    };
+                    open_picker = response.clicked();
+                }
+            });
+            if toggle_header {
+                header.toggle();
+            }
+            if open_picker {
+                header.set_open(true);
+                self.open_bucket_picker(&picker_key, "profile-items:add:");
+                repaint_context.request_repaint();
+            }
+            header.body(|ui| {
+                draw_bucket_details(ui, &group, &bucket_usage, InventoryScope::Profile);
+                if self.searches.contains_key(&picker_key) {
+                    let action = ui
+                        .add_enabled_ui(can_add, |ui| {
+                            ui.label(egui::RichText::new("Add a shared item").strong());
+                            let manifest = &self.manifest;
+                            let request_open = take_bucket_picker_open_request(
+                                &mut self.searches,
+                                &picker_key,
+                                ui.input(|input| input.pointer.any_click()),
+                            );
+                            let query = self.searches.entry(picker_key.clone()).or_default();
+                            super::equipment::item_editor::draw_definition_picker_with_open_request(
+                                ui,
+                                (
+                                    "profile-items-add-definition",
+                                    scope_id(group.key.scope),
+                                    group.key.native_id,
+                                ),
+                                query,
+                                picker_height(),
+                                request_open,
+                                |query| DefinitionPickerChoices {
+                                    definitions: profile_bucket_definition_choices(
+                                        manifest.profile_item_candidates(query).filter(
+                                            |definition| {
+                                                definition.metadata.scope == group.key.scope
+                                                    && definition.metadata.native_bucket_id
+                                                        == group.key.native_id
+                                                    && u32::try_from(definition.hash).is_ok()
+                                            },
+                                        ),
+                                    ),
+                                    clear: None,
+                                    empty_message: "No safe definitions in this bucket match"
+                                        .to_owned(),
+                                },
+                            )
+                        })
+                        .inner;
+                    if let Some(ItemEditorAction::SetDefinition { hash }) = action {
+                        match u32::try_from(hash)
+                            .map_err(|_| {
+                                "The selected profile-item hash does not fit in 32 bits".to_owned()
+                            })
+                            .and_then(|hash| {
+                                inventory::add_profile_item(&mut self.document, hash, 1)
+                                    .map_err(|error| error.to_string())
+                            }) {
+                            Ok(_) => {
+                                self.searches.remove(&picker_key);
+                                self.mark_inventory_changed("Added a shared profile item");
+                            }
+                            Err(error) => self.set_status(error, true),
+                        }
+                    }
+                }
+                draw_responsive_cards(ui, &group.items, PROFILE_CARD_MIN_WIDTH, |ui, snapshot| {
+                    let action = self.draw_profile_item_card(ui, snapshot, editable, &bucket_usage);
+                    if pending.is_none()
+                        && let Some(action) = action
+                    {
+                        pending = Some((snapshot.location, action));
+                    }
+                });
+            });
+        }
+        if let Some((location, action)) = pending {
+            let structural = matches!(action, ProfileItemAction::Remove);
+            match inventory::apply_profile_item_action(&mut self.document, location, action) {
+                Ok(()) => {
+                    self.mark_inventory_changed(if structural {
+                        "Removed a shared profile item"
+                    } else {
+                        "Updated a shared profile item"
+                    });
+                    if structural {
+                        self.searches.retain(|key, _| {
+                            key.starts_with("profile-items:add:")
+                                || !key.starts_with("profile-items:")
+                        });
+                    }
+                }
+                Err(error) => self.set_status(error.to_string(), true),
+            }
+        }
+    }
+
+    fn draw_profile_item_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &ProfileItemSnapshot,
+        editable: bool,
+        bucket_usage: &BucketUsage,
+    ) -> Option<ProfileItemAction> {
+        let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
+        let metadata = self
+            .manifest
+            .inventory_metadata(u64::from(snapshot.definition_hash))
+            .copied();
+        let hash_text = format_hash(u64::from(snapshot.definition_hash));
+        let valid = resolved
+            .as_ref()
+            .is_some_and(|definition| definition.metadata.is_profile_items_candidate());
+        let current_bucket = metadata
+            .filter(|metadata| metadata.scope == InventoryScope::Profile)
+            .map(|metadata| metadata.native_bucket_id);
+        let replacing_unresolved =
+            metadata.is_none_or(|metadata| metadata.scope == InventoryScope::Unknown);
+        let quantity_max = metadata
+            .and_then(|metadata| metadata.max_stack_size)
+            .map_or(i64::from(i32::MAX), |maximum| {
+                i64::from(maximum.min(i32::MAX as u32))
+            })
+            .max(i64::from(snapshot.quantity));
+        let key = format!("profile-items:{}", snapshot.location.index);
+        let mut requested = None;
+        let mut remove_requested = false;
+
+        ui.push_id(("profile-item", snapshot.location.index), |ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let definition = resolved.as_ref().map_or(
+                    DefinitionSummary::Unknown { hash: &hash_text },
+                    |definition| DefinitionSummary::Known {
+                        name: &definition.name,
+                        hash: &hash_text,
+                    },
+                );
+                draw_item_header_with_trailing(
+                    ui,
+                    ItemHeader {
+                        label: None,
+                        definition,
+                        valid,
+                        invalid_message: "not a profile-scoped stackable definition",
+                    },
+                    |ui| {
+                        if ui
+                            .add_enabled(editable, egui::Button::new("Remove").small())
+                            .on_hover_text("Remove this shared item")
+                            .clicked()
+                        {
+                            remove_requested = true;
+                        }
+                    },
+                );
+                ui.add_enabled_ui(editable, |ui| {
+                    let picker_action = {
+                        let manifest = &self.manifest;
+                        let query = self.searches.entry(key.clone()).or_default();
+                        super::equipment::item_editor::draw_definition_picker(
+                            ui,
+                            ("profile-item-definition", snapshot.location.index),
+                            query,
+                            picker_height(),
+                            |query| DefinitionPickerChoices {
+                                definitions: profile_definition_choices(
+                                    manifest
+                                        .profile_item_candidates(query)
+                                        .filter(|definition| {
+                                            u32::try_from(definition.hash).is_ok()
+                                                && definition.metadata.max_stack_size.is_some_and(
+                                                    |maximum| maximum >= snapshot.quantity as u32,
+                                                )
+                                                && bucket_has_room(
+                                                    definition.metadata,
+                                                    bucket_usage,
+                                                    current_bucket,
+                                                    replacing_unresolved,
+                                                )
+                                        }),
+                                ),
+                                clear: None,
+                                empty_message: "No safe profile-item definitions match".to_owned(),
+                            },
+                        )
+                    };
+                    if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action
+                        && let Ok(hash) = u32::try_from(hash)
+                    {
+                        requested = Some(ProfileItemAction::SetDefinitionHash(hash));
+                        self.searches.insert(key.clone(), String::new());
+                    }
+
+                    ui.horizontal_wrapped(|ui| {
+                        for action in super::equipment::item_editor::draw_level_and_quantity(
+                            ui,
+                            ("profile-item-numeric", snapshot.location.index),
+                            NumericItemFields {
+                                level: None,
+                                quantity: Some(i64::from(snapshot.quantity)),
+                                quantity_max: Some(quantity_max),
+                            },
+                        ) {
+                            if let ItemEditorAction::SetQuantity { quantity } = action
+                                && let Ok(quantity) = i32::try_from(quantity)
+                            {
+                                requested = Some(ProfileItemAction::SetQuantity(quantity));
+                            }
+                        }
+                    });
+                });
+            });
+        });
+        if remove_requested {
+            requested = Some(ProfileItemAction::Remove);
+        }
+        requested
+    }
+
+    fn draw_character_inventory_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
+        self.draw_character_tabs(ui);
+        ui.add_space(4.0);
+
+        let character_index = self.selected_character;
+        let class_type = self
+            .characters()
+            .and_then(|characters| characters.get(character_index))
+            .and_then(|character| character.get("class"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(99);
+        let (items, inventory_error) =
+            match inventory::character_inventory(&self.document, character_index) {
+                Ok(items) => (items.unwrap_or_default(), None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+        let (equipped_items, equipment_error) =
+            match equipped_item_snapshots(&self.document, character_index) {
+                Ok(items) => (items, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+        let stored_count = items.len();
+        let equipped_count = equipped_items.len();
+        let editable = mode.can_mutate_character_inventory();
+        let equipment_editable = mode.can_mutate_equipment();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(format!("Character {}", character_index + 1));
+            ui.label(egui::RichText::new(format!(
+                "{stored_count} / {CHARACTER_INVENTORY_CAPACITY} stored · {equipped_count} equipped"
+            )).weak());
+        });
+        ui.add_enabled_ui(equipment_editable, |ui| self.draw_item_safety_controls(ui));
+
+        if !editable {
+            let message = if equipment_editable {
+                "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout items remain editable."
+            } else {
+                "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout editing is also disabled for this schema."
+            };
+            ui.label(egui::RichText::new(message).weak());
+        } else if stored_count >= CHARACTER_INVENTORY_CAPACITY {
+            ui.label(egui::RichText::new("This character inventory is full.").weak());
+        }
+        if let Some(error) = &inventory_error {
+            draw_inventory_source_error(ui, "Stored inventory", error);
+        }
+        if let Some(error) = &equipment_error {
+            draw_inventory_source_error(ui, "Equipped items", error);
+        }
+
+        let mut bucket_usage = self.inventory_bucket_usage(&items, character_index);
+        if inventory_error.is_some() || equipment_error.is_some() {
+            bucket_usage.occupancy_complete = false;
+        }
+        if bucket_usage.unresolved_count > 0 {
+            draw_unresolved_bucket_warning(ui);
+        }
+        ui.add_space(4.0);
+
+        let ui_identities = inventory_item_ui_identities(&items);
+        let mut entries = equipped_items
+            .into_iter()
+            .map(CharacterInventoryEntry::Equipped)
+            .collect::<Vec<_>>();
+        entries.extend(
+            items
+                .into_iter()
+                .zip(ui_identities)
+                .map(|(snapshot, ui_identity)| CharacterInventoryEntry::Stored {
+                    snapshot,
+                    ui_identity,
+                }),
+        );
+        let candidate_buckets = distinct_candidate_buckets(
+            self.manifest
+                .character_inventory_candidates("", class_type, self.show_dummy_items)
+                .map(|definition| *definition.metadata),
+        );
+        let mut groups = self.group_items_by_bucket(
+            entries,
+            CharacterInventoryEntry::definition_hash,
+            InventoryScope::Character,
+        );
+        add_candidate_buckets(&mut groups, candidate_buckets, InventoryScope::Character);
+        if groups.is_empty() {
+            ui.label(egui::RichText::new("No character inventory buckets are available.").weak());
+            return;
+        }
+
+        let mut pending = None;
+        egui::ScrollArea::vertical()
+            .id_salt(("character-inventory-buckets", character_index))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for group in groups {
+                    let title =
+                        bucket_header_label(&group, &bucket_usage, InventoryScope::Character);
+                    let picker_key = format!(
+                        "character-inventory:{character_index}:add:{}:{}",
+                        scope_id(group.key.scope),
+                        group.key.native_id
+                    );
+                    let array_has_room =
+                        inventory_error.is_none() && stored_count < CHARACTER_INVENTORY_CAPACITY;
+                    let bucket_has_room = group.addable
+                        && bucket_key_has_room(group.key, group.capacity, &bucket_usage);
+                    let can_add = editable
+                        && array_has_room
+                        && bucket_usage.occupancy_complete
+                        && bucket_has_room;
+                    let repaint_context = ui.ctx().clone();
+                    let mut toggle_header = false;
+                    let mut open_picker = false;
+                    let mut header =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id((
+                                "character-inventory-bucket",
+                                character_index,
+                                scope_id(group.key.scope),
+                                group.key.native_id,
+                            )),
+                            true,
+                        )
+                        .show_header(ui, |ui| {
+                            toggle_header = ui
+                                .add(
+                                    egui::Label::new(egui::RichText::new(&title).strong())
+                                        .sense(egui::Sense::click()),
+                                )
+                                .clicked();
+                            if group.addable {
+                                let response =
+                                    ui.add_enabled(can_add, egui::Button::new("+").small());
+                                let tooltip = bucket_add_tooltip(
+                                    can_add,
+                                    editable,
+                                    true,
+                                    array_has_room,
+                                    bucket_usage.occupancy_complete,
+                                    bucket_has_room,
+                                    &group.label,
+                                );
+                                let response = if can_add {
+                                    response.on_hover_text(tooltip)
+                                } else {
+                                    response.on_disabled_hover_text(tooltip)
+                                };
+                                open_picker = response.clicked();
+                            }
+                        });
+                    if toggle_header {
+                        header.toggle();
+                    }
+                    if open_picker {
+                        header.set_open(true);
+                        self.open_bucket_picker(
+                            &picker_key,
+                            &format!("character-inventory:{character_index}:add:"),
+                        );
+                        repaint_context.request_repaint();
+                    }
+                    header.body(|ui| {
+                        draw_bucket_details(ui, &group, &bucket_usage, InventoryScope::Character);
+                        if self.searches.contains_key(&picker_key) {
+                            let action = ui
+                                .add_enabled_ui(can_add, |ui| {
+                                    ui.label(egui::RichText::new("Add a stored item").strong());
+                                    let manifest = &self.manifest;
+                                    let show_dummy_items = self.show_dummy_items;
+                                    let request_open = take_bucket_picker_open_request(
+                                        &mut self.searches,
+                                        &picker_key,
+                                        ui.input(|input| input.pointer.any_click()),
+                                    );
+                                    let query = self.searches.entry(picker_key.clone()).or_default();
+                                    super::equipment::item_editor::draw_definition_picker_with_open_request(
+                                        ui,
+                                        (
+                                            "character-inventory-add",
+                                            character_index,
+                                            scope_id(group.key.scope),
+                                            group.key.native_id,
+                                        ),
+                                        query,
+                                        picker_height(),
+                                        request_open,
+                                        |query| DefinitionPickerChoices {
+                                            definitions: character_bucket_definition_choices(
+                                                manifest
+                                                    .character_inventory_candidates(
+                                                        query,
+                                                        class_type,
+                                                        show_dummy_items,
+                                                    )
+                                                    .filter(|definition| {
+                                                        definition.metadata.scope == group.key.scope
+                                                            && definition
+                                                                .metadata
+                                                                .native_bucket_id
+                                                                == group.key.native_id
+                                                    }),
+                                            ),
+                                            clear: None,
+                                            empty_message:
+                                                "No compatible definitions in this bucket match"
+                                                    .to_owned(),
+                                        },
+                                    )
+                                })
+                                .inner;
+                            if let Some(ItemEditorAction::SetDefinition { hash }) = action {
+                                let level = default_inventory_item_level(
+                                    &self.document,
+                                    character_index,
+                                    group.key.native_id,
+                                );
+                                match u32::try_from(hash)
+                                    .map_err(|_| {
+                                        "The selected inventory hash does not fit in 32 bits"
+                                            .to_owned()
+                                    })
+                                    .and_then(|hash| {
+                                        i32::try_from(level)
+                                            .map_err(|_| {
+                                                "Could not infer a valid inventory item level"
+                                                    .to_owned()
+                                            })
+                                            .and_then(|level| {
+                                                inventory::add_inventory_item(
+                                                    &mut self.document,
+                                                    character_index,
+                                                    NewInventoryItem::single(hash, level),
+                                                )
+                                                .map_err(|error| error.to_string())
+                                            })
+                                    }) {
+                                    Ok(_) => {
+                                        self.searches.remove(&picker_key);
+                                        self.mark_inventory_changed(
+                                            "Added an item to character inventory",
+                                        );
+                                    }
+                                    Err(error) => self.set_status(error, true),
+                                }
+                            }
+                        }
+                        draw_responsive_cards(
+                            ui,
+                            &group.items,
+                            CHARACTER_CARD_MIN_WIDTH,
+                            |ui, entry| match entry {
+                                CharacterInventoryEntry::Equipped(snapshot) => {
+                                    self.draw_equipped_item_card(
+                                        ui,
+                                        character_index,
+                                        snapshot,
+                                        class_type,
+                                        equipment_editable,
+                                    );
+                                }
+                                CharacterInventoryEntry::Stored {
+                                    snapshot,
+                                    ui_identity,
+                                } => {
+                                    let actions = self.draw_inventory_item_card(
+                                        ui,
+                                        snapshot,
+                                        *ui_identity,
+                                        editable,
+                                        class_type,
+                                        &bucket_usage,
+                                    );
+                                    if pending.is_none() && !actions.is_empty() {
+                                        pending = Some((snapshot.clone(), *ui_identity, actions));
+                                    }
+                                }
+                            },
+                        );
+                    });
+                }
+            });
+        if let Some((snapshot, ui_identity, actions)) = pending {
+            let structural = actions
+                .iter()
+                .any(|action| matches!(action, InventoryItemAction::Remove));
+            let definition_changed = actions
+                .iter()
+                .any(|action| matches!(action, InventoryItemAction::SetDefinitionHash(_)));
+            match apply_inventory_actions_atomic(&mut self.document, snapshot.location, actions) {
+                Ok(()) => {
+                    self.mark_inventory_changed(if structural {
+                        "Removed an item from character inventory"
+                    } else {
+                        "Updated a character inventory item"
+                    });
+                    if structural || definition_changed {
+                        self.clear_inventory_item_picker_state(ui_identity, structural);
+                    }
+                }
+                Err(error) => self.set_status(error, true),
+            }
+        }
+    }
+
+    fn draw_equipped_item_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        character_index: usize,
+        snapshot: &EquippedItemSnapshot,
+        class_type: u64,
+        editable: bool,
+    ) {
+        let label = format!("Equipped · {}", snapshot.slot_label);
+        self.draw_equipment_slot_card(
+            ui,
+            character_index,
+            EquipmentSlotCard {
+                id_scope: "character-inventory-equipped",
+                slot: snapshot.slot,
+                label: &label,
+                bucket_hash: snapshot.bucket_hash,
+                class_type,
+                editable,
+                header_fill: Some(equipped_header_fill(ui)),
+                snapshot: Some(snapshot),
+            },
+        );
+    }
+
+    fn draw_inventory_item_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &InventoryItemSnapshot,
+        ui_identity: InventoryItemUiId,
+        editable: bool,
+        class_type: u64,
+        bucket_usage: &BucketUsage,
+    ) -> Vec<InventoryItemAction> {
+        let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
+        let metadata = self
+            .manifest
+            .inventory_metadata(u64::from(snapshot.definition_hash))
+            .copied();
+        let hash_text = format_hash(u64::from(snapshot.definition_hash));
+        let soid_text = format!("0x{:016X}", snapshot.instance_soid);
+        let current_bucket = metadata
+            .filter(|metadata| metadata.scope == InventoryScope::Character)
+            .map(|metadata| metadata.native_bucket_id);
+        let replacing_unresolved =
+            metadata.is_none_or(|metadata| metadata.scope == InventoryScope::Unknown);
+        let valid = resolved.as_ref().is_some_and(|definition| {
+            definition.metadata.is_character_inventory_candidate()
+                && definition
+                    .item
+                    .as_ref()
+                    .is_some_and(|item| item.class_type == 3 || item.class_type == class_type)
+        });
+        let key = inventory_item_state_key(ui_identity);
+        let mut requested = Vec::new();
+        let mut remove_requested = false;
+
+        ui.push_id(
+            ("character-inventory-item", ui_identity),
+            |ui| {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let definition = resolved.as_ref().map_or(
+                        DefinitionSummary::Unknown { hash: &hash_text },
+                        |definition| DefinitionSummary::Known {
+                            name: &definition.name,
+                            hash: &hash_text,
+                        },
+                    );
+                    draw_item_header_with_trailing(
+                        ui,
+                        ItemHeader {
+                            label: None,
+                            definition,
+                            valid,
+                            invalid_message: "not valid for this character inventory",
+                        },
+                        |ui| {
+                            if ui
+                                .add_enabled(editable, egui::Button::new("Remove").small())
+                                .on_hover_text("Remove this stored item")
+                                .clicked()
+                            {
+                                remove_requested = true;
+                            }
+                        },
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Instance SOID");
+                        ui.label(egui::RichText::new(&soid_text).monospace().weak());
+                    });
+
+                    ui.add_enabled_ui(editable, |ui| {
+                        let picker_action = {
+                            let manifest = &self.manifest;
+                            let show_dummy_items = self.show_dummy_items;
+                            let query = self.searches.entry(key.clone()).or_default();
+                            super::equipment::item_editor::draw_definition_picker(
+                                ui,
+                                ("character-inventory-definition", ui_identity),
+                                query,
+                                picker_height(),
+                                |query| DefinitionPickerChoices {
+                                    definitions: character_definition_choices(
+                                        manifest
+                                            .character_inventory_candidates(
+                                                query,
+                                                class_type,
+                                                show_dummy_items,
+                                            )
+                                            .filter(|definition| {
+                                                bucket_has_room(
+                                                    definition.metadata,
+                                                    bucket_usage,
+                                                    current_bucket,
+                                                    replacing_unresolved,
+                                                )
+                                            }),
+                                    ),
+                                    clear: None,
+                                    empty_message:
+                                        "No compatible definitions with remaining bucket space found"
+                                            .to_owned(),
+                                },
+                            )
+                        };
+                        if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action
+                            && let Ok(hash) = u32::try_from(hash)
+                        {
+                            requested.push(InventoryItemAction::SetDefinitionHash(hash));
+                            requested.push(InventoryItemAction::SetPlugs(
+                                ItemPlugs::NativeDefaults,
+                            ));
+                            if let Some(maximum) = self
+                                .manifest
+                                .inventory_metadata(u64::from(hash))
+                                .and_then(|metadata| metadata.max_stack_size)
+                                .map(|maximum| maximum.min(i32::MAX as u32) as i32)
+                                && snapshot.quantity > maximum
+                            {
+                                requested.push(InventoryItemAction::SetQuantity(maximum.max(1)));
+                            }
+                            self.searches.insert(key.clone(), String::new());
+                        }
+
+                        ui.horizontal_wrapped(|ui| {
+                            for action in super::equipment::item_editor::draw_level_and_quantity(
+                                ui,
+                                ("character-inventory-numeric", ui_identity),
+                                NumericItemFields {
+                                    level: Some(i64::from(snapshot.level)),
+                                    quantity: None,
+                                    quantity_max: None,
+                                },
+                            ) {
+                                if let ItemEditorAction::SetLevel { level } = action
+                                    && let Ok(level) = i32::try_from(level)
+                                {
+                                    requested.push(InventoryItemAction::SetLevel(level));
+                                }
+                            }
+                            ui.add_space(8.0);
+                            let flags = snapshot.flags.unwrap_or_default();
+                            let mut locked = flags & INVENTORY_FLAG_LOCKED != 0;
+                            if ui.checkbox(&mut locked, "Locked").changed() {
+                                requested.push(InventoryItemAction::SetFlags(
+                                    set_inventory_locked_flag(snapshot.flags, locked),
+                                ));
+                            }
+                        });
+
+                    });
+                    if !requested
+                        .iter()
+                        .any(|action| matches!(action, InventoryItemAction::Remove))
+                    {
+                        if let Some(item) = resolved
+                            .as_ref()
+                            .and_then(|definition| definition.item.as_ref())
+                        {
+                            self.draw_inventory_plugs(
+                                ui,
+                                snapshot,
+                                ui_identity,
+                                item,
+                                editable,
+                                &mut requested,
+                            );
+                        } else if matches!(snapshot.plugs, ItemPlugs::Authored(ref plugs) if !plugs.is_empty())
+                        {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Plugs are preserved but cannot be guided without an installed item definition.",
+                                )
+                                .weak(),
+                            );
+                        }
+                    }
+                });
+            },
+        );
+        if remove_requested {
+            requested.clear();
+            requested.push(InventoryItemAction::Remove);
+        }
+        requested
+    }
+
+    fn draw_inventory_plugs(
+        &mut self,
+        ui: &mut egui::Ui,
+        inventory: &InventoryItemSnapshot,
+        ui_identity: InventoryItemUiId,
+        item: &ItemDef,
+        editable: bool,
+        requested: &mut Vec<InventoryItemAction>,
+    ) {
+        let (current_plugs, native_defaults) = displayed_inventory_plugs(inventory, item);
+        if item.sockets.is_empty() && current_plugs.is_empty() {
+            return;
+        }
+        let socket_count = item
+            .sockets
+            .len()
+            .max(current_plugs.len())
+            .min(inventory::MAX_ITEM_PLUGS);
+        let title = if native_defaults {
+            format!("Plugs ({socket_count}, native defaults)")
+        } else {
+            format!("Plugs ({socket_count})")
+        };
+        egui::CollapsingHeader::new(title)
+            .id_salt(("character-inventory-plugs", ui_identity))
+            .show(ui, |ui| {
+                for socket_index in 0..socket_count {
+                    let current_hash = current_plugs
+                        .get(socket_index)
+                        .copied()
+                        .flatten()
+                        .map(u64::from);
+                    let native_default = native_plug_default(&item.default_plugs, socket_index);
+                    let allowed = item
+                        .sockets
+                        .get(socket_index)
+                        .map(|socket| match self.plug_selection_mode {
+                            PlugSelectionMode::Supported => self.manifest.socket_options(socket),
+                            PlugSelectionMode::MatchingSocketType => {
+                                self.manifest.socket_type_options(socket.socket_type)
+                            }
+                            PlugSelectionMode::AnyPlug => self.manifest.all_plug_options(),
+                        })
+                        .unwrap_or_default();
+                    let show_types = self.plug_selection_mode == PlugSelectionMode::AnyPlug;
+                    let choices = allowed
+                        .iter()
+                        .map(|hash| PlugChoice {
+                            hash: *hash,
+                            label: self.manifest.plug_label(*hash),
+                            type_name: if show_types {
+                                self.manifest
+                                    .plug_type_name(*hash)
+                                    .unwrap_or("Unknown type")
+                                    .to_owned()
+                            } else {
+                                String::new()
+                            },
+                        })
+                        .collect::<Vec<_>>();
+                    let searchable = choices.len() > 12;
+                    let query_key = format!(
+                        "{}:plug:{socket_index}",
+                        inventory_item_state_key(ui_identity)
+                    );
+                    let mut query = self
+                        .plug_searches
+                        .get(&query_key)
+                        .cloned()
+                        .unwrap_or_default();
+                    let socket_label = item.sockets.get(socket_index).map_or_else(
+                        || format!("Socket {}", socket_index + 1),
+                        |socket| socket.display_label(socket_index),
+                    );
+                    let snapshot = PlugPickerSnapshot {
+                        socket_index,
+                        socket_label,
+                        current_hash,
+                        current_label: current_hash.map_or_else(
+                            || "None".to_owned(),
+                            |hash| self.manifest.plug_label(hash),
+                        ),
+                        native_default,
+                        native_default_label: match native_default {
+                            Some(NativePlugDefault::Plug(hash)) => {
+                                Some(self.manifest.plug_label(hash))
+                            }
+                            _ => None,
+                        },
+                        choices,
+                        show_types,
+                    };
+                    let action = ui
+                        .add_enabled_ui(editable, |ui| {
+                            super::equipment::item_editor::draw_plug_picker(
+                                ui,
+                                ("character-inventory-plug", ui_identity, socket_index),
+                                &mut query,
+                                &snapshot,
+                                PickerHeight {
+                                    min: PLUG_PICKER_MIN_HEIGHT,
+                                    max: PLUG_PICKER_MAX_HEIGHT,
+                                },
+                            )
+                        })
+                        .inner;
+                    if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
+                        let mut plugs = current_plugs.clone();
+                        while plugs.len() <= socket_index {
+                            plugs.push(None);
+                        }
+                        plugs[socket_index] = hash.and_then(|hash| u32::try_from(hash).ok());
+                        requested.push(InventoryItemAction::SetPlugs(ItemPlugs::Authored(plugs)));
+                    }
+                    if searchable {
+                        self.plug_searches.insert(query_key, query);
+                    } else {
+                        self.plug_searches.remove(&query_key);
+                    }
+                }
+            });
+    }
+
+    fn inventory_bucket_usage(
+        &self,
+        items: &[InventoryItemSnapshot],
+        character_index: usize,
+    ) -> BucketUsage {
+        let mut counts = HashMap::new();
+        let mut unresolved_count = 0;
+        let character = self
+            .characters()
+            .and_then(|characters| characters.get(character_index));
+        let mut occupancy_complete = character.is_some();
+        let equipment_value = character.and_then(|character| character.get("equipment"));
+        if let Some(equipment) = equipment_value.and_then(serde_json::Value::as_object) {
+            if equipment.keys().any(|slot| {
+                !super::SLOTS
+                    .iter()
+                    .any(|(known_slot, _, _)| *known_slot == slot)
+            }) {
+                occupancy_complete = false;
+            }
+            for equipped in equipment.values().filter(|value| !value.is_null()) {
+                let metadata = equipped
+                    .get("definition_hash")
+                    .and_then(parse_unsigned_value)
+                    .and_then(|hash| self.manifest.inventory_metadata(hash));
+                match metadata {
+                    Some(metadata) if metadata.scope == InventoryScope::Character => {
+                        *counts.entry(metadata.native_bucket_id).or_default() += 1;
+                    }
+                    Some(metadata) if metadata.scope != InventoryScope::Unknown => {
+                        unresolved_count += 1;
+                        occupancy_complete = false;
+                    }
+                    Some(_) | None => unresolved_count += 1,
+                }
+            }
+        } else if equipment_value.is_some() {
+            occupancy_complete = false;
+        }
+
+        for item in items {
+            match self
+                .manifest
+                .inventory_metadata(u64::from(item.definition_hash))
+            {
+                Some(metadata) if metadata.scope == InventoryScope::Character => {
+                    *counts.entry(metadata.native_bucket_id).or_default() += 1;
+                }
+                Some(metadata) if metadata.scope != InventoryScope::Unknown => {
+                    unresolved_count += 1;
+                    occupancy_complete = false;
+                }
+                Some(_) | None => unresolved_count += 1,
+            }
+        }
+        BucketUsage {
+            counts,
+            unresolved_count,
+            occupancy_complete,
+        }
+    }
+
+    fn profile_bucket_usage(&self, items: &[ProfileItemSnapshot]) -> BucketUsage {
+        let mut counts = HashMap::new();
+        let mut unresolved_count = 0;
+        let mut occupancy_complete = true;
+        for item in items {
+            match self
+                .manifest
+                .inventory_metadata(u64::from(item.definition_hash))
+            {
+                Some(metadata) if metadata.scope == InventoryScope::Profile => {
+                    *counts.entry(metadata.native_bucket_id).or_default() += 1;
+                }
+                Some(metadata) if metadata.scope != InventoryScope::Unknown => {
+                    unresolved_count += 1;
+                    occupancy_complete = false;
+                }
+                Some(_) | None => unresolved_count += 1,
+            }
+        }
+        BucketUsage {
+            counts,
+            unresolved_count,
+            occupancy_complete,
+        }
+    }
+
+    fn resolve_inventory_definition(&self, hash: u32) -> Option<ResolvedDefinition> {
+        self.manifest
+            .inventory_definition(u64::from(hash))
+            .map(|definition| ResolvedDefinition {
+                name: definition.name.to_owned(),
+                metadata: *definition.metadata,
+                item: definition.item.cloned(),
+            })
+    }
+
+    fn group_items_by_bucket<T>(
+        &self,
+        items: Vec<T>,
+        definition_hash: impl Fn(&T) -> Option<u64>,
+        expected_scope: InventoryScope,
+    ) -> Vec<ItemBucket<T>> {
+        let mut groups = Vec::<ItemBucket<T>>::new();
+        for item in items {
+            let metadata = self
+                .manifest
+                .inventory_metadata(definition_hash(&item).unwrap_or_default())
+                .copied()
+                .unwrap_or_default();
+            let key = BucketKey {
+                scope: metadata.scope,
+                native_id: metadata.native_bucket_id,
+            };
+            if let Some(group) = groups.iter_mut().find(|group| group.key == key) {
+                group.items.push(item);
+            } else {
+                groups.push(ItemBucket {
+                    key,
+                    label: metadata.bucket_label(),
+                    capacity: metadata.authored_row_capacity(),
+                    addable: false,
+                    items: vec![item],
+                });
+            }
+        }
+        groups.sort_by_cached_key(|group| {
+            (
+                page_bucket_display_rank(expected_scope, group.key),
+                group.label.to_lowercase(),
+                group.key.native_id,
+            )
+        });
+        groups
+    }
+
+    fn open_bucket_picker(&mut self, key: &str, prefix: &str) {
+        self.searches
+            .retain(|stored, _| !stored.starts_with(prefix));
+        self.searches.insert(key.to_owned(), String::new());
+        self.searches
+            .insert(bucket_picker_open_request_key(key), String::new());
+    }
+
+    fn clear_inventory_item_picker_state(&mut self, ui_identity: InventoryItemUiId, removed: bool) {
+        let key = inventory_item_state_key(ui_identity);
+        if removed {
+            self.searches.remove(&key);
+        }
+        let plug_prefix = format!("{key}:plug:");
+        self.plug_searches
+            .retain(|stored, _| !stored.starts_with(&plug_prefix));
+    }
+
+    fn mark_inventory_changed(&mut self, status: &str) {
+        self.dirty = true;
+        self.set_status(format!("{status}; click Save to write it"), false);
+    }
+}
+
+fn distinct_candidate_buckets(
+    metadata: impl IntoIterator<Item = InventoryMetadata>,
+) -> Vec<InventoryMetadata> {
+    let mut buckets = Vec::new();
+    for metadata in metadata {
+        if !buckets.iter().any(|stored: &InventoryMetadata| {
+            stored.scope == metadata.scope && stored.native_bucket_id == metadata.native_bucket_id
+        }) {
+            buckets.push(metadata);
+        }
+    }
+    buckets
+}
+
+fn bucket_picker_open_request_key(picker_key: &str) -> String {
+    format!("{picker_key}:request-open")
+}
+
+fn take_bucket_picker_open_request(
+    searches: &mut HashMap<String, String>,
+    picker_key: &str,
+    pointer_clicked: bool,
+) -> bool {
+    if pointer_clicked {
+        return false;
+    }
+    searches
+        .remove(&bucket_picker_open_request_key(picker_key))
+        .is_some()
+}
+
+fn add_candidate_buckets<T>(
+    groups: &mut Vec<ItemBucket<T>>,
+    candidates: impl IntoIterator<Item = InventoryMetadata>,
+    expected_scope: InventoryScope,
+) {
+    for metadata in candidates {
+        let key = BucketKey {
+            scope: metadata.scope,
+            native_id: metadata.native_bucket_id,
+        };
+        if let Some(group) = groups.iter_mut().find(|group| group.key == key) {
+            group.addable = true;
+            group.capacity = metadata.authored_row_capacity();
+            group.label = metadata.bucket_label();
+        } else {
+            groups.push(ItemBucket {
+                key,
+                label: metadata.bucket_label(),
+                capacity: metadata.authored_row_capacity(),
+                addable: true,
+                items: Vec::new(),
+            });
+        }
+    }
+    groups.sort_by_cached_key(|group| {
+        (
+            page_bucket_display_rank(expected_scope, group.key),
+            group.label.to_lowercase(),
+            group.key.native_id,
+        )
+    });
+}
+
+fn bucket_header_label<T>(
+    group: &ItemBucket<T>,
+    usage: &BucketUsage,
+    expected_scope: InventoryScope,
+) -> String {
+    if group.key.scope == expected_scope
+        && let Some(capacity) = group.capacity
+    {
+        let occupied = usage
+            .counts
+            .get(&group.key.native_id)
+            .copied()
+            .unwrap_or_default();
+        return format!("{} · {occupied} / {capacity}", group.label);
+    }
+    format!("{} · {}", group.label, item_count_label(group.items.len()))
+}
+
+fn bucket_key_has_room(key: BucketKey, capacity: Option<u16>, usage: &BucketUsage) -> bool {
+    capacity.is_some_and(|capacity| {
+        let occupied = usage
+            .counts
+            .get(&key.native_id)
+            .copied()
+            .unwrap_or_default();
+        occupied.saturating_add(usage.unresolved_count) < usize::from(capacity)
+    })
+}
+
+fn bucket_add_tooltip(
+    can_add: bool,
+    editable: bool,
+    target_ready: bool,
+    array_has_room: bool,
+    occupancy_complete: bool,
+    bucket_has_room: bool,
+    bucket_label: &str,
+) -> String {
+    if can_add {
+        return format!("Add an item to {bucket_label}");
+    }
+    if !editable {
+        "Adding items is disabled for this schema".to_owned()
+    } else if !target_ready {
+        "The inventory target is missing or invalid".to_owned()
+    } else if !array_has_room {
+        "The inventory array is full".to_owned()
+    } else if !occupancy_complete {
+        "Bucket occupancy cannot be established until malformed or unsupported rows are repaired"
+            .to_owned()
+    } else if !bucket_has_room {
+        format!("{bucket_label} is at capacity")
+    } else {
+        "This bucket cannot accept another item".to_owned()
+    }
+}
+
+fn default_inventory_item_level(
+    document: &serde_json::Value,
+    character_index: usize,
+    native_bucket_id: u8,
+) -> i64 {
+    if native_bucket_id <= 7 {
+        inferred_item_level(document, character_index)
+    } else {
+        0
+    }
+}
+
+fn equipped_header_fill(ui: &egui::Ui) -> egui::Color32 {
+    let base = ui.visuals().panel_fill;
+    let accent = egui::Color32::from_rgb(255, 210, 72);
+    blend_color(base, accent, 0.16)
+}
+
+fn blend_color(base: egui::Color32, accent: egui::Color32, amount: f32) -> egui::Color32 {
+    let mix = |base: u8, accent: u8| {
+        (f32::from(base) + (f32::from(accent) - f32::from(base)) * amount).round() as u8
+    };
+    egui::Color32::from_rgba_premultiplied(
+        mix(base.r(), accent.r()),
+        mix(base.g(), accent.g()),
+        mix(base.b(), accent.b()),
+        base.a(),
+    )
+}
+
+fn picker_height() -> PickerHeight {
+    PickerHeight {
+        min: ITEM_PICKER_MIN_HEIGHT,
+        max: ITEM_PICKER_MAX_HEIGHT,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InventoryPageKind {
+    Profile,
+    Character,
+}
+
+fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: InventoryPageKind) {
+    match mode {
+        SchemaMode::MissingOrInvalid => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "The settings schema is missing or invalid. Existing items are shown read-only.",
+            );
+        }
+        SchemaMode::Unsupported(version) => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "Schema {version} predates the schemas supported by this Sundial release. Existing items are shown read-only."
+                ),
+            );
+        }
+        SchemaMode::PreInventory(version) if matches!(page, InventoryPageKind::Character) => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Schema {version} supports profile inventory and equipped loadouts, but stored character inventory requires schema 6. Stored rows are never created or rewritten here."
+                ))
+                .weak(),
+            );
+        }
+        SchemaMode::PreInventory(_) | SchemaMode::InventoryV6 => {}
+        SchemaMode::Future(version) => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "Schema {version} is newer than this Sundial release. Existing items are shown read-only and are not rewritten."
+                ),
+            );
+        }
+    }
+
+    let editable = !mode.is_read_only()
+        && match page {
+            InventoryPageKind::Profile => mode.can_mutate_profile_items(),
+            InventoryPageKind::Character => {
+                mode.can_mutate_character_inventory() || mode.can_mutate_equipment()
+            }
+        };
+    if !editable {
+        ui.label(
+            egui::RichText::new(
+                "Guided controls are disabled; All settings (JSON) remains available for inspection.",
+            )
+            .weak(),
+        );
+    }
+}
+
+fn profile_definition_choices<'a>(
+    definitions: impl IntoIterator<Item = InventoryDefinition<'a>>,
+) -> Vec<DefinitionChoice> {
+    grouped_definition_choices(
+        definitions,
+        |key| profile_bucket_rank(key.native_id),
+        |definitions| {
+            definitions.sort_by_cached_key(|definition| {
+                (
+                    profile_name_priority(*definition),
+                    Reverse(definition.metadata.max_stack_size),
+                    definition.name.to_lowercase(),
+                    definition.hash,
+                )
+            });
+        },
+    )
+}
+
+fn profile_bucket_definition_choices<'a>(
+    definitions: impl IntoIterator<Item = InventoryDefinition<'a>>,
+) -> Vec<DefinitionChoice> {
+    let mut definitions = definitions.into_iter().collect::<Vec<_>>();
+    definitions.sort_by_cached_key(|definition| {
+        (
+            profile_name_priority(*definition),
+            Reverse(definition.metadata.max_stack_size),
+            definition.name.to_lowercase(),
+            definition.hash,
+        )
+    });
+    definitions
+        .into_iter()
+        .map(definition_choice_without_group)
+        .collect()
+}
+
+fn character_definition_choices<'a>(
+    definitions: impl IntoIterator<Item = InventoryDefinition<'a>>,
+) -> Vec<DefinitionChoice> {
+    grouped_definition_choices(
+        definitions,
+        |key| character_bucket_rank(key.native_id),
+        |definitions| {
+            definitions
+                .sort_by_cached_key(|definition| (definition.name.to_lowercase(), definition.hash));
+        },
+    )
+}
+
+fn character_bucket_definition_choices<'a>(
+    definitions: impl IntoIterator<Item = InventoryDefinition<'a>>,
+) -> Vec<DefinitionChoice> {
+    let mut definitions = definitions.into_iter().collect::<Vec<_>>();
+    definitions.sort_by_cached_key(|definition| (definition.name.to_lowercase(), definition.hash));
+    definitions
+        .into_iter()
+        .map(definition_choice_without_group)
+        .collect()
+}
+
+fn grouped_definition_choices<'a>(
+    definitions: impl IntoIterator<Item = InventoryDefinition<'a>>,
+    bucket_rank: impl Fn(BucketKey) -> u16,
+    mut sort_definitions: impl FnMut(&mut Vec<InventoryDefinition<'a>>),
+) -> Vec<DefinitionChoice> {
+    let mut buckets = Vec::<(BucketKey, String, Vec<InventoryDefinition<'a>>)>::new();
+    for definition in definitions {
+        let key = BucketKey {
+            scope: definition.metadata.scope,
+            native_id: definition.metadata.native_bucket_id,
+        };
+        if let Some((_, _, items)) = buckets.iter_mut().find(|(stored, _, _)| *stored == key) {
+            items.push(definition);
+        } else {
+            buckets.push((key, definition.metadata.bucket_label(), vec![definition]));
+        }
+    }
+
+    for (_, _, definitions) in &mut buckets {
+        sort_definitions(definitions);
+    }
+    buckets.sort_by_cached_key(|(key, label, _)| {
+        (bucket_rank(*key), label.to_lowercase(), key.native_id)
+    });
+
+    buckets
+        .into_iter()
+        .flat_map(|(_, group, definitions)| {
+            definitions
+                .into_iter()
+                .map(move |definition| definition_choice(definition, group.clone()))
+        })
+        .collect()
+}
+
+fn definition_choice_without_group(definition: InventoryDefinition<'_>) -> DefinitionChoice {
+    DefinitionChoice {
+        hash: definition.hash,
+        label: definition.label(),
+        group: None,
+    }
+}
+
+fn definition_choice(definition: InventoryDefinition<'_>, group: String) -> DefinitionChoice {
+    DefinitionChoice {
+        hash: definition.hash,
+        label: definition.label(),
+        group: Some(group),
+    }
+}
+
+const fn profile_bucket_rank(bucket: u8) -> u16 {
+    match bucket {
+        21 => 0, // Glimmer
+        22 => 1, // Legendary Shards
+        24 => 2, // Bright Dust
+        15 => 3, // Consumables and materials
+        23 => 4, // Silver
+        14 => 5, // Shaders
+        13 => 6, // Modifications
+        42 => 7, // General profile items
+        _ => 8,
+    }
+}
+
+const fn character_bucket_rank(bucket: u8) -> u16 {
+    match bucket {
+        0 => 0,   // Kinetic weapons
+        1 => 1,   // Energy weapons
+        2 => 2,   // Power weapons
+        3 => 3,   // Helmets
+        4 => 4,   // Gauntlets
+        5 => 5,   // Chest armor
+        6 => 6,   // Leg armor
+        7 => 7,   // Class items
+        8 => 8,   // Ghost shells
+        9 => 9,   // Vehicles
+        10 => 10, // Ships
+        16 => 11, // Subclasses
+        17 => 12, // Clan banners
+        27 => 13, // Emblems
+        41 => 14, // Emotes
+        47 => 15, // Finishers
+        49 => 16, // Seasonal artifacts
+        _ => 100 + bucket as u16,
+    }
+}
+
+fn page_bucket_display_rank(expected_scope: InventoryScope, key: BucketKey) -> u16 {
+    if key.scope == expected_scope {
+        return match expected_scope {
+            InventoryScope::Character => character_bucket_rank(key.native_id),
+            InventoryScope::Profile => profile_bucket_rank(key.native_id),
+            InventoryScope::SmallProfile => key.native_id as u16,
+            InventoryScope::Unknown => u16::MAX,
+        };
+    }
+    match key.scope {
+        InventoryScope::Unknown => u16::MAX,
+        _ => 10_000 + u16::from(scope_id(key.scope)) * 256 + key.native_id as u16,
+    }
+}
+
+fn profile_name_priority(definition: InventoryDefinition<'_>) -> u8 {
+    let label = format!("{} {}", definition.name, definition.type_name).to_lowercase();
+    if [
+        "currency",
+        "material",
+        "consumable",
+        "token",
+        "shader",
+        "ornament",
+        "mod",
+    ]
+    .iter()
+    .any(|term| label.contains(term))
+    {
+        0
+    } else {
+        1
+    }
+}
+
+fn draw_responsive_cards<T>(
+    ui: &mut egui::Ui,
+    items: &[T],
+    minimum_card_width: f32,
+    mut draw: impl FnMut(&mut egui::Ui, &T),
+) {
+    let two_column_width = minimum_card_width * 2.0 + ui.spacing().item_spacing.x;
+    let column_count = usize::from(ui.available_width() >= two_column_width) + 1;
+    ui.columns(column_count, |columns| {
+        let mut counts = vec![0_usize; column_count];
+        for (index, item) in items.iter().enumerate() {
+            let column = index % column_count;
+            if counts[column] != 0 {
+                columns[column].add_space(3.0);
+            }
+            draw(&mut columns[column], item);
+            counts[column] += 1;
+        }
+    });
+}
+
+fn item_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 item".to_owned()
+    } else {
+        format!("{count} items")
+    }
+}
+
+const fn scope_id(scope: InventoryScope) -> u8 {
+    match scope {
+        InventoryScope::Unknown => 0,
+        InventoryScope::Character => 1,
+        InventoryScope::Profile => 2,
+        InventoryScope::SmallProfile => 3,
+    }
+}
+
+fn draw_bucket_details<T>(
+    ui: &mut egui::Ui,
+    group: &ItemBucket<T>,
+    _usage: &BucketUsage,
+    expected_scope: InventoryScope,
+) {
+    if group.key.scope == InventoryScope::Unknown {
+        ui.label(
+            egui::RichText::new(
+                "No installed bucket metadata is available; these rows remain in their original order.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    if group.key.scope != expected_scope {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!(
+                "{} scope · native bucket {} · wrong scope for this page, so this row is not counted toward valid bucket occupancy",
+                group.key.scope.label(),
+                group.key.native_id
+            ),
+        );
+    }
+}
+
+fn inventory_item_ui_identities(items: &[InventoryItemSnapshot]) -> Vec<InventoryItemUiId> {
+    let mut totals = HashMap::<u64, usize>::new();
+    for item in items {
+        *totals.entry(item.instance_soid).or_default() += 1;
+    }
+    let mut seen = HashMap::<u64, usize>::new();
+    items
+        .iter()
+        .map(|item| {
+            let duplicate_ordinal = (totals[&item.instance_soid] > 1).then(|| {
+                let ordinal = seen.entry(item.instance_soid).or_default();
+                let current = *ordinal;
+                *ordinal += 1;
+                current
+            });
+            InventoryItemUiId {
+                character_index: item.location.character_index,
+                instance_soid: item.instance_soid,
+                duplicate_ordinal,
+            }
+        })
+        .collect()
+}
+
+fn inventory_item_state_key(identity: InventoryItemUiId) -> String {
+    let duplicate = identity
+        .duplicate_ordinal
+        .map_or_else(String::new, |ordinal| format!(":duplicate-{ordinal}"));
+    format!(
+        "character-inventory:{}:{}{}",
+        identity.character_index, identity.instance_soid, duplicate
+    )
+}
+
+fn draw_section_error(ui: &mut egui::Ui, error: &str) {
+    ui.colored_label(ui.visuals().error_fg_color, error);
+    ui.label(
+        egui::RichText::new(
+            "This section was left untouched. Repair it in All settings (JSON) before using guided controls.",
+        )
+        .weak(),
+    );
+}
+
+fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error: &str) {
+    ui.colored_label(
+        ui.visuals().error_fg_color,
+        format!("{source} could not be read: {error}"),
+    );
+    ui.label(
+        egui::RichText::new(
+            "The other inventory source remains visible, but additions are disabled until this is repaired in All settings (JSON).",
+        )
+        .weak(),
+    );
+}
+
+fn draw_unresolved_bucket_warning(ui: &mut egui::Ui) {
+    ui.colored_label(
+        ui.visuals().warn_fg_color,
+        "At least one existing definition has no known bucket. Unknown rows are conservatively counted against each candidate bucket, so some additions or cross-bucket replacements may be hidden.",
+    );
+}
+
+fn bucket_has_room(
+    metadata: &InventoryMetadata,
+    usage: &BucketUsage,
+    current_bucket: Option<u8>,
+    replacing_unresolved: bool,
+) -> bool {
+    if current_bucket == Some(metadata.native_bucket_id) {
+        return true;
+    }
+    metadata.authored_row_capacity().is_some_and(|capacity| {
+        let known = usage
+            .counts
+            .get(&metadata.native_bucket_id)
+            .copied()
+            .unwrap_or_default();
+        let unresolved = usage
+            .unresolved_count
+            .saturating_sub(usize::from(replacing_unresolved));
+        known.saturating_add(unresolved) < usize::from(capacity)
+    })
+}
+
+fn displayed_inventory_plugs(
+    inventory: &InventoryItemSnapshot,
+    item: &ItemDef,
+) -> (Vec<Option<u32>>, bool) {
+    match &inventory.plugs {
+        ItemPlugs::NativeDefaults => (
+            item.default_plugs
+                .iter()
+                .map(|hash| {
+                    hash.as_deref()
+                        .and_then(parse_hash)
+                        .and_then(|hash| u32::try_from(hash).ok())
+                })
+                .collect(),
+            true,
+        ),
+        ItemPlugs::Authored(plugs) => (plugs.clone(), false),
+    }
+}
+
+fn apply_inventory_actions_atomic(
+    document: &mut serde_json::Value,
+    location: InventoryItemLocation,
+    actions: Vec<InventoryItemAction>,
+) -> Result<(), String> {
+    let mut candidate = document.clone();
+    for action in actions {
+        inventory::apply_inventory_item_action(&mut candidate, location, action)
+            .map_err(|error| error.to_string())?;
+    }
+    *document = candidate;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::ItemStackability;
+    use serde_json::json;
+
+    #[test]
+    fn profile_browse_keeps_all_results_across_named_buckets() {
+        let modifications = InventoryMetadata {
+            scope: InventoryScope::Profile,
+            native_bucket_id: 13,
+            stackability: ItemStackability::Stackable,
+            max_stack_size: Some(1),
+            bucket_capacity: Some(200),
+        };
+        let glimmer = InventoryMetadata {
+            scope: InventoryScope::Profile,
+            native_bucket_id: 21,
+            stackability: ItemStackability::Stackable,
+            max_stack_size: Some(999_999),
+            bucket_capacity: Some(1),
+        };
+        let many_alphabetical_rows = (0_u64..120).map(|hash| InventoryDefinition {
+            hash,
+            name: "Alphabetical modification",
+            type_name: "Modification",
+            metadata: &modifications,
+            item: None,
+        });
+        let currency = std::iter::once(InventoryDefinition {
+            hash: 1_000,
+            name: "Glimmer",
+            type_name: "Currency",
+            metadata: &glimmer,
+            item: None,
+        });
+
+        let choices = profile_definition_choices(many_alphabetical_rows.chain(currency));
+        assert_eq!(choices.len(), 121);
+        assert!(
+            choices
+                .iter()
+                .any(|choice| choice.group.as_deref() == Some("Glimmer"))
+        );
+    }
+
+    #[test]
+    fn character_browse_keeps_all_results_and_orders_native_buckets() {
+        let metadata = |native_bucket_id| InventoryMetadata {
+            scope: InventoryScope::Character,
+            native_bucket_id,
+            stackability: ItemStackability::Instanced,
+            max_stack_size: Some(1),
+            bucket_capacity: Some(200),
+        };
+        let kinetic = metadata(0);
+        let chest = metadata(5);
+        let artifact = metadata(49);
+        let many_chest_rows = (0_u64..120).map(|hash| InventoryDefinition {
+            hash,
+            name: "Chest item",
+            type_name: "Chest armor",
+            metadata: &chest,
+            item: None,
+        });
+        let edge_buckets = [
+            InventoryDefinition {
+                hash: 1_000,
+                name: "Kinetic item",
+                type_name: "Kinetic weapon",
+                metadata: &kinetic,
+                item: None,
+            },
+            InventoryDefinition {
+                hash: 1_001,
+                name: "Artifact item",
+                type_name: "Seasonal artifact",
+                metadata: &artifact,
+                item: None,
+            },
+        ];
+
+        let choices = character_definition_choices(many_chest_rows.chain(edge_buckets));
+        assert_eq!(choices.len(), 122);
+        let group_position = |group| {
+            choices
+                .iter()
+                .position(|choice| choice.group.as_deref() == Some(group))
+                .unwrap()
+        };
+        assert!(group_position("Kinetic weapons") < group_position("Chest armor"));
+        assert!(group_position("Chest armor") < group_position("Seasonal artifacts"));
+    }
+
+    #[test]
+    fn character_item_ui_ids_survive_index_shifts_and_disambiguate_bad_soids() {
+        let snapshot = |item_index, instance_soid| InventoryItemSnapshot {
+            location: InventoryItemLocation {
+                character_index: 0,
+                item_index,
+            },
+            instance_soid,
+            definition_hash: 1,
+            level: 1,
+            quantity: 1,
+            plugs: ItemPlugs::NativeDefaults,
+            flags: None,
+        };
+        let before = inventory_item_ui_identities(&[snapshot(0, 10), snapshot(1, 20)]);
+        let after = inventory_item_ui_identities(&[snapshot(0, 20)]);
+        assert_eq!(before[1], after[0]);
+
+        let duplicates = inventory_item_ui_identities(&[snapshot(0, 20), snapshot(1, 20)]);
+        assert_ne!(duplicates[0], duplicates[1]);
+        assert_eq!(duplicates[0].duplicate_ordinal, Some(0));
+        assert_eq!(duplicates[1].duplicate_ordinal, Some(1));
+    }
+
+    #[test]
+    fn bucket_picker_open_request_waits_for_the_originating_click_frame() {
+        let picker_key = "character-inventory:0:add:1:4";
+        let request_key = bucket_picker_open_request_key(picker_key);
+        let mut searches = HashMap::from([(request_key.clone(), String::new())]);
+
+        assert!(!take_bucket_picker_open_request(
+            &mut searches,
+            picker_key,
+            true
+        ));
+        assert!(searches.contains_key(&request_key));
+        assert!(take_bucket_picker_open_request(
+            &mut searches,
+            picker_key,
+            false
+        ));
+        assert!(!searches.contains_key(&request_key));
+        assert!(!take_bucket_picker_open_request(
+            &mut searches,
+            picker_key,
+            false
+        ));
+    }
+
+    #[test]
+    fn bucket_capacity_counts_only_present_rows_and_allows_same_bucket_replacement() {
+        let metadata = InventoryMetadata {
+            scope: InventoryScope::Character,
+            native_bucket_id: 4,
+            bucket_capacity: Some(3),
+            ..InventoryMetadata::default()
+        };
+        let one_row_free = BucketUsage {
+            // Present equipment and inventory rows are both included in this count.
+            counts: HashMap::from([(4, 2)]),
+            unresolved_count: 0,
+            occupancy_complete: true,
+        };
+        assert!(bucket_has_room(&metadata, &one_row_free, None, false));
+
+        let full = BucketUsage {
+            counts: HashMap::from([(4, 3)]),
+            unresolved_count: 0,
+            occupancy_complete: true,
+        };
+        assert!(bucket_has_room(&metadata, &full, Some(4), false));
+        assert!(!bucket_has_room(&metadata, &full, None, false));
+
+        let unresolved = BucketUsage {
+            counts: HashMap::new(),
+            unresolved_count: 3,
+            occupancy_complete: true,
+        };
+        assert!(bucket_has_room(&metadata, &unresolved, Some(4), false));
+        assert!(!bucket_has_room(&metadata, &unresolved, None, false));
+        assert!(bucket_has_room(&metadata, &unresolved, None, true));
+    }
+
+    #[test]
+    fn multi_field_inventory_edits_are_atomic() {
+        let mut document = json!({
+            "version": 6,
+            "state": {
+                "account": {},
+                "characters": [{
+                    "soid": 1,
+                    "equipment": {},
+                    "inventory": [{
+                        "instance_soid": "0x4000000000000001",
+                        "definition_hash": "0x0000002A",
+                        "level": 106,
+                        "quantity": 1,
+                        "plugs": null
+                    }]
+                }]
+            }
+        });
+        let before = document.clone();
+        let error = apply_inventory_actions_atomic(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            vec![
+                InventoryItemAction::SetQuantity(2),
+                InventoryItemAction::SetFlags(Some(4)),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("flags"));
+        assert_eq!(document, before);
+    }
+}

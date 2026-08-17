@@ -1,8 +1,8 @@
 [package]
 name = "sundial"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "GPL-3.0-only"
 description = "A local Project Sunrise character and loadout settings editor"
 repository = "https://github.com/kylethmpsn/sundial"

@@ -9,8 +9,8 @@ use serde_json::Value;
 use crate::{game_settings, storage};
 
 use super::{
-    MAX_SETTINGS_BYTES, Preferences, SLOTS, SettingsLayout, SettingsPathResolution,
-    equipment::parse_unsigned_value,
+    Preferences, SLOTS, SettingsLayout, SettingsPathResolution, equipment::parse_unsigned_value,
+    inventory,
 };
 
 const SUNRISE_MODULE_RELATIVE_PATH: &str = r"bin\x64\steam_api64.dll";
@@ -28,6 +28,8 @@ pub(super) fn sunrise_version_from_schema(schema: Option<u64>) -> String {
     match schema {
         Some(2) => "0.1".into(),
         Some(3) => "0.2 or 0.2.1".into(),
+        Some(4..=5) => "0.3 development".into(),
+        Some(6) => "0.3.1".into(),
         Some(_) | None => "Unknown".into(),
     }
 }
@@ -300,7 +302,77 @@ pub(super) fn verify_source_unchanged(path: &Path, expected: &Value) -> Result<(
     }
 }
 
-pub(super) fn save_json(path: &Path, document: &Value) -> Result<PathBuf, String> {
+pub(super) struct SaveJsonResult {
+    pub(super) backup: PathBuf,
+    pub(super) encoded_bytes: usize,
+    pub(super) size_limit_bytes: usize,
+    pub(super) compacted: bool,
+    pub(super) exceeds_size_limit: bool,
+}
+
+pub(super) struct PreparedSettings {
+    encoded: String,
+    pub(super) encoded_bytes: usize,
+    pub(super) size_limit_bytes: usize,
+    pub(super) compacted: bool,
+    pub(super) exceeds_size_limit: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SettingsSizeLimitTier {
+    through_schema: u64,
+    bytes: usize,
+}
+
+// This records the lowest cap known to have shipped with each schema. Schema 5 briefly shipped
+// with 128 KiB before Sunrise raised the cap without changing the schema, so keeping it in the
+// 128 KiB tier preserves compatibility with every v5 build. Unknown future schemas inherit the
+// latest known cap until a new boundary is added here.
+const SETTINGS_SIZE_LIMITS: &[SettingsSizeLimitTier] = &[
+    SettingsSizeLimitTier {
+        through_schema: 3,
+        bytes: 64 * 1024,
+    },
+    SettingsSizeLimitTier {
+        through_schema: 5,
+        bytes: 128 * 1024,
+    },
+    SettingsSizeLimitTier {
+        through_schema: u64::MAX,
+        bytes: 1024 * 1024,
+    },
+];
+
+pub(super) fn settings_size_limit_for_schema(schema: Option<u64>) -> usize {
+    let schema = schema.unwrap_or_default();
+    SETTINGS_SIZE_LIMITS
+        .iter()
+        .find(|tier| schema <= tier.through_schema)
+        .expect("the final settings-size tier must cover every schema")
+        .bytes
+}
+
+pub(super) fn prepare_settings(document: &Value) -> Result<PreparedSettings, String> {
+    let size_limit_bytes = settings_size_limit_for_schema(game_settings::schema_version(document));
+    let mut encoded = encode_settings(document)?;
+    encoded.push_str("\r\n");
+    let compacted = encoded.len() > size_limit_bytes;
+    if compacted {
+        encoded = serde_json::to_string(document)
+            .map_err(|e| format!("Could not compact settings JSON: {e}"))?;
+        encoded.push_str("\r\n");
+    }
+    let encoded_bytes = encoded.len();
+    Ok(PreparedSettings {
+        encoded,
+        encoded_bytes,
+        size_limit_bytes,
+        compacted,
+        exceeds_size_limit: encoded_bytes > size_limit_bytes,
+    })
+}
+
+pub(super) fn save_json(path: &Path, document: &Value) -> Result<SaveJsonResult, String> {
     let backup_root = preferences_path()
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .ok_or("Could not locate the local backup folder")?
@@ -312,16 +384,8 @@ pub(super) fn save_json_with_backup_root(
     path: &Path,
     document: &Value,
     backup_root: &Path,
-) -> Result<PathBuf, String> {
-    let mut encoded = encode_settings(document)?;
-    encoded.push('\n');
-    if encoded.len() > MAX_SETTINGS_BYTES {
-        return Err(format!(
-            "The encoded settings would be {} bytes; Sunrise requires less than {} bytes",
-            encoded.len(),
-            MAX_SETTINGS_BYTES + 1
-        ));
-    }
+) -> Result<SaveJsonResult, String> {
+    let prepared = prepare_settings(document)?;
 
     fs::create_dir_all(backup_root)
         .map_err(|e| format!("Could not create {}: {e}", backup_root.display()))?;
@@ -329,10 +393,11 @@ pub(super) fn save_json_with_backup_root(
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("Could not create backup timestamp: {e}"))?
         .as_nanos();
-    let backup = backup_root.join(format!("settings-{timestamp}-{}.json", std::process::id()));
+    let schema = backup_schema_label(path);
+    let backup = backup_root.join(format!("settings-{schema}-{timestamp}.json"));
     create_backup(path, &backup)?;
 
-    storage::replace_file(path, encoded.as_bytes())
+    storage::replace_file(path, prepared.encoded.as_bytes())
         .map_err(|e| format!("Could not safely replace {}: {e}", path.display()))?;
     let verification = load_json(path).and_then(|saved| {
         if saved == *document {
@@ -355,7 +420,21 @@ pub(super) fn save_json_with_backup_root(
             )),
         };
     }
-    Ok(backup)
+    Ok(SaveJsonResult {
+        backup,
+        encoded_bytes: prepared.encoded_bytes,
+        size_limit_bytes: prepared.size_limit_bytes,
+        compacted: prepared.compacted,
+        exceeds_size_limit: prepared.exceeds_size_limit,
+    })
+}
+
+fn backup_schema_label(source: &Path) -> String {
+    fs::read(source)
+        .ok()
+        .and_then(|contents| serde_json::from_slice::<Value>(&contents).ok())
+        .and_then(|document| game_settings::schema_version(&document))
+        .map_or_else(|| "v0".to_owned(), |schema| format!("v{schema}"))
 }
 
 pub(super) fn create_backup(source: &Path, destination: &Path) -> Result<(), String> {
@@ -424,8 +503,147 @@ pub(super) fn create_adjacent_backup(source: &Path) -> Result<PathBuf, String> {
 }
 
 pub(super) fn encode_settings(document: &Value) -> Result<String, String> {
-    fn write_value(value: &Value, indent: usize, output: &mut String) -> Result<(), String> {
+    const MAX_INLINE_WIDTH: usize = 80;
+
+    fn contains_object(value: &Value) -> bool {
         match value {
+            Value::Object(_) => true,
+            Value::Array(array) => array.iter().any(contains_object),
+            _ => false,
+        }
+    }
+
+    fn current_column(output: &str) -> usize {
+        output
+            .rsplit_once('\n')
+            .map_or(output.len(), |(_, line)| line.len())
+    }
+
+    fn is_dense_table(path: &[String]) -> bool {
+        matches!(path, [state, section, _] if state == "state" && (section == "investment" || section == "unlocks"))
+    }
+
+    fn is_entitlements(path: &[String]) -> bool {
+        matches!(path, [server, entitlements] if server == "server" && entitlements == "entitlements")
+    }
+
+    fn is_key_binding(path: &[String]) -> bool {
+        matches!(path, [state, account, settings, bindings, _]
+            if state == "state"
+                && account == "account"
+                && settings == "settings"
+                && bindings == "key_bindings")
+    }
+
+    fn is_profile_items(path: &[String]) -> bool {
+        matches!(path, [state, account, items]
+            if state == "state" && account == "account" && items == "profile_items")
+    }
+
+    fn write_inline(value: &Value, spaces: bool, output: &mut String) -> Result<(), String> {
+        let separator = if spaces { ", " } else { "," };
+        match value {
+            Value::Object(object) => {
+                output.push('{');
+                if spaces && !object.is_empty() {
+                    output.push(' ');
+                }
+                for (index, (key, child)) in object.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(separator);
+                    }
+                    output.push_str(
+                        &serde_json::to_string(key)
+                            .map_err(|e| format!("Could not encode setting name: {e}"))?,
+                    );
+                    output.push_str(if spaces { ": " } else { ":" });
+                    write_inline(child, spaces, output)?;
+                }
+                if spaces && !object.is_empty() {
+                    output.push(' ');
+                }
+                output.push('}');
+            }
+            Value::Array(array) => {
+                output.push('[');
+                for (index, child) in array.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(separator);
+                    }
+                    write_inline(child, spaces, output)?;
+                }
+                output.push(']');
+            }
+            _ => output.push_str(
+                &serde_json::to_string(value)
+                    .map_err(|e| format!("Could not encode setting: {e}"))?,
+            ),
+        }
+        Ok(())
+    }
+
+    fn write_dense_table(value: &Value, output: &mut String) -> Result<(), String> {
+        let Value::Array(array) = value else {
+            return write_inline(value, false, output);
+        };
+        output.push('[');
+        for (index, child) in array.iter().enumerate() {
+            if index != 0 {
+                // Sunrise separates rows in its dense pair tables, while keeping each row compact.
+                output.push_str(if child.is_array() { ", " } else { "," });
+            }
+            write_inline(child, false, output)?;
+        }
+        output.push(']');
+        Ok(())
+    }
+
+    fn write_profile_items(
+        array: &[Value],
+        indent: usize,
+        output: &mut String,
+    ) -> Result<(), String> {
+        output.push_str("[\n");
+        for (index, child) in array.iter().enumerate() {
+            let object = child
+                .as_object()
+                .ok_or("Sunrise profile_items entries must be objects")?;
+            output.push_str(&" ".repeat(indent));
+            output.push_str("{\n");
+            for (field_index, (key, value)) in object.iter().enumerate() {
+                output.push_str(&" ".repeat(indent));
+                output.push_str(
+                    &serde_json::to_string(key)
+                        .map_err(|e| format!("Could not encode setting name: {e}"))?,
+                );
+                output.push_str(": ");
+                write_inline(value, true, output)?;
+                if field_index + 1 != object.len() {
+                    output.push(',');
+                }
+                output.push('\n');
+            }
+            output.push_str(&" ".repeat(indent));
+            output.push('}');
+            if index + 1 != array.len() {
+                output.push(',');
+            }
+            output.push('\n');
+        }
+        output.push_str(&" ".repeat(indent));
+        output.push(']');
+        Ok(())
+    }
+
+    fn write_value(
+        value: &Value,
+        indent: usize,
+        path: &mut Vec<String>,
+        legacy_profile_items: bool,
+        output: &mut String,
+    ) -> Result<(), String> {
+        match value {
+            Value::Object(_) if is_key_binding(path) => write_inline(value, true, output)?,
             Value::Object(object) if !object.is_empty() => {
                 output.push_str("{\n");
                 for (index, (key, child)) in object.iter().enumerate() {
@@ -435,7 +653,9 @@ pub(super) fn encode_settings(document: &Value) -> Result<String, String> {
                             .map_err(|e| format!("Could not encode setting name: {e}"))?,
                     );
                     output.push_str(": ");
-                    write_value(child, indent + 2, output)?;
+                    path.push(key.clone());
+                    write_value(child, indent + 2, path, legacy_profile_items, output)?;
+                    path.pop();
                     if index + 1 != object.len() {
                         output.push(',');
                     }
@@ -444,10 +664,51 @@ pub(super) fn encode_settings(document: &Value) -> Result<String, String> {
                 output.push_str(&" ".repeat(indent));
                 output.push('}');
             }
-            Value::Array(_) => output.push_str(
-                &serde_json::to_string(value)
-                    .map_err(|e| format!("Could not encode settings array: {e}"))?,
-            ),
+            Value::Array(_) if is_dense_table(path) => write_dense_table(value, output)?,
+            Value::Array(array)
+                if legacy_profile_items
+                    && is_profile_items(path)
+                    && !array.is_empty()
+                    && array.iter().all(Value::is_object) =>
+            {
+                write_profile_items(array, indent, output)?;
+            }
+            Value::Array(array) if array.iter().any(contains_object) => {
+                output.push_str("[\n");
+                for (index, child) in array.iter().enumerate() {
+                    output.push_str(&" ".repeat(indent + 2));
+                    if is_entitlements(path) {
+                        write_inline(child, true, output)?;
+                    } else {
+                        write_value(child, indent + 2, path, legacy_profile_items, output)?;
+                    }
+                    if index + 1 != array.len() {
+                        output.push(',');
+                    }
+                    output.push('\n');
+                }
+                output.push_str(&" ".repeat(indent));
+                output.push(']');
+            }
+            Value::Array(array) => {
+                let mut inline = String::new();
+                write_inline(value, true, &mut inline)?;
+                if array.is_empty() || current_column(output) + inline.len() <= MAX_INLINE_WIDTH {
+                    output.push_str(&inline);
+                } else {
+                    output.push_str("[\n");
+                    for (index, child) in array.iter().enumerate() {
+                        output.push_str(&" ".repeat(indent + 2));
+                        write_value(child, indent + 2, path, legacy_profile_items, output)?;
+                        if index + 1 != array.len() {
+                            output.push(',');
+                        }
+                        output.push('\n');
+                    }
+                    output.push_str(&" ".repeat(indent));
+                    output.push(']');
+                }
+            }
             _ => output.push_str(
                 &serde_json::to_string(value)
                     .map_err(|e| format!("Could not encode setting: {e}"))?,
@@ -457,19 +718,29 @@ pub(super) fn encode_settings(document: &Value) -> Result<String, String> {
     }
 
     let mut output = String::new();
-    write_value(document, 0, &mut output)?;
-    Ok(output)
+    let legacy_profile_items =
+        matches!(game_settings::schema_version(document), None | Some(0..=3));
+    write_value(
+        document,
+        0,
+        &mut Vec::new(),
+        legacy_profile_items,
+        &mut output,
+    )?;
+    Ok(output.replace('\n', "\r\n"))
 }
 
 pub(super) fn validate_document(document: &Value) -> Result<(), String> {
     game_settings::validate(document)?;
-    validate_characters(document)
+    validate_characters(document)?;
+    inventory::validate_document_items(document).map_err(|error| error.to_string())
 }
 
 pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
     const MAX_CHARACTERS: usize = 3;
     const MAX_PLUGS: usize = 12;
     const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
+    let mode = inventory::schema_mode(document);
 
     let Some(characters_value) = document.pointer("/state/characters") else {
         return Ok(());
@@ -515,6 +786,34 @@ pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
             ("class_ability", "class ability"),
         ] {
             optional_bounded(key, label, 63)?;
+        }
+        for (key, label) in [
+            ("accepted", "accepted state"),
+            ("preview_available", "preview availability"),
+            ("content_bypass", "content bypass state"),
+        ] {
+            if character.get(key).is_some_and(|value| !value.is_boolean()) {
+                return Err(format!("Character {number} has an invalid {label}"));
+            }
+        }
+        if character.get("appearance_value").is_some_and(|value| {
+            value
+                .as_f64()
+                .is_none_or(|value| !(value as f32).is_finite())
+        }) {
+            return Err(format!(
+                "Character {number} has an invalid appearance value"
+            ));
+        }
+        if character
+            .get("last_orbited_destination")
+            .is_some_and(|value| {
+                parse_unsigned_value(value).is_none_or(|value| value > u64::from(u32::MAX))
+            })
+        {
+            return Err(format!(
+                "Character {number} has an invalid last orbited destination"
+            ));
         }
 
         let Some(equipment_value) = character.get("equipment") else {
@@ -592,6 +891,22 @@ pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
                 _ => {
                     return Err(format!(
                         "Character {number} {label} plugs must be null or an array"
+                    ));
+                }
+            }
+            if let Some(flags) = equipped.get("flags") {
+                if !mode.supports_equipment_flags() {
+                    return Err(format!(
+                        "Character {number} {label} flags require settings schema {} or newer",
+                        inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION
+                    ));
+                }
+                if parse_unsigned_value(flags)
+                    .is_none_or(|flags| flags > u64::from(inventory::INVENTORY_FLAG_MASK))
+                {
+                    return Err(format!(
+                        "Character {number} {label} flags must be between 0 and {}",
+                        inventory::INVENTORY_FLAG_MASK
                     ));
                 }
             }
