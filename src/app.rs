@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     env, fs,
     path::PathBuf,
+    process::Command,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
 };
@@ -16,31 +17,27 @@ use crate::{
     updates::{RELEASES_URL, UpdateCheck, UpdateStatus},
 };
 
-#[path = "startup.rs"]
 mod startup;
 use startup::StartupApp;
 
-#[path = "settings.rs"]
 mod settings;
 use settings::{
-    catalog_path, create_adjacent_backup, detect_sunrise_version, encode_settings,
+    backups_path, catalog_path, create_adjacent_backup, detect_sunrise_version, encode_settings,
     load_installed_sunrise_defaults, load_json, load_preferences, missing_settings_message,
     preferences_path, prepare_settings, repair_known_ability_pairs, resolve_settings_path,
     save_json, settings_path_for_install, validate_document, verify_source_unchanged,
 };
 
-#[path = "json_editor.rs"]
 mod json_editor;
 use json_editor::JsonEditorState;
 
-#[path = "equipment.rs"]
 mod equipment;
 use equipment::{class_name, collect_class_armor_defaults};
 
-#[path = "inventory.rs"]
 mod inventory;
 
-#[path = "inventory_page.rs"]
+mod item_editor;
+
 mod inventory_page;
 
 const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
@@ -55,6 +52,9 @@ const ITEM_PICKER_MIN_HEIGHT: f32 = 320.0;
 const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
 const PLUG_PICKER_MAX_HEIGHT: f32 = 420.0;
+const MAIN_SIDEBAR_WIDTH: f32 = 168.0;
+const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
+const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
 
 const SLOTS: &[(&str, &str, u64)] = &[
     ("kinetic", "Kinetic", 1_498_876_634),
@@ -82,7 +82,7 @@ enum ViewMode {
     CharacterInventory,
     GameSettings,
     AdvancedJson,
-    Paths,
+    Preferences,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,11 +93,49 @@ enum ConfirmationDialog {
     Exit,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum PlugSelectionMode {
+    #[default]
     Supported,
     MatchingSocketType,
     AnyPlug,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ColorTheme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ColorTheme {
+    const fn egui_theme(self) -> egui::Theme {
+        match self {
+            Self::Dark => egui::Theme::Dark,
+            Self::Light => egui::Theme::Light,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ItemCardWidth {
+    Compact,
+    #[default]
+    Standard,
+    Wide,
+}
+
+impl ItemCardWidth {
+    const fn dimensions(self) -> (f32, f32) {
+        match self {
+            Self::Compact => (285.0, 315.0),
+            Self::Standard => (335.0, 390.0),
+            Self::Wide => (430.0, 520.0),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -144,7 +182,7 @@ struct InstallSelection {
     preferred_layout: Option<SettingsLayout>,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Preferences {
     #[serde(default)]
     install: Option<PathBuf>,
@@ -152,6 +190,38 @@ struct Preferences {
     settings_layout: Option<String>,
     #[serde(default)]
     really_unsafe_warning_acknowledged: bool,
+    #[serde(default)]
+    default_plug_selection_mode: PlugSelectionMode,
+    #[serde(default = "default_show_safety_warnings")]
+    show_safety_warnings: bool,
+    #[serde(default)]
+    color_theme: ColorTheme,
+    #[serde(default)]
+    always_open_json_editor_in_second_window: bool,
+    #[serde(default)]
+    show_plug_hashes: bool,
+    #[serde(default)]
+    item_card_width: ItemCardWidth,
+}
+
+const fn default_show_safety_warnings() -> bool {
+    true
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            install: None,
+            settings_layout: None,
+            really_unsafe_warning_acknowledged: false,
+            default_plug_selection_mode: PlugSelectionMode::Supported,
+            show_safety_warnings: true,
+            color_theme: ColorTheme::Dark,
+            always_open_json_editor_in_second_window: false,
+            show_plug_hashes: false,
+            item_card_width: ItemCardWidth::Standard,
+        }
+    }
 }
 
 impl Preferences {
@@ -220,7 +290,14 @@ struct SundialApp {
     searches: HashMap<String, String>,
     plug_searches: HashMap<String, String>,
     plug_selection_mode: PlugSelectionMode,
+    default_plug_selection_mode: PlugSelectionMode,
+    show_safety_warnings: bool,
+    color_theme: ColorTheme,
+    always_open_json_editor_in_second_window: bool,
+    show_plug_hashes: bool,
+    item_card_width: ItemCardWidth,
     really_unsafe_warning_acknowledged: bool,
+    remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
     view_mode: ViewMode,
     game_settings_tab: game_settings::Tab,
@@ -248,25 +325,39 @@ impl SundialApp {
         settings_layout: SettingsLayout,
         install_path: PathBuf,
     ) -> Result<Self, String> {
-        Self::new_with_progress(settings_path, settings_layout, install_path, false, |_| {})
+        Self::new_with_progress(
+            settings_path,
+            settings_layout,
+            install_path,
+            Preferences::default(),
+            |_| {},
+        )
     }
 
     fn new_with_progress(
         settings_path: PathBuf,
         settings_layout: SettingsLayout,
         install_path: PathBuf,
-        really_unsafe_warning_acknowledged: bool,
+        preferences: Preferences,
         report: impl FnMut(CatalogProgress),
     ) -> Result<Self, String> {
         let document = load_json(&settings_path)?;
         let cache = catalog_path().ok_or("Could not locate Sundial's local catalog folder")?;
         let manifest = Manifest::load_or_scan_with_progress(&install_path, cache, false, report)?;
         let source_warning = validate_document(&document).err();
-        let sunrise_version = detect_sunrise_version(&install_path, &document);
+        let sunrise_version = detect_sunrise_version(&install_path);
         let class_armor_defaults = collect_class_armor_defaults(&document);
         let raw_json = encode_settings_for_editor(&document)?;
         let raw_json_document = document.clone();
         let persisted_document = document.clone();
+        let default_plug_selection_mode = if preferences.default_plug_selection_mode
+            == PlugSelectionMode::AnyPlug
+            && !preferences.really_unsafe_warning_acknowledged
+        {
+            PlugSelectionMode::Supported
+        } else {
+            preferences.default_plug_selection_mode
+        };
         Ok(Self {
             settings_path,
             settings_layout,
@@ -280,8 +371,17 @@ impl SundialApp {
             selected_character: 0,
             searches: HashMap::new(),
             plug_searches: HashMap::new(),
-            plug_selection_mode: PlugSelectionMode::Supported,
-            really_unsafe_warning_acknowledged,
+            plug_selection_mode: default_plug_selection_mode,
+            default_plug_selection_mode,
+            show_safety_warnings: preferences.show_safety_warnings,
+            color_theme: preferences.color_theme,
+            always_open_json_editor_in_second_window: preferences
+                .always_open_json_editor_in_second_window,
+            show_plug_hashes: preferences.show_plug_hashes,
+            item_card_width: preferences.item_card_width,
+            really_unsafe_warning_acknowledged: preferences
+                .really_unsafe_warning_acknowledged,
+            remember_plug_selection_mode_after_confirmation: false,
             show_dummy_items: false,
             view_mode: ViewMode::Characters,
             game_settings_tab: game_settings::Tab::Player,
@@ -289,7 +389,7 @@ impl SundialApp {
             raw_json,
             raw_json_document,
             json_editor: JsonEditorState::default(),
-            json_editor_window_open: false,
+            json_editor_window_open: preferences.always_open_json_editor_in_second_window,
             logo: None,
             about_open: false,
             update_check: UpdateCheck::default(),
@@ -504,7 +604,7 @@ impl SundialApp {
     }
 
     fn refresh_sunrise_version(&mut self) {
-        self.sunrise_version = detect_sunrise_version(&self.install_path, &self.document);
+        self.sunrise_version = detect_sunrise_version(&self.install_path);
     }
 
     fn save_preferences(&self) -> Result<(), String> {
@@ -518,6 +618,12 @@ impl SundialApp {
             install: Some(self.install_path.clone()),
             settings_layout: Some(self.settings_layout.preference_value().to_owned()),
             really_unsafe_warning_acknowledged: self.really_unsafe_warning_acknowledged,
+            default_plug_selection_mode: self.default_plug_selection_mode,
+            show_safety_warnings: self.show_safety_warnings,
+            color_theme: self.color_theme,
+            always_open_json_editor_in_second_window: self.always_open_json_editor_in_second_window,
+            show_plug_hashes: self.show_plug_hashes,
+            item_card_width: self.item_card_width,
         };
         let encoded = serde_json::to_vec_pretty(&preferences)
             .map_err(|e| format!("Could not encode Sundial's preferences: {e}"))?;
@@ -819,6 +925,196 @@ impl SundialApp {
         });
     }
 
+    fn draw_app_chrome(&mut self, ctx: &egui::Context, available_update: Option<&str>) {
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if self.has_unsaved_changes() {
+                    ui.label(
+                        egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(self.has_unsaved_changes(), egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        let _ = self.save_all_edits();
+                    }
+                    if ui.button("Reload").clicked() {
+                        if self.has_unsaved_changes() {
+                            self.confirmation = Some(ConfirmationDialog::Reload);
+                        } else {
+                            self.reload();
+                        }
+                    }
+                });
+            });
+        });
+
+        egui::SidePanel::left("characters")
+            .resizable(false)
+            .exact_width(MAIN_SIDEBAR_WIDTH)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                for (view, label) in [
+                    (ViewMode::Characters, "Characters & loadouts"),
+                    (ViewMode::ProfileInventory, "Profile inventory"),
+                    (ViewMode::CharacterInventory, "Character inventory"),
+                    (ViewMode::GameSettings, "Game settings"),
+                    (ViewMode::AdvancedJson, "All settings (JSON)"),
+                    (ViewMode::Preferences, "Preferences"),
+                ] {
+                    if ui.selectable_label(self.view_mode == view, label).clicked() {
+                        self.select_view(view);
+                    }
+                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("About").clicked() {
+                            self.about_open = true;
+                        }
+                        if let Some(version) = available_update {
+                            let update_text = egui::RichText::new("Update Available")
+                                .color(ui.visuals().hyperlink_color);
+                            if ui
+                                .add(egui::Button::new(update_text).small())
+                                .on_hover_text(format!(
+                                    "Sundial {version} is available. Open GitHub Releases."
+                                ))
+                                .clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(RELEASES_URL));
+                            }
+                        }
+                    });
+                });
+            });
+
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            let color = if self.status_is_error {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().text_color()
+            };
+            ui.colored_label(color, &self.status);
+        });
+    }
+
+    fn draw_about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let logo = self
+            .logo
+            .get_or_insert_with(|| load_logo_texture(ctx))
+            .clone();
+        let update_status = self.update_check.status().clone();
+        let mut retry_update_check = false;
+        egui::Window::new("About Sundial")
+            .open(&mut self.about_open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.set_width(430.0);
+                ui.vertical_centered(|ui| {
+                    ui.image((logo.id(), egui::vec2(64.0, 64.0)));
+                    ui.heading("Sundial");
+                    ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
+                    ui.add_space(8.0);
+                    ui.label("A simple Project Sunrise settings editor.");
+                    ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
+                    ui.add_space(8.0);
+                    match &update_status {
+                        UpdateStatus::NotStarted => {
+                            retry_update_check = ui.button("Check for updates").clicked();
+                        }
+                        UpdateStatus::Checking => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Checking for updates...");
+                            });
+                        }
+                        UpdateStatus::Current => {
+                            ui.label(egui::RichText::new("Sundial is up to date.").weak());
+                        }
+                        UpdateStatus::Available(version) => {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                format!("Sundial {version} is available."),
+                            );
+                            ui.hyperlink_to("Open GitHub Releases", RELEASES_URL);
+                        }
+                        UpdateStatus::Failed => {
+                            ui.label(
+                                egui::RichText::new("Could not check for updates.").weak(),
+                            );
+                            retry_update_check = ui.button("Try again").clicked();
+                        }
+                    }
+                });
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label("Built for Project Sunrise 0.1 through 0.3.2.");
+                ui.hyperlink_to("Project Sunrise on GitHub", SUNRISE_URL);
+                ui.add_space(6.0);
+                ui.label("Local Destiny package parsing is powered by tiger-pkg.");
+                ui.hyperlink_to("tiger-pkg on GitHub", TIGER_PKG_URL);
+                ui.add_space(6.0);
+                let definition_manifest_version = unnamed_plugs::manifest_version();
+                ui.label(format!(
+                    "Thanks to Nox for their research on unnamed plugs. Stat values are verified from manifest {definition_manifest_version}."
+                ));
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This project is not affiliated with or endorsed by Bungie Inc. or Sony Interactive Entertainment. Destiny and related intellectual property are owned by Bungie Inc. and their respective rights holders.",
+                    )
+                    .weak(),
+                );
+            });
+        if retry_update_check {
+            self.update_check.retry(ctx);
+        }
+    }
+
+    fn draw_catalog_progress(&self, ctx: &egui::Context) {
+        let Some(task) = &self.catalog_task else {
+            return;
+        };
+        let progress = task.progress;
+        let title = task.kind.title();
+        let path = match &task.kind {
+            CatalogTaskKind::LoadInstall(pending) => &pending.install_path,
+            CatalogTaskKind::Rebuild => &self.install_path,
+        };
+        egui::Modal::new("catalog_task_progress".into()).show(ctx, |ui| {
+            ui.set_width(500.0);
+            ui.heading(title);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.strong(progress.message);
+            });
+            ui.add_space(10.0);
+            let mut bar = egui::ProgressBar::new(progress.fraction()).desired_width(480.0);
+            if progress.total > 0 {
+                bar = bar.show_percentage();
+            } else {
+                bar = bar.animate(true);
+            }
+            ui.add(bar);
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(path.display().to_string())
+                    .weak()
+                    .small(),
+            );
+        });
+    }
+
     fn sync_raw_json(&mut self) {
         if let Ok(raw_json) = encode_settings_for_editor(&self.document) {
             self.raw_json = raw_json;
@@ -902,6 +1198,237 @@ impl SundialApp {
         }
     }
 
+    fn draw_preferences_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Preferences");
+        ui.add_space(8.0);
+        let mut preferences_changed = false;
+        let mut preferences_reset = false;
+
+        ui.strong("Appearance");
+        let mut requested_theme = self.color_theme;
+        ui.horizontal(|ui| {
+            ui.label("Color theme:");
+            ui.radio_value(&mut requested_theme, ColorTheme::Dark, "Dark (recommended)");
+            ui.radio_value(&mut requested_theme, ColorTheme::Light, "Light");
+        });
+        if requested_theme != self.color_theme {
+            self.color_theme = requested_theme;
+            ctx.set_theme(requested_theme.egui_theme());
+            preferences_changed = true;
+        }
+        let mut requested_card_width = self.item_card_width;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Item card width:");
+            ui.radio_value(&mut requested_card_width, ItemCardWidth::Compact, "Compact");
+            ui.radio_value(
+                &mut requested_card_width,
+                ItemCardWidth::Standard,
+                "Standard",
+            );
+            ui.radio_value(&mut requested_card_width, ItemCardWidth::Wide, "Wide");
+        });
+        if requested_card_width != self.item_card_width {
+            self.item_card_width = requested_card_width;
+            preferences_changed = true;
+        }
+        if ui
+            .checkbox(
+                &mut self.always_open_json_editor_in_second_window,
+                "Always open the JSON editor in a second window",
+            )
+            .changed()
+        {
+            self.json_editor_window_open = self.always_open_json_editor_in_second_window;
+            self.json_editor.restore_location_next_draw();
+            if !self.json_editor_window_open && self.json_editor.has_unapplied_changes() {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
+            preferences_changed = true;
+        }
+
+        ui.add_space(12.0);
+        ui.strong("Item editing");
+        ui.label("Choose the plug selection mode Sundial uses when it starts.");
+        ui.add_space(4.0);
+
+        let mut requested_mode = self.default_plug_selection_mode;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Default plug selection mode:");
+            ui.radio_value(
+                &mut requested_mode,
+                PlugSelectionMode::Supported,
+                "Supported only",
+            );
+            ui.radio_value(
+                &mut requested_mode,
+                PlugSelectionMode::MatchingSocketType,
+                "Matching socket type (unsafe)",
+            );
+            ui.radio_value(
+                &mut requested_mode,
+                PlugSelectionMode::AnyPlug,
+                "Any plug (really unsafe)",
+            );
+        });
+
+        if requested_mode != self.default_plug_selection_mode {
+            if requested_mode == PlugSelectionMode::AnyPlug
+                && !self.really_unsafe_warning_acknowledged
+            {
+                self.remember_plug_selection_mode_after_confirmation = true;
+                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
+            } else {
+                self.default_plug_selection_mode = requested_mode;
+                self.plug_selection_mode = requested_mode;
+                preferences_changed = true;
+            }
+        }
+
+        let warning_response = ui.checkbox(
+            &mut self.show_safety_warnings,
+            "Show plug-selection safety warnings",
+        );
+        preferences_changed |= warning_response.changed();
+
+        let hash_response =
+            ui.checkbox(&mut self.show_plug_hashes, "Show plug hashes on item cards");
+        preferences_changed |= hash_response.changed();
+
+        if self.show_safety_warnings {
+            match self.default_plug_selection_mode {
+                PlugSelectionMode::Supported => {}
+                PlugSelectionMode::MatchingSocketType => {
+                    ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
+                }
+                PlugSelectionMode::AnyPlug => {
+                    ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        if ui
+            .button("Reset preferences to defaults")
+            .on_hover_text(
+                "Reset Appearance and Item editing preferences. Paths, catalog data, and backups are not changed.",
+            )
+            .clicked()
+        {
+            let defaults = Preferences::default();
+            self.color_theme = defaults.color_theme;
+            ctx.set_theme(defaults.color_theme.egui_theme());
+            self.item_card_width = defaults.item_card_width;
+            self.always_open_json_editor_in_second_window =
+                defaults.always_open_json_editor_in_second_window;
+            self.json_editor_window_open = defaults.always_open_json_editor_in_second_window;
+            self.json_editor.restore_location_next_draw();
+            if !self.json_editor_window_open && self.json_editor.has_unapplied_changes() {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
+            self.default_plug_selection_mode = defaults.default_plug_selection_mode;
+            self.plug_selection_mode = defaults.default_plug_selection_mode;
+            self.show_safety_warnings = defaults.show_safety_warnings;
+            self.show_plug_hashes = defaults.show_plug_hashes;
+            self.really_unsafe_warning_acknowledged =
+                defaults.really_unsafe_warning_acknowledged;
+            self.remember_plug_selection_mode_after_confirmation = false;
+            preferences_changed = true;
+            preferences_reset = true;
+        }
+
+        if preferences_changed {
+            match self.save_preferences() {
+                Ok(()) => self.set_status(
+                    if preferences_reset {
+                        "Preferences reset to defaults"
+                    } else {
+                        "Preferences saved"
+                    },
+                    false,
+                ),
+                Err(error) => self.set_status(
+                    format!("Preferences changed, but could not be saved: {error}"),
+                    true,
+                ),
+            }
+        }
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(10.0);
+        ui.strong("Paths and catalog");
+        ui.label("Select the Destiny 2 Shadowkeep installation. Sundial finds Project Sunrise's settings.json inside it automatically.");
+        ui.add_space(10.0);
+        egui::Grid::new("preferences_paths_grid")
+            .num_columns(3)
+            .spacing([12.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Shadowkeep install");
+                ui.monospace(self.install_path.display().to_string());
+                if ui.button("Choose…").clicked() {
+                    self.choose_install(ctx);
+                }
+                ui.end_row();
+                ui.label("Sunrise settings");
+                ui.monospace(self.settings_path.display().to_string());
+                ui.end_row();
+                ui.label("Settings schema");
+                ui.monospace(game_settings::schema_version(&self.document).map_or_else(
+                    || "Missing or invalid".to_owned(),
+                    |version| version.to_string(),
+                ))
+                .on_hover_text("Sundial uses this value to determine compatibility.");
+                ui.end_row();
+                ui.label("Detected Sunrise version");
+                ui.monospace(&self.sunrise_version)
+                    .on_hover_text("Shown for reference; this does not control compatibility.");
+                ui.end_row();
+            });
+        ui.add_space(12.0);
+        ui.label(format!(
+            "Local catalog cache: {}",
+            self.manifest.cache_path.display()
+        ));
+        ui.label(if self.manifest.loaded_from_cache {
+            "Loaded from local cache"
+        } else {
+            "Scanned from game packages"
+        });
+        let catalog_stats = self.manifest.stats();
+        ui.label(format!(
+            "{} items · {} plugs · {} icons · {} descriptions",
+            catalog_stats.items,
+            catalog_stats.plugs,
+            catalog_stats.icons,
+            catalog_stats.descriptions,
+        ));
+        if ui.button("Rebuild catalog from game files").clicked() {
+            self.rebuild_catalog(ctx);
+        }
+        ui.add_space(6.0);
+        ui.label("The first scan reads the installed packages. Later starts use the local cache unless the package files change.");
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(10.0);
+        ui.strong("Recovery");
+        ui.label("Restore the exact default settings bundled with this installed Project Sunrise version. Your current settings are backed up first.");
+        ui.horizontal(|ui| {
+            if ui.button("Restore Sunrise defaults…").clicked() {
+                self.confirmation = Some(ConfirmationDialog::ResetDefaults);
+            }
+            if ui.button("Open backups folder…").clicked() {
+                match backups_path()
+                    .ok_or("Could not locate Sundial's backups folder".to_owned())
+                    .and_then(|path| open_directory(&path))
+                {
+                    Ok(()) => self.set_status("Opened the backups folder", false),
+                    Err(error) => self.set_status(error, true),
+                }
+            }
+        });
+    }
+
     fn draw_json_editor_window(&mut self, ctx: &egui::Context) {
         if !self.json_editor_window_open {
             return;
@@ -970,115 +1497,7 @@ impl eframe::App for SundialApp {
             self.confirmation = Some(ConfirmationDialog::Exit);
         }
 
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if self.has_unsaved_changes() {
-                    ui.label(
-                        egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(self.has_unsaved_changes(), egui::Button::new("Save"))
-                        .clicked()
-                    {
-                        let _ = self.save_all_edits();
-                    }
-                    if ui.button("Reload").clicked() {
-                        if self.has_unsaved_changes() {
-                            self.confirmation = Some(ConfirmationDialog::Reload);
-                        } else {
-                            self.reload();
-                        }
-                    }
-                });
-            });
-        });
-
-        egui::SidePanel::left("characters")
-            .resizable(false)
-            .exact_width(205.0)
-            .show(ctx, |ui| {
-                ui.heading("Editor");
-                ui.add_space(6.0);
-                if ui
-                    .selectable_label(
-                        self.view_mode == ViewMode::Characters,
-                        "Characters & loadouts",
-                    )
-                    .clicked()
-                {
-                    self.select_view(ViewMode::Characters);
-                }
-                if ui
-                    .selectable_label(
-                        self.view_mode == ViewMode::ProfileInventory,
-                        "Profile inventory",
-                    )
-                    .clicked()
-                {
-                    self.select_view(ViewMode::ProfileInventory);
-                }
-                if ui
-                    .selectable_label(
-                        self.view_mode == ViewMode::CharacterInventory,
-                        "Character inventory",
-                    )
-                    .clicked()
-                {
-                    self.select_view(ViewMode::CharacterInventory);
-                }
-                if ui
-                    .selectable_label(self.view_mode == ViewMode::GameSettings, "Game settings")
-                    .clicked()
-                {
-                    self.select_view(ViewMode::GameSettings);
-                }
-                if ui
-                    .selectable_label(
-                        self.view_mode == ViewMode::AdvancedJson,
-                        "All settings (JSON)",
-                    )
-                    .clicked()
-                {
-                    self.select_view(ViewMode::AdvancedJson);
-                }
-                if ui
-                    .selectable_label(self.view_mode == ViewMode::Paths, "Paths")
-                    .clicked()
-                {
-                    self.select_view(ViewMode::Paths);
-                }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.small_button("About").clicked() {
-                            self.about_open = true;
-                        }
-                        if let Some(version) = &available_update {
-                            let update_text = egui::RichText::new("Update Available")
-                                .color(ui.visuals().hyperlink_color);
-                            if ui
-                                .add(egui::Button::new(update_text).small())
-                                .on_hover_text(format!(
-                                    "Sundial {version} is available. Open GitHub Releases."
-                                ))
-                                .clicked()
-                            {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(RELEASES_URL));
-                            }
-                        }
-                    });
-                });
-            });
-
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            let color = if self.status_is_error {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().text_color()
-            };
-            ui.colored_label(color, &self.status);
-        });
+        self.draw_app_chrome(ctx, available_update.as_deref());
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.json_editor_window_open
@@ -1153,172 +1572,15 @@ impl eframe::App for SundialApp {
                         self.handle_json_editor_response(response);
                     }
                 }
-                ViewMode::Paths => {
-                    ui.heading("Paths");
-                    ui.label("Select the Destiny 2 Shadowkeep installation. Sundial finds Project Sunrise's settings.json inside it automatically.");
-                    ui.add_space(12.0);
-                    egui::Grid::new("paths_grid")
-                        .num_columns(3)
-                        .spacing([12.0, 10.0])
-                        .show(ui, |ui| {
-                            ui.label("Shadowkeep install");
-                            ui.monospace(self.install_path.display().to_string());
-                            if ui.button("Choose…").clicked() {
-                                self.choose_install(ctx);
-                            }
-                            ui.end_row();
-                            ui.label("Sunrise settings");
-                            ui.monospace(self.settings_path.display().to_string());
-                            ui.end_row();
-                            ui.label("Settings schema");
-                            ui.monospace(
-                                game_settings::schema_version(&self.document)
-                                    .map_or_else(|| "Missing or invalid".to_owned(), |version| version.to_string()),
-                            );
-                            ui.end_row();
-                            ui.label("Project Sunrise");
-                            ui.monospace(&self.sunrise_version);
-                            ui.end_row();
-                        });
-                    ui.add_space(14.0);
-                    ui.label(format!("Local catalog: {}", self.manifest.cache_path.display()));
-                    ui.label(if self.manifest.loaded_from_cache {
-                        "Loaded from local cache"
-                    } else {
-                        "Scanned from game packages"
-                    });
-                    ui.label(format!(
-                        "{} local catalog items",
-                        self.manifest.items.len()
-                    ));
-                    if ui.button("Rebuild catalog from game files").clicked() {
-                        self.rebuild_catalog(ctx);
-                    }
-                    ui.add_space(8.0);
-                    ui.label("The first scan reads the installed packages. Later starts use the local cache unless the package files change.");
-                    ui.add_space(18.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    ui.heading("Restore defaults");
-                    ui.label("Restore the exact default settings bundled with this installed Project Sunrise version. Your current settings are backed up first.");
-                    if ui.button("Restore Sunrise defaults…").clicked() {
-                        self.confirmation = Some(ConfirmationDialog::ResetDefaults);
-                    }
-                }
+                ViewMode::Preferences => self.draw_preferences_page(ui, ctx),
             }
         });
 
         self.draw_json_editor_window(ctx);
 
-        if self.about_open {
-            let logo = self
-                .logo
-                .get_or_insert_with(|| load_logo_texture(ctx))
-                .clone();
-            let update_status = self.update_check.status().clone();
-            let mut retry_update_check = false;
-            egui::Window::new("About Sundial")
-                .open(&mut self.about_open)
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.set_width(430.0);
-                    ui.vertical_centered(|ui| {
-                        ui.image((logo.id(), egui::vec2(64.0, 64.0)));
-                        ui.heading("Sundial");
-                        ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
-                        ui.add_space(8.0);
-                        ui.label("A simple Project Sunrise settings editor.");
-                        ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
-                        ui.add_space(8.0);
-                        match &update_status {
-                            UpdateStatus::NotStarted => {
-                                retry_update_check = ui.button("Check for updates").clicked();
-                            }
-                            UpdateStatus::Checking => {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Checking for updates...");
-                                });
-                            }
-                            UpdateStatus::Current => {
-                                ui.label(egui::RichText::new("Sundial is up to date.").weak());
-                            }
-                            UpdateStatus::Available(version) => {
-                                ui.colored_label(
-                                    ui.visuals().warn_fg_color,
-                                    format!("Sundial {version} is available."),
-                                );
-                                ui.hyperlink_to("Open GitHub Releases", RELEASES_URL);
-                            }
-                            UpdateStatus::Failed => {
-                                ui.label(
-                                    egui::RichText::new("Could not check for updates.").weak(),
-                                );
-                                retry_update_check = ui.button("Try again").clicked();
-                            }
-                        }
-                    });
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label("Built for Project Sunrise 0.1 through 0.3.1.");
-                    ui.hyperlink_to("Project Sunrise on GitHub", SUNRISE_URL);
-                    ui.add_space(6.0);
-                    ui.label("Local Destiny package parsing is powered by tiger-pkg.");
-                    ui.hyperlink_to("tiger-pkg on GitHub", TIGER_PKG_URL);
-                    ui.add_space(6.0);
-                    let definition_manifest_version = unnamed_plugs::manifest_version();
-                    ui.label(format!(
-                        "Thanks to Nox for their research on unnamed plugs. Stat values are verified from manifest {definition_manifest_version}."
-                    ));
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "This project is not affiliated with or endorsed by Bungie Inc. or Sony Interactive Entertainment. Destiny and related intellectual property are owned by Bungie Inc. and their respective rights holders.",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                });
-            if retry_update_check {
-                self.update_check.retry(ctx);
-            }
-        }
+        self.draw_about_window(ctx);
 
-        if let Some(task) = &self.catalog_task {
-            let progress = task.progress;
-            let title = task.kind.title();
-            let path = match &task.kind {
-                CatalogTaskKind::LoadInstall(pending) => &pending.install_path,
-                CatalogTaskKind::Rebuild => &self.install_path,
-            };
-            egui::Modal::new("catalog_task_progress".into()).show(ctx, |ui| {
-                ui.set_width(500.0);
-                ui.heading(title);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.strong(progress.message);
-                });
-                ui.add_space(10.0);
-                let mut bar = egui::ProgressBar::new(progress.fraction()).desired_width(480.0);
-                if progress.total > 0 {
-                    bar = bar.show_percentage();
-                } else {
-                    bar = bar.animate(true);
-                }
-                ui.add(bar);
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(path.display().to_string())
-                        .weak()
-                        .small(),
-                );
-            });
-        }
+        self.draw_catalog_progress(ctx);
 
         if let Some(install_path) = self.pending_install_choice.clone() {
             let mut selected = None;
@@ -1432,7 +1694,7 @@ impl eframe::App for SundialApp {
                 ui.label("Even basic settings edits can theoretically cause problems, but this mode makes every discovered plug available in every socket. Saving arbitrary or incompatible combinations greatly increases the risk of leaving a character or the entire settings file unusable.");
                 ui.add_space(8.0);
                 ui.label("Every Sundial save creates a timestamped backup under %LOCALAPPDATA%\\Sundial\\backups.");
-                ui.label("If the game no longer loads, open Paths > Restore Sunrise defaults. Sundial backs up the current file again before restoring the defaults bundled with Project Sunrise.");
+                ui.label("If the game no longer loads, open Preferences > Recovery. Sundial backs up the current file again before restoring the defaults bundled with Project Sunrise.");
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("I understand — enable").clicked() {
@@ -1447,15 +1709,21 @@ impl eframe::App for SundialApp {
             self.confirmation = (!enable && !cancel).then_some(ConfirmationDialog::ReallyUnsafe);
             if enable {
                 self.plug_selection_mode = PlugSelectionMode::AnyPlug;
+                if self.remember_plug_selection_mode_after_confirmation {
+                    self.default_plug_selection_mode = PlugSelectionMode::AnyPlug;
+                }
                 self.really_unsafe_warning_acknowledged = true;
+                self.remember_plug_selection_mode_after_confirmation = false;
                 if let Err(error) = self.save_preferences() {
                     self.set_status(
                         format!(
-                            "Really unsafe mode enabled, but the warning acknowledgement could not be remembered: {error}"
+                            "Really unsafe mode enabled, but the preference could not be saved: {error}"
                         ),
                         true,
                     );
                 }
+            } else if cancel {
+                self.remember_plug_selection_mode_after_confirmation = false;
             }
         }
 
@@ -1588,7 +1856,7 @@ fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLo
     );
 }
 
-fn parse_args() -> (Option<InstallSelection>, bool, bool) {
+fn parse_args() -> (Option<InstallSelection>, bool, Preferences) {
     let preferences = load_preferences();
     let mut install = preferences.install_selection();
     let mut check_only = false;
@@ -1607,11 +1875,7 @@ fn parse_args() -> (Option<InstallSelection>, bool, bool) {
             _ => {}
         }
     }
-    (
-        install,
-        check_only,
-        preferences.really_unsafe_warning_acknowledged,
-    )
+    (install, check_only, preferences)
 }
 
 fn check_install(selection: InstallSelection) -> Result<String, String> {
@@ -1639,8 +1903,11 @@ fn check_install(selection: InstallSelection) -> Result<String, String> {
     } else {
         String::new()
     };
+    let schema_version = game_settings::schema_version(&app.document)
+        .ok_or("Validated settings are missing a schema version")?;
     Ok(format!(
-        "Valid: Project Sunrise {}, {} characters, {} compatible local catalog items loaded, save size {} bytes{}",
+        "Valid: settings schema {}, detected Project Sunrise {}, {} characters, {} compatible local catalog items loaded, save size {} bytes{}",
+        schema_version,
         app.sunrise_version,
         app.character_count(),
         app.manifest.items.len(),
@@ -1653,8 +1920,25 @@ fn validate_for_check(document: &Value) -> Result<(), String> {
     validate_document(document).map_err(|error| format!("Invalid settings: {error}"))
 }
 
+fn open_directory(path: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(path)
+        .map_err(|error| format!("Could not create {}: {error}", path.display()))?;
+    let mut command = if cfg!(target_os = "windows") {
+        Command::new("explorer.exe")
+    } else if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else {
+        Command::new("xdg-open")
+    };
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+}
+
 pub(crate) fn run() -> eframe::Result {
-    let (install, check_only, really_unsafe_warning_acknowledged) = parse_args();
+    let (install, check_only, preferences) = parse_args();
     if check_only {
         let Some(selection) = install else {
             eprintln!("Sundial: --check requires a saved install or --install <folder>");
@@ -1669,11 +1953,13 @@ pub(crate) fn run() -> eframe::Result {
         }
         return Ok(());
     }
+    #[cfg(windows)]
+    set_windows_app_identity();
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/sundial-alt.png"))
         .expect("embedded Sundial icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 760.0])
+            .with_inner_size([1_240.0, 800.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
         ..Default::default()
@@ -1682,15 +1968,72 @@ pub(crate) fn run() -> eframe::Result {
         "Sundial",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(StartupApp::new(
-                install,
-                really_unsafe_warning_acknowledged,
-            )))
+            #[cfg(windows)]
+            set_windows_taskbar_icon(cc);
+            cc.egui_ctx.set_theme(preferences.color_theme.egui_theme());
+            Ok(Box::new(StartupApp::new(install, preferences)))
         }),
     )
 }
 
+#[cfg(windows)]
+fn set_windows_app_identity() {
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    let app_id = "KyleThompson.Sundial\0".encode_utf16().collect::<Vec<_>>();
+    let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+}
+
+#[cfg(windows)]
+fn set_windows_taskbar_icon(context: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            GCLP_HICON, GCLP_HICONSM, GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON,
+            LR_SHARED, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW,
+            SetClassLongPtrW, WM_SETICON,
+        },
+    };
+
+    let Ok(window_handle) = context.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(window_handle) = window_handle.as_raw() else {
+        return;
+    };
+    let window = window_handle.hwnd.get() as HWND;
+
+    // build.rs embeds the ICO as resource 1. Shared resource handles remain valid
+    // for the process lifetime and do not need application-side destruction.
+    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+    for (kind, class_index, width_metric, height_metric) in [
+        (ICON_BIG, GCLP_HICON, SM_CXICON, SM_CYICON),
+        (ICON_SMALL, GCLP_HICONSM, SM_CXSMICON, SM_CYSMICON),
+    ] {
+        let width = unsafe { GetSystemMetrics(width_metric) };
+        let height = unsafe { GetSystemMetrics(height_metric) };
+        let icon = unsafe {
+            LoadImageW(
+                module,
+                std::ptr::without_provenance(1),
+                IMAGE_ICON,
+                width,
+                height,
+                LR_SHARED,
+            )
+        };
+        if icon.is_null() {
+            continue;
+        }
+
+        unsafe {
+            SendMessageW(window, WM_SETICON, kind as usize, icon as isize);
+            SetClassLongPtrW(window, class_index, icon as isize);
+        }
+    }
+}
+
 #[cfg(test)]
-#[path = "app_tests.rs"]
 mod tests;

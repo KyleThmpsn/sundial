@@ -8,30 +8,16 @@ use serde_json::Value;
 
 use crate::{game_settings, storage};
 
-use super::{
-    Preferences, SLOTS, SettingsLayout, SettingsPathResolution, equipment::parse_unsigned_value,
-    inventory,
-};
+use crate::hash::parse_unsigned_value;
+
+use super::{Preferences, SLOTS, SettingsLayout, SettingsPathResolution, inventory};
 
 const SUNRISE_MODULE_RELATIVE_PATH: &str = r"bin\x64\steam_api64.dll";
 const MAX_VERSION_INFO_BYTES: u32 = 1024 * 1024;
 const VERSION_INFO_SIGNATURE: u32 = 0xFEEF_04BD;
 
-pub(super) fn detect_sunrise_version(install_path: &Path, document: &Value) -> String {
-    if let Some(version) = installed_sunrise_module_version(install_path) {
-        return version;
-    }
-    sunrise_version_from_schema(game_settings::schema_version(document))
-}
-
-pub(super) fn sunrise_version_from_schema(schema: Option<u64>) -> String {
-    match schema {
-        Some(2) => "0.1".into(),
-        Some(3) => "0.2 or 0.2.1".into(),
-        Some(4..=5) => "0.3 development".into(),
-        Some(6) => "0.3.1".into(),
-        Some(_) | None => "Unknown".into(),
-    }
+pub(super) fn detect_sunrise_version(install_path: &Path) -> String {
+    installed_sunrise_module_version(install_path).unwrap_or_else(|| "Not detected".into())
 }
 
 fn installed_sunrise_module_version(install_path: &Path) -> Option<String> {
@@ -373,10 +359,7 @@ pub(super) fn prepare_settings(document: &Value) -> Result<PreparedSettings, Str
 }
 
 pub(super) fn save_json(path: &Path, document: &Value) -> Result<SaveJsonResult, String> {
-    let backup_root = preferences_path()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .ok_or("Could not locate the local backup folder")?
-        .join("backups");
+    let backup_root = backups_path().ok_or("Could not locate the local backup folder")?;
     save_json_with_backup_root(path, document, &backup_root)
 }
 
@@ -1031,6 +1014,18 @@ const fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, 
 pub(super) fn preferences_path() -> Option<PathBuf> {
     env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
+        .map(|path| path.join("Sundial").join("preferences.json"))
+}
+
+pub(super) fn backups_path() -> Option<PathBuf> {
+    preferences_path()?
+        .parent()
+        .map(|path| path.join("backups"))
+}
+
+fn legacy_preferences_path() -> Option<PathBuf> {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
         .map(|path| path.join("Sundial").join("paths.json"))
 }
 
@@ -1080,8 +1075,13 @@ pub(super) fn missing_settings_message(install: &Path) -> String {
 }
 
 pub(super) fn load_preferences() -> Preferences {
-    preferences_path()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+    [preferences_path(), legacy_preferences_path()]
+        .into_iter()
+        .flatten()
+        .find_map(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+        })
         .unwrap_or_default()
 }

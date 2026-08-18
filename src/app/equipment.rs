@@ -1,23 +1,23 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use eframe::egui;
 use serde_json::Value;
 
 use crate::{
-    catalog::{self, AbilityChoice, ItemDef, format_hash},
+    catalog::{self, AbilityChoice, CatalystSocket, CatalystState, ItemDef},
     game_settings,
+    hash::{format_hash, parse_hash, parse_unsigned_value},
 };
 
 use super::{
-    ARMOR_SLOTS, ConfirmationDialog, ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT,
-    PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SLOTS, SundialApp,
-    WEAPON_SLOTS, settings::character_ability_issue,
+    ANY_PLUG_WARNING, ARMOR_SLOTS, ConfirmationDialog, ITEM_PICKER_MAX_HEIGHT,
+    ITEM_PICKER_MIN_HEIGHT, MATCHING_SOCKET_WARNING, PLUG_PICKER_MAX_HEIGHT,
+    PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SLOTS, SundialApp, WEAPON_SLOTS,
+    settings::character_ability_issue,
 };
 
-#[path = "item_editor.rs"]
-pub(super) mod item_editor;
-pub(super) use item_editor::NativePlugDefault;
-use item_editor::{
+use super::item_editor::{self, NativePlugDefault};
+use super::item_editor::{
     ClearDefinitionChoice, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary,
     ItemEditorAction, ItemHeader, NumericItemFields, PickerHeight, PlugChoice, PlugPickerSnapshot,
 };
@@ -66,6 +66,17 @@ pub(super) struct EquipmentSlotCard<'a> {
     pub editable: bool,
     pub header_fill: Option<egui::Color32>,
     pub snapshot: Option<&'a EquippedItemSnapshot>,
+}
+
+struct EquipmentPlugEditor<'a> {
+    id_scope: &'static str,
+    character_index: usize,
+    slot: &'static str,
+    item: &'a ItemDef,
+    authored_plugs: Option<&'a Value>,
+    guided_editable: bool,
+    flags_editable: bool,
+    catalyst: Option<CatalystSocket>,
 }
 
 impl SundialApp {
@@ -156,24 +167,20 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        let Some(plugs_value) = self
-            .characters_mut()
-            .and_then(|chars| chars.get_mut(character))
-            .and_then(|ch| ch.pointer_mut(&format!("/equipment/{slot}/plugs")))
-        else {
-            self.set_status(format!("Missing plugs value for {slot}"), true);
-            return;
-        };
-        let Some(plugs) = materialize_authored_plugs(plugs_value, default_plugs) else {
-            self.set_status(format!("Invalid plugs value for {slot}"), true);
-            return;
-        };
-        while plugs.len() <= socket_index {
-            plugs.push(Value::Null);
+        match set_equipment_item_plug(
+            &mut self.document,
+            character,
+            slot,
+            socket_index,
+            default_plugs,
+            hash,
+        ) {
+            Ok(()) => {
+                self.dirty = true;
+                self.set_status(format!("Updated {slot} {socket_label}"), false);
+            }
+            Err(error) => self.set_status(error, true),
         }
-        plugs[socket_index] = hash.map(format_hash).map_or(Value::Null, Value::String);
-        self.dirty = true;
-        self.set_status(format!("Updated {slot} {socket_label}"), false);
     }
 
     fn select_equipment_level(&mut self, character: usize, slot: &str, level: i64) {
@@ -200,7 +207,41 @@ impl SundialApp {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
-                    format!("Updated {} lock state", equipment_slot_label(slot)),
+                    format!("Updated {} item state", equipment_slot_label(slot)),
+                    false,
+                );
+            }
+            Err(error) => self.set_status(error, true),
+        }
+    }
+
+    fn select_equipment_catalyst(
+        &mut self,
+        character: usize,
+        slot: &str,
+        default_plugs: &[Option<String>],
+        catalyst: CatalystSocket,
+        state: CatalystState,
+    ) {
+        if !self.equipment_mutation_allowed() || !self.equipment_flags_mutation_allowed() {
+            return;
+        }
+        match set_equipment_item_catalyst(
+            &mut self.document,
+            character,
+            slot,
+            default_plugs,
+            catalyst,
+            state,
+        ) {
+            Ok(()) => {
+                self.dirty = true;
+                self.set_status(
+                    format!(
+                        "Set {} catalyst to {}",
+                        equipment_slot_label(slot),
+                        state.label()
+                    ),
                     false,
                 );
             }
@@ -254,19 +295,19 @@ impl SundialApp {
             .map(|item| item.abilities.clone())
             .unwrap_or_default();
         let mut attunement_index = selected_attunement_index(&abilities, super_ability, melee);
-        let all_subclasses: Vec<ItemDef> = self
+        let all_subclasses: Vec<Arc<ItemDef>> = self
             .manifest
             .items
             .iter()
             .filter(|item| item.bucket_hash == 3_284_755_031)
             .cloned()
             .collect();
-        let mut subclasses: Vec<ItemDef> = all_subclasses
+        let mut subclasses: Vec<Arc<ItemDef>> = all_subclasses
             .iter()
             .filter(|item| item.class_type == class_type)
             .cloned()
             .collect();
-        let mut selected_subclass = None::<ItemDef>;
+        let mut selected_subclass = None::<Arc<ItemDef>>;
         let stored_warning = self
             .source_warning
             .as_deref()
@@ -292,10 +333,22 @@ impl SundialApp {
             );
         }
         ui.add_space(8.0);
-        egui::Grid::new("character_fields")
-            .num_columns(2)
-            .spacing([18.0, 8.0])
+        let (group_columns, group_widths) = character_field_group_layout(ui.available_width());
+        let subclass_selector_width = (group_widths[1] - 98.0).clamp(140.0, 260.0);
+        let ability_selector_width = (group_widths[2] - 138.0).clamp(140.0, 260.0);
+        let mut previous_attunement = attunement_index;
+        egui::Grid::new(("character_field_groups", index))
+            .num_columns(group_columns)
+            .spacing([18.0, 12.0])
             .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(group_widths[0]);
+                    ui.strong("Identity");
+                    ui.add_space(3.0);
+                    egui::Grid::new(("character_identity_fields", index))
+                        .num_columns(2)
+                        .spacing([18.0, 8.0])
+                        .show(ui, |ui| {
                 ui.label("Class");
                 combo_u64(
                     ui,
@@ -336,13 +389,27 @@ impl SundialApp {
                 ui.label("Gender");
                 combo_u64(ui, "gender", &mut gender, &[(0, "Male"), (1, "Female")]);
                 ui.end_row();
+                        });
+                });
+                if group_columns == 1 {
+                    ui.end_row();
+                }
+
+                ui.vertical(|ui| {
+                    ui.set_width(group_widths[1]);
+                    ui.strong("Subclass");
+                    ui.add_space(3.0);
+                    egui::Grid::new(("character_subclass_fields", index))
+                        .num_columns(2)
+                        .spacing([18.0, 5.0])
+                        .show(ui, |ui| {
                 ui.label("Subclass");
                 let selected_name = current_subclass_hash
                     .and_then(|hash| subclasses.iter().find(|item| item.hash == hash))
                     .map_or("Unknown subclass", |item| item.name.as_str());
                 egui::ComboBox::from_id_salt("subclass")
                     .selected_text(selected_name)
-                    .width(260.0)
+                    .width(subclass_selector_width)
                     .show_ui(ui, |ui| {
                         for subclass in &subclasses {
                             let selected = current_subclass_hash == Some(subclass.hash);
@@ -359,15 +426,16 @@ impl SundialApp {
                         }
                     });
                 ui.end_row();
+
                 ui.label("Attunement");
-                let previous_attunement = attunement_index;
+                previous_attunement = attunement_index;
                 let selected_attunement = abilities
                     .attunements
                     .get(attunement_index)
                     .map_or("No attunement data", |attunement| attunement.name.as_str());
                 egui::ComboBox::from_id_salt("attunement")
                     .selected_text(selected_attunement)
-                    .width(260.0)
+                    .width(subclass_selector_width)
                     .show_ui(ui, |ui| {
                         for (choice_index, attunement) in abilities.attunements.iter().enumerate() {
                             ui.selectable_value(
@@ -378,38 +446,47 @@ impl SundialApp {
                         }
                     });
                 ui.end_row();
-                if let Some(attunement) = abilities.attunements.get(attunement_index) {
-                    let current_pair_is_valid = attunement.melee.entry == melee
-                        && attunement
-                            .super_abilities
-                            .iter()
-                            .any(|choice| choice.entry == super_ability);
-                    if attunement_index != previous_attunement || !current_pair_is_valid {
-                        melee = attunement.melee.entry;
-                        super_ability = attunement
-                            .super_abilities
-                            .first()
-                            .map_or(10, |choice| choice.entry);
-                    }
-                }
-                if let Some(attunement) = abilities.attunements.get(attunement_index) {
-                    ui.label("Attunement perks");
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(
-                                attunement
-                                    .perks
-                                    .iter()
-                                    .map(|choice| choice.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(" • "),
-                            )
-                            .weak(),
-                        )
-                        .wrap(),
-                    );
+
+                if let Some(attunement) = abilities.attunements.get(attunement_index)
+                    && !attunement.perks.is_empty()
+                {
+                    ui.label("");
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        for perk in &attunement.perks {
+                            ui.label(&perk.name);
+                        }
+                    });
                     ui.end_row();
                 }
+                        });
+                    if let Some(attunement) = abilities.attunements.get(attunement_index) {
+                        let current_pair_is_valid = attunement.melee.entry == melee
+                            && attunement
+                                .super_abilities
+                                .iter()
+                                .any(|choice| choice.entry == super_ability);
+                        if attunement_index != previous_attunement || !current_pair_is_valid {
+                            melee = attunement.melee.entry;
+                            super_ability = attunement
+                                .super_abilities
+                                .first()
+                                .map_or(10, |choice| choice.entry);
+                        }
+                    }
+                });
+                if group_columns == 1 {
+                    ui.end_row();
+                }
+
+                ui.vertical(|ui| {
+                    ui.set_width(group_widths[2]);
+                    ui.strong("Abilities");
+                    ui.add_space(3.0);
+                    egui::Grid::new(("character_ability_fields", index))
+                        .num_columns(2)
+                        .spacing([18.0, 8.0])
+                        .show(ui, |ui| {
                 for (label, id, value, choices) in [
                     (
                         "Movement ability",
@@ -425,7 +502,7 @@ impl SundialApp {
                     ),
                 ] {
                     ui.label(label);
-                    ability_combo(ui, id, value, choices);
+                    ability_combo(ui, id, value, choices, ability_selector_width);
                     ui.end_row();
                 }
                 if let Some(attunement) = abilities.attunements.get(attunement_index) {
@@ -456,7 +533,7 @@ impl SundialApp {
                         ),
                     ] {
                         ui.label(label);
-                        ability_combo(ui, id, value, choices);
+                        ability_combo(ui, id, value, choices, ability_selector_width);
                         ui.end_row();
                     }
                 }
@@ -468,7 +545,11 @@ impl SundialApp {
                     "class_ability",
                     &mut class_ability,
                     &abilities.class_ability,
+                    ability_selector_width,
                 );
+                ui.end_row();
+                        });
+                });
                 ui.end_row();
             });
 
@@ -551,24 +632,21 @@ impl SundialApp {
             if requested_plug_selection_mode == PlugSelectionMode::AnyPlug
                 && !self.really_unsafe_warning_acknowledged
             {
+                self.remember_plug_selection_mode_after_confirmation = false;
                 self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
             } else {
                 self.plug_selection_mode = requested_plug_selection_mode;
             }
         }
-        match self.plug_selection_mode {
-            PlugSelectionMode::Supported => {}
-            PlugSelectionMode::MatchingSocketType => {
-                ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                    "Warning: unsupported plug combinations may break items, corrupt the loadout, or crash Sunrise/Destiny 2.",
-                );
-            }
-            PlugSelectionMode::AnyPlug => {
-                ui.colored_label(
-                            ui.visuals().error_fg_color,
-                    "Danger: every discovered plug is available for every socket, greatly increasing the chance that the game will not load or will crash.",
-                );
+        if self.show_safety_warnings {
+            match self.plug_selection_mode {
+                PlugSelectionMode::Supported => {}
+                PlugSelectionMode::MatchingSocketType => {
+                    ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
+                }
+                PlugSelectionMode::AnyPlug => {
+                    ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
+                }
             }
         }
     }
@@ -583,37 +661,48 @@ impl SundialApp {
             .unwrap_or(0);
 
         ui.add_space(14.0);
-        ui.heading("Equipped loadout");
-        ui.label("Search by item name or 0x hash. Choosing an item also installs its package-default plugs.");
-        ui.label(
-            egui::RichText::new(
-                "Some character changes may leave the character-select preview appearing to load, while the in-game model still reflects them.",
-            )
-            .weak(),
-        );
+        ui.horizontal(|ui| {
+            ui.heading("Equipped loadout");
+            if ui
+                .add(egui::Button::new("Inventory ›").small())
+                .on_hover_text("Open this character's stored inventory")
+                .clicked()
+            {
+                self.select_view(super::ViewMode::CharacterInventory);
+            }
+        });
+        ui.label("Click an item header or select Swap to browse or search. Choosing an item also installs its package-default plugs.");
         ui.add_enabled_ui(editable, |ui| self.draw_item_safety_controls(ui));
         ui.add_space(6.0);
 
-        for &(slot, label, bucket) in SLOTS {
-            if slot == "subclass" {
-                continue;
-            }
-            self.draw_equipment_slot_card(
-                ui,
-                character_index,
-                EquipmentSlotCard {
-                    id_scope: "characters-equipment",
-                    slot,
-                    label,
-                    bucket_hash: bucket,
-                    class_type,
-                    editable,
-                    header_fill: None,
-                    snapshot: None,
-                },
-            );
-            ui.add_space(5.0);
-        }
+        let slots = SLOTS
+            .iter()
+            .copied()
+            .filter(|(slot, _, _)| *slot != "subclass")
+            .collect::<Vec<_>>();
+        let (minimum_card_width, maximum_card_width) = self.item_card_width.dimensions();
+        item_editor::draw_responsive_item_cards(
+            ui,
+            &slots,
+            minimum_card_width,
+            maximum_card_width,
+            |ui, &(slot, label, bucket)| {
+                self.draw_equipment_slot_card(
+                    ui,
+                    character_index,
+                    EquipmentSlotCard {
+                        id_scope: "characters-equipment",
+                        slot,
+                        label,
+                        bucket_hash: bucket,
+                        class_type,
+                        editable,
+                        header_fill: None,
+                        snapshot: None,
+                    },
+                );
+            },
+        );
     }
 
     pub(super) fn draw_equipment_slot_card(
@@ -632,40 +721,60 @@ impl SundialApp {
             header_fill,
             snapshot,
         } = card;
-        let equipped_value = self
-            .characters()
-            .and_then(|chars| chars.get(character_index))
-            .and_then(|ch| ch.pointer(&format!("/equipment/{slot}")))
-            .cloned();
-        let is_empty = equipped_value.as_ref().is_some_and(Value::is_null);
-        let current_level = equipped_value
+        let (
+            is_empty,
+            current_level,
+            current_flags,
+            current_hash,
+            current_hash_text,
+            current_soid_text,
+            authored_plugs,
+        ) = {
+            let equipped = self
+                .characters()
+                .and_then(|characters| characters.get(character_index))
+                .and_then(|character| character.get("equipment"))
+                .and_then(Value::as_object)
+                .and_then(|equipment| equipment.get(slot));
+            let hash_value = equipped.and_then(|item| item.get("definition_hash"));
+            let hash = hash_value.and_then(parse_unsigned_value);
+            (
+                equipped.is_some_and(Value::is_null),
+                equipped
+                    .and_then(|item| item.get("level"))
+                    .and_then(Value::as_i64),
+                equipped
+                    .and_then(|item| item.get("flags"))
+                    .and_then(parse_unsigned_value)
+                    .and_then(|flags| u8::try_from(flags).ok()),
+                hash,
+                hash.map_or_else(
+                    || {
+                        hash_value
+                            .and_then(Value::as_str)
+                            .unwrap_or("<missing>")
+                            .to_owned()
+                    },
+                    format_hash,
+                ),
+                equipped
+                    .and_then(|item| item.get("instance_soid"))
+                    .map(|value| {
+                        parse_unsigned_value(value).map_or_else(
+                            || field_display_text(Some(value)),
+                            |soid| format!("0x{soid:016X}"),
+                        )
+                    }),
+                equipped.and_then(|item| item.get("plugs")).cloned(),
+            )
+        };
+        let current =
+            current_hash.and_then(|hash| self.manifest.item_handle_for_bucket(hash, bucket));
+        let catalyst = current
             .as_ref()
-            .and_then(|item| item.get("level"))
-            .and_then(Value::as_i64);
-        let current_flags = equipped_value
-            .as_ref()
-            .and_then(|item| item.get("flags"))
-            .and_then(parse_unsigned_value)
-            .and_then(|flags| u8::try_from(flags).ok());
-        let current_hash_value = self
-            .characters()
-            .and_then(|chars| chars.get(character_index))
-            .and_then(|ch| ch.pointer(&format!("/equipment/{slot}/definition_hash")))
-            .cloned();
-        let current_hash = current_hash_value.as_ref().and_then(parse_unsigned_value);
-        let current_hash_text = current_hash.map_or_else(
-            || {
-                current_hash_value
-                    .as_ref()
-                    .and_then(Value::as_str)
-                    .unwrap_or("<missing>")
-                    .to_owned()
-            },
-            format_hash,
-        );
-        let current = current_hash
-            .and_then(|hash| self.manifest.get_for_bucket(hash, bucket))
-            .cloned();
+            .and_then(|item| self.manifest.catalyst_socket(item));
+        let masterwork_feature_present =
+            super::inventory::inventory_masterwork_feature_present(current_flags);
         let definition_valid = is_empty
             || current.as_ref().is_some_and(|item| {
                 item.bucket_hash == bucket
@@ -676,299 +785,371 @@ impl SundialApp {
         let guided_editable = editable && snapshot_valid;
         let flags_editable =
             super::inventory::schema_mode(&self.document).can_mutate_equipment_flags();
+        let equipped_label = equipped_header_label(id_scope, label);
+        let header_soid = snapshot
+            .map(|snapshot| snapshot.instance_soid_text.as_str())
+            .or(current_soid_text.as_deref());
         ui.push_id((id_scope, character_index, slot), |ui| {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let definition = if is_empty {
-                    DefinitionSummary::Empty
-                } else if let Some(item) = &current {
-                    DefinitionSummary::Known {
-                        name: &item.name,
-                        hash: &current_hash_text,
-                    }
-                } else {
-                    DefinitionSummary::Unknown {
-                        hash: &current_hash_text,
-                    }
-                };
-                let header = ItemHeader {
-                    label: Some(label),
-                    definition,
-                    valid,
-                    invalid_message: if definition_valid {
-                        "invalid equipped item"
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::ZERO)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let definition = if is_empty {
+                        DefinitionSummary::Empty
+                    } else if let Some(item) = &current {
+                        DefinitionSummary::Known {
+                            name: &item.name,
+                            hash: &current_hash_text,
+                            type_name: &item.type_name,
+                        }
                     } else {
-                        "invalid for slot/class"
-                    },
-                };
-                if let Some(fill) = header_fill {
-                    egui::Frame::NONE
-                        .fill(fill)
-                        .inner_margin(egui::Margin::symmetric(4, 1))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            item_editor::draw_item_header(ui, header);
-                        });
-                } else {
-                    item_editor::draw_item_header(ui, header);
-                }
+                        DefinitionSummary::Unknown {
+                            hash: &current_hash_text,
+                        }
+                    };
+                    let header = ItemHeader {
+                        label: Some(&equipped_label),
+                        soid: header_soid,
+                        definition,
+                        icon: None,
+                        fill: header_fill
+                            .unwrap_or_else(|| item_editor::muted_item_header_fill(ui)),
+                        valid,
+                        invalid_message: if definition_valid {
+                            "invalid equipped item"
+                        } else {
+                            "invalid for slot/class"
+                        },
+                    };
+                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
+                        ui,
+                        &self.manifest,
+                        current_hash,
+                        header,
+                        |_| {},
+                    );
 
-                if let Some(snapshot) = snapshot {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("SOID").weak());
-                        ui.monospace(&snapshot.instance_soid_text);
-                    });
-                    if !snapshot.issues.is_empty() {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            snapshot.issues.join(" · "),
-                        )
-                        .on_hover_text(format!("Authored item: {}", snapshot.raw_item_text));
-                        ui.label(
-                            egui::RichText::new(
-                                "Guided edits are disabled for this malformed equipped item.",
+                    if let Some(snapshot) = snapshot {
+                        if !snapshot.issues.is_empty() {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                snapshot.issues.join(" · "),
                             )
-                            .weak(),
-                        );
-                    }
-                }
-
-                if !is_empty {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(guided_editable, |ui| {
-                            if let Some(level) = current_level {
-                                for action in item_editor::draw_level_and_quantity(
-                                    ui,
-                                    ("equipment-numeric", character_index, slot),
-                                    NumericItemFields {
-                                        level: Some(level),
-                                        quantity: None,
-                                        quantity_max: None,
-                                    },
-                                ) {
-                                    if let ItemEditorAction::SetLevel { level } = action {
-                                        self.select_equipment_level(character_index, slot, level);
-                                    }
-                                }
-                            } else {
-                                ui.label("Power");
-                                ui.label(egui::RichText::new("<invalid or missing>").weak());
-                            }
-                        });
-
-                        ui.add_space(8.0);
-                        ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
-                            let mut locked = current_flags.unwrap_or_default()
-                                & super::inventory::INVENTORY_FLAG_LOCKED
-                                != 0;
-                            if ui.checkbox(&mut locked, "Locked").changed() {
-                                self.select_equipment_flags(
-                                    character_index,
-                                    slot,
-                                    super::inventory::set_inventory_locked_flag(
-                                        current_flags,
-                                        locked,
-                                    ),
-                                );
-                            }
-                        });
-                    });
-                }
-                let key = format!("{id_scope}:{character_index}:{slot}");
-                let picker_action = {
-                    let manifest = &self.manifest;
-                    let show_dummy_items = self.show_dummy_items;
-                    let query = self.searches.entry(key.clone()).or_default();
-                    ui.add_enabled_ui(guided_editable, |ui| {
-                        item_editor::draw_definition_picker(
-                            ui,
-                            ("equipment-definition", id_scope, character_index, slot),
-                            query,
-                            PickerHeight {
-                                min: ITEM_PICKER_MIN_HEIGHT,
-                                max: ITEM_PICKER_MAX_HEIGHT,
-                            },
-                            |query_value| {
-                                let candidates = if query_value.trim().is_empty() {
-                                    manifest.browse(bucket, class_type, show_dummy_items)
-                                } else {
-                                    manifest.search(
-                                        query_value,
-                                        bucket,
-                                        class_type,
-                                        show_dummy_items,
-                                    )
-                                };
-                                let needle = query_value.to_lowercase();
-                                let definitions =
-                                    equipment_definition_choices(candidates, query_value);
-                                let show_empty_weapon = WEAPON_SLOTS.contains(&slot)
-                                    && (query_value.trim().is_empty()
-                                        || "empty weapon".contains(&needle));
-                                DefinitionPickerChoices {
-                                    definitions,
-                                    clear: show_empty_weapon.then(|| ClearDefinitionChoice {
-                                        label: "Empty weapon".to_owned(),
-                                        tooltip: "Sets this equipment slot to empty.".to_owned(),
-                                        selected: is_empty,
-                                    }),
-                                    empty_message: "No compatible installed items found".to_owned(),
-                                }
-                            },
-                        )
-                    })
-                    .inner
-                };
-                match picker_action {
-                    Some(ItemEditorAction::ClearDefinition) => {
-                        self.empty_weapon(character_index, slot);
-                        self.searches.insert(key.clone(), String::new());
-                    }
-                    Some(ItemEditorAction::SetDefinition { hash }) => {
-                        if let Some(item) = self.manifest.get_for_bucket(hash, bucket).cloned() {
-                            if slot == "subclass" {
-                                self.select_subclass_item(character_index, &item);
-                            } else {
-                                self.select_item(character_index, slot, &item);
-                            }
-                            self.searches.insert(key.clone(), String::new());
+                            .on_hover_text(format!("Authored item: {}", snapshot.raw_item_text));
+                            ui.label(
+                                egui::RichText::new(
+                                    "Guided edits are disabled for this malformed equipped item.",
+                                )
+                                .weak(),
+                            );
                         }
                     }
-                    _ => {}
-                }
 
-                if let Some(item) = &current {
-                    let plugs_value = self
-                        .characters()
-                        .and_then(|chars| chars.get(character_index))
-                        .and_then(|ch| ch.pointer(&format!("/equipment/{slot}/plugs")));
-                    let (current_plugs, native_defaults) =
-                        displayed_plugs(plugs_value, &item.default_plugs);
-                    if !item.sockets.is_empty() || !current_plugs.is_empty() {
-                        let title = if native_defaults {
-                            format!("Plugs ({}, native defaults)", current_plugs.len())
-                        } else {
-                            format!("Plugs ({})", current_plugs.len())
-                        };
-                        egui::CollapsingHeader::new(title)
-                            .id_salt(("equipment-plugs", id_scope, character_index, slot))
-                            .show(ui, |ui| {
-                                let socket_count = item.sockets.len().max(current_plugs.len());
-                                // A plug's array index is part of the Sunrise save schema.
-                                // Keep sockets in that exact order even when a label is unknown.
-                                for socket_index in 0..socket_count {
-                                    let current_hash = current_plugs
-                                        .get(socket_index)
-                                        .and_then(parse_unsigned_value);
-                                    let native_default =
-                                        native_plug_default(&item.default_plugs, socket_index);
-                                    let allowed = item
-                                        .sockets
-                                        .get(socket_index)
-                                        .map(|socket| match self.plug_selection_mode {
-                                            PlugSelectionMode::Supported => {
-                                                self.manifest.socket_options(socket)
-                                            }
-                                            PlugSelectionMode::MatchingSocketType => self
-                                                .manifest
-                                                .socket_type_options(socket.socket_type),
-                                            PlugSelectionMode::AnyPlug => {
-                                                self.manifest.all_plug_options()
-                                            }
-                                        })
-                                        .unwrap_or_default();
-                                    let current_label = current_hash.map_or_else(
-                                        || "None".to_owned(),
-                                        |hash| self.manifest.plug_label(hash),
-                                    );
-                                    let show_plug_types =
-                                        self.plug_selection_mode == PlugSelectionMode::AnyPlug;
-                                    let choices = allowed
-                                        .iter()
-                                        .map(|hash| PlugChoice {
-                                            hash: *hash,
-                                            label: self.manifest.plug_label(*hash),
-                                            type_name: if show_plug_types {
-                                                self.manifest
-                                                    .plug_type_name(*hash)
-                                                    .unwrap_or_default()
-                                                    .to_owned()
-                                            } else {
-                                                String::new()
+                    let mut swap_requested = false;
+                    let swap_response = ui
+                        .horizontal(|ui| {
+                            ui.add_space(4.0);
+                            if !is_empty {
+                                ui.add_enabled_ui(guided_editable, |ui| {
+                                    if let Some(level) = current_level {
+                                        for action in item_editor::draw_level_and_quantity(
+                                            ui,
+                                            ("equipment-numeric", character_index, slot),
+                                            NumericItemFields {
+                                                level: Some(level),
+                                                quantity: None,
+                                                quantity_max: None,
                                             },
-                                        })
-                                        .collect::<Vec<_>>();
-                                    let searchable = choices.len() > 12;
-                                    let plug_search_key = format!(
-                                        "plug-search:{id_scope}:{character_index}:{slot}:{socket_index}"
-                                    );
-                                    let mut plug_query = self
-                                        .plug_searches
-                                        .get(&plug_search_key)
-                                        .cloned()
-                                        .unwrap_or_default();
-                                    let socket_label = item.sockets.get(socket_index).map_or_else(
-                                        || format!("Socket {}", socket_index + 1),
-                                        |socket| socket.display_label(socket_index),
-                                    );
-                                    let snapshot = PlugPickerSnapshot {
-                                        socket_index,
-                                        socket_label,
-                                        current_hash,
-                                        current_label,
-                                        native_default,
-                                        native_default_label: match native_default {
-                                            Some(NativePlugDefault::Plug(hash)) => {
-                                                Some(self.manifest.plug_label(hash))
-                                            }
-                                            _ => None,
-                                        },
-                                        choices,
-                                        show_types: show_plug_types,
-                                    };
-                                    let action = ui
-                                        .add_enabled_ui(guided_editable, |ui| {
-                                            item_editor::draw_plug_picker(
-                                                ui,
-                                                (
-                                                    "equipment-plug",
-                                                    id_scope,
+                                        ) {
+                                            if let ItemEditorAction::SetLevel { level } = action {
+                                                self.select_equipment_level(
                                                     character_index,
                                                     slot,
-                                                    socket_index,
-                                                ),
-                                                &mut plug_query,
-                                                &snapshot,
-                                                PickerHeight {
-                                                    min: PLUG_PICKER_MIN_HEIGHT,
-                                                    max: PLUG_PICKER_MAX_HEIGHT,
-                                                },
-                                            )
-                                        })
-                                        .inner;
-                                    if let Some(ItemEditorAction::SetPlug { socket_index, hash }) =
-                                        action
-                                    {
-                                        self.select_plug(
-                                            character_index,
-                                            slot,
-                                            socket_index,
-                                            &snapshot.socket_label,
-                                            &item.default_plugs,
-                                            hash,
+                                                    level,
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        ui.label("Power");
+                                        ui.label(
+                                            egui::RichText::new("<invalid or missing>").weak(),
                                         );
                                     }
-                                    if searchable {
-                                        self.plug_searches.insert(plug_search_key, plug_query);
-                                    } else {
-                                        self.plug_searches.remove(&plug_search_key);
+                                });
+
+                                ui.add_space(8.0);
+                                ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
+                                    let mut locked = current_flags.unwrap_or_default()
+                                        & super::inventory::INVENTORY_FLAG_LOCKED
+                                        != 0;
+                                    if ui.checkbox(&mut locked, "Locked").changed() {
+                                        self.select_equipment_flags(
+                                            character_index,
+                                            slot,
+                                            super::inventory::set_inventory_locked_flag(
+                                                current_flags,
+                                                locked,
+                                            ),
+                                        );
                                     }
+                                    if masterwork_feature_present {
+                                        ui.add_space(8.0);
+                                        let mut masterworked = current_flags.unwrap_or_default()
+                                            & super::inventory::INVENTORY_FLAG_MASTERWORK
+                                            != 0;
+                                        if ui.checkbox(&mut masterworked, "Masterwork").changed() {
+                                            self.select_equipment_flags(
+                                                character_index,
+                                                slot,
+                                                super::inventory::set_inventory_masterwork_flag(
+                                                    current_flags,
+                                                    masterworked,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(4.0);
+                                let response = ui
+                                    .add_enabled(guided_editable, egui::Button::new("Swap").small())
+                                    .on_hover_text("Open the item picker");
+                                swap_requested = response.clicked();
+                                response
+                            })
+                            .inner
+                        })
+                        .inner;
+                    let picker_anchor = header_response.clone() | swap_response;
+                    let key = format!("{id_scope}:{character_index}:{slot}");
+                    let picker_action = {
+                        let manifest = &self.manifest;
+                        let show_dummy_items = self.show_dummy_items;
+                        let query = self.searches.entry(key.clone()).or_default();
+                        ui.add_enabled_ui(guided_editable, |ui| {
+                            item_editor::draw_definition_picker_with_open_request(
+                                ui,
+                                manifest,
+                                ("equipment-definition", id_scope, character_index, slot),
+                                query,
+                                PickerHeight {
+                                    min: ITEM_PICKER_MIN_HEIGHT,
+                                    max: ITEM_PICKER_MAX_HEIGHT,
+                                },
+                                (Some(&picker_anchor), swap_requested),
+                                |query_value| {
+                                    let candidates = if query_value.trim().is_empty() {
+                                        manifest.browse(bucket, class_type, show_dummy_items)
+                                    } else {
+                                        manifest.search(
+                                            query_value,
+                                            bucket,
+                                            class_type,
+                                            show_dummy_items,
+                                        )
+                                    };
+                                    let needle = query_value.to_lowercase();
+                                    let definitions =
+                                        equipment_definition_choices(candidates, query_value);
+                                    let show_empty_weapon = WEAPON_SLOTS.contains(&slot)
+                                        && (query_value.trim().is_empty()
+                                            || "empty weapon".contains(&needle));
+                                    DefinitionPickerChoices {
+                                        definitions,
+                                        clear: show_empty_weapon.then(|| ClearDefinitionChoice {
+                                            label: "Empty weapon".to_owned(),
+                                            tooltip: "Sets this equipment slot to empty."
+                                                .to_owned(),
+                                            selected: is_empty,
+                                        }),
+                                        empty_message: "No compatible installed items found"
+                                            .to_owned(),
+                                    }
+                                },
+                            )
+                        })
+                        .inner
+                    };
+                    match picker_action {
+                        Some(ItemEditorAction::ClearDefinition) => {
+                            self.empty_weapon(character_index, slot);
+                            self.searches.insert(key.clone(), String::new());
+                        }
+                        Some(ItemEditorAction::SetDefinition { hash }) => {
+                            if let Some(item) = self.manifest.item_handle_for_bucket(hash, bucket) {
+                                if slot == "subclass" {
+                                    self.select_subclass_item(character_index, &item);
+                                } else {
+                                    self.select_item(character_index, slot, &item);
                                 }
-                            });
+                                self.searches.insert(key.clone(), String::new());
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if let Some(item) = &current {
+                        self.draw_equipment_plugs(
+                            ui,
+                            EquipmentPlugEditor {
+                                id_scope,
+                                character_index,
+                                slot,
+                                item,
+                                authored_plugs: authored_plugs.as_ref(),
+                                guided_editable,
+                                flags_editable,
+                                catalyst,
+                            },
+                        );
+                    }
+                });
+        });
+    }
+
+    fn draw_equipment_plugs(&mut self, ui: &mut egui::Ui, editor: EquipmentPlugEditor<'_>) {
+        let EquipmentPlugEditor {
+            id_scope,
+            character_index,
+            slot,
+            item,
+            authored_plugs,
+            guided_editable,
+            flags_editable,
+            catalyst,
+        } = editor;
+        let (current_plugs, native_defaults) = displayed_plugs(authored_plugs, &item.default_plugs);
+        if item.sockets.is_empty() && current_plugs.is_empty() {
+            return;
+        }
+        let title = if native_defaults {
+            format!("Plugs ({}, native defaults)", current_plugs.len())
+        } else {
+            format!("Plugs ({})", current_plugs.len())
+        };
+        egui::CollapsingHeader::new(title)
+            .id_salt(("equipment-plugs", id_scope, character_index, slot))
+            .show(ui, |ui| {
+                let socket_count = item.sockets.len().max(current_plugs.len());
+                // A plug's array index is part of the Sunrise save schema.
+                // Keep sockets in that exact order even when a label is unknown.
+                for socket_index in 0..socket_count {
+                    let current_hash = current_plugs
+                        .get(socket_index)
+                        .and_then(parse_unsigned_value);
+                    let native_default = native_plug_default(&item.default_plugs, socket_index);
+                    let allowed = item
+                        .sockets
+                        .get(socket_index)
+                        .map(|socket| match self.plug_selection_mode {
+                            PlugSelectionMode::Supported => self.manifest.socket_options(socket),
+                            PlugSelectionMode::MatchingSocketType => {
+                                self.manifest.socket_type_options(socket.socket_type)
+                            }
+                            PlugSelectionMode::AnyPlug => self.manifest.all_plug_options(),
+                        })
+                        .unwrap_or_default();
+                    let current_label = current_hash.map_or_else(
+                        || "None".to_owned(),
+                        |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
+                    );
+                    let show_plug_types = self.plug_selection_mode == PlugSelectionMode::AnyPlug;
+                    let choices = allowed
+                        .iter()
+                        .map(|hash| PlugChoice {
+                            hash: *hash,
+                            label: self.manifest.plug_label(*hash, true),
+                            type_name: if show_plug_types {
+                                self.manifest
+                                    .plug_type_name(*hash)
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            } else {
+                                String::new()
+                            },
+                        })
+                        .collect::<Vec<_>>();
+                    let searchable = choices.len() > 12;
+                    let plug_search_key =
+                        format!("plug-search:{id_scope}:{character_index}:{slot}:{socket_index}");
+                    let mut plug_query = self
+                        .plug_searches
+                        .get(&plug_search_key)
+                        .cloned()
+                        .unwrap_or_default();
+                    let socket_label = item.sockets.get(socket_index).map_or_else(
+                        || format!("Socket {}", socket_index + 1),
+                        |socket| socket.display_label(socket_index),
+                    );
+                    let snapshot = PlugPickerSnapshot {
+                        socket_index,
+                        socket_label,
+                        current_hash,
+                        current_label,
+                        native_default,
+                        native_default_label: match native_default {
+                            Some(NativePlugDefault::Plug(hash)) => {
+                                Some(self.manifest.plug_label(hash, true))
+                            }
+                            _ => None,
+                        },
+                        choices,
+                        show_types: show_plug_types,
+                    };
+                    let action = ui
+                        .add_enabled_ui(guided_editable, |ui| {
+                            item_editor::draw_plug_picker(
+                                ui,
+                                &self.manifest,
+                                (
+                                    "equipment-plug",
+                                    id_scope,
+                                    character_index,
+                                    slot,
+                                    socket_index,
+                                ),
+                                &mut plug_query,
+                                &snapshot,
+                                PickerHeight {
+                                    min: PLUG_PICKER_MIN_HEIGHT,
+                                    max: PLUG_PICKER_MAX_HEIGHT,
+                                },
+                            )
+                        })
+                        .inner;
+                    if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
+                        if flags_editable
+                            && let Some(catalyst) =
+                                catalyst.filter(|catalyst| catalyst.socket_index == socket_index)
+                            && let Some(state) = catalyst.state_for_selected_plug(hash)
+                        {
+                            self.select_equipment_catalyst(
+                                character_index,
+                                slot,
+                                &item.default_plugs,
+                                catalyst,
+                                state,
+                            );
+                        } else {
+                            self.select_plug(
+                                character_index,
+                                slot,
+                                socket_index,
+                                &snapshot.socket_label,
+                                &item.default_plugs,
+                                hash,
+                            );
+                        }
+                    }
+                    if searchable {
+                        self.plug_searches.insert(plug_search_key, plug_query);
+                    } else {
+                        self.plug_searches.remove(&plug_search_key);
                     }
                 }
             });
-        });
     }
 }
 
@@ -986,7 +1167,8 @@ fn equipment_definition_choices<'a>(
         })
         .map(|item| DefinitionChoice {
             hash: item.hash,
-            label: item.label(),
+            name: item.name.clone(),
+            type_name: item.type_name.clone(),
             group: None,
         })
         .collect()
@@ -1079,6 +1261,7 @@ pub(super) fn ability_combo(
     id: &str,
     value: &mut u64,
     choices: &[AbilityChoice],
+    width: f32,
 ) {
     let selected = choices
         .iter()
@@ -1089,7 +1272,7 @@ pub(super) fn ability_combo(
         );
     egui::ComboBox::from_id_salt(id)
         .selected_text(selected)
-        .width(260.0)
+        .width(width)
         .show_ui(ui, |ui| {
             for choice in choices {
                 ui.selectable_value(value, choice.entry, &choice.name);
@@ -1098,6 +1281,19 @@ pub(super) fn ability_combo(
                 ui.label("No named choices found for this subclass");
             }
         });
+}
+
+fn character_field_group_layout(available_width: f32) -> (usize, [f32; 3]) {
+    const WIDE_COLUMN_WIDTHS: [f32; 3] = [220.0, 310.0, 360.0];
+    const COLUMN_GAP: f32 = 18.0;
+    const WIDE_LAYOUT_WIDTH: f32 =
+        WIDE_COLUMN_WIDTHS[0] + WIDE_COLUMN_WIDTHS[1] + WIDE_COLUMN_WIDTHS[2] + COLUMN_GAP * 2.0;
+
+    if available_width >= WIDE_LAYOUT_WIDTH {
+        (3, WIDE_COLUMN_WIDTHS)
+    } else {
+        (1, [available_width.max(0.0); 3])
+    }
 }
 
 pub(super) const fn default_subclass_name(class_type: u64) -> &'static str {
@@ -1181,23 +1377,6 @@ pub(super) const fn class_name(class_type: u64) -> &'static str {
         2 => "Warlock",
         _ => "Invalid class",
     }
-}
-
-pub(super) fn parse_hash(text: &str) -> Option<u64> {
-    let digits = text
-        .trim()
-        .strip_prefix("0x")
-        .or_else(|| text.trim().strip_prefix("0X"))?;
-    if digits.is_empty() || digits.len() > 16 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    u64::from_str_radix(digits, 16).ok()
-}
-
-pub(super) fn parse_unsigned_value(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(parse_hash))
 }
 
 /// Returns the present, non-null equipment rows for one character in [`SLOTS`] order.
@@ -1607,6 +1786,73 @@ pub(super) fn set_equipment_item_level(
     Ok(())
 }
 
+pub(super) fn set_equipment_item_plug(
+    document: &mut Value,
+    character_index: usize,
+    slot: &str,
+    socket_index: usize,
+    default_plugs: &[Option<String>],
+    hash: Option<u64>,
+) -> Result<(), String> {
+    if socket_index >= super::inventory::MAX_ITEM_PLUGS {
+        return Err(format!(
+            "Equipment socket index must be below {}",
+            super::inventory::MAX_ITEM_PLUGS
+        ));
+    }
+    if hash.is_some_and(|hash| u32::try_from(hash).is_err()) {
+        return Err("Equipment plug hash must fit in an unsigned 32-bit integer".to_owned());
+    }
+    let item = equipment_item_object_mut(document, character_index, slot)?;
+    let plugs_value = item
+        .get_mut("plugs")
+        .ok_or_else(|| format!("Missing plugs value for {slot}"))?;
+    let plugs = materialize_authored_plugs(plugs_value, default_plugs)
+        .ok_or_else(|| format!("Invalid plugs value for {slot}"))?;
+    while plugs.len() <= socket_index {
+        plugs.push(Value::Null);
+    }
+    plugs[socket_index] = hash.map(format_hash).map_or(Value::Null, Value::String);
+    Ok(())
+}
+
+pub(super) fn set_equipment_item_catalyst(
+    document: &mut Value,
+    character_index: usize,
+    slot: &str,
+    default_plugs: &[Option<String>],
+    catalyst: CatalystSocket,
+    state: CatalystState,
+) -> Result<(), String> {
+    let (plug, masterworked) = catalyst.authored_state(state);
+    let current_flags = equipment_item_object(document, character_index, slot)?
+        .get("flags")
+        .map(|value| {
+            parse_unsigned_value(value)
+                .and_then(|flags| u8::try_from(flags).ok())
+                .ok_or("Equipment flags must be an unsigned 8-bit value")
+        })
+        .transpose()?;
+
+    let mut candidate = document.clone();
+    set_equipment_item_plug(
+        &mut candidate,
+        character_index,
+        slot,
+        catalyst.socket_index,
+        default_plugs,
+        Some(plug),
+    )?;
+    set_equipment_item_flags(
+        &mut candidate,
+        character_index,
+        slot,
+        super::inventory::set_inventory_masterwork_flag(current_flags, masterworked),
+    )?;
+    *document = candidate;
+    Ok(())
+}
+
 pub(super) fn set_equipment_item_flags(
     document: &mut Value,
     character_index: usize,
@@ -1658,6 +1904,30 @@ fn equipment_item_object_mut<'a>(
         })
 }
 
+fn equipment_item_object<'a>(
+    document: &'a Value,
+    character_index: usize,
+    slot: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    if !SLOTS.iter().any(|(known_slot, _, _)| *known_slot == slot) {
+        return Err(format!("Unknown equipment slot: {slot}"));
+    }
+    document
+        .pointer("/state/characters")
+        .and_then(Value::as_array)
+        .and_then(|characters| characters.get(character_index))
+        .and_then(|character| character.get("equipment"))
+        .and_then(Value::as_object)
+        .and_then(|equipment| equipment.get(slot))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            format!(
+                "Missing equipped item in the {} slot",
+                equipment_slot_label(slot)
+            )
+        })
+}
+
 pub(super) fn set_weapon_slot_empty(
     document: &mut Value,
     character_index: usize,
@@ -1692,9 +1962,13 @@ pub(super) fn displayed_plugs(
     plugs: Option<&Value>,
     defaults: &[Option<String>],
 ) -> (Vec<Value>, bool) {
+    let default_plugs = || default_plug_values(defaults);
     match plugs {
-        Some(Value::Array(plugs)) => (plugs.clone(), false),
-        Some(Value::Null) => (default_plug_values(defaults), true),
+        Some(Value::Array(plugs)) => {
+            let native_defaults = *plugs == default_plugs();
+            (plugs.clone(), native_defaults)
+        }
+        Some(Value::Null) => (default_plugs(), true),
         _ => (Vec::new(), false),
     }
 }
@@ -1709,16 +1983,6 @@ pub(super) fn materialize_authored_plugs<'a>(
     plugs.as_array_mut()
 }
 
-#[cfg(test)]
-pub(super) fn picker_list_height(
-    row_count: usize,
-    row_height: f32,
-    min_height: f32,
-    max_height: f32,
-) -> f32 {
-    item_editor::picker_list_height(row_count, row_height, min_height, max_height)
-}
-
 pub(super) fn native_plug_default(
     defaults: &[Option<String>],
     socket_index: usize,
@@ -1729,11 +1993,43 @@ pub(super) fn native_plug_default(
     }
 }
 
+fn equipped_header_label(id_scope: &str, slot_label: &str) -> String {
+    if id_scope == "character-inventory-equipped" {
+        "Equipped".to_owned()
+    } else {
+        format!("{slot_label} Slot")
+    }
+}
+
 #[cfg(test)]
 mod snapshot_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn character_fields_collapse_as_available_width_narrows() {
+        assert_eq!(
+            character_field_group_layout(700.0),
+            (1, [700.0, 700.0, 700.0])
+        );
+        assert_eq!(
+            character_field_group_layout(926.0),
+            (3, [220.0, 310.0, 360.0])
+        );
+    }
+
+    #[test]
+    fn equipped_header_labels_are_page_specific() {
+        assert_eq!(
+            equipped_header_label("character-inventory-equipped", "Energy"),
+            "Equipped"
+        );
+        assert_eq!(
+            equipped_header_label("character-loadout-equipped", "Energy"),
+            "Energy Slot"
+        );
+    }
 
     #[test]
     fn equipment_picker_choice_assembly_keeps_more_than_five_hundred_items() {
@@ -1948,7 +2244,7 @@ mod snapshot_tests {
         let unchanged = document.clone();
         assert!(set_equipment_item_level(&mut document, 0, "future_slot", 75).is_err());
         assert_eq!(document, unchanged);
-        assert!(set_equipment_item_flags(&mut document, 0, "kinetic", Some(4)).is_err());
+        assert!(set_equipment_item_flags(&mut document, 0, "kinetic", Some(8)).is_err());
         assert_eq!(document, unchanged);
     }
 
@@ -1990,6 +2286,85 @@ mod snapshot_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn catalyst_state_updates_equipment_plug_and_flags_atomically() {
+        let mut document = json!({
+            "version": 6,
+            "state": {
+                "characters": [{
+                    "equipment": {
+                        "kinetic": {
+                            "plugs": null,
+                            "flags": 3,
+                            "future": {"preserved": true}
+                        }
+                    },
+                    "inventory": [{"plugs": ["0x00000063"], "flags": 1}]
+                }]
+            }
+        });
+        let stored_before = document.pointer("/state/characters/0/inventory").cloned();
+        let defaults = vec![Some(format_hash(5)), Some(format_hash(10))];
+        let catalyst = CatalystSocket {
+            socket_index: 1,
+            unacquired_plug: 10,
+            in_progress_plug: 20,
+            completed_plug: 30,
+        };
+
+        set_equipment_item_catalyst(
+            &mut document,
+            0,
+            "kinetic",
+            &defaults,
+            catalyst,
+            CatalystState::Completed,
+        )
+        .unwrap();
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic/plugs"),
+            Some(&json!(["0x00000005", "0x0000001E"]))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic/flags"),
+            Some(&json!(7))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic/future/preserved"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            stored_before.as_ref()
+        );
+
+        let mut missing_flags = json!({
+            "version": 6,
+            "state": {
+                "characters": [{
+                    "equipment": {"kinetic": {"plugs": null}}
+                }]
+            }
+        });
+        set_equipment_item_catalyst(
+            &mut missing_flags,
+            0,
+            "kinetic",
+            &defaults,
+            catalyst,
+            CatalystState::Completed,
+        )
+        .unwrap();
+        assert_eq!(
+            missing_flags.pointer("/state/characters/0/equipment/kinetic/plugs"),
+            Some(&json!(["0x00000005", "0x0000001E"]))
+        );
+        assert_eq!(
+            missing_flags.pointer("/state/characters/0/equipment/kinetic/flags"),
+            Some(&json!(super::super::inventory::INVENTORY_FLAG_MASTERWORK))
+        );
     }
 
     #[test]

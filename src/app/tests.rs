@@ -1,32 +1,30 @@
-use std::{
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::Path;
 
-use crate::catalog::{self, AbilityChoice, format_hash};
+use crate::{
+    catalog::{self, AbilityChoice},
+    hash::format_hash,
+    test_support::TestDirectory,
+};
 
 use super::*;
 use super::{
     equipment::{
-        NativePlugDefault, collect_class_armor_defaults, default_ability_values,
-        default_subclass_name, displayed_plugs, equip_definition, materialize_authored_plugs,
-        native_plug_default, parse_hash, parse_unsigned_value, picker_list_height,
+        collect_class_armor_defaults, default_ability_values, default_subclass_name,
+        displayed_plugs, equip_definition, materialize_authored_plugs, native_plug_default,
         restore_class_armor, selected_attunement_index, set_weapon_slot_empty,
     },
     inventory::{
         EQUIPMENT_FLAGS_SCHEMA_VERSION, InventoryItemAction, InventoryItemLocation,
         apply_inventory_item_action,
     },
+    item_editor::{NativePlugDefault, picker_list_height},
     settings::{
         character_ability_issue, create_adjacent_backup, encode_settings, load_json,
         normalize_sunrise_version, repair_known_ability_pairs, resolve_settings_path,
         save_json_with_backup_root, settings_path_for_install, settings_size_limit_for_schema,
-        sunrise_version_from_schema, validate_characters, verify_source_unchanged,
+        validate_characters, verify_source_unchanged,
     },
 };
-
-static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn pending_edit_guard_covers_document_and_json_editor_changes() {
@@ -34,30 +32,6 @@ fn pending_edit_guard_covers_document_and_json_editor_changes() {
     assert!(has_pending_edits(true, false));
     assert!(has_pending_edits(false, true));
     assert!(has_pending_edits(true, true));
-}
-
-struct TestDirectory(PathBuf);
-
-impl TestDirectory {
-    fn new() -> Self {
-        let path = env::temp_dir().join(format!(
-            "sundial-save-test-{}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }
 
 #[test]
@@ -73,6 +47,7 @@ fn check_mode_rejects_documents_that_the_gui_loads_with_a_warning() {
 
 #[test]
 fn sunrise_versions_are_normalized_for_display() {
+    assert_eq!(normalize_sunrise_version("0.3.2.0"), Some("0.3.2".into()));
     assert_eq!(normalize_sunrise_version("0.3.1.0"), Some("0.3.1".into()));
     assert_eq!(normalize_sunrise_version("0.2.1.0"), Some("0.2.1".into()));
     assert_eq!(normalize_sunrise_version("0.2.0.0"), Some("0.2".into()));
@@ -80,31 +55,6 @@ fn sunrise_versions_are_normalized_for_display() {
     assert_eq!(normalize_sunrise_version(" 1.4.2 "), Some("1.4.2".into()));
     assert_eq!(normalize_sunrise_version("0"), None);
     assert_eq!(normalize_sunrise_version("not-a-version"), None);
-}
-
-#[test]
-fn sunrise_schema_fallback_reports_known_release_families() {
-    assert_eq!(sunrise_version_from_schema(Some(2)), "0.1");
-    assert_eq!(sunrise_version_from_schema(Some(3)), "0.2 or 0.2.1");
-    assert_eq!(sunrise_version_from_schema(Some(4)), "0.3 development");
-    assert_eq!(sunrise_version_from_schema(Some(5)), "0.3 development");
-    assert_eq!(sunrise_version_from_schema(Some(6)), "0.3.1");
-    assert_eq!(sunrise_version_from_schema(Some(7)), "Unknown");
-    assert_eq!(sunrise_version_from_schema(None), "Unknown");
-}
-
-#[test]
-fn hashes_are_strict_hex_and_normalized() {
-    assert_eq!(parse_hash("0xE516CF40"), Some(0xE516_CF40));
-    assert_eq!(parse_hash("0Xe516cf40"), Some(0xE516_CF40));
-    assert_eq!(format_hash(0x123), "0x00000123");
-    assert_eq!(parse_hash("E516CF40"), None);
-    assert_eq!(parse_hash("0xnope"), None);
-    assert_eq!(parse_unsigned_value(&Value::from(42)), Some(42));
-    assert_eq!(
-        parse_unsigned_value(&Value::String("0x0000002A".into())),
-        Some(42)
-    );
 }
 
 #[test]
@@ -121,6 +71,14 @@ fn sunrise_native_plugs_are_displayed_and_materialized_on_edit() {
             .unwrap()
             .clone()
     );
+
+    let authored_defaults = Value::Array(displayed.clone());
+    let (_, native_defaults) = displayed_plugs(Some(&authored_defaults), &defaults);
+    assert!(native_defaults);
+
+    let authored_override = serde_json::json!(["0x0000002A", "0x0000002C", "0x0000002B"]);
+    let (_, native_defaults) = displayed_plugs(Some(&authored_override), &defaults);
+    assert!(!native_defaults);
 
     let authored = materialize_authored_plugs(&mut plugs, &defaults).unwrap();
     authored[1] = Value::String("0x0000002C".into());
@@ -491,6 +449,11 @@ fn character_validation_keeps_sunrise_limits() {
         .pointer_mut("/state/characters/0/equipment/kinetic/flags")
         .unwrap()
         .clone_from(&Value::String("0x4".into()));
+    assert_eq!(validate_characters(&document), Ok(()));
+    document
+        .pointer_mut("/state/characters/0/equipment/kinetic/flags")
+        .unwrap()
+        .clone_from(&Value::String("0x8".into()));
     assert!(validate_characters(&document).is_err());
 }
 
@@ -589,11 +552,17 @@ fn settings_paths_are_derived_from_install() {
 }
 
 #[test]
-fn preferences_round_trip_install_layout_and_safety_acknowledgement() {
+fn preferences_round_trip_editor_defaults() {
     let preferences = Preferences {
         install: Some(PathBuf::from(r"F:\Destiny2\Shadowkeep")),
         settings_layout: Some(SettingsLayout::BinX64.preference_value().to_owned()),
         really_unsafe_warning_acknowledged: true,
+        default_plug_selection_mode: PlugSelectionMode::MatchingSocketType,
+        show_safety_warnings: false,
+        color_theme: ColorTheme::Light,
+        always_open_json_editor_in_second_window: true,
+        show_plug_hashes: true,
+        item_card_width: ItemCardWidth::Wide,
     };
 
     let encoded = serde_json::to_vec(&preferences).unwrap();
@@ -606,11 +575,40 @@ fn preferences_round_trip_install_layout_and_safety_acknowledgement() {
     );
     assert!(selection.preferred_layout == Some(SettingsLayout::BinX64));
     assert!(decoded.really_unsafe_warning_acknowledged);
+    assert_eq!(
+        decoded.default_plug_selection_mode,
+        PlugSelectionMode::MatchingSocketType
+    );
+    assert!(!decoded.show_safety_warnings);
+    assert_eq!(decoded.color_theme, ColorTheme::Light);
+    assert!(decoded.always_open_json_editor_in_second_window);
+    assert!(decoded.show_plug_hashes);
+    assert_eq!(decoded.item_card_width, ItemCardWidth::Wide);
+}
+
+#[test]
+fn legacy_preferences_default_to_supported_plugs_with_warnings() {
+    let decoded: Preferences = serde_json::from_value(serde_json::json!({
+        "install": null,
+        "settings_layout": null,
+        "really_unsafe_warning_acknowledged": false
+    }))
+    .unwrap();
+
+    assert_eq!(
+        decoded.default_plug_selection_mode,
+        PlugSelectionMode::Supported
+    );
+    assert!(decoded.show_safety_warnings);
+    assert_eq!(decoded.color_theme, ColorTheme::Dark);
+    assert!(!decoded.always_open_json_editor_in_second_window);
+    assert!(!decoded.show_plug_hashes);
+    assert_eq!(decoded.item_card_width, ItemCardWidth::Standard);
 }
 
 #[test]
 fn settings_resolution_uses_the_only_existing_file_and_never_creates_one() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     assert!(matches!(
         resolve_settings_path(&directory.0, None),
         SettingsPathResolution::Missing
@@ -629,7 +627,7 @@ fn settings_resolution_uses_the_only_existing_file_and_never_creates_one() {
 
 #[test]
 fn settings_resolution_requires_a_choice_when_both_files_exist() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let root = settings_path_for_install(&directory.0, SettingsLayout::Root);
     let bin_x64 = settings_path_for_install(&directory.0, SettingsLayout::BinX64);
     fs::create_dir_all(root.parent().unwrap()).unwrap();
@@ -654,7 +652,7 @@ fn settings_resolution_requires_a_choice_when_both_files_exist() {
 
 #[test]
 fn loading_a_missing_selected_settings_file_never_creates_it() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = settings_path_for_install(&directory.0, SettingsLayout::BinX64);
 
     let error = load_json(&settings).unwrap_err();
@@ -822,7 +820,7 @@ fn settings_encoder_uses_standard_profile_item_indentation_from_schema_four() {
 
 #[test]
 fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
     fs::write(&settings, b"{\"version\":0}\n").unwrap();
@@ -862,7 +860,7 @@ fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
 
 #[test]
 fn timestamped_backup_names_describe_the_source_schema() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
 
@@ -895,7 +893,7 @@ fn timestamped_backup_names_describe_the_source_schema() {
 
 #[test]
 fn unexpected_settings_get_an_exact_adjacent_backup_without_losing_an_older_one() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let original = b"{\"unexpected\":1}\n";
     let newer = b"{\"unexpected\":2}\n";
@@ -924,7 +922,7 @@ fn unexpected_settings_get_an_exact_adjacent_backup_without_losing_an_older_one(
 
 #[test]
 fn external_settings_changes_are_detected_before_saving() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let loaded = serde_json::json!({"state": {"characters": [1, 2, 3]}});
     let newer = serde_json::json!({"state": {"characters": [1, 2, 3], "new": true}});
@@ -940,7 +938,7 @@ fn external_settings_changes_are_detected_before_saving() {
 
 #[test]
 fn readable_settings_over_the_limit_fall_back_to_compact_json() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
     let original = b"{\"version\":0}\n";
@@ -960,7 +958,7 @@ fn readable_settings_over_the_limit_fall_back_to_compact_json() {
 
 #[test]
 fn compact_settings_over_the_limit_are_saved_with_a_warning_result() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
     let original = b"{\"version\":0}\n";
@@ -979,7 +977,7 @@ fn compact_settings_over_the_limit_are_saved_with_a_warning_result() {
 
 #[test]
 fn settings_at_exactly_64_kib_do_not_trigger_compaction() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
     fs::write(&settings, b"{}\n").unwrap();

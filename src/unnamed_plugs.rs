@@ -2,6 +2,8 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use serde::Deserialize;
 
+use crate::hash::parse_hash;
+
 const DEFINITION_DATABASE_JSON: &str = include_str!("../assets/unnamed-plugs.json");
 const DEFINITION_DATABASE_SCHEMA: u32 = 2;
 
@@ -76,10 +78,6 @@ fn definition_database() -> &'static DefinitionDatabase {
         );
         database
     })
-}
-
-fn parse_hash(hash: &str) -> Option<u64> {
-    u64::from_str_radix(hash.trim().strip_prefix("0x")?, 16).ok()
 }
 
 fn is_placeholder_name(name: &str) -> bool {

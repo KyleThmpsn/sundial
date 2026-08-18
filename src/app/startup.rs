@@ -10,7 +10,7 @@ use eframe::egui;
 use crate::{catalog::CatalogProgress, game_settings};
 
 use super::{
-    DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, SettingsLayout,
+    DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, Preferences, SettingsLayout,
     SettingsPathResolution, SundialApp, draw_future_schema_warning, load_logo_texture,
     settings::{
         load_json, missing_settings_message, resolve_settings_path, settings_path_for_install,
@@ -31,14 +31,11 @@ pub(super) struct StartupApp {
     logo: Option<egui::TextureHandle>,
     pending_settings_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
-    really_unsafe_warning_acknowledged: bool,
+    preferences: Preferences,
 }
 
 impl StartupApp {
-    pub(super) fn new(
-        selection: Option<InstallSelection>,
-        really_unsafe_warning_acknowledged: bool,
-    ) -> Self {
+    pub(super) fn new(selection: Option<InstallSelection>, preferences: Preferences) -> Self {
         let mut app = Self {
             editor: None,
             receiver: None,
@@ -54,7 +51,7 @@ impl StartupApp {
             logo: None,
             pending_settings_choice: None,
             pending_future_schema: None,
-            really_unsafe_warning_acknowledged,
+            preferences,
         };
         if let Some(selection) = selection {
             app.begin_loading(selection.install_path, selection.preferred_layout);
@@ -111,7 +108,7 @@ impl StartupApp {
         settings_layout: SettingsLayout,
     ) {
         let (sender, receiver) = mpsc::channel();
-        let really_unsafe_warning_acknowledged = self.really_unsafe_warning_acknowledged;
+        let preferences = self.preferences.clone();
         self.install_path = Some(install_path.clone());
         self.receiver = Some(receiver);
         self.error = None;
@@ -128,7 +125,7 @@ impl StartupApp {
                 settings_path,
                 settings_layout,
                 install_path,
-                really_unsafe_warning_acknowledged,
+                preferences,
                 move |progress| {
                     let _ = progress_sender.send(StartupEvent::Progress(progress));
                 },

@@ -11,7 +11,7 @@ fn main() {
                 "Project Sunrise character and loadout settings editor",
             )
             .set("OriginalFilename", "Sundial.exe")
-            .set("LegalCopyright", "Copyright (c) 2026 Sundial contributors")
+            .set("LegalCopyright", "Copyright © 2026 Kyle Thompson")
             .compile()
             .expect("failed to embed the Sundial Windows resources");
     }

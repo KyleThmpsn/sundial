@@ -81,34 +81,11 @@ fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "sundial-storage-test-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support::TestDirectory;
 
     #[test]
     fn replacement_never_leaves_a_partial_or_temporary_file() {
-        let directory = TestDirectory::new();
+        let directory = TestDirectory::new("storage");
         let destination = directory.0.join("settings.json");
         fs::write(&destination, b"old").unwrap();
 

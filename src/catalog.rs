@@ -3,15 +3,28 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 
-use crate::{class_items, unnamed_plugs};
+use crate::{
+    class_items,
+    hash::{format_hash, parse_hash},
+    unnamed_plugs,
+};
 
-const CACHE_SCHEMA: u32 = 38;
+mod icons;
+mod package;
+
+use icons::IconRuntime;
+#[cfg(test)]
+use package::u64_at;
+pub use package::validate_install;
+use package::{array_at, i32_at, i64_at, install_fingerprint, relative_offset, u16_at, u32_at};
+
+const CACHE_SCHEMA: u32 = 39;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
@@ -31,12 +44,25 @@ const INVENTORY_BUCKET_SCOPE_OFFSET: usize = 24;
 const INVENTORY_MAX_STACK_SIZE_OFFSET: usize = 180;
 const INVENTORY_BUCKET_ID_OFFSET: usize = 184;
 const INVENTORY_INSTANCED_OFFSET: usize = 187;
+const ITEM_ICON_INDEX_OFFSET: usize = 0x80;
+const ITEM_DESCRIPTION_OFFSET: usize = 0x98;
+const ITEM_ICON_TABLE_SLOT: usize = 75;
+const ITEM_ICON_TABLE_ROW_SIZE: usize = 24;
+const ITEM_ICON_CONTAINER_OFFSET: usize = 16;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CatalogProgress {
     pub message: &'static str,
     pub completed: usize,
     pub total: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CatalogStats {
+    pub items: usize,
+    pub plugs: usize,
+    pub icons: usize,
+    pub descriptions: usize,
 }
 
 impl CatalogProgress {
@@ -69,6 +95,56 @@ pub struct ItemDef {
     pub sockets: Vec<SocketDef>,
     #[serde(default)]
     pub abilities: AbilityOptions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CatalystSocket {
+    pub socket_index: usize,
+    pub unacquired_plug: u64,
+    pub in_progress_plug: u64,
+    pub completed_plug: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalystState {
+    Unacquired,
+    InProgress,
+    Completed,
+}
+
+impl CatalystState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unacquired => "not acquired",
+            Self::InProgress => "in progress",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+impl CatalystSocket {
+    pub const fn authored_state(self, state: CatalystState) -> (u64, bool) {
+        match state {
+            CatalystState::Unacquired => (self.unacquired_plug, false),
+            CatalystState::InProgress => (self.in_progress_plug, false),
+            CatalystState::Completed => (self.completed_plug, true),
+        }
+    }
+
+    pub fn state_for_selected_plug(self, plug: Option<u64>) -> Option<CatalystState> {
+        if plug == Some(self.unacquired_plug) {
+            Some(CatalystState::Unacquired)
+        } else if self.completed_plug != self.in_progress_plug && plug == Some(self.completed_plug)
+        {
+            Some(CatalystState::Completed)
+        } else if self.completed_plug != self.in_progress_plug
+            && plug == Some(self.in_progress_plug)
+        {
+            Some(CatalystState::InProgress)
+        } else {
+            None
+        }
+    }
 }
 
 /// Native inventory array selected by an installed bucket descriptor.
@@ -240,21 +316,6 @@ pub struct InventoryDefinition<'a> {
     pub item: Option<&'a ItemDef>,
 }
 
-impl InventoryDefinition<'_> {
-    pub fn label(self) -> String {
-        if self.type_name.is_empty() {
-            format!("{}  ({})", self.name, format_hash(self.hash))
-        } else {
-            format!(
-                "{} — {}  ({})",
-                self.name,
-                self.type_name,
-                format_hash(self.hash)
-            )
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AbilityOptions {
     pub movement: Vec<AbilityChoice>,
@@ -297,6 +358,8 @@ struct ScannedCatalog {
     items: Vec<ItemDef>,
     names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
+    descriptions: HashMap<u64, String>,
+    icon_containers: HashMap<u64, u32>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
 }
 
@@ -327,37 +390,54 @@ struct CatalogCache {
     names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
     #[serde(default)]
+    descriptions: HashMap<u64, String>,
+    #[serde(default)]
+    icon_containers: HashMap<u64, u32>,
+    #[serde(default)]
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     plug_pools: Vec<Vec<u64>>,
 }
 
+struct CatalogContents {
+    items: Vec<ItemDef>,
+    names: HashMap<u64, String>,
+    type_names: HashMap<u64, String>,
+    descriptions: HashMap<u64, String>,
+    icon_containers: HashMap<u64, u32>,
+    inventory_metadata: HashMap<u64, InventoryMetadata>,
+    plug_pools: Vec<Vec<u64>>,
+}
+
+impl CatalogCache {
+    fn into_contents(self) -> CatalogContents {
+        CatalogContents {
+            items: self.items,
+            names: self.names,
+            type_names: self.type_names,
+            descriptions: self.descriptions,
+            icon_containers: self.icon_containers,
+            inventory_metadata: self.inventory_metadata,
+            plug_pools: self.plug_pools,
+        }
+    }
+}
+
 pub struct Catalog {
-    pub items: Vec<ItemDef>,
+    pub items: Vec<Arc<ItemDef>>,
     pub names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
+    descriptions: HashMap<u64, String>,
+    icon_containers: HashMap<u64, u32>,
     pub cache_path: PathBuf,
     pub loaded_from_cache: bool,
+    install_path: PathBuf,
+    icon_runtime: Mutex<IconRuntime>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     inventory_hashes: Vec<u64>,
     item_indices: HashMap<u64, usize>,
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
     all_plug_options: Vec<u64>,
-}
-
-impl ItemDef {
-    pub fn label(&self) -> String {
-        if self.type_name.is_empty() {
-            format!("{}  ({})", self.name, format_hash(self.hash))
-        } else {
-            format!(
-                "{} — {}  ({})",
-                self.name,
-                self.type_name,
-                format_hash(self.hash)
-            )
-        }
-    }
 }
 
 impl SocketDef {
@@ -393,12 +473,9 @@ impl Catalog {
                             total: 1,
                         });
                         return Ok(Self::finish(
-                            cache.items,
-                            cache.names,
-                            cache.type_names,
-                            cache.inventory_metadata,
-                            cache.plug_pools,
+                            cache.into_contents(),
                             cache_path,
+                            install.to_path_buf(),
                             true,
                         ));
                     }
@@ -409,6 +486,8 @@ impl Catalog {
             mut items,
             mut names,
             type_names,
+            descriptions,
+            icon_containers,
             inventory_metadata,
         } = scan_packages(install, &mut report)?;
         report(CatalogProgress::stage("Optimizing the local catalog…"));
@@ -428,6 +507,8 @@ impl Catalog {
             items,
             names,
             type_names,
+            descriptions,
+            icon_containers,
             inventory_metadata,
             plug_pools,
         };
@@ -446,26 +527,28 @@ impl Catalog {
             total: 1,
         });
         Ok(Self::finish(
-            cache.items,
-            cache.names,
-            cache.type_names,
-            cache.inventory_metadata,
-            cache.plug_pools,
+            cache.into_contents(),
             cache_path,
+            install.to_path_buf(),
             false,
         ))
     }
 
     fn finish(
-        mut items: Vec<ItemDef>,
-        mut names: HashMap<u64, String>,
-        mut type_names: HashMap<u64, String>,
-        inventory_metadata: HashMap<u64, InventoryMetadata>,
-        mut plug_pools: Vec<Vec<u64>>,
+        contents: CatalogContents,
         cache_path: PathBuf,
+        install_path: PathBuf,
         loaded_from_cache: bool,
     ) -> Self {
-        unnamed_plugs::apply_to_catalog(&mut names, &mut type_names);
+        let CatalogContents {
+            mut items,
+            names,
+            type_names,
+            descriptions,
+            icon_containers,
+            inventory_metadata,
+            mut plug_pools,
+        } = contents;
         for pool in &mut plug_pools {
             sort_plug_options(pool, &names);
         }
@@ -505,11 +588,15 @@ impl Catalog {
             .map(|(index, item)| (item.hash, index))
             .collect();
         Self {
-            items,
+            items: items.into_iter().map(Arc::new).collect(),
             names,
             type_names,
+            descriptions,
+            icon_containers,
             cache_path,
             loaded_from_cache,
+            install_path,
+            icon_runtime: Mutex::new(IconRuntime::default()),
             inventory_metadata,
             inventory_hashes,
             item_indices,
@@ -523,11 +610,24 @@ impl Catalog {
         self.item(hash).filter(|item| item.bucket_hash == bucket)
     }
 
+    pub fn item_handle_for_bucket(&self, hash: u64, bucket: u64) -> Option<Arc<ItemDef>> {
+        self.item_handle(hash)
+            .filter(|item| item.bucket_hash == bucket)
+    }
+
     /// Finds an existing equipment definition without requiring its bucket hash.
     pub fn item(&self, hash: u64) -> Option<&ItemDef> {
         self.item_indices
             .get(&hash)
             .and_then(|index| self.items.get(*index))
+            .map(Arc::as_ref)
+    }
+
+    pub fn item_handle(&self, hash: u64) -> Option<Arc<ItemDef>> {
+        self.item_indices
+            .get(&hash)
+            .and_then(|index| self.items.get(*index))
+            .cloned()
     }
 
     pub fn inventory_metadata(&self, hash: u64) -> Option<&InventoryMetadata> {
@@ -573,7 +673,11 @@ impl Catalog {
             .filter(move |definition| {
                 definition.metadata.is_profile_items_candidate()
                     && !crate::dummy_items::contains(definition.hash)
-                    && inventory_definition_matches(*definition, &needle)
+                    && inventory_definition_matches(
+                        *definition,
+                        self.description(definition.hash),
+                        &needle,
+                    )
             })
     }
 
@@ -595,7 +699,11 @@ impl Catalog {
                     (item.class_type == 3 || item.class_type == class_type)
                         && (show_dummy_items || !crate::dummy_items::contains(item.hash))
                 }) && definition.metadata.is_character_inventory_candidate()
-                    && inventory_definition_matches(*definition, &needle)
+                    && inventory_definition_matches(
+                        *definition,
+                        self.description(definition.hash),
+                        &needle,
+                    )
             })
     }
 
@@ -616,8 +724,12 @@ impl Catalog {
                 compatible(item, bucket, class_type, show_dummy_items)
                     && (item.name.to_lowercase().contains(&needle)
                         || item.type_name.to_lowercase().contains(&needle)
+                        || self.description(item.hash).is_some_and(|description| {
+                            description.to_lowercase().contains(&needle)
+                        })
                         || format_hash(item.hash).to_lowercase().contains(&needle))
             })
+            .map(Arc::as_ref)
             .collect()
     }
 
@@ -625,16 +737,59 @@ impl Catalog {
         self.items
             .iter()
             .filter(|item| compatible(item, bucket, class_type, show_dummy_items))
+            .map(Arc::as_ref)
             .collect()
     }
 
-    pub fn plug_label(&self, hash: u64) -> String {
+    pub fn plug_label(&self, hash: u64, include_hash: bool) -> String {
         let name = self.names.get(&hash).map_or("Unknown plug", String::as_str);
-        format!("{name}  ({})", format_hash(hash))
+        format_plug_label(name, hash, include_hash)
     }
 
     pub fn plug_type_name(&self, hash: u64) -> Option<&str> {
         self.type_names.get(&hash).map(String::as_str)
+    }
+
+    pub fn display_name(&self, hash: u64) -> Option<&str> {
+        self.names
+            .get(&hash)
+            .map(String::as_str)
+            .or_else(|| self.item(hash).map(|item| item.name.as_str()))
+    }
+
+    pub fn stats(&self) -> CatalogStats {
+        CatalogStats {
+            items: self.items.len(),
+            plugs: self.all_plug_options.len(),
+            icons: self.icon_containers.len(),
+            descriptions: self.descriptions.len(),
+        }
+    }
+
+    pub fn description(&self, hash: u64) -> Option<&str> {
+        self.descriptions.get(&hash).map(String::as_str)
+    }
+
+    /// Loads an installed package icon on demand and keeps only displayed icons on the GPU.
+    pub fn icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        hash: u64,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let &container = self.icon_containers.get(&hash)?;
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture(context, &self.install_path, hash, container)
+    }
+
+    pub fn icon_diagnostic(&self, hash: u64) -> Option<String> {
+        let runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.diagnostic(hash)
     }
 
     pub fn socket_options(&self, socket: &SocketDef) -> &[u64] {
@@ -642,6 +797,68 @@ impl Catalog {
             .get(socket.pool as usize)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    /// Resolves the installed exotic-catalyst lifecycle for one item.
+    ///
+    /// Shadowkeep-era definitions use either a legacy three-plug lifecycle
+    /// (unacquired, objective progress, completion marker) or the later empty/active
+    /// pair where the item-state Masterwork bit distinguishes progress from completion.
+    /// Ambiguous socket pools are deliberately left as ordinary plug editors.
+    pub fn catalyst_socket(&self, item: &ItemDef) -> Option<CatalystSocket> {
+        item.sockets
+            .iter()
+            .enumerate()
+            .find_map(|(socket_index, socket)| {
+                let options = self.socket_options(socket);
+                let default = item
+                    .default_plugs
+                    .get(socket_index)
+                    .and_then(Option::as_deref)
+                    .and_then(parse_hash)?;
+
+                if options.len() == 2
+                    && default == crate::catalyst_plugs::EMPTY_CATALYST_SOCKET
+                    && options.contains(&crate::catalyst_plugs::EMPTY_CATALYST_SOCKET)
+                {
+                    let active = options
+                        .iter()
+                        .copied()
+                        .find(|hash| *hash != crate::catalyst_plugs::EMPTY_CATALYST_SOCKET)?;
+                    return Some(CatalystSocket {
+                        socket_index,
+                        unacquired_plug: default,
+                        in_progress_plug: active,
+                        completed_plug: active,
+                    });
+                }
+
+                if options.len() != 3 || !options.contains(&default) {
+                    return None;
+                }
+                let mut completion = options
+                    .iter()
+                    .copied()
+                    .filter(|hash| crate::catalyst_plugs::is_legacy_completion(*hash));
+                let completed_plug = completion.next()?;
+                if completion.next().is_some() || completed_plug == default {
+                    return None;
+                }
+                let mut progress = options
+                    .iter()
+                    .copied()
+                    .filter(|hash| *hash != default && *hash != completed_plug);
+                let in_progress_plug = progress.next()?;
+                if progress.next().is_some() {
+                    return None;
+                }
+                Some(CatalystSocket {
+                    socket_index,
+                    unacquired_plug: default,
+                    in_progress_plug,
+                    completed_plug,
+                })
+            })
     }
 
     pub fn socket_type_options(&self, socket_type: u16) -> &[u64] {
@@ -656,11 +873,24 @@ impl Catalog {
     }
 }
 
-fn inventory_definition_matches(definition: InventoryDefinition<'_>, needle: &str) -> bool {
+fn inventory_definition_matches(
+    definition: InventoryDefinition<'_>,
+    description: Option<&str>,
+    needle: &str,
+) -> bool {
     needle.is_empty()
         || definition.name.to_lowercase().contains(needle)
         || definition.type_name.to_lowercase().contains(needle)
+        || description.is_some_and(|description| description.to_lowercase().contains(needle))
         || format_hash(definition.hash).to_lowercase().contains(needle)
+}
+
+fn format_plug_label(name: &str, hash: u64, include_hash: bool) -> String {
+    if include_hash {
+        format!("{name}  ({})", format_hash(hash))
+    } else {
+        name.to_owned()
+    }
 }
 
 fn sort_plug_options(options: &mut Vec<u64>, names: &HashMap<u64, String>) {
@@ -725,49 +955,6 @@ fn compatible(item: &ItemDef, bucket: u64, class_type: u64, show_dummy_items: bo
     item.bucket_hash == bucket
         && (item.class_type == 3 || item.class_type == class_type)
         && (show_dummy_items || !crate::dummy_items::contains(item.hash))
-}
-
-pub fn validate_install(install: &Path) -> Result<(), String> {
-    if install.join("destiny2.exe").is_file()
-        && install.join("packages").is_dir()
-        && install.join("bin/x64/oo2core_3_win64.dll").is_file()
-    {
-        Ok(())
-    } else {
-        Err("Not a Shadowkeep install: expected destiny2.exe, packages, and bin\\x64\\oo2core_3_win64.dll".into())
-    }
-}
-
-fn install_fingerprint(install: &Path) -> Result<String, String> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(install.join("packages"))
-        .map_err(|e| format!("Could not read packages: {e}"))?
-    {
-        let entry = entry.map_err(|e| format!("Could not inspect packages: {e}"))?;
-        let path = entry.path();
-        if path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("pkg"))
-        {
-            let meta = entry
-                .metadata()
-                .map_err(|e| format!("Could not inspect {}: {e}", path.display()))?;
-            let modified = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_secs());
-            entries.push(format!(
-                "{}:{}:{}",
-                entry.file_name().to_string_lossy(),
-                meta.len(),
-                modified
-            ));
-        }
-    }
-    entries.sort();
-    Ok(entries.join("|"))
 }
 
 fn scan_packages(
@@ -843,8 +1030,11 @@ fn scan_packages(
             ))
         })
         .collect();
+    let icon_containers_by_index = scan_item_icon_containers(&manager, &globals_data)?;
     let mut names = HashMap::new();
     let mut type_names = HashMap::new();
+    let mut descriptions = HashMap::new();
+    let mut icon_containers = HashMap::new();
     let mut inventory_metadata = HashMap::new();
     let mut items = Vec::new();
     let mut item_socket_lists = Vec::<(usize, u16)>::new();
@@ -907,6 +1097,23 @@ fn scan_packages(
             0x90,
         )
         .unwrap_or_default();
+        if let Some(description) = resolve_string(
+            &manager,
+            &localized_tags,
+            &mut localized_cache,
+            &string_thing,
+            ITEM_DESCRIPTION_OFFSET,
+        )
+        .filter(|description| !description.trim().is_empty())
+        {
+            descriptions.insert(hash, description);
+        }
+        if let Ok(icon_index) = u16_at(&string_thing, ITEM_ICON_INDEX_OFFSET)
+            && icon_index != u16::MAX
+            && let Some(Some(container)) = icon_containers_by_index.get(icon_index as usize)
+        {
+            icon_containers.insert(hash, *container);
+        }
         if name.trim().is_empty() {
             let Some((derived_name, derived_type_name)) =
                 stat_allocation_labels(&item, &stat_names)
@@ -1019,7 +1226,39 @@ fn scan_packages(
         total: count,
     });
     report(CatalogProgress::stage("Building socket choices…"));
-    for item in &mut items {
+    build_socket_choices(
+        &mut items,
+        &plug_category_by_hash,
+        &plug_category_items,
+        &names,
+        &mut type_names,
+    );
+    report(CatalogProgress::stage("Building subclass choices…"));
+    build_subclass_choices(
+        &manager,
+        &root,
+        &ability_displays,
+        item_socket_lists,
+        &mut items,
+    )?;
+    Ok(ScannedCatalog {
+        items,
+        names,
+        type_names,
+        descriptions,
+        icon_containers,
+        inventory_metadata,
+    })
+}
+
+fn build_socket_choices(
+    items: &mut [ItemDef],
+    plug_category_by_hash: &HashMap<u64, u32>,
+    plug_category_items: &HashMap<u32, Vec<u64>>,
+    names: &HashMap<u64, String>,
+    type_names: &mut HashMap<u64, String>,
+) {
+    for item in items.iter_mut() {
         for (socket_index, socket) in item.sockets.iter_mut().enumerate() {
             let mut seeds = socket.allowed.clone();
             if let Some(Some(default)) = item.default_plugs.get(socket_index) {
@@ -1042,9 +1281,9 @@ fn scan_packages(
             socket.allowed.dedup();
         }
     }
-    infer_socket_plug_types(&items, &names, &mut type_names);
+    infer_socket_plug_types(items, names, type_names);
     let tracker_plugs = [2_285_418_970, 2_302_094_943, 38_912_240];
-    for item in &mut items {
+    for item in items.iter_mut() {
         for socket in &mut item.sockets {
             // Kill/Crucible tracker sockets use a small synthetic plug set
             // keyed by socket type rather than a package plug-set row.
@@ -1055,7 +1294,7 @@ fn scan_packages(
             }
         }
     }
-    for item in &mut items {
+    for item in items.iter_mut() {
         for (socket_index, socket) in item.sockets.iter_mut().enumerate() {
             let default = item
                 .default_plugs
@@ -1066,15 +1305,23 @@ fn scan_packages(
                 socket.socket_type,
                 default,
                 &socket.allowed,
-                &names,
-                &type_names,
+                names,
+                type_names,
             );
         }
     }
+}
+
+fn build_subclass_choices(
+    manager: &PackageManager,
+    root: &[u8],
+    ability_displays: &HashMap<u16, AbilityDisplayData>,
+    item_socket_lists: Vec<(usize, u16)>,
+    items: &mut [ItemDef],
+) -> Result<(), String> {
     let list_table = manager
-        .read_tag(TagHash(u32_at(&root, 8 + 97 * 16)?))
+        .read_tag(TagHash(u32_at(root, 8 + 97 * 16)?))
         .map_err(|e| format!("Could not read subclass ability table: {e}"))?;
-    report(CatalogProgress::stage("Building subclass choices…"));
     let (list_count, list_rows, _) = array_at(&list_table, 8)?;
     for (item_index, list_index) in item_socket_lists {
         let Some(item) = items.get_mut(item_index) else {
@@ -1102,12 +1349,32 @@ fn scan_packages(
             }
         }
     }
-    Ok(ScannedCatalog {
-        items,
-        names,
-        type_names,
-        inventory_metadata,
-    })
+    Ok(())
+}
+
+fn scan_item_icon_containers(
+    manager: &PackageManager,
+    globals: &[u8],
+) -> Result<Vec<Option<u32>>, String> {
+    let slot = 16 + ITEM_ICON_TABLE_SLOT * 16;
+    let table_tag = TagHash(u32_at(globals, slot)?);
+    let table = manager
+        .read_tag(table_tag)
+        .map_err(|e| format!("Could not read item icon table: {e}"))?;
+    let (count, rows, _) = array_at(&table, 8)?;
+    (0..count)
+        .map(|index| {
+            let row = rows
+                .checked_add(
+                    index
+                        .checked_mul(ITEM_ICON_TABLE_ROW_SIZE)
+                        .ok_or("Item icon table offset overflowed")?,
+                )
+                .ok_or("Item icon table offset overflowed")?;
+            let tag = u32_at(&table, row + ITEM_ICON_CONTAINER_OFFSET)?;
+            Ok((tag != u32::MAX && TagHash(tag).is_valid()).then_some(tag))
+        })
+        .collect()
 }
 
 fn scan_inventory_bucket_descriptors(
@@ -1851,70 +2118,6 @@ fn decode_strings(manager: &PackageManager, tag: TagHash) -> Result<Vec<(u32, St
     Ok(result)
 }
 
-fn array_at(data: &[u8], descriptor: usize) -> Result<(usize, usize, u32), String> {
-    let count_raw = u64_at(data, descriptor)?;
-    let count = usize::try_from(count_raw).map_err(|_| "Package array is too large")?;
-    let pointer = descriptor
-        .checked_add(8)
-        .ok_or("Package array pointer overflowed")?;
-    let header = relative_offset(descriptor, 8, i64_at(data, pointer)?)?;
-    if u64_at(data, header)? != count_raw {
-        return Err("Package array count mismatch".into());
-    }
-    let rows = header
-        .checked_add(16)
-        .ok_or("Package array row offset overflowed")?;
-    let class_offset = header
-        .checked_add(8)
-        .ok_or("Package array class offset overflowed")?;
-    Ok((count, rows, u32_at(data, class_offset)?))
-}
-
-fn u16_at(data: &[u8], offset: usize) -> Result<u16, String> {
-    Ok(u16::from_le_bytes(bytes_at(data, offset)?))
-}
-fn i32_at(data: &[u8], offset: usize) -> Result<i32, String> {
-    Ok(i32::from_le_bytes(bytes_at(data, offset)?))
-}
-fn u32_at(data: &[u8], offset: usize) -> Result<u32, String> {
-    Ok(u32::from_le_bytes(bytes_at(data, offset)?))
-}
-fn u64_at(data: &[u8], offset: usize) -> Result<u64, String> {
-    Ok(u64::from_le_bytes(bytes_at(data, offset)?))
-}
-fn i64_at(data: &[u8], offset: usize) -> Result<i64, String> {
-    Ok(i64::from_le_bytes(bytes_at(data, offset)?))
-}
-
-fn bytes_at<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N], String> {
-    let end = offset
-        .checked_add(N)
-        .ok_or_else(|| format!("Package offset overflowed at {offset}"))?;
-    data.get(offset..end)
-        .ok_or_else(|| format!("Package data ended at {offset}"))?
-        .try_into()
-        .map_err(|_| format!("Invalid {N}-byte package value"))
-}
-
-fn relative_offset(base: usize, bias: usize, relative: i64) -> Result<usize, String> {
-    let origin = base
-        .checked_add(bias)
-        .ok_or("Package relative pointer overflowed")?;
-    if relative >= 0 {
-        let relative =
-            usize::try_from(relative).map_err(|_| "Package relative pointer is too large")?;
-        origin
-            .checked_add(relative)
-            .ok_or_else(|| "Package relative pointer overflowed".into())
-    } else {
-        let magnitude = usize::try_from(relative.unsigned_abs())
-            .map_err(|_| "Package relative pointer is too small")?;
-        origin
-            .checked_sub(magnitude)
-            .ok_or_else(|| "Package relative pointer points before the data".into())
-    }
-}
-
 const fn bucket_hash(bucket: u8) -> Option<u64> {
     Some(match bucket {
         0 => 1_498_876_634,
@@ -1938,22 +2141,18 @@ const fn bucket_hash(bucket: u8) -> Option<u64> {
     })
 }
 
-pub(crate) fn format_hash(hash: u64) -> String {
-    format!("0x{hash:08X}")
-}
-fn parse_hash(text: &str) -> Option<u64> {
-    u64::from_str_radix(
-        text.trim()
-            .trim_start_matches("0x")
-            .trim_start_matches("0X"),
-        16,
-    )
-    .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plug_labels_only_include_hashes_when_requested() {
+        assert_eq!(format_plug_label("Rampage", 0x12AB, false), "Rampage");
+        assert_eq!(
+            format_plug_label("Rampage", 0x12AB, true),
+            "Rampage  (0x000012AB)"
+        );
+    }
 
     #[test]
     fn super_choices_include_gunslinger_and_dawnblade_alternates() {
@@ -2172,11 +2371,16 @@ mod tests {
             ),
         ]);
         let catalog = Catalog::finish(
-            vec![character],
-            names,
-            type_names,
-            inventory_metadata,
-            vec![Vec::new()],
+            CatalogContents {
+                items: vec![character],
+                names,
+                type_names,
+                descriptions: HashMap::new(),
+                icon_containers: HashMap::new(),
+                inventory_metadata,
+                plug_pools: vec![Vec::new()],
+            },
+            PathBuf::new(),
             PathBuf::new(),
             false,
         );
@@ -2239,11 +2443,16 @@ mod tests {
             }))
             .collect();
         let catalog = Catalog::finish(
-            items,
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            Vec::new(),
+            CatalogContents {
+                items,
+                names: HashMap::new(),
+                type_names: HashMap::new(),
+                descriptions: HashMap::from([(10_042, "A description-only match".to_owned())]),
+                icon_containers: HashMap::new(),
+                inventory_metadata: HashMap::new(),
+                plug_pools: Vec::new(),
+            },
+            PathBuf::new(),
             PathBuf::new(),
             false,
         );
@@ -2257,6 +2466,70 @@ mod tests {
         assert_eq!(searched.len(), 620);
         assert_eq!(searched.first().unwrap().name, "Matching item 0000");
         assert_eq!(searched.last().unwrap().name, "Matching item 0619");
+        assert_eq!(catalog.search("description-only", bucket, 0, true).len(), 1);
+    }
+
+    #[test]
+    fn catalyst_lifecycles_resolve_legacy_and_empty_socket_formats() {
+        let legacy = ItemDef {
+            hash: 1,
+            name: "Legacy exotic".into(),
+            type_name: "Exotic weapon".into(),
+            bucket_hash: 0,
+            class_type: 3,
+            default_plugs: vec![Some(format_hash(10))],
+            sockets: vec![SocketDef {
+                pool: 0,
+                ..SocketDef::default()
+            }],
+            abilities: AbilityOptions::default(),
+        };
+        let current = ItemDef {
+            hash: 2,
+            name: "Current exotic".into(),
+            type_name: "Exotic weapon".into(),
+            bucket_hash: 0,
+            class_type: 3,
+            default_plugs: vec![Some(format_hash(
+                crate::catalyst_plugs::EMPTY_CATALYST_SOCKET,
+            ))],
+            sockets: vec![SocketDef {
+                pool: 1,
+                ..SocketDef::default()
+            }],
+            abilities: AbilityOptions::default(),
+        };
+        let catalog = Catalog::finish(
+            CatalogContents {
+                items: vec![legacy, current],
+                names: HashMap::new(),
+                type_names: HashMap::new(),
+                descriptions: HashMap::new(),
+                icon_containers: HashMap::new(),
+                inventory_metadata: HashMap::new(),
+                plug_pools: vec![
+                    vec![10, 20, 354_293_076],
+                    vec![crate::catalyst_plugs::EMPTY_CATALYST_SOCKET, 30],
+                ],
+            },
+            PathBuf::new(),
+            PathBuf::new(),
+            false,
+        );
+
+        let legacy = catalog.catalyst_socket(catalog.item(1).unwrap()).unwrap();
+        assert_eq!(legacy.unacquired_plug, 10);
+        assert_eq!(legacy.in_progress_plug, 20);
+        assert_eq!(legacy.completed_plug, 354_293_076);
+        assert_eq!(
+            legacy.state_for_selected_plug(Some(legacy.completed_plug)),
+            Some(CatalystState::Completed)
+        );
+
+        let current = catalog.catalyst_socket(catalog.item(2).unwrap()).unwrap();
+        assert_eq!(current.in_progress_plug, 30);
+        assert_eq!(current.completed_plug, 30);
+        assert_eq!(current.state_for_selected_plug(Some(30)), None);
     }
 
     #[test]
@@ -2292,6 +2565,8 @@ mod tests {
         ))
         .unwrap();
         assert!(cache.inventory_metadata.is_empty());
+        assert!(cache.descriptions.is_empty());
+        assert!(cache.icon_containers.is_empty());
     }
 
     #[test]
@@ -2302,11 +2577,16 @@ mod tests {
             (3, "Beta".to_owned()),
         ]);
         let catalog = Catalog::finish(
-            Vec::new(),
-            names,
-            HashMap::new(),
-            HashMap::new(),
-            vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
+            CatalogContents {
+                items: Vec::new(),
+                names,
+                type_names: HashMap::new(),
+                descriptions: HashMap::new(),
+                icon_containers: HashMap::new(),
+                inventory_metadata: HashMap::new(),
+                plug_pools: vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
+            },
+            PathBuf::new(),
             PathBuf::new(),
             false,
         );

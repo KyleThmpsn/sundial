@@ -105,9 +105,9 @@ const VERTICAL_SYNC_INTERVAL_KEY: &str = "vertical_sync_interval";
 const FIELD_OF_VIEW_KEY: &str = "field_of_view";
 const KEY_BINDING_SOURCE_KEY: &str = "key_binding_source";
 
-// TODO: These preferences come from an experimental Sunrise change. Until it is accepted and
-// released, Sundial must never add the fields to an existing file. Once it is upstream, move their
-// visibility and requiredness into SettingsSchema instead of gating them only on field presence.
+// Compatibility gate: these preferences come from an experimental Sunrise change. Sundial must
+// not add them to an existing file unless that file already contains them; a released schema can
+// move their visibility and requiredness into `SettingsSchema`.
 fn show_experimental_preference(values: &Map<String, Value>, key: &str) -> bool {
     values.contains_key(key)
 }
@@ -176,6 +176,30 @@ const BACKGROUND_OPACITY: &[(u64, &str)] = &[
     (4, "Highest"),
 ];
 const RETICLE_LOCATIONS: &[(u64, &str)] = &[(0, "PC Default"), (1, "Console Default")];
+const RETICLE_COLORS: &[(u64, &str)] = &[
+    (0, "Default"),
+    (1, "Red"),
+    (2, "Green"),
+    (3, "Yellow"),
+    (4, "Blue"),
+    (5, "Purple"),
+    (6, "Cyan"),
+];
+const GAME_LANGUAGES: &[(&str, &str)] = &[
+    ("english", "English"),
+    ("french", "French"),
+    ("german", "German"),
+    ("italian", "Italian"),
+    ("japanese", "Japanese"),
+    ("brazilian", "Portuguese (Brazil)"),
+    ("spanish", "Spanish (Spain)"),
+    ("russian", "Russian"),
+    ("polish", "Polish"),
+    ("schinese", "Chinese (Simplified)"),
+    ("tchinese", "Chinese (Traditional)"),
+    ("latam", "Spanish (Latin America)"),
+    ("koreana", "Korean"),
+];
 const TEXT_CHAT_MODES: &[(u64, &str)] = &[
     (0, "Off"),
     (1, "On (No Notifications)"),
@@ -323,38 +347,62 @@ fn draw_account_settings(
 
 fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
     ui.heading("Player");
-    ui.label("Change the player name shown by Project Sunrise in Destiny 2.");
+    ui.label("Change the player identity and language Project Sunrise reports to Destiny 2.");
     ui.add_space(8.0);
+    ui.strong("Player name");
 
-    let Some(value) = document.pointer("/steam/user/persona_name") else {
-        ui.colored_label(
-            ui.visuals().error_fg_color,
-            "This settings.json has no steam.user.persona_name field.",
-        );
-        return false;
-    };
-    let Some(current) = value.as_str() else {
-        ui.colored_label(
-            ui.visuals().error_fg_color,
-            "steam.user.persona_name must be text.",
-        );
-        return false;
-    };
-
-    let mut edited = current.to_owned();
-    let response = ui.add(
-        egui::TextEdit::singleline(&mut edited)
-            .desired_width(360.0)
-            .char_limit(63),
-    );
-    ui.label(egui::RichText::new(format!("{}/63", edited.len())).weak());
-    ui.label("Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
-
-    if !response.changed() {
-        return false;
+    let mut changed = false;
+    match document.pointer("/steam/user/persona_name") {
+        Some(value) => {
+            if let Some(current) = value.as_str() {
+                let mut edited = current.to_owned();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut edited)
+                        .desired_width(360.0)
+                        .char_limit(63),
+                );
+                ui.label(egui::RichText::new(format!("{}/63", edited.len())).weak());
+                ui.label("Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
+                if response.changed() {
+                    changed |= set_player_name(document, &edited);
+                }
+            } else {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "steam.user.persona_name must be text.",
+                );
+            }
+        }
+        None => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "This settings.json has no steam.user.persona_name field.",
+            );
+        }
     }
 
-    set_player_name(document, &edited)
+    if document.pointer("/steam/language").is_some() {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.strong("Game language");
+        ui.label("Controls the language Sunrise reports to Destiny 2 through Steam. Changes take effect after fully restarting Destiny 2.");
+        ui.add_space(4.0);
+        if let Some(steam) = document
+            .pointer_mut("/steam")
+            .and_then(Value::as_object_mut)
+        {
+            changed |= egui::Grid::new("game_language_grid")
+                .num_columns(2)
+                .spacing([18.0, 9.0])
+                .show(ui, |ui| {
+                    string_choice(ui, steam, "language", "Language", GAME_LANGUAGES)
+                })
+                .inner;
+        }
+    }
+
+    changed
 }
 
 fn valid_player_name(name: &str) -> Option<&str> {
@@ -627,7 +675,7 @@ fn draw_interface(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool 
                 "Reticle location",
                 RETICLE_LOCATIONS,
             );
-            changed |= integer_slider(ui, values, "reticle_color", "Reticle color", 0, 6);
+            changed |= choice(ui, values, "reticle_color", "Reticle color", RETICLE_COLORS);
             changed |= integer_slider(ui, values, "text_size", "Text size", 0, 4);
             changed |= integer_slider(ui, values, "text_color", "Text color", 0, 3);
             changed |= integer_slider(
@@ -1164,6 +1212,7 @@ fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
 
 pub(super) fn validate(document: &Value) -> Result<(), String> {
     let schema = SettingsSchema::from_document(document)?;
+    validate_game_language(document)?;
     let settings = document
         .pointer("/state/account/settings")
         .and_then(Value::as_object)
@@ -1249,6 +1298,21 @@ pub(super) fn validate(document: &Value) -> Result<(), String> {
 
     optional_string_member(settings, KEY_BINDING_SOURCE_KEY, &["account", "computer"])?;
     validate_key_bindings(settings, schema)
+}
+
+fn validate_game_language(document: &Value) -> Result<(), String> {
+    let Some(value) = document.pointer("/steam/language") else {
+        return Ok(());
+    };
+    if value.as_str().is_some_and(|token| {
+        GAME_LANGUAGES
+            .iter()
+            .any(|(candidate, _)| *candidate == token)
+    }) {
+        Ok(())
+    } else {
+        Err("steam.language must be one of Sunrise's supported language tokens".to_owned())
+    }
 }
 
 fn validate_key_bindings(
@@ -1788,6 +1852,26 @@ mod tests {
         assert_eq!(valid_player_name(&"x".repeat(64)), None);
         assert_eq!(valid_player_name("Guardian\n"), None);
         assert_eq!(valid_player_name("Guardián"), None);
+    }
+
+    #[test]
+    fn game_language_validation_matches_sunrise_tokens() {
+        for &(token, _) in GAME_LANGUAGES {
+            let document = serde_json::json!({"steam": {"language": token}});
+            assert_eq!(validate_game_language(&document), Ok(()), "{token}");
+        }
+
+        assert_eq!(
+            validate_game_language(&serde_json::json!({"steam": {}})),
+            Ok(())
+        );
+        assert!(
+            validate_game_language(&serde_json::json!({
+                "steam": {"language": "unsupported"}
+            }))
+            .is_err()
+        );
+        assert!(validate_game_language(&serde_json::json!({"steam": {"language": 1}})).is_err());
     }
 
     #[test]

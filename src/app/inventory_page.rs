@@ -2,15 +2,16 @@
 //!
 //! The page intentionally renders snapshots and applies typed actions from `inventory`; it never
 //! reaches into the document with ad-hoc JSON pointers. Shared item controls live in
-//! `equipment::item_editor`, while this module owns inventory-specific policy such as scope and
+//! `item_editor`, while this module owns inventory-specific policy such as scope and
 //! bucket-capacity checks.
 
-use std::{cmp::Reverse, collections::HashMap};
+use std::{cmp::Reverse, collections::HashMap, sync::Arc};
 
 use eframe::egui;
 
-use crate::catalog::{
-    InventoryDefinition, InventoryMetadata, InventoryScope, ItemDef, format_hash,
+use crate::{
+    catalog::{InventoryDefinition, InventoryMetadata, InventoryScope, ItemDef},
+    hash::{format_hash, parse_hash, parse_unsigned_value},
 };
 
 use super::{
@@ -18,28 +19,30 @@ use super::{
     PlugSelectionMode, SundialApp,
     equipment::{
         EquipmentSlotCard, EquippedItemSnapshot, equipped_item_snapshots, inferred_item_level,
-        item_editor::{
-            DefinitionChoice, DefinitionPickerChoices, DefinitionSummary, ItemEditorAction,
-            ItemHeader, NativePlugDefault, NumericItemFields, PickerHeight, PlugChoice,
-            PlugPickerSnapshot, draw_item_header_with_trailing,
-        },
-        native_plug_default, parse_hash, parse_unsigned_value,
+        native_plug_default,
     },
     inventory::{
-        self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, InventoryItemAction,
-        InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, NewInventoryItem,
-        ProfileItemAction, ProfileItemSnapshot, SchemaMode, set_inventory_locked_flag,
+        self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASTERWORK,
+        InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs,
+        NewInventoryItem, ProfileItemAction, ProfileItemSnapshot, SchemaMode,
+        inventory_masterwork_feature_present, set_inventory_locked_flag,
+        set_inventory_masterwork_flag,
+    },
+    item_editor::{
+        self, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary, ItemEditorAction,
+        ItemHeader, NativePlugDefault, NumericItemFields, PickerHeight, PlugChoice,
+        PlugPickerSnapshot,
     },
 };
 
-const PROFILE_CARD_MIN_WIDTH: f32 = 320.0;
-const CHARACTER_CARD_MIN_WIDTH: f32 = 420.0;
+const BUCKET_HEADER_SIZE_DELTA: f32 = 1.0;
 
 #[derive(Clone)]
 struct ResolvedDefinition {
     name: String,
+    type_name: String,
     metadata: InventoryMetadata,
-    item: Option<ItemDef>,
+    item: Option<Arc<ItemDef>>,
 }
 
 struct BucketUsage {
@@ -190,6 +193,7 @@ impl SundialApp {
             let repaint_context = ui.ctx().clone();
             let mut toggle_header = false;
             let mut open_picker = false;
+            let mut picker_anchor = None;
             let mut header = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 ui.make_persistent_id((
@@ -202,7 +206,7 @@ impl SundialApp {
             .show_header(ui, |ui| {
                 toggle_header = ui
                     .add(
-                        egui::Label::new(egui::RichText::new(&title).strong())
+                        egui::Label::new(bucket_header_text(ui, &title))
                             .sense(egui::Sense::click()),
                     )
                     .clicked();
@@ -223,6 +227,7 @@ impl SundialApp {
                         response.on_disabled_hover_text(tooltip)
                     };
                     open_picker = response.clicked();
+                    picker_anchor = Some(response);
                 }
             });
             if toggle_header {
@@ -238,7 +243,6 @@ impl SundialApp {
                 if self.searches.contains_key(&picker_key) {
                     let action = ui
                         .add_enabled_ui(can_add, |ui| {
-                            ui.label(egui::RichText::new("Add a shared item").strong());
                             let manifest = &self.manifest;
                             let request_open = take_bucket_picker_open_request(
                                 &mut self.searches,
@@ -246,8 +250,9 @@ impl SundialApp {
                                 ui.input(|input| input.pointer.any_click()),
                             );
                             let query = self.searches.entry(picker_key.clone()).or_default();
-                            super::equipment::item_editor::draw_definition_picker_with_open_request(
+                            item_editor::draw_definition_picker_with_open_request(
                                 ui,
+                                manifest,
                                 (
                                     "profile-items-add-definition",
                                     scope_id(group.key.scope),
@@ -255,7 +260,7 @@ impl SundialApp {
                                 ),
                                 query,
                                 picker_height(),
-                                request_open,
+                                (picker_anchor.as_ref(), request_open),
                                 |query| DefinitionPickerChoices {
                                     definitions: profile_bucket_definition_choices(
                                         manifest.profile_item_candidates(query).filter(
@@ -291,14 +296,22 @@ impl SundialApp {
                         }
                     }
                 }
-                draw_responsive_cards(ui, &group.items, PROFILE_CARD_MIN_WIDTH, |ui, snapshot| {
-                    let action = self.draw_profile_item_card(ui, snapshot, editable, &bucket_usage);
-                    if pending.is_none()
-                        && let Some(action) = action
-                    {
-                        pending = Some((snapshot.location, action));
-                    }
-                });
+                let (minimum_card_width, maximum_card_width) = self.item_card_width.dimensions();
+                item_editor::draw_responsive_item_cards(
+                    ui,
+                    &group.items,
+                    minimum_card_width,
+                    maximum_card_width,
+                    |ui, snapshot| {
+                        let action =
+                            self.draw_profile_item_card(ui, snapshot, editable, &bucket_usage);
+                        if pending.is_none()
+                            && let Some(action) = action
+                        {
+                            pending = Some((snapshot.location, action));
+                        }
+                    },
+                );
             });
         }
         if let Some((location, action)) = pending {
@@ -352,92 +365,124 @@ impl SundialApp {
         let key = format!("profile-items:{}", snapshot.location.index);
         let mut requested = None;
         let mut remove_requested = false;
+        let mut swap_requested = false;
+        let mut swap_response = None;
 
         ui.push_id(("profile-item", snapshot.location.index), |ui| {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let definition = resolved.as_ref().map_or(
-                    DefinitionSummary::Unknown { hash: &hash_text },
-                    |definition| DefinitionSummary::Known {
-                        name: &definition.name,
-                        hash: &hash_text,
-                    },
-                );
-                draw_item_header_with_trailing(
-                    ui,
-                    ItemHeader {
-                        label: None,
-                        definition,
-                        valid,
-                        invalid_message: "not a profile-scoped stackable definition",
-                    },
-                    |ui| {
-                        if ui
-                            .add_enabled(editable, egui::Button::new("Remove").small())
-                            .on_hover_text("Remove this shared item")
-                            .clicked()
-                        {
-                            remove_requested = true;
-                        }
-                    },
-                );
-                ui.add_enabled_ui(editable, |ui| {
-                    let picker_action = {
-                        let manifest = &self.manifest;
-                        let query = self.searches.entry(key.clone()).or_default();
-                        super::equipment::item_editor::draw_definition_picker(
-                            ui,
-                            ("profile-item-definition", snapshot.location.index),
-                            query,
-                            picker_height(),
-                            |query| DefinitionPickerChoices {
-                                definitions: profile_definition_choices(
-                                    manifest
-                                        .profile_item_candidates(query)
-                                        .filter(|definition| {
-                                            u32::try_from(definition.hash).is_ok()
-                                                && definition.metadata.max_stack_size.is_some_and(
-                                                    |maximum| maximum >= snapshot.quantity as u32,
-                                                )
-                                                && bucket_has_room(
-                                                    definition.metadata,
-                                                    bucket_usage,
-                                                    current_bucket,
-                                                    replacing_unresolved,
-                                                )
-                                        }),
-                                ),
-                                clear: None,
-                                empty_message: "No safe profile-item definitions match".to_owned(),
-                            },
-                        )
-                    };
-                    if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action
-                        && let Ok(hash) = u32::try_from(hash)
-                    {
-                        requested = Some(ProfileItemAction::SetDefinitionHash(hash));
-                        self.searches.insert(key.clone(), String::new());
-                    }
-
-                    ui.horizontal_wrapped(|ui| {
-                        for action in super::equipment::item_editor::draw_level_and_quantity(
-                            ui,
-                            ("profile-item-numeric", snapshot.location.index),
-                            NumericItemFields {
-                                level: None,
-                                quantity: Some(i64::from(snapshot.quantity)),
-                                quantity_max: Some(quantity_max),
-                            },
-                        ) {
-                            if let ItemEditorAction::SetQuantity { quantity } = action
-                                && let Ok(quantity) = i32::try_from(quantity)
-                            {
-                                requested = Some(ProfileItemAction::SetQuantity(quantity));
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::ZERO)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let definition = resolved.as_ref().map_or(
+                        DefinitionSummary::Unknown { hash: &hash_text },
+                        |definition| DefinitionSummary::Known {
+                            name: &definition.name,
+                            hash: &hash_text,
+                            type_name: &definition.type_name,
+                        },
+                    );
+                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
+                        ui,
+                        &self.manifest,
+                        Some(u64::from(snapshot.definition_hash)),
+                        ItemHeader {
+                            label: None,
+                            soid: None,
+                            definition,
+                            icon: None,
+                            fill: item_editor::muted_item_header_fill(ui),
+                            valid,
+                            invalid_message: "not a profile-scoped stackable definition",
+                        },
+                        |_| {},
+                    );
+                    ui.add_enabled_ui(editable, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            for action in item_editor::draw_level_and_quantity(
+                                ui,
+                                ("profile-item-numeric", snapshot.location.index),
+                                NumericItemFields {
+                                    level: None,
+                                    quantity: Some(i64::from(snapshot.quantity)),
+                                    quantity_max: Some(quantity_max),
+                                },
+                            ) {
+                                if let ItemEditorAction::SetQuantity { quantity } = action
+                                    && let Ok(quantity) = i32::try_from(quantity)
+                                {
+                                    requested = Some(ProfileItemAction::SetQuantity(quantity));
+                                }
                             }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add_space(4.0);
+                                    if ui
+                                        .add(egui::Button::new("Remove").small())
+                                        .on_hover_text("Remove this shared item")
+                                        .clicked()
+                                    {
+                                        remove_requested = true;
+                                    }
+                                    let response = ui
+                                        .add(egui::Button::new("Swap").small())
+                                        .on_hover_text("Open the item picker");
+                                    if response.clicked() {
+                                        swap_requested = true;
+                                    }
+                                    swap_response = Some(response);
+                                },
+                            );
+                        });
+
+                        let picker_anchor = header_response.clone()
+                            | swap_response.expect("a profile item card always draws Swap");
+                        let picker_action = {
+                            let manifest = &self.manifest;
+                            let query = self.searches.entry(key.clone()).or_default();
+                            item_editor::draw_definition_picker_with_open_request(
+                                ui,
+                                manifest,
+                                ("profile-item-definition", snapshot.location.index),
+                                query,
+                                picker_height(),
+                                (Some(&picker_anchor), swap_requested),
+                                |query| DefinitionPickerChoices {
+                                    definitions: profile_definition_choices(
+                                        manifest.profile_item_candidates(query).filter(
+                                            |definition| {
+                                                u32::try_from(definition.hash).is_ok()
+                                                    && definition
+                                                        .metadata
+                                                        .max_stack_size
+                                                        .is_some_and(|maximum| {
+                                                            maximum >= snapshot.quantity as u32
+                                                        })
+                                                    && bucket_has_room(
+                                                        definition.metadata,
+                                                        bucket_usage,
+                                                        current_bucket,
+                                                        replacing_unresolved,
+                                                    )
+                                            },
+                                        ),
+                                    ),
+                                    clear: None,
+                                    empty_message: "No safe profile-item definitions match"
+                                        .to_owned(),
+                                },
+                            )
+                        };
+                        if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action
+                            && let Ok(hash) = u32::try_from(hash)
+                        {
+                            requested = Some(ProfileItemAction::SetDefinitionHash(hash));
+                            self.searches.insert(key.clone(), String::new());
                         }
                     });
                 });
-            });
         });
         if remove_requested {
             requested = Some(ProfileItemAction::Remove);
@@ -447,7 +492,7 @@ impl SundialApp {
 
     fn draw_character_inventory_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
         self.draw_character_tabs(ui);
-        ui.add_space(4.0);
+        ui.separator();
 
         let character_index = self.selected_character;
         let class_type = self
@@ -478,6 +523,7 @@ impl SundialApp {
             )).weak());
         });
         ui.add_enabled_ui(equipment_editable, |ui| self.draw_item_safety_controls(ui));
+        ui.separator();
 
         if !editable {
             let message = if equipment_editable {
@@ -559,6 +605,7 @@ impl SundialApp {
                     let repaint_context = ui.ctx().clone();
                     let mut toggle_header = false;
                     let mut open_picker = false;
+                    let mut picker_anchor = None;
                     let mut header =
                         egui::collapsing_header::CollapsingState::load_with_default_open(
                             ui.ctx(),
@@ -573,7 +620,7 @@ impl SundialApp {
                         .show_header(ui, |ui| {
                             toggle_header = ui
                                 .add(
-                                    egui::Label::new(egui::RichText::new(&title).strong())
+                                    egui::Label::new(bucket_header_text(ui, &title))
                                         .sense(egui::Sense::click()),
                                 )
                                 .clicked();
@@ -595,6 +642,7 @@ impl SundialApp {
                                     response.on_disabled_hover_text(tooltip)
                                 };
                                 open_picker = response.clicked();
+                                picker_anchor = Some(response);
                             }
                         });
                     if toggle_header {
@@ -613,7 +661,6 @@ impl SundialApp {
                         if self.searches.contains_key(&picker_key) {
                             let action = ui
                                 .add_enabled_ui(can_add, |ui| {
-                                    ui.label(egui::RichText::new("Add a stored item").strong());
                                     let manifest = &self.manifest;
                                     let show_dummy_items = self.show_dummy_items;
                                     let request_open = take_bucket_picker_open_request(
@@ -621,9 +668,11 @@ impl SundialApp {
                                         &picker_key,
                                         ui.input(|input| input.pointer.any_click()),
                                     );
-                                    let query = self.searches.entry(picker_key.clone()).or_default();
-                                    super::equipment::item_editor::draw_definition_picker_with_open_request(
+                                    let query =
+                                        self.searches.entry(picker_key.clone()).or_default();
+                                    item_editor::draw_definition_picker_with_open_request(
                                         ui,
+                                        manifest,
                                         (
                                             "character-inventory-add",
                                             character_index,
@@ -632,7 +681,7 @@ impl SundialApp {
                                         ),
                                         query,
                                         picker_height(),
-                                        request_open,
+                                        (picker_anchor.as_ref(), request_open),
                                         |query| DefinitionPickerChoices {
                                             definitions: character_bucket_definition_choices(
                                                 manifest
@@ -643,9 +692,7 @@ impl SundialApp {
                                                     )
                                                     .filter(|definition| {
                                                         definition.metadata.scope == group.key.scope
-                                                            && definition
-                                                                .metadata
-                                                                .native_bucket_id
+                                                            && definition.metadata.native_bucket_id
                                                                 == group.key.native_id
                                                     }),
                                             ),
@@ -693,10 +740,13 @@ impl SundialApp {
                                 }
                             }
                         }
-                        draw_responsive_cards(
+                        let (minimum_card_width, maximum_card_width) =
+                            self.item_card_width.dimensions();
+                        item_editor::draw_responsive_item_cards(
                             ui,
                             &group.items,
-                            CHARACTER_CARD_MIN_WIDTH,
+                            minimum_card_width,
+                            maximum_card_width,
                             |ui, entry| match entry {
                                 CharacterInventoryEntry::Equipped(snapshot) => {
                                     self.draw_equipped_item_card(
@@ -759,14 +809,13 @@ impl SundialApp {
         class_type: u64,
         editable: bool,
     ) {
-        let label = format!("Equipped · {}", snapshot.slot_label);
         self.draw_equipment_slot_card(
             ui,
             character_index,
             EquipmentSlotCard {
                 id_scope: "character-inventory-equipped",
                 slot: snapshot.slot,
-                label: &label,
+                label: snapshot.slot_label,
                 bucket_hash: snapshot.bucket_hash,
                 class_type,
                 editable,
@@ -805,54 +854,116 @@ impl SundialApp {
                     .is_some_and(|item| item.class_type == 3 || item.class_type == class_type)
         });
         let key = inventory_item_state_key(ui_identity);
+        let masterwork_feature_present = inventory_masterwork_feature_present(snapshot.flags);
         let mut requested = Vec::new();
         let mut remove_requested = false;
+        let mut swap_requested = false;
+        let mut swap_response = None;
 
         ui.push_id(
             ("character-inventory-item", ui_identity),
             |ui| {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::ZERO)
+                    .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     let definition = resolved.as_ref().map_or(
                         DefinitionSummary::Unknown { hash: &hash_text },
                         |definition| DefinitionSummary::Known {
                             name: &definition.name,
                             hash: &hash_text,
+                            type_name: &definition.type_name,
                         },
                     );
-                    draw_item_header_with_trailing(
+                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
                         ui,
+                        &self.manifest,
+                        Some(u64::from(snapshot.definition_hash)),
                         ItemHeader {
                             label: None,
+                            soid: Some(&soid_text),
                             definition,
+                            icon: None,
+                            fill: item_editor::muted_item_header_fill(ui),
                             valid,
                             invalid_message: "not valid for this character inventory",
                         },
-                        |ui| {
-                            if ui
-                                .add_enabled(editable, egui::Button::new("Remove").small())
-                                .on_hover_text("Remove this stored item")
-                                .clicked()
-                            {
-                                remove_requested = true;
-                            }
-                        },
+                        |_| {},
                     );
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Instance SOID");
-                        ui.label(egui::RichText::new(&soid_text).monospace().weak());
-                    });
-
                     ui.add_enabled_ui(editable, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            for action in item_editor::draw_level_and_quantity(
+                                ui,
+                                ("character-inventory-numeric", ui_identity),
+                                NumericItemFields {
+                                    level: Some(i64::from(snapshot.level)),
+                                    quantity: None,
+                                    quantity_max: None,
+                                },
+                            ) {
+                                if let ItemEditorAction::SetLevel { level } = action
+                                    && let Ok(level) = i32::try_from(level)
+                                {
+                                    requested.push(InventoryItemAction::SetLevel(level));
+                                }
+                            }
+                            ui.add_space(8.0);
+                            let flags = snapshot.flags.unwrap_or_default();
+                            let mut locked = flags & INVENTORY_FLAG_LOCKED != 0;
+                            if ui.checkbox(&mut locked, "Locked").changed() {
+                                requested.push(InventoryItemAction::SetFlags(
+                                    set_inventory_locked_flag(snapshot.flags, locked),
+                                ));
+                            }
+                            if masterwork_feature_present {
+                                ui.add_space(8.0);
+                                let mut masterworked = flags & INVENTORY_FLAG_MASTERWORK != 0;
+                                if ui.checkbox(&mut masterworked, "Masterwork").changed() {
+                                    requested.push(InventoryItemAction::SetFlags(
+                                        set_inventory_masterwork_flag(
+                                            snapshot.flags,
+                                            masterworked,
+                                        ),
+                                    ));
+                                }
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add_space(4.0);
+                                    if ui
+                                        .add(egui::Button::new("Remove").small())
+                                        .on_hover_text("Remove this stored item")
+                                        .clicked()
+                                    {
+                                        remove_requested = true;
+                                    }
+                                    let response = ui
+                                        .add(egui::Button::new("Swap").small())
+                                        .on_hover_text("Open the item picker");
+                                    if response.clicked() {
+                                        swap_requested = true;
+                                    }
+                                    swap_response = Some(response);
+                                },
+                            );
+                        });
+
+                        let picker_anchor = header_response.clone()
+                            | swap_response.expect("a character item card always draws Swap");
                         let picker_action = {
                             let manifest = &self.manifest;
                             let show_dummy_items = self.show_dummy_items;
                             let query = self.searches.entry(key.clone()).or_default();
-                            super::equipment::item_editor::draw_definition_picker(
+                            item_editor::draw_definition_picker_with_open_request(
                                 ui,
+                                manifest,
                                 ("character-inventory-definition", ui_identity),
                                 query,
                                 picker_height(),
+                                (Some(&picker_anchor), swap_requested),
                                 |query| DefinitionPickerChoices {
                                     definitions: character_definition_choices(
                                         manifest
@@ -895,33 +1006,6 @@ impl SundialApp {
                             }
                             self.searches.insert(key.clone(), String::new());
                         }
-
-                        ui.horizontal_wrapped(|ui| {
-                            for action in super::equipment::item_editor::draw_level_and_quantity(
-                                ui,
-                                ("character-inventory-numeric", ui_identity),
-                                NumericItemFields {
-                                    level: Some(i64::from(snapshot.level)),
-                                    quantity: None,
-                                    quantity_max: None,
-                                },
-                            ) {
-                                if let ItemEditorAction::SetLevel { level } = action
-                                    && let Ok(level) = i32::try_from(level)
-                                {
-                                    requested.push(InventoryItemAction::SetLevel(level));
-                                }
-                            }
-                            ui.add_space(8.0);
-                            let flags = snapshot.flags.unwrap_or_default();
-                            let mut locked = flags & INVENTORY_FLAG_LOCKED != 0;
-                            if ui.checkbox(&mut locked, "Locked").changed() {
-                                requested.push(InventoryItemAction::SetFlags(
-                                    set_inventory_locked_flag(snapshot.flags, locked),
-                                ));
-                            }
-                        });
-
                     });
                     if !requested
                         .iter()
@@ -949,7 +1033,7 @@ impl SundialApp {
                             );
                         }
                     }
-                });
+                    });
             },
         );
         if remove_requested {
@@ -1008,7 +1092,7 @@ impl SundialApp {
                         .iter()
                         .map(|hash| PlugChoice {
                             hash: *hash,
-                            label: self.manifest.plug_label(*hash),
+                            label: self.manifest.plug_label(*hash, true),
                             type_name: if show_types {
                                 self.manifest
                                     .plug_type_name(*hash)
@@ -1033,18 +1117,18 @@ impl SundialApp {
                         || format!("Socket {}", socket_index + 1),
                         |socket| socket.display_label(socket_index),
                     );
-                    let snapshot = PlugPickerSnapshot {
+                    let picker_snapshot = PlugPickerSnapshot {
                         socket_index,
                         socket_label,
                         current_hash,
                         current_label: current_hash.map_or_else(
                             || "None".to_owned(),
-                            |hash| self.manifest.plug_label(hash),
+                            |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
                         ),
                         native_default,
                         native_default_label: match native_default {
                             Some(NativePlugDefault::Plug(hash)) => {
-                                Some(self.manifest.plug_label(hash))
+                                Some(self.manifest.plug_label(hash, true))
                             }
                             _ => None,
                         },
@@ -1053,11 +1137,12 @@ impl SundialApp {
                     };
                     let action = ui
                         .add_enabled_ui(editable, |ui| {
-                            super::equipment::item_editor::draw_plug_picker(
+                            item_editor::draw_plug_picker(
                                 ui,
+                                &self.manifest,
                                 ("character-inventory-plug", ui_identity, socket_index),
                                 &mut query,
-                                &snapshot,
+                                &picker_snapshot,
                                 PickerHeight {
                                     min: PLUG_PICKER_MIN_HEIGHT,
                                     max: PLUG_PICKER_MAX_HEIGHT,
@@ -1072,6 +1157,18 @@ impl SundialApp {
                         }
                         plugs[socket_index] = hash.and_then(|hash| u32::try_from(hash).ok());
                         requested.push(InventoryItemAction::SetPlugs(ItemPlugs::Authored(plugs)));
+                        if inventory.flags.is_some()
+                            && let Some(catalyst) = self
+                                .manifest
+                                .catalyst_socket(item)
+                                .filter(|catalyst| catalyst.socket_index == socket_index)
+                            && let Some(state) = catalyst.state_for_selected_plug(hash)
+                        {
+                            let (_, masterworked) = catalyst.authored_state(state);
+                            requested.push(InventoryItemAction::SetFlags(
+                                set_inventory_masterwork_flag(inventory.flags, masterworked),
+                            ));
+                        }
                     }
                     if searchable {
                         self.plug_searches.insert(query_key, query);
@@ -1175,8 +1272,9 @@ impl SundialApp {
             .inventory_definition(u64::from(hash))
             .map(|definition| ResolvedDefinition {
                 name: definition.name.to_owned(),
+                type_name: definition.type_name.to_owned(),
                 metadata: *definition.metadata,
-                item: definition.item.cloned(),
+                item: self.manifest.item_handle(u64::from(hash)),
             })
     }
 
@@ -1323,6 +1421,11 @@ fn bucket_header_label<T>(
         return format!("{} · {occupied} / {capacity}", group.label);
     }
     format!("{} · {}", group.label, item_count_label(group.items.len()))
+}
+
+fn bucket_header_text(ui: &egui::Ui, text: &str) -> egui::RichText {
+    let size = egui::TextStyle::Body.resolve(ui.style()).size + BUCKET_HEADER_SIZE_DELTA;
+    egui::RichText::new(text).strong().size(size)
 }
 
 fn bucket_key_has_room(key: BucketKey, capacity: Option<u16>, usage: &BucketUsage) -> bool {
@@ -1558,7 +1661,8 @@ fn grouped_definition_choices<'a>(
 fn definition_choice_without_group(definition: InventoryDefinition<'_>) -> DefinitionChoice {
     DefinitionChoice {
         hash: definition.hash,
-        label: definition.label(),
+        name: definition.name.to_owned(),
+        type_name: definition.type_name.to_owned(),
         group: None,
     }
 }
@@ -1566,7 +1670,8 @@ fn definition_choice_without_group(definition: InventoryDefinition<'_>) -> Defin
 fn definition_choice(definition: InventoryDefinition<'_>, group: String) -> DefinitionChoice {
     DefinitionChoice {
         hash: definition.hash,
-        label: definition.label(),
+        name: definition.name.to_owned(),
+        type_name: definition.type_name.to_owned(),
         group: Some(group),
     }
 }
@@ -1641,27 +1746,6 @@ fn profile_name_priority(definition: InventoryDefinition<'_>) -> u8 {
     } else {
         1
     }
-}
-
-fn draw_responsive_cards<T>(
-    ui: &mut egui::Ui,
-    items: &[T],
-    minimum_card_width: f32,
-    mut draw: impl FnMut(&mut egui::Ui, &T),
-) {
-    let two_column_width = minimum_card_width * 2.0 + ui.spacing().item_spacing.x;
-    let column_count = usize::from(ui.available_width() >= two_column_width) + 1;
-    ui.columns(column_count, |columns| {
-        let mut counts = vec![0_usize; column_count];
-        for (index, item) in items.iter().enumerate() {
-            let column = index % column_count;
-            if counts[column] != 0 {
-                columns[column].add_space(3.0);
-            }
-            draw(&mut columns[column], item);
-            counts[column] += 1;
-        }
-    });
 }
 
 fn item_count_label(count: usize) -> String {
@@ -2033,7 +2117,7 @@ mod tests {
             },
             vec![
                 InventoryItemAction::SetQuantity(2),
-                InventoryItemAction::SetFlags(Some(4)),
+                InventoryItemAction::SetFlags(Some(8)),
             ],
         )
         .unwrap_err();

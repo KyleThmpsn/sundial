@@ -12,7 +12,10 @@ use std::{
 
 use serde_json::{Map, Value};
 
-use crate::game_settings::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA};
+use crate::{
+    game_settings::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA},
+    hash::parse_unsigned_value,
+};
 
 pub(crate) const LEGACY_PROFILE_ITEM_CAPACITY: usize = 32;
 pub(crate) const PROFILE_ITEM_CAPACITY: usize = 701;
@@ -24,14 +27,28 @@ pub(crate) const DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 5;
 pub(crate) const GENERATED_INSTANCE_SOID_START: u64 = 0x4000_0000_0000_0001;
 pub(crate) const INVENTORY_FLAG_LOCKED: u8 = 1;
 pub(crate) const INVENTORY_FLAG_TRACKED: u8 = 2;
-pub(crate) const INVENTORY_FLAG_MASK: u8 = INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED;
+pub(crate) const INVENTORY_FLAG_MASTERWORK: u8 = 4;
+pub(crate) const INVENTORY_FLAG_MASK: u8 =
+    INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED | INVENTORY_FLAG_MASTERWORK;
 
 pub(crate) fn set_inventory_locked_flag(flags: Option<u8>, locked: bool) -> Option<u8> {
+    set_inventory_flag(flags, INVENTORY_FLAG_LOCKED, locked)
+}
+
+pub(crate) fn set_inventory_masterwork_flag(flags: Option<u8>, masterworked: bool) -> Option<u8> {
+    set_inventory_flag(flags, INVENTORY_FLAG_MASTERWORK, masterworked)
+}
+
+pub(crate) fn inventory_masterwork_feature_present(flags: Option<u8>) -> bool {
+    flags.is_some_and(|flags| flags & INVENTORY_FLAG_MASTERWORK != 0)
+}
+
+fn set_inventory_flag(flags: Option<u8>, flag: u8, enabled: bool) -> Option<u8> {
     let mut flags = flags.unwrap_or_default();
-    if locked {
-        flags |= INVENTORY_FLAG_LOCKED;
+    if enabled {
+        flags |= flag;
     } else {
-        flags &= !INVENTORY_FLAG_LOCKED;
+        flags &= !flag;
     }
     (flags != 0).then_some(flags)
 }
@@ -1198,22 +1215,6 @@ fn validate_required_account_primary_soid(document: &Value) -> InventoryResult<(
     Ok(())
 }
 
-fn parse_unsigned_value(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        let text = value.as_str()?.trim();
-        let digits = text
-            .strip_prefix("0x")
-            .or_else(|| text.strip_prefix("0X"))?;
-        if digits.is_empty()
-            || digits.len() > 16
-            || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return None;
-        }
-        u64::from_str_radix(digits, 16).ok()
-    })
-}
-
 fn validate_positive_i32(value: i32, path: &str) -> InventoryResult<()> {
     if value > 0 {
         Ok(())
@@ -1670,7 +1671,14 @@ mod tests {
     }
 
     #[test]
-    fn locked_flag_edits_preserve_the_hidden_tracked_flag() {
+    fn item_state_edits_preserve_unrelated_flags() {
+        assert!(!inventory_masterwork_feature_present(None));
+        assert!(!inventory_masterwork_feature_present(Some(
+            INVENTORY_FLAG_LOCKED
+        )));
+        assert!(inventory_masterwork_feature_present(Some(
+            INVENTORY_FLAG_MASTERWORK
+        )));
         assert_eq!(
             set_inventory_locked_flag(None, true),
             Some(INVENTORY_FLAG_LOCKED)
@@ -1681,11 +1689,23 @@ mod tests {
         );
         assert_eq!(
             set_inventory_locked_flag(Some(INVENTORY_FLAG_TRACKED), true),
-            Some(INVENTORY_FLAG_MASK)
+            Some(INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED)
         );
         assert_eq!(
             set_inventory_locked_flag(Some(INVENTORY_FLAG_MASK), false),
-            Some(INVENTORY_FLAG_TRACKED)
+            Some(INVENTORY_FLAG_TRACKED | INVENTORY_FLAG_MASTERWORK)
+        );
+        assert_eq!(
+            set_inventory_masterwork_flag(Some(INVENTORY_FLAG_LOCKED), true),
+            Some(INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_MASTERWORK)
+        );
+        assert_eq!(
+            set_inventory_masterwork_flag(Some(INVENTORY_FLAG_MASK), false),
+            Some(INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED)
+        );
+        assert_eq!(
+            set_inventory_masterwork_flag(None, true),
+            Some(INVENTORY_FLAG_MASTERWORK)
         );
     }
 
@@ -1782,7 +1802,7 @@ mod tests {
             ("definition_hash", Value::from(u64::from(u32::MAX) + 1)),
             ("level", Value::from(-1)),
             ("quantity", Value::from(0)),
-            ("flags", Value::from(4)),
+            ("flags", Value::from(8)),
         ];
         for (key, value) in invalid_values {
             let mut document = document(6);

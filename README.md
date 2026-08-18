@@ -11,8 +11,9 @@ Ghost shells, Sparrows, ships, emblems, character properties, and more. You can
 also adjust the plugs and perks installed on supported items... or equip exotics
 in every slot, if you want! Unsafe plug selection can show every plug matching
 a socket type, while the “really unsafe” tier makes every discovered plug
-available in every socket. Unsupported combinations may break items, corrupt
-the loadout, or crash Destiny 2. (Never forget the Craftening!)
+available in every socket. These combinations are not known to be supported;
+incompatible choices may prevent an item, loadout, Sunrise, or Destiny 2 from
+working or loading correctly. (Never forget the Craftening!)
 
 Edit the player name and game defaults from the Game settings page. Project
 Sunrise applies these settings when loading into Destiny 2, and Sundial limits
@@ -28,7 +29,7 @@ are bundled.
 
 Sundial is designed for:
 
-- Project Sunrise 0.1 through 0.3.1 with Destiny 2 Shadowkeep
+- Project Sunrise 0.1 through 0.3.2 (schema v6) with Destiny 2 Shadowkeep
   build `86657.20.08.23`
 
 Sundial handles the known differences between Sunrise settings schemas.
@@ -60,11 +61,12 @@ The catalog is stored at:
 `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json`
 
 Sundial automatically rebuilds it after an app update or if the installed
-package files change. You can also rebuild it manually from the **Paths** screen.
+package files change. You can also rebuild it manually from
+**Preferences > Paths**.
 
 ## Usage
 
-Download `sundial.exe` or `Sundial-v0.3.0-windows-x86_64.zip` from the GitHub
+Download `sundial.exe` or `Sundial-v0.3.1-windows-x86_64.zip` from the GitHub
 [Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
 build it yourself from source using the instructions below.
 
@@ -91,9 +93,9 @@ The executable is written to `target\release\sundial.exe`.
 
 ### Can I use Sundial with the current live version of Destiny 2?
 
-No. Sundial is designed for Project Sunrise 0.1 through 0.3.1 with Destiny 2
-Shadowkeep build `86657.20.08.23`. Select only the Shadowkeep installation used
-with Project Sunrise.
+No. Sundial is designed for Project Sunrise 0.1 through 0.3.2 (schema v6) with
+Destiny 2 Shadowkeep build `86657.20.08.23`. Select only the Shadowkeep
+installation used with Project Sunrise.
 
 ### Does Sundial change my loadout while Destiny 2 is running?
 
@@ -105,7 +107,7 @@ for Project Sunrise to load them.
 Unsafe mode shows every plug matching the socket type. “Really unsafe” mode
 allows any discovered plug in any socket, greatly increasing the risk of
 loading failures or crashes. Sundial warns once before enabling it. Every save
-is backed up, and **Paths > Restore Sunrise defaults** can recover the defaults.
+is backed up, and **Preferences > Recovery** can recover the defaults.
 
 ### Why does Destiny 2 send me to character creation?
 
@@ -115,7 +117,7 @@ combination. Fully exit Destiny 2, open the file in Sundial, and save it again;
 Sundial repairs the known ability pairings during save. If the problem remains,
 reselect that character's class, subclass, and attunement before saving.
 
-If all else fails, use **Paths > Restore Sunrise defaults**. Sundial preserves
+If all else fails, use **Preferences > Recovery**. Sundial preserves
 the current file as `settings.json.bak` and as a timestamped backup before
 restoring it. Earlier save backups are also available under
 `%LOCALAPPDATA%\Sundial\backups`.
@@ -138,9 +140,7 @@ changing the in-game model.
 
 Sunrise may use a default female Awoken for character previews, regardless of
 the saved race or gender. Equipment can also render incorrectly in previews but
-should appear correctly in game. Some character changes can leave the
-character-select preview appearing to load even though the in-game model still
-reflects them.
+should appear correctly in game.
 
 ### Why does the first launch take longer?
 
