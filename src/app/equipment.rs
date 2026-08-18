@@ -4,7 +4,7 @@ use eframe::egui;
 use serde_json::Value;
 
 use crate::{
-    catalog::{self, AbilityChoice, CatalystSocket, CatalystState, ItemDef},
+    catalog::{self, AbilityChoice, Catalog, CatalystSocket, CatalystState, ItemDef},
     game_settings,
     hash::{format_hash, parse_hash, parse_unsigned_value},
 };
@@ -19,7 +19,8 @@ use super::{
 use super::item_editor::{self, NativePlugDefault};
 use super::item_editor::{
     ClearDefinitionChoice, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary,
-    ItemEditorAction, ItemHeader, NumericItemFields, PickerHeight, PlugChoice, PlugPickerSnapshot,
+    ExistingInventoryChoice, ItemEditorAction, ItemHeader, NumericItemFields, PickerHeight,
+    PlugChoice, PlugPickerSnapshot,
 };
 
 /// A tolerant, read-only view of one non-null character equipment slot.
@@ -126,6 +127,89 @@ impl SundialApp {
         }
     }
 
+    pub(super) fn equip_stored_item(
+        &mut self,
+        location: super::inventory::InventoryItemLocation,
+        slot: &str,
+    ) -> bool {
+        if !self.equipment_mutation_allowed() {
+            return false;
+        }
+        if !super::inventory::schema_mode(&self.document).can_mutate_character_inventory() {
+            self.set_status("Equipping a stored item requires settings schema 6", true);
+            return false;
+        }
+
+        let snapshot =
+            match super::inventory::character_inventory(&self.document, location.character_index) {
+                Ok(Some(items)) => items.into_iter().find(|item| item.location == location),
+                Ok(None) => None,
+                Err(error) => {
+                    self.set_status(error.to_string(), true);
+                    return false;
+                }
+            };
+        let Some(snapshot) = snapshot else {
+            self.set_status("The selected inventory item no longer exists", true);
+            return false;
+        };
+        let Some((_, _, bucket)) = SLOTS
+            .iter()
+            .find(|(known_slot, _, _)| *known_slot == slot)
+            .copied()
+        else {
+            self.set_status(format!("Unknown equipment slot: {slot}"), true);
+            return false;
+        };
+        let Some(item) = self
+            .manifest
+            .item_handle_for_bucket(u64::from(snapshot.definition_hash), bucket)
+        else {
+            self.set_status(
+                format!(
+                    "The selected inventory item is not valid for the {} slot",
+                    equipment_slot_label(slot)
+                ),
+                true,
+            );
+            return false;
+        };
+        let item_name = item.name.clone();
+        match equip_inventory_item(&mut self.document, location, slot, &item) {
+            Ok(replaced_item) => {
+                self.dirty = true;
+                let slot_label = equipment_slot_label(slot);
+                self.set_status(
+                    if replaced_item {
+                        format!(
+                            "Equipped {item_name}; moved the previous {slot_label} item to inventory"
+                        )
+                    } else {
+                        format!("Equipped {item_name} in the empty {slot_label} slot")
+                    },
+                    false,
+                );
+                for id_scope in ["characters-equipment", "character-inventory-equipped"] {
+                    self.searches.insert(
+                        format!("{id_scope}:{}:{slot}", location.character_index),
+                        String::new(),
+                    );
+                    let plug_prefix = format!(
+                        "plug-search:{id_scope}:{}:{slot}:",
+                        location.character_index
+                    );
+                    self.plug_searches
+                        .retain(|key, _| !key.starts_with(&plug_prefix));
+                }
+                true
+            }
+            Err(error) => {
+                self.set_status(error, true);
+                false
+            }
+        }
+    }
+
     fn select_subclass_item(&mut self, character: usize, item: &ItemDef) {
         if !self.equipment_mutation_allowed() {
             return;
@@ -152,6 +236,41 @@ impl SundialApp {
                 );
             }
             Err(error) => self.set_status(error, true),
+        }
+    }
+
+    fn unequip_weapon(&mut self, character: usize, slot: &str) {
+        if !WEAPON_SLOTS.contains(&slot) {
+            self.set_status(
+                format!(
+                    "The {} slot cannot be unequipped",
+                    equipment_slot_label(slot)
+                ),
+                true,
+            );
+            return;
+        }
+        if !self.equipment_mutation_allowed() {
+            return;
+        }
+        if !super::inventory::schema_mode(&self.document).can_mutate_character_inventory() {
+            self.set_status("Unequipping to inventory requires settings schema 6", true);
+            return;
+        }
+
+        match super::inventory::move_equipment_item_to_inventory(
+            &mut self.document,
+            character,
+            slot,
+        ) {
+            Ok(()) => {
+                self.dirty = true;
+                self.set_status(
+                    format!("Moved the {} item to inventory", equipment_slot_label(slot)),
+                    false,
+                );
+            }
+            Err(error) => self.set_status(error.to_string(), true),
         }
     }
 
@@ -785,10 +904,19 @@ impl SundialApp {
         let guided_editable = editable && snapshot_valid;
         let flags_editable =
             super::inventory::schema_mode(&self.document).can_mutate_equipment_flags();
+        let inventory_editable =
+            super::inventory::schema_mode(&self.document).can_mutate_character_inventory();
         let equipped_label = equipped_header_label(id_scope, label);
         let header_soid = snapshot
             .map(|snapshot| snapshot.instance_soid_text.as_str())
             .or(current_soid_text.as_deref());
+        let existing_inventory = equipment_inventory_choices(
+            &self.document,
+            &self.manifest,
+            character_index,
+            bucket,
+            class_type,
+        );
         ui.push_id((id_scope, character_index, slot), |ui| {
             egui::Frame::group(ui.style())
                 .inner_margin(egui::Margin::ZERO)
@@ -846,6 +974,8 @@ impl SundialApp {
                     }
 
                     let mut swap_requested = false;
+                    let mut empty_requested = false;
+                    let mut unequip_requested = false;
                     let swap_response = ui
                         .horizontal(|ui| {
                             ui.add_space(4.0);
@@ -913,10 +1043,40 @@ impl SundialApp {
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.add_space(4.0);
+                                if !is_empty && WEAPON_SLOTS.contains(&slot) {
+                                    let response = item_editor::draw_trash_button(
+                                        ui,
+                                        guided_editable,
+                                        "Delete equipped item",
+                                    )
+                                    .on_hover_text(format!(
+                                        "Delete this item and set the {} slot to empty. This does not move it to inventory (use Unequip).",
+                                        equipment_slot_label(slot)
+                                    ));
+                                    empty_requested = response.clicked();
+                                }
                                 let response = ui
                                     .add_enabled(guided_editable, egui::Button::new("Swap").small())
                                     .on_hover_text("Open the item picker");
                                 swap_requested = response.clicked();
+                                if !is_empty && WEAPON_SLOTS.contains(&slot) {
+                                    let tooltip = if inventory_editable {
+                                        format!(
+                                            "Move the {} item to character inventory",
+                                            equipment_slot_label(slot)
+                                        )
+                                    } else {
+                                        "Unequipping to inventory requires settings schema 6"
+                                            .to_owned()
+                                    };
+                                    let response = ui
+                                        .add_enabled(
+                                            guided_editable && inventory_editable,
+                                            egui::Button::new("Unequip").small(),
+                                        )
+                                        .on_hover_text(tooltip);
+                                    unequip_requested = response.clicked();
+                                }
                                 response
                             })
                             .inner
@@ -924,6 +1084,14 @@ impl SundialApp {
                         .inner;
                     let picker_anchor = header_response.clone() | swap_response;
                     let key = format!("{id_scope}:{character_index}:{slot}");
+                    if empty_requested {
+                        self.empty_weapon(character_index, slot);
+                        self.searches.insert(key.clone(), String::new());
+                    }
+                    if unequip_requested {
+                        self.unequip_weapon(character_index, slot);
+                        self.searches.insert(key.clone(), String::new());
+                    }
                     let picker_action = {
                         let manifest = &self.manifest;
                         let show_dummy_items = self.show_dummy_items;
@@ -953,11 +1121,23 @@ impl SundialApp {
                                     let needle = query_value.to_lowercase();
                                     let definitions =
                                         equipment_definition_choices(candidates, query_value);
+                                    let existing_inventory = existing_inventory
+                                        .iter()
+                                        .filter(|choice| {
+                                            existing_inventory_choice_matches(
+                                                manifest,
+                                                choice,
+                                                query_value,
+                                            )
+                                        })
+                                        .cloned()
+                                        .collect();
                                     let show_empty_weapon = WEAPON_SLOTS.contains(&slot)
                                         && (query_value.trim().is_empty()
                                             || "empty weapon".contains(&needle));
                                     DefinitionPickerChoices {
                                         definitions,
+                                        existing_inventory,
                                         clear: show_empty_weapon.then(|| ClearDefinitionChoice {
                                             label: "Empty weapon".to_owned(),
                                             tooltip: "Sets this equipment slot to empty."
@@ -986,6 +1166,16 @@ impl SundialApp {
                                 }
                                 self.searches.insert(key.clone(), String::new());
                             }
+                        }
+                        Some(ItemEditorAction::EquipInventoryItem { item_index }) => {
+                            self.equip_stored_item(
+                                super::inventory::InventoryItemLocation {
+                                    character_index,
+                                    item_index,
+                                },
+                                slot,
+                            );
+                            self.searches.insert(key.clone(), String::new());
                         }
                         _ => {}
                     }
@@ -1172,6 +1362,57 @@ fn equipment_definition_choices<'a>(
             group: None,
         })
         .collect()
+}
+
+fn equipment_inventory_choices(
+    document: &Value,
+    catalog: &Catalog,
+    character_index: usize,
+    bucket: u64,
+    class_type: u64,
+) -> Vec<ExistingInventoryChoice> {
+    super::inventory::character_inventory(document, character_index)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|snapshot| {
+            if snapshot.quantity != 1 {
+                return None;
+            }
+            let hash = u64::from(snapshot.definition_hash);
+            let definition = catalog.inventory_definition(hash)?;
+            if !definition.metadata.is_character_inventory_candidate() {
+                return None;
+            }
+            let item = catalog.get_for_bucket(hash, bucket)?;
+            if item.class_type != 3 && item.class_type != class_type {
+                return None;
+            }
+
+            Some(ExistingInventoryChoice {
+                item_index: snapshot.location.item_index,
+                hash,
+                name: item.name.clone(),
+                type_name: item.type_name.clone(),
+            })
+        })
+        .collect()
+}
+
+fn existing_inventory_choice_matches(
+    catalog: &Catalog,
+    choice: &ExistingInventoryChoice,
+    query: &str,
+) -> bool {
+    let needle = query.trim().to_lowercase();
+    needle.is_empty()
+        || choice.name.to_lowercase().contains(&needle)
+        || choice.type_name.to_lowercase().contains(&needle)
+        || format_hash(choice.hash).to_lowercase().contains(&needle)
+        || catalog
+            .description(choice.hash)
+            .is_some_and(|description| description.to_lowercase().contains(&needle))
 }
 
 pub(super) fn collect_class_armor_defaults(
@@ -1740,12 +1981,6 @@ pub(super) fn equip_subclass_with_default_abilities(
     }
 
     let mut candidate = document.clone();
-    let defaults = default_ability_values(
-        class_type,
-        &item.abilities,
-        game_settings::schema_version(&candidate),
-    );
-
     equip_definition(
         &mut candidate,
         character_index,
@@ -1753,7 +1988,89 @@ pub(super) fn equip_subclass_with_default_abilities(
         item.hash,
         &item.default_plugs,
     )?;
-    let character = candidate
+    set_default_subclass_abilities(&mut candidate, character_index, class_type, item)?;
+    *document = candidate;
+    Ok(())
+}
+
+/// Equips one exact stored instance, moving the previously equipped instance back to inventory.
+/// Subclass swaps also reset the coordinated character ability entries just like the definition
+/// picker does.
+pub(super) fn equip_inventory_item(
+    document: &mut Value,
+    location: super::inventory::InventoryItemLocation,
+    slot: &str,
+    item: &ItemDef,
+) -> Result<bool, String> {
+    let expected_bucket = SLOTS
+        .iter()
+        .find_map(|(known_slot, _, bucket)| (*known_slot == slot).then_some(*bucket))
+        .ok_or_else(|| format!("Unknown equipment slot: {slot}"))?;
+    if item.bucket_hash != expected_bucket {
+        return Err(format!(
+            "{} is not valid for the {} slot",
+            item.name,
+            equipment_slot_label(slot)
+        ));
+    }
+
+    let inventory = super::inventory::character_inventory(document, location.character_index)
+        .map_err(|error| error.to_string())?
+        .ok_or("The selected character has no inventory array")?;
+    let snapshot = inventory
+        .iter()
+        .find(|snapshot| snapshot.location == location)
+        .ok_or("The selected inventory item no longer exists")?;
+    if u64::from(snapshot.definition_hash) != item.hash {
+        return Err("The selected inventory item changed before it could be equipped".to_owned());
+    }
+    if snapshot.quantity != 1 {
+        return Err("Only a single inventory item can be equipped at a time".to_owned());
+    }
+
+    let class_type = document
+        .pointer("/state/characters")
+        .and_then(Value::as_array)
+        .and_then(|characters| characters.get(location.character_index))
+        .and_then(|character| character.get("class"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            format!(
+                "Character {} has no valid class",
+                location.character_index + 1
+            )
+        })?;
+    if item.class_type != 3 && item.class_type != class_type {
+        return Err(format!(
+            "{} is not compatible with {}",
+            item.name,
+            class_name(class_type)
+        ));
+    }
+
+    let mut candidate = document.clone();
+    let replaced_item =
+        super::inventory::swap_inventory_item_with_equipment(&mut candidate, location, slot)
+            .map_err(|error| error.to_string())?;
+    if slot == "subclass" {
+        set_default_subclass_abilities(&mut candidate, location.character_index, class_type, item)?;
+    }
+    *document = candidate;
+    Ok(replaced_item)
+}
+
+fn set_default_subclass_abilities(
+    document: &mut Value,
+    character_index: usize,
+    class_type: u64,
+    item: &ItemDef,
+) -> Result<(), String> {
+    let defaults = default_ability_values(
+        class_type,
+        &item.abilities,
+        game_settings::schema_version(document),
+    );
+    let character = document
         .pointer_mut("/state/characters")
         .and_then(Value::as_array_mut)
         .and_then(|characters| characters.get_mut(character_index))
@@ -1768,7 +2085,6 @@ pub(super) fn equip_subclass_with_default_abilities(
     ] {
         character.insert(field.to_owned(), Value::from(value));
     }
-    *document = candidate;
     Ok(())
 }
 
@@ -2421,6 +2737,67 @@ mod snapshot_tests {
         assert_eq!(
             document.pointer("/state/characters/0/equipment/subclass/plugs"),
             Some(&json!(["0x0000000A", null]))
+        );
+        for (field, expected) in [
+            ("movement_ability", 6),
+            ("grenade_ability", 7),
+            ("super_ability", 10),
+            ("melee_ability", 11),
+            ("class_ability", 2),
+        ] {
+            assert_eq!(
+                document.pointer(&format!("/state/characters/0/{field}")),
+                Some(&json!(expected))
+            );
+        }
+
+        let previous_subclass = document
+            .pointer("/state/characters/0/equipment/subclass")
+            .unwrap()
+            .clone();
+        let character = document
+            .pointer_mut("/state/characters/0")
+            .and_then(Value::as_object_mut)
+            .unwrap();
+        character.insert(
+            "inventory".into(),
+            json!([{
+                "instance_soid": "0x0000000000000002",
+                "definition_hash": "0x0000002A",
+                "level": 0,
+                "quantity": 1,
+                "plugs": ["0x0000000B", null]
+            }]),
+        );
+        for field in [
+            "movement_ability",
+            "grenade_ability",
+            "super_ability",
+            "melee_ability",
+            "class_ability",
+        ] {
+            character.insert(field.into(), Value::from(99));
+        }
+
+        assert!(
+            equip_inventory_item(
+                &mut document,
+                super::super::inventory::InventoryItemLocation {
+                    character_index: 0,
+                    item_index: 0,
+                },
+                "subclass",
+                &item,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/subclass/instance_soid"),
+            Some(&json!("0x0000000000000002"))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory/0"),
+            Some(&previous_subclass)
         );
         for (field, expected) in [
             ("movement_ability", 6),

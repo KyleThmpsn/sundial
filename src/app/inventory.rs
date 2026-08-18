@@ -565,6 +565,168 @@ pub(crate) fn apply_inventory_item_action(
     Ok(())
 }
 
+/// Moves a stored item into an equipment slot and puts the previous equipped item in its place.
+///
+/// The complete authored rows are moved rather than rebuilt, preserving instance SOIDs, plugs,
+/// flags, and any unrecognized members. If the equipment slot is empty, the stored row is removed
+/// from the inventory array. Work is performed on a clone so a malformed destination cannot leave
+/// the document partially changed.
+pub(crate) fn swap_inventory_item_with_equipment(
+    document: &mut Value,
+    location: InventoryItemLocation,
+    slot: &str,
+) -> InventoryResult<bool> {
+    require_inventory_mutation(document)?;
+    if !super::SLOTS
+        .iter()
+        .any(|(known_slot, _, _)| *known_slot == slot)
+    {
+        return Err(InventoryError::new(
+            format!(
+                "/state/characters/{}/equipment/{slot}",
+                location.character_index
+            ),
+            "unknown equipment slot",
+        ));
+    }
+
+    let snapshots = character_inventory(document, location.character_index)?.ok_or_else(|| {
+        InventoryError::new(
+            format!("/state/characters/{}/inventory", location.character_index),
+            "character inventory is missing; add an item before equipping a row",
+        )
+    })?;
+    if location.item_index >= snapshots.len() {
+        return Err(InventoryError::new(
+            inventory_item_path(location),
+            "inventory item index is out of range",
+        ));
+    }
+
+    let character = character_object(document, location.character_index)?;
+    let stored_item = character
+        .get("inventory")
+        .and_then(Value::as_array)
+        .and_then(|items| items.get(location.item_index))
+        .cloned()
+        .expect("the selected inventory row was validated before the swap");
+    let equipment_path = format!("/state/characters/{}/equipment", location.character_index);
+    let equipment = character
+        .get("equipment")
+        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment is missing"))?
+        .as_object()
+        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment must be an object"))?;
+    let previous_item = match equipment.get(slot) {
+        Some(Value::Object(_)) => equipment.get(slot).cloned(),
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err(InventoryError::new(
+                format!("{equipment_path}/{slot}"),
+                "equipped item must be an object or null",
+            ));
+        }
+    };
+    let replaced_item = previous_item.is_some();
+
+    let mut candidate = document.clone();
+    let candidate_character = character_object_mut(&mut candidate, location.character_index)?;
+    candidate_character
+        .get_mut("equipment")
+        .and_then(Value::as_object_mut)
+        .expect("the equipment object was validated before the swap")
+        .insert(slot.to_owned(), stored_item);
+    let inventory = candidate_character
+        .get_mut("inventory")
+        .and_then(Value::as_array_mut)
+        .expect("the inventory array was validated before the swap");
+    if let Some(previous_item) = previous_item {
+        inventory[location.item_index] = previous_item;
+    } else {
+        inventory.remove(location.item_index);
+    }
+
+    // An equipped row can be more malformed than a stored row. Refuse the swap if moving it into
+    // inventory would make that inventory unreadable by the guided editor.
+    let _ = character_inventory(&candidate, location.character_index)?;
+    *document = candidate;
+    Ok(replaced_item)
+}
+
+/// Moves the complete authored item in an equipment slot to the end of character inventory.
+///
+/// The source slot is set to null only after the resulting inventory has been validated, so a
+/// full inventory or malformed equipped row cannot leave the document partially changed.
+pub(crate) fn move_equipment_item_to_inventory(
+    document: &mut Value,
+    character_index: usize,
+    slot: &str,
+) -> InventoryResult<()> {
+    require_inventory_mutation(document)?;
+    if !super::SLOTS
+        .iter()
+        .any(|(known_slot, _, _)| *known_slot == slot)
+    {
+        return Err(InventoryError::new(
+            format!("/state/characters/{character_index}/equipment/{slot}"),
+            "unknown equipment slot",
+        ));
+    }
+
+    let existing_inventory = character_inventory(document, character_index)?;
+    let inventory_length = existing_inventory.as_ref().map_or(0, Vec::len);
+    if inventory_length >= CHARACTER_INVENTORY_CAPACITY {
+        return Err(InventoryError::new(
+            format!("/state/characters/{character_index}/inventory"),
+            format!("character inventory is full (maximum {CHARACTER_INVENTORY_CAPACITY} items)"),
+        ));
+    }
+
+    let character = character_object(document, character_index)?;
+    let equipment_path = format!("/state/characters/{character_index}/equipment");
+    let equipment = character
+        .get("equipment")
+        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment is missing"))?
+        .as_object()
+        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment must be an object"))?;
+    let equipped_item = match equipment.get(slot) {
+        Some(Value::Object(_)) => equipment
+            .get(slot)
+            .cloned()
+            .expect("the equipped item was just found"),
+        Some(Value::Null) | None => {
+            return Err(InventoryError::new(
+                format!("{equipment_path}/{slot}"),
+                "equipment slot is already empty",
+            ));
+        }
+        Some(_) => {
+            return Err(InventoryError::new(
+                format!("{equipment_path}/{slot}"),
+                "equipped item must be an object or null",
+            ));
+        }
+    };
+
+    let mut candidate = document.clone();
+    let candidate_character = character_object_mut(&mut candidate, character_index)?;
+    candidate_character
+        .get_mut("equipment")
+        .and_then(Value::as_object_mut)
+        .expect("the equipment object was validated before the move")
+        .insert(slot.to_owned(), Value::Null);
+    match candidate_character.get_mut("inventory") {
+        Some(Value::Array(items)) => items.push(equipped_item),
+        Some(_) => unreachable!("the inventory shape was validated before the move"),
+        None => {
+            candidate_character.insert("inventory".into(), Value::Array(vec![equipped_item]));
+        }
+    }
+
+    let _ = character_inventory(&candidate, character_index)?;
+    *document = candidate;
+    Ok(())
+}
+
 pub(crate) fn collect_used_soids(document: &Value) -> InventoryResult<BTreeSet<u64>> {
     let mut used = BTreeSet::new();
     visit_soids(document, |soid, _path| {
@@ -1762,6 +1924,185 @@ mod tests {
             document.pointer("/state/characters/0/inventory/1/instance_soid"),
             Some(&Value::String("0x4000000000000002".into()))
         );
+    }
+
+    #[test]
+    fn equipping_a_stored_item_swaps_the_complete_authored_rows() {
+        let mut document = document(6);
+        let mut equipped = item(1, 10);
+        equipped["equipped_only"] = json!({"preserved": true});
+        let mut stored = item(2, 20);
+        stored["stored_only"] = json!([1, 2, 3]);
+        let untouched = item(3, 30);
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({"kinetic": equipped.clone()});
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = Value::Array(vec![stored.clone(), untouched.clone()]);
+
+        let replaced = swap_inventory_item_with_equipment(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            "kinetic",
+        )
+        .unwrap();
+
+        assert!(replaced);
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic"),
+            Some(&stored)
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory/0"),
+            Some(&equipped)
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory/1"),
+            Some(&untouched)
+        );
+    }
+
+    #[test]
+    fn equipping_into_an_empty_slot_removes_only_the_moved_inventory_row() {
+        let mut document = document(6);
+        let stored = item(1, 10);
+        let untouched = item(2, 20);
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({"energy": null});
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = Value::Array(vec![stored.clone(), untouched.clone()]);
+
+        let replaced = swap_inventory_item_with_equipment(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            "energy",
+        )
+        .unwrap();
+
+        assert!(!replaced);
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/energy"),
+            Some(&stored)
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            Some(&Value::Array(vec![untouched]))
+        );
+    }
+
+    #[test]
+    fn failed_inventory_equipment_swaps_are_atomic() {
+        let mut document = document(6);
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({
+            "kinetic": {
+                "instance_soid": "0x4000000000000001",
+                "definition_hash": "0x0000000A",
+                "level": 106,
+                "quantity": 1
+            }
+        });
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = Value::Array(vec![item(2, 20)]);
+        let before = document.clone();
+
+        assert!(
+            swap_inventory_item_with_equipment(
+                &mut document,
+                InventoryItemLocation {
+                    character_index: 0,
+                    item_index: 0,
+                },
+                "kinetic",
+            )
+            .is_err()
+        );
+        assert_eq!(document, before);
+    }
+
+    #[test]
+    fn unequipping_moves_the_complete_authored_row_to_inventory() {
+        let mut document = document(6);
+        let mut equipped = item(1, 10);
+        equipped["equipped_only"] = json!({"preserved": true});
+        let untouched = item(2, 20);
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({"kinetic": equipped.clone()});
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = Value::Array(vec![untouched.clone()]);
+
+        move_equipment_item_to_inventory(&mut document, 0, "kinetic").unwrap();
+
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            Some(&Value::Array(vec![untouched, equipped]))
+        );
+    }
+
+    #[test]
+    fn unequipping_creates_a_missing_inventory_array() {
+        let mut document = document(6);
+        let equipped = item(1, 10);
+        document
+            .pointer_mut("/state/characters/0")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("inventory");
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({"energy": equipped.clone()});
+
+        move_equipment_item_to_inventory(&mut document, 0, "energy").unwrap();
+
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            Some(&Value::Array(vec![equipped]))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/energy"),
+            Some(&Value::Null)
+        );
+    }
+
+    #[test]
+    fn failed_unequips_are_atomic() {
+        let mut document = document(6);
+        *document
+            .pointer_mut("/state/characters/0/equipment")
+            .unwrap() = json!({"heavy": item(1, 10)});
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = Value::Array(
+            (0..CHARACTER_INVENTORY_CAPACITY)
+                .map(|index| item(index as u64 + 2, 20))
+                .collect(),
+        );
+        let before = document.clone();
+
+        let error = move_equipment_item_to_inventory(&mut document, 0, "heavy").unwrap_err();
+
+        assert!(
+            error.message().contains("inventory is full"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(document, before);
     }
 
     #[test]

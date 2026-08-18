@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT,
-    PlugSelectionMode, SundialApp,
+    PlugSelectionMode, SLOTS, SundialApp,
     equipment::{
         EquipmentSlotCard, EquippedItemSnapshot, equipped_item_snapshots, inferred_item_level,
         native_plug_default,
@@ -79,6 +79,11 @@ enum CharacterInventoryEntry {
         snapshot: InventoryItemSnapshot,
         ui_identity: InventoryItemUiId,
     },
+}
+
+enum CharacterInventoryItemRequest {
+    Apply(Vec<InventoryItemAction>),
+    Equip(&'static str),
 }
 
 impl CharacterInventoryEntry {
@@ -272,6 +277,7 @@ impl SundialApp {
                                             },
                                         ),
                                     ),
+                                    existing_inventory: Vec::new(),
                                     clear: None,
                                     empty_message: "No safe definitions in this bucket match"
                                         .to_owned(),
@@ -419,10 +425,13 @@ impl SundialApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.add_space(4.0);
-                                    if ui
-                                        .add(egui::Button::new("Remove").small())
-                                        .on_hover_text("Remove this shared item")
-                                        .clicked()
+                                    if item_editor::draw_trash_button(
+                                        ui,
+                                        true,
+                                        "Delete shared item",
+                                    )
+                                    .on_hover_text("Delete this shared item")
+                                    .clicked()
                                     {
                                         remove_requested = true;
                                     }
@@ -450,25 +459,28 @@ impl SundialApp {
                                 picker_height(),
                                 (Some(&picker_anchor), swap_requested),
                                 |query| DefinitionPickerChoices {
-                                    definitions: profile_definition_choices(
-                                        manifest.profile_item_candidates(query).filter(
-                                            |definition| {
-                                                u32::try_from(definition.hash).is_ok()
-                                                    && definition
-                                                        .metadata
-                                                        .max_stack_size
-                                                        .is_some_and(|maximum| {
-                                                            maximum >= snapshot.quantity as u32
-                                                        })
-                                                    && bucket_has_room(
-                                                        definition.metadata,
-                                                        bucket_usage,
-                                                        current_bucket,
-                                                        replacing_unresolved,
-                                                    )
-                                            },
+                                    definitions: without_definition_groups(
+                                        profile_definition_choices(
+                                            manifest.profile_item_candidates(query).filter(
+                                                |definition| {
+                                                    u32::try_from(definition.hash).is_ok()
+                                                        && definition
+                                                            .metadata
+                                                            .max_stack_size
+                                                            .is_some_and(|maximum| {
+                                                                maximum >= snapshot.quantity as u32
+                                                            })
+                                                        && bucket_has_room(
+                                                            definition.metadata,
+                                                            bucket_usage,
+                                                            current_bucket,
+                                                            replacing_unresolved,
+                                                        )
+                                                },
+                                            ),
                                         ),
                                     ),
+                                    existing_inventory: Vec::new(),
                                     clear: None,
                                     empty_message: "No safe profile-item definitions match"
                                         .to_owned(),
@@ -696,6 +708,7 @@ impl SundialApp {
                                                                 == group.key.native_id
                                                     }),
                                             ),
+                                            existing_inventory: Vec::new(),
                                             clear: None,
                                             empty_message:
                                                 "No compatible definitions in this bucket match"
@@ -761,7 +774,7 @@ impl SundialApp {
                                     snapshot,
                                     ui_identity,
                                 } => {
-                                    let actions = self.draw_inventory_item_card(
+                                    let request = self.draw_inventory_item_card(
                                         ui,
                                         snapshot,
                                         *ui_identity,
@@ -769,8 +782,10 @@ impl SundialApp {
                                         class_type,
                                         &bucket_usage,
                                     );
-                                    if pending.is_none() && !actions.is_empty() {
-                                        pending = Some((snapshot.clone(), *ui_identity, actions));
+                                    if pending.is_none()
+                                        && let Some(request) = request
+                                    {
+                                        pending = Some((snapshot.clone(), *ui_identity, request));
                                     }
                                 }
                             },
@@ -778,25 +793,38 @@ impl SundialApp {
                     });
                 }
             });
-        if let Some((snapshot, ui_identity, actions)) = pending {
-            let structural = actions
-                .iter()
-                .any(|action| matches!(action, InventoryItemAction::Remove));
-            let definition_changed = actions
-                .iter()
-                .any(|action| matches!(action, InventoryItemAction::SetDefinitionHash(_)));
-            match apply_inventory_actions_atomic(&mut self.document, snapshot.location, actions) {
-                Ok(()) => {
-                    self.mark_inventory_changed(if structural {
-                        "Removed an item from character inventory"
-                    } else {
-                        "Updated a character inventory item"
-                    });
-                    if structural || definition_changed {
-                        self.clear_inventory_item_picker_state(ui_identity, structural);
+        if let Some((snapshot, ui_identity, request)) = pending {
+            match request {
+                CharacterInventoryItemRequest::Apply(actions) => {
+                    let structural = actions
+                        .iter()
+                        .any(|action| matches!(action, InventoryItemAction::Remove));
+                    let definition_changed = actions
+                        .iter()
+                        .any(|action| matches!(action, InventoryItemAction::SetDefinitionHash(_)));
+                    match apply_inventory_actions_atomic(
+                        &mut self.document,
+                        snapshot.location,
+                        actions,
+                    ) {
+                        Ok(()) => {
+                            self.mark_inventory_changed(if structural {
+                                "Removed an item from character inventory"
+                            } else {
+                                "Updated a character inventory item"
+                            });
+                            if structural || definition_changed {
+                                self.clear_inventory_item_picker_state(ui_identity, structural);
+                            }
+                        }
+                        Err(error) => self.set_status(error, true),
                     }
                 }
-                Err(error) => self.set_status(error, true),
+                CharacterInventoryItemRequest::Equip(slot) => {
+                    if self.equip_stored_item(snapshot.location, slot) {
+                        self.clear_inventory_item_picker_state(ui_identity, true);
+                    }
+                }
             }
         }
     }
@@ -833,7 +861,7 @@ impl SundialApp {
         editable: bool,
         class_type: u64,
         bucket_usage: &BucketUsage,
-    ) -> Vec<InventoryItemAction> {
+    ) -> Option<CharacterInventoryItemRequest> {
         let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
         let metadata = self
             .manifest
@@ -857,8 +885,21 @@ impl SundialApp {
         let masterwork_feature_present = inventory_masterwork_feature_present(snapshot.flags);
         let mut requested = Vec::new();
         let mut remove_requested = false;
+        let mut equip_requested = None;
         let mut swap_requested = false;
         let mut swap_response = None;
+        let equipment_target = resolved
+            .as_ref()
+            .and_then(|definition| definition.item.as_ref())
+            .and_then(|item| equipment_target_for_bucket(item.bucket_hash));
+        let target_occupied = equipment_target.is_some_and(|(slot, _)| {
+            self.characters()
+                .and_then(|characters| characters.get(snapshot.location.character_index))
+                .and_then(|character| character.get("equipment"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|equipment| equipment.get(slot))
+                .is_some_and(|item| !item.is_null())
+        });
 
         ui.push_id(
             ("character-inventory-item", ui_identity),
@@ -933,9 +974,12 @@ impl SundialApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.add_space(4.0);
-                                    if ui
-                                        .add(egui::Button::new("Remove").small())
-                                        .on_hover_text("Remove this stored item")
+                                    if item_editor::draw_trash_button(
+                                        ui,
+                                        true,
+                                        "Delete stored item",
+                                    )
+                                        .on_hover_text("Delete this stored item")
                                         .clicked()
                                     {
                                         remove_requested = true;
@@ -947,6 +991,35 @@ impl SundialApp {
                                         swap_requested = true;
                                     }
                                     swap_response = Some(response);
+                                    if let Some((slot, slot_label)) = equipment_target {
+                                        let can_equip = editable && valid && snapshot.quantity == 1;
+                                        let tooltip = if snapshot.quantity != 1 {
+                                            "Only a single inventory item can be equipped at a time"
+                                                .to_owned()
+                                        } else if !valid {
+                                            format!(
+                                                "This item is not valid for the {slot_label} slot"
+                                            )
+                                        } else if target_occupied {
+                                            format!(
+                                                "Equip in the {slot_label} slot and move its current item here"
+                                            )
+                                        } else {
+                                            format!("Equip in the empty {slot_label} slot")
+                                        };
+                                        let response = ui.add_enabled(
+                                            can_equip,
+                                            egui::Button::new("Equip").small(),
+                                        );
+                                        let response = if can_equip {
+                                            response.on_hover_text(tooltip)
+                                        } else {
+                                            response.on_disabled_hover_text(tooltip)
+                                        };
+                                        if response.clicked() {
+                                            equip_requested = Some(slot);
+                                        }
+                                    }
                                 },
                             );
                         });
@@ -965,22 +1038,25 @@ impl SundialApp {
                                 picker_height(),
                                 (Some(&picker_anchor), swap_requested),
                                 |query| DefinitionPickerChoices {
-                                    definitions: character_definition_choices(
-                                        manifest
-                                            .character_inventory_candidates(
-                                                query,
-                                                class_type,
-                                                show_dummy_items,
-                                            )
-                                            .filter(|definition| {
-                                                bucket_has_room(
-                                                    definition.metadata,
-                                                    bucket_usage,
-                                                    current_bucket,
-                                                    replacing_unresolved,
+                                    definitions: without_definition_groups(
+                                        character_definition_choices(
+                                            manifest
+                                                .character_inventory_candidates(
+                                                    query,
+                                                    class_type,
+                                                    show_dummy_items,
                                                 )
-                                            }),
+                                                .filter(|definition| {
+                                                    bucket_has_room(
+                                                        definition.metadata,
+                                                        bucket_usage,
+                                                        current_bucket,
+                                                        replacing_unresolved,
+                                                    )
+                                                }),
+                                        ),
                                     ),
+                                    existing_inventory: Vec::new(),
                                     clear: None,
                                     empty_message:
                                         "No compatible definitions with remaining bucket space found"
@@ -1037,10 +1113,14 @@ impl SundialApp {
             },
         );
         if remove_requested {
-            requested.clear();
-            requested.push(InventoryItemAction::Remove);
+            return Some(CharacterInventoryItemRequest::Apply(vec![
+                InventoryItemAction::Remove,
+            ]));
         }
-        requested
+        if let Some(slot) = equip_requested {
+            return Some(CharacterInventoryItemRequest::Equip(slot));
+        }
+        (!requested.is_empty()).then_some(CharacterInventoryItemRequest::Apply(requested))
     }
 
     fn draw_inventory_plugs(
@@ -1479,6 +1559,12 @@ fn default_inventory_item_level(
     }
 }
 
+fn equipment_target_for_bucket(bucket_hash: u64) -> Option<(&'static str, &'static str)> {
+    SLOTS
+        .iter()
+        .find_map(|(slot, label, bucket)| (*bucket == bucket_hash).then_some((*slot, *label)))
+}
+
 fn equipped_header_fill(ui: &egui::Ui) -> egui::Color32 {
     let base = ui.visuals().panel_fill;
     let accent = egui::Color32::from_rgb(255, 210, 72);
@@ -1610,6 +1696,13 @@ fn character_definition_choices<'a>(
                 .sort_by_cached_key(|definition| (definition.name.to_lowercase(), definition.hash));
         },
     )
+}
+
+fn without_definition_groups(mut choices: Vec<DefinitionChoice>) -> Vec<DefinitionChoice> {
+    for choice in &mut choices {
+        choice.group = None;
+    }
+    choices
 }
 
 fn character_bucket_definition_choices<'a>(
@@ -2004,6 +2097,43 @@ mod tests {
         };
         assert!(group_position("Kinetic weapons") < group_position("Chest armor"));
         assert!(group_position("Chest armor") < group_position("Seasonal artifacts"));
+    }
+
+    #[test]
+    fn per_item_swap_choices_omit_bucket_heading_rows() {
+        let choices = without_definition_groups(vec![
+            DefinitionChoice {
+                hash: 1,
+                name: "First".into(),
+                type_name: "Kinetic weapon".into(),
+                group: Some("Kinetic weapons".into()),
+            },
+            DefinitionChoice {
+                hash: 2,
+                name: "Second".into(),
+                type_name: "Energy weapon".into(),
+                group: Some("Energy weapons".into()),
+            },
+        ]);
+
+        assert_eq!(
+            choices.iter().map(|choice| choice.hash).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(choices.iter().all(|choice| choice.group.is_none()));
+    }
+
+    #[test]
+    fn only_known_equipment_buckets_get_inventory_equip_targets() {
+        assert_eq!(
+            equipment_target_for_bucket(1_498_876_634),
+            Some(("kinetic", "Kinetic"))
+        );
+        assert_eq!(
+            equipment_target_for_bucket(3_284_755_031),
+            Some(("subclass", "Subclass"))
+        );
+        assert_eq!(equipment_target_for_bucket(0x59CA_1EA2), None);
     }
 
     #[test]

@@ -12,6 +12,159 @@ const ITEM_HEADER_ICON_SIZE: f32 = 48.0;
 const ITEM_HEADER_ROW_HEIGHT: f32 = 48.0;
 const ITEM_HEADER_WITH_METADATA_ROW_HEIGHT: f32 = 54.0;
 
+#[derive(Clone, Copy)]
+enum FeatherActionIcon {
+    Trash,
+    Lock,
+    Unlock,
+}
+
+/// Draws a compact, neutral delete button using Feather's Trash 2 icon.
+pub(crate) fn draw_trash_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    accessible_label: &str,
+) -> egui::Response {
+    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Trash)
+}
+
+/// Matching lock-state icons are ready for a future compact lock control.
+#[allow(dead_code)]
+pub(crate) fn draw_lock_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    accessible_label: &str,
+) -> egui::Response {
+    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Lock)
+}
+
+#[allow(dead_code)]
+pub(crate) fn draw_unlock_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    accessible_label: &str,
+) -> egui::Response {
+    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Unlock)
+}
+
+/// Feather action icons are MIT-licensed; see THIRD_PARTY_NOTICES.md.
+fn draw_feather_action_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    accessible_label: &str,
+    icon: FeatherActionIcon,
+) -> egui::Response {
+    let side = (ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y)
+        .max(20.0);
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new("")
+            .small()
+            .min_size(egui::vec2(side, side)),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible_label)
+    });
+
+    if ui.is_rect_visible(response.rect) {
+        let base_icon_size = (response.rect.height() - 5.0).clamp(12.0, 16.0);
+        let icon_size = if matches!(icon, FeatherActionIcon::Trash) {
+            base_icon_size - 1.0
+        } else {
+            base_icon_size
+        };
+        let icon_rect =
+            egui::Rect::from_center_size(response.rect.center(), egui::vec2(icon_size, icon_size));
+        let point = |x: f32, y: f32| {
+            egui::pos2(
+                icon_rect.left() + x / 24.0 * icon_rect.width(),
+                icon_rect.top() + y / 24.0 * icon_rect.height(),
+            )
+        };
+        let color = ui.style().interact(&response).fg_stroke.color;
+        let stroke = egui::Stroke::new((icon_size / 12.0).max(1.0), color);
+        let painter = ui.painter();
+
+        match icon {
+            FeatherActionIcon::Trash => {
+                painter.add(egui::Shape::line(
+                    vec![point(3.0, 6.0), point(5.0, 6.0), point(21.0, 6.0)],
+                    stroke,
+                ));
+                painter.add(egui::Shape::line(
+                    vec![
+                        point(19.0, 6.0),
+                        point(19.0, 20.0),
+                        point(18.8, 20.8),
+                        point(18.2, 21.5),
+                        point(17.0, 22.0),
+                        point(7.0, 22.0),
+                        point(5.8, 21.5),
+                        point(5.2, 20.8),
+                        point(5.0, 20.0),
+                        point(5.0, 6.0),
+                    ],
+                    stroke,
+                ));
+                painter.add(egui::Shape::line(
+                    vec![
+                        point(8.0, 6.0),
+                        point(8.0, 4.0),
+                        point(8.2, 3.2),
+                        point(8.8, 2.5),
+                        point(10.0, 2.0),
+                        point(14.0, 2.0),
+                        point(15.2, 2.5),
+                        point(15.8, 3.2),
+                        point(16.0, 4.0),
+                        point(16.0, 6.0),
+                    ],
+                    stroke,
+                ));
+                painter.line_segment([point(10.0, 11.0), point(10.0, 17.0)], stroke);
+                painter.line_segment([point(14.0, 11.0), point(14.0, 17.0)], stroke);
+            }
+            FeatherActionIcon::Lock | FeatherActionIcon::Unlock => {
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(point(3.0, 11.0), point(21.0, 22.0)),
+                    egui::CornerRadius::same(2),
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                let mut shackle = vec![
+                    point(7.0, 11.0),
+                    point(7.0, 7.0),
+                    point(7.3, 5.3),
+                    point(8.2, 3.8),
+                    point(9.7, 2.7),
+                    point(11.2, 2.1),
+                    point(12.0, 2.0),
+                ];
+                if matches!(icon, FeatherActionIcon::Lock) {
+                    shackle.extend([
+                        point(12.8, 2.1),
+                        point(14.3, 2.7),
+                        point(15.8, 3.8),
+                        point(16.7, 5.3),
+                        point(17.0, 7.0),
+                        point(17.0, 11.0),
+                    ]);
+                } else {
+                    shackle.extend([
+                        point(13.7, 2.2),
+                        point(15.2, 3.0),
+                        point(16.2, 4.3),
+                        point(16.9, 6.0),
+                    ]);
+                }
+                painter.add(egui::Shape::line(shackle, stroke));
+            }
+        }
+    }
+
+    response
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativePlugDefault {
     Plug(u64),
@@ -31,6 +184,9 @@ impl NativePlugDefault {
 pub(crate) enum ItemEditorAction {
     SetDefinition {
         hash: u64,
+    },
+    EquipInventoryItem {
+        item_index: usize,
     },
     ClearDefinition,
     SetLevel {
@@ -488,6 +644,14 @@ pub(crate) struct DefinitionChoice {
     pub group: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExistingInventoryChoice {
+    pub item_index: usize,
+    pub hash: u64,
+    pub name: String,
+    pub type_name: String,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ClearDefinitionChoice {
     pub label: String,
@@ -498,6 +662,7 @@ pub(crate) struct ClearDefinitionChoice {
 #[derive(Clone, Debug)]
 pub(crate) struct DefinitionPickerChoices {
     pub definitions: Vec<DefinitionChoice>,
+    pub existing_inventory: Vec<ExistingInventoryChoice>,
     pub clear: Option<ClearDefinitionChoice>,
     pub empty_message: String,
 }
@@ -555,7 +720,10 @@ pub(crate) fn draw_definition_picker_with_open_request(
                 }
                 ui.separator();
                 let choices = choices_for_query(query);
-                if choices.definitions.is_empty() && choices.clear.is_none() {
+                if choices.definitions.is_empty()
+                    && choices.existing_inventory.is_empty()
+                    && choices.clear.is_none()
+                {
                     ui.label(egui::RichText::new(&choices.empty_message).weak());
                     return;
                 }
@@ -572,15 +740,51 @@ pub(crate) fn draw_definition_picker_with_open_request(
                 }
 
                 let rows = definition_picker_rows(&choices.definitions);
+                let scroll_row_count = rows.len()
+                    + choices.existing_inventory.len()
+                    + usize::from(!choices.existing_inventory.is_empty());
+                if scroll_row_count == 0 {
+                    return;
+                }
                 let picker_height =
-                    picker_list_height(rows.len(), row_height, height.min, height.max);
+                    picker_list_height(scroll_row_count, row_height, height.min, height.max);
                 egui::ScrollArea::vertical()
                     .min_scrolled_height(picker_height)
                     .max_height(picker_height)
                     .auto_shrink([false, false])
-                    .show_rows(ui, row_height, rows.len(), |ui, visible_rows| {
-                        for row_index in visible_rows {
-                            match rows[row_index] {
+                    .show(ui, |ui| {
+                        if !choices.existing_inventory.is_empty() {
+                            ui.label(egui::RichText::new("Existing inventory item").strong());
+                            for existing in &choices.existing_inventory {
+                                let label =
+                                    format!("{}  ({})", existing.name, format_hash(existing.hash));
+                                let response = draw_catalog_picker_row(
+                                    ui,
+                                    catalog,
+                                    CatalogPickerRow {
+                                        hash: existing.hash,
+                                        primary: &label,
+                                        secondary: (!existing.type_name.trim().is_empty())
+                                            .then_some(existing.type_name.as_str()),
+                                        icon_size: 36.0,
+                                        row_height,
+                                        selected: false,
+                                    },
+                                );
+                                let response =
+                                    catalog_item_tooltip(response, catalog, existing.hash);
+                                if response.clicked() {
+                                    action = Some(ItemEditorAction::EquipInventoryItem {
+                                        item_index: existing.item_index,
+                                    });
+                                    ui.memory_mut(egui::Memory::close_popup);
+                                }
+                            }
+                            ui.separator();
+                        }
+
+                        for row in rows {
+                            match row {
                                 DefinitionPickerRow::Group(group) => {
                                     ui.add_sized(
                                         [ui.available_width(), row_height],
@@ -1439,6 +1643,27 @@ mod tests {
             definition_picker_rows(&multiple_groups).first(),
             Some(DefinitionPickerRow::Group("Kinetic weapons"))
         ));
+    }
+
+    #[test]
+    fn feather_action_icons_use_matching_compact_buttons() {
+        egui::__run_test_ui(|ui| {
+            ui.horizontal(|ui| {
+                for response in [
+                    draw_trash_button(ui, true, "Delete item"),
+                    draw_lock_button(ui, true, "Lock item"),
+                    draw_unlock_button(ui, true, "Unlock item"),
+                ] {
+                    assert!(
+                        (response.rect.width() - response.rect.height()).abs() < 0.5,
+                        "icon button was {} by {}",
+                        response.rect.width(),
+                        response.rect.height()
+                    );
+                    assert!(response.rect.height() >= 12.0);
+                }
+            });
+        });
     }
 
     #[test]

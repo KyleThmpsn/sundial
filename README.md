@@ -45,7 +45,8 @@ Named key-binding editing is experimental. Some Sunrise configurations may use
   ability choices
 - Search and browse for equipment, plugs, and perks, with options to show dummy
   items or equip plugs not normally allowed on an item
-- Character and profile (shared) inventory editing
+- Character and profile (shared) inventory editing, including moving exact item
+  instances between character inventory and equipment slots
 - Remove equipped weapons completely (great for screenshots!)
 - Automatic subclass, ability, and armor defaults when changing class
 - Player name editing, initial support for named key-binding editing, and guided
@@ -66,7 +67,7 @@ package files change. You can also rebuild it manually from
 
 ## Usage
 
-Download `sundial.exe` or `Sundial-v0.3.1-windows-x86_64.zip` from the GitHub
+Download `sundial.exe` or `Sundial-v0.3.2-windows-x86_64.zip` from the GitHub
 [Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
 build it yourself from source using the instructions below.
 
