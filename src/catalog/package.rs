@@ -66,6 +66,14 @@ pub(super) fn u16_at(data: &[u8], offset: usize) -> Result<u16, String> {
     Ok(u16::from_le_bytes(bytes_at(data, offset)?))
 }
 
+pub(super) fn bool_at(data: &[u8], offset: usize) -> Result<bool, String> {
+    match bytes_at::<1>(data, offset)?[0] {
+        0 => Ok(false),
+        1 => Ok(true),
+        value => Err(format!("Invalid package boolean {value} at {offset}")),
+    }
+}
+
 pub(super) fn i32_at(data: &[u8], offset: usize) -> Result<i32, String> {
     Ok(i32::from_le_bytes(bytes_at(data, offset)?))
 }
@@ -108,5 +116,18 @@ pub(super) fn relative_offset(base: usize, bias: usize, relative: i64) -> Result
         origin
             .checked_sub(magnitude)
             .ok_or_else(|| "Package relative pointer points before the data".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_booleans_are_strict() {
+        assert_eq!(bool_at(&[0], 0), Ok(false));
+        assert_eq!(bool_at(&[1], 0), Ok(true));
+        assert!(bool_at(&[2], 0).is_err());
+        assert!(bool_at(&[], 0).is_err());
     }
 }

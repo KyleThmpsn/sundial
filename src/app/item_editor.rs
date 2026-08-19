@@ -25,26 +25,47 @@ pub(crate) fn draw_trash_button(
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Trash)
+    draw_feather_action_button(
+        ui,
+        enabled,
+        accessible_label,
+        FeatherActionIcon::Trash,
+        None,
+        true,
+    )
 }
 
-/// Matching lock-state icons are ready for a future compact lock control.
-#[allow(dead_code)]
+/// Draws the active lock state in a muted green.
 pub(crate) fn draw_lock_button(
     ui: &mut egui::Ui,
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Lock)
+    draw_feather_action_button(
+        ui,
+        enabled,
+        accessible_label,
+        FeatherActionIcon::Lock,
+        Some(egui::Color32::from_rgb(102, 153, 113)),
+        false,
+    )
 }
 
-#[allow(dead_code)]
+/// Draws the inactive lock state with the theme's subdued text color.
 pub(crate) fn draw_unlock_button(
     ui: &mut egui::Ui,
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_feather_action_button(ui, enabled, accessible_label, FeatherActionIcon::Unlock)
+    let color = ui.visuals().weak_text_color();
+    draw_feather_action_button(
+        ui,
+        enabled,
+        accessible_label,
+        FeatherActionIcon::Unlock,
+        Some(color),
+        false,
+    )
 }
 
 /// Feather action icons are MIT-licensed; see THIRD_PARTY_NOTICES.md.
@@ -53,15 +74,36 @@ fn draw_feather_action_button(
     enabled: bool,
     accessible_label: &str,
     icon: FeatherActionIcon,
+    icon_color: Option<egui::Color32>,
+    framed: bool,
 ) -> egui::Response {
-    let side = (ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y)
+    let use_icon_color = enabled && ui.is_enabled();
+    let button_side = (ui.text_style_height(&egui::TextStyle::Body)
+        + 2.0 * ui.spacing().button_padding.y)
         .max(20.0);
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new("")
-            .small()
-            .min_size(egui::vec2(side, side)),
-    );
+    let side = if framed {
+        button_side
+    } else {
+        (button_side + 2.0).min(22.0)
+    };
+    let response = if framed {
+        ui.add_enabled(
+            enabled,
+            egui::Button::new("")
+                .small()
+                .min_size(egui::vec2(side, side)),
+        )
+    } else {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.allocate_response(egui::vec2(side, side), egui::Sense::click())
+        })
+        .inner
+    };
+    let response = if !framed && use_icon_color {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible_label)
     });
@@ -69,7 +111,7 @@ fn draw_feather_action_button(
     if ui.is_rect_visible(response.rect) {
         let base_icon_size = (response.rect.height() - 5.0).clamp(12.0, 16.0);
         let icon_size = if matches!(icon, FeatherActionIcon::Trash) {
-            base_icon_size - 1.0
+            base_icon_size - 2.0
         } else {
             base_icon_size
         };
@@ -81,7 +123,11 @@ fn draw_feather_action_button(
                 icon_rect.top() + y / 24.0 * icon_rect.height(),
             )
         };
-        let color = ui.style().interact(&response).fg_stroke.color;
+        let color = if use_icon_color {
+            icon_color.unwrap_or_else(|| ui.style().interact(&response).fg_stroke.color)
+        } else {
+            ui.style().interact(&response).fg_stroke.color
+        };
         let stroke = egui::Stroke::new((icon_size / 12.0).max(1.0), color);
         let painter = ui.painter();
 
@@ -682,6 +728,31 @@ pub(crate) fn draw_definition_picker_with_open_request(
     trigger: (Option<&egui::Response>, bool),
     choices_for_query: impl FnOnce(&str) -> DefinitionPickerChoices,
 ) -> Option<ItemEditorAction> {
+    draw_definition_picker_with_open_request_and_footer(
+        ui,
+        catalog,
+        scope,
+        query,
+        height,
+        trigger,
+        (choices_for_query, |_| None::<()>),
+    )
+    .0
+}
+
+pub(crate) fn draw_definition_picker_with_open_request_and_footer<T>(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    height: PickerHeight,
+    trigger: (Option<&egui::Response>, bool),
+    contents: (
+        impl FnOnce(&str) -> DefinitionPickerChoices,
+        impl FnOnce(&mut egui::Ui) -> Option<T>,
+    ),
+) -> (Option<ItemEditorAction>, Option<T>) {
+    let (choices_for_query, draw_footer) = contents;
     ui.push_id(scope, |ui| {
         let (anchor, open_requested) = trigger;
         let picker_response = anchor.cloned().unwrap_or_else(|| {
@@ -696,12 +767,13 @@ pub(crate) fn draw_definition_picker_with_open_request(
             ui.memory_mut(|memory| memory.open_popup(popup_id));
         }
         if !ui.memory(|memory| memory.is_popup_open(popup_id)) {
-            return None;
+            return (None, None);
         }
 
         let row_height = ui.spacing().interact_size.y.max(44.0);
         let popup_direction = popup_direction(ui.ctx().screen_rect(), picker_response.rect);
         let mut action = None;
+        let mut footer_action = None;
         egui::popup::popup_above_or_below_widget(
             ui,
             popup_id,
@@ -720,14 +792,12 @@ pub(crate) fn draw_definition_picker_with_open_request(
                 }
                 ui.separator();
                 let choices = choices_for_query(query);
-                if choices.definitions.is_empty()
-                    && choices.existing_inventory.is_empty()
-                    && choices.clear.is_none()
-                {
+                let has_picker_choices = !choices.definitions.is_empty()
+                    || !choices.existing_inventory.is_empty()
+                    || choices.clear.is_some();
+                if !has_picker_choices {
                     ui.label(egui::RichText::new(&choices.empty_message).weak());
-                    return;
-                }
-                if let Some(clear) = &choices.clear {
+                } else if let Some(clear) = &choices.clear {
                     if ui
                         .selectable_label(clear.selected, &clear.label)
                         .on_hover_text(&clear.tooltip)
@@ -736,97 +806,117 @@ pub(crate) fn draw_definition_picker_with_open_request(
                         action = Some(ItemEditorAction::ClearDefinition);
                         ui.memory_mut(egui::Memory::close_popup);
                     }
-                    ui.separator();
                 }
 
                 let rows = definition_picker_rows(&choices.definitions);
                 let scroll_row_count = rows.len()
                     + choices.existing_inventory.len()
                     + usize::from(!choices.existing_inventory.is_empty());
-                if scroll_row_count == 0 {
-                    return;
-                }
-                let picker_height =
-                    picker_list_height(scroll_row_count, row_height, height.min, height.max);
-                egui::ScrollArea::vertical()
-                    .min_scrolled_height(picker_height)
-                    .max_height(picker_height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if !choices.existing_inventory.is_empty() {
-                            ui.label(egui::RichText::new("Existing inventory item").strong());
-                            for existing in &choices.existing_inventory {
-                                let label =
-                                    format!("{}  ({})", existing.name, format_hash(existing.hash));
-                                let response = draw_catalog_picker_row(
-                                    ui,
-                                    catalog,
-                                    CatalogPickerRow {
-                                        hash: existing.hash,
-                                        primary: &label,
-                                        secondary: (!existing.type_name.trim().is_empty())
-                                            .then_some(existing.type_name.as_str()),
-                                        icon_size: 36.0,
-                                        row_height,
-                                        selected: false,
-                                    },
-                                );
-                                let response =
-                                    catalog_item_tooltip(response, catalog, existing.hash);
-                                if response.clicked() {
-                                    action = Some(ItemEditorAction::EquipInventoryItem {
-                                        item_index: existing.item_index,
-                                    });
-                                    ui.memory_mut(egui::Memory::close_popup);
-                                }
-                            }
-                            ui.separator();
-                        }
-
-                        for row in rows {
-                            match row {
-                                DefinitionPickerRow::Group(group) => {
-                                    ui.add_sized(
-                                        [ui.available_width(), row_height],
-                                        egui::Label::new(egui::RichText::new(group).strong())
-                                            .halign(egui::Align::LEFT),
-                                    );
-                                }
-                                DefinitionPickerRow::Definition(definition) => {
+                if scroll_row_count > 0 {
+                    if choices.clear.is_some() {
+                        ui.separator();
+                    }
+                    let picker_height = spaced_picker_list_height(
+                        scroll_row_count,
+                        row_height,
+                        ui.spacing().item_spacing.y,
+                        height.min,
+                        height.max,
+                    );
+                    egui::ScrollArea::vertical()
+                        .min_scrolled_height(picker_height)
+                        .max_height(picker_height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if !choices.existing_inventory.is_empty() {
+                                ui.label(egui::RichText::new("Existing inventory item").strong());
+                                for existing in &choices.existing_inventory {
                                     let label = format!(
                                         "{}  ({})",
-                                        definition.name,
-                                        format_hash(definition.hash)
+                                        existing.name,
+                                        format_hash(existing.hash)
                                     );
                                     let response = draw_catalog_picker_row(
                                         ui,
                                         catalog,
                                         CatalogPickerRow {
-                                            hash: definition.hash,
+                                            hash: existing.hash,
                                             primary: &label,
-                                            secondary: (!definition.type_name.trim().is_empty())
-                                                .then_some(definition.type_name.as_str()),
+                                            secondary: (!existing.type_name.trim().is_empty())
+                                                .then_some(existing.type_name.as_str()),
                                             icon_size: 36.0,
                                             row_height,
                                             selected: false,
                                         },
                                     );
                                     let response =
-                                        catalog_item_tooltip(response, catalog, definition.hash);
-                                    let clicked = response.clicked();
-                                    if clicked {
-                                        action = Some(ItemEditorAction::SetDefinition {
-                                            hash: definition.hash,
+                                        catalog_item_tooltip(response, catalog, existing.hash);
+                                    if response.clicked() {
+                                        action = Some(ItemEditorAction::EquipInventoryItem {
+                                            item_index: existing.item_index,
                                         });
                                         ui.memory_mut(egui::Memory::close_popup);
                                     }
                                 }
+                                ui.separator();
                             }
-                        }
-                    });
+
+                            for row in rows {
+                                match row {
+                                    DefinitionPickerRow::Group(group) => {
+                                        ui.add_sized(
+                                            [ui.available_width(), row_height],
+                                            egui::Label::new(egui::RichText::new(group).strong())
+                                                .halign(egui::Align::LEFT),
+                                        );
+                                    }
+                                    DefinitionPickerRow::Definition(definition) => {
+                                        let label = format!(
+                                            "{}  ({})",
+                                            definition.name,
+                                            format_hash(definition.hash)
+                                        );
+                                        let response = draw_catalog_picker_row(
+                                            ui,
+                                            catalog,
+                                            CatalogPickerRow {
+                                                hash: definition.hash,
+                                                primary: &label,
+                                                secondary: (!definition
+                                                    .type_name
+                                                    .trim()
+                                                    .is_empty())
+                                                .then_some(definition.type_name.as_str()),
+                                                icon_size: 36.0,
+                                                row_height,
+                                                selected: false,
+                                            },
+                                        );
+                                        let response = catalog_item_tooltip(
+                                            response,
+                                            catalog,
+                                            definition.hash,
+                                        );
+                                        let clicked = response.clicked();
+                                        if clicked {
+                                            action = Some(ItemEditorAction::SetDefinition {
+                                                hash: definition.hash,
+                                            });
+                                            ui.memory_mut(egui::Memory::close_popup);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                }
+
+                if let Some(selected) = draw_footer(ui) {
+                    footer_action = Some(selected);
+                    ui.memory_mut(egui::Memory::close_popup);
+                }
             },
         );
-        action
+        (action, footer_action)
     })
     .inner
 }
@@ -1468,6 +1558,33 @@ pub(crate) fn picker_list_height(
     }
 }
 
+fn spaced_picker_list_height(
+    row_count: usize,
+    row_height: f32,
+    row_spacing: f32,
+    min_height: f32,
+    max_height: f32,
+) -> f32 {
+    if row_count == 0 {
+        return 0.0;
+    }
+
+    let row_spacing = row_spacing.max(0.0);
+    let content_height =
+        row_count as f32 * row_height + row_count.saturating_sub(1) as f32 * row_spacing;
+    if content_height < min_height {
+        return content_height.max(row_height);
+    }
+    if content_height <= max_height {
+        return content_height;
+    }
+
+    let row_stride = row_height + row_spacing;
+    let visible_rows =
+        (((max_height + row_spacing) / row_stride).floor() as usize).clamp(1, row_count);
+    visible_rows as f32 * row_height + visible_rows.saturating_sub(1) as f32 * row_spacing
+}
+
 fn popup_direction(screen: egui::Rect, anchor: egui::Rect) -> egui::AboveOrBelow {
     let room_above = (anchor.top() - screen.top()).max(0.0);
     let room_below = (screen.bottom() - anchor.bottom()).max(0.0);
@@ -1585,6 +1702,16 @@ mod tests {
     }
 
     #[test]
+    fn spaced_picker_height_stops_on_a_complete_row() {
+        assert_eq!(
+            spaced_picker_list_height(500, 44.0, 4.0, 234.0, 334.0),
+            332.0
+        );
+        assert_eq!(spaced_picker_list_height(7, 44.0, 4.0, 234.0, 334.0), 332.0);
+        assert_eq!(spaced_picker_list_height(2, 44.0, 4.0, 234.0, 334.0), 92.0);
+    }
+
+    #[test]
     fn picker_secondary_text_is_compact_and_single_line() {
         assert_eq!(
             single_line_text("First line\n  second\tline"),
@@ -1646,14 +1773,13 @@ mod tests {
     }
 
     #[test]
-    fn feather_action_icons_use_matching_compact_buttons() {
+    fn feather_action_icons_keep_compact_aligned_hit_targets() {
         egui::__run_test_ui(|ui| {
             ui.horizontal(|ui| {
-                for response in [
-                    draw_trash_button(ui, true, "Delete item"),
-                    draw_lock_button(ui, true, "Lock item"),
-                    draw_unlock_button(ui, true, "Unlock item"),
-                ] {
+                let trash = draw_trash_button(ui, true, "Delete item");
+                let lock = draw_lock_button(ui, true, "Lock item");
+                let unlock = draw_unlock_button(ui, true, "Unlock item");
+                for response in [&trash, &lock, &unlock] {
                     assert!(
                         (response.rect.width() - response.rect.height()).abs() < 0.5,
                         "icon button was {} by {}",
@@ -1662,6 +1788,9 @@ mod tests {
                     );
                     assert!(response.rect.height() >= 12.0);
                 }
+                assert!((lock.rect.height() - unlock.rect.height()).abs() < 0.1);
+                assert!(lock.rect.height() >= trash.rect.height());
+                assert!(lock.rect.height() - trash.rect.height() <= 2.1);
             });
         });
     }

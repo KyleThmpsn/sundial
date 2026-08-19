@@ -18,8 +18,8 @@ use super::{
     ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT,
     PlugSelectionMode, SLOTS, SundialApp,
     equipment::{
-        EquipmentSlotCard, EquippedItemSnapshot, equipped_item_snapshots, inferred_item_level,
-        native_plug_default,
+        EquipmentSlotCard, EquippedItemSnapshot, class_name, equipped_item_snapshots,
+        inferred_item_level, native_plug_default,
     },
     inventory::{
         self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASTERWORK,
@@ -36,6 +36,10 @@ use super::{
 };
 
 const BUCKET_HEADER_SIZE_DELTA: f32 = 1.0;
+const TRANSFER_DESTINATION_ROW_HEIGHT: f32 = 28.0;
+const TRANSFER_DESTINATION_ROW_SPACING: f32 = 2.0;
+const TRANSFER_FOOTER_CHROME_HEIGHT: f32 = 28.0;
+const TRANSFER_PICKER_MIN_LIST_HEIGHT: f32 = 176.0;
 
 #[derive(Clone)]
 struct ResolvedDefinition {
@@ -49,6 +53,20 @@ struct BucketUsage {
     counts: HashMap<u8, usize>,
     unresolved_count: usize,
     occupancy_complete: bool,
+}
+
+struct CharacterTransferTarget {
+    character_index: usize,
+    label: String,
+    class_type: u64,
+    stored_count: Option<usize>,
+    usage: Option<BucketUsage>,
+    unavailable_reason: Option<String>,
+}
+
+struct CharacterInventoryCardContext<'a> {
+    bucket_usage: &'a BucketUsage,
+    transfer_targets: &'a [CharacterTransferTarget],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +102,16 @@ enum CharacterInventoryEntry {
 enum CharacterInventoryItemRequest {
     Apply(Vec<InventoryItemAction>),
     Equip(&'static str),
+    MoveTo(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CharacterTransferDestination {
+    character_index: usize,
+    label: String,
+    detail: String,
+    enabled: bool,
+    tooltip: String,
 }
 
 impl CharacterInventoryEntry {
@@ -564,6 +592,7 @@ impl SundialApp {
         ui.add_space(4.0);
 
         let ui_identities = inventory_item_ui_identities(&items);
+        let transfer_targets = self.character_transfer_targets(character_index);
         let mut entries = equipped_items
             .into_iter()
             .map(CharacterInventoryEntry::Equipped)
@@ -710,9 +739,8 @@ impl SundialApp {
                                             ),
                                             existing_inventory: Vec::new(),
                                             clear: None,
-                                            empty_message:
-                                                "No compatible definitions in this bucket match"
-                                                    .to_owned(),
+                                            empty_message: "No compatible items in this bucket"
+                                                .to_owned(),
                                         },
                                     )
                                 })
@@ -780,7 +808,10 @@ impl SundialApp {
                                         *ui_identity,
                                         editable,
                                         class_type,
-                                        &bucket_usage,
+                                        CharacterInventoryCardContext {
+                                            bucket_usage: &bucket_usage,
+                                            transfer_targets: &transfer_targets,
+                                        },
                                     );
                                     if pending.is_none()
                                         && let Some(request) = request
@@ -817,12 +848,35 @@ impl SundialApp {
                                 self.clear_inventory_item_picker_state(ui_identity, structural);
                             }
                         }
-                        Err(error) => self.set_status(error, true),
+                        Err(error) => self.set_status(error.to_string(), true),
                     }
                 }
                 CharacterInventoryItemRequest::Equip(slot) => {
                     if self.equip_stored_item(snapshot.location, slot) {
                         self.clear_inventory_item_picker_state(ui_identity, true);
+                    }
+                }
+                CharacterInventoryItemRequest::MoveTo(destination_character_index) => {
+                    match inventory::move_inventory_item_to_character(
+                        &mut self.document,
+                        snapshot.location,
+                        destination_character_index,
+                    ) {
+                        Ok(_) => {
+                            let class_type = self
+                                .characters()
+                                .and_then(|characters| characters.get(destination_character_index))
+                                .and_then(|character| character.get("class"))
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(99);
+                            self.mark_inventory_changed(&format!(
+                                "Moved an item to Character {} · {}",
+                                destination_character_index + 1,
+                                class_name(class_type)
+                            ));
+                            self.clear_inventory_item_picker_state(ui_identity, true);
+                        }
+                        Err(error) => self.set_status(error.to_string(), true),
                     }
                 }
             }
@@ -860,7 +914,7 @@ impl SundialApp {
         ui_identity: InventoryItemUiId,
         editable: bool,
         class_type: u64,
-        bucket_usage: &BucketUsage,
+        context: CharacterInventoryCardContext<'_>,
     ) -> Option<CharacterInventoryItemRequest> {
         let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
         let metadata = self
@@ -886,8 +940,11 @@ impl SundialApp {
         let mut requested = Vec::new();
         let mut remove_requested = false;
         let mut equip_requested = None;
+        let mut move_requested = None;
         let mut swap_requested = false;
         let mut swap_response = None;
+        let transfer_destinations =
+            self.character_transfer_destinations(context.transfer_targets, resolved.as_ref());
         let equipment_target = resolved
             .as_ref()
             .and_then(|definition| definition.item.as_ref())
@@ -951,10 +1008,17 @@ impl SundialApp {
                             }
                             ui.add_space(8.0);
                             let flags = snapshot.flags.unwrap_or_default();
-                            let mut locked = flags & INVENTORY_FLAG_LOCKED != 0;
-                            if ui.checkbox(&mut locked, "Locked").changed() {
+                            let locked = flags & INVENTORY_FLAG_LOCKED != 0;
+                            let lock_response = if locked {
+                                item_editor::draw_lock_button(ui, true, "Unlock stored item")
+                                    .on_hover_text("Unlock this item")
+                            } else {
+                                item_editor::draw_unlock_button(ui, true, "Lock stored item")
+                                    .on_hover_text("Lock this item")
+                            };
+                            if lock_response.clicked() {
                                 requested.push(InventoryItemAction::SetFlags(
-                                    set_inventory_locked_flag(snapshot.flags, locked),
+                                    set_inventory_locked_flag(snapshot.flags, !locked),
                                 ));
                             }
                             if masterwork_feature_present {
@@ -986,10 +1050,8 @@ impl SundialApp {
                                     }
                                     let response = ui
                                         .add(egui::Button::new("Swap").small())
-                                        .on_hover_text("Open the item picker");
-                                    if response.clicked() {
-                                        swap_requested = true;
-                                    }
+                                        .on_hover_text("Open item picker");
+                                    swap_requested = response.clicked();
                                     swap_response = Some(response);
                                     if let Some((slot, slot_label)) = equipment_target {
                                         let can_equip = editable && valid && snapshot.quantity == 1;
@@ -1025,46 +1087,57 @@ impl SundialApp {
                         });
 
                         let picker_anchor = header_response.clone()
-                            | swap_response.expect("a character item card always draws Swap");
+                            | swap_response
+                                .expect("a character inventory item card always draws Swap");
                         let picker_action = {
                             let manifest = &self.manifest;
                             let show_dummy_items = self.show_dummy_items;
                             let query = self.searches.entry(key.clone()).or_default();
-                            item_editor::draw_definition_picker_with_open_request(
+                            item_editor::draw_definition_picker_with_open_request_and_footer(
                                 ui,
                                 manifest,
                                 ("character-inventory-definition", ui_identity),
                                 query,
-                                picker_height(),
+                                picker_height_with_transfer_destinations(
+                                    transfer_destinations.len(),
+                                ),
                                 (Some(&picker_anchor), swap_requested),
-                                |query| DefinitionPickerChoices {
-                                    definitions: without_definition_groups(
-                                        character_definition_choices(
-                                            manifest
-                                                .character_inventory_candidates(
-                                                    query,
-                                                    class_type,
-                                                    show_dummy_items,
-                                                )
-                                                .filter(|definition| {
-                                                    bucket_has_room(
-                                                        definition.metadata,
-                                                        bucket_usage,
-                                                        current_bucket,
-                                                        replacing_unresolved,
+                                (
+                                    |query| DefinitionPickerChoices {
+                                        definitions: without_definition_groups(
+                                            character_definition_choices(
+                                                manifest
+                                                    .character_inventory_candidates(
+                                                        query,
+                                                        class_type,
+                                                        show_dummy_items,
                                                     )
-                                                }),
+                                                    .filter(|definition| {
+                                                        bucket_has_room(
+                                                            definition.metadata,
+                                                            context.bucket_usage,
+                                                            current_bucket,
+                                                            replacing_unresolved,
+                                                        )
+                                                    }),
+                                            ),
                                         ),
-                                    ),
-                                    existing_inventory: Vec::new(),
-                                    clear: None,
-                                    empty_message:
-                                        "No compatible definitions with remaining bucket space found"
-                                            .to_owned(),
-                                },
+                                        existing_inventory: Vec::new(),
+                                        clear: None,
+                                        empty_message:
+                                            "No compatible items with space in this bucket".to_owned(),
+                                    },
+                                    |ui| {
+                                        draw_character_transfer_destinations(
+                                            ui,
+                                            &transfer_destinations,
+                                        )
+                                    },
+                                ),
                             )
                         };
-                        if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action
+                        move_requested = picker_action.1;
+                        if let Some(ItemEditorAction::SetDefinition { hash }) = picker_action.0
                             && let Ok(hash) = u32::try_from(hash)
                         {
                             requested.push(InventoryItemAction::SetDefinitionHash(hash));
@@ -1116,6 +1189,11 @@ impl SundialApp {
             return Some(CharacterInventoryItemRequest::Apply(vec![
                 InventoryItemAction::Remove,
             ]));
+        }
+        if let Some(destination_character_index) = move_requested {
+            return Some(CharacterInventoryItemRequest::MoveTo(
+                destination_character_index,
+            ));
         }
         if let Some(slot) = equip_requested {
             return Some(CharacterInventoryItemRequest::Equip(slot));
@@ -1257,6 +1335,134 @@ impl SundialApp {
                     }
                 }
             });
+    }
+
+    fn character_transfer_targets(
+        &self,
+        source_character_index: usize,
+    ) -> Vec<CharacterTransferTarget> {
+        let Some(characters) = self.characters() else {
+            return Vec::new();
+        };
+
+        characters
+            .iter()
+            .enumerate()
+            .filter(|(character_index, _)| *character_index != source_character_index)
+            .map(|(character_index, character)| {
+                let class_type = character
+                    .get("class")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(99);
+                let label = format!(
+                    "Character {} · {}",
+                    character_index + 1,
+                    class_name(class_type)
+                );
+                if !matches!(class_type, 0..=2) {
+                    return CharacterTransferTarget {
+                        character_index,
+                        label,
+                        class_type,
+                        stored_count: None,
+                        usage: None,
+                        unavailable_reason: Some("Invalid character class".to_owned()),
+                    };
+                }
+                match inventory::character_inventory(&self.document, character_index) {
+                    Err(_) => CharacterTransferTarget {
+                        character_index,
+                        label,
+                        class_type,
+                        stored_count: None,
+                        usage: None,
+                        unavailable_reason: Some("Inventory could not be read".to_owned()),
+                    },
+                    Ok(items) => {
+                        let items = items.unwrap_or_default();
+                        CharacterTransferTarget {
+                            character_index,
+                            label,
+                            class_type,
+                            stored_count: Some(items.len()),
+                            usage: Some(self.inventory_bucket_usage(&items, character_index)),
+                            unavailable_reason: None,
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn character_transfer_destinations(
+        &self,
+        targets: &[CharacterTransferTarget],
+        definition: Option<&ResolvedDefinition>,
+    ) -> Vec<CharacterTransferDestination> {
+        targets
+            .iter()
+            .map(|target| {
+                let character_index = target.character_index;
+                let class_type = target.class_type;
+                let label = &target.label;
+                let mut bucket_detail = None;
+                let unavailable_reason = if let Some(reason) = &target.unavailable_reason {
+                    Some(reason.clone())
+                } else if let Some(definition) = definition {
+                    if definition.metadata.scope != InventoryScope::Character {
+                        Some("Item bucket could not be verified".to_owned())
+                    } else if let Some(item) = &definition.item {
+                        if item.class_type != 3 && item.class_type != class_type {
+                            Some("Not compatible with this character".to_owned())
+                        } else {
+                            let Some(usage) = &target.usage else {
+                                return CharacterTransferDestination {
+                                    character_index,
+                                    label: label.clone(),
+                                    detail: "Bucket usage unavailable".to_owned(),
+                                    enabled: false,
+                                    tooltip: "Inventory could not be read".to_owned(),
+                                };
+                            };
+                            bucket_detail =
+                                character_bucket_usage_detail(definition.metadata, usage);
+                            if target
+                                .stored_count
+                                .is_some_and(|count| count >= CHARACTER_INVENTORY_CAPACITY)
+                            {
+                                Some("Inventory is full".to_owned())
+                            } else if definition.metadata.authored_row_capacity().is_none() {
+                                Some("Bucket capacity could not be verified".to_owned())
+                            } else if !usage.occupancy_complete {
+                                Some("Bucket occupancy could not be verified".to_owned())
+                            } else if !bucket_has_room(&definition.metadata, usage, None, false) {
+                                Some(format!("{} is full", definition.metadata.bucket_label()))
+                            } else {
+                                None
+                            }
+                        }
+                    } else {
+                        Some("Item definition is incomplete".to_owned())
+                    }
+                } else {
+                    Some("Item definition is unavailable".to_owned())
+                };
+                let enabled = unavailable_reason.is_none();
+                let detail = bucket_detail.unwrap_or_else(|| {
+                    unavailable_reason
+                        .clone()
+                        .unwrap_or_else(|| "Bucket usage unavailable".to_owned())
+                });
+                CharacterTransferDestination {
+                    character_index,
+                    label: label.clone(),
+                    detail,
+                    enabled,
+                    tooltip: unavailable_reason
+                        .unwrap_or_else(|| format!("Move this item to {label}")),
+                }
+            })
+            .collect()
     }
 
     fn inventory_bucket_usage(
@@ -1590,6 +1796,21 @@ fn picker_height() -> PickerHeight {
     }
 }
 
+fn picker_height_with_transfer_destinations(destination_count: usize) -> PickerHeight {
+    if destination_count == 0 {
+        return picker_height();
+    }
+    let destination_count = u16::try_from(destination_count).unwrap_or(u16::MAX);
+    let footer_height = TRANSFER_FOOTER_CHROME_HEIGHT
+        + TRANSFER_DESTINATION_ROW_HEIGHT * f32::from(destination_count)
+        + TRANSFER_DESTINATION_ROW_SPACING * f32::from(destination_count.saturating_sub(1));
+    let min = (ITEM_PICKER_MIN_HEIGHT - footer_height).max(TRANSFER_PICKER_MIN_LIST_HEIGHT);
+    PickerHeight {
+        min,
+        max: (ITEM_PICKER_MAX_HEIGHT - footer_height).max(min),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InventoryPageKind {
     Profile,
@@ -1883,6 +2104,165 @@ fn draw_bucket_details<T>(
             ),
         );
     }
+}
+
+fn draw_character_transfer_destinations(
+    ui: &mut egui::Ui,
+    destinations: &[CharacterTransferDestination],
+) -> Option<usize> {
+    if destinations.is_empty() {
+        return None;
+    }
+
+    let mut selected = None;
+    ui.separator();
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = TRANSFER_DESTINATION_ROW_SPACING;
+        ui.label(egui::RichText::new("Move to another character").strong());
+        for destination in destinations {
+            let response = ui
+                .add_enabled_ui(destination.enabled, |ui| {
+                    draw_character_transfer_destination(ui, destination)
+                })
+                .inner;
+            let response = if destination.enabled {
+                response.on_hover_text(&destination.tooltip)
+            } else {
+                response.on_disabled_hover_text(&destination.tooltip)
+            };
+            if response.clicked() {
+                selected = Some(destination.character_index);
+            }
+        }
+    });
+    selected
+}
+
+fn draw_character_transfer_destination(
+    ui: &mut egui::Ui,
+    destination: &CharacterTransferDestination,
+) -> egui::Response {
+    draw_inventory_item_menu_text(ui, &destination.label, &destination.detail)
+}
+
+fn character_bucket_usage_detail(
+    metadata: InventoryMetadata,
+    usage: &BucketUsage,
+) -> Option<String> {
+    let capacity = metadata.authored_row_capacity()?;
+    let occupied = usage
+        .counts
+        .get(&metadata.native_bucket_id)
+        .copied()
+        .unwrap_or_default();
+    Some(format!(
+        "{} · {occupied} / {capacity} slots used",
+        metadata.bucket_label()
+    ))
+}
+
+fn draw_inventory_item_menu_text(
+    ui: &mut egui::Ui,
+    primary_text: &str,
+    secondary_text: &str,
+) -> egui::Response {
+    const HORIZONTAL_PADDING: f32 = 4.0;
+    const TEXT_GAP: f32 = 8.0;
+    const PRIMARY_WIDTH_SHARE: f32 = 0.45;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), TRANSFER_DESTINATION_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let visuals = ui.style().interact(&response);
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let text_width = (rect.width() - HORIZONTAL_PADDING * 2.0).max(0.0);
+    let available_text_width = (text_width - TEXT_GAP).max(0.0);
+    let primary_font = egui::TextStyle::Button.resolve(ui.style());
+    let secondary_font = egui::TextStyle::Body.resolve(ui.style());
+    let primary_color = visuals.text_color();
+    let secondary_color = ui.visuals().weak_text_color();
+    let natural_primary = transfer_menu_galley(
+        ui,
+        primary_text,
+        primary_font.clone(),
+        primary_color,
+        f32::INFINITY,
+    );
+    let natural_secondary = transfer_menu_galley(
+        ui,
+        secondary_text,
+        secondary_font.clone(),
+        secondary_color,
+        f32::INFINITY,
+    );
+    let reserved_primary_width = natural_primary
+        .size()
+        .x
+        .min(available_text_width * PRIMARY_WIDTH_SHARE);
+    let secondary_width = natural_secondary
+        .size()
+        .x
+        .min((available_text_width - reserved_primary_width).max(0.0));
+    let primary_width = natural_primary
+        .size()
+        .x
+        .min((available_text_width - secondary_width).max(0.0));
+    let primary =
+        transfer_menu_galley(ui, primary_text, primary_font, primary_color, primary_width);
+    let secondary = transfer_menu_galley(
+        ui,
+        secondary_text,
+        secondary_font,
+        secondary_color,
+        secondary_width,
+    );
+    let primary_position = egui::pos2(
+        rect.left() + HORIZONTAL_PADDING,
+        rect.center().y - primary.size().y / 2.0,
+    );
+    let secondary_position = egui::pos2(
+        rect.right() - HORIZONTAL_PADDING - secondary.size().x,
+        rect.center().y - secondary.size().y / 2.0,
+    );
+    ui.painter()
+        .galley(primary_position, primary, primary_color);
+    ui.painter()
+        .galley(secondary_position, secondary, secondary_color);
+    response
+}
+
+fn transfer_menu_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat {
+            font_id,
+            color,
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = max_width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    ui.fonts(|fonts| fonts.layout_job(job))
 }
 
 fn inventory_item_ui_identities(items: &[InventoryItemSnapshot]) -> Vec<InventoryItemUiId> {
@@ -2254,5 +2634,36 @@ mod tests {
 
         assert!(error.contains("flags"));
         assert_eq!(document, before);
+    }
+
+    #[test]
+    fn character_transfer_detail_uses_the_native_bucket_capacity() {
+        let usage = BucketUsage {
+            counts: HashMap::from([(1, 4)]),
+            unresolved_count: 0,
+            occupancy_complete: true,
+        };
+        let metadata = InventoryMetadata {
+            scope: InventoryScope::Character,
+            native_bucket_id: 1,
+            stackability: crate::catalog::ItemStackability::Instanced,
+            max_stack_size: Some(1),
+            bucket_capacity: Some(10),
+        };
+
+        assert_eq!(
+            character_bucket_usage_detail(metadata, &usage).as_deref(),
+            Some("Energy weapons · 4 / 10 slots used")
+        );
+    }
+
+    #[test]
+    fn character_transfer_picker_reserves_space_for_its_fixed_footer() {
+        assert_eq!(picker_height_with_transfer_destinations(0).min, 320.0);
+        assert_eq!(picker_height_with_transfer_destinations(0).max, 420.0);
+        assert_eq!(picker_height_with_transfer_destinations(1).min, 264.0);
+        assert_eq!(picker_height_with_transfer_destinations(1).max, 364.0);
+        assert_eq!(picker_height_with_transfer_destinations(2).min, 234.0);
+        assert_eq!(picker_height_with_transfer_destinations(2).max, 334.0);
     }
 }

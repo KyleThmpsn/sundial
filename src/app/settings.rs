@@ -10,7 +10,7 @@ use crate::{game_settings, storage};
 
 use crate::hash::parse_unsigned_value;
 
-use super::{Preferences, SLOTS, SettingsLayout, SettingsPathResolution, inventory};
+use super::{Preferences, SLOTS, SettingsLayout, SettingsPathResolution, inventory, progression};
 
 const SUNRISE_MODULE_RELATIVE_PATH: &str = r"bin\x64\steam_api64.dll";
 const MAX_VERSION_INFO_BYTES: u32 = 1024 * 1024;
@@ -715,6 +715,7 @@ pub(super) fn encode_settings(document: &Value) -> Result<String, String> {
 
 pub(super) fn validate_document(document: &Value) -> Result<(), String> {
     game_settings::validate(document)?;
+    progression::validate(document)?;
     validate_characters(document)?;
     inventory::validate_document_items(document).map_err(|error| error.to_string())
 }

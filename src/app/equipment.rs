@@ -790,7 +790,7 @@ impl SundialApp {
                 self.select_view(super::ViewMode::CharacterInventory);
             }
         });
-        ui.label("Click an item header or select Swap to browse or search. Choosing an item also installs its package-default plugs.");
+        ui.label("Select an item or Swap to browse.");
         ui.add_enabled_ui(editable, |ui| self.draw_item_safety_controls(ui));
         ui.add_space(6.0);
 
@@ -1009,16 +1009,31 @@ impl SundialApp {
 
                                 ui.add_space(8.0);
                                 ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
-                                    let mut locked = current_flags.unwrap_or_default()
+                                    let locked = current_flags.unwrap_or_default()
                                         & super::inventory::INVENTORY_FLAG_LOCKED
                                         != 0;
-                                    if ui.checkbox(&mut locked, "Locked").changed() {
+                                    let lock_response = if locked {
+                                        super::item_editor::draw_lock_button(
+                                            ui,
+                                            true,
+                                            "Unlock equipped item",
+                                        )
+                                        .on_hover_text("Unlock this item")
+                                    } else {
+                                        super::item_editor::draw_unlock_button(
+                                            ui,
+                                            true,
+                                            "Lock equipped item",
+                                        )
+                                        .on_hover_text("Lock this item")
+                                    };
+                                    if lock_response.clicked() {
                                         self.select_equipment_flags(
                                             character_index,
                                             slot,
                                             super::inventory::set_inventory_locked_flag(
                                                 current_flags,
-                                                locked,
+                                                !locked,
                                             ),
                                         );
                                     }
@@ -1057,7 +1072,7 @@ impl SundialApp {
                                 }
                                 let response = ui
                                     .add_enabled(guided_editable, egui::Button::new("Swap").small())
-                                    .on_hover_text("Open the item picker");
+                                    .on_hover_text("Open item picker");
                                 swap_requested = response.clicked();
                                 if !is_empty && WEAPON_SLOTS.contains(&slot) {
                                     let tooltip = if inventory_editable {

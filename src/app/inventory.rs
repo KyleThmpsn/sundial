@@ -652,6 +652,79 @@ pub(crate) fn swap_inventory_item_with_equipment(
     Ok(replaced_item)
 }
 
+/// Moves a complete authored inventory row from one character to another.
+///
+/// The source row is removed and appended to the destination inventory without rebuilding it,
+/// preserving its instance SOID, plugs, flags, and any unrecognized members. Work is performed
+/// on a clone so an invalid or full destination cannot leave either character partially changed.
+pub(crate) fn move_inventory_item_to_character(
+    document: &mut Value,
+    location: InventoryItemLocation,
+    destination_character_index: usize,
+) -> InventoryResult<InventoryItemLocation> {
+    require_inventory_mutation(document)?;
+    if destination_character_index == location.character_index {
+        return Err(InventoryError::new(
+            format!("/state/characters/{destination_character_index}"),
+            "source and destination characters must be different",
+        ));
+    }
+
+    let source_inventory =
+        character_inventory(document, location.character_index)?.ok_or_else(|| {
+            InventoryError::new(
+                format!("/state/characters/{}/inventory", location.character_index),
+                "character inventory is missing; add an item before moving a row",
+            )
+        })?;
+    if location.item_index >= source_inventory.len() {
+        return Err(InventoryError::new(
+            inventory_item_path(location),
+            "inventory item index is out of range",
+        ));
+    }
+
+    let destination_inventory = character_inventory(document, destination_character_index)?;
+    let destination_length = destination_inventory.as_ref().map_or(0, Vec::len);
+    if destination_length >= CHARACTER_INVENTORY_CAPACITY {
+        return Err(InventoryError::new(
+            format!("/state/characters/{destination_character_index}/inventory"),
+            format!("character inventory is full (maximum {CHARACTER_INVENTORY_CAPACITY} items)"),
+        ));
+    }
+
+    let source_character = character_object(document, location.character_index)?;
+    let moved_item = source_character
+        .get("inventory")
+        .and_then(Value::as_array)
+        .and_then(|items| items.get(location.item_index))
+        .cloned()
+        .expect("the selected inventory row was validated before the move");
+
+    let mut candidate = document.clone();
+    character_object_mut(&mut candidate, location.character_index)?
+        .get_mut("inventory")
+        .and_then(Value::as_array_mut)
+        .expect("the source inventory array was validated before the move")
+        .remove(location.item_index);
+    let destination_character = character_object_mut(&mut candidate, destination_character_index)?;
+    match destination_character.get_mut("inventory") {
+        Some(Value::Array(items)) => items.push(moved_item),
+        Some(_) => unreachable!("the destination inventory shape was validated before the move"),
+        None => {
+            destination_character.insert("inventory".into(), Value::Array(vec![moved_item]));
+        }
+    }
+
+    let _ = character_inventory(&candidate, location.character_index)?;
+    let _ = character_inventory(&candidate, destination_character_index)?;
+    *document = candidate;
+    Ok(InventoryItemLocation {
+        character_index: destination_character_index,
+        item_index: destination_length,
+    })
+}
+
 /// Moves the complete authored item in an equipment slot to the end of character inventory.
 ///
 /// The source slot is set to null only after the resulting inventory has been validated, so a
@@ -1607,6 +1680,19 @@ mod tests {
         })
     }
 
+    fn add_character(document: &mut Value, soid: u64, class_type: u64) {
+        document
+            .pointer_mut("/state/characters")
+            .and_then(Value::as_array_mut)
+            .expect("test document has a characters array")
+            .push(json!({
+                "soid": format_instance_soid(soid),
+                "class": class_type,
+                "equipment": {},
+                "inventory": []
+            }));
+    }
+
     #[test]
     fn schema_modes_are_explicit_about_mutability() {
         assert_eq!(schema_mode(&json!({})), SchemaMode::MissingOrInvalid);
@@ -2029,6 +2115,126 @@ mod tests {
             .is_err()
         );
         assert_eq!(document, before);
+    }
+
+    #[test]
+    fn moving_between_characters_preserves_the_complete_authored_row() {
+        let mut document = document(6);
+        add_character(&mut document, 0x9EAA_3002_0020_0100, 1);
+        let mut moved = item(1, 10);
+        moved["flags"] = json!(1);
+        moved["future"] = json!({"preserved": true});
+        let source_untouched = item(2, 20);
+        let destination_untouched = item(3, 30);
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = json!([moved.clone(), source_untouched.clone()]);
+        *document
+            .pointer_mut("/state/characters/1/inventory")
+            .unwrap() = json!([destination_untouched.clone()]);
+
+        let destination = move_inventory_item_to_character(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            destination,
+            InventoryItemLocation {
+                character_index: 1,
+                item_index: 1,
+            }
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            Some(&json!([source_untouched]))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/1/inventory"),
+            Some(&json!([destination_untouched, moved]))
+        );
+    }
+
+    #[test]
+    fn moving_between_characters_creates_a_missing_destination_inventory() {
+        let mut document = document(6);
+        add_character(&mut document, 0x9EAA_3002_0020_0100, 1);
+        let moved = item(1, 10);
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = json!([moved.clone()]);
+        document
+            .pointer_mut("/state/characters/1")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("inventory");
+
+        move_inventory_item_to_character(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            document.pointer("/state/characters/0/inventory"),
+            Some(&json!([]))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/1/inventory"),
+            Some(&json!([moved]))
+        );
+    }
+
+    #[test]
+    fn failed_moves_between_characters_are_atomic() {
+        let mut document = document(6);
+        add_character(&mut document, 0x9EAA_3002_0020_0100, 1);
+        *document
+            .pointer_mut("/state/characters/0/inventory")
+            .unwrap() = json!([item(1, 10)]);
+        let before_same_character = document.clone();
+
+        let same_character_error = move_inventory_item_to_character(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            0,
+        )
+        .unwrap_err();
+        assert!(same_character_error.message().contains("must be different"));
+        assert_eq!(document, before_same_character);
+
+        *document
+            .pointer_mut("/state/characters/1/inventory")
+            .unwrap() = Value::Array(
+            (0..CHARACTER_INVENTORY_CAPACITY)
+                .map(|index| item(index as u64 + 2, 20))
+                .collect(),
+        );
+        let before_full_character = document.clone();
+
+        let full_character_error = move_inventory_item_to_character(
+            &mut document,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            1,
+        )
+        .unwrap_err();
+        assert!(full_character_error.message().contains("inventory is full"));
+        assert_eq!(document, before_full_character);
     }
 
     #[test]

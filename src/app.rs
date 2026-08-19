@@ -1,9 +1,12 @@
 use std::{
     collections::HashMap,
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread,
 };
 
@@ -40,6 +43,8 @@ mod item_editor;
 
 mod inventory_page;
 
+mod progression;
+
 const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
 const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
@@ -53,6 +58,10 @@ const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
 const PLUG_PICKER_MAX_HEIGHT: f32 = 420.0;
 const MAIN_SIDEBAR_WIDTH: f32 = 168.0;
+const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
+    ("Destiny Symbols 360", r"fonts\Destiny_Symbols_360.ttf"),
+    ("Destiny Symbols PC", r"fonts\Destiny_Symbols_PC.otf"),
+];
 const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
 const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
 
@@ -81,6 +90,7 @@ enum ViewMode {
     ProfileInventory,
     CharacterInventory,
     GameSettings,
+    Progression,
     AdvancedJson,
     Preferences,
 }
@@ -208,6 +218,37 @@ const fn default_show_safety_warnings() -> bool {
     true
 }
 
+fn configure_destiny_symbol_fonts(ctx: &egui::Context, install: &Path) -> Result<(), String> {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = Vec::new();
+    let mut errors = Vec::new();
+    for &(name, relative_path) in DESTINY_SYMBOL_FONTS {
+        let path = install.join(relative_path);
+        match fs::read(&path) {
+            Ok(bytes) => {
+                fonts
+                    .font_data
+                    .insert(name.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
+                loaded.push(name.to_owned());
+            }
+            Err(error) => errors.push(format!("Could not read {}: {error}", path.display())),
+        }
+    }
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .extend(loaded.clone());
+    }
+    ctx.set_fonts(fonts);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -302,6 +343,7 @@ struct SundialApp {
     view_mode: ViewMode,
     game_settings_tab: game_settings::Tab,
     key_binding_ui: game_settings::KeyBindingUiState,
+    progression_ui: progression::UiState,
     raw_json: String,
     raw_json_document: Value,
     json_editor: JsonEditorState,
@@ -317,6 +359,8 @@ struct SundialApp {
     pending_install_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
     catalog_task: Option<CatalogTask>,
+    destiny_symbol_font_install: Option<PathBuf>,
+    destiny_symbol_font_error: Option<String>,
 }
 
 impl SundialApp {
@@ -386,6 +430,7 @@ impl SundialApp {
             view_mode: ViewMode::Characters,
             game_settings_tab: game_settings::Tab::Player,
             key_binding_ui: game_settings::KeyBindingUiState::default(),
+            progression_ui: progression::UiState::default(),
             raw_json,
             raw_json_document,
             json_editor: JsonEditorState::default(),
@@ -408,7 +453,19 @@ impl SundialApp {
             pending_install_choice: None,
             pending_future_schema: None,
             catalog_task: None,
+            destiny_symbol_font_install: None,
+            destiny_symbol_font_error: None,
         })
+    }
+
+    fn ensure_destiny_symbol_font(&mut self, ctx: &egui::Context) {
+        if self.destiny_symbol_font_install.as_ref() == Some(&self.install_path) {
+            return;
+        }
+
+        self.destiny_symbol_font_error =
+            configure_destiny_symbol_fonts(ctx, &self.install_path).err();
+        self.destiny_symbol_font_install = Some(self.install_path.clone());
     }
 
     fn reload(&mut self) {
@@ -961,6 +1018,7 @@ impl SundialApp {
                     (ViewMode::ProfileInventory, "Profile inventory"),
                     (ViewMode::CharacterInventory, "Character inventory"),
                     (ViewMode::GameSettings, "Game settings"),
+                    (ViewMode::Progression, "Unlocks & investment"),
                     (ViewMode::AdvancedJson, "All settings (JSON)"),
                     (ViewMode::Preferences, "Preferences"),
                 ] {
@@ -1482,6 +1540,7 @@ impl SundialApp {
 
 impl eframe::App for SundialApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ensure_destiny_symbol_font(ctx);
         self.update_check.start_if_needed(ctx);
         self.update_check.poll();
         self.poll_catalog_task();
@@ -1508,6 +1567,7 @@ impl eframe::App for SundialApp {
                         | ViewMode::ProfileInventory
                         | ViewMode::CharacterInventory
                         | ViewMode::GameSettings
+                        | ViewMode::Progression
                 )
             {
                 ui.heading("Finish the JSON edit");
@@ -1552,6 +1612,15 @@ impl eframe::App for SundialApp {
                         self.dirty = true;
                         self.set_status("Game setting updated; click Save to write it", false);
                     }
+                }
+                ViewMode::Progression => {
+                    progression::draw_page(
+                        ui,
+                        &self.document,
+                        &self.manifest,
+                        self.destiny_symbol_font_error.as_deref(),
+                        &mut self.progression_ui,
+                    );
                 }
                 ViewMode::AdvancedJson => {
                     if self.json_editor_window_open {

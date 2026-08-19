@@ -17,14 +17,20 @@ use crate::{
 
 mod icons;
 mod package;
+mod progression;
 
 use icons::IconRuntime;
-#[cfg(test)]
-use package::u64_at;
 pub use package::validate_install;
 use package::{array_at, i32_at, i64_at, install_fingerprint, relative_offset, u16_at, u32_at};
+pub use progression::{ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, UnlockDefinition};
+use progression::{
+    add_objective_owner, attach_presentation_node_objective_owners, item_objective_indices,
+    scan_collectible_item_paths, scan_metric_objective_owners, scan_objectives,
+    scan_presentation_nodes, scan_record_objective_owners, scan_unlock_flag_definitions,
+    scan_unlock_flag_displays, scan_unlock_value_definitions, unlock_state_indices,
+};
 
-const CACHE_SCHEMA: u32 = 39;
+const CACHE_SCHEMA: u32 = 45;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
@@ -361,6 +367,10 @@ struct ScannedCatalog {
     descriptions: HashMap<u64, String>,
     icon_containers: HashMap<u64, u32>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
+    objectives: Vec<ObjectiveDef>,
+    unlock_flag_definitions: Vec<UnlockDefinition>,
+    unlock_value_definitions: Vec<UnlockDefinition>,
+    progression_package_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,6 +405,11 @@ struct CatalogCache {
     icon_containers: HashMap<u64, u32>,
     #[serde(default)]
     inventory_metadata: HashMap<u64, InventoryMetadata>,
+    objectives: Vec<ObjectiveDef>,
+    unlock_flag_definitions: Vec<UnlockDefinition>,
+    unlock_value_definitions: Vec<UnlockDefinition>,
+    #[serde(default)]
+    progression_package_error: Option<String>,
     plug_pools: Vec<Vec<u64>>,
 }
 
@@ -405,6 +420,10 @@ struct CatalogContents {
     descriptions: HashMap<u64, String>,
     icon_containers: HashMap<u64, u32>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
+    objectives: Vec<ObjectiveDef>,
+    unlock_flag_definitions: Vec<UnlockDefinition>,
+    unlock_value_definitions: Vec<UnlockDefinition>,
+    progression_package_error: Option<String>,
     plug_pools: Vec<Vec<u64>>,
 }
 
@@ -417,6 +436,10 @@ impl CatalogCache {
             descriptions: self.descriptions,
             icon_containers: self.icon_containers,
             inventory_metadata: self.inventory_metadata,
+            objectives: self.objectives,
+            unlock_flag_definitions: self.unlock_flag_definitions,
+            unlock_value_definitions: self.unlock_value_definitions,
+            progression_package_error: self.progression_package_error,
             plug_pools: self.plug_pools,
         }
     }
@@ -433,6 +456,13 @@ pub struct Catalog {
     install_path: PathBuf,
     icon_runtime: Mutex<IconRuntime>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
+    objectives: Vec<ObjectiveDef>,
+    unlock_flag_definitions: Vec<UnlockDefinition>,
+    unlock_value_definitions: Vec<UnlockDefinition>,
+    progression_package_error: Option<String>,
+    unlock_flag_state_indices: HashMap<(u8, u16), usize>,
+    unlock_value_state_indices: HashMap<(u8, u16), usize>,
+    objectives_by_unlock_value: HashMap<usize, usize>,
     inventory_hashes: Vec<u64>,
     item_indices: HashMap<u64, usize>,
     plug_pools: Vec<Vec<u64>>,
@@ -489,6 +519,10 @@ impl Catalog {
             descriptions,
             icon_containers,
             inventory_metadata,
+            objectives,
+            unlock_flag_definitions,
+            unlock_value_definitions,
+            progression_package_error,
         } = scan_packages(install, &mut report)?;
         report(CatalogProgress::stage("Optimizing the local catalog…"));
         let mut type_names = type_names;
@@ -510,6 +544,10 @@ impl Catalog {
             descriptions,
             icon_containers,
             inventory_metadata,
+            objectives,
+            unlock_flag_definitions,
+            unlock_value_definitions,
+            progression_package_error,
             plug_pools,
         };
         if let Some(parent) = cache_path.parent() {
@@ -547,6 +585,10 @@ impl Catalog {
             descriptions,
             icon_containers,
             inventory_metadata,
+            objectives,
+            unlock_flag_definitions,
+            unlock_value_definitions,
+            progression_package_error,
             mut plug_pools,
         } = contents;
         for pool in &mut plug_pools {
@@ -587,6 +629,17 @@ impl Catalog {
             .enumerate()
             .map(|(index, item)| (item.hash, index))
             .collect();
+        let unlock_flag_state_indices = unlock_state_indices(&unlock_flag_definitions);
+        let unlock_value_state_indices = unlock_state_indices(&unlock_value_definitions);
+        let objectives_by_unlock_value = objectives
+            .iter()
+            .enumerate()
+            .filter_map(|(objective_index, objective)| {
+                objective
+                    .related_unlock_value_definition_index
+                    .map(|definition_index| (usize::from(definition_index), objective_index))
+            })
+            .collect();
         Self {
             items: items.into_iter().map(Arc::new).collect(),
             names,
@@ -598,6 +651,13 @@ impl Catalog {
             install_path,
             icon_runtime: Mutex::new(IconRuntime::default()),
             inventory_metadata,
+            objectives,
+            unlock_flag_definitions,
+            unlock_value_definitions,
+            progression_package_error,
+            unlock_flag_state_indices,
+            unlock_value_state_indices,
+            objectives_by_unlock_value,
             inventory_hashes,
             item_indices,
             plug_pools,
@@ -632,6 +692,44 @@ impl Catalog {
 
     pub fn inventory_metadata(&self, hash: u64) -> Option<&InventoryMetadata> {
         self.inventory_metadata.get(&hash)
+    }
+
+    pub fn progression_package_error(&self) -> Option<&str> {
+        self.progression_package_error.as_deref()
+    }
+
+    pub fn unlock_flag_for_state(
+        &self,
+        bank: u8,
+        slot: usize,
+    ) -> Option<(usize, &UnlockDefinition)> {
+        let slot = u16::try_from(slot).ok()?;
+        let index = *self.unlock_flag_state_indices.get(&(bank, slot))?;
+        Some((index, self.unlock_flag_definitions.get(index)?))
+    }
+
+    pub fn unlock_value_for_state(
+        &self,
+        bank: u8,
+        slot: usize,
+    ) -> Option<(usize, &UnlockDefinition)> {
+        let slot = u16::try_from(slot).ok()?;
+        let index = *self.unlock_value_state_indices.get(&(bank, slot))?;
+        Some((index, self.unlock_value_definitions.get(index)?))
+    }
+
+    pub fn unlock_flag_definition(&self, index: usize) -> Option<&UnlockDefinition> {
+        self.unlock_flag_definitions.get(index)
+    }
+
+    pub fn unlock_value_definition(&self, index: usize) -> Option<&UnlockDefinition> {
+        self.unlock_value_definitions.get(index)
+    }
+
+    pub fn objective_for_unlock_value(&self, definition_index: usize) -> Option<&ObjectiveDef> {
+        self.objectives_by_unlock_value
+            .get(&definition_index)
+            .and_then(|index| self.objectives.get(*index))
     }
 
     /// Resolves both equipment definitions and profile-only inventory definitions.
@@ -957,6 +1055,32 @@ fn compatible(item: &ItemDef, bucket: u64, class_type: u64, show_dummy_items: bo
         && (show_dummy_items || !crate::dummy_items::contains(item.hash))
 }
 
+fn retain_progression_scan<T: Default>(
+    section: &str,
+    result: Result<T, String>,
+    errors: &mut Vec<String>,
+) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{section}: {error}"));
+            T::default()
+        }
+    }
+}
+
+fn retain_progression_enrichment<T>(
+    section: &str,
+    result: Result<(), String>,
+    value: T,
+    errors: &mut Vec<String>,
+) -> T {
+    if let Err(error) = result {
+        errors.push(format!("{section}: {error}"));
+    }
+    value
+}
+
 fn scan_packages(
     install: &Path,
     report: &mut dyn FnMut(CatalogProgress),
@@ -1002,6 +1126,90 @@ fn scan_packages(
     let root = manager
         .read_tag(TagHash(u32_at(&globals_data, 16)?))
         .map_err(|e| format!("Could not read investment root: {e}"))?;
+    let mut progression_package_errors = Vec::new();
+    report(CatalogProgress::stage("Reading unlock definitions…"));
+    let mut unlock_flag_definitions = retain_progression_scan(
+        "Unlock flag definitions",
+        scan_unlock_flag_definitions(&manager, &root),
+        &mut progression_package_errors,
+    );
+    if !unlock_flag_definitions.is_empty() {
+        let display_result = scan_unlock_flag_displays(
+            &manager,
+            &globals_data,
+            &localized_tags,
+            &mut localized_cache,
+            &mut unlock_flag_definitions,
+        );
+        unlock_flag_definitions = retain_progression_enrichment(
+            "Unlock flag displays",
+            display_result,
+            unlock_flag_definitions,
+            &mut progression_package_errors,
+        );
+    }
+    let unlock_value_definitions = retain_progression_scan(
+        "Unlock value definitions",
+        scan_unlock_value_definitions(&manager, &root),
+        &mut progression_package_errors,
+    );
+    report(CatalogProgress::stage("Reading objective definitions…"));
+    let mut objectives = retain_progression_scan(
+        "Objective definitions",
+        scan_objectives(
+            &manager,
+            &root,
+            &globals_data,
+            &localized_tags,
+            &mut localized_cache,
+            &unlock_value_definitions,
+        ),
+        &mut progression_package_errors,
+    );
+    let presentation_nodes = match scan_presentation_nodes(
+        &manager,
+        &root,
+        &globals_data,
+        &localized_tags,
+        &mut localized_cache,
+        objectives.len(),
+    ) {
+        Ok(nodes) => nodes,
+        Err(error) => {
+            progression_package_errors.push(format!("Presentation nodes: {error}"));
+            Vec::new()
+        }
+    };
+    attach_presentation_node_objective_owners(&mut objectives, &presentation_nodes);
+    if let Err(error) = scan_metric_objective_owners(
+        &manager,
+        &root,
+        &globals_data,
+        &localized_tags,
+        &mut localized_cache,
+        &presentation_nodes,
+        &mut objectives,
+    ) {
+        progression_package_errors.push(format!("Metric objective owners: {error}"));
+    }
+    if let Err(error) = scan_record_objective_owners(
+        &manager,
+        &root,
+        &globals_data,
+        &localized_tags,
+        &mut localized_cache,
+        &presentation_nodes,
+        &mut objectives,
+    ) {
+        progression_package_errors.push(format!("Record objective owners: {error}"));
+    }
+    let collectible_item_paths = retain_progression_scan(
+        "Collectible item paths",
+        scan_collectible_item_paths(&manager, &root, &presentation_nodes),
+        &mut progression_package_errors,
+    );
+    let progression_package_error =
+        (!progression_package_errors.is_empty()).then(|| progression_package_errors.join("\n"));
     let inventory_buckets = scan_inventory_bucket_descriptors(&manager, &root)?;
     let plug_set_table = manager
         .read_tag(TagHash(u32_at(&root, 8 + 51 * 16)?))
@@ -1131,6 +1339,22 @@ fn scan_packages(
         } else {
             names.entry(hash).or_insert_with(|| name.clone());
         }
+        for objective_index in item_objective_indices(&item, objectives.len()) {
+            add_objective_owner(
+                &mut objectives,
+                objective_index,
+                ObjectiveOwnerDef {
+                    hash,
+                    kind: ObjectiveOwnerKind::InventoryItem,
+                    name: name.clone(),
+                    type_name: type_name.clone(),
+                    paths: collectible_item_paths
+                        .get(&index)
+                        .cloned()
+                        .unwrap_or_default(),
+                },
+            );
+        }
         if let Ok(category) = u32_at(&item, 392) {
             if category != 0 && category != u32::MAX {
                 plug_category_by_hash.insert(hash, category);
@@ -1248,6 +1472,10 @@ fn scan_packages(
         descriptions,
         icon_containers,
         inventory_metadata,
+        objectives,
+        unlock_flag_definitions,
+        unlock_value_definitions,
+        progression_package_error,
     })
 }
 
@@ -2095,9 +2323,9 @@ fn decode_strings(manager: &PackageManager, tag: TagHash) -> Result<Vec<(u32, St
                 .ok_or("Localized string pointer overflowed")?;
             let start = relative_offset(part, 8, i64_at(&data, part_pointer)?)?;
             let len = u16_at(&data, part + 0x14)? as usize;
-            // Shadowkeep stores this shift in a 16-bit field, but the string
-            // codec defines the low byte as the character offset.
-            let shift = u16_at(&data, part + 0x18)?.to_le_bytes()[0];
+            // The high byte is significant for Destiny's private-use symbol
+            // glyphs, which are rendered with the installed PC symbol font.
+            let shift = u16_at(&data, part + 0x18)?;
             let Some(end) = start.checked_add(len) else {
                 continue;
             };
@@ -2105,7 +2333,7 @@ fn decode_strings(manager: &PackageManager, tag: TagHash) -> Result<Vec<(u32, St
                 continue;
             };
             for ch in String::from_utf8_lossy(bytes).chars() {
-                let shifted = char::from_u32(ch as u32 + u32::from(shift)).unwrap_or(ch);
+                let shifted = shift_localized_character(ch, shift);
                 let mut encoded = [0; 4];
                 value.extend_from_slice(shifted.encode_utf8(&mut encoded).as_bytes());
             }
@@ -2116,6 +2344,10 @@ fn decode_strings(manager: &PackageManager, tag: TagHash) -> Result<Vec<(u32, St
         ));
     }
     Ok(result)
+}
+
+fn shift_localized_character(character: char, shift: u16) -> char {
+    char::from_u32(character as u32 + u32::from(shift)).unwrap_or(character)
 }
 
 const fn bucket_hash(bucket: u8) -> Option<u64> {
@@ -2144,6 +2376,113 @@ const fn bucket_hash(bucket: u8) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localized_string_shift_preserves_destiny_symbol_codepoints() {
+        assert_eq!(shift_localized_character('\u{1}', 0xE142), '\u{E143}');
+        assert_eq!(shift_localized_character('\u{1}', 0x001F), ' ');
+    }
+
+    #[test]
+    fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions() {
+        let flag = UnlockDefinition {
+            hash: 0xAAAA_AAAA,
+            code: 1,
+            compact_slot: Some(26),
+            name: Some("Crucible Access".into()),
+            description: None,
+        };
+        let value = UnlockDefinition {
+            hash: 0x14D6_FB47,
+            code: 0x0201,
+            compact_slot: Some(58),
+            name: None,
+            description: None,
+        };
+        let catalog = Catalog::finish(
+            CatalogContents {
+                items: Vec::new(),
+                names: HashMap::new(),
+                type_names: HashMap::new(),
+                descriptions: HashMap::new(),
+                icon_containers: HashMap::new(),
+                inventory_metadata: HashMap::new(),
+                objectives: vec![ObjectiveDef {
+                    hash: value.hash,
+                    description: "C Arc".into(),
+                    completion_value: 5_000,
+                    allow_overcompletion: true,
+                    allow_negative_value: false,
+                    allow_value_change_when_completed: true,
+                    is_counting_downward: false,
+                    owners: Vec::new(),
+                    related_unlock_value_definition_index: Some(0),
+                }],
+                unlock_flag_definitions: vec![flag.clone()],
+                unlock_value_definitions: vec![value.clone()],
+                progression_package_error: Some("Objective definitions: unavailable".to_owned()),
+                plug_pools: Vec::new(),
+            },
+            PathBuf::new(),
+            PathBuf::new(),
+            false,
+        );
+
+        assert_eq!(catalog.unlock_flag_for_state(1, 26), Some((0, &flag)));
+        assert_eq!(catalog.unlock_value_for_state(1, 58), Some((0, &value)));
+        assert!(catalog.unlock_value_for_state(2, 58).is_none());
+        assert_eq!(catalog.unlock_value_definition(0), Some(&value));
+        assert_eq!(
+            catalog.progression_package_error(),
+            Some("Objective definitions: unavailable")
+        );
+        assert_eq!(
+            catalog
+                .objective_for_unlock_value(0)
+                .map(|row| (row.description.as_str(), row.completion_value)),
+            Some(("C Arc", 5_000))
+        );
+        let objective = catalog.objective_for_unlock_value(0).unwrap();
+        assert_eq!(objective.maximum_value(), None);
+        assert_eq!(objective.minimum_value(), None);
+    }
+
+    #[test]
+    fn progression_scan_failures_fall_back_without_discarding_other_sections() {
+        let mut errors = Vec::new();
+        let flags = retain_progression_scan("Unlock flag definitions", Ok(vec![1, 2]), &mut errors);
+        let values: Vec<u8> = retain_progression_scan(
+            "Unlock value definitions",
+            Err("table unavailable".into()),
+            &mut errors,
+        );
+
+        assert_eq!(flags, vec![1, 2]);
+        assert!(values.is_empty());
+        assert_eq!(errors, vec!["Unlock value definitions: table unavailable"]);
+    }
+
+    #[test]
+    fn optional_unlock_display_failure_keeps_core_definitions() {
+        let definitions = vec![UnlockDefinition {
+            hash: 0x1234_5678,
+            code: 1,
+            compact_slot: Some(26),
+            name: None,
+            description: None,
+        }];
+        let mut errors = Vec::new();
+
+        let retained = retain_progression_enrichment(
+            "Unlock flag displays",
+            Err("table unavailable".into()),
+            definitions.clone(),
+            &mut errors,
+        );
+
+        assert_eq!(retained, definitions);
+        assert_eq!(errors, vec!["Unlock flag displays: table unavailable"]);
+    }
 
     #[test]
     fn plug_labels_only_include_hashes_when_requested() {
@@ -2378,6 +2717,10 @@ mod tests {
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
                 inventory_metadata,
+                objectives: Vec::new(),
+                unlock_flag_definitions: Vec::new(),
+                unlock_value_definitions: Vec::new(),
+                progression_package_error: None,
                 plug_pools: vec![Vec::new()],
             },
             PathBuf::new(),
@@ -2450,6 +2793,10 @@ mod tests {
                 descriptions: HashMap::from([(10_042, "A description-only match".to_owned())]),
                 icon_containers: HashMap::new(),
                 inventory_metadata: HashMap::new(),
+                objectives: Vec::new(),
+                unlock_flag_definitions: Vec::new(),
+                unlock_value_definitions: Vec::new(),
+                progression_package_error: None,
                 plug_pools: Vec::new(),
             },
             PathBuf::new(),
@@ -2507,6 +2854,10 @@ mod tests {
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
                 inventory_metadata: HashMap::new(),
+                objectives: Vec::new(),
+                unlock_flag_definitions: Vec::new(),
+                unlock_value_definitions: Vec::new(),
+                progression_package_error: None,
                 plug_pools: vec![
                     vec![10, 20, 354_293_076],
                     vec![crate::catalyst_plugs::EMPTY_CATALYST_SOCKET, 30],
@@ -2559,14 +2910,33 @@ mod tests {
     }
 
     #[test]
-    fn older_cache_shape_defaults_inventory_metadata() {
-        let cache: CatalogCache = serde_json::from_str(&format!(
-            "{{\"schema\":{CACHE_SCHEMA},\"sundial_version\":\"{SUNDIAL_VERSION}\",\"fingerprint\":\"test\",\"items\":[],\"names\":{{}},\"type_names\":{{}},\"plug_pools\":[]}}"
-        ))
-        .unwrap();
-        assert!(cache.inventory_metadata.is_empty());
-        assert!(cache.descriptions.is_empty());
-        assert!(cache.icon_containers.is_empty());
+    fn schema_current_cache_requires_progression_sections() {
+        let complete = serde_json::json!({
+            "schema": CACHE_SCHEMA,
+            "sundial_version": SUNDIAL_VERSION,
+            "fingerprint": "test",
+            "items": [],
+            "names": {},
+            "type_names": {},
+            "objectives": [],
+            "unlock_flag_definitions": [],
+            "unlock_value_definitions": [],
+            "plug_pools": [],
+        });
+        assert!(serde_json::from_value::<CatalogCache>(complete.clone()).is_ok());
+
+        for required in [
+            "objectives",
+            "unlock_flag_definitions",
+            "unlock_value_definitions",
+        ] {
+            let mut incomplete = complete.clone();
+            incomplete.as_object_mut().unwrap().remove(required);
+            assert!(
+                serde_json::from_value::<CatalogCache>(incomplete).is_err(),
+                "a cache without {required} must be rescanned"
+            );
+        }
     }
 
     #[test]
@@ -2584,6 +2954,10 @@ mod tests {
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
                 inventory_metadata: HashMap::new(),
+                objectives: Vec::new(),
+                unlock_flag_definitions: Vec::new(),
+                unlock_value_definitions: Vec::new(),
+                progression_package_error: None,
                 plug_pools: vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
             },
             PathBuf::new(),
@@ -2815,7 +3189,7 @@ mod tests {
     fn package_offsets_reject_underflow_and_out_of_bounds_reads() {
         assert!(relative_offset(8, 0, -9).is_err());
         assert!(relative_offset(usize::MAX, 1, 0).is_err());
-        assert!(u64_at(&[0; 4], usize::MAX).is_err());
+        assert!(package::u64_at(&[0; 4], usize::MAX).is_err());
 
         let mut descriptor = [0_u8; 32];
         descriptor[0..8].copy_from_slice(&1_u64.to_le_bytes());
