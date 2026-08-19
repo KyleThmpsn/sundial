@@ -33,7 +33,8 @@ Sundial is designed for:
   build `86657.20.08.23`
 
 Sundial handles the known differences between Sunrise settings schemas.
-Newer schemas display a warning and may be opened with caution, but future
+Newer schemas display a warning and may be opened with caution. Sundial keeps
+recognized fields editable and preserves unrecognized JSON, but future
 compatibility is not guaranteed.
 
 Named key-binding editing is experimental. Some Sunrise configurations may use

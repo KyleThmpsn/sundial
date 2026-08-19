@@ -76,6 +76,12 @@ impl SettingsSchema {
         }
     }
 
+    fn for_editing(document: &Value) -> Option<Self> {
+        schema_version(document)
+            .filter(|version| *version >= MIN_SUPPORTED_SCHEMA)
+            .map(Self)
+    }
+
     const fn key_binding_format(self) -> KeyBindingFormat {
         if self.0 == 2 {
             KeyBindingFormat::Numeric
@@ -98,7 +104,7 @@ pub(super) fn future_schema_version(document: &Value) -> Option<u64> {
 }
 
 fn key_bindings_editable(document: &Value) -> bool {
-    SettingsSchema::from_document(document).is_ok_and(SettingsSchema::named_key_bindings_editable)
+    SettingsSchema::for_editing(document).is_some_and(SettingsSchema::named_key_bindings_editable)
 }
 
 const VERTICAL_SYNC_INTERVAL_KEY: &str = "vertical_sync_interval";
@@ -1988,14 +1994,16 @@ mod tests {
     }
 
     #[test]
-    fn named_key_binding_editing_follows_schema_capabilities() {
+    fn named_key_binding_editing_uses_the_last_known_format_for_future_schemas() {
         assert!(!key_bindings_editable(&serde_json::json!({"version": 2})));
         for version in 3..=6 {
             assert!(key_bindings_editable(
                 &serde_json::json!({"version": version})
             ));
         }
-        assert!(!key_bindings_editable(&serde_json::json!({"version": 7})));
+        assert!(key_bindings_editable(&serde_json::json!({
+            "version": MAX_SUPPORTED_SCHEMA + 1
+        })));
         assert!(!key_bindings_editable(&serde_json::json!({})));
     }
 
@@ -2053,7 +2061,65 @@ mod tests {
     }
 
     #[test]
+    fn future_schema_binding_edit_round_trip_preserves_unknown_actions_and_members() {
+        const FIRE_PRIMARY_PATH: &str = "/state/account/settings/key_bindings/Fire/primary";
+        const FIRE_FUTURE_DATA_PATH: &str =
+            "/state/account/settings/key_bindings/Fire/future_binding_data/keep";
+        const FUTURE_ACTION_DATA_PATH: &str =
+            "/state/account/settings/key_bindings/FutureAction/opaque/keep";
+        let future_version = MAX_SUPPORTED_SCHEMA + 117;
+        let mut document = serde_json::json!({
+            "version": future_version,
+            "future_root_data": {"keep": true},
+            "state": {
+                "account": {
+                    "settings": {
+                        "key_bindings": {
+                            "Fire": {
+                                "primary": "a",
+                                "secondary": null,
+                                "future_binding_data": {"keep": [1, 2, 3]}
+                            },
+                            "FutureAction": {
+                                "opaque": {"keep": "unchanged"}
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        assert!(SettingsSchema::from_document(&document).is_err());
+        assert!(key_bindings_editable(&document));
+        assert_eq!(
+            set_named_binding_value(
+                document.pointer_mut(FIRE_PRIMARY_PATH).unwrap(),
+                Some("control+a"),
+            ),
+            Ok(true)
+        );
+
+        let encoded = serde_json::to_string(&document).unwrap();
+        let reparsed: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            reparsed.pointer(FIRE_FUTURE_DATA_PATH),
+            Some(&serde_json::json!([1, 2, 3]))
+        );
+        assert_eq!(
+            reparsed.pointer(FUTURE_ACTION_DATA_PATH),
+            Some(&Value::String("unchanged".into()))
+        );
+        assert_eq!(
+            reparsed.pointer("/future_root_data/keep"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(reparsed, document);
+    }
+
+    #[test]
     fn only_newer_schema_versions_require_a_confirmation() {
+        let future_version = MAX_SUPPORTED_SCHEMA + 1;
+
         assert_eq!(schema_version(&serde_json::json!({"version": 3})), Some(3));
         assert_eq!(schema_version(&serde_json::json!({"version": "3"})), None);
         assert_eq!(
@@ -2069,8 +2135,8 @@ mod tests {
             None
         );
         assert_eq!(
-            future_schema_version(&serde_json::json!({"version": 7})),
-            Some(7)
+            future_schema_version(&serde_json::json!({"version": future_version})),
+            Some(future_version)
         );
     }
 
@@ -2123,7 +2189,7 @@ mod tests {
             assert_eq!(validate(&valid_game_settings_document(version)), Ok(()));
         }
         assert!(validate(&valid_game_settings_document(1)).is_err());
-        assert!(validate(&valid_game_settings_document(7)).is_err());
+        assert!(validate(&valid_game_settings_document(MAX_SUPPORTED_SCHEMA + 1)).is_err());
     }
 
     #[test]

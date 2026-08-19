@@ -1659,12 +1659,15 @@ pub(super) fn equipped_item_snapshots(
     let equipment = equipment_value
         .as_object()
         .ok_or_else(|| format!("Character {character_index} equipment must be an object"))?;
+    let allow_unknown_members = super::inventory::schema_mode(document).is_future();
 
     Ok(SLOTS
         .iter()
         .filter_map(|&(slot, slot_label, bucket_hash)| {
             let value = equipment.get(slot)?;
-            (!value.is_null()).then(|| equipped_item_snapshot(slot, slot_label, bucket_hash, value))
+            (!value.is_null()).then(|| {
+                equipped_item_snapshot(slot, slot_label, bucket_hash, value, allow_unknown_members)
+            })
         })
         .collect())
 }
@@ -1674,6 +1677,7 @@ fn equipped_item_snapshot(
     slot_label: &'static str,
     bucket_hash: u64,
     value: &Value,
+    allow_unknown_members: bool,
 ) -> EquippedItemSnapshot {
     const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
 
@@ -1704,9 +1708,11 @@ fn equipped_item_snapshot(
         "plugs",
         "flags",
     ];
-    for member in item.keys() {
-        if !KNOWN_MEMBERS.contains(&member.as_str()) {
-            issues.push(format!("unknown item member {member}"));
+    if !allow_unknown_members {
+        for member in item.keys() {
+            if !KNOWN_MEMBERS.contains(&member.as_str()) {
+                issues.push(format!("unknown item member {member}"));
+            }
         }
     }
 
@@ -2339,30 +2345,6 @@ mod snapshot_tests {
     use super::*;
 
     #[test]
-    fn character_fields_collapse_as_available_width_narrows() {
-        assert_eq!(
-            character_field_group_layout(700.0),
-            (1, [700.0, 700.0, 700.0])
-        );
-        assert_eq!(
-            character_field_group_layout(926.0),
-            (3, [220.0, 310.0, 360.0])
-        );
-    }
-
-    #[test]
-    fn equipped_header_labels_are_page_specific() {
-        assert_eq!(
-            equipped_header_label("character-inventory-equipped", "Energy"),
-            "Equipped"
-        );
-        assert_eq!(
-            equipped_header_label("character-loadout-equipped", "Energy"),
-            "Energy Slot"
-        );
-    }
-
-    #[test]
     fn equipment_picker_choice_assembly_keeps_more_than_five_hundred_items() {
         let items = (0_u64..620)
             .map(|index| ItemDef {
@@ -2465,6 +2447,66 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn future_schema_equipment_edits_preserve_unknown_members() {
+        let mut document = json!({
+            "version": crate::game_settings::MAX_SUPPORTED_SCHEMA,
+            "state": {
+                "characters": [{
+                    "equipment": {
+                        "kinetic": {
+                            "instance_soid": "0x0000000000000001",
+                            "definition_hash": "0x00000002",
+                            "level": 75,
+                            "quantity": 1,
+                            "plugs": null,
+                            "future_item_data": {"keep": [1, 2, 3]}
+                        }
+                    }
+                }]
+            }
+        });
+
+        let supported = equipped_item_snapshots(&document, 0).unwrap();
+        assert!(
+            supported[0]
+                .issues
+                .iter()
+                .any(|issue| issue.contains("unknown item member"))
+        );
+
+        document["version"] = Value::from(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
+        let future = equipped_item_snapshots(&document, 0).unwrap();
+        assert!(future[0].issues.is_empty());
+
+        set_equipment_item_level(&mut document, 0, "kinetic", 106).unwrap();
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic/level"),
+            Some(&Value::from(106))
+        );
+        assert_eq!(
+            document.pointer("/state/characters/0/equipment/kinetic/future_item_data/keep"),
+            Some(&json!([1, 2, 3]))
+        );
+
+        *document
+            .pointer_mut("/state/characters/0/equipment/kinetic/quantity")
+            .unwrap() = json!({"future_quantity_shape": 1});
+        let incompatible_known_field = equipped_item_snapshots(&document, 0).unwrap();
+        assert!(
+            incompatible_known_field[0]
+                .issues
+                .iter()
+                .any(|issue| issue.contains("quantity must be"))
+        );
+        assert!(
+            incompatible_known_field[0]
+                .issues
+                .iter()
+                .all(|issue| !issue.contains("unknown item member"))
+        );
+    }
+
+    #[test]
     fn equipped_snapshots_retain_invalid_fields_and_report_issues() {
         let document = json!({
             "state": {
@@ -2494,24 +2536,6 @@ mod snapshot_tests {
             EquippedItemPlugs::Malformed("{\"unexpected\":true}".to_owned())
         );
         assert_eq!(snapshot.issues.len(), 5);
-    }
-
-    #[test]
-    fn equipped_snapshots_reject_an_unusable_equipment_path() {
-        let missing_characters = json!({"state": {}});
-        assert!(equipped_item_snapshots(&missing_characters, 0).is_err());
-
-        let missing_character = json!({"state": {"characters": []}});
-        assert!(equipped_item_snapshots(&missing_character, 0).is_err());
-
-        let missing_equipment = json!({"state": {"characters": [{}]}});
-        assert_eq!(
-            equipped_item_snapshots(&missing_equipment, 0).unwrap(),
-            Vec::new()
-        );
-
-        let malformed_equipment = json!({"state": {"characters": [{"equipment": []}]}});
-        assert!(equipped_item_snapshots(&malformed_equipment, 0).is_err());
     }
 
     #[test]

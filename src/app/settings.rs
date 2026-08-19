@@ -811,7 +811,7 @@ pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
             return Err(format!("Character {number} {issue}"));
         }
         for slot in equipment.keys() {
-            if !SLOTS.iter().any(|(known, _, _)| known == slot) {
+            if !mode.is_future() && !SLOTS.iter().any(|(known, _, _)| known == slot) {
                 return Err(format!(
                     "Character {number} has an unknown equipment slot: {slot}"
                 ));

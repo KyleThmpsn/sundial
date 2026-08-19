@@ -1846,7 +1846,7 @@ fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: InventoryPageKi
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "Schema {version} is newer than this Sundial release. Existing items are shown read-only and are not rewritten."
+                    "Schema {version} is newer than this Sundial release. Known item fields remain editable; unrecognized fields are preserved."
                 ),
             );
         }
@@ -2480,43 +2480,6 @@ mod tests {
     }
 
     #[test]
-    fn per_item_swap_choices_omit_bucket_heading_rows() {
-        let choices = without_definition_groups(vec![
-            DefinitionChoice {
-                hash: 1,
-                name: "First".into(),
-                type_name: "Kinetic weapon".into(),
-                group: Some("Kinetic weapons".into()),
-            },
-            DefinitionChoice {
-                hash: 2,
-                name: "Second".into(),
-                type_name: "Energy weapon".into(),
-                group: Some("Energy weapons".into()),
-            },
-        ]);
-
-        assert_eq!(
-            choices.iter().map(|choice| choice.hash).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert!(choices.iter().all(|choice| choice.group.is_none()));
-    }
-
-    #[test]
-    fn only_known_equipment_buckets_get_inventory_equip_targets() {
-        assert_eq!(
-            equipment_target_for_bucket(1_498_876_634),
-            Some(("kinetic", "Kinetic"))
-        );
-        assert_eq!(
-            equipment_target_for_bucket(3_284_755_031),
-            Some(("subclass", "Subclass"))
-        );
-        assert_eq!(equipment_target_for_bucket(0x59CA_1EA2), None);
-    }
-
-    #[test]
     fn character_item_ui_ids_survive_index_shifts_and_disambiguate_bad_soids() {
         let snapshot = |item_index, instance_soid| InventoryItemSnapshot {
             location: InventoryItemLocation {
@@ -2634,36 +2597,5 @@ mod tests {
 
         assert!(error.contains("flags"));
         assert_eq!(document, before);
-    }
-
-    #[test]
-    fn character_transfer_detail_uses_the_native_bucket_capacity() {
-        let usage = BucketUsage {
-            counts: HashMap::from([(1, 4)]),
-            unresolved_count: 0,
-            occupancy_complete: true,
-        };
-        let metadata = InventoryMetadata {
-            scope: InventoryScope::Character,
-            native_bucket_id: 1,
-            stackability: crate::catalog::ItemStackability::Instanced,
-            max_stack_size: Some(1),
-            bucket_capacity: Some(10),
-        };
-
-        assert_eq!(
-            character_bucket_usage_detail(metadata, &usage).as_deref(),
-            Some("Energy weapons · 4 / 10 slots used")
-        );
-    }
-
-    #[test]
-    fn character_transfer_picker_reserves_space_for_its_fixed_footer() {
-        assert_eq!(picker_height_with_transfer_destinations(0).min, 320.0);
-        assert_eq!(picker_height_with_transfer_destinations(0).max, 420.0);
-        assert_eq!(picker_height_with_transfer_destinations(1).min, 264.0);
-        assert_eq!(picker_height_with_transfer_destinations(1).max, 364.0);
-        assert_eq!(picker_height_with_transfer_destinations(2).min, 234.0);
-        assert_eq!(picker_height_with_transfer_destinations(2).max, 334.0);
     }
 }

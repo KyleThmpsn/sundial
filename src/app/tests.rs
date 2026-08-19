@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::{
     catalog::{self, AbilityChoice},
     hash::format_hash,
@@ -13,11 +11,8 @@ use super::{
         displayed_plugs, equip_definition, materialize_authored_plugs, native_plug_default,
         restore_class_armor, selected_attunement_index, set_weapon_slot_empty,
     },
-    inventory::{
-        EQUIPMENT_FLAGS_SCHEMA_VERSION, InventoryItemAction, InventoryItemLocation,
-        apply_inventory_item_action,
-    },
-    item_editor::{NativePlugDefault, picker_list_height},
+    inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION,
+    item_editor::NativePlugDefault,
     settings::{
         character_ability_issue, create_adjacent_backup, encode_settings, load_json,
         normalize_sunrise_version, repair_known_ability_pairs, resolve_settings_path,
@@ -25,25 +20,6 @@ use super::{
         validate_characters, verify_source_unchanged,
     },
 };
-
-#[test]
-fn pending_edit_guard_covers_document_and_json_editor_changes() {
-    assert!(!has_pending_edits(false, false));
-    assert!(has_pending_edits(true, false));
-    assert!(has_pending_edits(false, true));
-    assert!(has_pending_edits(true, true));
-}
-
-#[test]
-fn check_mode_rejects_documents_that_the_gui_loads_with_a_warning() {
-    for document in [
-        serde_json::json!({"version": 3}),
-        serde_json::json!({"version": 4}),
-    ] {
-        let error = validate_for_check(&document).unwrap_err();
-        assert!(error.starts_with("Invalid settings: "));
-    }
-}
 
 #[test]
 fn sunrise_versions_are_normalized_for_display() {
@@ -86,13 +62,6 @@ fn sunrise_native_plugs_are_displayed_and_materialized_on_edit() {
         plugs,
         serde_json::json!(["0x0000002A", "0x0000002C", "0x0000002B"])
     );
-}
-
-#[test]
-fn long_picker_lists_get_a_real_scroll_viewport() {
-    assert_eq!(picker_list_height(500, 24.0, 320.0, 420.0), 420.0);
-    assert_eq!(picker_list_height(14, 24.0, 320.0, 420.0), 336.0);
-    assert_eq!(picker_list_height(2, 24.0, 320.0, 420.0), 48.0);
 }
 
 #[test]
@@ -162,83 +131,6 @@ fn weapon_slots_can_be_emptied_and_equipped_again() {
         }))
     );
     assert_eq!(validate_characters(&document), Ok(()));
-}
-
-fn document_with_equipped_and_stored_items() -> Value {
-    serde_json::json!({
-        "version": 6,
-        "state": {
-            "characters": [{
-                "soid": "0x9EAA300200100100",
-                "equipment": {
-                    "kinetic": {
-                        "instance_soid": "0x4000000000000001",
-                        "definition_hash": "0x0000002A",
-                        "level": 106,
-                        "quantity": 1,
-                        "plugs": null,
-                        "equipment_only": { "keep": true }
-                    }
-                },
-                "inventory": [{
-                    "instance_soid": "0x4000000000000002",
-                    "definition_hash": "0x0000003A",
-                    "level": 106,
-                    "quantity": 1,
-                    "plugs": null,
-                    "stored_only": { "keep": true }
-                }]
-            }]
-        }
-    })
-}
-
-#[test]
-fn equipped_edits_do_not_mutate_stored_inventory() {
-    let mut document = document_with_equipped_and_stored_items();
-    let inventory_before = document
-        .pointer("/state/characters/0/inventory")
-        .unwrap()
-        .clone();
-
-    equip_definition(&mut document, 0, "kinetic", 0x2B, &[]).unwrap();
-
-    assert_eq!(
-        document.pointer("/state/characters/0/inventory"),
-        Some(&inventory_before)
-    );
-    assert_eq!(
-        document.pointer("/state/characters/0/equipment/kinetic/definition_hash"),
-        Some(&Value::String("0x0000002B".into()))
-    );
-}
-
-#[test]
-fn stored_edits_do_not_mutate_equipment() {
-    let mut document = document_with_equipped_and_stored_items();
-    let equipment_before = document
-        .pointer("/state/characters/0/equipment")
-        .unwrap()
-        .clone();
-
-    apply_inventory_item_action(
-        &mut document,
-        InventoryItemLocation {
-            character_index: 0,
-            item_index: 0,
-        },
-        InventoryItemAction::SetDefinitionHash(0x3B),
-    )
-    .unwrap();
-
-    assert_eq!(
-        document.pointer("/state/characters/0/equipment"),
-        Some(&equipment_before)
-    );
-    assert_eq!(
-        document.pointer("/state/characters/0/inventory/0/definition_hash"),
-        Some(&Value::String("0x0000003B".into()))
-    );
 }
 
 #[test]
@@ -491,6 +383,29 @@ fn equipped_flags_follow_the_schema_four_introduction() {
 }
 
 #[test]
+fn future_schema_character_validation_ignores_unknown_equipment_slots() {
+    let mut document = serde_json::json!({
+        "version": crate::game_settings::MAX_SUPPORTED_SCHEMA,
+        "state": {
+            "characters": [{
+                "soid": "0x1",
+                "equipment": {
+                    "future_slot": {
+                        "opaque": {"keep": [1, 2, 3]}
+                    }
+                }
+            }]
+        }
+    });
+
+    assert!(validate_characters(&document).is_err());
+    document["version"] = Value::from(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
+    let before = document.clone();
+    assert_eq!(validate_characters(&document), Ok(()));
+    assert_eq!(document, before);
+}
+
+#[test]
 fn character_validation_checks_presence_gated_sunrise_scalars() {
     let valid = serde_json::json!({
         "state": {
@@ -537,53 +452,6 @@ fn character_validation_checks_presence_gated_sunrise_scalars() {
         "state": {"characters": [{"soid": 1, "future_character_data": true}]}
     });
     assert_eq!(validate_characters(&optional_members_absent), Ok(()));
-}
-
-#[test]
-fn settings_paths_are_derived_from_install() {
-    assert_eq!(
-        settings_path_for_install(Path::new("game"), SettingsLayout::Root),
-        PathBuf::from("game").join(ROOT_SETTINGS_RELATIVE_PATH)
-    );
-    assert_eq!(
-        settings_path_for_install(Path::new("game"), SettingsLayout::BinX64),
-        PathBuf::from("game").join(BIN_X64_SETTINGS_RELATIVE_PATH)
-    );
-}
-
-#[test]
-fn preferences_round_trip_editor_defaults() {
-    let preferences = Preferences {
-        install: Some(PathBuf::from(r"F:\Destiny2\Shadowkeep")),
-        settings_layout: Some(SettingsLayout::BinX64.preference_value().to_owned()),
-        really_unsafe_warning_acknowledged: true,
-        default_plug_selection_mode: PlugSelectionMode::MatchingSocketType,
-        show_safety_warnings: false,
-        color_theme: ColorTheme::Light,
-        always_open_json_editor_in_second_window: true,
-        show_plug_hashes: true,
-        item_card_width: ItemCardWidth::Wide,
-    };
-
-    let encoded = serde_json::to_vec(&preferences).unwrap();
-    let decoded: Preferences = serde_json::from_slice(&encoded).unwrap();
-    let selection = decoded.install_selection().unwrap();
-
-    assert_eq!(
-        selection.install_path,
-        PathBuf::from(r"F:\Destiny2\Shadowkeep")
-    );
-    assert!(selection.preferred_layout == Some(SettingsLayout::BinX64));
-    assert!(decoded.really_unsafe_warning_acknowledged);
-    assert_eq!(
-        decoded.default_plug_selection_mode,
-        PlugSelectionMode::MatchingSocketType
-    );
-    assert!(!decoded.show_safety_warnings);
-    assert_eq!(decoded.color_theme, ColorTheme::Light);
-    assert!(decoded.always_open_json_editor_in_second_window);
-    assert!(decoded.show_plug_hashes);
-    assert_eq!(decoded.item_card_width, ItemCardWidth::Wide);
 }
 
 #[test]

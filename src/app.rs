@@ -579,7 +579,7 @@ impl SundialApp {
     }
 
     fn has_unsaved_changes(&self) -> bool {
-        has_pending_edits(self.dirty, self.json_editor.has_unapplied_changes())
+        self.dirty || self.json_editor.has_unapplied_changes()
     }
 
     fn select_view(&mut self, view: ViewMode) {
@@ -1875,10 +1875,6 @@ fn settings_size_note(result: &settings::SaveJsonResult) -> String {
     }
 }
 
-const fn has_pending_edits(document_dirty: bool, json_unapplied: bool) -> bool {
-    document_dirty || json_unapplied
-}
-
 fn settings_size_label(bytes: usize) -> String {
     const KIB: usize = 1024;
     const MIB: usize = 1024 * KIB;
@@ -1916,7 +1912,7 @@ fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLo
         "You can continue, but settings may have changed in this Sunrise version.",
     );
     ui.add_space(6.0);
-    ui.label("Sundial will preserve unrecognized JSON and create settings.json.bak beside the original before saving.");
+    ui.label("Known fields remain editable where their layout is recognized. Sundial will preserve unrecognized JSON and create settings.json.bak beside the original before saving.");
     ui.add_space(8.0);
     ui.label(
         egui::RichText::new(pending.settings_path.display().to_string())

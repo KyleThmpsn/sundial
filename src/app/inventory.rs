@@ -77,22 +77,29 @@ impl SchemaMode {
     }
 
     pub(crate) const fn is_read_only(self) -> bool {
-        matches!(
-            self,
-            Self::MissingOrInvalid | Self::Unsupported(_) | Self::Future(_)
-        )
+        matches!(self, Self::MissingOrInvalid | Self::Unsupported(_))
+    }
+
+    pub(crate) const fn is_future(self) -> bool {
+        matches!(self, Self::Future(_))
     }
 
     pub(crate) const fn can_mutate_profile_items(self) -> bool {
-        matches!(self, Self::PreInventory(_) | Self::InventoryV6)
+        matches!(
+            self,
+            Self::PreInventory(_) | Self::InventoryV6 | Self::Future(_)
+        )
     }
 
     pub(crate) const fn can_mutate_character_inventory(self) -> bool {
-        matches!(self, Self::InventoryV6)
+        matches!(self, Self::InventoryV6 | Self::Future(_))
     }
 
     pub(crate) const fn can_mutate_equipment(self) -> bool {
-        matches!(self, Self::PreInventory(_) | Self::InventoryV6)
+        matches!(
+            self,
+            Self::PreInventory(_) | Self::InventoryV6 | Self::Future(_)
+        )
     }
 
     pub(crate) const fn supports_equipment_flags(self) -> bool {
@@ -116,9 +123,13 @@ impl SchemaMode {
     pub(crate) const fn profile_item_capacity(self) -> Option<usize> {
         match self {
             Self::PreInventory(version) => Some(profile_item_capacity(version)),
-            Self::InventoryV6 => Some(PROFILE_ITEM_CAPACITY),
-            Self::MissingOrInvalid | Self::Unsupported(_) | Self::Future(_) => None,
+            Self::InventoryV6 | Self::Future(_) => Some(PROFILE_ITEM_CAPACITY),
+            Self::MissingOrInvalid | Self::Unsupported(_) => None,
         }
+    }
+
+    const fn enforces_profile_item_capacity(self) -> bool {
+        !matches!(self, Self::Future(_))
     }
 
     const fn enforces_character_inventory_capacity(self) -> bool {
@@ -269,7 +280,8 @@ pub(crate) fn profile_items(document: &Value) -> InventoryResult<Option<Vec<Prof
             "profile_items must be an array",
         )
     })?;
-    if let Some(capacity) = mode.profile_item_capacity()
+    if mode.enforces_profile_item_capacity()
+        && let Some(capacity) = mode.profile_item_capacity()
         && array.len() > capacity
     {
         return Err(InventoryError::new(
@@ -317,14 +329,7 @@ pub(crate) fn validate_document_items(document: &Value) -> InventoryResult<()> {
                 "settings schema version is missing or invalid",
             ));
         }
-        SchemaMode::Future(version) => {
-            return Err(InventoryError::new(
-                "/version",
-                format!(
-                    "settings schema {version} is newer than supported schema {MAX_SUPPORTED_SCHEMA}; inventory is read-only"
-                ),
-            ));
-        }
+        mode @ SchemaMode::Future(_) => mode,
         SchemaMode::Unsupported(version) => {
             return Err(InventoryError::new(
                 "/version",
@@ -339,7 +344,7 @@ pub(crate) fn validate_document_items(document: &Value) -> InventoryResult<()> {
     validate_required_account_primary_soid(document)?;
     let _ = profile_items(document)?;
     validate_existing_character_inventories(document, mode)?;
-    if mode.supports_dismantle_rewards() {
+    if mode.supports_dismantle_rewards() && !mode.is_future() {
         validate_dismantle_rewards(document)?;
     }
     if matches!(mode, SchemaMode::InventoryV6) {
@@ -875,12 +880,6 @@ fn require_inventory_mutation(document: &Value) -> InventoryResult<SchemaMode> {
 
 fn read_only_schema_error(mode: SchemaMode, section: &str) -> InventoryError {
     match mode {
-        SchemaMode::Future(version) => InventoryError::new(
-            "/version",
-            format!(
-                "settings schema {version} is newer than supported schema {MAX_SUPPORTED_SCHEMA}; {section} is read-only"
-            ),
-        ),
         SchemaMode::Unsupported(version) => InventoryError::new(
             "/version",
             format!(
@@ -891,7 +890,7 @@ fn read_only_schema_error(mode: SchemaMode, section: &str) -> InventoryError {
             "/version",
             format!("settings schema version is missing or invalid; {section} is read-only"),
         ),
-        SchemaMode::PreInventory(_) | SchemaMode::InventoryV6 => {
+        SchemaMode::PreInventory(_) | SchemaMode::InventoryV6 | SchemaMode::Future(_) => {
             InventoryError::new("/version", format!("{section} is read-only"))
         }
     }
@@ -1552,6 +1551,7 @@ fn visit_soids(
     document: &Value,
     mut visit: impl FnMut(u64, &str) -> InventoryResult<()>,
 ) -> InventoryResult<()> {
+    let future_schema = schema_mode(document).is_future();
     let Some(state) = optional_root_object_member(document, "state", "/state")? else {
         return Ok(());
     };
@@ -1580,7 +1580,7 @@ fn visit_soids(
             let path = format!("{character_path}/soid");
             visit(parse_nonzero_soid(value, &path)?, &path)?;
         }
-        visit_equipment_soids(character, character_index, &mut visit)?;
+        visit_equipment_soids(character, character_index, future_schema, &mut visit)?;
         visit_inventory_soids(character, character_index, &mut visit)?;
     }
     Ok(())
@@ -1589,6 +1589,7 @@ fn visit_soids(
 fn visit_equipment_soids(
     character: &Map<String, Value>,
     character_index: usize,
+    future_schema: bool,
     visit: &mut impl FnMut(u64, &str) -> InventoryResult<()>,
 ) -> InventoryResult<()> {
     let Some(value) = character.get("equipment") else {
@@ -1603,6 +1604,20 @@ fn visit_equipment_soids(
             continue;
         }
         let item_path = format!("{path}/{slot}");
+        let known_slot = super::SLOTS
+            .iter()
+            .any(|(known_slot, _, _)| *known_slot == slot);
+        if future_schema && !known_slot {
+            if let Some(soid) = value
+                .as_object()
+                .and_then(|item| item.get("instance_soid"))
+                .and_then(parse_unsigned_value)
+                .filter(|soid| *soid != 0)
+            {
+                visit(soid, &format!("{item_path}/instance_soid"))?;
+            }
+            continue;
+        }
         let item = value.as_object().ok_or_else(|| {
             InventoryError::new(&item_path, "equipped item must be an object or null")
         })?;
@@ -1695,6 +1710,9 @@ mod tests {
 
     #[test]
     fn schema_modes_are_explicit_about_mutability() {
+        let future_version = MAX_SUPPORTED_SCHEMA + 1;
+        let future = SchemaMode::Future(future_version);
+
         assert_eq!(schema_mode(&json!({})), SchemaMode::MissingOrInvalid);
         assert_eq!(
             schema_mode(&json!({"version": 1})),
@@ -1705,17 +1723,21 @@ mod tests {
             SchemaMode::PreInventory(3)
         );
         assert_eq!(schema_mode(&json!({"version": 6})), SchemaMode::InventoryV6);
-        assert_eq!(schema_mode(&json!({"version": 7})), SchemaMode::Future(7));
-        assert!(SchemaMode::Future(7).is_read_only());
+        assert_eq!(schema_mode(&json!({"version": future_version})), future);
+        assert!(!future.is_read_only());
+        assert!(future.is_future());
         assert!(SchemaMode::Unsupported(1).is_read_only());
         assert!(!SchemaMode::Unsupported(1).can_mutate_profile_items());
         assert!(!SchemaMode::MissingOrInvalid.can_mutate_equipment());
         assert!(!SchemaMode::Unsupported(1).can_mutate_equipment());
-        assert!(!SchemaMode::Future(7).can_mutate_equipment());
+        assert!(future.can_mutate_profile_items());
+        assert!(future.can_mutate_character_inventory());
+        assert!(future.can_mutate_equipment());
         assert!(!SchemaMode::MissingOrInvalid.supports_equipment_flags());
         assert!(!SchemaMode::Unsupported(1).supports_equipment_flags());
-        assert!(SchemaMode::Future(7).supports_equipment_flags());
-        assert!(!SchemaMode::Future(7).can_mutate_equipment_flags());
+        assert!(future.supports_equipment_flags());
+        assert!(future.can_mutate_equipment_flags());
+        assert_eq!(future.profile_item_capacity(), Some(PROFILE_ITEM_CAPACITY));
         for version in 2..=5 {
             let mode = schema_mode(&json!({"version": version}));
             assert!(mode.can_mutate_profile_items());
@@ -1857,7 +1879,26 @@ mod tests {
     }
 
     #[test]
-    fn old_and_future_schemas_are_read_only_where_required() {
+    fn future_schema_does_not_assume_the_last_known_profile_capacity() {
+        let mut future = document(MAX_SUPPORTED_SCHEMA + 1);
+        *future.pointer_mut("/state/account/profile_items").unwrap() = Value::Array(
+            (1..=PROFILE_ITEM_CAPACITY + 1)
+                .map(|hash| json!({"definition_hash": hash, "quantity": 1}))
+                .collect(),
+        );
+
+        assert_eq!(
+            profile_items(&future).unwrap().unwrap().len(),
+            PROFILE_ITEM_CAPACITY + 1
+        );
+        assert_eq!(validate_document_items(&future), Ok(()));
+
+        future["version"] = Value::from(MAX_SUPPORTED_SCHEMA);
+        assert!(profile_items(&future).is_err());
+    }
+
+    #[test]
+    fn unsupported_and_pre_inventory_schemas_keep_unsupported_edits_read_only() {
         let mut unsupported = document(1);
         let before = unsupported.clone();
         assert!(add_profile_item(&mut unsupported, 1, 1).is_err());
@@ -1881,10 +1922,174 @@ mod tests {
             .is_err()
         );
         assert_eq!(old, before);
+    }
 
-        let mut future = document(7);
+    #[test]
+    fn future_schema_edits_known_item_fields_and_preserves_opaque_data() {
+        let future_version = MAX_SUPPORTED_SCHEMA + 73;
+        let inventory_soid = GENERATED_INSTANCE_SOID_START;
+        let equipment_soid = GENERATED_INSTANCE_SOID_START + 1;
+        let opaque_slot_soid = GENERATED_INSTANCE_SOID_START + 2;
+        let mut future = document(future_version);
+
+        *future.pointer_mut("/state/account/profile_items").unwrap() = json!([{
+            "definition_hash": "0x00000001",
+            "quantity": 2,
+            "future_profile_data": {"keep": [1, 2, 3]}
+        }]);
+        future
+            .pointer_mut("/state/account")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "dismantle_rewards".into(),
+                json!({"future_layout": ["leave", "untouched"]}),
+            );
+
+        let mut stored_item = item(inventory_soid, 2);
+        stored_item["future_item_data"] = json!({"keep": true});
+        *future.pointer_mut("/state/characters/0/inventory").unwrap() =
+            Value::Array(vec![stored_item]);
+
+        let mut equipped_item = item(equipment_soid, 3);
+        equipped_item["future_equipment_data"] = json!([4, 5, 6]);
+        *future.pointer_mut("/state/characters/0/equipment").unwrap() = json!({
+            "kinetic": equipped_item,
+            "future_slot": {
+                "instance_soid": format_instance_soid(opaque_slot_soid),
+                "opaque": {"keep": "all of this"}
+            },
+            "future_scalar_slot": ["an", "unknown", "shape"]
+        });
+        future["future_root_data"] = json!({"keep": true});
+
+        assert_eq!(validate_document_items(&future), Ok(()));
+        assert!(
+            collect_used_soids(&future)
+                .unwrap()
+                .contains(&opaque_slot_soid)
+        );
+
+        let added = add_inventory_item(&mut future, 0, NewInventoryItem::single(4, 106)).unwrap();
+        assert_eq!(
+            added,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 1,
+            }
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/inventory/1/instance_soid"),
+            Some(&Value::String(format_instance_soid(
+                GENERATED_INSTANCE_SOID_START + 3
+            )))
+        );
+
+        apply_profile_item_action(
+            &mut future,
+            ProfileItemLocation { index: 0 },
+            ProfileItemAction::SetQuantity(9),
+        )
+        .unwrap();
+        apply_inventory_item_action(
+            &mut future,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            InventoryItemAction::SetQuantity(7),
+        )
+        .unwrap();
+
+        assert_eq!(
+            future.pointer("/state/account/profile_items/0/quantity"),
+            Some(&Value::from(9))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/inventory/0/quantity"),
+            Some(&Value::from(7))
+        );
+        assert_eq!(
+            future.pointer("/state/account/profile_items/0/future_profile_data/keep"),
+            Some(&json!([1, 2, 3]))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/inventory/0/future_item_data/keep"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/equipment/kinetic/future_equipment_data"),
+            Some(&json!([4, 5, 6]))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/equipment/future_slot/opaque/keep"),
+            Some(&Value::String("all of this".into()))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/equipment/future_scalar_slot"),
+            Some(&json!(["an", "unknown", "shape"]))
+        );
+        assert_eq!(
+            future.pointer("/state/account/dismantle_rewards/future_layout"),
+            Some(&json!(["leave", "untouched"]))
+        );
+        assert_eq!(
+            future.pointer("/future_root_data/keep"),
+            Some(&Value::Bool(true))
+        );
+
+        assert!(
+            swap_inventory_item_with_equipment(
+                &mut future,
+                InventoryItemLocation {
+                    character_index: 0,
+                    item_index: 0,
+                },
+                "kinetic",
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/equipment/kinetic/future_item_data/keep"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/inventory/0/future_equipment_data"),
+            Some(&json!([4, 5, 6]))
+        );
+        assert_eq!(
+            future.pointer("/state/characters/0/equipment/future_scalar_slot"),
+            Some(&json!(["an", "unknown", "shape"]))
+        );
+        assert_eq!(validate_document_items(&future), Ok(()));
+
+        let encoded = super::super::settings::encode_settings(&future).unwrap();
+        let reparsed: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(reparsed, future);
+    }
+
+    #[test]
+    fn future_schema_rejects_malformed_known_fields_without_mutation() {
+        let mut future = document(MAX_SUPPORTED_SCHEMA + 91);
+        let mut malformed = item(GENERATED_INSTANCE_SOID_START, 1);
+        malformed["quantity"] = json!({"future_quantity_shape": 1});
+        malformed["unknown_item_data"] = json!({"keep": true});
+        *future.pointer_mut("/state/characters/0/inventory").unwrap() =
+            Value::Array(vec![malformed]);
+
         let before = future.clone();
-        assert!(add_profile_item(&mut future, 1, 1).is_err());
+        let error = apply_inventory_item_action(
+            &mut future,
+            InventoryItemLocation {
+                character_index: 0,
+                item_index: 0,
+            },
+            InventoryItemAction::SetLevel(107),
+        )
+        .unwrap_err();
+
+        assert!(error.path().ends_with("/quantity"));
         assert_eq!(future, before);
     }
 
@@ -2406,7 +2611,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_five_and_newer_dismantle_rewards_follow_sunrise_constraints() {
+    fn schemas_five_and_six_dismantle_rewards_follow_sunrise_constraints() {
         for version in 5..=6 {
             let mut valid = document(version);
             *valid

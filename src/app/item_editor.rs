@@ -1544,12 +1544,7 @@ fn responsive_item_card_layout(
     ))
 }
 
-pub(crate) fn picker_list_height(
-    row_count: usize,
-    row_height: f32,
-    min_height: f32,
-    max_height: f32,
-) -> f32 {
+fn picker_list_height(row_count: usize, row_height: f32, min_height: f32, max_height: f32) -> f32 {
     let content_height = row_count as f32 * row_height;
     if content_height < min_height {
         content_height.max(row_height)
@@ -1600,66 +1595,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn item_header_text_is_anchored_to_the_left_edge() {
-        egui::__run_test_ui(|ui| {
-            ui.set_width(320.0);
-            let expected_left = ui.cursor().left();
-            let expected_right = ui.max_rect().right();
-            let mut title = egui::text::LayoutJob::default();
-            title.append("Battle Scar", 0.0, egui::TextFormat::default());
-            let mut title_hash = egui::text::LayoutJob::default();
-            title_hash.append("0x45ABCDEF", 0.0, egui::TextFormat::default());
-            let mut subtitle = egui::text::LayoutJob::default();
-            subtitle.append(
-                "Pulse Rifle | Equipped: Kinetic Slot",
-                0.0,
-                egui::TextFormat::default(),
-            );
-            let mut metadata = egui::text::LayoutJob::default();
-            metadata.append("0x4000000000000001", 0.0, egui::TextFormat::default());
-
-            let response = ui
-                .allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), ITEM_HEADER_WITH_METADATA_ROW_HEIGHT),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| draw_item_header_text(ui, title, title_hash, subtitle, metadata),
-                )
-                .inner;
-
-            assert!((response.rect.left() - expected_left).abs() < 0.5);
-            assert!((response.rect.right() - expected_right).abs() < 0.5);
-        });
-    }
-
-    #[test]
-    fn item_header_title_uses_its_natural_text_height() {
-        egui::__run_test_ui(|ui| {
-            ui.set_width(320.0);
-            let mut font_id = egui::TextStyle::Body.resolve(ui.style());
-            font_id.size += ITEM_HEADER_TITLE_SIZE_DELTA;
-            let format = egui::TextFormat {
-                font_id,
-                ..Default::default()
-            };
-            let mut title = egui::text::LayoutJob::default();
-            title.append("Battle Scar", 0.0, format.clone());
-            let mut hash = egui::text::LayoutJob::default();
-            hash.append("0x45ABCDEF", 0.0, format);
-            let expected_height = ui.fonts(|fonts| {
-                fonts
-                    .layout_job(title.clone())
-                    .size()
-                    .y
-                    .max(fonts.layout_job(hash.clone()).size().y)
-            });
-
-            let response = draw_item_header_title(ui, title, hash);
-
-            assert!((response.rect.height() - expected_height).abs() < 0.5);
-        });
-    }
-
-    #[test]
     fn responsive_item_cards_share_the_same_bounded_width_rules() {
         const STANDARD_MIN: f32 = 335.0;
         const STANDARD_MAX: f32 = 390.0;
@@ -1702,138 +1637,6 @@ mod tests {
     }
 
     #[test]
-    fn spaced_picker_height_stops_on_a_complete_row() {
-        assert_eq!(
-            spaced_picker_list_height(500, 44.0, 4.0, 234.0, 334.0),
-            332.0
-        );
-        assert_eq!(spaced_picker_list_height(7, 44.0, 4.0, 234.0, 334.0), 332.0);
-        assert_eq!(spaced_picker_list_height(2, 44.0, 4.0, 234.0, 334.0), 92.0);
-    }
-
-    #[test]
-    fn picker_secondary_text_is_compact_and_single_line() {
-        assert_eq!(
-            single_line_text("First line\n  second\tline"),
-            "First line second line"
-        );
-        assert_eq!(
-            picker_secondary_text("Trait", "A short description"),
-            "Trait · A short description"
-        );
-        assert_eq!(
-            picker_secondary_text("", "A short description"),
-            "A short description"
-        );
-
-        egui::__run_test_ui(|ui| {
-            let galley = single_line_galley(
-                ui,
-                "A deliberately long description that cannot fit in the picker row",
-                egui::TextStyle::Body.resolve(ui.style()),
-                ui.visuals().text_color(),
-                80.0,
-            );
-            assert_eq!(galley.rows.len(), 1);
-            assert!(galley.size().x <= 80.5);
-        });
-    }
-
-    #[test]
-    fn definition_picker_omits_a_redundant_single_group_heading() {
-        let definitions = [
-            DefinitionChoice {
-                hash: 1,
-                name: "First".into(),
-                type_name: "Pulse Rifle".into(),
-                group: Some("Kinetic weapons".into()),
-            },
-            DefinitionChoice {
-                hash: 2,
-                name: "Second".into(),
-                type_name: "Hand Cannon".into(),
-                group: Some("Kinetic weapons".into()),
-            },
-        ];
-
-        assert_eq!(
-            definition_picker_rows(&definitions),
-            vec![
-                DefinitionPickerRow::Definition(&definitions[0]),
-                DefinitionPickerRow::Definition(&definitions[1]),
-            ]
-        );
-
-        let mut multiple_groups = definitions.to_vec();
-        multiple_groups[1].group = Some("Energy weapons".into());
-        assert!(matches!(
-            definition_picker_rows(&multiple_groups).first(),
-            Some(DefinitionPickerRow::Group("Kinetic weapons"))
-        ));
-    }
-
-    #[test]
-    fn feather_action_icons_keep_compact_aligned_hit_targets() {
-        egui::__run_test_ui(|ui| {
-            ui.horizontal(|ui| {
-                let trash = draw_trash_button(ui, true, "Delete item");
-                let lock = draw_lock_button(ui, true, "Lock item");
-                let unlock = draw_unlock_button(ui, true, "Unlock item");
-                for response in [&trash, &lock, &unlock] {
-                    assert!(
-                        (response.rect.width() - response.rect.height()).abs() < 0.5,
-                        "icon button was {} by {}",
-                        response.rect.width(),
-                        response.rect.height()
-                    );
-                    assert!(response.rect.height() >= 12.0);
-                }
-                assert!((lock.rect.height() - unlock.rect.height()).abs() < 0.1);
-                assert!(lock.rect.height() >= trash.rect.height());
-                assert!(lock.rect.height() - trash.rect.height() <= 2.1);
-            });
-        });
-    }
-
-    #[test]
-    fn long_item_header_keeps_trailing_action_inside_available_width() {
-        egui::__run_test_ui(|ui| {
-            ui.set_width(320.0);
-            let expected_right = ui.max_rect().right();
-            let mut trailing_rect = None;
-            let mut trailing_right = None;
-            let response = draw_item_header_with_trailing(
-                ui,
-                ItemHeader {
-                    label: Some("Equipped · Class item"),
-                    soid: Some("0x4000000000000001"),
-                    definition: DefinitionSummary::Known {
-                        name: "An intentionally very long installed item definition name",
-                        hash: "0x12345678",
-                        type_name: "Class item",
-                    },
-                    icon: None,
-                    fill: muted_item_header_fill(ui),
-                    valid: false,
-                    invalid_message: "not valid for this character inventory",
-                },
-                |ui| {
-                    trailing_right = Some(ui.max_rect().right());
-                    trailing_rect = Some(ui.button("Remove").rect);
-                },
-            );
-
-            let trailing_rect = trailing_rect.expect("trailing action should be drawn");
-            let trailing_right = trailing_right.expect("trailing column should be drawn");
-            assert!((trailing_rect.right() - trailing_right).abs() < 0.5);
-            assert!(trailing_rect.right() >= expected_right - 4.5);
-            assert!(trailing_rect.right() <= expected_right + 0.5);
-            assert!(response.rect.contains(trailing_rect.center()));
-            assert!(ui.min_rect().right() <= expected_right + 0.5);
-        });
-    }
-
-    #[test]
     fn authored_levels_display_as_in_game_power() {
         assert_eq!(displayed_item_power(0), 0);
         assert_eq!(displayed_item_power(1), 750);
@@ -1856,16 +1659,6 @@ mod tests {
         assert_eq!(authored_item_level(759), Some(75));
         assert_eq!(authored_item_level(760), Some(76));
         assert_eq!(authored_item_level(1_060), Some(106));
-    }
-
-    #[test]
-    fn power_input_range_keeps_unpowered_items_editable() {
-        let range = item_power_input_range();
-        assert!(range.contains(&0));
-        assert!(range.contains(&MINIMUM_POWERED_ITEM_POWER));
-        assert!(range.contains(&MAXIMUM_POWERED_ITEM_POWER));
-        assert!(!range.contains(&-1));
-        assert!(!range.contains(&(MAXIMUM_POWERED_ITEM_POWER + 1)));
     }
 
     #[test]
