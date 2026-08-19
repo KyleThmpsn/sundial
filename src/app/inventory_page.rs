@@ -22,10 +22,11 @@ use super::{
         inferred_item_level, native_plug_default,
     },
     inventory::{
-        self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASTERWORK,
-        InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs,
-        NewInventoryItem, ProfileItemAction, ProfileItemSnapshot, SchemaMode,
-        inventory_masterwork_feature_present, set_inventory_locked_flag,
+        self, CHARACTER_INVENTORY_CAPACITY, DismantleGearClass, DismantleRarity,
+        DismantleRewardAction, DismantleRewardSnapshot, INVENTORY_FLAG_LOCKED,
+        INVENTORY_FLAG_MASTERWORK, InventoryItemAction, InventoryItemLocation,
+        InventoryItemSnapshot, ItemPlugs, NewInventoryItem, ProfileItemAction, ProfileItemSnapshot,
+        SchemaMode, inventory_masterwork_feature_present, set_inventory_locked_flag,
         set_inventory_masterwork_flag,
     },
     item_editor::{
@@ -40,6 +41,13 @@ const TRANSFER_DESTINATION_ROW_HEIGHT: f32 = 28.0;
 const TRANSFER_DESTINATION_ROW_SPACING: f32 = 2.0;
 const TRANSFER_FOOTER_CHROME_HEIGHT: f32 = 28.0;
 const TRANSFER_PICKER_MIN_LIST_HEIGHT: f32 = 176.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum ProfileInventorySection {
+    #[default]
+    SharedItems,
+    DismantleRewards,
+}
 
 #[derive(Clone)]
 struct ResolvedDefinition {
@@ -126,15 +134,50 @@ impl CharacterInventoryEntry {
 impl SundialApp {
     pub(super) fn draw_profile_inventory_page(&mut self, ui: &mut egui::Ui) {
         let mode = inventory::schema_mode(&self.document);
+        let section_id = ui.make_persistent_id("profile-inventory-section");
+        let mut section = ui.data_mut(|data| {
+            data.get_temp::<ProfileInventorySection>(section_id)
+                .unwrap_or_default()
+        });
+        let dismantle_rewards_available = mode.supports_dismantle_rewards() && !mode.is_future();
+        if !dismantle_rewards_available {
+            section = ProfileInventorySection::SharedItems;
+        }
+
         ui.heading("Profile inventory");
         ui.label(
             "Items shared by the account and available to every character. Profile inventory is supported by every Sunrise settings schema Sundial can edit.",
         );
         draw_schema_notice(ui, mode, InventoryPageKind::Profile);
         ui.add_space(4.0);
+
+        if dismantle_rewards_available {
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut section,
+                    ProfileInventorySection::SharedItems,
+                    "Shared items",
+                );
+                ui.selectable_value(
+                    &mut section,
+                    ProfileInventorySection::DismantleRewards,
+                    "Dismantle rewards",
+                );
+            });
+            ui.add_space(4.0);
+        }
+        ui.data_mut(|data| data.insert_temp(section_id, section));
+
         egui::ScrollArea::vertical()
-            .id_salt("profile-inventory-page")
-            .show(ui, |ui| self.draw_profile_items_section(ui, mode));
+            .id_salt(("profile-inventory-page", section))
+            .show(ui, |ui| match section {
+                ProfileInventorySection::SharedItems => {
+                    self.draw_profile_items_section(ui, mode);
+                }
+                ProfileInventorySection::DismantleRewards => {
+                    self.draw_dismantle_reward_section(ui, mode);
+                }
+            });
     }
 
     pub(super) fn draw_character_inventory_page(&mut self, ui: &mut egui::Ui) {
@@ -146,6 +189,360 @@ impl SundialApp {
         draw_schema_notice(ui, mode, InventoryPageKind::Character);
         ui.add_space(4.0);
         self.draw_character_inventory_section(ui, mode);
+    }
+
+    fn draw_dismantle_reward_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
+        if !mode.supports_dismantle_rewards() || mode.is_future() {
+            return;
+        }
+        let rewards = match inventory::dismantle_rewards(&self.document) {
+            Ok(rewards) => rewards.unwrap_or_default(),
+            Err(error) => {
+                ui.strong("Dismantle rewards");
+                draw_section_error(ui, &error.to_string());
+                return;
+            }
+        };
+        let editable = mode.can_mutate_dismantle_rewards();
+        let capacity = mode.dismantle_reward_capacity();
+        let account_ready = inventory::profile_item_target_exists(&self.document).unwrap_or(false);
+        let has_room = capacity.is_some_and(|capacity| rewards.len() < capacity);
+        let picker_key = "dismantle-rewards:add".to_owned();
+        let mut picker_anchor = None;
+        let mut open_picker = false;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Dismantle rewards");
+            let count = capacity.map_or_else(
+                || format!("{} policies", rewards.len()),
+                |capacity| format!("{} / {capacity}", rewards.len()),
+            );
+            ui.label(egui::RichText::new(count).weak());
+            let can_add = editable && account_ready && has_room;
+            let response = ui.add_enabled(can_add, egui::Button::new("+").small());
+            let response = if can_add {
+                response.on_hover_text("Add a dismantle payout policy")
+            } else {
+                response.on_disabled_hover_text(if !editable {
+                    "Dismantle-policy editing is disabled for this schema"
+                } else if !account_ready {
+                    "An existing state.account object is required"
+                } else {
+                    "The dismantle-policy array is full"
+                })
+            };
+            if response.clicked() {
+                self.searches.entry(picker_key.clone()).or_default();
+                open_picker = true;
+            }
+            picker_anchor = Some(response);
+        });
+        ui.label(
+            "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together.",
+        );
+        if mode.supports_filtered_dismantle_rewards() {
+            ui.label(
+                egui::RichText::new(
+                    "Leave a filter on Any to match every rarity, gear class, or masterwork state.",
+                )
+                .weak(),
+            );
+        }
+        ui.add_space(4.0);
+
+        if self.searches.contains_key(&picker_key) {
+            let action = ui
+                .add_enabled_ui(editable && account_ready && has_room, |ui| {
+                    let manifest = &self.manifest;
+                    let query = self.searches.entry(picker_key.clone()).or_default();
+                    item_editor::draw_definition_picker_with_open_request(
+                        ui,
+                        manifest,
+                        "dismantle-reward-add-definition",
+                        query,
+                        picker_height(),
+                        (picker_anchor.as_ref(), open_picker),
+                        |query| DefinitionPickerChoices {
+                            definitions: without_definition_groups(profile_definition_choices(
+                                manifest
+                                    .profile_item_candidates(query)
+                                    .filter(|definition| u32::try_from(definition.hash).is_ok()),
+                            )),
+                            existing_inventory: Vec::new(),
+                            clear: None,
+                            empty_message: "No profile material definitions match".to_owned(),
+                        },
+                    )
+                })
+                .inner;
+            if let Some(ItemEditorAction::SetDefinition { hash }) = action
+                && let Ok(hash) = u32::try_from(hash)
+            {
+                match inventory::add_dismantle_reward(&mut self.document, hash) {
+                    Ok(_) => {
+                        self.searches.remove(&picker_key);
+                        self.mark_inventory_changed("Added a dismantle reward policy");
+                    }
+                    Err(error) => self.set_status(error.to_string(), true),
+                }
+            }
+        }
+
+        if rewards.is_empty() {
+            ui.label(egui::RichText::new("No dismantle payout policies.").weak());
+            return;
+        }
+
+        let mut pending = None;
+        let (minimum_card_width, maximum_card_width) = self.item_card_width.dimensions();
+        item_editor::draw_responsive_item_cards(
+            ui,
+            &rewards,
+            minimum_card_width,
+            maximum_card_width,
+            |ui, reward| {
+                if pending.is_none()
+                    && let Some(action) =
+                        self.draw_dismantle_reward_card(ui, reward, editable, mode)
+                {
+                    pending = Some((reward.location, action));
+                }
+            },
+        );
+        if let Some((location, action)) = pending {
+            let structural = matches!(action, DismantleRewardAction::Remove);
+            match inventory::apply_dismantle_reward_action(&mut self.document, location, action) {
+                Ok(()) => {
+                    self.mark_inventory_changed(if structural {
+                        "Removed a dismantle reward policy"
+                    } else {
+                        "Updated a dismantle reward policy"
+                    });
+                    if structural {
+                        self.searches
+                            .retain(|key, _| !key.starts_with("dismantle-rewards:edit:"));
+                    }
+                }
+                Err(error) => self.set_status(error.to_string(), true),
+            }
+        }
+    }
+
+    fn draw_dismantle_reward_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &DismantleRewardSnapshot,
+        editable: bool,
+        mode: SchemaMode,
+    ) -> Option<DismantleRewardAction> {
+        let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
+        let valid = resolved
+            .as_ref()
+            .is_some_and(|definition| definition.metadata.is_profile_items_candidate());
+        let hash_text = format_hash(u64::from(snapshot.definition_hash));
+        let key = format!("dismantle-rewards:edit:{}", snapshot.location.index);
+        let mut definition_hash = snapshot.definition_hash;
+        let mut quantity = snapshot.quantity;
+        let mut rarities = snapshot.rarities.clone();
+        let mut gear_class = snapshot.gear_class;
+        let mut masterworked = snapshot.masterworked;
+        let mut changed = false;
+        let mut remove_requested = false;
+        let mut swap_requested = false;
+        let mut swap_response = None;
+
+        ui.push_id(("dismantle-reward", snapshot.location.index), |ui| {
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::ZERO)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let definition = resolved.as_ref().map_or(
+                        DefinitionSummary::Unknown { hash: &hash_text },
+                        |definition| DefinitionSummary::Known {
+                            name: &definition.name,
+                            hash: &hash_text,
+                            type_name: &definition.type_name,
+                        },
+                    );
+                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
+                        ui,
+                        &self.manifest,
+                        Some(u64::from(snapshot.definition_hash)),
+                        ItemHeader {
+                            label: None,
+                            soid: None,
+                            definition,
+                            icon: None,
+                            fill: item_editor::muted_item_header_fill(ui),
+                            valid,
+                            invalid_message: "not a profile-scoped material definition",
+                        },
+                        |ui| {
+                            ui.add_enabled_ui(editable, |ui| {
+                                if item_editor::draw_trash_button(
+                                    ui,
+                                    true,
+                                    "Delete dismantle policy",
+                                )
+                                .on_hover_text("Delete this payout policy")
+                                .clicked()
+                                {
+                                    remove_requested = true;
+                                }
+                                let response = ui
+                                    .add(egui::Button::new("Swap").small())
+                                    .on_hover_text("Choose a different payout material");
+                                swap_requested = response.clicked();
+                                swap_response = Some(response);
+                            });
+                        },
+                    );
+
+                    ui.add_enabled_ui(editable, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Quantity");
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut quantity)
+                                        .range(1..=i32::MAX)
+                                        .speed(1),
+                                )
+                                .changed();
+
+                            if mode.supports_filtered_dismantle_rewards() {
+                                ui.label("Rarity");
+                                egui::ComboBox::from_id_salt("rarity")
+                                    .selected_text(dismantle_rarity_summary(&rarities))
+                                    .show_ui(ui, |ui| {
+                                        if ui.selectable_label(rarities.is_empty(), "Any").clicked()
+                                            && !rarities.is_empty()
+                                        {
+                                            rarities.clear();
+                                            changed = true;
+                                        }
+                                        ui.separator();
+                                        for rarity in DismantleRarity::ALL {
+                                            let selected = rarities.contains(&rarity);
+                                            if ui
+                                                .selectable_label(
+                                                    selected,
+                                                    dismantle_rarity_label(rarity),
+                                                )
+                                                .clicked()
+                                            {
+                                                if selected {
+                                                    rarities.retain(|value| *value != rarity);
+                                                } else {
+                                                    rarities.push(rarity);
+                                                    rarities.sort_unstable();
+                                                }
+                                                changed = true;
+                                            }
+                                        }
+                                    });
+                            }
+                        });
+
+                        if mode.supports_filtered_dismantle_rewards() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Class");
+                                egui::ComboBox::from_id_salt("class")
+                                    .selected_text(dismantle_class_label(gear_class))
+                                    .show_ui(ui, |ui| {
+                                        changed |= ui
+                                            .selectable_value(&mut gear_class, None, "Any gear")
+                                            .changed();
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut gear_class,
+                                                Some(DismantleGearClass::Weapon),
+                                                "Weapon",
+                                            )
+                                            .changed();
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut gear_class,
+                                                Some(DismantleGearClass::Armor),
+                                                "Armor",
+                                            )
+                                            .changed();
+                                    });
+
+                                ui.label("Masterwork");
+                                egui::ComboBox::from_id_salt("masterwork")
+                                    .selected_text(dismantle_masterwork_label(masterworked))
+                                    .show_ui(ui, |ui| {
+                                        changed |= ui
+                                            .selectable_value(&mut masterworked, None, "Any state")
+                                            .changed();
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut masterworked,
+                                                Some(true),
+                                                "Masterworked",
+                                            )
+                                            .changed();
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut masterworked,
+                                                Some(false),
+                                                "Not masterworked",
+                                            )
+                                            .changed();
+                                    });
+                            });
+                        }
+
+                        let picker_anchor = header_response.clone()
+                            | swap_response
+                                .clone()
+                                .unwrap_or_else(|| header_response.clone());
+                        let manifest = &self.manifest;
+                        let query = self.searches.entry(key.clone()).or_default();
+                        if let Some(ItemEditorAction::SetDefinition { hash }) =
+                            item_editor::draw_definition_picker_with_open_request(
+                                ui,
+                                manifest,
+                                ("dismantle-reward-definition", snapshot.location.index),
+                                query,
+                                picker_height(),
+                                (Some(&picker_anchor), swap_requested),
+                                |query| DefinitionPickerChoices {
+                                    definitions: without_definition_groups(
+                                        profile_definition_choices(
+                                            manifest.profile_item_candidates(query).filter(
+                                                |definition| u32::try_from(definition.hash).is_ok(),
+                                            ),
+                                        ),
+                                    ),
+                                    existing_inventory: Vec::new(),
+                                    clear: None,
+                                    empty_message: "No profile material definitions match"
+                                        .to_owned(),
+                                },
+                            )
+                            && let Ok(hash) = u32::try_from(hash)
+                        {
+                            definition_hash = hash;
+                            changed = true;
+                        }
+                    });
+                });
+        });
+
+        if remove_requested {
+            Some(DismantleRewardAction::Remove)
+        } else if changed {
+            Some(DismantleRewardAction::SetPolicy {
+                definition_hash,
+                quantity,
+                rarities,
+                gear_class,
+                masterworked,
+            })
+        } else {
+            None
+        }
     }
 
     fn draw_profile_items_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
@@ -1811,6 +2208,40 @@ fn picker_height_with_transfer_destinations(destination_count: usize) -> PickerH
     }
 }
 
+fn dismantle_rarity_label(rarity: DismantleRarity) -> &'static str {
+    match rarity {
+        DismantleRarity::Common => "Common",
+        DismantleRarity::Uncommon => "Uncommon",
+        DismantleRarity::Rare => "Rare",
+        DismantleRarity::Legendary => "Legendary",
+        DismantleRarity::Exotic => "Exotic",
+    }
+}
+
+fn dismantle_rarity_summary(rarities: &[DismantleRarity]) -> String {
+    match rarities {
+        [] => "Any rarity".to_owned(),
+        [rarity] => dismantle_rarity_label(*rarity).to_owned(),
+        rarities => format!("{} rarities", rarities.len()),
+    }
+}
+
+fn dismantle_class_label(gear_class: Option<DismantleGearClass>) -> &'static str {
+    match gear_class {
+        None => "Any gear",
+        Some(DismantleGearClass::Weapon) => "Weapon",
+        Some(DismantleGearClass::Armor) => "Armor",
+    }
+}
+
+fn dismantle_masterwork_label(masterworked: Option<bool>) -> &'static str {
+    match masterworked {
+        None => "Any state",
+        Some(true) => "Masterworked",
+        Some(false) => "Not masterworked",
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InventoryPageKind {
     Profile,
@@ -1841,7 +2272,7 @@ fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: InventoryPageKi
                 .weak(),
             );
         }
-        SchemaMode::PreInventory(_) | SchemaMode::InventoryV6 => {}
+        SchemaMode::PreInventory(_) | SchemaMode::Inventory(_) => {}
         SchemaMode::Future(version) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,

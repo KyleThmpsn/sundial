@@ -1,5 +1,6 @@
 use eframe::egui;
 use serde_json::{Map, Value};
+use std::sync::OnceLock;
 
 #[derive(Default)]
 pub(super) struct KeyBindingUiState {
@@ -58,7 +59,7 @@ pub(super) enum Tab {
 }
 
 pub(crate) const MIN_SUPPORTED_SCHEMA: u64 = 2;
-pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 6;
+pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SettingsSchema(u64);
@@ -128,18 +129,8 @@ const BUTTON_LAYOUTS: &[(u64, &str)] = &[
     (9, "Custom"),
 ];
 
-const VERTICAL_SYNC_INTERVALS: &[(u64, &str)] = &[
-    (0, "Off"),
-    (1, "Every refresh"),
-    (2, "Every 2 refreshes"),
-    (3, "Every 3 refreshes"),
-    (4, "Every 4 refreshes"),
-];
-
-const KEY_BINDING_SOURCES: &[(&str, &str)] = &[
-    ("computer", "Computer (local)"),
-    ("account", "Account (replicated)"),
-];
+const KEY_BINDING_SOURCES: &[(&str, &str)] =
+    &[("account", "Account"), ("computer", "Computer (Default)")];
 
 const STICK_LAYOUTS: &[(u64, &str)] = &[
     (0, "Default"),
@@ -613,12 +604,19 @@ fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
             changed |= boolean(ui, values, "show_fps", "Show FPS");
             changed |= choice(ui, values, "hdr_mode", "HDR mode", HDR_MODES);
             if show_experimental_preference(values, VERTICAL_SYNC_INTERVAL_KEY) {
+                let refresh_rate_hz = display_refresh_rate_hz();
+                let intervals = vertical_sync_intervals(refresh_rate_hz);
                 changed |= choice(
                     ui,
                     values,
                     VERTICAL_SYNC_INTERVAL_KEY,
-                    "Vertical sync",
-                    VERTICAL_SYNC_INTERVALS,
+                    &refresh_rate_hz.map_or_else(
+                        || "Vertical sync".to_owned(),
+                        |refresh_rate_hz| {
+                            format!("Vertical sync ({refresh_rate_hz} Hz primary display)")
+                        },
+                    ),
+                    &intervals,
                 );
             }
             if show_experimental_preference(values, FIELD_OF_VIEW_KEY) {
@@ -795,9 +793,9 @@ fn draw_key_bindings(
     editable: bool,
 ) -> bool {
     let mut changed = false;
-    ui.heading("Key bindings (Experimental)");
+    ui.heading("Key bindings");
     if editable {
-        ui.label("Choose a primary and secondary input for each action. Changes apply after Destiny 2 is fully restarted.");
+        ui.label("Choose a primary and secondary input for each action. With Binding source set to Account, changes apply after Destiny 2 is fully restarted.");
     } else {
         ui.label(
             "This settings schema does not use editable named bindings. These values are read-only.",
@@ -818,6 +816,15 @@ fn draw_key_bindings(
                     KEY_BINDING_SOURCES,
                 );
             });
+        ui.label(
+            "Account uses the bindings in this settings.json. Computer leaves bindings under Destiny's control in cvars.xml.",
+        );
+        if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Bindings edited here will not apply while the source is Computer. Switch Binding source to Account to have Sunrise use them.",
+            );
+        }
         ui.add_space(8.0);
     }
     let Some(bindings) = settings
@@ -1010,12 +1017,12 @@ fn boolean(ui: &mut egui::Ui, values: &mut Map<String, Value>, key: &str, label:
     changed
 }
 
-fn choice(
+fn choice<T: AsRef<str>>(
     ui: &mut egui::Ui,
     values: &mut Map<String, Value>,
     key: &str,
     label: &str,
-    choices: &[(u64, &str)],
+    choices: &[(u64, T)],
 ) -> bool {
     ui.label(label);
     let mut changed = false;
@@ -1024,13 +1031,16 @@ fn choice(
             let selected = choices
                 .iter()
                 .find(|(candidate, _)| *candidate == current)
-                .map_or("Invalid value", |(_, name)| *name);
+                .map_or("Invalid value", |(_, name)| name.as_ref());
             egui::ComboBox::from_id_salt(("game_setting", key))
                 .selected_text(selected)
                 .width(210.0)
                 .show_ui(ui, |ui| {
-                    for &(candidate, name) in choices {
-                        if ui.selectable_value(&mut current, candidate, name).changed() {
+                    for (candidate, name) in choices {
+                        if ui
+                            .selectable_value(&mut current, *candidate, name.as_ref())
+                            .changed()
+                        {
                             changed = true;
                         }
                     }
@@ -1046,6 +1056,63 @@ fn choice(
     }
     ui.end_row();
     changed
+}
+
+fn vertical_sync_intervals(refresh_rate_hz: Option<u32>) -> Vec<(u64, String)> {
+    std::iter::once((0, "Off (Default)".to_owned()))
+        .chain((1..=4).map(|interval| {
+            let refreshes = if interval == 1 {
+                "Every refresh".to_owned()
+            } else {
+                format!("Every {interval} refreshes")
+            };
+            let label = refresh_rate_hz.map_or(refreshes.clone(), |refresh_rate_hz| {
+                let frame_rate = f64::from(refresh_rate_hz) / interval as f64;
+                let frame_rate = if frame_rate.fract() == 0.0 {
+                    format!("{frame_rate:.0}")
+                } else {
+                    format!("{frame_rate:.1}")
+                };
+                format!("{refreshes} ({frame_rate} FPS)")
+            });
+            (interval, label)
+        }))
+        .collect()
+}
+
+fn display_refresh_rate_hz() -> Option<u32> {
+    static REFRESH_RATE_HZ: OnceLock<Option<u32>> = OnceLock::new();
+    *REFRESH_RATE_HZ.get_or_init(query_display_refresh_rate_hz)
+}
+
+fn nominal_refresh_rate_hz(reported: u32) -> u32 {
+    const COMMON_REFRESH_RATES: &[u32] = &[
+        24, 25, 30, 50, 60, 72, 75, 90, 100, 120, 144, 165, 170, 175, 180, 200, 240, 360, 480, 500,
+    ];
+    COMMON_REFRESH_RATES
+        .iter()
+        .copied()
+        .find(|candidate| candidate.abs_diff(reported) <= 1)
+        .unwrap_or(reported)
+}
+
+#[cfg(windows)]
+fn query_display_refresh_rate_hz() -> Option<u32> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW,
+    };
+
+    let mut mode = unsafe { std::mem::zeroed::<DEVMODEW>() };
+    mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+    let found =
+        unsafe { EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, &mut mode) } != 0;
+    (found && (24..=1_000).contains(&mode.dmDisplayFrequency))
+        .then(|| nominal_refresh_rate_hz(mode.dmDisplayFrequency))
+}
+
+#[cfg(not(windows))]
+fn query_display_refresh_rate_hz() -> Option<u32> {
+    None
 }
 
 fn string_choice(
@@ -1465,7 +1532,7 @@ fn bool_fields(
     Ok(())
 }
 
-// These are the decoded input names accepted by Sunrise schemas 3 through 6. Sunrise's raw table
+// These are the decoded input names accepted by Sunrise schemas 3 through 8. Sunrise's raw table
 // contains both its backslash name
 // and its JSON-escaped spelling; serde represents the usable value as one
 // decoded backslash, leaving 120 logical choices here. Matching is ASCII
@@ -1743,7 +1810,7 @@ fn input_code(
             u16::MAX
         )),
         KeyBindingFormat::Named => Err(format!(
-            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise schemas 3 through 6"
+            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise schemas 3 through 8"
         )),
     }
 }
@@ -2184,7 +2251,22 @@ mod tests {
     }
 
     #[test]
-    fn schemas_two_through_six_share_one_validated_policy() {
+    fn vertical_sync_intervals_show_the_effective_frame_rate() {
+        assert_eq!(nominal_refresh_rate_hz(119), 120);
+        assert_eq!(
+            vertical_sync_intervals(Some(120)),
+            vec![
+                (0, "Off (Default)".to_owned()),
+                (1, "Every refresh (120 FPS)".to_owned()),
+                (2, "Every 2 refreshes (60 FPS)".to_owned()),
+                (3, "Every 3 refreshes (40 FPS)".to_owned()),
+                (4, "Every 4 refreshes (30 FPS)".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn schemas_two_through_eight_share_one_validated_policy() {
         for version in MIN_SUPPORTED_SCHEMA..=MAX_SUPPORTED_SCHEMA {
             assert_eq!(validate(&valid_game_settings_document(version)), Ok(()));
         }

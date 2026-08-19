@@ -54,14 +54,16 @@ fn set_inventory_flag(flags: Option<u8>, flag: u8, enabled: bool) -> Option<u8> 
 }
 
 const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
-const DISMANTLE_REWARD_CAPACITY: usize = 8;
+const LEGACY_DISMANTLE_REWARD_CAPACITY: usize = 8;
+pub(crate) const FILTERED_DISMANTLE_REWARD_CAPACITY: usize = 32;
+const FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SchemaMode {
     MissingOrInvalid,
     Unsupported(u64),
     PreInventory(u64),
-    InventoryV6,
+    Inventory(u64),
     Future(u64),
 }
 
@@ -69,10 +71,10 @@ impl SchemaMode {
     pub(crate) const fn version(self) -> Option<u64> {
         match self {
             Self::MissingOrInvalid => None,
-            Self::Unsupported(version) | Self::PreInventory(version) | Self::Future(version) => {
-                Some(version)
-            }
-            Self::InventoryV6 => Some(INVENTORY_SCHEMA_VERSION),
+            Self::Unsupported(version)
+            | Self::PreInventory(version)
+            | Self::Inventory(version)
+            | Self::Future(version) => Some(version),
         }
     }
 
@@ -87,18 +89,18 @@ impl SchemaMode {
     pub(crate) const fn can_mutate_profile_items(self) -> bool {
         matches!(
             self,
-            Self::PreInventory(_) | Self::InventoryV6 | Self::Future(_)
+            Self::PreInventory(_) | Self::Inventory(_) | Self::Future(_)
         )
     }
 
     pub(crate) const fn can_mutate_character_inventory(self) -> bool {
-        matches!(self, Self::InventoryV6 | Self::Future(_))
+        matches!(self, Self::Inventory(_) | Self::Future(_))
     }
 
     pub(crate) const fn can_mutate_equipment(self) -> bool {
         matches!(
             self,
-            Self::PreInventory(_) | Self::InventoryV6 | Self::Future(_)
+            Self::PreInventory(_) | Self::Inventory(_) | Self::Future(_)
         )
     }
 
@@ -113,17 +115,38 @@ impl SchemaMode {
         self.can_mutate_equipment() && self.supports_equipment_flags()
     }
 
-    const fn supports_dismantle_rewards(self) -> bool {
+    pub(crate) const fn supports_dismantle_rewards(self) -> bool {
         match self.version() {
             Some(version) => version >= DISMANTLE_REWARDS_SCHEMA_VERSION,
             None => false,
         }
     }
 
+    pub(crate) const fn can_mutate_dismantle_rewards(self) -> bool {
+        self.supports_dismantle_rewards() && !self.is_read_only() && !self.is_future()
+    }
+
+    pub(crate) const fn supports_filtered_dismantle_rewards(self) -> bool {
+        match self.version() {
+            Some(version) => version >= FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION,
+            None => false,
+        }
+    }
+
+    pub(crate) const fn dismantle_reward_capacity(self) -> Option<usize> {
+        if !self.supports_dismantle_rewards() || self.is_future() {
+            None
+        } else if self.supports_filtered_dismantle_rewards() {
+            Some(FILTERED_DISMANTLE_REWARD_CAPACITY)
+        } else {
+            Some(LEGACY_DISMANTLE_REWARD_CAPACITY)
+        }
+    }
+
     pub(crate) const fn profile_item_capacity(self) -> Option<usize> {
         match self {
             Self::PreInventory(version) => Some(profile_item_capacity(version)),
-            Self::InventoryV6 | Self::Future(_) => Some(PROFILE_ITEM_CAPACITY),
+            Self::Inventory(_) | Self::Future(_) => Some(PROFILE_ITEM_CAPACITY),
             Self::MissingOrInvalid | Self::Unsupported(_) => None,
         }
     }
@@ -140,7 +163,9 @@ impl SchemaMode {
 pub(crate) fn schema_mode(document: &Value) -> SchemaMode {
     match document.get("version").and_then(Value::as_u64) {
         None => SchemaMode::MissingOrInvalid,
-        Some(INVENTORY_SCHEMA_VERSION) => SchemaMode::InventoryV6,
+        Some(version) if (INVENTORY_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA).contains(&version) => {
+            SchemaMode::Inventory(version)
+        }
         Some(version) if version > MAX_SUPPORTED_SCHEMA => SchemaMode::Future(version),
         Some(version) if version >= MIN_SUPPORTED_SCHEMA => SchemaMode::PreInventory(version),
         Some(version) => SchemaMode::Unsupported(version),
@@ -204,6 +229,105 @@ pub(crate) struct ProfileItemSnapshot {
     pub location: ProfileItemLocation,
     pub definition_hash: u32,
     pub quantity: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DismantleRarity {
+    Common,
+    Uncommon,
+    Rare,
+    Legendary,
+    Exotic,
+}
+
+impl DismantleRarity {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Common,
+        Self::Uncommon,
+        Self::Rare,
+        Self::Legendary,
+        Self::Exotic,
+    ];
+
+    pub(crate) const fn token(self) -> &'static str {
+        match self {
+            Self::Common => "common",
+            Self::Uncommon => "uncommon",
+            Self::Rare => "rare",
+            Self::Legendary => "legendary",
+            Self::Exotic => "exotic",
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "common" => Some(Self::Common),
+            "uncommon" => Some(Self::Uncommon),
+            "rare" => Some(Self::Rare),
+            "legendary" => Some(Self::Legendary),
+            "exotic" => Some(Self::Exotic),
+            _ => None,
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Common => 1 << 1,
+            Self::Uncommon => 1 << 2,
+            Self::Rare => 1 << 3,
+            Self::Legendary => 1 << 4,
+            Self::Exotic => 1 << 5,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DismantleGearClass {
+    Weapon,
+    Armor,
+}
+
+impl DismantleGearClass {
+    pub(crate) const fn token(self) -> &'static str {
+        match self {
+            Self::Weapon => "weapon",
+            Self::Armor => "armor",
+        }
+    }
+
+    const fn mask(self) -> u8 {
+        match self {
+            Self::Weapon => 1,
+            Self::Armor => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DismantleRewardLocation {
+    pub index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DismantleRewardSnapshot {
+    pub location: DismantleRewardLocation,
+    pub definition_hash: u32,
+    pub quantity: i32,
+    pub rarities: Vec<DismantleRarity>,
+    pub gear_class: Option<DismantleGearClass>,
+    pub masterworked: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DismantleRewardAction {
+    SetPolicy {
+        definition_hash: u32,
+        quantity: i32,
+        rarities: Vec<DismantleRarity>,
+        gear_class: Option<DismantleGearClass>,
+        masterworked: Option<bool>,
+    },
+    Remove,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,6 +433,84 @@ pub(crate) fn profile_item_target_exists(document: &Value) -> InventoryResult<bo
     Ok(optional_object_member(state, "account", "/state/account")?.is_some())
 }
 
+pub(crate) fn dismantle_rewards(
+    document: &Value,
+) -> InventoryResult<Option<Vec<DismantleRewardSnapshot>>> {
+    let mode = require_readable_schema(document)?;
+    if !mode.supports_dismantle_rewards() || mode.is_future() {
+        return Ok(None);
+    }
+    let Some(value) = document.pointer("/state/account/dismantle_rewards") else {
+        return Ok(None);
+    };
+    validate_dismantle_rewards(document, mode)?;
+    let rewards = value
+        .as_array()
+        .expect("dismantle rewards were validated as an array");
+    rewards
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let reward = value
+                .as_object()
+                .expect("dismantle reward was validated as an object");
+            let definition_hash = reward
+                .get("definition_hash")
+                .and_then(parse_unsigned_value)
+                .and_then(|hash| u32::try_from(hash).ok())
+                .expect("dismantle reward hash was validated");
+            let quantity = reward
+                .get("quantity")
+                .and_then(Value::as_i64)
+                .and_then(|quantity| i32::try_from(quantity).ok())
+                .expect("dismantle reward quantity was validated");
+            let rarities = if mode.supports_filtered_dismantle_rewards() {
+                reward
+                    .get("rarity")
+                    .map(dismantle_rarity_values)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let gear_class = if mode.supports_filtered_dismantle_rewards() {
+                match reward.get("class").and_then(Value::as_str) {
+                    Some("weapon") => Some(DismantleGearClass::Weapon),
+                    Some("armor") => Some(DismantleGearClass::Armor),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let masterworked = mode
+                .supports_filtered_dismantle_rewards()
+                .then(|| reward.get("masterworked").and_then(Value::as_bool))
+                .flatten();
+            Ok(DismantleRewardSnapshot {
+                location: DismantleRewardLocation { index },
+                definition_hash,
+                quantity,
+                rarities,
+                gear_class,
+                masterworked,
+            })
+        })
+        .collect::<InventoryResult<Vec<_>>>()
+        .map(Some)
+}
+
+fn dismantle_rarity_values(value: &Value) -> Vec<DismantleRarity> {
+    if let Some(token) = value.as_str() {
+        return DismantleRarity::from_token(token).into_iter().collect();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(DismantleRarity::from_token)
+        .collect()
+}
+
 pub(crate) fn character_inventory(
     document: &Value,
     character_index: usize,
@@ -345,10 +547,10 @@ pub(crate) fn validate_document_items(document: &Value) -> InventoryResult<()> {
     let _ = profile_items(document)?;
     validate_existing_character_inventories(document, mode)?;
     if mode.supports_dismantle_rewards() && !mode.is_future() {
-        validate_dismantle_rewards(document)?;
+        validate_dismantle_rewards(document, mode)?;
     }
-    if matches!(mode, SchemaMode::InventoryV6) {
-        validate_v6_item_members(document)?;
+    if let SchemaMode::Inventory(version) = mode {
+        validate_known_schema_item_members(document, version)?;
     }
     validate_unique_soids(document)
 }
@@ -454,6 +656,264 @@ pub(crate) fn apply_profile_item_action(
         }
     }
     Ok(())
+}
+
+pub(crate) fn add_dismantle_reward(
+    document: &mut Value,
+    definition_hash: u32,
+) -> InventoryResult<DismantleRewardLocation> {
+    let mode = require_dismantle_reward_mutation(document)?;
+    validate_inventory_definition_hash(
+        definition_hash,
+        "/state/account/dismantle_rewards/<new>/definition_hash",
+    )?;
+    let existing = dismantle_rewards(document)?.unwrap_or_default();
+    let capacity = mode
+        .dismantle_reward_capacity()
+        .expect("writable dismantle schemas have a known capacity");
+    if existing.len() >= capacity {
+        return Err(InventoryError::new(
+            "/state/account/dismantle_rewards",
+            format!("dismantle_rewards is full for this schema (maximum {capacity})"),
+        ));
+    }
+
+    let occupied = existing
+        .iter()
+        .map(dismantle_policy_key)
+        .collect::<BTreeSet<_>>();
+    let mut selected = None;
+    let rarity_masks = if mode.supports_filtered_dismantle_rewards() {
+        0..32
+    } else {
+        0..1
+    };
+    let gear_classes: &[Option<DismantleGearClass>] = if mode.supports_filtered_dismantle_rewards()
+    {
+        &[
+            None,
+            Some(DismantleGearClass::Weapon),
+            Some(DismantleGearClass::Armor),
+        ]
+    } else {
+        &[None]
+    };
+    let masterwork_filters: &[Option<bool>] = if mode.supports_filtered_dismantle_rewards() {
+        &[None, Some(false), Some(true)]
+    } else {
+        &[None]
+    };
+    'policies: for rarity_mask in rarity_masks {
+        let rarities = DismantleRarity::ALL
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, rarity)| (rarity_mask & (1 << index) != 0).then_some(rarity))
+            .collect::<Vec<_>>();
+        for &gear_class in gear_classes {
+            for &masterworked in masterwork_filters {
+                let candidate = (
+                    definition_hash,
+                    rarity_mask_of(&rarities),
+                    gear_class.map_or(0, DismantleGearClass::mask),
+                    masterworked.map_or(0, |value| if value { 1 } else { 2 }),
+                );
+                if !occupied.contains(&candidate) {
+                    selected = Some((rarities, gear_class, masterworked));
+                    break 'policies;
+                }
+            }
+        }
+    }
+    let Some((rarities, gear_class, masterworked)) = selected else {
+        return Err(InventoryError::new(
+            "/state/account/dismantle_rewards",
+            "every supported filter combination for this material is already present",
+        ));
+    };
+
+    let mut candidate = document.clone();
+    ensure_account_object(&candidate)?;
+    let mut reward = Map::new();
+    write_dismantle_policy(
+        &mut reward,
+        definition_hash,
+        1,
+        &rarities,
+        gear_class,
+        masterworked,
+        mode.supports_filtered_dismantle_rewards(),
+    );
+    let account = account_object_mut(&mut candidate)?;
+    match account.get_mut("dismantle_rewards") {
+        Some(Value::Array(rewards)) => rewards.push(Value::Object(reward)),
+        Some(_) => unreachable!("dismantle rewards were validated before mutation"),
+        None => {
+            account.insert(
+                "dismantle_rewards".into(),
+                Value::Array(vec![Value::Object(reward)]),
+            );
+        }
+    }
+    validate_document_items(&candidate)?;
+    *document = candidate;
+    Ok(DismantleRewardLocation {
+        index: existing.len(),
+    })
+}
+
+pub(crate) fn apply_dismantle_reward_action(
+    document: &mut Value,
+    location: DismantleRewardLocation,
+    action: DismantleRewardAction,
+) -> InventoryResult<()> {
+    let mode = require_dismantle_reward_mutation(document)?;
+    let snapshots = dismantle_rewards(document)?.ok_or_else(|| {
+        InventoryError::new(
+            "/state/account/dismantle_rewards",
+            "dismantle_rewards is missing; add a policy before editing a row",
+        )
+    })?;
+    if location.index >= snapshots.len() {
+        return Err(InventoryError::new(
+            format!("/state/account/dismantle_rewards/{}", location.index),
+            "dismantle reward index is out of range",
+        ));
+    }
+    if let DismantleRewardAction::SetPolicy {
+        definition_hash,
+        quantity,
+        rarities,
+        gear_class,
+        masterworked,
+    } = &action
+    {
+        validate_inventory_definition_hash(
+            *definition_hash,
+            &format!(
+                "/state/account/dismantle_rewards/{}/definition_hash",
+                location.index
+            ),
+        )?;
+        validate_positive_i32(
+            *quantity,
+            &format!(
+                "/state/account/dismantle_rewards/{}/quantity",
+                location.index
+            ),
+        )?;
+        if !mode.supports_filtered_dismantle_rewards()
+            && (!rarities.is_empty() || gear_class.is_some() || masterworked.is_some())
+        {
+            return Err(InventoryError::new(
+                format!("/state/account/dismantle_rewards/{}", location.index),
+                "dismantle filters require settings schema 8",
+            ));
+        }
+    }
+
+    let mut candidate = document.clone();
+    let rewards = candidate
+        .pointer_mut("/state/account/dismantle_rewards")
+        .and_then(Value::as_array_mut)
+        .expect("dismantle rewards were validated before mutation");
+    match action {
+        DismantleRewardAction::Remove => {
+            rewards.remove(location.index);
+        }
+        DismantleRewardAction::SetPolicy {
+            definition_hash,
+            quantity,
+            rarities,
+            gear_class,
+            masterworked,
+        } => {
+            let reward = rewards[location.index]
+                .as_object_mut()
+                .expect("dismantle reward row was validated before mutation");
+            write_dismantle_policy(
+                reward,
+                definition_hash,
+                quantity,
+                &rarities,
+                gear_class,
+                masterworked,
+                mode.supports_filtered_dismantle_rewards(),
+            );
+        }
+    }
+    validate_document_items(&candidate)?;
+    *document = candidate;
+    Ok(())
+}
+
+fn require_dismantle_reward_mutation(document: &Value) -> InventoryResult<SchemaMode> {
+    let mode = require_readable_schema(document)?;
+    if mode.can_mutate_dismantle_rewards() {
+        Ok(mode)
+    } else {
+        Err(read_only_schema_error(mode, "dismantle rewards"))
+    }
+}
+
+fn dismantle_policy_key(snapshot: &DismantleRewardSnapshot) -> (u32, u8, u8, u8) {
+    (
+        snapshot.definition_hash,
+        rarity_mask_of(&snapshot.rarities),
+        snapshot.gear_class.map_or(0, DismantleGearClass::mask),
+        snapshot
+            .masterworked
+            .map_or(0, |value| if value { 1 } else { 2 }),
+    )
+}
+
+fn rarity_mask_of(rarities: &[DismantleRarity]) -> u8 {
+    rarities.iter().fold(0, |mask, rarity| mask | rarity.bit())
+}
+
+fn write_dismantle_policy(
+    reward: &mut Map<String, Value>,
+    definition_hash: u32,
+    quantity: i32,
+    rarities: &[DismantleRarity],
+    gear_class: Option<DismantleGearClass>,
+    masterworked: Option<bool>,
+    filtered: bool,
+) {
+    reward.insert(
+        "definition_hash".into(),
+        Value::String(format_definition_hash(definition_hash)),
+    );
+    reward.insert("quantity".into(), Value::from(quantity));
+    if filtered && !rarities.is_empty() {
+        let value = if rarities.len() == 1 {
+            Value::String(rarities[0].token().into())
+        } else {
+            Value::Array(
+                rarities
+                    .iter()
+                    .map(|rarity| Value::String(rarity.token().into()))
+                    .collect(),
+            )
+        };
+        reward.insert("rarity".into(), value);
+    } else {
+        reward.remove("rarity");
+    }
+    if filtered {
+        if let Some(gear_class) = gear_class {
+            reward.insert("class".into(), Value::String(gear_class.token().into()));
+        } else {
+            reward.remove("class");
+        }
+        if let Some(masterworked) = masterworked {
+            reward.insert("masterworked".into(), Value::Bool(masterworked));
+        } else {
+            reward.remove("masterworked");
+        }
+    } else {
+        reward.remove("class");
+        reward.remove("masterworked");
+    }
 }
 
 pub(crate) fn add_inventory_item(
@@ -890,7 +1350,7 @@ fn read_only_schema_error(mode: SchemaMode, section: &str) -> InventoryError {
             "/version",
             format!("settings schema version is missing or invalid; {section} is read-only"),
         ),
-        SchemaMode::PreInventory(_) | SchemaMode::InventoryV6 | SchemaMode::Future(_) => {
+        SchemaMode::PreInventory(_) | SchemaMode::Inventory(_) | SchemaMode::Future(_) => {
             InventoryError::new("/version", format!("{section} is read-only"))
         }
     }
@@ -1025,7 +1485,7 @@ fn validate_existing_character_inventories(
     Ok(())
 }
 
-fn validate_dismantle_rewards(document: &Value) -> InventoryResult<()> {
+fn validate_dismantle_rewards(document: &Value, mode: SchemaMode) -> InventoryResult<()> {
     let path = "/state/account/dismantle_rewards";
     let Some(value) = document.pointer(path) else {
         return Ok(());
@@ -1033,16 +1493,22 @@ fn validate_dismantle_rewards(document: &Value) -> InventoryResult<()> {
     let rewards = value
         .as_array()
         .ok_or_else(|| InventoryError::new(path, "dismantle_rewards must be an array"))?;
-    if rewards.len() > DISMANTLE_REWARD_CAPACITY {
+    let filtered = mode
+        .version()
+        .is_some_and(|version| version >= FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION);
+    let capacity = if filtered {
+        FILTERED_DISMANTLE_REWARD_CAPACITY
+    } else {
+        LEGACY_DISMANTLE_REWARD_CAPACITY
+    };
+    if rewards.len() > capacity {
         return Err(InventoryError::new(
             path,
-            format!(
-                "dismantle_rewards cannot contain more than {DISMANTLE_REWARD_CAPACITY} entries"
-            ),
+            format!("dismantle_rewards cannot contain more than {capacity} entries"),
         ));
     }
 
-    let mut definitions = BTreeSet::new();
+    let mut policies = BTreeSet::new();
     for (index, value) in rewards.iter().enumerate() {
         let reward_path = format!("{path}/{index}");
         let reward = value.as_object().ok_or_else(|| {
@@ -1078,10 +1544,54 @@ fn validate_dismantle_rewards(document: &Value) -> InventoryResult<()> {
             ));
         }
         validate_inventory_definition_hash(hash, &hash_path)?;
-        if !definitions.insert(hash) {
+
+        let rarity_mask = if filtered {
+            reward
+                .get("rarity")
+                .map(|value| validate_dismantle_rarity(value, &format!("{reward_path}/rarity")))
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            0
+        };
+        let class_mask = if filtered {
+            match reward.get("class") {
+                None => 0,
+                Some(Value::String(class)) if class == "weapon" => 1,
+                Some(Value::String(class)) if class == "armor" => 2,
+                Some(_) => {
+                    return Err(InventoryError::new(
+                        format!("{reward_path}/class"),
+                        "class must be \"weapon\" or \"armor\"",
+                    ));
+                }
+            }
+        } else {
+            0
+        };
+        let masterwork_filter = if filtered {
+            match reward.get("masterworked") {
+                None => 0,
+                Some(Value::Bool(true)) => 1,
+                Some(Value::Bool(false)) => 2,
+                Some(_) => {
+                    return Err(InventoryError::new(
+                        format!("{reward_path}/masterworked"),
+                        "masterworked must be true or false",
+                    ));
+                }
+            }
+        } else {
+            0
+        };
+        if !policies.insert((hash, rarity_mask, class_mask, masterwork_filter)) {
             return Err(InventoryError::new(
                 &hash_path,
-                "dismantle reward definition_hash values must be unique",
+                if filtered {
+                    "dismantle reward material and filter combinations must be unique"
+                } else {
+                    "dismantle reward definition_hash values must be unique"
+                },
             ));
         }
 
@@ -1113,7 +1623,52 @@ fn validate_dismantle_rewards(document: &Value) -> InventoryResult<()> {
     Ok(())
 }
 
-fn validate_v6_item_members(document: &Value) -> InventoryResult<()> {
+fn validate_dismantle_rarity(value: &Value, path: &str) -> InventoryResult<u8> {
+    fn rarity_bit(value: &Value, path: &str) -> InventoryResult<u8> {
+        let name = value
+            .as_str()
+            .ok_or_else(|| InventoryError::new(path, "rarity must contain rarity names"))?;
+        DismantleRarity::from_token(name)
+            .map(DismantleRarity::bit)
+            .ok_or_else(|| {
+                InventoryError::new(
+                    path,
+                    "rarity must be common, uncommon, rare, legendary, or exotic",
+                )
+            })
+    }
+
+    if value.is_string() {
+        return rarity_bit(value, path);
+    }
+    let values = value
+        .as_array()
+        .ok_or_else(|| InventoryError::new(path, "rarity must be a name or an array of names"))?;
+    if values.is_empty() {
+        return Err(InventoryError::new(
+            path,
+            "rarity arrays must contain at least one name",
+        ));
+    }
+    let mut mask = 0;
+    for (index, value) in values.iter().enumerate() {
+        let value_path = format!("{path}/{index}");
+        let bit = rarity_bit(value, &value_path)?;
+        if mask & bit != 0 {
+            return Err(InventoryError::new(
+                value_path,
+                "rarity arrays cannot contain duplicate names",
+            ));
+        }
+        mask |= bit;
+    }
+    Ok(mask)
+}
+
+fn validate_known_schema_item_members(
+    document: &Value,
+    schema_version: u64,
+) -> InventoryResult<()> {
     const KNOWN_MEMBERS: &[&str] = &[
         "instance_soid",
         "definition_hash",
@@ -1140,6 +1695,7 @@ fn validate_v6_item_members(document: &Value) -> InventoryResult<()> {
                         item,
                         &format!("/state/characters/{character_index}/equipment/{slot}"),
                         KNOWN_MEMBERS,
+                        schema_version,
                     )?;
                 }
             }
@@ -1151,6 +1707,7 @@ fn validate_v6_item_members(document: &Value) -> InventoryResult<()> {
                         item,
                         &format!("/state/characters/{character_index}/inventory/{item_index}"),
                         KNOWN_MEMBERS,
+                        schema_version,
                     )?;
                 }
             }
@@ -1163,6 +1720,7 @@ fn validate_known_item_members(
     item: &Map<String, Value>,
     path: &str,
     known_members: &[&str],
+    schema_version: u64,
 ) -> InventoryResult<()> {
     if let Some(key) = item
         .keys()
@@ -1171,7 +1729,7 @@ fn validate_known_item_members(
         Err(InventoryError::new(
             format!("{path}/{key}"),
             format!(
-                "schema 6 item member {key:?} is preserved by Sundial but is not accepted by Sunrise"
+                "schema {schema_version} item member {key:?} is preserved by Sundial but is not accepted by Sunrise"
             ),
         ))
     } else {
@@ -1722,7 +2280,12 @@ mod tests {
             schema_mode(&json!({"version": 3})),
             SchemaMode::PreInventory(3)
         );
-        assert_eq!(schema_mode(&json!({"version": 6})), SchemaMode::InventoryV6);
+        for version in 6..=MAX_SUPPORTED_SCHEMA {
+            assert_eq!(
+                schema_mode(&json!({"version": version})),
+                SchemaMode::Inventory(version)
+            );
+        }
         assert_eq!(schema_mode(&json!({"version": future_version})), future);
         assert!(!future.is_read_only());
         assert!(future.is_future());
@@ -1747,12 +2310,13 @@ mod tests {
             assert_eq!(mode.can_mutate_equipment_flags(), version >= 4);
             assert_eq!(mode.supports_dismantle_rewards(), version >= 5);
         }
-        assert!(SchemaMode::InventoryV6.can_mutate_profile_items());
-        assert!(SchemaMode::InventoryV6.can_mutate_character_inventory());
-        assert!(SchemaMode::InventoryV6.can_mutate_equipment());
-        assert!(SchemaMode::InventoryV6.supports_equipment_flags());
-        assert!(SchemaMode::InventoryV6.can_mutate_equipment_flags());
-        assert!(SchemaMode::InventoryV6.supports_dismantle_rewards());
+        let current = SchemaMode::Inventory(MAX_SUPPORTED_SCHEMA);
+        assert!(current.can_mutate_profile_items());
+        assert!(current.can_mutate_character_inventory());
+        assert!(current.can_mutate_equipment());
+        assert!(current.supports_equipment_flags());
+        assert!(current.can_mutate_equipment_flags());
+        assert!(current.supports_dismantle_rewards());
         assert_eq!(profile_item_capacity(3), 32);
         assert_eq!(profile_item_capacity(4), 701);
     }
@@ -2611,8 +3175,8 @@ mod tests {
     }
 
     #[test]
-    fn schemas_five_and_six_dismantle_rewards_follow_sunrise_constraints() {
-        for version in 5..=6 {
+    fn schemas_five_through_seven_dismantle_rewards_follow_legacy_constraints() {
+        for version in 5..=7 {
             let mut valid = document(version);
             *valid
                 .pointer_mut("/state/account")
@@ -2688,14 +3252,14 @@ mod tests {
             ),
             (
                 Value::Array(
-                    (1..=DISMANTLE_REWARD_CAPACITY + 1)
+                    (1..=LEGACY_DISMANTLE_REWARD_CAPACITY + 1)
                         .map(|hash| json!({"definition_hash": hash, "quantity": 1}))
                         .collect(),
                 ),
                 "/state/account/dismantle_rewards",
             ),
         ];
-        for version in 5..=6 {
+        for version in 5..=7 {
             for (rewards, expected_path_suffix) in &invalid {
                 let mut candidate = document(version);
                 candidate
@@ -2722,6 +3286,198 @@ mod tests {
             .unwrap()
             .insert("dismantle_rewards".into(), json!({"future": true}));
         assert_eq!(validate_document_items(&legacy), Ok(()));
+    }
+
+    #[test]
+    fn schema_eight_validates_filtered_dismantle_reward_policies() {
+        let mut valid = document(8);
+        valid
+            .pointer_mut("/state/account")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "dismantle_rewards".into(),
+                json!([
+                    {"definition_hash": 1, "quantity": 25, "rarity": "common"},
+                    {"definition_hash": 1, "quantity": 50, "rarity": "uncommon"},
+                    {
+                        "definition_hash": 2,
+                        "quantity": 3,
+                        "rarity": ["legendary", "exotic"],
+                        "class": "weapon"
+                    },
+                    {
+                        "definition_hash": 2,
+                        "quantity": 4,
+                        "rarity": ["legendary", "exotic"],
+                        "class": "armor",
+                        "masterworked": false
+                    },
+                    {"definition_hash": 2, "quantity": 5, "masterworked": true},
+                    {
+                        "definition_hash": 3,
+                        "quantity": i32::MAX,
+                        "future": {"preserved": true}
+                    }
+                ]),
+            );
+        let before = valid.clone();
+        assert_eq!(validate_document_items(&valid), Ok(()));
+        assert_eq!(valid, before);
+        let rewards = valid
+            .pointer("/state/account/dismantle_rewards")
+            .cloned()
+            .unwrap();
+        add_profile_item(&mut valid, 4, 1).unwrap();
+        assert_eq!(
+            valid.pointer("/state/account/dismantle_rewards"),
+            Some(&rewards)
+        );
+
+        let invalid = [
+            (
+                json!([
+                    {"definition_hash": 1, "quantity": 1, "rarity": ["rare", "legendary"]},
+                    {"definition_hash": 1, "quantity": 2, "rarity": ["legendary", "rare"]}
+                ]),
+                "/dismantle_rewards/1/definition_hash",
+            ),
+            (
+                json!([{"definition_hash": 1, "quantity": 1, "rarity": []}]),
+                "/dismantle_rewards/0/rarity",
+            ),
+            (
+                json!([{"definition_hash": 1, "quantity": 1, "rarity": ["rare", "rare"]}]),
+                "/dismantle_rewards/0/rarity/1",
+            ),
+            (
+                json!([{"definition_hash": 1, "quantity": 1, "rarity": "mythic"}]),
+                "/dismantle_rewards/0/rarity",
+            ),
+            (
+                json!([{"definition_hash": 1, "quantity": 1, "class": "ghost"}]),
+                "/dismantle_rewards/0/class",
+            ),
+            (
+                json!([{"definition_hash": 1, "quantity": 1, "masterworked": 1}]),
+                "/dismantle_rewards/0/masterworked",
+            ),
+            (
+                Value::Array(
+                    (1..=FILTERED_DISMANTLE_REWARD_CAPACITY + 1)
+                        .map(|hash| json!({"definition_hash": hash, "quantity": 1}))
+                        .collect(),
+                ),
+                "/state/account/dismantle_rewards",
+            ),
+        ];
+        for (rewards, expected_path_suffix) in invalid {
+            let mut candidate = document(8);
+            candidate
+                .pointer_mut("/state/account")
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("dismantle_rewards".into(), rewards);
+            let before = candidate.clone();
+            let error = validate_document_items(&candidate).unwrap_err();
+            assert!(
+                error.path().ends_with(expected_path_suffix),
+                "unexpected error: {error}"
+            );
+            assert_eq!(candidate, before);
+        }
+    }
+
+    #[test]
+    fn dismantle_policy_actions_preserve_unknown_members_and_are_atomic() {
+        let mut document = document(8);
+        document
+            .pointer_mut("/state/account")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "dismantle_rewards".into(),
+                json!([{
+                    "definition_hash": 1,
+                    "quantity": 1,
+                    "opaque": {"keep": true}
+                }]),
+            );
+
+        apply_dismantle_reward_action(
+            &mut document,
+            DismantleRewardLocation { index: 0 },
+            DismantleRewardAction::SetPolicy {
+                definition_hash: 1,
+                quantity: 7,
+                rarities: vec![DismantleRarity::Rare, DismantleRarity::Legendary],
+                gear_class: Some(DismantleGearClass::Weapon),
+                masterworked: Some(true),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            document.pointer("/state/account/dismantle_rewards/0"),
+            Some(&json!({
+                "definition_hash": "0x00000001",
+                "quantity": 7,
+                "rarity": ["rare", "legendary"],
+                "class": "weapon",
+                "masterworked": true,
+                "opaque": {"keep": true}
+            }))
+        );
+
+        let added = add_dismantle_reward(&mut document, 1).unwrap();
+        assert_eq!(added, DismantleRewardLocation { index: 1 });
+        let before = document.clone();
+        let error = apply_dismantle_reward_action(
+            &mut document,
+            added,
+            DismantleRewardAction::SetPolicy {
+                definition_hash: 1,
+                quantity: 9,
+                rarities: vec![DismantleRarity::Legendary, DismantleRarity::Rare],
+                gear_class: Some(DismantleGearClass::Weapon),
+                masterworked: Some(true),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("filter combinations must be unique")
+        );
+        assert_eq!(document, before);
+
+        apply_dismantle_reward_action(&mut document, added, DismantleRewardAction::Remove).unwrap();
+        assert_eq!(
+            document
+                .pointer("/state/account/dismantle_rewards")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn legacy_dismantle_policies_do_not_create_filtered_duplicates() {
+        let mut document = document(7);
+        document
+            .pointer_mut("/state/account")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "dismantle_rewards".into(),
+                json!([{"definition_hash": 1, "quantity": 1}]),
+            );
+        let before = document.clone();
+        assert!(add_dismantle_reward(&mut document, 1).is_err());
+        assert_eq!(document, before);
     }
 
     #[test]

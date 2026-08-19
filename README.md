@@ -8,12 +8,9 @@ and more in `settings.json`.
 
 Edit any of the three default characters' weapons, subclass abilities, armor,
 Ghost shells, Sparrows, ships, emblems, character properties, and more. You can
-also adjust the plugs and perks installed on supported items... or equip exotics
-in every slot, if you want! Unsafe plug selection can show every plug matching
-a socket type, while the “really unsafe” tier makes every discovered plug
-available in every socket. These combinations are not known to be supported;
-incompatible choices may prevent an item, loadout, Sunrise, or Destiny 2 from
-working or loading correctly. (Never forget the Craftening!)
+also adjust the plugs and perks installed on supported items, equip exotics in
+every slot, or use the unsafe selection modes to experiment with unsupported
+combinations. (Never forget the Craftening!)
 
 Edit the player name and game defaults from the Game settings page. Project
 Sunrise applies these settings when loading into Destiny 2, and Sundial limits
@@ -29,16 +26,13 @@ are bundled.
 
 Sundial is designed for:
 
-- Project Sunrise 0.1 through 0.3.2 (schema v6) with Destiny 2 Shadowkeep
-  build `86657.20.08.23`
+- Project Sunrise 0.1 through 0.3.2 (schema v6), with settings support through
+  schema v8, using Destiny 2 Shadowkeep build `86657.20.08.23`
 
 Sundial handles the known differences between Sunrise settings schemas.
 Newer schemas display a warning and may be opened with caution. Sundial keeps
 recognized fields editable and preserves unrecognized JSON, but future
 compatibility is not guaranteed.
-
-Named key-binding editing is experimental. Some Sunrise configurations may use
-`cvars.xml` instead, so changes might not take effect.
 
 ## Features
 
@@ -50,7 +44,7 @@ Named key-binding editing is experimental. Some Sunrise configurations may use
   instances between character inventory and equipment slots
 - Remove equipped weapons completely (great for screenshots!)
 - Automatic subclass, ability, and armor defaults when changing class
-- Player name editing, initial support for named key-binding editing, and guided
+- Player name editing, named key-binding editing, and guided
   controls for supported game settings
 - A straightforward JSON editor for anything not covered by the guided interface
 - Preservation of unrecognized data, with warnings and extra safety copies for
@@ -68,7 +62,7 @@ package files change. You can also rebuild it manually from
 
 ## Usage
 
-Download `sundial.exe` or `Sundial-v0.3.2-windows-x86_64.zip` from the GitHub
+Download `sundial.exe` or `Sundial-v0.3.3-windows-x86_64.zip` from the GitHub
 [Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
 build it yourself from source using the instructions below.
 
@@ -95,9 +89,10 @@ The executable is written to `target\release\sundial.exe`.
 
 ### Can I use Sundial with the current live version of Destiny 2?
 
-No. Sundial is designed for Project Sunrise 0.1 through 0.3.2 (schema v6) with
-Destiny 2 Shadowkeep build `86657.20.08.23`. Select only the Shadowkeep
-installation used with Project Sunrise.
+No. Sundial is designed for Project Sunrise 0.1 through 0.3.2 (schema v6), with
+settings support through schema v8, using Destiny 2 Shadowkeep build
+`86657.20.08.23`. Select only the Shadowkeep installation used with Project
+Sunrise.
 
 ### Does Sundial change my loadout while Destiny 2 is running?
 
@@ -119,10 +114,8 @@ combination. Fully exit Destiny 2, open the file in Sundial, and save it again;
 Sundial repairs the known ability pairings during save. If the problem remains,
 reselect that character's class, subclass, and attunement before saving.
 
-If all else fails, use **Preferences > Recovery**. Sundial preserves
-the current file as `settings.json.bak` and as a timestamped backup before
-restoring it. Earlier save backups are also available under
-`%LOCALAPPDATA%\Sundial\backups`.
+If all else fails, use **Preferences > Recovery** to restore the Sunrise
+defaults. Earlier saves remain available under `%LOCALAPPDATA%\Sundial\backups`.
 
 ### Can I undo a change after saving?
 
@@ -130,32 +123,13 @@ Sundial creates a timestamped backup before every save. Backups are stored in
 `%LOCALAPPDATA%\Sundial\backups`. Unexpected files also receive a
 `settings.json.bak` beside the original.
 
-### Why does an ornament show as equipped but not appear in game?
+### Why does the first launch take longer, and does Sundial download Destiny data?
 
-Sundial can equip an ornament plug correctly even when Sunrise shows the base
-item model in game. Sunrise 0.2.1 applies shader and material overrides from
-plugs, but does not apply every ornament's model replacement. This is why
-shaders generally work while an ornament may appear equipped in menus without
-changing the in-game model.
-
-### Why does the character preview show a female Awoken or incorrect equipment?
-
-Sunrise may use a default female Awoken for character previews, regardless of
-the saved race or gender. Equipment can also render incorrectly in previews but
-should appear correctly in game.
-
-### Why does the first launch take longer?
-
-Sundial scans the installed Shadowkeep packages to build its local catalog.
-Later launches load that catalog from the cache unless the package files change
-or you choose to rebuild it.
-
-### Does Sundial download or include Destiny game data?
-
-No. Item and ability data is read from your existing Shadowkeep installation.
-The resulting catalog is cached locally on your PC. Sundial includes a small
-definition list for armor plugs whose manifest names are missing or generic,
-including derived stat allocations.
+Sundial scans your existing Shadowkeep packages to build a local catalog; it
+does not download or include Destiny game data. Later launches use the cached
+catalog unless the package files change or you rebuild it. Sundial includes a
+small definition list for armor plugs whose manifest names are missing or
+generic, including derived stat allocations.
 
 ### What should I do if I find a weird edge case?
 

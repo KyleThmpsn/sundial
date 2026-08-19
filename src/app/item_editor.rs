@@ -94,7 +94,7 @@ fn draw_action_button(
     if ui.is_rect_visible(response.rect) {
         let base_icon_size = (response.rect.height() - 9.0).clamp(9.0, 12.0);
         let icon_size = match icon {
-            Glyph::Trash => base_icon_size - 1.0,
+            Glyph::Trash => base_icon_size + 1.0,
             Glyph::Lock | Glyph::Unlock => base_icon_size + 1.0,
             Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronRight => base_icon_size,
         };

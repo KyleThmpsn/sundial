@@ -472,6 +472,7 @@ fn legacy_preferences_default_to_supported_plugs_with_warnings() {
     assert!(!decoded.always_open_json_editor_in_second_window);
     assert!(!decoded.show_plug_hashes);
     assert_eq!(decoded.item_card_width, ItemCardWidth::Standard);
+    assert!(!decoded.show_progression);
 }
 
 #[test]
@@ -871,6 +872,7 @@ fn settings_size_limits_follow_sunrise_schema_history() {
     }
     assert_eq!(settings_size_limit_for_schema(Some(6)), 1024 * KIB);
     assert_eq!(settings_size_limit_for_schema(Some(7)), 1024 * KIB);
+    assert_eq!(settings_size_limit_for_schema(Some(8)), 1024 * KIB);
 }
 
 #[test]

@@ -224,6 +224,8 @@ struct Preferences {
     show_plug_hashes: bool,
     #[serde(default)]
     item_card_width: ItemCardWidth,
+    #[serde(default)]
+    show_progression: bool,
 }
 
 const fn default_show_safety_warnings() -> bool {
@@ -273,6 +275,7 @@ impl Default for Preferences {
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
             item_card_width: ItemCardWidth::Standard,
+            show_progression: false,
         }
     }
 }
@@ -349,6 +352,7 @@ struct SundialApp {
     always_open_json_editor_in_second_window: bool,
     show_plug_hashes: bool,
     item_card_width: ItemCardWidth,
+    show_progression: bool,
     really_unsafe_warning_acknowledged: bool,
     remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
@@ -437,6 +441,7 @@ impl SundialApp {
                 .always_open_json_editor_in_second_window,
             show_plug_hashes: preferences.show_plug_hashes,
             item_card_width: preferences.item_card_width,
+            show_progression: preferences.show_progression,
             really_unsafe_warning_acknowledged: preferences
                 .really_unsafe_warning_acknowledged,
             remember_plug_selection_mode_after_confirmation: false,
@@ -700,6 +705,7 @@ impl SundialApp {
             always_open_json_editor_in_second_window: self.always_open_json_editor_in_second_window,
             show_plug_hashes: self.show_plug_hashes,
             item_card_width: self.item_card_width,
+            show_progression: self.show_progression,
         };
         let encoded = serde_json::to_vec_pretty(&preferences)
             .map_err(|e| format!("Could not encode Sundial's preferences: {e}"))?;
@@ -1032,15 +1038,18 @@ impl SundialApp {
             .exact_width(MAIN_SIDEBAR_WIDTH)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                for (view, label) in [
-                    (ViewMode::Characters, "Characters & loadouts"),
-                    (ViewMode::ProfileInventory, "Profile inventory"),
-                    (ViewMode::CharacterInventory, "Character inventory"),
-                    (ViewMode::GameSettings, "Game settings"),
-                    (ViewMode::Progression, "Progression"),
-                    (ViewMode::AdvancedJson, "All settings (JSON)"),
-                    (ViewMode::Preferences, "Preferences"),
+                for (view, label, visible) in [
+                    (ViewMode::Characters, "Characters & loadouts", true),
+                    (ViewMode::ProfileInventory, "Profile inventory", true),
+                    (ViewMode::CharacterInventory, "Character inventory", true),
+                    (ViewMode::GameSettings, "Game settings", true),
+                    (ViewMode::Progression, "Progression", self.show_progression),
+                    (ViewMode::AdvancedJson, "All settings (JSON)", true),
+                    (ViewMode::Preferences, "Preferences", true),
                 ] {
+                    if !visible {
+                        continue;
+                    }
                     if ui.selectable_label(self.view_mode == view, label).clicked() {
                         self.select_view(view);
                     }
@@ -1383,11 +1392,20 @@ impl SundialApp {
             }
         }
 
+        ui.add_space(12.0);
+        ui.strong("Experimental");
+        let progression_response = ui.checkbox(
+            &mut self.show_progression,
+            "Show Progression in the sidebar",
+        );
+        preferences_changed |= progression_response.changed();
+        ui.label("Progression is still being worked on and is hidden by default.");
+
         ui.add_space(8.0);
         if ui
             .button("Reset preferences to defaults")
             .on_hover_text(
-                "Reset Appearance and Item editing preferences. Paths, catalog data, and backups are not changed.",
+                "Reset appearance, item editing, and experimental preferences. Paths, catalog data, and backups are not changed.",
             )
             .clicked()
         {
@@ -1406,6 +1424,7 @@ impl SundialApp {
             self.plug_selection_mode = defaults.default_plug_selection_mode;
             self.show_safety_warnings = defaults.show_safety_warnings;
             self.show_plug_hashes = defaults.show_plug_hashes;
+            self.show_progression = defaults.show_progression;
             self.really_unsafe_warning_acknowledged =
                 defaults.really_unsafe_warning_acknowledged;
             self.remember_plug_selection_mode_after_confirmation = false;
