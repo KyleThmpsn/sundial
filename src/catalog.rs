@@ -15,22 +15,31 @@ use crate::{
     unnamed_plugs,
 };
 
+mod collections;
 mod icons;
 mod package;
 mod progression;
 
+pub use collections::{CollectibleDef, CollectionConditionDef, CollectionConditionTokenDef};
+use collections::{PendingCollectibleDef, scan_collectibles};
 use icons::IconRuntime;
 pub use package::validate_install;
 use package::{array_at, i32_at, i64_at, install_fingerprint, relative_offset, u16_at, u32_at};
-pub use progression::{ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, UnlockDefinition};
 use progression::{
-    add_objective_owner, attach_presentation_node_objective_owners, item_objective_indices,
-    scan_collectible_item_paths, scan_metric_objective_owners, scan_objectives,
-    scan_presentation_nodes, scan_record_objective_owners, scan_unlock_flag_definitions,
-    scan_unlock_flag_displays, scan_unlock_value_definitions, unlock_state_indices,
+    ItemProgressionContext, ProgressionPackageData, add_objective_owner,
+    attach_item_condition_contexts, attach_presentation_node_objective_owners,
+    item_objective_indices, scan_activity_condition_contexts, scan_collectible_condition_contexts,
+    scan_collectible_item_paths, scan_location_condition_contexts, scan_metric_objective_owners,
+    scan_objectives, scan_presentation_nodes, scan_record_objective_owners,
+    scan_unlock_flag_definitions, scan_unlock_flag_displays, scan_unlock_value_definitions,
+    sort_progression_contexts, unlock_state_indices,
+};
+pub use progression::{
+    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
+    ProgressionContextDef, ProgressionContextKind, UnlockDefinition,
 };
 
-const CACHE_SCHEMA: u32 = 45;
+const CACHE_SCHEMA: u32 = 54;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
@@ -370,6 +379,7 @@ struct ScannedCatalog {
     objectives: Vec<ObjectiveDef>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
+    collectibles: Vec<CollectibleDef>,
     progression_package_error: Option<String>,
 }
 
@@ -408,6 +418,7 @@ struct CatalogCache {
     objectives: Vec<ObjectiveDef>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
+    collectibles: Vec<CollectibleDef>,
     #[serde(default)]
     progression_package_error: Option<String>,
     plug_pools: Vec<Vec<u64>>,
@@ -423,6 +434,7 @@ struct CatalogContents {
     objectives: Vec<ObjectiveDef>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
+    collectibles: Vec<CollectibleDef>,
     progression_package_error: Option<String>,
     plug_pools: Vec<Vec<u64>>,
 }
@@ -439,6 +451,7 @@ impl CatalogCache {
             objectives: self.objectives,
             unlock_flag_definitions: self.unlock_flag_definitions,
             unlock_value_definitions: self.unlock_value_definitions,
+            collectibles: self.collectibles,
             progression_package_error: self.progression_package_error,
             plug_pools: self.plug_pools,
         }
@@ -459,6 +472,7 @@ pub struct Catalog {
     objectives: Vec<ObjectiveDef>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
+    collectibles: Vec<CollectibleDef>,
     progression_package_error: Option<String>,
     unlock_flag_state_indices: HashMap<(u8, u16), usize>,
     unlock_value_state_indices: HashMap<(u8, u16), usize>,
@@ -522,6 +536,7 @@ impl Catalog {
             objectives,
             unlock_flag_definitions,
             unlock_value_definitions,
+            collectibles,
             progression_package_error,
         } = scan_packages(install, &mut report)?;
         report(CatalogProgress::stage("Optimizing the local catalog…"));
@@ -547,6 +562,7 @@ impl Catalog {
             objectives,
             unlock_flag_definitions,
             unlock_value_definitions,
+            collectibles,
             progression_package_error,
             plug_pools,
         };
@@ -588,6 +604,7 @@ impl Catalog {
             objectives,
             unlock_flag_definitions,
             unlock_value_definitions,
+            collectibles,
             progression_package_error,
             mut plug_pools,
         } = contents;
@@ -654,6 +671,7 @@ impl Catalog {
             objectives,
             unlock_flag_definitions,
             unlock_value_definitions,
+            collectibles,
             progression_package_error,
             unlock_flag_state_indices,
             unlock_value_state_indices,
@@ -722,8 +740,20 @@ impl Catalog {
         self.unlock_flag_definitions.get(index)
     }
 
+    pub fn unlock_flag_definitions(&self) -> &[UnlockDefinition] {
+        &self.unlock_flag_definitions
+    }
+
     pub fn unlock_value_definition(&self, index: usize) -> Option<&UnlockDefinition> {
         self.unlock_value_definitions.get(index)
+    }
+
+    pub fn unlock_value_definitions(&self) -> &[UnlockDefinition] {
+        &self.unlock_value_definitions
+    }
+
+    pub fn collectibles(&self) -> &[CollectibleDef] {
+        &self.collectibles
     }
 
     pub fn objective_for_unlock_value(&self, definition_index: usize) -> Option<&ObjectiveDef> {
@@ -1148,7 +1178,7 @@ fn scan_packages(
             &mut progression_package_errors,
         );
     }
-    let unlock_value_definitions = retain_progression_scan(
+    let mut unlock_value_definitions = retain_progression_scan(
         "Unlock value definitions",
         scan_unlock_value_definitions(&manager, &root),
         &mut progression_package_errors,
@@ -1162,17 +1192,23 @@ fn scan_packages(
             &globals_data,
             &localized_tags,
             &mut localized_cache,
-            &unlock_value_definitions,
+            &mut unlock_flag_definitions,
+            &mut unlock_value_definitions,
         ),
         &mut progression_package_errors,
     );
-    let presentation_nodes = match scan_presentation_nodes(
+    let mut progression_package = ProgressionPackageData::new(
         &manager,
         &root,
         &globals_data,
         &localized_tags,
         &mut localized_cache,
+    );
+    let presentation_nodes = match scan_presentation_nodes(
+        &mut progression_package,
         objectives.len(),
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
     ) {
         Ok(nodes) => nodes,
         Err(error) => {
@@ -1182,30 +1218,49 @@ fn scan_packages(
     };
     attach_presentation_node_objective_owners(&mut objectives, &presentation_nodes);
     if let Err(error) = scan_metric_objective_owners(
-        &manager,
-        &root,
-        &globals_data,
-        &localized_tags,
-        &mut localized_cache,
+        &mut progression_package,
         &presentation_nodes,
         &mut objectives,
     ) {
         progression_package_errors.push(format!("Metric objective owners: {error}"));
     }
     if let Err(error) = scan_record_objective_owners(
-        &manager,
-        &root,
-        &globals_data,
-        &localized_tags,
-        &mut localized_cache,
+        &mut progression_package,
         &presentation_nodes,
         &mut objectives,
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
     ) {
         progression_package_errors.push(format!("Record objective owners: {error}"));
+    }
+    let location_contexts = match scan_location_condition_contexts(&mut progression_package) {
+        Ok(locations) => locations,
+        Err(error) => {
+            progression_package_errors.push(format!("Location unlock conditions: {error}"));
+            Vec::new()
+        }
+    };
+    if let Err(error) = scan_activity_condition_contexts(
+        &mut progression_package,
+        &location_contexts,
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
+    ) {
+        progression_package_errors.push(format!("Activity unlock conditions: {error}"));
     }
     let collectible_item_paths = retain_progression_scan(
         "Collectible item paths",
         scan_collectible_item_paths(&manager, &root, &presentation_nodes),
+        &mut progression_package_errors,
+    );
+    let collectible_condition_contexts = retain_progression_scan(
+        "Collectible unlock conditions",
+        scan_collectible_condition_contexts(&manager, &root, &presentation_nodes),
+        &mut progression_package_errors,
+    );
+    let pending_collectibles = retain_progression_scan(
+        "Collectible definitions",
+        scan_collectibles(&manager, &root, &presentation_nodes),
         &mut progression_package_errors,
     );
     let progression_package_error =
@@ -1269,19 +1324,42 @@ fn scan_packages(
         if item.len() < 188 {
             continue;
         }
-        if let Some(metadata) = item_inventory_metadata(&item, &inventory_buckets) {
+        let metadata = item_inventory_metadata(&item, &inventory_buckets);
+        if let Some(metadata) = metadata {
             inventory_metadata.insert(hash, metadata);
         }
+        let objective_indices = item_objective_indices(&item, objectives.len());
+        let objective_paths = collectible_item_paths
+            .get(&index)
+            .map_or(&[][..], Vec::as_slice);
         let string_row = string_rows + index * 24;
         let string_tag = if u32_at(&string_map, string_row).ok().map(u64::from) == Some(hash) {
             TagHash(u32_at(&string_map, string_row + 16)?)
         } else {
             let Some(&tag) = string_tags.get(&hash) else {
+                attach_item_objective_owners(
+                    &mut objectives,
+                    &objective_indices,
+                    hash,
+                    "",
+                    "",
+                    metadata,
+                    objective_paths,
+                );
                 continue;
             };
             tag
         };
         let Ok(string_thing) = manager.read_tag(string_tag) else {
+            attach_item_objective_owners(
+                &mut objectives,
+                &objective_indices,
+                hash,
+                "",
+                "",
+                metadata,
+                objective_paths,
+            );
             continue;
         };
         let mut name = resolve_string(
@@ -1326,6 +1404,15 @@ fn scan_packages(
             let Some((derived_name, derived_type_name)) =
                 stat_allocation_labels(&item, &stat_names)
             else {
+                attach_item_objective_owners(
+                    &mut objectives,
+                    &objective_indices,
+                    hash,
+                    "",
+                    &type_name,
+                    metadata,
+                    objective_paths,
+                );
                 continue;
             };
             name = derived_name;
@@ -1339,22 +1426,31 @@ fn scan_packages(
         } else {
             names.entry(hash).or_insert_with(|| name.clone());
         }
-        for objective_index in item_objective_indices(&item, objectives.len()) {
-            add_objective_owner(
-                &mut objectives,
-                objective_index,
-                ObjectiveOwnerDef {
-                    hash,
-                    kind: ObjectiveOwnerKind::InventoryItem,
-                    name: name.clone(),
-                    type_name: type_name.clone(),
-                    paths: collectible_item_paths
-                        .get(&index)
-                        .cloned()
-                        .unwrap_or_default(),
-                },
-            );
-        }
+        attach_item_condition_contexts(
+            &item,
+            ItemProgressionContext {
+                hash,
+                name: &name,
+                type_name: &type_name,
+                paths: collectible_item_paths
+                    .get(&index)
+                    .map_or(&[], Vec::as_slice),
+            },
+            collectible_condition_contexts
+                .get(&index)
+                .map_or(&[], Vec::as_slice),
+            &mut unlock_flag_definitions,
+            &mut unlock_value_definitions,
+        );
+        attach_item_objective_owners(
+            &mut objectives,
+            &objective_indices,
+            hash,
+            &name,
+            &type_name,
+            metadata,
+            objective_paths,
+        );
         if let Ok(category) = u32_at(&item, 392) {
             if category != 0 && category != u32::MAX {
                 plug_category_by_hash.insert(hash, category);
@@ -1465,6 +1561,9 @@ fn scan_packages(
         item_socket_lists,
         &mut items,
     )?;
+    sort_progression_contexts(&mut unlock_flag_definitions);
+    sort_progression_contexts(&mut unlock_value_definitions);
+    let collectibles = materialize_collectibles(pending_collectibles, &hashes, &names, &type_names);
     Ok(ScannedCatalog {
         items,
         names,
@@ -1475,8 +1574,32 @@ fn scan_packages(
         objectives,
         unlock_flag_definitions,
         unlock_value_definitions,
+        collectibles,
         progression_package_error,
     })
+}
+
+fn materialize_collectibles(
+    pending: Vec<PendingCollectibleDef>,
+    item_hashes: &[u64],
+    names: &HashMap<u64, String>,
+    type_names: &HashMap<u64, String>,
+) -> Vec<CollectibleDef> {
+    pending
+        .into_iter()
+        .filter_map(|collectible| {
+            let item_hash = *item_hashes.get(collectible.item_index)?;
+            Some(CollectibleDef {
+                index: collectible.index,
+                hash: collectible.hash,
+                item_hash,
+                name: names.get(&item_hash).cloned().unwrap_or_default(),
+                type_name: type_names.get(&item_hash).cloned().unwrap_or_default(),
+                paths: collectible.paths,
+                conditions: collectible.conditions,
+            })
+        })
+        .collect()
 }
 
 fn build_socket_choices(
@@ -1703,6 +1826,37 @@ fn item_inventory_metadata(
         max_stack_size,
         bucket_capacity: Some(descriptor.capacity),
     })
+}
+
+fn attach_item_objective_owners(
+    objectives: &mut [ObjectiveDef],
+    objective_indices: &[usize],
+    hash: u64,
+    name: &str,
+    type_name: &str,
+    metadata: Option<InventoryMetadata>,
+    paths: &[Vec<String>],
+) {
+    let owner_type = if type_name.trim().is_empty() {
+        metadata.map_or_else(String::new, InventoryMetadata::bucket_label)
+    } else {
+        type_name.to_owned()
+    };
+    for &objective_index in objective_indices {
+        add_objective_owner(
+            objectives,
+            objective_index,
+            ObjectiveOwnerDef {
+                hash,
+                kind: ObjectiveOwnerKind::InventoryItem,
+                name: name.to_owned(),
+                type_name: owner_type.clone(),
+                description: String::new(),
+                traits: Vec::new(),
+                paths: paths.to_vec(),
+            },
+        );
+    }
 }
 
 fn infer_socket_label(
@@ -2391,6 +2545,7 @@ mod tests {
             compact_slot: Some(26),
             name: Some("Crucible Access".into()),
             description: None,
+            tested_by: Vec::new(),
         };
         let value = UnlockDefinition {
             hash: 0x14D6_FB47,
@@ -2398,6 +2553,7 @@ mod tests {
             compact_slot: Some(58),
             name: None,
             description: None,
+            tested_by: Vec::new(),
         };
         let catalog = Catalog::finish(
             CatalogContents {
@@ -2420,6 +2576,7 @@ mod tests {
                 }],
                 unlock_flag_definitions: vec![flag.clone()],
                 unlock_value_definitions: vec![value.clone()],
+                collectibles: Vec::new(),
                 progression_package_error: Some("Objective definitions: unavailable".to_owned()),
                 plug_pools: Vec::new(),
             },
@@ -2470,6 +2627,7 @@ mod tests {
             compact_slot: Some(26),
             name: None,
             description: None,
+            tested_by: Vec::new(),
         }];
         let mut errors = Vec::new();
 
@@ -2667,6 +2825,32 @@ mod tests {
     }
 
     #[test]
+    fn unnamed_item_objective_owners_keep_the_installed_bucket_type() {
+        let mut objectives = vec![ObjectiveDef::default()];
+        let metadata = InventoryMetadata {
+            scope: InventoryScope::Character,
+            native_bucket_id: 37,
+            stackability: ItemStackability::Stackable,
+            max_stack_size: Some(1),
+            bucket_capacity: Some(64),
+        };
+
+        attach_item_objective_owners(
+            &mut objectives,
+            &[0],
+            0x1234_5678,
+            "",
+            "",
+            Some(metadata),
+            &[],
+        );
+
+        assert_eq!(objectives[0].owners.len(), 1);
+        assert!(objectives[0].owners[0].name.is_empty());
+        assert_eq!(objectives[0].owners[0].type_name, "General inventory");
+    }
+
+    #[test]
     fn inventory_apis_resolve_profile_only_items_and_keep_character_items_safe() {
         let character = ItemDef {
             hash: 30,
@@ -2720,6 +2904,7 @@ mod tests {
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
+                collectibles: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![Vec::new()],
             },
@@ -2796,6 +2981,7 @@ mod tests {
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
+                collectibles: Vec::new(),
                 progression_package_error: None,
                 plug_pools: Vec::new(),
             },
@@ -2857,6 +3043,7 @@ mod tests {
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
+                collectibles: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![
                     vec![10, 20, 354_293_076],
@@ -2921,6 +3108,7 @@ mod tests {
             "objectives": [],
             "unlock_flag_definitions": [],
             "unlock_value_definitions": [],
+            "collectibles": [],
             "plug_pools": [],
         });
         assert!(serde_json::from_value::<CatalogCache>(complete.clone()).is_ok());
@@ -2929,6 +3117,7 @@ mod tests {
             "objectives",
             "unlock_flag_definitions",
             "unlock_value_definitions",
+            "collectibles",
         ] {
             let mut incomplete = complete.clone();
             incomplete.as_object_mut().unwrap().remove(required);
@@ -2957,6 +3146,7 @@ mod tests {
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
+                collectibles: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
             },

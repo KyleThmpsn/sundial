@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
     time::Duration,
 };
@@ -19,6 +19,8 @@ use super::{
 
 enum StartupEvent {
     Progress(CatalogProgress),
+    SettingsChoice(PathBuf),
+    FutureSchema(PendingFutureSchemaLoad),
     Finished(Box<Result<SundialApp, String>>),
 }
 
@@ -60,45 +62,55 @@ impl StartupApp {
     }
 
     fn begin_loading(&mut self, install_path: PathBuf, preferred_layout: Option<SettingsLayout>) {
+        let (sender, receiver) = mpsc::channel();
+        let preferences = self.preferences.clone();
         self.install_path = Some(install_path.clone());
-        self.receiver = None;
+        self.receiver = Some(receiver);
         self.error = None;
         self.pending_settings_choice = None;
         self.pending_future_schema = None;
-        match resolve_settings_path(&install_path, preferred_layout) {
-            SettingsPathResolution::Found(layout, settings_path) => {
-                self.begin_loading_at(install_path, settings_path, layout);
-            }
-            SettingsPathResolution::Missing => {
-                self.error = Some(missing_settings_message(&install_path));
-            }
-            SettingsPathResolution::Ambiguous => {
-                self.pending_settings_choice = Some(install_path);
-            }
-        }
-    }
-
-    fn begin_loading_at(
-        &mut self,
-        install_path: PathBuf,
-        settings_path: PathBuf,
-        settings_layout: SettingsLayout,
-    ) {
-        match load_json(&settings_path) {
-            Ok(document) => {
-                if let Some(schema_version) = game_settings::future_schema_version(&document) {
-                    self.pending_future_schema = Some(PendingFutureSchemaLoad {
-                        install_path,
-                        settings_path,
-                        settings_layout,
-                        schema_version,
-                    });
-                } else {
-                    self.start_loading_at(install_path, settings_path, settings_layout);
+        self.progress = CatalogProgress {
+            message: "Checking the saved installation…",
+            completed: 0,
+            total: 0,
+        };
+        thread::spawn(
+            move || match resolve_settings_path(&install_path, preferred_layout) {
+                SettingsPathResolution::Found(settings_layout, settings_path) => {
+                    match load_json(&settings_path) {
+                        Ok(document) => {
+                            if let Some(schema_version) =
+                                game_settings::future_schema_version(&document)
+                            {
+                                let _ = sender.send(StartupEvent::FutureSchema(
+                                    PendingFutureSchemaLoad {
+                                        install_path,
+                                        settings_path,
+                                        settings_layout,
+                                        schema_version,
+                                    },
+                                ));
+                            } else {
+                                load_editor(
+                                    &sender,
+                                    install_path,
+                                    settings_path,
+                                    settings_layout,
+                                    preferences,
+                                );
+                            }
+                        }
+                        Err(error) => send_startup_error(&sender, error),
+                    }
                 }
-            }
-            Err(error) => self.error = Some(error),
-        }
+                SettingsPathResolution::Missing => {
+                    send_startup_error(&sender, missing_settings_message(&install_path));
+                }
+                SettingsPathResolution::Ambiguous => {
+                    let _ = sender.send(StartupEvent::SettingsChoice(install_path));
+                }
+            },
+        );
     }
 
     fn start_loading_at(
@@ -120,17 +132,13 @@ impl StartupApp {
             total: 0,
         };
         thread::spawn(move || {
-            let progress_sender = sender.clone();
-            let result = SundialApp::new_with_progress(
+            load_editor(
+                &sender,
+                install_path,
                 settings_path,
                 settings_layout,
-                install_path,
                 preferences,
-                move |progress| {
-                    let _ = progress_sender.send(StartupEvent::Progress(progress));
-                },
             );
-            let _ = sender.send(StartupEvent::Finished(Box::new(result)));
         });
     }
 
@@ -147,12 +155,30 @@ impl StartupApp {
 
     fn receive_events(&mut self) {
         let mut events = Vec::new();
+        let mut disconnected = false;
         if let Some(receiver) = &self.receiver {
-            events.extend(receiver.try_iter());
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
         }
         for event in events {
             match event {
                 StartupEvent::Progress(progress) => self.progress = progress,
+                StartupEvent::SettingsChoice(install_path) => {
+                    self.pending_settings_choice = Some(install_path);
+                    self.receiver = None;
+                }
+                StartupEvent::FutureSchema(pending) => {
+                    self.pending_future_schema = Some(pending);
+                    self.receiver = None;
+                }
                 StartupEvent::Finished(result) => match *result {
                     Ok(mut editor) => {
                         editor.logo.clone_from(&self.logo);
@@ -173,6 +199,13 @@ impl StartupApp {
                     }
                 },
             }
+        }
+        if disconnected && self.receiver.is_some() {
+            self.error = Some(
+                "The startup task stopped unexpectedly. Try again or choose another folder"
+                    .to_owned(),
+            );
+            self.receiver = None;
         }
     }
 
@@ -212,11 +245,7 @@ impl StartupApp {
                                         )
                                         .clicked()
                                     {
-                                        self.begin_loading_at(
-                                            install_path.clone(),
-                                            path.clone(),
-                                            layout,
-                                        );
+                                        self.begin_loading(install_path.clone(), Some(layout));
                                     }
                                     ui.label(
                                         egui::RichText::new(path.display().to_string())
@@ -322,6 +351,30 @@ impl StartupApp {
     }
 }
 
+fn load_editor(
+    sender: &Sender<StartupEvent>,
+    install_path: PathBuf,
+    settings_path: PathBuf,
+    settings_layout: SettingsLayout,
+    preferences: Preferences,
+) {
+    let progress_sender = sender.clone();
+    let result = SundialApp::new_with_progress(
+        settings_path,
+        settings_layout,
+        install_path,
+        preferences,
+        move |progress| {
+            let _ = progress_sender.send(StartupEvent::Progress(progress));
+        },
+    );
+    let _ = sender.send(StartupEvent::Finished(Box::new(result)));
+}
+
+fn send_startup_error(sender: &Sender<StartupEvent>, error: String) {
+    let _ = sender.send(StartupEvent::Finished(Box::new(Err(error))));
+}
+
 impl eframe::App for StartupApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.receive_events();
@@ -331,5 +384,41 @@ impl eframe::App for StartupApp {
             self.draw_startup(ctx);
             ctx.request_repaint_after(Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_construction_does_not_probe_the_saved_installation() {
+        let selection = InstallSelection {
+            install_path: std::env::temp_dir().join("sundial-unavailable-install"),
+            preferred_layout: None,
+        };
+
+        let app = StartupApp::new(Some(selection), Preferences::default());
+
+        assert!(app.receiver.is_some());
+        assert!(app.error.is_none());
+        assert_eq!(app.progress.message, "Checking the saved installation…");
+    }
+
+    #[test]
+    fn disconnected_startup_worker_becomes_a_recoverable_error() {
+        let mut app = StartupApp::new(None, Preferences::default());
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        app.receiver = Some(receiver);
+
+        app.receive_events();
+
+        assert!(app.receiver.is_none());
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|error| error.contains("stopped unexpectedly"))
+        );
     }
 }

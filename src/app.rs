@@ -41,9 +41,13 @@ mod inventory;
 
 mod item_editor;
 
+mod glyphs;
+
 mod inventory_page;
 
 mod progression;
+
+mod collections_page;
 
 const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
 const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
@@ -93,6 +97,14 @@ enum ViewMode {
     Progression,
     AdvancedJson,
     Preferences,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ProgressionSection {
+    #[default]
+    Unlocks,
+    Investment,
+    Collections,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -341,9 +353,11 @@ struct SundialApp {
     remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
     view_mode: ViewMode,
+    progression_section: ProgressionSection,
     game_settings_tab: game_settings::Tab,
     key_binding_ui: game_settings::KeyBindingUiState,
     progression_ui: progression::UiState,
+    collections_ui: collections_page::UiState,
     raw_json: String,
     raw_json_document: Value,
     json_editor: JsonEditorState,
@@ -428,9 +442,11 @@ impl SundialApp {
             remember_plug_selection_mode_after_confirmation: false,
             show_dummy_items: false,
             view_mode: ViewMode::Characters,
+            progression_section: ProgressionSection::default(),
             game_settings_tab: game_settings::Tab::Player,
             key_binding_ui: game_settings::KeyBindingUiState::default(),
             progression_ui: progression::UiState::default(),
+            collections_ui: collections_page::UiState::default(),
             raw_json,
             raw_json_document,
             json_editor: JsonEditorState::default(),
@@ -596,6 +612,9 @@ impl SundialApp {
         if view == ViewMode::AdvancedJson {
             self.sync_raw_json_if_stale();
             self.json_editor.restore_location_next_draw();
+        }
+        if self.view_mode == ViewMode::Progression || view == ViewMode::Progression {
+            self.progression_ui.reset_navigation();
         }
         self.view_mode = view;
     }
@@ -1018,7 +1037,7 @@ impl SundialApp {
                     (ViewMode::ProfileInventory, "Profile inventory"),
                     (ViewMode::CharacterInventory, "Character inventory"),
                     (ViewMode::GameSettings, "Game settings"),
-                    (ViewMode::Progression, "Unlocks & investment"),
+                    (ViewMode::Progression, "Progression"),
                     (ViewMode::AdvancedJson, "All settings (JSON)"),
                     (ViewMode::Preferences, "Preferences"),
                 ] {
@@ -1614,13 +1633,76 @@ impl eframe::App for SundialApp {
                     }
                 }
                 ViewMode::Progression => {
-                    progression::draw_page(
-                        ui,
-                        &self.document,
-                        &self.manifest,
-                        self.destiny_symbol_font_error.as_deref(),
-                        &mut self.progression_ui,
-                    );
+                    ui.horizontal(|ui| {
+                        ui.heading("Progression");
+                        ui.label(
+                            egui::RichText::new("EXPERIMENTAL")
+                                .small()
+                                .color(ui.visuals().warn_fg_color),
+                        );
+                    });
+                    ui.add_space(8.0);
+                    let section_changed = ui
+                        .horizontal(|ui| {
+                            let mut changed = false;
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.progression_section,
+                                    ProgressionSection::Unlocks,
+                                    "Unlocks",
+                                )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.progression_section,
+                                    ProgressionSection::Investment,
+                                    "Investment",
+                                )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.progression_section,
+                                    ProgressionSection::Collections,
+                                    "Collections",
+                                )
+                                .changed();
+                            changed
+                        })
+                        .inner;
+                    if section_changed {
+                        self.progression_ui.reset_navigation();
+                    }
+                    ui.separator();
+
+                    match self.progression_section {
+                        ProgressionSection::Unlocks | ProgressionSection::Investment => {
+                            let view = match self.progression_section {
+                                ProgressionSection::Unlocks => progression::View::Unlocks,
+                                ProgressionSection::Investment => progression::View::Investment,
+                                ProgressionSection::Collections => unreachable!(),
+                            };
+                            if progression::draw_content(
+                                ui,
+                                &mut self.document,
+                                &self.manifest,
+                                self.destiny_symbol_font_error.as_deref(),
+                                &mut self.progression_ui,
+                                view,
+                            ) {
+                                self.dirty = true;
+                                self.set_status(
+                                    "Progression updated; click Save to write it",
+                                    false,
+                                );
+                            }
+                        }
+                        ProgressionSection::Collections => collections_page::draw_content(
+                            ui,
+                            &self.document,
+                            &self.manifest,
+                            &mut self.collections_ui,
+                        ),
+                    }
                 }
                 ViewMode::AdvancedJson => {
                     if self.json_editor_window_open {

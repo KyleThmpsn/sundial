@@ -4,6 +4,8 @@ use eframe::egui;
 
 use crate::{catalog::Catalog, hash::format_hash};
 
+use super::glyphs::{self, Glyph};
+
 const POWER_PER_LEVEL: i64 = 10;
 const MINIMUM_POWERED_ITEM_POWER: i64 = 750;
 const MAXIMUM_POWERED_ITEM_POWER: i64 = 1060;
@@ -12,27 +14,13 @@ const ITEM_HEADER_ICON_SIZE: f32 = 48.0;
 const ITEM_HEADER_ROW_HEIGHT: f32 = 48.0;
 const ITEM_HEADER_WITH_METADATA_ROW_HEIGHT: f32 = 54.0;
 
-#[derive(Clone, Copy)]
-enum FeatherActionIcon {
-    Trash,
-    Lock,
-    Unlock,
-}
-
-/// Draws a compact, neutral delete button using Feather's Trash 2 icon.
+/// Draws a compact, neutral delete button.
 pub(crate) fn draw_trash_button(
     ui: &mut egui::Ui,
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_feather_action_button(
-        ui,
-        enabled,
-        accessible_label,
-        FeatherActionIcon::Trash,
-        None,
-        true,
-    )
+    draw_action_button(ui, enabled, accessible_label, Glyph::Trash, None, true)
 }
 
 /// Draws the active lock state in a muted green.
@@ -41,11 +29,11 @@ pub(crate) fn draw_lock_button(
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_feather_action_button(
+    draw_action_button(
         ui,
         enabled,
         accessible_label,
-        FeatherActionIcon::Lock,
+        Glyph::Lock,
         Some(egui::Color32::from_rgb(102, 153, 113)),
         false,
     )
@@ -58,22 +46,21 @@ pub(crate) fn draw_unlock_button(
     accessible_label: &str,
 ) -> egui::Response {
     let color = ui.visuals().weak_text_color();
-    draw_feather_action_button(
+    draw_action_button(
         ui,
         enabled,
         accessible_label,
-        FeatherActionIcon::Unlock,
+        Glyph::Unlock,
         Some(color),
         false,
     )
 }
 
-/// Feather action icons are MIT-licensed; see THIRD_PARTY_NOTICES.md.
-fn draw_feather_action_button(
+fn draw_action_button(
     ui: &mut egui::Ui,
     enabled: bool,
     accessible_label: &str,
-    icon: FeatherActionIcon,
+    icon: Glyph,
     icon_color: Option<egui::Color32>,
     framed: bool,
 ) -> egui::Response {
@@ -81,11 +68,7 @@ fn draw_feather_action_button(
     let button_side = (ui.text_style_height(&egui::TextStyle::Body)
         + 2.0 * ui.spacing().button_padding.y)
         .max(20.0);
-    let side = if framed {
-        button_side
-    } else {
-        (button_side + 2.0).min(22.0)
-    };
+    let side = (button_side - 4.0).max(16.0);
     let response = if framed {
         ui.add_enabled(
             enabled,
@@ -109,103 +92,21 @@ fn draw_feather_action_button(
     });
 
     if ui.is_rect_visible(response.rect) {
-        let base_icon_size = (response.rect.height() - 5.0).clamp(12.0, 16.0);
-        let icon_size = if matches!(icon, FeatherActionIcon::Trash) {
-            base_icon_size - 2.0
-        } else {
-            base_icon_size
+        let base_icon_size = (response.rect.height() - 9.0).clamp(9.0, 12.0);
+        let icon_size = match icon {
+            Glyph::Trash => base_icon_size - 1.0,
+            Glyph::Lock | Glyph::Unlock => base_icon_size + 1.0,
+            Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronRight => base_icon_size,
         };
         let icon_rect =
             egui::Rect::from_center_size(response.rect.center(), egui::vec2(icon_size, icon_size));
-        let point = |x: f32, y: f32| {
-            egui::pos2(
-                icon_rect.left() + x / 24.0 * icon_rect.width(),
-                icon_rect.top() + y / 24.0 * icon_rect.height(),
-            )
-        };
         let color = if use_icon_color {
             icon_color.unwrap_or_else(|| ui.style().interact(&response).fg_stroke.color)
         } else {
             ui.style().interact(&response).fg_stroke.color
         };
         let stroke = egui::Stroke::new((icon_size / 12.0).max(1.0), color);
-        let painter = ui.painter();
-
-        match icon {
-            FeatherActionIcon::Trash => {
-                painter.add(egui::Shape::line(
-                    vec![point(3.0, 6.0), point(5.0, 6.0), point(21.0, 6.0)],
-                    stroke,
-                ));
-                painter.add(egui::Shape::line(
-                    vec![
-                        point(19.0, 6.0),
-                        point(19.0, 20.0),
-                        point(18.8, 20.8),
-                        point(18.2, 21.5),
-                        point(17.0, 22.0),
-                        point(7.0, 22.0),
-                        point(5.8, 21.5),
-                        point(5.2, 20.8),
-                        point(5.0, 20.0),
-                        point(5.0, 6.0),
-                    ],
-                    stroke,
-                ));
-                painter.add(egui::Shape::line(
-                    vec![
-                        point(8.0, 6.0),
-                        point(8.0, 4.0),
-                        point(8.2, 3.2),
-                        point(8.8, 2.5),
-                        point(10.0, 2.0),
-                        point(14.0, 2.0),
-                        point(15.2, 2.5),
-                        point(15.8, 3.2),
-                        point(16.0, 4.0),
-                        point(16.0, 6.0),
-                    ],
-                    stroke,
-                ));
-                painter.line_segment([point(10.0, 11.0), point(10.0, 17.0)], stroke);
-                painter.line_segment([point(14.0, 11.0), point(14.0, 17.0)], stroke);
-            }
-            FeatherActionIcon::Lock | FeatherActionIcon::Unlock => {
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(point(3.0, 11.0), point(21.0, 22.0)),
-                    egui::CornerRadius::same(2),
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                let mut shackle = vec![
-                    point(7.0, 11.0),
-                    point(7.0, 7.0),
-                    point(7.3, 5.3),
-                    point(8.2, 3.8),
-                    point(9.7, 2.7),
-                    point(11.2, 2.1),
-                    point(12.0, 2.0),
-                ];
-                if matches!(icon, FeatherActionIcon::Lock) {
-                    shackle.extend([
-                        point(12.8, 2.1),
-                        point(14.3, 2.7),
-                        point(15.8, 3.8),
-                        point(16.7, 5.3),
-                        point(17.0, 7.0),
-                        point(17.0, 11.0),
-                    ]);
-                } else {
-                    shackle.extend([
-                        point(13.7, 2.2),
-                        point(15.2, 3.0),
-                        point(16.2, 4.3),
-                        point(16.9, 6.0),
-                    ]);
-                }
-                painter.add(egui::Shape::line(shackle, stroke));
-            }
-        }
+        glyphs::paint_with_stroke(ui, icon_rect, icon, stroke);
     }
 
     response
