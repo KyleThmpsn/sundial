@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    bubble_names,
     catalog::{Catalog as Manifest, CatalogProgress},
-    game_settings, storage, unnamed_plugs,
+    game_settings, orbit_map, storage, unnamed_plugs,
     updates::{RELEASES_URL, UpdateCheck, UpdateStatus},
 };
 
@@ -42,6 +43,8 @@ mod inventory;
 mod item_editor;
 
 mod glyphs;
+
+mod ui;
 
 mod inventory_page;
 
@@ -115,6 +118,54 @@ enum ConfirmationDialog {
     Exit,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeneratedFileSaveAction {
+    Save,
+    SaveAndExit,
+    ResetDefaults,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeneratedFileDecision {
+    Ask,
+    Replace,
+    KeepExisting,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeneratedFileKind {
+    OrbitMap,
+}
+
+impl GeneratedFileKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::OrbitMap => "Orbit map",
+        }
+    }
+
+    const fn file_name(self) -> &'static str {
+        match self {
+            Self::OrbitMap => "orbit_map.txt",
+        }
+    }
+}
+
+struct PendingGeneratedFile {
+    kind: GeneratedFileKind,
+    path: PathBuf,
+    existing: String,
+    generated: String,
+    diff: String,
+    action: GeneratedFileSaveAction,
+}
+
+enum GeneratedFilePlan {
+    Current(GeneratedFileKind, PathBuf),
+    Write(GeneratedFileKind, String),
+    KeepExisting(GeneratedFileKind, PathBuf),
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PlugSelectionMode {
@@ -122,6 +173,18 @@ enum PlugSelectionMode {
     Supported,
     MatchingSocketType,
     AnyPlug,
+}
+
+fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
+    match mode {
+        PlugSelectionMode::Supported => {}
+        PlugSelectionMode::MatchingSocketType => {
+            ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
+        }
+        PlugSelectionMode::AnyPlug => {
+            ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -225,7 +288,9 @@ struct Preferences {
     #[serde(default)]
     item_card_width: ItemCardWidth,
     #[serde(default)]
-    show_progression: bool,
+    experimental_bubble_names: bool,
+    #[serde(default)]
+    experimental_progression: bool,
 }
 
 const fn default_show_safety_warnings() -> bool {
@@ -275,7 +340,8 @@ impl Default for Preferences {
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
             item_card_width: ItemCardWidth::Standard,
-            show_progression: false,
+            experimental_bubble_names: false,
+            experimental_progression: false,
         }
     }
 }
@@ -332,6 +398,16 @@ struct CatalogTask {
     progress: CatalogProgress,
 }
 
+enum BubbleNamesTaskEvent {
+    Progress(CatalogProgress),
+    Finished(Result<PathBuf, String>),
+}
+
+struct BubbleNamesTask {
+    receiver: Receiver<BubbleNamesTaskEvent>,
+    progress: CatalogProgress,
+}
+
 struct SundialApp {
     settings_path: PathBuf,
     settings_layout: SettingsLayout,
@@ -352,7 +428,8 @@ struct SundialApp {
     always_open_json_editor_in_second_window: bool,
     show_plug_hashes: bool,
     item_card_width: ItemCardWidth,
-    show_progression: bool,
+    experimental_bubble_names: bool,
+    experimental_progression: bool,
     really_unsafe_warning_acknowledged: bool,
     remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
@@ -362,6 +439,7 @@ struct SundialApp {
     key_binding_ui: game_settings::KeyBindingUiState,
     progression_ui: progression::UiState,
     collections_ui: collections_page::UiState,
+    hash_inspection: progression::HashInspectionState,
     raw_json: String,
     raw_json_document: Value,
     json_editor: JsonEditorState,
@@ -370,6 +448,8 @@ struct SundialApp {
     about_open: bool,
     update_check: UpdateCheck,
     confirmation: Option<ConfirmationDialog>,
+    pending_generated_file: Option<PendingGeneratedFile>,
+    generated_file_decisions: Vec<(GeneratedFileKind, GeneratedFileDecision)>,
     exit_confirmed: bool,
     dirty: bool,
     status: String,
@@ -377,6 +457,7 @@ struct SundialApp {
     pending_install_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
     catalog_task: Option<CatalogTask>,
+    bubble_names_task: Option<BubbleNamesTask>,
     destiny_symbol_font_install: Option<PathBuf>,
     destiny_symbol_font_error: Option<String>,
 }
@@ -441,7 +522,8 @@ impl SundialApp {
                 .always_open_json_editor_in_second_window,
             show_plug_hashes: preferences.show_plug_hashes,
             item_card_width: preferences.item_card_width,
-            show_progression: preferences.show_progression,
+            experimental_bubble_names: preferences.experimental_bubble_names,
+            experimental_progression: preferences.experimental_progression,
             really_unsafe_warning_acknowledged: preferences
                 .really_unsafe_warning_acknowledged,
             remember_plug_selection_mode_after_confirmation: false,
@@ -452,6 +534,7 @@ impl SundialApp {
             key_binding_ui: game_settings::KeyBindingUiState::default(),
             progression_ui: progression::UiState::default(),
             collections_ui: collections_page::UiState::default(),
+            hash_inspection: progression::HashInspectionState::default(),
             raw_json,
             raw_json_document,
             json_editor: JsonEditorState::default(),
@@ -460,6 +543,8 @@ impl SundialApp {
             about_open: false,
             update_check: UpdateCheck::default(),
             confirmation: None,
+            pending_generated_file: None,
+            generated_file_decisions: Vec::new(),
             exit_confirmed: false,
             dirty: false,
             status: source_warning.as_ref().map_or_else(
@@ -474,6 +559,7 @@ impl SundialApp {
             pending_install_choice: None,
             pending_future_schema: None,
             catalog_task: None,
+            bubble_names_task: None,
             destiny_symbol_font_install: None,
             destiny_symbol_font_error: None,
         })
@@ -496,6 +582,7 @@ impl SundialApp {
                 self.class_armor_defaults = collect_class_armor_defaults(&doc);
                 self.persisted_document = doc.clone();
                 self.document = doc;
+                self.progression_ui.invalidate_document();
                 self.refresh_sunrise_version();
                 self.source_warning.clone_from(&warning);
                 self.selected_character = self
@@ -519,7 +606,10 @@ impl SundialApp {
         }
     }
 
-    fn save(&mut self) -> bool {
+    fn save_with_generated_files(&mut self, action: GeneratedFileSaveAction) -> bool {
+        if game_settings::ensure_schema_v8_preferences(&mut self.document) {
+            self.dirty = true;
+        }
         if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Not saved: {error}"), true);
             return false;
@@ -533,6 +623,15 @@ impl SundialApp {
             .source_warning
             .clone()
             .or_else(|| current_warning.clone());
+        let orbit_supported = self.document.pointer("/client/orbit_slice_set").is_some();
+        let generated_file_plans = match self.prepare_generated_files(orbit_supported, action) {
+            Ok(Some(plans)) => plans,
+            Ok(None) => return false,
+            Err(error) => {
+                self.set_status(format!("Not saved: {error}"), true);
+                return false;
+            }
+        };
         let safety_backup = if detected_warning.is_some() {
             match create_adjacent_backup(&self.settings_path) {
                 Ok(path) => Some(path),
@@ -562,10 +661,27 @@ impl SundialApp {
                     count => format!(" Corrected {count} invalid ability pairings."),
                 };
                 let size_note = settings_size_note(&result);
+                let generated_file_note = match self
+                    .complete_generated_file_plans(generated_file_plans)
+                {
+                    Ok(note) => note,
+                    Err(error) => {
+                        self.generated_file_decisions.clear();
+                        self.set_status(
+                            format!(
+                                "Saved settings, but a package-generated Sunrise file could not be written: {error}. Backup: {}",
+                                result.backup.display()
+                            ),
+                            true,
+                        );
+                        return false;
+                    }
+                };
+                self.generated_file_decisions.clear();
                 if let (Some(warning), Some(safety_backup)) = (detected_warning, safety_backup) {
                     self.set_status(
                         format!(
-                            "Saved after detecting an unexpected setting ({warning}).{repair_note}{size_note} The untouched source is at {}. Backup: {}",
+                            "Saved after detecting an unexpected setting ({warning}).{repair_note}{size_note}{generated_file_note} The untouched source is at {}. Backup: {}",
                             safety_backup.display(),
                             result.backup.display()
                         ),
@@ -574,7 +690,7 @@ impl SundialApp {
                 } else {
                     self.set_status(
                         format!(
-                            "Saved.{repair_note}{size_note} Backup: {}",
+                            "Saved.{repair_note}{size_note}{generated_file_note} Backup: {}",
                             result.backup.display()
                         ),
                         result.exceeds_size_limit,
@@ -583,6 +699,7 @@ impl SundialApp {
                 safe_to_close
             }
             Err(error) => {
+                self.generated_file_decisions.clear();
                 let suffix = safety_backup.map_or_else(String::new, |path| {
                     format!(" The untouched source is at {}.", path.display())
                 });
@@ -593,10 +710,140 @@ impl SundialApp {
     }
 
     fn save_all_edits(&mut self) -> bool {
+        self.save_all_edits_with_action(GeneratedFileSaveAction::Save)
+    }
+
+    fn save_all_edits_with_action(&mut self, action: GeneratedFileSaveAction) -> bool {
         if self.json_editor.has_unapplied_changes() && !self.apply_raw_json() {
             return false;
         }
-        self.save()
+        self.generated_file_decisions.clear();
+        self.save_with_generated_files(action)
+    }
+
+    fn prepare_generated_files(
+        &mut self,
+        orbit_supported: bool,
+        action: GeneratedFileSaveAction,
+    ) -> Result<Option<Vec<GeneratedFilePlan>>, String> {
+        let mut files = Vec::new();
+        if orbit_supported {
+            files.push((
+                GeneratedFileKind::OrbitMap,
+                orbit_map::path(&self.settings_path)?,
+                orbit_map::document(self.manifest.orbit_map_entries()),
+            ));
+        }
+        let mut plans = Vec::with_capacity(files.len());
+        for (kind, path, generated) in files {
+            let decision = self
+                .generated_file_decisions
+                .iter()
+                .rev()
+                .find_map(|(saved_kind, decision)| (*saved_kind == kind).then_some(*decision))
+                .unwrap_or(GeneratedFileDecision::Ask);
+            match decision {
+                GeneratedFileDecision::Replace => {
+                    plans.push(GeneratedFilePlan::Write(kind, generated));
+                }
+                GeneratedFileDecision::KeepExisting => {
+                    plans.push(GeneratedFilePlan::KeepExisting(kind, path));
+                }
+                GeneratedFileDecision::Ask => match fs::read(&path) {
+                    Ok(raw) => {
+                        let existing = String::from_utf8_lossy(&raw).into_owned();
+                        if normalized_generated_document(&existing)
+                            == normalized_generated_document(&generated)
+                        {
+                            plans.push(GeneratedFilePlan::Current(kind, path));
+                        } else {
+                            let diff = generated_file_diff(kind.file_name(), &existing, &generated);
+                            self.pending_generated_file = Some(PendingGeneratedFile {
+                                kind,
+                                path: path.clone(),
+                                existing,
+                                generated,
+                                diff,
+                                action,
+                            });
+                            self.set_status(
+                                format!(
+                                    "Save paused: {} differs from Sundial's package-generated {}",
+                                    path.display(),
+                                    kind.label()
+                                ),
+                                false,
+                            );
+                            return Ok(None);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        plans.push(GeneratedFilePlan::Write(kind, generated));
+                    }
+                    Err(error) => {
+                        return Err(format!("Could not read {}: {error}", path.display()));
+                    }
+                },
+            }
+        }
+        Ok(Some(plans))
+    }
+
+    fn complete_generated_file_plans(
+        &self,
+        plans: Vec<GeneratedFilePlan>,
+    ) -> Result<String, String> {
+        let mut note = String::new();
+        for plan in plans {
+            match plan {
+                GeneratedFilePlan::Current(kind, path) => {
+                    note.push_str(&format!(" {} unchanged: {}.", kind.label(), path.display()))
+                }
+                GeneratedFilePlan::KeepExisting(kind, path) => note.push_str(&format!(
+                    " Existing {} kept: {}.",
+                    kind.label(),
+                    path.display()
+                )),
+                GeneratedFilePlan::Write(kind, document) => {
+                    let path = match kind {
+                        GeneratedFileKind::OrbitMap => {
+                            orbit_map::save(&self.settings_path, &document)?
+                        }
+                    };
+                    note.push_str(&format!(" {}: {}.", kind.label(), path.display()));
+                }
+            }
+        }
+        Ok(note)
+    }
+
+    fn resume_generated_file_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: GeneratedFileSaveAction,
+        kind: GeneratedFileKind,
+        decision: GeneratedFileDecision,
+    ) {
+        self.generated_file_decisions
+            .retain(|(saved_kind, _)| *saved_kind != kind);
+        if decision != GeneratedFileDecision::Ask {
+            self.generated_file_decisions.push((kind, decision));
+        }
+        match action {
+            GeneratedFileSaveAction::Save => {
+                let _ = self.save_with_generated_files(action);
+            }
+            GeneratedFileSaveAction::SaveAndExit => {
+                let safe_to_close = self.save_with_generated_files(action);
+                if !self.has_unsaved_changes() && safe_to_close {
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            GeneratedFileSaveAction::ResetDefaults => {
+                self.reset_to_sunrise_defaults_with_generated_files();
+            }
+        }
     }
 
     fn has_unsaved_changes(&self) -> bool {
@@ -604,6 +851,9 @@ impl SundialApp {
     }
 
     fn select_view(&mut self, view: ViewMode) {
+        if view == ViewMode::Progression && !self.experimental_progression {
+            return;
+        }
         if self.view_mode == view {
             return;
         }
@@ -625,6 +875,11 @@ impl SundialApp {
     }
 
     fn reset_to_sunrise_defaults(&mut self) {
+        self.generated_file_decisions.clear();
+        self.reset_to_sunrise_defaults_with_generated_files();
+    }
+
+    fn reset_to_sunrise_defaults_with_generated_files(&mut self) {
         if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Defaults not restored: {error}"), true);
             return;
@@ -633,6 +888,19 @@ impl SundialApp {
             Ok(document) => document,
             Err(error) => {
                 self.set_status(error, true);
+                return;
+            }
+        };
+        let orbit_supported = default_document
+            .pointer("/client/orbit_slice_set")
+            .is_some();
+        let generated_file_plans = match self
+            .prepare_generated_files(orbit_supported, GeneratedFileSaveAction::ResetDefaults)
+        {
+            Ok(Some(plans)) => plans,
+            Ok(None) => return,
+            Err(error) => {
+                self.set_status(format!("Defaults not restored: {error}"), true);
                 return;
             }
         };
@@ -649,7 +917,10 @@ impl SundialApp {
         match save_json(&self.settings_path, &default_document) {
             Ok(result) => {
                 let size_note = settings_size_note(&result);
+                let generated_file_result =
+                    self.complete_generated_file_plans(generated_file_plans);
                 self.document = default_document;
+                self.progression_ui.invalidate_document();
                 self.persisted_document = self.document.clone();
                 self.refresh_sunrise_version();
                 self.source_warning = validate_document(&self.document).err();
@@ -660,22 +931,41 @@ impl SundialApp {
                 self.clear_picker_state();
                 self.sync_raw_json();
                 self.dirty = false;
+                let generated_file_note = match generated_file_result {
+                    Ok(note) => note,
+                    Err(error) => {
+                        self.generated_file_decisions.clear();
+                        self.set_status(
+                            format!(
+                                "Restored the settings defaults, but a package-generated Sunrise file could not be written: {error}. Original: {}. Backup: {}",
+                                adjacent_backup.display(),
+                                result.backup.display()
+                            ),
+                            true,
+                        );
+                        return;
+                    }
+                };
+                self.generated_file_decisions.clear();
                 self.set_status(
                     format!(
-                        "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}",
+                        "Restored the defaults bundled with the installed Project Sunrise.{size_note}{generated_file_note} Original: {}. Backup: {}",
                         adjacent_backup.display(),
                         result.backup.display()
                     ),
                     result.exceeds_size_limit,
                 );
             }
-            Err(error) => self.set_status(
-                format!(
-                    "Defaults not restored: {error}. The untouched source is at {}",
-                    adjacent_backup.display()
-                ),
-                true,
-            ),
+            Err(error) => {
+                self.generated_file_decisions.clear();
+                self.set_status(
+                    format!(
+                        "Defaults not restored: {error}. The untouched source is at {}",
+                        adjacent_backup.display()
+                    ),
+                    true,
+                );
+            }
         }
     }
 
@@ -705,7 +995,8 @@ impl SundialApp {
             always_open_json_editor_in_second_window: self.always_open_json_editor_in_second_window,
             show_plug_hashes: self.show_plug_hashes,
             item_card_width: self.item_card_width,
-            show_progression: self.show_progression,
+            experimental_bubble_names: self.experimental_bubble_names,
+            experimental_progression: self.experimental_progression,
         };
         let encoded = serde_json::to_vec_pretty(&preferences)
             .map_err(|e| format!("Could not encode Sundial's preferences: {e}"))?;
@@ -827,6 +1118,7 @@ impl SundialApp {
         self.class_armor_defaults = collect_class_armor_defaults(&document);
         self.persisted_document = document.clone();
         self.document = document;
+        self.progression_ui.invalidate_document();
         self.refresh_sunrise_version();
         self.source_warning.clone_from(&warning);
         self.selected_character = 0;
@@ -950,6 +1242,86 @@ impl SundialApp {
         }
     }
 
+    fn start_bubble_names_task(&mut self, ctx: &egui::Context) {
+        if !self.experimental_bubble_names {
+            return;
+        }
+        if self.catalog_task.is_some() || self.bubble_names_task.is_some() {
+            self.set_status("Another package task is already running", true);
+            return;
+        }
+        let install_path = self.install_path.clone();
+        let settings_path = self.settings_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.bubble_names_task = Some(BubbleNamesTask {
+            receiver,
+            progress: CatalogProgress {
+                message: "Opening the installed game packages…",
+                completed: 0,
+                total: 0,
+            },
+        });
+        self.set_status("Generating the experimental Bubble-name list…", false);
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let progress_sender = sender.clone();
+            let progress_ctx = ctx.clone();
+            let result = bubble_names::generate_for_install(
+                &install_path,
+                &settings_path,
+                move |completed, total| {
+                    let _ = progress_sender.send(BubbleNamesTaskEvent::Progress(CatalogProgress {
+                        message: "Resolving Bubble names…",
+                        completed,
+                        total,
+                    }));
+                    progress_ctx.request_repaint();
+                },
+            );
+            let _ = sender.send(BubbleNamesTaskEvent::Finished(result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_bubble_names_task(&mut self) {
+        loop {
+            let event = match self
+                .bubble_names_task
+                .as_ref()
+                .map(|task| task.receiver.try_recv())
+            {
+                Some(Ok(event)) => event,
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    self.bubble_names_task = None;
+                    self.set_status("Bubble-name generation stopped unexpectedly", true);
+                    break;
+                }
+            };
+            match event {
+                BubbleNamesTaskEvent::Progress(progress) => {
+                    if let Some(task) = &mut self.bubble_names_task {
+                        task.progress = progress;
+                    }
+                }
+                BubbleNamesTaskEvent::Finished(result) => {
+                    self.bubble_names_task = None;
+                    match result {
+                        Ok(path) => self.set_status(
+                            format!("Bubble-name list generated: {}", path.display()),
+                            false,
+                        ),
+                        Err(error) => self.set_status(
+                            format!("Bubble-name list was not generated: {error}"),
+                            true,
+                        ),
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     fn rebuild_catalog(&mut self, ctx: &egui::Context) {
         self.set_status("Scanning installed Shadowkeep packages…", false);
         self.start_catalog_task(
@@ -1038,18 +1410,27 @@ impl SundialApp {
             .exact_width(MAIN_SIDEBAR_WIDTH)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                for (view, label, visible) in [
-                    (ViewMode::Characters, "Characters & loadouts", true),
-                    (ViewMode::ProfileInventory, "Profile inventory", true),
-                    (ViewMode::CharacterInventory, "Character inventory", true),
-                    (ViewMode::GameSettings, "Game settings", true),
-                    (ViewMode::Progression, "Progression", self.show_progression),
-                    (ViewMode::AdvancedJson, "All settings (JSON)", true),
-                    (ViewMode::Preferences, "Preferences", true),
+                for (view, label) in [
+                    (ViewMode::Characters, "Characters & loadouts"),
+                    (ViewMode::ProfileInventory, "Profile inventory"),
+                    (ViewMode::CharacterInventory, "Character inventory"),
+                    (ViewMode::GameSettings, "Game settings"),
                 ] {
-                    if !visible {
-                        continue;
+                    if ui.selectable_label(self.view_mode == view, label).clicked() {
+                        self.select_view(view);
                     }
+                }
+                if self.experimental_progression
+                    && ui
+                        .selectable_label(self.view_mode == ViewMode::Progression, "Progression")
+                        .clicked()
+                {
+                    self.select_view(ViewMode::Progression);
+                }
+                for (view, label) in [
+                    (ViewMode::AdvancedJson, "All settings (JSON)"),
+                    (ViewMode::Preferences, "Preferences"),
+                ] {
                     if ui.selectable_label(self.view_mode == view, label).clicked() {
                         self.select_view(view);
                     }
@@ -1201,6 +1582,36 @@ impl SundialApp {
         });
     }
 
+    fn draw_bubble_names_progress(&self, ctx: &egui::Context) {
+        let Some(task) = &self.bubble_names_task else {
+            return;
+        };
+        let progress = task.progress;
+        egui::Modal::new("bubble_names_task_progress".into()).show(ctx, |ui| {
+            ui.set_width(500.0);
+            ui.heading("Generating Bubble-name list");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.strong(progress.message);
+            });
+            ui.add_space(10.0);
+            let mut bar = egui::ProgressBar::new(progress.fraction()).desired_width(480.0);
+            if progress.total > 0 {
+                bar = bar.show_percentage();
+            } else {
+                bar = bar.animate(true);
+            }
+            ui.add(bar);
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(self.install_path.display().to_string())
+                    .weak()
+                    .small(),
+            );
+        });
+    }
+
     fn sync_raw_json(&mut self) {
         if let Ok(raw_json) = encode_settings_for_editor(&self.document) {
             self.raw_json = raw_json;
@@ -1231,6 +1642,7 @@ impl SundialApp {
                 let changed = document != self.document;
                 self.raw_json_document = document.clone();
                 self.document = document;
+                self.progression_ui.invalidate_document();
                 self.selected_character = self
                     .selected_character
                     .min(self.character_count().saturating_sub(1));
@@ -1381,31 +1793,43 @@ impl SundialApp {
         preferences_changed |= hash_response.changed();
 
         if self.show_safety_warnings {
-            match self.default_plug_selection_mode {
-                PlugSelectionMode::Supported => {}
-                PlugSelectionMode::MatchingSocketType => {
-                    ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-                }
-                PlugSelectionMode::AnyPlug => {
-                    ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-                }
-            }
+            draw_plug_selection_warning(ui, self.default_plug_selection_mode);
         }
 
         ui.add_space(12.0);
         ui.strong("Experimental");
-        let progression_response = ui.checkbox(
-            &mut self.show_progression,
-            "Show Progression in the sidebar",
+        let progression_response =
+            ui.checkbox(&mut self.experimental_progression, "Enable Progression");
+        if progression_response.changed() {
+            preferences_changed = true;
+            if !self.experimental_progression && self.view_mode == ViewMode::Progression {
+                self.select_view(ViewMode::Characters);
+            }
+        }
+        ui.label(
+            egui::RichText::new(
+                "Shows package-backed Unlocks, Investment, and Collections editing.",
+            )
+            .weak(),
         );
-        preferences_changed |= progression_response.changed();
-        ui.label("Progression is still being worked on and is hidden by default.");
+        ui.add_space(6.0);
+        let bubble_names_response = ui.checkbox(
+            &mut self.experimental_bubble_names,
+            "Enable Bubble-name list generation",
+        );
+        preferences_changed |= bubble_names_response.changed();
+        ui.label(
+            egui::RichText::new(
+                "Adds the package-backed Bubble-name generator to Game settings > Player.",
+            )
+            .weak(),
+        );
 
         ui.add_space(8.0);
         if ui
             .button("Reset preferences to defaults")
             .on_hover_text(
-                "Reset appearance, item editing, and experimental preferences. Paths, catalog data, and backups are not changed.",
+                "Reset appearance, item-editing, and experimental preferences. Paths, catalog data, and backups are not changed.",
             )
             .clicked()
         {
@@ -1424,7 +1848,8 @@ impl SundialApp {
             self.plug_selection_mode = defaults.default_plug_selection_mode;
             self.show_safety_warnings = defaults.show_safety_warnings;
             self.show_plug_hashes = defaults.show_plug_hashes;
-            self.show_progression = defaults.show_progression;
+            self.experimental_bubble_names = defaults.experimental_bubble_names;
+            self.experimental_progression = defaults.experimental_progression;
             self.really_unsafe_warning_acknowledged =
                 defaults.really_unsafe_warning_acknowledged;
             self.remember_plug_selection_mode_after_confirmation = false;
@@ -1582,6 +2007,7 @@ impl eframe::App for SundialApp {
         self.update_check.start_if_needed(ctx);
         self.update_check.poll();
         self.poll_catalog_task();
+        self.poll_bubble_names_task();
         let available_update = match self.update_check.status() {
             UpdateStatus::Available(version) => Some(version.clone()),
             _ => None,
@@ -1641,25 +2067,30 @@ impl eframe::App for SundialApp {
                 ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
                 ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
+                    let mut generate_bubble_names = false;
+                    let bubble_names_busy =
+                        self.catalog_task.is_some() || self.bubble_names_task.is_some();
                     if game_settings::draw_page(
                         ui,
                         &mut self.document,
+                        self.manifest.orbit_backdrops(),
+                        game_settings::PlayerTools {
+                            bubble_names_enabled: self.experimental_bubble_names,
+                            bubble_names_busy,
+                            generate_bubble_names: &mut generate_bubble_names,
+                        },
                         &mut self.game_settings_tab,
                         &mut self.key_binding_ui,
                     ) {
                         self.dirty = true;
                         self.set_status("Game setting updated; click Save to write it", false);
                     }
+                    if generate_bubble_names {
+                        self.start_bubble_names_task(ctx);
+                    }
                 }
                 ViewMode::Progression => {
-                    ui.horizontal(|ui| {
-                        ui.heading("Progression");
-                        ui.label(
-                            egui::RichText::new("EXPERIMENTAL")
-                                .small()
-                                .color(ui.visuals().warn_fg_color),
-                        );
-                    });
+                    ui.heading("Progression");
                     ui.add_space(8.0);
                     let section_changed = ui
                         .horizontal(|ui| {
@@ -1690,6 +2121,7 @@ impl eframe::App for SundialApp {
                         .inner;
                     if section_changed {
                         self.progression_ui.reset_navigation();
+                        self.collections_ui.reset_navigation();
                     }
                     ui.separator();
 
@@ -1715,12 +2147,20 @@ impl eframe::App for SundialApp {
                                 );
                             }
                         }
-                        ProgressionSection::Collections => collections_page::draw_content(
-                            ui,
-                            &self.document,
-                            &self.manifest,
-                            &mut self.collections_ui,
-                        ),
+                        ProgressionSection::Collections => {
+                            if collections_page::draw_content(
+                                ui,
+                                &mut self.document,
+                                &self.manifest,
+                                &mut self.collections_ui,
+                            ) {
+                                self.dirty = true;
+                                self.set_status(
+                                    "Collection acquisition state updated; click Save to write it",
+                                    false,
+                                );
+                            }
+                        }
                     }
                 }
                 ViewMode::AdvancedJson => {
@@ -1746,11 +2186,17 @@ impl eframe::App for SundialApp {
             }
         });
 
+        if let Some(hash) = progression::take_hash_inspection_request(ctx) {
+            self.hash_inspection.open(hash);
+        }
+        progression::draw_catalog_hash_window(ctx, &self.manifest, &mut self.hash_inspection);
+
         self.draw_json_editor_window(ctx);
 
         self.draw_about_window(ctx);
 
         self.draw_catalog_progress(ctx);
+        self.draw_bubble_names_progress(ctx);
 
         if let Some(install_path) = self.pending_install_choice.clone() {
             let mut selected = None;
@@ -1786,6 +2232,110 @@ impl eframe::App for SundialApp {
                 self.load_install(ctx, install_path, path, layout);
             } else if cancel {
                 self.pending_install_choice = None;
+            }
+        }
+
+        if let Some(pending) = self.pending_generated_file.take() {
+            let mut replace = false;
+            let mut keep_existing = false;
+            let response = egui::Modal::new("generated_file_replace_confirmation".into()).show(
+                ctx,
+                |ui| {
+                    ui.set_width(760.0);
+                    ui.heading(format!("Replace the existing {}?", pending.kind.label()));
+                    ui.add_space(6.0);
+                    ui.label(format!(
+                        "Sunrise already has a different {}. Review the line diff before deciding; Sundial has not changed this file.",
+                        pending.kind.file_name()
+                    ));
+                    ui.label(
+                        egui::RichText::new(pending.path.display().to_string())
+                            .weak()
+                            .small(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(format!(
+                        "Existing: {} lines · Package-generated: {} lines",
+                        normalized_generated_document(&pending.existing).lines().count(),
+                        normalized_generated_document(&pending.generated)
+                            .lines()
+                            .count()
+                    ));
+                    egui::ScrollArea::vertical()
+                        .id_salt("generated_file_diff")
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(720.0);
+                            for line in pending.diff.lines() {
+                                let color = if line.starts_with('+') {
+                                    ui.visuals().selection.bg_fill
+                                } else if line.starts_with('-') {
+                                    ui.visuals().error_fg_color
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                ui.label(egui::RichText::new(line).monospace().color(color));
+                            }
+                        });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, replace").clicked() {
+                            replace = true;
+                        }
+                        if ui.button("No, keep existing").clicked() {
+                            keep_existing = true;
+                        }
+                    });
+                },
+            );
+            let cancel = response.should_close();
+            if replace {
+                match fs::read(&pending.path) {
+                    Ok(raw)
+                        if normalized_generated_document(&String::from_utf8_lossy(&raw))
+                            == normalized_generated_document(&pending.existing) =>
+                    {
+                        self.resume_generated_file_action(
+                            ctx,
+                            pending.action,
+                            pending.kind,
+                            GeneratedFileDecision::Replace,
+                        );
+                    }
+                    Ok(_) | Err(_) => {
+                        self.set_status(
+                            format!(
+                                "The existing {} changed while the comparison was open; checking it again",
+                                pending.kind.label()
+                            ),
+                            false,
+                        );
+                        self.resume_generated_file_action(
+                            ctx,
+                            pending.action,
+                            pending.kind,
+                            GeneratedFileDecision::Ask,
+                        );
+                    }
+                }
+            } else if keep_existing {
+                self.resume_generated_file_action(
+                    ctx,
+                    pending.action,
+                    pending.kind,
+                    GeneratedFileDecision::KeepExisting,
+                );
+            } else if cancel {
+                self.generated_file_decisions.clear();
+                self.set_status(
+                    format!(
+                        "Save cancelled; the existing {} was not changed",
+                        pending.kind.label()
+                    ),
+                    false,
+                );
+            } else {
+                self.pending_generated_file = Some(pending);
             }
         }
 
@@ -1946,7 +2496,8 @@ impl eframe::App for SundialApp {
             self.confirmation = (!save_and_exit && !discard_and_exit && !cancel)
                 .then_some(ConfirmationDialog::Exit);
             if save_and_exit {
-                let safe_to_close = self.save_all_edits();
+                let safe_to_close =
+                    self.save_all_edits_with_action(GeneratedFileSaveAction::SaveAndExit);
                 if !self.has_unsaved_changes() && safe_to_close {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1974,6 +2525,58 @@ fn settings_size_note(result: &settings::SaveJsonResult) -> String {
     } else {
         String::new()
     }
+}
+
+fn normalized_generated_document(document: &str) -> String {
+    document
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim_end_matches('\n')
+        .to_owned()
+}
+
+fn generated_file_diff(file_name: &str, existing: &str, generated: &str) -> String {
+    let existing = normalized_generated_document(existing);
+    let generated = normalized_generated_document(generated);
+    let before = existing.lines().collect::<Vec<_>>();
+    let after = generated.lines().collect::<Vec<_>>();
+    let mut common = vec![vec![0_usize; after.len() + 1]; before.len() + 1];
+    for before_index in (0..before.len()).rev() {
+        for after_index in (0..after.len()).rev() {
+            common[before_index][after_index] = if before[before_index] == after[after_index] {
+                common[before_index + 1][after_index + 1] + 1
+            } else {
+                common[before_index + 1][after_index].max(common[before_index][after_index + 1])
+            };
+        }
+    }
+
+    let mut diff = format!("--- Existing {file_name}\n+++ Package-generated {file_name}\n");
+    let (mut before_index, mut after_index) = (0, 0);
+    while before_index < before.len() || after_index < after.len() {
+        if before_index < before.len()
+            && after_index < after.len()
+            && before[before_index] == after[after_index]
+        {
+            diff.push_str("  ");
+            diff.push_str(before[before_index]);
+            before_index += 1;
+            after_index += 1;
+        } else if after_index == after.len()
+            || (before_index < before.len()
+                && common[before_index + 1][after_index] >= common[before_index][after_index + 1])
+        {
+            diff.push_str("- ");
+            diff.push_str(before[before_index]);
+            before_index += 1;
+        } else {
+            diff.push_str("+ ");
+            diff.push_str(after[after_index]);
+            after_index += 1;
+        }
+        diff.push('\n');
+    }
+    diff
 }
 
 fn settings_size_label(bytes: usize) -> String {
@@ -2125,7 +2728,7 @@ pub(crate) fn run() -> eframe::Result {
         .expect("embedded Sundial icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1_240.0, 800.0])
+            .with_inner_size([1_240.0, 880.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
         ..Default::default()

@@ -30,6 +30,14 @@ pub(crate) const INVENTORY_FLAG_TRACKED: u8 = 2;
 pub(crate) const INVENTORY_FLAG_MASTERWORK: u8 = 4;
 pub(crate) const INVENTORY_FLAG_MASK: u8 =
     INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED | INVENTORY_FLAG_MASTERWORK;
+pub(super) const KNOWN_ITEM_MEMBERS: &[&str] = &[
+    "instance_soid",
+    "definition_hash",
+    "level",
+    "quantity",
+    "plugs",
+    "flags",
+];
 
 pub(crate) fn set_inventory_locked_flag(flags: Option<u8>, locked: bool) -> Option<u8> {
     set_inventory_flag(flags, INVENTORY_FLAG_LOCKED, locked)
@@ -1669,15 +1677,6 @@ fn validate_known_schema_item_members(
     document: &Value,
     schema_version: u64,
 ) -> InventoryResult<()> {
-    const KNOWN_MEMBERS: &[&str] = &[
-        "instance_soid",
-        "definition_hash",
-        "level",
-        "quantity",
-        "plugs",
-        "flags",
-    ];
-
     let Some(characters) = document
         .pointer("/state/characters")
         .and_then(Value::as_array)
@@ -1694,7 +1693,7 @@ fn validate_known_schema_item_members(
                     validate_known_item_members(
                         item,
                         &format!("/state/characters/{character_index}/equipment/{slot}"),
-                        KNOWN_MEMBERS,
+                        KNOWN_ITEM_MEMBERS,
                         schema_version,
                     )?;
                 }
@@ -1706,7 +1705,7 @@ fn validate_known_schema_item_members(
                     validate_known_item_members(
                         item,
                         &format!("/state/characters/{character_index}/inventory/{item_index}"),
-                        KNOWN_MEMBERS,
+                        KNOWN_ITEM_MEMBERS,
                         schema_version,
                     )?;
                 }

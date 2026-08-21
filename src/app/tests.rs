@@ -1,6 +1,7 @@
 use crate::{
     catalog::{self, AbilityChoice},
     hash::format_hash,
+    orbit_map,
     test_support::TestDirectory,
 };
 
@@ -472,7 +473,8 @@ fn legacy_preferences_default_to_supported_plugs_with_warnings() {
     assert!(!decoded.always_open_json_editor_in_second_window);
     assert!(!decoded.show_plug_hashes);
     assert_eq!(decoded.item_card_width, ItemCardWidth::Standard);
-    assert!(!decoded.show_progression);
+    assert!(!decoded.experimental_bubble_names);
+    assert!(!decoded.experimental_progression);
 }
 
 #[test]
@@ -528,6 +530,36 @@ fn loading_a_missing_selected_settings_file_never_creates_it() {
 
     assert!(error.contains("No Project Sunrise settings.json was found"));
     assert!(!settings.exists());
+}
+
+#[test]
+fn generated_orbit_map_is_written_beside_sunrise_settings() {
+    let directory = TestDirectory::new("orbit-map");
+    let settings = settings_path_for_install(&directory.0, SettingsLayout::BinX64);
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+    let document = "# generated\r\nedz = orbit_earth_d2\r\n";
+    let path = orbit_map::save(&settings, document).unwrap();
+
+    assert_eq!(path, settings.parent().unwrap().join("orbit_map.txt"));
+    assert_eq!(fs::read_to_string(path).unwrap(), document);
+}
+
+#[test]
+fn generated_file_comparison_ignores_line_endings_and_marks_changed_rows() {
+    assert_eq!(
+        normalized_generated_document("edz = orbit_earth_d2\r\n"),
+        normalized_generated_document("edz = orbit_earth_d2\n")
+    );
+
+    let diff = generated_file_diff(
+        "orbit_map.txt",
+        "edz = orbit_venus_d2\nmoon = orbit_moon_d2\n",
+        "edz = orbit_earth_d2\nmoon = orbit_moon_d2\n",
+    );
+    assert!(diff.contains("- edz = orbit_venus_d2"));
+    assert!(diff.contains("+ edz = orbit_earth_d2"));
+    assert!(diff.contains("  moon = orbit_moon_d2"));
 }
 
 #[test]

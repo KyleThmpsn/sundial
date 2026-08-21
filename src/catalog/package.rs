@@ -1,6 +1,6 @@
 use std::{fs, path::Path, time::UNIX_EPOCH};
 
-pub fn validate_install(install: &Path) -> Result<(), String> {
+pub(crate) fn validate_install(install: &Path) -> Result<(), String> {
     if install.join("destiny2.exe").is_file()
         && install.join("packages").is_dir()
         && install.join("bin/x64/oo2core_3_win64.dll").is_file()
@@ -43,7 +43,7 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     Ok(entries.join("|"))
 }
 
-pub(super) fn array_at(data: &[u8], descriptor: usize) -> Result<(usize, usize, u32), String> {
+pub(crate) fn array_at(data: &[u8], descriptor: usize) -> Result<(usize, usize, u32), String> {
     let count_raw = u64_at(data, descriptor)?;
     let count = usize::try_from(count_raw).map_err(|_| "Package array is too large")?;
     let pointer = descriptor
@@ -78,7 +78,7 @@ pub(super) fn i32_at(data: &[u8], offset: usize) -> Result<i32, String> {
     Ok(i32::from_le_bytes(bytes_at(data, offset)?))
 }
 
-pub(super) fn u32_at(data: &[u8], offset: usize) -> Result<u32, String> {
+pub(crate) fn u32_at(data: &[u8], offset: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes(bytes_at(data, offset)?))
 }
 

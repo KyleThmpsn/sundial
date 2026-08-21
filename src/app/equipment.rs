@@ -10,17 +10,15 @@ use crate::{
 };
 
 use super::{
-    ANY_PLUG_WARNING, ARMOR_SLOTS, ConfirmationDialog, ITEM_PICKER_MAX_HEIGHT,
-    ITEM_PICKER_MIN_HEIGHT, MATCHING_SOCKET_WARNING, PLUG_PICKER_MAX_HEIGHT,
-    PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SLOTS, SundialApp, WEAPON_SLOTS,
-    settings::character_ability_issue,
+    ARMOR_SLOTS, ConfirmationDialog, ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT,
+    PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SLOTS, SundialApp,
+    WEAPON_SLOTS, settings::character_ability_issue,
 };
 
 use super::item_editor::{self, NativePlugDefault};
 use super::item_editor::{
     ClearDefinitionChoice, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary,
     ExistingInventoryChoice, ItemEditorAction, ItemHeader, NumericItemFields, PickerHeight,
-    PlugChoice, PlugPickerSnapshot,
 };
 
 /// A tolerant, read-only view of one non-null character equipment slot.
@@ -758,15 +756,7 @@ impl SundialApp {
             }
         }
         if self.show_safety_warnings {
-            match self.plug_selection_mode {
-                PlugSelectionMode::Supported => {}
-                PlugSelectionMode::MatchingSocketType => {
-                    ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-                }
-                PlugSelectionMode::AnyPlug => {
-                    ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-                }
-            }
+            super::draw_plug_selection_warning(ui, self.plug_selection_mode);
         }
     }
 
@@ -1245,38 +1235,10 @@ impl SundialApp {
                         .get(socket_index)
                         .and_then(parse_unsigned_value);
                     let native_default = native_plug_default(&item.default_plugs, socket_index);
-                    let allowed = item
-                        .sockets
-                        .get(socket_index)
-                        .map(|socket| match self.plug_selection_mode {
-                            PlugSelectionMode::Supported => self.manifest.socket_options(socket),
-                            PlugSelectionMode::MatchingSocketType => {
-                                self.manifest.socket_type_options(socket.socket_type)
-                            }
-                            PlugSelectionMode::AnyPlug => self.manifest.all_plug_options(),
-                        })
-                        .unwrap_or_default();
                     let current_label = current_hash.map_or_else(
                         || "None".to_owned(),
                         |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
                     );
-                    let show_plug_types = self.plug_selection_mode == PlugSelectionMode::AnyPlug;
-                    let choices = allowed
-                        .iter()
-                        .map(|hash| PlugChoice {
-                            hash: *hash,
-                            label: self.manifest.plug_label(*hash, true),
-                            type_name: if show_plug_types {
-                                self.manifest
-                                    .plug_type_name(*hash)
-                                    .unwrap_or_default()
-                                    .to_owned()
-                            } else {
-                                String::new()
-                            },
-                        })
-                        .collect::<Vec<_>>();
-                    let searchable = choices.len() > 12;
                     let plug_search_key =
                         format!("plug-search:{id_scope}:{character_index}:{slot}:{socket_index}");
                     let mut plug_query = self
@@ -1284,25 +1246,16 @@ impl SundialApp {
                         .get(&plug_search_key)
                         .cloned()
                         .unwrap_or_default();
-                    let socket_label = item.sockets.get(socket_index).map_or_else(
-                        || format!("Socket {}", socket_index + 1),
-                        |socket| socket.display_label(socket_index),
-                    );
-                    let snapshot = PlugPickerSnapshot {
+                    let snapshot = item_editor::plug_picker_snapshot(
+                        &self.manifest,
                         socket_index,
-                        socket_label,
+                        item.sockets.get(socket_index),
                         current_hash,
                         current_label,
                         native_default,
-                        native_default_label: match native_default {
-                            Some(NativePlugDefault::Plug(hash)) => {
-                                Some(self.manifest.plug_label(hash, true))
-                            }
-                            _ => None,
-                        },
-                        choices,
-                        show_types: show_plug_types,
-                    };
+                        self.plug_selection_mode,
+                    );
+                    let searchable = snapshot.choices.len() > 12;
                     let action = ui
                         .add_enabled_ui(guided_editable, |ui| {
                             item_editor::draw_plug_picker(
@@ -1700,17 +1653,9 @@ fn equipped_item_snapshot(
     };
 
     let mut issues = Vec::new();
-    const KNOWN_MEMBERS: &[&str] = &[
-        "instance_soid",
-        "definition_hash",
-        "level",
-        "quantity",
-        "plugs",
-        "flags",
-    ];
     if !allow_unknown_members {
         for member in item.keys() {
-            if !KNOWN_MEMBERS.contains(&member.as_str()) {
+            if !super::inventory::KNOWN_ITEM_MEMBERS.contains(&member.as_str()) {
                 issues.push(format!("unknown item member {member}"));
             }
         }

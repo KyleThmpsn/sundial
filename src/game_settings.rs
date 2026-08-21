@@ -111,11 +111,44 @@ fn key_bindings_editable(document: &Value) -> bool {
 const VERTICAL_SYNC_INTERVAL_KEY: &str = "vertical_sync_interval";
 const FIELD_OF_VIEW_KEY: &str = "field_of_view";
 const KEY_BINDING_SOURCE_KEY: &str = "key_binding_source";
+const ORBIT_SLICE_SET_PATH: &str = "/client/orbit_slice_set";
 
-// Compatibility gate: these preferences come from an experimental Sunrise change. Sundial must
-// not add them to an existing file unless that file already contains them; a released schema can
-// move their visibility and requiredness into `SettingsSchema`.
-fn show_experimental_preference(values: &Map<String, Value>, key: &str) -> bool {
+pub(crate) fn ensure_schema_v8_preferences(document: &mut Value) -> bool {
+    if schema_version(document) != Some(8) {
+        return false;
+    }
+
+    let Some(settings) = document
+        .pointer_mut("/state/account/settings")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+
+    let mut changed = false;
+    if let Some(display) = settings.get_mut("display").and_then(Value::as_object_mut) {
+        if !display.contains_key(VERTICAL_SYNC_INTERVAL_KEY) {
+            display.insert(VERTICAL_SYNC_INTERVAL_KEY.into(), Value::from(0));
+            changed = true;
+        }
+        if !display.contains_key(FIELD_OF_VIEW_KEY) {
+            display.insert(FIELD_OF_VIEW_KEY.into(), Value::from(85));
+            changed = true;
+        }
+    }
+    if !settings.contains_key(KEY_BINDING_SOURCE_KEY) {
+        settings.insert(
+            KEY_BINDING_SOURCE_KEY.into(),
+            Value::String("computer".into()),
+        );
+        changed = true;
+    }
+    changed
+}
+
+// Older schemas only expose these preferences when they already contain them. Schema v8 files are
+// populated with their effective defaults before reaching the editor.
+fn show_presence_gated_preference(values: &Map<String, Value>, key: &str) -> bool {
     values.contains_key(key)
 }
 
@@ -285,6 +318,8 @@ const ACTIONS: &[(&str, &str)] = &[
 pub(super) fn draw_page(
     ui: &mut egui::Ui,
     document: &mut Value,
+    orbit_backdrops: &[String],
+    mut player_tools: PlayerTools<'_>,
     tab: &mut Tab,
     key_bindings: &mut KeyBindingUiState,
 ) -> bool {
@@ -311,7 +346,7 @@ pub(super) fn draw_page(
     egui::ScrollArea::vertical()
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
-            Tab::Player => draw_player(ui, document),
+            Tab::Player => draw_player(ui, document, orbit_backdrops, &mut player_tools),
             Tab::Controls => draw_account_settings(ui, document, draw_controls),
             Tab::Audio => draw_account_settings(ui, document, draw_audio),
             Tab::Display => draw_account_settings(ui, document, draw_display),
@@ -322,6 +357,12 @@ pub(super) fn draw_page(
             }),
         })
         .inner
+}
+
+pub(super) struct PlayerTools<'a> {
+    pub bubble_names_enabled: bool,
+    pub bubble_names_busy: bool,
+    pub generate_bubble_names: &'a mut bool,
 }
 
 fn draw_account_settings(
@@ -342,7 +383,12 @@ fn draw_account_settings(
     draw(ui, settings)
 }
 
-fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
+fn draw_player(
+    ui: &mut egui::Ui,
+    document: &mut Value,
+    orbit_backdrops: &[String],
+    player_tools: &mut PlayerTools<'_>,
+) -> bool {
     ui.heading("Player");
     ui.label("Change the player identity and language Project Sunrise reports to Destiny 2.");
     ui.add_space(8.0);
@@ -399,6 +445,70 @@ fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         }
     }
 
+    let orbit_value = document.pointer(ORBIT_SLICE_SET_PATH).cloned();
+    if let Some(orbit_value) = orbit_value {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.strong("Orbit backdrop");
+        if let Some(current) = orbit_value.as_str() {
+            let mut selected = current.to_owned();
+            let selected_text = if selected.is_empty() {
+                "Sunrise default"
+            } else {
+                selected.as_str()
+            };
+            egui::ComboBox::from_id_salt("orbit_slice_set")
+                .selected_text(selected_text)
+                .width(280.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, String::new(), "Sunrise default");
+                    for name in orbit_backdrops {
+                        ui.selectable_value(&mut selected, name.clone(), name);
+                    }
+                });
+            if selected != current {
+                changed |= set_existing_orbit_slice_set(document, &selected);
+            }
+            if orbit_backdrops.is_empty() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "No supported Orbit backdrops were found in the installed game packages.",
+                );
+            }
+            ui.label("Uses the selected internal Orbit slice set. Saving also rebuilds Sunrise/orbit_map.txt from the installed game packages; changes take effect after fully restarting Destiny 2.");
+        } else {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "client.orbit_slice_set must be text.",
+            );
+        }
+    }
+
+    if player_tools.bubble_names_enabled {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.strong("Bubble-name list");
+        ui.label("Generate Sunrise/bubble_names.txt from the installed destination packages.");
+        if ui
+            .add_enabled(
+                !player_tools.bubble_names_busy,
+                egui::Button::new(if player_tools.bubble_names_busy {
+                    "Generating Bubble-name list…"
+                } else {
+                    "Generate Bubble-name list"
+                }),
+            )
+            .on_hover_text(
+                "Scans package-backed scenario names and replaces the existing Bubble-name list.",
+            )
+            .clicked()
+        {
+            *player_tools.generate_bubble_names = true;
+        }
+    }
+
     changed
 }
 
@@ -412,6 +522,27 @@ fn set_player_name(document: &mut Value, name: &str) -> bool {
         return false;
     };
     let Some(value) = document.pointer_mut("/steam/user/persona_name") else {
+        return false;
+    };
+    if !value.is_string() || value.as_str() == Some(name) {
+        return false;
+    }
+    *value = Value::String(name.to_owned());
+    true
+}
+
+fn valid_orbit_slice_set(name: &str) -> bool {
+    name.len() <= 48
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn set_existing_orbit_slice_set(document: &mut Value, name: &str) -> bool {
+    if !valid_orbit_slice_set(name) {
+        return false;
+    }
+    let Some(value) = document.pointer_mut(ORBIT_SLICE_SET_PATH) else {
         return false;
     };
     if !value.is_string() || value.as_str() == Some(name) {
@@ -603,7 +734,7 @@ fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
             changed |= integer_slider(ui, values, "brightness", "Brightness", 0, 6);
             changed |= boolean(ui, values, "show_fps", "Show FPS");
             changed |= choice(ui, values, "hdr_mode", "HDR mode", HDR_MODES);
-            if show_experimental_preference(values, VERTICAL_SYNC_INTERVAL_KEY) {
+            if show_presence_gated_preference(values, VERTICAL_SYNC_INTERVAL_KEY) {
                 let refresh_rate_hz = display_refresh_rate_hz();
                 let intervals = vertical_sync_intervals(refresh_rate_hz);
                 changed |= choice(
@@ -619,7 +750,7 @@ fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
                     &intervals,
                 );
             }
-            if show_experimental_preference(values, FIELD_OF_VIEW_KEY) {
+            if show_presence_gated_preference(values, FIELD_OF_VIEW_KEY) {
                 changed |= integer_slider(ui, values, FIELD_OF_VIEW_KEY, "Field of view", 55, 105);
             }
             fixed(ui, values, "calibration_primary", "Renderer calibration");
@@ -802,7 +933,7 @@ fn draw_key_bindings(
         );
     }
     ui.add_space(8.0);
-    if show_experimental_preference(settings, KEY_BINDING_SOURCE_KEY) {
+    if show_presence_gated_preference(settings, KEY_BINDING_SOURCE_KEY) {
         egui::Grid::new("game_key_binding_source_grid")
             .num_columns(2)
             .spacing([18.0, 9.0])
@@ -1286,6 +1417,7 @@ fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
 pub(super) fn validate(document: &Value) -> Result<(), String> {
     let schema = SettingsSchema::from_document(document)?;
     validate_game_language(document)?;
+    validate_orbit_slice_set(document)?;
     let settings = document
         .pointer("/state/account/settings")
         .and_then(Value::as_object)
@@ -1385,6 +1517,20 @@ fn validate_game_language(document: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err("steam.language must be one of Sunrise's supported language tokens".to_owned())
+    }
+}
+
+fn validate_orbit_slice_set(document: &Value) -> Result<(), String> {
+    let Some(value) = document.pointer(ORBIT_SLICE_SET_PATH) else {
+        return Ok(());
+    };
+    if value.as_str().is_some_and(valid_orbit_slice_set) {
+        Ok(())
+    } else {
+        Err(
+            "client.orbit_slice_set must contain at most 48 ASCII letters, numbers, or underscores"
+                .to_owned(),
+        )
     }
 }
 
@@ -1969,6 +2115,43 @@ mod tests {
     }
 
     #[test]
+    fn orbit_slice_set_is_only_edited_when_the_field_exists() {
+        let mut unsupported = serde_json::json!({"client": {"future": true}});
+        assert!(!set_existing_orbit_slice_set(
+            &mut unsupported,
+            "orbit_hiveship_d2"
+        ));
+        assert!(unsupported.pointer(ORBIT_SLICE_SET_PATH).is_none());
+
+        let mut supported = serde_json::json!({
+            "client": {
+                "orbit_slice_set": "",
+                "future": true
+            }
+        });
+        assert!(set_existing_orbit_slice_set(
+            &mut supported,
+            "orbit_hiveship_d2"
+        ));
+        assert_eq!(
+            supported.pointer(ORBIT_SLICE_SET_PATH),
+            Some(&Value::String("orbit_hiveship_d2".into()))
+        );
+        assert_eq!(
+            supported.pointer("/client/future"),
+            Some(&Value::Bool(true))
+        );
+        assert!(!set_existing_orbit_slice_set(
+            &mut supported,
+            "orbit_hiveship_d2"
+        ));
+        assert!(!set_existing_orbit_slice_set(
+            &mut supported,
+            "orbit-hiveship-d2"
+        ));
+    }
+
+    #[test]
     fn key_binding_forms_follow_sunrise_schema_versions() {
         assert_eq!(
             SettingsSchema(2).key_binding_format(),
@@ -2208,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_preferences_are_optional_but_validated_when_present() {
+    fn presence_gated_preferences_are_optional_but_validated_when_present() {
         let stock = Map::new();
         assert_eq!(optional_range(&stock, "field_of_view", 55, 105), Ok(()));
         assert_eq!(
@@ -2248,6 +2431,71 @@ mod tests {
             optional_string_member(invalid, "key_binding_source", &["account", "computer"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn schema_v8_materializes_missing_preferences_without_overwriting_values() {
+        let mut document = valid_game_settings_document(8);
+        assert!(ensure_schema_v8_preferences(&mut document));
+        assert_eq!(
+            document.pointer("/state/account/settings/display/field_of_view"),
+            Some(&Value::from(85))
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/vertical_sync_interval"),
+            Some(&Value::from(0))
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/key_binding_source"),
+            Some(&Value::String("computer".into()))
+        );
+
+        *document
+            .pointer_mut("/state/account/settings/display/field_of_view")
+            .unwrap() = Value::from(100);
+        *document
+            .pointer_mut("/state/account/settings/display/vertical_sync_interval")
+            .unwrap() = Value::from(2);
+        *document
+            .pointer_mut("/state/account/settings/key_binding_source")
+            .unwrap() = Value::String("account".into());
+
+        assert!(!ensure_schema_v8_preferences(&mut document));
+        assert_eq!(
+            document.pointer("/state/account/settings/display/field_of_view"),
+            Some(&Value::from(100))
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/vertical_sync_interval"),
+            Some(&Value::from(2))
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/key_binding_source"),
+            Some(&Value::String("account".into()))
+        );
+    }
+
+    #[test]
+    fn schema_v8_preferences_are_not_added_to_other_schemas() {
+        for version in [6, 7, 9] {
+            let mut document = valid_game_settings_document(version);
+            assert!(!ensure_schema_v8_preferences(&mut document));
+            assert!(
+                document
+                    .pointer("/state/account/settings/display/field_of_view")
+                    .is_none()
+            );
+            assert!(
+                document
+                    .pointer("/state/account/settings/display/vertical_sync_interval")
+                    .is_none()
+            );
+            assert!(
+                document
+                    .pointer("/state/account/settings/key_binding_source")
+                    .is_none()
+            );
+        }
     }
 
     #[test]

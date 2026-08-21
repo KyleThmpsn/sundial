@@ -12,34 +12,43 @@ use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 use crate::{
     class_items,
     hash::{format_hash, parse_hash},
-    unnamed_plugs,
+    orbit_map, unnamed_plugs,
 };
 
 mod collections;
 mod icons;
-mod package;
+pub(crate) mod package;
 mod progression;
 
-pub use collections::{CollectibleDef, CollectionConditionDef, CollectionConditionTokenDef};
-use collections::{PendingCollectibleDef, scan_collectibles};
+pub(crate) use collections::{
+    CollectibleDef, CollectionConditionDef, CollectionConditionTokenDef, MaterialRequirementDef,
+    MaterialRequirementSetDef,
+};
+use collections::{
+    PendingCollectibleDef, materialize_material_requirement_sets, scan_collectibles,
+    scan_material_requirement_sets,
+};
 use icons::IconRuntime;
-pub use package::validate_install;
+pub(crate) use package::validate_install;
 use package::{array_at, i32_at, i64_at, install_fingerprint, relative_offset, u16_at, u32_at};
 use progression::{
     ItemProgressionContext, ProgressionPackageData, add_objective_owner,
     attach_item_condition_contexts, attach_presentation_node_objective_owners,
     item_objective_indices, scan_activity_condition_contexts, scan_collectible_condition_contexts,
     scan_collectible_item_paths, scan_location_condition_contexts, scan_metric_objective_owners,
-    scan_objectives, scan_presentation_nodes, scan_record_objective_owners,
-    scan_unlock_flag_definitions, scan_unlock_flag_displays, scan_unlock_value_definitions,
-    sort_progression_contexts, unlock_state_indices,
+    scan_milestone_objective_owners, scan_objectives, scan_presentation_nodes,
+    scan_progression_definitions, scan_record_objective_owners, scan_unlock_flag_definitions,
+    scan_unlock_flag_displays, scan_unlock_value_definitions, sort_progression_contexts,
+    unlock_state_indices,
 };
-pub use progression::{
+pub(crate) use progression::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
-    ProgressionContextDef, ProgressionContextKind, UnlockDefinition,
+    ProgressionContextDef, ProgressionContextKind, ProgressionDefinition, ProgressionScope,
+    UnlockDefinition,
 };
 
-const CACHE_SCHEMA: u32 = 54;
+const CACHE_SCHEMA: u32 = 68;
+const MAX_ITEM_SCAN_PROGRESS_UPDATES: usize = 200;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
@@ -64,16 +73,18 @@ const ITEM_DESCRIPTION_OFFSET: usize = 0x98;
 const ITEM_ICON_TABLE_SLOT: usize = 75;
 const ITEM_ICON_TABLE_ROW_SIZE: usize = 24;
 const ITEM_ICON_CONTAINER_OFFSET: usize = 16;
+const INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x1E8;
+const ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x200;
 
 #[derive(Clone, Copy, Debug)]
-pub struct CatalogProgress {
+pub(crate) struct CatalogProgress {
     pub message: &'static str,
     pub completed: usize,
     pub total: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CatalogStats {
+pub(crate) struct CatalogStats {
     pub items: usize,
     pub plugs: usize,
     pub icons: usize,
@@ -90,7 +101,7 @@ impl CatalogProgress {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    pub fn fraction(self) -> f32 {
+    pub(crate) fn fraction(self) -> f32 {
         if self.total == 0 {
             0.0
         } else {
@@ -100,7 +111,7 @@ impl CatalogProgress {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ItemDef {
+pub(crate) struct ItemDef {
     pub hash: u64,
     pub name: String,
     pub type_name: String,
@@ -113,7 +124,7 @@ pub struct ItemDef {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CatalystSocket {
+pub(crate) struct CatalystSocket {
     pub socket_index: usize,
     pub unacquired_plug: u64,
     pub in_progress_plug: u64,
@@ -121,14 +132,14 @@ pub struct CatalystSocket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CatalystState {
+pub(crate) enum CatalystState {
     Unacquired,
     InProgress,
     Completed,
 }
 
 impl CatalystState {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Unacquired => "not acquired",
             Self::InProgress => "in progress",
@@ -138,7 +149,7 @@ impl CatalystState {
 }
 
 impl CatalystSocket {
-    pub const fn authored_state(self, state: CatalystState) -> (u64, bool) {
+    pub(crate) const fn authored_state(self, state: CatalystState) -> (u64, bool) {
         match state {
             CatalystState::Unacquired => (self.unacquired_plug, false),
             CatalystState::InProgress => (self.in_progress_plug, false),
@@ -146,7 +157,7 @@ impl CatalystSocket {
         }
     }
 
-    pub fn state_for_selected_plug(self, plug: Option<u64>) -> Option<CatalystState> {
+    pub(crate) fn state_for_selected_plug(self, plug: Option<u64>) -> Option<CatalystState> {
         if plug == Some(self.unacquired_plug) {
             Some(CatalystState::Unacquired)
         } else if self.completed_plug != self.in_progress_plug && plug == Some(self.completed_plug)
@@ -165,7 +176,7 @@ impl CatalystSocket {
 /// Native inventory array selected by an installed bucket descriptor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InventoryScope {
+pub(crate) enum InventoryScope {
     #[default]
     Unknown,
     Character,
@@ -174,7 +185,7 @@ pub enum InventoryScope {
 }
 
 impl InventoryScope {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Unknown => "Unknown",
             Self::Character => "Character",
@@ -184,7 +195,7 @@ impl InventoryScope {
     }
 
     /// Fixed capacity of the native array selected by this scope.
-    pub const fn array_capacity(self) -> Option<u16> {
+    pub(crate) const fn array_capacity(self) -> Option<u16> {
         match self {
             Self::Unknown => None,
             Self::Character => Some(350),
@@ -197,7 +208,7 @@ impl InventoryScope {
 /// Quantity policy declared by the installed item definition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ItemStackability {
+pub(crate) enum ItemStackability {
     #[default]
     Unknown,
     Stackable,
@@ -205,8 +216,7 @@ pub enum ItemStackability {
 }
 
 impl ItemStackability {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Unknown => "Unknown",
             Self::Stackable => "Stackable",
@@ -217,7 +227,7 @@ impl ItemStackability {
 
 /// Installed item and bucket fields needed to place an authored inventory row safely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InventoryMetadata {
+pub(crate) struct InventoryMetadata {
     pub scope: InventoryScope,
     pub native_bucket_id: u8,
     pub stackability: ItemStackability,
@@ -244,21 +254,21 @@ impl InventoryMetadata {
     /// Character callers count both present equipment and unequipped inventory against
     /// this value. Empty equipment slots therefore leave their row available, matching
     /// Sunrise's runtime placement order.
-    pub const fn authored_row_capacity(self) -> Option<u16> {
+    pub(crate) const fn authored_row_capacity(self) -> Option<u16> {
         match (self.scope, self.bucket_capacity) {
             (InventoryScope::Unknown, _) | (_, None) => None,
             (_, Some(capacity)) => Some(capacity),
         }
     }
 
-    pub const fn is_profile_items_candidate(self) -> bool {
+    pub(crate) const fn is_profile_items_candidate(self) -> bool {
         matches!(self.scope, InventoryScope::Profile)
             && matches!(self.stackability, ItemStackability::Stackable)
             && matches!(self.max_stack_size, Some(size) if size > 0)
             && matches!(self.authored_row_capacity(), Some(size) if size > 0)
     }
 
-    pub const fn is_character_inventory_candidate(self) -> bool {
+    pub(crate) const fn is_character_inventory_candidate(self) -> bool {
         matches!(self.scope, InventoryScope::Character)
             && !matches!(self.stackability, ItemStackability::Unknown)
             && matches!(self.max_stack_size, Some(size) if size > 0)
@@ -270,7 +280,7 @@ impl InventoryMetadata {
     /// The package descriptor exposes a compact native id rather than a localized display name,
     /// so stable names for the targeted build live beside the descriptor interpretation. Unknown
     /// ids retain their scope and identity instead of being merged into one misleading group.
-    pub fn bucket_label(self) -> String {
+    pub(crate) fn bucket_label(self) -> String {
         inventory_bucket_name(self.scope, self.native_bucket_id).map_or_else(
             || match self.scope {
                 InventoryScope::Unknown => "Unknown bucket".to_owned(),
@@ -322,7 +332,7 @@ const fn inventory_bucket_name(scope: InventoryScope, bucket: u8) -> Option<&'st
 
 /// A displayable inventory definition, including profile-only definitions that are not equipment.
 #[derive(Clone, Copy, Debug)]
-pub struct InventoryDefinition<'a> {
+pub(crate) struct InventoryDefinition<'a> {
     pub hash: u64,
     pub name: &'a str,
     pub type_name: &'a str,
@@ -331,8 +341,14 @@ pub struct InventoryDefinition<'a> {
     pub item: Option<&'a ItemDef>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemMaterialRequirementSetIndices {
+    pub insertion: Option<u16>,
+    pub enabled: Option<u16>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AbilityOptions {
+pub(crate) struct AbilityOptions {
     pub movement: Vec<AbilityChoice>,
     pub grenade: Vec<AbilityChoice>,
     pub super_ability: Vec<AbilityChoice>,
@@ -343,13 +359,13 @@ pub struct AbilityOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AbilityChoice {
+pub(crate) struct AbilityChoice {
     pub entry: u64,
     pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AttunementChoice {
+pub(crate) struct AttunementChoice {
     pub name: String,
     pub super_abilities: Vec<AbilityChoice>,
     pub melee: AbilityChoice,
@@ -369,20 +385,6 @@ struct ParsedAbilityEntry {
     group: u8,
 }
 
-struct ScannedCatalog {
-    items: Vec<ItemDef>,
-    names: HashMap<u64, String>,
-    type_names: HashMap<u64, String>,
-    descriptions: HashMap<u64, String>,
-    icon_containers: HashMap<u64, u32>,
-    inventory_metadata: HashMap<u64, InventoryMetadata>,
-    objectives: Vec<ObjectiveDef>,
-    unlock_flag_definitions: Vec<UnlockDefinition>,
-    unlock_value_definitions: Vec<UnlockDefinition>,
-    collectibles: Vec<CollectibleDef>,
-    progression_package_error: Option<String>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InventoryBucketDescriptor {
     scope: InventoryScope,
@@ -390,7 +392,7 @@ struct InventoryBucketDescriptor {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SocketDef {
+pub(crate) struct SocketDef {
     pub socket_type: u16,
     #[serde(default)]
     pub label: String,
@@ -406,60 +408,38 @@ struct CatalogCache {
     schema: u32,
     sundial_version: String,
     fingerprint: String,
-    items: Vec<ItemDef>,
-    names: HashMap<u64, String>,
-    type_names: HashMap<u64, String>,
-    #[serde(default)]
-    descriptions: HashMap<u64, String>,
-    #[serde(default)]
-    icon_containers: HashMap<u64, u32>,
-    #[serde(default)]
-    inventory_metadata: HashMap<u64, InventoryMetadata>,
-    objectives: Vec<ObjectiveDef>,
-    unlock_flag_definitions: Vec<UnlockDefinition>,
-    unlock_value_definitions: Vec<UnlockDefinition>,
-    collectibles: Vec<CollectibleDef>,
-    #[serde(default)]
-    progression_package_error: Option<String>,
-    plug_pools: Vec<Vec<u64>>,
+    contents: CatalogContents,
 }
 
+#[derive(Serialize, Deserialize)]
 struct CatalogContents {
     items: Vec<ItemDef>,
+    orbit_backdrops: Vec<String>,
+    orbit_map_entries: Vec<orbit_map::Entry>,
     names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
+    #[serde(default)]
     descriptions: HashMap<u64, String>,
+    #[serde(default)]
     icon_containers: HashMap<u64, u32>,
+    #[serde(default)]
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     objectives: Vec<ObjectiveDef>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
     collectibles: Vec<CollectibleDef>,
+    material_requirement_sets: Vec<MaterialRequirementSetDef>,
+    item_material_requirement_set_indices: HashMap<u64, ItemMaterialRequirementSetIndices>,
+    progression_definitions: Vec<ProgressionDefinition>,
+    #[serde(default)]
     progression_package_error: Option<String>,
     plug_pools: Vec<Vec<u64>>,
 }
 
-impl CatalogCache {
-    fn into_contents(self) -> CatalogContents {
-        CatalogContents {
-            items: self.items,
-            names: self.names,
-            type_names: self.type_names,
-            descriptions: self.descriptions,
-            icon_containers: self.icon_containers,
-            inventory_metadata: self.inventory_metadata,
-            objectives: self.objectives,
-            unlock_flag_definitions: self.unlock_flag_definitions,
-            unlock_value_definitions: self.unlock_value_definitions,
-            collectibles: self.collectibles,
-            progression_package_error: self.progression_package_error,
-            plug_pools: self.plug_pools,
-        }
-    }
-}
-
-pub struct Catalog {
+pub(crate) struct Catalog {
     pub items: Vec<Arc<ItemDef>>,
+    orbit_backdrops: Vec<String>,
+    orbit_map_entries: Vec<orbit_map::Entry>,
     pub names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
     descriptions: HashMap<u64, String>,
@@ -473,19 +453,31 @@ pub struct Catalog {
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
     collectibles: Vec<CollectibleDef>,
+    material_requirement_sets: Vec<MaterialRequirementSetDef>,
+    item_material_requirement_set_indices: HashMap<u64, ItemMaterialRequirementSetIndices>,
+    progression_definitions: Vec<ProgressionDefinition>,
     progression_package_error: Option<String>,
     unlock_flag_state_indices: HashMap<(u8, u16), usize>,
     unlock_value_state_indices: HashMap<(u8, u16), usize>,
-    objectives_by_unlock_value: HashMap<usize, usize>,
+    objectives_by_unlock_value: HashMap<usize, Vec<usize>>,
+    progression_names: HashMap<u64, String>,
     inventory_hashes: Vec<u64>,
     item_indices: HashMap<u64, usize>,
+    bucket_item_indices: HashMap<u64, Vec<usize>>,
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
     all_plug_options: Vec<u64>,
 }
 
+fn insert_progression_name(names: &mut HashMap<u64, String>, hash: u64, candidate: &str) {
+    let candidate = candidate.trim();
+    if !candidate.is_empty() {
+        names.entry(hash).or_insert_with(|| candidate.to_owned());
+    }
+}
+
 impl SocketDef {
-    pub fn display_label(&self, index: usize) -> String {
+    pub(crate) fn display_label(&self, index: usize) -> String {
         if self.label.is_empty() {
             format!("Socket {}", index + 1)
         } else {
@@ -495,7 +487,7 @@ impl SocketDef {
 }
 
 impl Catalog {
-    pub fn load_or_scan_with_progress(
+    pub(crate) fn load_or_scan_with_progress(
         install: &Path,
         cache_path: PathBuf,
         force: bool,
@@ -517,7 +509,7 @@ impl Catalog {
                             total: 1,
                         });
                         return Ok(Self::finish(
-                            cache.into_contents(),
+                            cache.contents,
                             cache_path,
                             install.to_path_buf(),
                             true,
@@ -526,45 +518,28 @@ impl Catalog {
                 }
             }
         }
-        let ScannedCatalog {
-            mut items,
-            mut names,
-            type_names,
-            descriptions,
-            icon_containers,
-            inventory_metadata,
-            objectives,
-            unlock_flag_definitions,
-            unlock_value_definitions,
-            collectibles,
-            progression_package_error,
-        } = scan_packages(install, &mut report)?;
+        let mut contents = scan_packages(install, &mut report)?;
         report(CatalogProgress::stage("Optimizing the local catalog…"));
-        let mut type_names = type_names;
-        unnamed_plugs::apply_to_catalog(&mut names, &mut type_names);
-        let plug_pools = intern_socket_pools(&mut items, &names)?;
-        let type_names = plug_pools
+        unnamed_plugs::apply_to_catalog(&mut contents.names, &mut contents.type_names);
+        contents.plug_pools = intern_socket_pools(&mut contents.items, &contents.names)?;
+        contents.type_names = contents
+            .plug_pools
             .iter()
             .flatten()
-            .chain(inventory_metadata.keys())
-            .filter_map(|hash| type_names.get(hash).cloned().map(|name| (*hash, name)))
+            .chain(contents.inventory_metadata.keys())
+            .filter_map(|hash| {
+                contents
+                    .type_names
+                    .get(hash)
+                    .cloned()
+                    .map(|name| (*hash, name))
+            })
             .collect();
         let cache = CatalogCache {
             schema: CACHE_SCHEMA,
             sundial_version: SUNDIAL_VERSION.into(),
             fingerprint,
-            items,
-            names,
-            type_names,
-            descriptions,
-            icon_containers,
-            inventory_metadata,
-            objectives,
-            unlock_flag_definitions,
-            unlock_value_definitions,
-            collectibles,
-            progression_package_error,
-            plug_pools,
+            contents,
         };
         if let Some(parent) = cache_path.parent() {
             fs::create_dir_all(parent)
@@ -581,7 +556,7 @@ impl Catalog {
             total: 1,
         });
         Ok(Self::finish(
-            cache.into_contents(),
+            cache.contents,
             cache_path,
             install.to_path_buf(),
             false,
@@ -596,6 +571,8 @@ impl Catalog {
     ) -> Self {
         let CatalogContents {
             mut items,
+            mut orbit_backdrops,
+            mut orbit_map_entries,
             names,
             type_names,
             descriptions,
@@ -605,6 +582,9 @@ impl Catalog {
             unlock_flag_definitions,
             unlock_value_definitions,
             collectibles,
+            material_requirement_sets,
+            item_material_requirement_set_indices,
+            progression_definitions,
             progression_package_error,
             mut plug_pools,
         } = contents;
@@ -628,6 +608,8 @@ impl Catalog {
         let mut all_plug_options = plug_pools.iter().flatten().copied().collect();
         sort_plug_options(&mut all_plug_options, &names);
         items.sort_by_key(|item| item.name.to_lowercase());
+        orbit_backdrops.sort();
+        orbit_map_entries.sort_by(|first, second| first.destination.cmp(&second.destination));
         let mut inventory_hashes = inventory_metadata
             .keys()
             .filter(|hash| names.contains_key(hash))
@@ -646,19 +628,95 @@ impl Catalog {
             .enumerate()
             .map(|(index, item)| (item.hash, index))
             .collect();
+        let mut bucket_item_indices = HashMap::<u64, Vec<usize>>::new();
+        for (index, item) in items.iter().enumerate() {
+            if item.bucket_hash != 0 {
+                bucket_item_indices
+                    .entry(item.bucket_hash)
+                    .or_default()
+                    .push(index);
+            }
+        }
         let unlock_flag_state_indices = unlock_state_indices(&unlock_flag_definitions);
         let unlock_value_state_indices = unlock_state_indices(&unlock_value_definitions);
-        let objectives_by_unlock_value = objectives
+        let mut progression_names = HashMap::new();
+        for objective in &objectives {
+            for candidate in [
+                objective.name.as_str(),
+                objective.progress_description.as_str(),
+                objective.display_description.as_str(),
+                objective.description.as_str(),
+            ] {
+                insert_progression_name(&mut progression_names, objective.hash, candidate);
+            }
+            for owner in &objective.owners {
+                insert_progression_name(&mut progression_names, objective.hash, &owner.name);
+                insert_progression_name(&mut progression_names, owner.hash, &owner.name);
+                for trait_definition in &owner.traits {
+                    insert_progression_name(
+                        &mut progression_names,
+                        trait_definition.hash,
+                        &trait_definition.name,
+                    );
+                }
+            }
+        }
+        for objective in &objectives {
+            if progression_names.contains_key(&objective.hash) {
+                continue;
+            }
+            if let Some(name) = objective
+                .referenced_objective_indices
+                .iter()
+                .filter_map(|index| objectives.get(usize::from(*index)))
+                .find_map(|target| progression_names.get(&target.hash))
+                .cloned()
+            {
+                insert_progression_name(&mut progression_names, objective.hash, &name);
+            }
+        }
+        for definition in unlock_flag_definitions
             .iter()
-            .enumerate()
-            .filter_map(|(objective_index, objective)| {
-                objective
-                    .related_unlock_value_definition_index
-                    .map(|definition_index| (usize::from(definition_index), objective_index))
-            })
-            .collect();
+            .chain(&unlock_value_definitions)
+        {
+            if let Some(name) = definition.name.as_deref() {
+                insert_progression_name(&mut progression_names, definition.hash, name);
+            }
+            for context in &definition.tested_by {
+                for candidate in [
+                    context.name.as_str(),
+                    context.type_name.as_str(),
+                    context.description.as_str(),
+                ] {
+                    insert_progression_name(&mut progression_names, definition.hash, candidate);
+                }
+                for component in context.paths.iter().flatten() {
+                    insert_progression_name(&mut progression_names, definition.hash, component);
+                }
+                insert_progression_name(&mut progression_names, context.hash, &context.name);
+            }
+        }
+        for definition in &collectibles {
+            insert_progression_name(&mut progression_names, definition.hash, &definition.name);
+            insert_progression_name(
+                &mut progression_names,
+                definition.item_hash,
+                &definition.name,
+            );
+        }
+        let mut objectives_by_unlock_value = HashMap::<usize, Vec<usize>>::new();
+        for (objective_index, objective) in objectives.iter().enumerate() {
+            if let Some(definition_index) = objective.related_unlock_value_definition_index {
+                objectives_by_unlock_value
+                    .entry(usize::from(definition_index))
+                    .or_default()
+                    .push(objective_index);
+            }
+        }
         Self {
             items: items.into_iter().map(Arc::new).collect(),
+            orbit_backdrops,
+            orbit_map_entries,
             names,
             type_names,
             descriptions,
@@ -672,51 +730,73 @@ impl Catalog {
             unlock_flag_definitions,
             unlock_value_definitions,
             collectibles,
+            material_requirement_sets,
+            item_material_requirement_set_indices,
+            progression_definitions,
             progression_package_error,
             unlock_flag_state_indices,
             unlock_value_state_indices,
             objectives_by_unlock_value,
+            progression_names,
             inventory_hashes,
             item_indices,
+            bucket_item_indices,
             plug_pools,
             socket_type_options,
             all_plug_options,
         }
     }
 
-    pub fn get_for_bucket(&self, hash: u64, bucket: u64) -> Option<&ItemDef> {
+    pub(crate) fn get_for_bucket(&self, hash: u64, bucket: u64) -> Option<&ItemDef> {
         self.item(hash).filter(|item| item.bucket_hash == bucket)
     }
 
-    pub fn item_handle_for_bucket(&self, hash: u64, bucket: u64) -> Option<Arc<ItemDef>> {
+    pub(crate) fn item_handle_for_bucket(&self, hash: u64, bucket: u64) -> Option<Arc<ItemDef>> {
         self.item_handle(hash)
             .filter(|item| item.bucket_hash == bucket)
     }
 
     /// Finds an existing equipment definition without requiring its bucket hash.
-    pub fn item(&self, hash: u64) -> Option<&ItemDef> {
+    pub(crate) fn item(&self, hash: u64) -> Option<&ItemDef> {
         self.item_indices
             .get(&hash)
             .and_then(|index| self.items.get(*index))
             .map(Arc::as_ref)
     }
 
-    pub fn item_handle(&self, hash: u64) -> Option<Arc<ItemDef>> {
+    pub(crate) fn items_for_bucket(&self, bucket_hash: u64) -> impl Iterator<Item = &ItemDef> {
+        self.bucket_item_indices
+            .get(&bucket_hash)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.items.get(*index))
+            .map(Arc::as_ref)
+    }
+
+    pub(crate) fn item_handle(&self, hash: u64) -> Option<Arc<ItemDef>> {
         self.item_indices
             .get(&hash)
             .and_then(|index| self.items.get(*index))
             .cloned()
     }
 
-    pub fn inventory_metadata(&self, hash: u64) -> Option<&InventoryMetadata> {
+    pub(crate) fn inventory_metadata(&self, hash: u64) -> Option<&InventoryMetadata> {
         self.inventory_metadata.get(&hash)
     }
 
-    pub fn progression_package_error(&self) -> Option<&str> {
+    pub(crate) fn orbit_backdrops(&self) -> &[String] {
+        &self.orbit_backdrops
+    }
+
+    pub(crate) fn orbit_map_entries(&self) -> &[orbit_map::Entry] {
+        &self.orbit_map_entries
+    }
+
+    pub(crate) fn progression_package_error(&self) -> Option<&str> {
         self.progression_package_error.as_deref()
     }
 
-    pub fn unlock_flag_for_state(
+    pub(crate) fn unlock_flag_for_state(
         &self,
         bank: u8,
         slot: usize,
@@ -726,7 +806,7 @@ impl Catalog {
         Some((index, self.unlock_flag_definitions.get(index)?))
     }
 
-    pub fn unlock_value_for_state(
+    pub(crate) fn unlock_value_for_state(
         &self,
         bank: u8,
         slot: usize,
@@ -736,34 +816,99 @@ impl Catalog {
         Some((index, self.unlock_value_definitions.get(index)?))
     }
 
-    pub fn unlock_flag_definition(&self, index: usize) -> Option<&UnlockDefinition> {
+    pub(crate) fn unlock_flag_definition(&self, index: usize) -> Option<&UnlockDefinition> {
         self.unlock_flag_definitions.get(index)
     }
 
-    pub fn unlock_flag_definitions(&self) -> &[UnlockDefinition] {
+    pub(crate) fn unlock_flag_definitions(&self) -> &[UnlockDefinition] {
         &self.unlock_flag_definitions
     }
 
-    pub fn unlock_value_definition(&self, index: usize) -> Option<&UnlockDefinition> {
+    pub(crate) fn unlock_value_definition(&self, index: usize) -> Option<&UnlockDefinition> {
         self.unlock_value_definitions.get(index)
     }
 
-    pub fn unlock_value_definitions(&self) -> &[UnlockDefinition] {
+    pub(crate) fn unlock_value_definitions(&self) -> &[UnlockDefinition] {
         &self.unlock_value_definitions
     }
 
-    pub fn collectibles(&self) -> &[CollectibleDef] {
+    pub(crate) fn objective_definition(&self, index: usize) -> Option<&ObjectiveDef> {
+        self.objectives.get(index)
+    }
+
+    pub(crate) fn objectives(&self) -> &[ObjectiveDef] {
+        &self.objectives
+    }
+
+    pub(crate) fn collectibles(&self) -> &[CollectibleDef] {
         &self.collectibles
     }
 
-    pub fn objective_for_unlock_value(&self, definition_index: usize) -> Option<&ObjectiveDef> {
+    pub(crate) fn material_requirement_sets(&self) -> &[MaterialRequirementSetDef] {
+        &self.material_requirement_sets
+    }
+
+    pub(crate) fn material_requirement_set(
+        &self,
+        index: usize,
+    ) -> Option<&MaterialRequirementSetDef> {
+        self.material_requirement_sets.get(index)
+    }
+
+    pub(crate) fn item_material_requirement_set_indices(
+        &self,
+        hash: u64,
+    ) -> Option<ItemMaterialRequirementSetIndices> {
+        self.item_material_requirement_set_indices
+            .get(&hash)
+            .copied()
+    }
+
+    pub(crate) fn progression_definitions(&self) -> &[ProgressionDefinition] {
+        &self.progression_definitions
+    }
+
+    pub(crate) fn progression_definition(&self, index: usize) -> Option<&ProgressionDefinition> {
+        self.progression_definitions.get(index)
+    }
+
+    pub(crate) fn objective_for_unlock_value(
+        &self,
+        definition_index: usize,
+    ) -> Option<&ObjectiveDef> {
         self.objectives_by_unlock_value
             .get(&definition_index)
+            .and_then(|indices| indices.first())
             .and_then(|index| self.objectives.get(*index))
     }
 
+    pub(crate) fn objective_with_index_for_unlock_value(
+        &self,
+        definition_index: usize,
+    ) -> Option<(usize, &ObjectiveDef)> {
+        let index = *self
+            .objectives_by_unlock_value
+            .get(&definition_index)?
+            .first()?;
+        self.objectives
+            .get(index)
+            .map(|objective| (index, objective))
+    }
+
+    pub(crate) fn objectives_for_unlock_value(
+        &self,
+        definition_index: usize,
+    ) -> Vec<&ObjectiveDef> {
+        self.objectives_by_unlock_value
+            .get(&definition_index)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.objectives.get(*index))
+            .collect()
+    }
+
     /// Resolves both equipment definitions and profile-only inventory definitions.
-    pub fn inventory_definition(&self, hash: u64) -> Option<InventoryDefinition<'_>> {
+    pub(crate) fn inventory_definition(&self, hash: u64) -> Option<InventoryDefinition<'_>> {
         let metadata = self.inventory_metadata(hash)?;
         let item = self.item(hash);
         let name = self
@@ -790,7 +935,7 @@ impl Catalog {
     ///
     /// Callers apply their display limit after document-specific capacity filters. Duplicate
     /// definitions remain valid because Sunrise can store overflow quantities in another stack.
-    pub fn profile_item_candidates(
+    pub(crate) fn profile_item_candidates(
         &self,
         text: &str,
     ) -> impl Iterator<Item = InventoryDefinition<'_>> + '_ {
@@ -812,7 +957,7 @@ impl Catalog {
     /// Returns deterministic, equippable character-inventory matches.
     ///
     /// Callers apply their display limit after document-specific bucket-capacity filters.
-    pub fn character_inventory_candidates(
+    pub(crate) fn character_inventory_candidates(
         &self,
         text: &str,
         class_type: u64,
@@ -835,7 +980,7 @@ impl Catalog {
             })
     }
 
-    pub fn search(
+    pub(crate) fn search(
         &self,
         text: &str,
         bucket: u64,
@@ -861,7 +1006,12 @@ impl Catalog {
             .collect()
     }
 
-    pub fn browse(&self, bucket: u64, class_type: u64, show_dummy_items: bool) -> Vec<&ItemDef> {
+    pub(crate) fn browse(
+        &self,
+        bucket: u64,
+        class_type: u64,
+        show_dummy_items: bool,
+    ) -> Vec<&ItemDef> {
         self.items
             .iter()
             .filter(|item| compatible(item, bucket, class_type, show_dummy_items))
@@ -869,23 +1019,29 @@ impl Catalog {
             .collect()
     }
 
-    pub fn plug_label(&self, hash: u64, include_hash: bool) -> String {
+    pub(crate) fn plug_label(&self, hash: u64, include_hash: bool) -> String {
         let name = self.names.get(&hash).map_or("Unknown plug", String::as_str);
         format_plug_label(name, hash, include_hash)
     }
 
-    pub fn plug_type_name(&self, hash: u64) -> Option<&str> {
+    pub(crate) fn plug_type_name(&self, hash: u64) -> Option<&str> {
         self.type_names.get(&hash).map(String::as_str)
     }
 
-    pub fn display_name(&self, hash: u64) -> Option<&str> {
+    pub(crate) fn display_name(&self, hash: u64) -> Option<&str> {
         self.names
             .get(&hash)
             .map(String::as_str)
-            .or_else(|| self.item(hash).map(|item| item.name.as_str()))
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                self.item(hash)
+                    .map(|item| item.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .or_else(|| self.progression_names.get(&hash).map(String::as_str))
     }
 
-    pub fn stats(&self) -> CatalogStats {
+    pub(crate) fn stats(&self) -> CatalogStats {
         CatalogStats {
             items: self.items.len(),
             plugs: self.all_plug_options.len(),
@@ -894,12 +1050,12 @@ impl Catalog {
         }
     }
 
-    pub fn description(&self, hash: u64) -> Option<&str> {
+    pub(crate) fn description(&self, hash: u64) -> Option<&str> {
         self.descriptions.get(&hash).map(String::as_str)
     }
 
     /// Loads an installed package icon on demand and keeps only displayed icons on the GPU.
-    pub fn icon_texture(
+    pub(crate) fn icon_texture(
         &self,
         context: &eframe::egui::Context,
         hash: u64,
@@ -912,7 +1068,7 @@ impl Catalog {
         runtime.texture(context, &self.install_path, hash, container)
     }
 
-    pub fn icon_diagnostic(&self, hash: u64) -> Option<String> {
+    pub(crate) fn icon_diagnostic(&self, hash: u64) -> Option<String> {
         let runtime = self
             .icon_runtime
             .lock()
@@ -920,7 +1076,7 @@ impl Catalog {
         runtime.diagnostic(hash)
     }
 
-    pub fn socket_options(&self, socket: &SocketDef) -> &[u64] {
+    pub(crate) fn socket_options(&self, socket: &SocketDef) -> &[u64] {
         self.plug_pools
             .get(socket.pool as usize)
             .map(Vec::as_slice)
@@ -933,7 +1089,7 @@ impl Catalog {
     /// (unacquired, objective progress, completion marker) or the later empty/active
     /// pair where the item-state Masterwork bit distinguishes progress from completion.
     /// Ambiguous socket pools are deliberately left as ordinary plug editors.
-    pub fn catalyst_socket(&self, item: &ItemDef) -> Option<CatalystSocket> {
+    pub(crate) fn catalyst_socket(&self, item: &ItemDef) -> Option<CatalystSocket> {
         item.sockets
             .iter()
             .enumerate()
@@ -989,14 +1145,14 @@ impl Catalog {
             })
     }
 
-    pub fn socket_type_options(&self, socket_type: u16) -> &[u64] {
+    pub(crate) fn socket_type_options(&self, socket_type: u16) -> &[u64] {
         self.socket_type_options
             .get(&socket_type)
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
 
-    pub fn all_plug_options(&self) -> &[u64] {
+    pub(crate) fn all_plug_options(&self) -> &[u64] {
         &self.all_plug_options
     }
 }
@@ -1030,7 +1186,7 @@ fn sort_plug_options(options: &mut Vec<u64>, names: &HashMap<u64, String>) {
     });
 }
 
-pub fn cache_is_current(path: &Path) -> bool {
+pub(crate) fn cache_is_current(path: &Path) -> bool {
     let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
@@ -1114,7 +1270,7 @@ fn retain_progression_enrichment<T>(
 fn scan_packages(
     install: &Path,
     report: &mut dyn FnMut(CatalogProgress),
-) -> Result<ScannedCatalog, String> {
+) -> Result<CatalogContents, String> {
     report(CatalogProgress::stage(
         "Opening the installed game packages…",
     ));
@@ -1156,6 +1312,11 @@ fn scan_packages(
     let root = manager
         .read_tag(TagHash(u32_at(&globals_data, 16)?))
         .map_err(|e| format!("Could not read investment root: {e}"))?;
+    report(CatalogProgress::stage("Reading Orbit backdrops…"));
+    let orbit_map::Scan {
+        backdrops: orbit_backdrops,
+        entries: orbit_map_entries,
+    } = orbit_map::scan(&manager)?;
     let mut progression_package_errors = Vec::new();
     report(CatalogProgress::stage("Reading unlock definitions…"));
     let mut unlock_flag_definitions = retain_progression_scan(
@@ -1217,6 +1378,9 @@ fn scan_packages(
         }
     };
     attach_presentation_node_objective_owners(&mut objectives, &presentation_nodes);
+    if let Err(error) = scan_milestone_objective_owners(&mut progression_package, &mut objectives) {
+        progression_package_errors.push(format!("Milestone objective owners: {error}"));
+    }
     if let Err(error) = scan_metric_objective_owners(
         &mut progression_package,
         &presentation_nodes,
@@ -1258,13 +1422,30 @@ fn scan_packages(
         scan_collectible_condition_contexts(&manager, &root, &presentation_nodes),
         &mut progression_package_errors,
     );
-    let pending_collectibles = retain_progression_scan(
-        "Collectible definitions",
-        scan_collectibles(&manager, &root, &presentation_nodes),
+    let pending_material_requirement_sets = retain_progression_scan(
+        "Material requirement sets",
+        scan_material_requirement_sets(&manager, &root),
         &mut progression_package_errors,
     );
-    let progression_package_error =
-        (!progression_package_errors.is_empty()).then(|| progression_package_errors.join("\n"));
+    let pending_collectibles = if pending_material_requirement_sets.is_empty() {
+        Vec::new()
+    } else {
+        retain_progression_scan(
+            "Collectible definitions",
+            scan_collectibles(
+                &manager,
+                &root,
+                &presentation_nodes,
+                &pending_material_requirement_sets,
+            ),
+            &mut progression_package_errors,
+        )
+    };
+    let progression_definitions = retain_progression_scan(
+        "Progression definitions",
+        scan_progression_definitions(&manager, &root),
+        &mut progression_package_errors,
+    );
     let inventory_buckets = scan_inventory_bucket_descriptors(&manager, &root)?;
     let plug_set_table = manager
         .read_tag(TagHash(u32_at(&root, 8 + 51 * 16)?))
@@ -1299,17 +1480,22 @@ fn scan_packages(
     let mut descriptions = HashMap::new();
     let mut icon_containers = HashMap::new();
     let mut inventory_metadata = HashMap::new();
+    let mut item_material_requirement_set_indices = HashMap::new();
     let mut items = Vec::new();
     let mut item_socket_lists = Vec::<(usize, u16)>::new();
     let mut plug_category_by_hash = HashMap::<u64, u32>::new();
     let mut plug_category_items = HashMap::<u32, Vec<u64>>::new();
+    let mut unreadable_item_definitions = 0_usize;
+    let mut short_item_definitions = 0_usize;
+    let mut unreadable_item_strings = 0_usize;
     report(CatalogProgress {
         message: "Reading item definitions…",
         completed: 0,
         total: count,
     });
+    let progress_stride = item_scan_progress_stride(count);
     for index in 0..count {
-        if index % 64 == 0 {
+        if index % progress_stride == 0 {
             report(CatalogProgress {
                 message: "Reading item definitions…",
                 completed: index,
@@ -1319,19 +1505,38 @@ fn scan_packages(
         let hash = hashes[index];
         let item_tag = TagHash(u32_at(&item_table, rows + index * 24 + 16)?);
         let Ok(item) = manager.read_tag(item_tag) else {
+            unreadable_item_definitions += 1;
             continue;
         };
         if item.len() < 188 {
+            short_item_definitions += 1;
             continue;
         }
         let metadata = item_inventory_metadata(&item, &inventory_buckets);
         if let Some(metadata) = metadata {
             inventory_metadata.insert(hash, metadata);
         }
+        if let Some(indices) = item_material_requirement_set_indices_from_data(&item) {
+            item_material_requirement_set_indices.insert(hash, indices);
+        }
         let objective_indices = item_objective_indices(&item, objectives.len());
         let objective_paths = collectible_item_paths
             .get(&index)
             .map_or(&[][..], Vec::as_slice);
+        attach_item_condition_contexts(
+            &item,
+            ItemProgressionContext {
+                hash,
+                name: "",
+                type_name: "",
+                paths: objective_paths,
+            },
+            collectible_condition_contexts
+                .get(&index)
+                .map_or(&[], Vec::as_slice),
+            &mut unlock_flag_definitions,
+            &mut unlock_value_definitions,
+        );
         let string_row = string_rows + index * 24;
         let string_tag = if u32_at(&string_map, string_row).ok().map(u64::from) == Some(hash) {
             TagHash(u32_at(&string_map, string_row + 16)?)
@@ -1351,6 +1556,7 @@ fn scan_packages(
             tag
         };
         let Ok(string_thing) = manager.read_tag(string_tag) else {
+            unreadable_item_strings += 1;
             attach_item_objective_owners(
                 &mut objectives,
                 &objective_indices,
@@ -1563,9 +1769,43 @@ fn scan_packages(
     )?;
     sort_progression_contexts(&mut unlock_flag_definitions);
     sort_progression_contexts(&mut unlock_value_definitions);
-    let collectibles = materialize_collectibles(pending_collectibles, &hashes, &names, &type_names);
-    Ok(ScannedCatalog {
+    let material_requirement_sets =
+        match materialize_material_requirement_sets(pending_material_requirement_sets, &hashes) {
+            Ok(sets) => sets,
+            Err(error) => {
+                progression_package_errors.push(format!("Material requirement sets: {error}"));
+                Vec::new()
+            }
+        };
+    if material_requirement_sets.is_empty() {
+        item_material_requirement_set_indices.clear();
+    }
+    let collectibles =
+        match materialize_collectibles(pending_collectibles, &hashes, &names, &type_names) {
+            Ok(collectibles) => collectibles,
+            Err(error) => {
+                progression_package_errors.push(format!("Collectible definitions: {error}"));
+                Vec::new()
+            }
+        };
+    for (label, count) in [
+        ("Unreadable item definitions", unreadable_item_definitions),
+        ("Truncated item definitions", short_item_definitions),
+        (
+            "Unreadable item string definitions",
+            unreadable_item_strings,
+        ),
+    ] {
+        if count > 0 {
+            progression_package_errors.push(format!("{label}: {count}"));
+        }
+    }
+    let progression_package_error =
+        (!progression_package_errors.is_empty()).then(|| progression_package_errors.join("\n"));
+    Ok(CatalogContents {
         items,
+        orbit_backdrops,
+        orbit_map_entries,
         names,
         type_names,
         descriptions,
@@ -1575,8 +1815,31 @@ fn scan_packages(
         unlock_flag_definitions,
         unlock_value_definitions,
         collectibles,
+        material_requirement_sets,
+        item_material_requirement_set_indices,
+        progression_definitions,
         progression_package_error,
+        plug_pools: Vec::new(),
     })
+}
+
+fn item_scan_progress_stride(item_count: usize) -> usize {
+    item_count.div_ceil(MAX_ITEM_SCAN_PROGRESS_UPDATES).max(64)
+}
+
+fn item_material_requirement_set_indices_from_data(
+    item: &[u8],
+) -> Option<ItemMaterialRequirementSetIndices> {
+    fn read(item: &[u8], offset: usize) -> Option<u16> {
+        let bytes = item.get(offset..offset + 2)?;
+        let index = u16::from_le_bytes([bytes[0], bytes[1]]);
+        (index != u16::MAX).then_some(index)
+    }
+
+    let insertion = read(item, INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET);
+    let enabled = read(item, ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET);
+    (insertion.is_some() || enabled.is_some())
+        .then_some(ItemMaterialRequirementSetIndices { insertion, enabled })
 }
 
 fn materialize_collectibles(
@@ -1584,15 +1847,55 @@ fn materialize_collectibles(
     item_hashes: &[u64],
     names: &HashMap<u64, String>,
     type_names: &HashMap<u64, String>,
-) -> Vec<CollectibleDef> {
+) -> Result<Vec<CollectibleDef>, String> {
     pending
         .into_iter()
-        .filter_map(|collectible| {
-            let item_hash = *item_hashes.get(collectible.item_index)?;
-            Some(CollectibleDef {
+        .map(|collectible| {
+            let item_hash = if collectible.item_definition_index == u16::MAX {
+                0
+            } else {
+                item_hashes
+                    .get(usize::from(collectible.item_definition_index))
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "Collectible #{} references item definition index {}, which is outside the package table",
+                            collectible.index, collectible.item_definition_index
+                        )
+                    })?
+            };
+            let material_requirements = collectible
+                .material_requirements
+                .into_iter()
+                .enumerate()
+                .map(|(row, requirement)| {
+                    let item_hash = item_hashes
+                        .get(usize::from(requirement.item_definition_index))
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "Collectible #{} material requirement row #{row} references item definition index {}, which is outside the package table",
+                                collectible.index, requirement.item_definition_index
+                            )
+                        })?;
+                    Ok(MaterialRequirementDef {
+                        item_definition_index: requirement.item_definition_index,
+                        item_hash,
+                        quantity: requirement.quantity,
+                        delete_on_action: requirement.delete_on_action,
+                        omit_from_requirements: requirement.omit_from_requirements,
+                        condition: requirement.condition,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(CollectibleDef {
                 index: collectible.index,
                 hash: collectible.hash,
+                item_definition_index: collectible.item_definition_index,
                 item_hash,
+                material_requirement_set_index: collectible.material_requirement_set_index,
+                material_requirement_set_hash: collectible.material_requirement_set_hash,
+                material_requirements,
                 name: names.get(&item_hash).cloned().unwrap_or_default(),
                 type_name: type_names.get(&item_hash).cloned().unwrap_or_default(),
                 paths: collectible.paths,
@@ -2532,6 +2835,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn item_scan_progress_updates_are_bounded_without_becoming_choppy() {
+        assert_eq!(item_scan_progress_stride(0), 64);
+        assert_eq!(item_scan_progress_stride(12_800), 64);
+        assert_eq!(item_scan_progress_stride(100_000), 500);
+        assert!(100_000_usize.div_ceil(item_scan_progress_stride(100_000)) <= 200);
+    }
+
+    #[test]
     fn localized_string_shift_preserves_destiny_symbol_codepoints() {
         assert_eq!(shift_localized_character('\u{1}', 0xE142), '\u{E143}');
         assert_eq!(shift_localized_character('\u{1}', 0x001F), ' ');
@@ -2555,9 +2866,27 @@ mod tests {
             description: None,
             tested_by: Vec::new(),
         };
+        let reader_named_value = UnlockDefinition {
+            hash: 0x738D_5E2D,
+            code: 1,
+            compact_slot: None,
+            name: None,
+            description: None,
+            tested_by: vec![ProgressionContextDef {
+                hash: 0x22EB_C08C,
+                kind: ProgressionContextKind::Record,
+                name: "Tradition Is Bigger Than You".into(),
+                type_name: String::new(),
+                description: String::new(),
+                paths: Vec::new(),
+                condition_programs: Vec::new(),
+            }],
+        };
         let catalog = Catalog::finish(
             CatalogContents {
                 items: Vec::new(),
+                orbit_backdrops: Vec::new(),
+                orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
                 descriptions: HashMap::new(),
@@ -2565,18 +2894,27 @@ mod tests {
                 inventory_metadata: HashMap::new(),
                 objectives: vec![ObjectiveDef {
                     hash: value.hash,
+                    name: String::new(),
+                    display_description: String::new(),
+                    progress_description: "C Arc".into(),
                     description: "C Arc".into(),
                     completion_value: 5_000,
                     allow_overcompletion: true,
                     allow_negative_value: false,
                     allow_value_change_when_completed: true,
                     is_counting_downward: false,
+                    condition_programs: Vec::new(),
+                    referenced_objective_indices: Vec::new(),
+                    intrinsic_perk_flag_definition_indices: Vec::new(),
                     owners: Vec::new(),
                     related_unlock_value_definition_index: Some(0),
                 }],
                 unlock_flag_definitions: vec![flag.clone()],
-                unlock_value_definitions: vec![value.clone()],
+                unlock_value_definitions: vec![value.clone(), reader_named_value.clone()],
                 collectibles: Vec::new(),
+                material_requirement_sets: Vec::new(),
+                item_material_requirement_set_indices: HashMap::new(),
+                progression_definitions: Vec::new(),
                 progression_package_error: Some("Objective definitions: unavailable".to_owned()),
                 plug_pools: Vec::new(),
             },
@@ -2602,6 +2940,12 @@ mod tests {
         let objective = catalog.objective_for_unlock_value(0).unwrap();
         assert_eq!(objective.maximum_value(), None);
         assert_eq!(objective.minimum_value(), None);
+        assert_eq!(catalog.display_name(flag.hash), Some("Crucible Access"));
+        assert_eq!(catalog.display_name(value.hash), Some("C Arc"));
+        assert_eq!(
+            catalog.display_name(reader_named_value.hash),
+            Some("Tradition Is Bigger Than You")
+        );
     }
 
     #[test]
@@ -2896,6 +3240,8 @@ mod tests {
         let catalog = Catalog::finish(
             CatalogContents {
                 items: vec![character],
+                orbit_backdrops: Vec::new(),
+                orbit_map_entries: Vec::new(),
                 names,
                 type_names,
                 descriptions: HashMap::new(),
@@ -2905,6 +3251,9 @@ mod tests {
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
                 collectibles: Vec::new(),
+                material_requirement_sets: Vec::new(),
+                item_material_requirement_set_indices: HashMap::new(),
+                progression_definitions: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![Vec::new()],
             },
@@ -2973,6 +3322,8 @@ mod tests {
         let catalog = Catalog::finish(
             CatalogContents {
                 items,
+                orbit_backdrops: Vec::new(),
+                orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
                 descriptions: HashMap::from([(10_042, "A description-only match".to_owned())]),
@@ -2982,6 +3333,9 @@ mod tests {
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
                 collectibles: Vec::new(),
+                material_requirement_sets: Vec::new(),
+                item_material_requirement_set_indices: HashMap::new(),
+                progression_definitions: Vec::new(),
                 progression_package_error: None,
                 plug_pools: Vec::new(),
             },
@@ -2994,6 +3348,11 @@ mod tests {
         assert_eq!(browsed.len(), 620);
         assert_eq!(browsed.first().unwrap().name, "Matching item 0000");
         assert_eq!(browsed.last().unwrap().name, "Matching item 0619");
+        let bucket_items = catalog.items_for_bucket(bucket).collect::<Vec<_>>();
+        assert_eq!(bucket_items.len(), 620);
+        assert_eq!(bucket_items.first().unwrap().name, "Matching item 0000");
+        assert_eq!(bucket_items.last().unwrap().name, "Matching item 0619");
+        assert_eq!(catalog.items_for_bucket(0).count(), 0);
 
         let searched = catalog.search("matching", bucket, 0, true);
         assert_eq!(searched.len(), 620);
@@ -3035,6 +3394,8 @@ mod tests {
         let catalog = Catalog::finish(
             CatalogContents {
                 items: vec![legacy, current],
+                orbit_backdrops: Vec::new(),
+                orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
                 descriptions: HashMap::new(),
@@ -3044,6 +3405,9 @@ mod tests {
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
                 collectibles: Vec::new(),
+                material_requirement_sets: Vec::new(),
+                item_material_requirement_set_indices: HashMap::new(),
+                progression_definitions: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![
                     vec![10, 20, 354_293_076],
@@ -3097,30 +3461,86 @@ mod tests {
     }
 
     #[test]
+    fn item_material_requirement_links_use_sunrise_offsets_and_sentinels() {
+        let mut item = vec![0_u8; ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2];
+        item[INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&2_u16.to_le_bytes());
+        item[ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item),
+            Some(ItemMaterialRequirementSetIndices {
+                insertion: Some(2),
+                enabled: None,
+            })
+        );
+        item[INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&60_000_u16.to_le_bytes());
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item),
+            Some(ItemMaterialRequirementSetIndices {
+                insertion: Some(60_000),
+                enabled: None,
+            })
+        );
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item[..188]),
+            None
+        );
+    }
+
+    #[test]
     fn schema_current_cache_requires_progression_sections() {
         let complete = serde_json::json!({
             "schema": CACHE_SCHEMA,
             "sundial_version": SUNDIAL_VERSION,
             "fingerprint": "test",
-            "items": [],
-            "names": {},
-            "type_names": {},
-            "objectives": [],
-            "unlock_flag_definitions": [],
-            "unlock_value_definitions": [],
-            "collectibles": [],
-            "plug_pools": [],
+            "contents": {
+                "items": [],
+                "orbit_backdrops": [],
+                "orbit_map_entries": [],
+                "names": {"3365180871": "Test definition"},
+                "type_names": {},
+                "objectives": [],
+                "unlock_flag_definitions": [],
+                "unlock_value_definitions": [],
+                "collectibles": [],
+                "material_requirement_sets": [],
+                "item_material_requirement_set_indices": {},
+                "progression_definitions": [],
+                "plug_pools": [],
+            },
         });
-        assert!(serde_json::from_value::<CatalogCache>(complete.clone()).is_ok());
+        let decoded = serde_json::from_value::<CatalogCache>(complete.clone()).unwrap();
+        assert_eq!(
+            decoded
+                .contents
+                .names
+                .get(&3_365_180_871)
+                .map(String::as_str),
+            Some("Test definition")
+        );
 
         for required in [
+            "orbit_backdrops",
+            "orbit_map_entries",
             "objectives",
             "unlock_flag_definitions",
             "unlock_value_definitions",
             "collectibles",
+            "material_requirement_sets",
+            "item_material_requirement_set_indices",
+            "progression_definitions",
         ] {
             let mut incomplete = complete.clone();
-            incomplete.as_object_mut().unwrap().remove(required);
+            incomplete["contents"]
+                .as_object_mut()
+                .unwrap()
+                .remove(required);
             assert!(
                 serde_json::from_value::<CatalogCache>(incomplete).is_err(),
                 "a cache without {required} must be rescanned"
@@ -3138,6 +3558,8 @@ mod tests {
         let catalog = Catalog::finish(
             CatalogContents {
                 items: Vec::new(),
+                orbit_backdrops: Vec::new(),
+                orbit_map_entries: Vec::new(),
                 names,
                 type_names: HashMap::new(),
                 descriptions: HashMap::new(),
@@ -3147,6 +3569,9 @@ mod tests {
                 unlock_flag_definitions: Vec::new(),
                 unlock_value_definitions: Vec::new(),
                 collectibles: Vec::new(),
+                material_requirement_sets: Vec::new(),
+                item_material_requirement_set_indices: HashMap::new(),
+                progression_definitions: Vec::new(),
                 progression_package_error: None,
                 plug_pools: vec![Vec::new(), vec![4, 3, 1], vec![2, 3]],
             },

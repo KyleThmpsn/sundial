@@ -17,7 +17,7 @@ use windows_sys::Win32::{
     },
 };
 
-pub const RELEASES_URL: &str = "https://github.com/kylethmpsn/sundial/releases";
+pub(crate) const RELEASES_URL: &str = "https://github.com/kylethmpsn/sundial/releases";
 
 const API_HOST: &str = "api.github.com";
 const LATEST_RELEASE_PATH: &str = "/repos/kylethmpsn/sundial/releases/latest";
@@ -25,7 +25,7 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const NETWORK_TIMEOUT_MS: i32 = 5_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UpdateStatus {
+pub(crate) enum UpdateStatus {
     NotStarted,
     Checking,
     Current,
@@ -33,7 +33,7 @@ pub enum UpdateStatus {
     Failed,
 }
 
-pub struct UpdateCheck {
+pub(crate) struct UpdateCheck {
     status: UpdateStatus,
     receiver: Option<Receiver<Result<Option<String>, String>>>,
 }
@@ -48,19 +48,19 @@ impl Default for UpdateCheck {
 }
 
 impl UpdateCheck {
-    pub fn start_if_needed(&mut self, ctx: &egui::Context) {
+    pub(crate) fn start_if_needed(&mut self, ctx: &egui::Context) {
         if self.status == UpdateStatus::NotStarted {
             self.start(ctx);
         }
     }
 
-    pub fn retry(&mut self, ctx: &egui::Context) {
+    pub(crate) fn retry(&mut self, ctx: &egui::Context) {
         if self.status != UpdateStatus::Checking {
             self.start(ctx);
         }
     }
 
-    pub fn poll(&mut self) {
+    pub(crate) fn poll(&mut self) {
         let Some(receiver) = &self.receiver else {
             return;
         };
@@ -81,7 +81,7 @@ impl UpdateCheck {
         }
     }
 
-    pub const fn status(&self) -> &UpdateStatus {
+    pub(crate) const fn status(&self) -> &UpdateStatus {
         &self.status
     }
 

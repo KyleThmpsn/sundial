@@ -11,6 +11,7 @@ const GLYPH_VIEWBOX: f32 = 24.0;
 pub(super) enum Glyph {
     ChevronUp,
     ChevronDown,
+    ChevronLeft,
     ChevronRight,
     Trash,
     Lock,
@@ -21,6 +22,7 @@ pub(super) enum Glyph {
 struct ChevronAssets {
     up: [[f32; 2]; 3],
     down: [[f32; 2]; 3],
+    left: [[f32; 2]; 3],
     right: [[f32; 2]; 3],
 }
 
@@ -29,6 +31,7 @@ impl ChevronAssets {
         match glyph {
             Glyph::ChevronUp => &self.up,
             Glyph::ChevronDown => &self.down,
+            Glyph::ChevronLeft => &self.left,
             Glyph::ChevronRight => &self.right,
             Glyph::Trash | Glyph::Lock | Glyph::Unlock => {
                 unreachable!("action glyph requested from chevron assets")
@@ -71,7 +74,7 @@ impl ActionAssets {
             Glyph::Trash => &self.trash,
             Glyph::Lock => &self.lock,
             Glyph::Unlock => &self.unlock,
-            Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronRight => {
+            Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronLeft | Glyph::ChevronRight => {
                 unreachable!("chevron requested from action glyph assets")
             }
         }
@@ -111,7 +114,7 @@ pub(super) fn paint_with_stroke(
     let rect = pixel_fitted_square(rect, pixels_per_point);
     if matches!(
         glyph,
-        Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronRight
+        Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronLeft | Glyph::ChevronRight
     ) {
         let stroke = pixel_fitted_stroke(stroke, pixels_per_point);
         let points = chevrons().points(glyph).map(|[x, y]| {
@@ -234,7 +237,7 @@ mod tests {
     #[test]
     fn bundled_chevrons_are_bounded_and_point_in_the_named_direction() {
         let assets = chevrons();
-        for points in [&assets.up, &assets.down, &assets.right] {
+        for points in [&assets.up, &assets.down, &assets.left, &assets.right] {
             assert!(
                 points
                     .iter()
@@ -244,6 +247,7 @@ mod tests {
         }
         assert!(assets.up[1][1] < assets.up[0][1]);
         assert!(assets.down[1][1] > assets.down[0][1]);
+        assert!(assets.left[1][0] < assets.left[0][0]);
         assert!(assets.right[1][0] > assets.right[0][0]);
     }
 
@@ -254,7 +258,12 @@ mod tests {
         for glyph in [Glyph::Trash, Glyph::Lock, Glyph::Unlock] {
             let geometry = assets.glyph(glyph);
             assert!(geometry.minimum_stroke.is_finite() && geometry.minimum_stroke >= 0.0);
-            assert!(!geometry.paths.is_empty(), "{glyph:?} has no paths");
+            assert!(
+                !geometry.paths.is_empty()
+                    || !geometry.segments.is_empty()
+                    || !geometry.rounded_rects.is_empty(),
+                "{glyph:?} has no stroked geometry"
+            );
             assert!(geometry.paths.iter().all(|path| path.len() >= 2));
             assert!(
                 geometry
@@ -285,6 +294,28 @@ mod tests {
     }
 
     #[test]
+    fn trash_glyph_is_axis_aligned_and_bilaterally_symmetric() {
+        let trash = &actions().trash;
+        assert!(
+            trash.segments.is_empty(),
+            "tiny trash glyph must not contain uneven interior strokes"
+        );
+
+        let mirrored = |left: [f32; 2], right: [f32; 2]| {
+            assert_eq!(left[0] + right[0], GLYPH_VIEWBOX);
+            assert_eq!(left[1], right[1]);
+        };
+        mirrored(trash.paths[0][0], trash.paths[0][1]);
+        assert_eq!(trash.paths[1][0], trash.paths[1][4]);
+        mirrored(trash.paths[1][0], trash.paths[1][3]);
+        mirrored(trash.paths[1][1], trash.paths[1][2]);
+        for point in 0..trash.paths[2].len() / 2 {
+            let mirror = trash.paths[2].len() - 1 - point;
+            mirrored(trash.paths[2][point], trash.paths[2][mirror]);
+        }
+    }
+
+    #[test]
     fn sundial_lock_states_are_solid_and_visibly_distinct_at_ten_pixels() {
         let assets = actions();
         let lock = assets.glyph(Glyph::Lock);
@@ -292,7 +323,6 @@ mod tests {
 
         for geometry in [lock, unlock] {
             assert!(geometry.minimum_stroke >= 1.25);
-            assert!(geometry.rounded_rects.is_empty());
             assert_eq!(geometry.filled_rounded_rects.len(), 1);
             let body = &geometry.filled_rounded_rects[0];
             let rendered_width = (body.max[0] - body.min[0]) / assets.view_box * 10.0;
@@ -303,7 +333,12 @@ mod tests {
         }
 
         assert_ne!(lock.paths, unlock.paths);
-        assert_eq!(lock.paths[0].last(), Some(&[15.6, 12.0]));
+        assert_eq!(lock.rounded_rects.len(), 1);
+        assert!(unlock.rounded_rects.is_empty());
+        let shackle = &lock.rounded_rects[0];
+        assert_eq!(shackle.min[0] + shackle.max[0], assets.view_box);
+        assert_eq!(shackle.max[0] - shackle.min[0], 8.0);
+        assert_eq!(shackle.corner_radius, 4.0);
         let open_end = unlock.paths[0].last().expect("unlock has a shackle");
         let rendered_gap = (10.8 - open_end[1]) / assets.view_box * 10.0;
         assert!(rendered_gap >= 1.0, "unlock needs a visible gap");

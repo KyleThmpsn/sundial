@@ -16,6 +16,10 @@ const OBJECTIVE_STRING_TABLE_SLOT: usize = 38;
 const OBJECTIVE_DEFINITION_ROW_SIZE: usize = 160;
 const OBJECTIVE_DEFINITION_ROW_CLASS: u32 = 0x8080_775F;
 const OBJECTIVE_CONDITIONS_OFFSET: usize = 0x08;
+const OBJECTIVE_SECONDARY_CONDITIONS_OFFSET: usize = 0x38;
+const OBJECTIVE_INTRINSIC_PERK_FLAGS_OFFSET: usize = 0x48;
+const OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_CLASS: u32 = 0x8080_7D4B;
+const OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_SIZE: usize = size_of::<u16>();
 const OBJECTIVE_STRING_ROW_SIZE: usize = 64;
 const OBJECTIVE_COMPLETION_VALUE_OFFSET: usize = 0x30;
 const OBJECTIVE_ALLOW_OVERCOMPLETION_OFFSET: usize = 0x29;
@@ -58,6 +62,18 @@ const METRIC_TRAIT_LIST_OFFSET: usize = 0x08;
 const METRIC_TRAIT_INDEX_ROW_CLASS: u32 = 0x8080_2C50;
 const METRIC_HASH_OFFSET: usize = 0x28;
 const METRIC_OBJECTIVE_INDEX_OFFSET: usize = 0x2C;
+const MILESTONE_DEFINITION_TABLE_SLOT: usize = 54;
+const MILESTONE_STRING_TABLE_SLOT: usize = 36;
+const MILESTONE_DEFINITION_ROW_CLASS: u32 = 0x8080_74BF;
+const MILESTONE_STRING_ROW_CLASS: u32 = 0x8080_5A00;
+const MILESTONE_DEFINITION_ROW_SIZE: usize = 0x38;
+const MILESTONE_STRING_ROW_SIZE: usize = 0x28;
+const MILESTONE_STRING_OFFSETS: [usize; 4] = [0x08, 0x10, 0x18, 0x20];
+const MILESTONE_PRIMARY_OBJECTIVE_INDEX_OFFSET: usize = 0x18;
+const MILESTONE_PHASE_COUNT_OFFSET: usize = 0x1C;
+const MILESTONE_PHASE_OBJECTIVES_OFFSET: usize = 0x20;
+const MILESTONE_PHASE_OBJECTIVE_PAIR_SIZE: usize = 0x04;
+const MILESTONE_MAX_PHASES: usize = 6;
 const TRAIT_DEFINITION_TABLE_SLOT: usize = 98;
 const TRAIT_STRING_TABLE_SLOT: usize = 62;
 const TRAIT_DEFINITION_ROW_CLASS: u32 = 0x8080_2C45;
@@ -124,23 +140,122 @@ const CONDITION_EXPRESSION_ROW_CLASS: u32 = 0x8080_7D31;
 const CONDITION_EXPRESSION_ROW_SIZE: usize = 8;
 const CONDITION_FLAG_KIND: u32 = 1;
 const CONDITION_VALUE_KIND: u32 = 10;
+const CONDITION_OBJECTIVE_KIND: u32 = 12;
+const PROGRESSION_DEFINITION_TABLE_SLOT: usize = 68;
+const PROGRESSION_DEFINITION_ROW_CLASS: u32 = 0x8080_7CDD;
+const PROGRESSION_DEFINITION_ROW_SIZE: usize = 88;
+const PROGRESSION_DEFINITION_SCOPE_OFFSET: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ProgressionScope {
+    Account,
+    Character,
+    Unreplicated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProgressionDefinition {
+    pub definition_index: u16,
+    pub scope: ProgressionScope,
+    pub scope_slot: Option<u16>,
+}
+
+pub(super) fn scan_progression_definitions(
+    manager: &PackageManager,
+    root: &[u8],
+) -> Result<Vec<ProgressionDefinition>, String> {
+    let table = manager
+        .read_tag(TagHash(u32_at(
+            root,
+            8 + PROGRESSION_DEFINITION_TABLE_SLOT * 16,
+        )?))
+        .map_err(|error| format!("Could not read progression definitions: {error}"))?;
+    progression_definitions_from_data(&table)
+}
+
+fn progression_definitions_from_data(table: &[u8]) -> Result<Vec<ProgressionDefinition>, String> {
+    let (count, rows, row_class) = array_at(table, 8)?;
+    if row_class != PROGRESSION_DEFINITION_ROW_CLASS {
+        return Err(format!(
+            "Unexpected progression definition row class 0x{row_class:08X}"
+        ));
+    }
+    if count > usize::from(u16::MAX) + 1 {
+        return Err("Progression definition count exceeds its native index".into());
+    }
+    if count == 0 {
+        return Err("Progression definition table is empty".into());
+    }
+    let mut account_slot = 0_u16;
+    let mut character_slot = 0_u16;
+    let mut definitions = Vec::with_capacity(count);
+    for definition_index in 0..count {
+        let row = rows
+            .checked_add(
+                definition_index
+                    .checked_mul(PROGRESSION_DEFINITION_ROW_SIZE)
+                    .ok_or("Progression definition row offset overflowed")?,
+            )
+            .ok_or("Progression definition row offset overflowed")?;
+        let raw_scope = *table
+            .get(row + PROGRESSION_DEFINITION_SCOPE_OFFSET)
+            .ok_or("Progression definition ended before its scope")?;
+        let (scope, scope_slot) = match raw_scope {
+            0 => {
+                let slot = account_slot;
+                account_slot = account_slot
+                    .checked_add(1)
+                    .ok_or("Account progression slot overflowed")?;
+                (ProgressionScope::Account, Some(slot))
+            }
+            1 => {
+                let slot = character_slot;
+                character_slot = character_slot
+                    .checked_add(1)
+                    .ok_or("Character progression slot overflowed")?;
+                (ProgressionScope::Character, Some(slot))
+            }
+            _ => (ProgressionScope::Unreplicated, None),
+        };
+        definitions.push(ProgressionDefinition {
+            definition_index: u16::try_from(definition_index)
+                .map_err(|_| "Progression definition index is too large")?,
+            scope,
+            scope_slot,
+        });
+    }
+    Ok(definitions)
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectiveDef {
+pub(crate) struct ObjectiveDef {
     pub hash: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display_description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub progress_description: String,
+    /// Preferred display text retained for compatibility with older catalog caches.
     pub description: String,
     pub completion_value: i32,
     pub allow_overcompletion: bool,
     pub allow_negative_value: bool,
     pub allow_value_change_when_completed: bool,
     pub is_counting_downward: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub condition_programs: Vec<Vec<[u32; 2]>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_objective_indices: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intrinsic_perk_flag_definition_indices: Vec<u16>,
     pub owners: Vec<ObjectiveOwnerDef>,
     #[serde(default)]
     pub related_unlock_value_definition_index: Option<u16>,
 }
 
 impl ObjectiveDef {
-    pub const fn maximum_value(&self) -> Option<i32> {
+    pub(crate) const fn maximum_value(&self) -> Option<i32> {
         if self.allow_overcompletion || self.is_counting_downward {
             None
         } else {
@@ -148,7 +263,7 @@ impl ObjectiveDef {
         }
     }
 
-    pub const fn minimum_value(&self) -> Option<i32> {
+    pub(crate) const fn minimum_value(&self) -> Option<i32> {
         if self.allow_overcompletion || !self.is_counting_downward {
             None
         } else {
@@ -158,15 +273,16 @@ impl ObjectiveDef {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ObjectiveOwnerKind {
+pub(crate) enum ObjectiveOwnerKind {
     InventoryItem,
+    Milestone,
     Metric,
     Record,
     PresentationNode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectiveOwnerTraitDef {
+pub(crate) struct ObjectiveOwnerTraitDef {
     pub hash: u64,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -174,7 +290,7 @@ pub struct ObjectiveOwnerTraitDef {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectiveOwnerDef {
+pub(crate) struct ObjectiveOwnerDef {
     pub hash: u64,
     pub kind: ObjectiveOwnerKind,
     pub name: String,
@@ -187,7 +303,7 @@ pub struct ObjectiveOwnerDef {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnlockDefinition {
+pub(crate) struct UnlockDefinition {
     pub hash: u64,
     pub code: u16,
     pub compact_slot: Option<u16>,
@@ -200,13 +316,13 @@ pub struct UnlockDefinition {
 }
 
 impl UnlockDefinition {
-    pub const fn bank(&self) -> u8 {
+    pub(crate) const fn bank(&self) -> u8 {
         self.code.to_le_bytes()[0]
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProgressionContextKind {
+pub(crate) enum ProgressionContextKind {
     InventoryItem,
     Collectible,
     Record,
@@ -220,7 +336,7 @@ pub enum ProgressionContextKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProgressionContextDef {
+pub(crate) struct ProgressionContextDef {
     pub hash: u64,
     pub kind: ProgressionContextKind,
     pub name: String,
@@ -230,6 +346,8 @@ pub struct ProgressionContextDef {
     pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub condition_programs: Vec<Vec<[u32; 2]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -279,6 +397,8 @@ impl<'a> ProgressionPackageData<'a> {
 struct ConditionReferences {
     flags: Vec<usize>,
     values: Vec<usize>,
+    objectives: Vec<usize>,
+    programs: Vec<Vec<[u32; 2]>>,
 }
 
 fn add_progression_context(
@@ -306,6 +426,11 @@ fn add_progression_context(
         for path in &context.paths {
             if !path.is_empty() && !existing.paths.contains(path) {
                 existing.paths.push(path.clone());
+            }
+        }
+        for program in &context.condition_programs {
+            if !program.is_empty() && !existing.condition_programs.contains(program) {
+                existing.condition_programs.push(program.clone());
             }
         }
         return;
@@ -355,11 +480,17 @@ fn attach_condition_context(
     references: &ConditionReferences,
     context: &ProgressionContextDef,
 ) {
+    let mut context = context.clone();
+    for program in &references.programs {
+        if !program.is_empty() && !context.condition_programs.contains(program) {
+            context.condition_programs.push(program.clone());
+        }
+    }
     for &index in &references.flags {
-        add_progression_context(flag_definitions, index, context);
+        add_progression_context(flag_definitions, index, &context);
     }
     for &index in &references.values {
-        add_progression_context(value_definitions, index, context);
+        add_progression_context(value_definitions, index, &context);
     }
 }
 
@@ -380,10 +511,65 @@ fn objective_condition_references_at(
     definitions: &[u8],
     definition: usize,
 ) -> Result<ConditionReferences, String> {
+    let mut references = ConditionReferences::default();
+    for offset in [
+        OBJECTIVE_CONDITIONS_OFFSET,
+        OBJECTIVE_SECONDARY_CONDITIONS_OFFSET,
+    ] {
+        let descriptor = definition
+            .checked_add(offset)
+            .ok_or("Objective condition descriptor offset overflowed")?;
+        merge_condition_references(
+            &mut references,
+            condition_references_at(definitions, descriptor)?,
+        );
+    }
+    Ok(references)
+}
+
+fn objective_intrinsic_perk_flag_indices_at(
+    definitions: &[u8],
+    definition: usize,
+    flag_definition_count: usize,
+) -> Result<Vec<u16>, String> {
     let descriptor = definition
-        .checked_add(OBJECTIVE_CONDITIONS_OFFSET)
-        .ok_or("Objective condition descriptor offset overflowed")?;
-    condition_references_at(definitions, descriptor)
+        .checked_add(OBJECTIVE_INTRINSIC_PERK_FLAGS_OFFSET)
+        .ok_or("Objective intrinsic-perk descriptor offset overflowed")?;
+    if u64_at(definitions, descriptor)? == 0 {
+        return Ok(Vec::new());
+    }
+    let (count, rows, row_class) = array_at(definitions, descriptor)?;
+    if row_class != OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_CLASS {
+        return Err(format!(
+            "Unexpected objective intrinsic-perk row class 0x{row_class:08X}"
+        ));
+    }
+    let byte_count = count
+        .checked_mul(OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_SIZE)
+        .ok_or("Objective intrinsic-perk list size overflowed")?;
+    if rows
+        .checked_add(byte_count)
+        .is_none_or(|end| end > definitions.len())
+    {
+        return Err("Objective intrinsic-perk list extends beyond its package data".into());
+    }
+
+    let mut indices = Vec::with_capacity(count);
+    for row_index in 0..count {
+        let index = u16_at(
+            definitions,
+            rows + row_index * OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_SIZE,
+        )?;
+        if usize::from(index) >= flag_definition_count {
+            return Err(format!(
+                "Objective intrinsic perk references unavailable unlock flag definition #{index}"
+            ));
+        }
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    Ok(indices)
 }
 
 fn condition_references_from_rows(
@@ -402,13 +588,18 @@ fn condition_references_from_rows(
     }
 
     let mut references = ConditionReferences::default();
+    let mut program = Vec::with_capacity(count);
     for index in 0..count {
         let row = rows + index * CONDITION_EXPRESSION_ROW_SIZE;
-        let operand = usize::try_from(u32_at(data, row + 4)?)
+        let kind = u32_at(data, row)?;
+        let raw_operand = u32_at(data, row + 4)?;
+        program.push([kind, raw_operand]);
+        let operand = usize::try_from(raw_operand)
             .map_err(|_| "Condition-expression definition index is too large")?;
-        match u32_at(data, row)? {
+        match kind {
             CONDITION_FLAG_KIND => references.flags.push(operand),
             CONDITION_VALUE_KIND => references.values.push(operand),
+            CONDITION_OBJECTIVE_KIND => references.objectives.push(operand),
             _ => {}
         }
     }
@@ -416,16 +607,29 @@ fn condition_references_from_rows(
     references.flags.dedup();
     references.values.sort_unstable();
     references.values.dedup();
+    references.objectives.sort_unstable();
+    references.objectives.dedup();
+    if !program.is_empty() {
+        references.programs.push(program);
+    }
     Ok(references)
 }
 
 fn merge_condition_references(target: &mut ConditionReferences, source: ConditionReferences) {
     target.flags.extend(source.flags);
     target.values.extend(source.values);
+    target.objectives.extend(source.objectives);
+    for program in source.programs {
+        if !program.is_empty() && !target.programs.contains(&program) {
+            target.programs.push(program);
+        }
+    }
     target.flags.sort_unstable();
     target.flags.dedup();
     target.values.sort_unstable();
     target.values.dedup();
+    target.objectives.sort_unstable();
+    target.objectives.dedup();
 }
 
 fn scan_condition_expressions(data: &[u8]) -> ConditionReferences {
@@ -512,11 +716,46 @@ pub(super) fn add_objective_owner(
     let Some(objective) = objectives.get_mut(objective_index) else {
         return;
     };
-    if objective
+    if let Some(existing) = objective
         .owners
-        .iter()
-        .any(|existing| existing.kind == owner.kind && existing.hash == owner.hash)
+        .iter_mut()
+        .find(|existing| existing.kind == owner.kind && existing.hash == owner.hash)
     {
+        if existing.name.trim().is_empty() && !owner.name.trim().is_empty() {
+            existing.name.clone_from(&owner.name);
+        }
+        if existing.type_name.trim().is_empty() && !owner.type_name.trim().is_empty() {
+            existing.type_name.clone_from(&owner.type_name);
+        }
+        if existing.description.trim().is_empty() && !owner.description.trim().is_empty() {
+            existing.description.clone_from(&owner.description);
+        }
+        for path in owner.paths {
+            if !path.is_empty() && !existing.paths.contains(&path) {
+                existing.paths.push(path);
+            }
+        }
+        for trait_definition in owner.traits {
+            if let Some(existing_trait) = existing
+                .traits
+                .iter_mut()
+                .find(|candidate| candidate.hash == trait_definition.hash)
+            {
+                if existing_trait.name.trim().is_empty() && !trait_definition.name.trim().is_empty()
+                {
+                    existing_trait.name.clone_from(&trait_definition.name);
+                }
+                if existing_trait.description.trim().is_empty()
+                    && !trait_definition.description.trim().is_empty()
+                {
+                    existing_trait
+                        .description
+                        .clone_from(&trait_definition.description);
+                }
+            } else {
+                existing.traits.push(trait_definition);
+            }
+        }
         return;
     }
     objective.owners.push(owner);
@@ -693,6 +932,142 @@ fn nonblank_localized_string(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
 
+fn resolve_string_index_reference(
+    manager: &PackageManager,
+    localized_tags: &[TagHash],
+    localized_cache: &mut HashMap<u32, HashMap<u32, String>>,
+    data: &[u8],
+    offset: usize,
+) -> Option<String> {
+    let hash = u32_at(data, offset).ok()?;
+    let table_index = u32_at(data, offset.checked_add(4)?).ok()?;
+    let mut reference = [0_u8; 8];
+    reference[..4].copy_from_slice(&table_index.to_le_bytes());
+    reference[4..].copy_from_slice(&hash.to_le_bytes());
+    resolve_string(manager, localized_tags, localized_cache, &reference, 0)
+}
+
+fn milestone_objective_indices(
+    definitions: &[u8],
+    row: usize,
+    objective_count: usize,
+) -> Result<Vec<usize>, String> {
+    let phase_count = usize::try_from(u32_at(definitions, row + MILESTONE_PHASE_COUNT_OFFSET)?)
+        .map_err(|_| "Milestone phase count is too large")?;
+    if phase_count > MILESTONE_MAX_PHASES {
+        return Err(format!(
+            "Milestone has {phase_count} phases; expected at most {MILESTONE_MAX_PHASES}"
+        ));
+    }
+
+    let mut indices = Vec::with_capacity(1 + phase_count * 2);
+    let mut push_index = |raw: u16| -> Result<(), String> {
+        if raw == u16::MAX {
+            return Ok(());
+        }
+        let index = usize::from(raw);
+        if index >= objective_count {
+            return Err(format!(
+                "Milestone references out-of-range objective index {index}"
+            ));
+        }
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+        Ok(())
+    };
+    push_index(u16_at(
+        definitions,
+        row + MILESTONE_PRIMARY_OBJECTIVE_INDEX_OFFSET,
+    )?)?;
+    for phase in 0..phase_count {
+        let pair =
+            row + MILESTONE_PHASE_OBJECTIVES_OFFSET + phase * MILESTONE_PHASE_OBJECTIVE_PAIR_SIZE;
+        push_index(u16_at(definitions, pair)?)?;
+        push_index(u16_at(definitions, pair + 2)?)?;
+    }
+    Ok(indices)
+}
+
+pub(super) fn scan_milestone_objective_owners(
+    package: &mut ProgressionPackageData<'_>,
+    objectives: &mut [ObjectiveDef],
+) -> Result<(), String> {
+    let ProgressionPackageData {
+        manager,
+        root,
+        globals,
+        localized_tags,
+        localized_cache,
+    } = package;
+    let definitions = manager
+        .read_tag(TagHash(u32_at(
+            root,
+            8 + MILESTONE_DEFINITION_TABLE_SLOT * 16,
+        )?))
+        .map_err(|error| format!("Could not read milestone definitions: {error}"))?;
+    let strings = manager
+        .read_tag(TagHash(u32_at(
+            globals,
+            16 + MILESTONE_STRING_TABLE_SLOT * 16,
+        )?))
+        .map_err(|error| format!("Could not read milestone strings: {error}"))?;
+    let (definition_count, definition_rows, definition_class) = array_at(&definitions, 8)?;
+    let (string_count, string_rows, string_class) = array_at(&strings, 8)?;
+    if definition_class != MILESTONE_DEFINITION_ROW_CLASS {
+        return Err(format!(
+            "The installed milestone table has unexpected row class 0x{definition_class:08X}"
+        ));
+    }
+    if string_class != MILESTONE_STRING_ROW_CLASS {
+        return Err(format!(
+            "The installed milestone-string table has unexpected row class 0x{string_class:08X}"
+        ));
+    }
+    if definition_count != string_count {
+        return Err("The installed milestone definition and string tables do not match".into());
+    }
+
+    for index in 0..definition_count {
+        let definition = definition_rows + index * MILESTONE_DEFINITION_ROW_SIZE;
+        let string = string_rows + index * MILESTONE_STRING_ROW_SIZE;
+        let hash = u32_at(&definitions, definition)?;
+        if u32_at(&strings, string)? != hash {
+            return Err(format!(
+                "Milestone definition and string row {index} do not match"
+            ));
+        }
+        let name = MILESTONE_STRING_OFFSETS
+            .into_iter()
+            .filter_map(|offset| {
+                resolve_string_index_reference(
+                    manager,
+                    localized_tags,
+                    localized_cache,
+                    &strings,
+                    string + offset,
+                )
+            })
+            .find(|value| !value.trim().is_empty())
+            .unwrap_or_default();
+        let owner = ObjectiveOwnerDef {
+            hash: u64::from(hash),
+            kind: ObjectiveOwnerKind::Milestone,
+            name,
+            type_name: "Milestone".into(),
+            description: String::new(),
+            traits: Vec::new(),
+            paths: Vec::new(),
+        };
+        for objective_index in
+            milestone_objective_indices(&definitions, definition, objectives.len())?
+        {
+            add_objective_owner(objectives, objective_index, owner.clone());
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn scan_objectives(
     manager: &PackageManager,
     root: &[u8],
@@ -763,13 +1138,7 @@ pub(super) fn scan_objectives(
                 "Objective definition and string row {index} do not match"
             ));
         }
-        let description = [
-            OBJECTIVE_PROGRESS_DESCRIPTION_OFFSET,
-            OBJECTIVE_NAME_OFFSET,
-            OBJECTIVE_DISPLAY_DESCRIPTION_OFFSET,
-        ]
-        .into_iter()
-        .filter_map(|offset| {
+        let mut objective_string = |offset| {
             resolve_string(
                 manager,
                 localized_tags,
@@ -777,10 +1146,41 @@ pub(super) fn scan_objectives(
                 &strings,
                 string + offset,
             )
-        })
+            .unwrap_or_default()
+        };
+        let name = objective_string(OBJECTIVE_NAME_OFFSET);
+        let display_description = objective_string(OBJECTIVE_DISPLAY_DESCRIPTION_OFFSET);
+        let progress_description = objective_string(OBJECTIVE_PROGRESS_DESCRIPTION_OFFSET);
+        let description = [
+            progress_description.as_str(),
+            name.as_str(),
+            display_description.as_str(),
+        ]
+        .into_iter()
         .find(|value| !value.trim().is_empty())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
         let condition_references = objective_condition_references_at(&definitions, definition)?;
+        let condition_programs = condition_references.programs.clone();
+        let referenced_objective_indices = condition_references
+            .objectives
+            .iter()
+            .copied()
+            .map(|objective_index| {
+                if objective_index >= definition_count {
+                    return Err(format!(
+                        "Objective row {index} references unavailable objective #{objective_index}"
+                    ));
+                }
+                u16::try_from(objective_index)
+                    .map_err(|_| format!("Objective index {objective_index} exceeds u16"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let intrinsic_perk_flag_definition_indices = objective_intrinsic_perk_flag_indices_at(
+            &definitions,
+            definition,
+            unlock_flag_definitions.len(),
+        )?;
         attach_condition_context(
             unlock_flag_definitions,
             unlock_value_definitions,
@@ -792,10 +1192,14 @@ pub(super) fn scan_objectives(
                 type_name: String::new(),
                 description: String::new(),
                 paths: Vec::new(),
+                condition_programs: Vec::new(),
             },
         );
         objectives.push(ObjectiveDef {
             hash: u64::from(definition_hash),
+            name,
+            display_description,
+            progress_description,
             description,
             completion_value: i32_at(&definitions, definition + OBJECTIVE_COMPLETION_VALUE_OFFSET)?,
             allow_overcompletion: bool_at(
@@ -814,6 +1218,9 @@ pub(super) fn scan_objectives(
                 &definitions,
                 definition + OBJECTIVE_IS_COUNTING_DOWNWARD_OFFSET,
             )?,
+            condition_programs,
+            referenced_objective_indices,
+            intrinsic_perk_flag_definition_indices,
             owners: Vec::new(),
             related_unlock_value_definition_index: related_unlock_value_indices
                 .get(&u64::from(definition_hash))
@@ -917,6 +1324,7 @@ pub(super) fn scan_presentation_nodes(
             type_name: String::new(),
             description: String::new(),
             paths: presentation_paths(&nodes, &node.parents),
+            condition_programs: Vec::new(),
         };
         attach_condition_context(
             flag_definitions,
@@ -1113,6 +1521,7 @@ pub(super) fn attach_item_condition_contexts(
         type_name: item_context.type_name.to_owned(),
         description: String::new(),
         paths: item_context.paths.to_vec(),
+        condition_programs: Vec::new(),
     };
     attach_condition_context(
         flag_definitions,
@@ -1129,6 +1538,7 @@ pub(super) fn attach_item_condition_contexts(
             type_name: item_context.type_name.to_owned(),
             description: String::new(),
             paths: pending.paths.clone(),
+            condition_programs: Vec::new(),
         };
         attach_condition_context(
             flag_definitions,
@@ -1891,6 +2301,7 @@ fn location_release_progression_context(
         } else {
             Vec::new()
         },
+        condition_programs: Vec::new(),
     }
 }
 
@@ -1905,6 +2316,7 @@ fn activity_progression_context(
         type_name: String::new(),
         description: activity.description.clone(),
         paths: Vec::new(),
+        condition_programs: Vec::new(),
     }
 }
 
@@ -2077,6 +2489,7 @@ pub(super) fn scan_record_objective_owners(
                 type_name: String::new(),
                 description: String::new(),
                 paths: paths.clone(),
+                condition_programs: Vec::new(),
             },
         );
 
@@ -2215,6 +2628,55 @@ pub(super) fn item_objective_indices(item: &[u8], objective_count: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progression_definitions_preserve_native_order_scope_and_object_slot() {
+        const HEADER: usize = 32;
+        const ROWS: usize = HEADER + 16;
+        let scopes = [0_u8, 1, 0, 2, 99];
+        let mut table = vec![0_u8; ROWS + scopes.len() * PROGRESSION_DEFINITION_ROW_SIZE];
+        table[8..16].copy_from_slice(&(scopes.len() as u64).to_le_bytes());
+        table[16..24].copy_from_slice(&((HEADER - 16) as i64).to_le_bytes());
+        table[HEADER..HEADER + 8].copy_from_slice(&(scopes.len() as u64).to_le_bytes());
+        table[HEADER + 8..HEADER + 12]
+            .copy_from_slice(&PROGRESSION_DEFINITION_ROW_CLASS.to_le_bytes());
+        for (index, scope) in scopes.into_iter().enumerate() {
+            table[ROWS
+                + index * PROGRESSION_DEFINITION_ROW_SIZE
+                + PROGRESSION_DEFINITION_SCOPE_OFFSET] = scope;
+        }
+
+        assert_eq!(
+            progression_definitions_from_data(&table).unwrap(),
+            [
+                ProgressionDefinition {
+                    definition_index: 0,
+                    scope: ProgressionScope::Account,
+                    scope_slot: Some(0),
+                },
+                ProgressionDefinition {
+                    definition_index: 1,
+                    scope: ProgressionScope::Character,
+                    scope_slot: Some(0),
+                },
+                ProgressionDefinition {
+                    definition_index: 2,
+                    scope: ProgressionScope::Account,
+                    scope_slot: Some(1),
+                },
+                ProgressionDefinition {
+                    definition_index: 3,
+                    scope: ProgressionScope::Unreplicated,
+                    scope_slot: None,
+                },
+                ProgressionDefinition {
+                    definition_index: 4,
+                    scope: ProgressionScope::Unreplicated,
+                    scope_slot: None,
+                },
+            ]
+        );
+    }
 
     fn unlock_flag_display_table(hash: u32) -> Vec<u8> {
         const HEADER: usize = 32;
@@ -2362,6 +2824,72 @@ mod tests {
     }
 
     #[test]
+    fn repeated_objective_owners_merge_richer_package_metadata() {
+        let mut objectives = vec![ObjectiveDef::default()];
+        add_objective_owner(
+            &mut objectives,
+            0,
+            ObjectiveOwnerDef {
+                hash: 7,
+                kind: ObjectiveOwnerKind::InventoryItem,
+                name: String::new(),
+                type_name: "Item".into(),
+                description: String::new(),
+                traits: Vec::new(),
+                paths: vec![vec!["Items".into()]],
+            },
+        );
+        add_objective_owner(
+            &mut objectives,
+            0,
+            ObjectiveOwnerDef {
+                hash: 7,
+                kind: ObjectiveOwnerKind::InventoryItem,
+                name: "Ace of Spades".into(),
+                type_name: String::new(),
+                description: "Hand cannon".into(),
+                traits: vec![ObjectiveOwnerTraitDef {
+                    hash: 9,
+                    name: "Exotic".into(),
+                    description: String::new(),
+                }],
+                paths: vec![vec!["Collections".into()]],
+            },
+        );
+
+        let owner = &objectives[0].owners[0];
+        assert_eq!(objectives[0].owners.len(), 1);
+        assert_eq!(owner.name, "Ace of Spades");
+        assert_eq!(owner.description, "Hand cannon");
+        assert_eq!(owner.paths.len(), 2);
+        assert_eq!(owner.traits.len(), 1);
+    }
+
+    #[test]
+    fn condition_references_retain_the_complete_package_program() {
+        let mut rows = vec![0_u8; 24];
+        for (index, (kind, operand)) in [(1_u32, 3_u32), (12, 77), (10, 9)].into_iter().enumerate()
+        {
+            let row = index * CONDITION_EXPRESSION_ROW_SIZE;
+            rows[row..row + 4].copy_from_slice(&kind.to_le_bytes());
+            rows[row + 4..row + 8].copy_from_slice(&operand.to_le_bytes());
+        }
+
+        let references = condition_references_from_rows(&rows, 0, 3).unwrap();
+
+        assert_eq!(references.flags, vec![3]);
+        assert_eq!(references.values, vec![9]);
+        assert_eq!(references.objectives, vec![77]);
+        assert_eq!(
+            references.programs[0]
+                .iter()
+                .map(|token| (token[0], token[1]))
+                .collect::<Vec<_>>(),
+            vec![(1, 3), (12, 77), (10, 9)]
+        );
+    }
+
+    #[test]
     fn objective_conditions_use_row_plus_08_and_ignore_plus_10_decoy() {
         const ACTUAL_HEADER: usize = 0x60;
         const DECOY_HEADER: usize = 0x100;
@@ -2396,15 +2924,74 @@ mod tests {
             ConditionReferences {
                 flags: vec![3],
                 values: Vec::new(),
+                objectives: Vec::new(),
+                programs: vec![vec![[CONDITION_FLAG_KIND, 3]]],
             }
         );
+        let decoy = condition_references_at(&definitions, 0x10).unwrap();
+        assert!(decoy.flags.is_empty());
+        assert_eq!(decoy.values, vec![9]);
+        assert_eq!(decoy.programs[0][0], [CONDITION_VALUE_KIND, 9]);
+        assert_eq!(decoy.programs[0].len(), DECOY_COUNT);
+    }
+
+    #[test]
+    fn objective_conditions_merge_the_secondary_package_program() {
+        const PRIMARY_HEADER: usize = 0x80;
+        const SECONDARY_HEADER: usize = 0xA0;
+        let mut definitions = vec![0_u8; 0xC0];
+        write_condition_array(
+            &mut definitions,
+            OBJECTIVE_CONDITIONS_OFFSET,
+            PRIMARY_HEADER,
+            &[(CONDITION_FLAG_KIND, 4)],
+        );
+        write_condition_array(
+            &mut definitions,
+            OBJECTIVE_SECONDARY_CONDITIONS_OFFSET,
+            SECONDARY_HEADER,
+            &[(CONDITION_VALUE_KIND, 6)],
+        );
+
+        let references = objective_condition_references_at(&definitions, 0).unwrap();
+
+        assert_eq!(references.flags, vec![4]);
+        assert_eq!(references.values, vec![6]);
+        assert_eq!(references.programs.len(), 2);
+        assert_eq!(references.programs[0], vec![[CONDITION_FLAG_KIND, 4]]);
+        assert_eq!(references.programs[1], vec![[CONDITION_VALUE_KIND, 6]]);
+    }
+
+    #[test]
+    fn objective_intrinsic_perks_validate_and_deduplicate_flag_indices() {
+        const HEADER: usize = 0x80;
+        const ROWS: usize = HEADER + 16;
+        let descriptor = OBJECTIVE_INTRINSIC_PERK_FLAGS_OFFSET;
+        let mut definitions = vec![0_u8; 0xA0];
+        definitions[descriptor..descriptor + 8].copy_from_slice(&3_u64.to_le_bytes());
+        definitions[descriptor + 8..descriptor + 16].copy_from_slice(
+            &i64::try_from(HEADER - (descriptor + 8))
+                .unwrap()
+                .to_le_bytes(),
+        );
+        definitions[HEADER..HEADER + 8].copy_from_slice(&3_u64.to_le_bytes());
+        definitions[HEADER + 8..HEADER + 12]
+            .copy_from_slice(&OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_CLASS.to_le_bytes());
+        for (row, index) in [4_u16, 7, 4].into_iter().enumerate() {
+            let offset = ROWS + row * OBJECTIVE_INTRINSIC_PERK_FLAG_ROW_SIZE;
+            definitions[offset..offset + 2].copy_from_slice(&index.to_le_bytes());
+        }
+
         assert_eq!(
-            condition_references_at(&definitions, 0x10).unwrap(),
-            ConditionReferences {
-                flags: Vec::new(),
-                values: vec![9],
-            }
+            objective_intrinsic_perk_flag_indices_at(&definitions, 0, 8),
+            Ok(vec![4, 7])
         );
+
+        definitions[ROWS..ROWS + 2].copy_from_slice(&8_u16.to_le_bytes());
+        assert!(objective_intrinsic_perk_flag_indices_at(&definitions, 0, 8).is_err());
+        definitions[ROWS..ROWS + 2].copy_from_slice(&4_u16.to_le_bytes());
+        definitions[HEADER + 8..HEADER + 12].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(objective_intrinsic_perk_flag_indices_at(&definitions, 0, 8).is_err());
     }
 
     #[test]
@@ -2672,6 +3259,38 @@ mod tests {
             ]])
         );
         assert!(!paths.contains_key(&0xBEEF_0007));
+    }
+
+    #[test]
+    fn milestone_objectives_include_the_primary_and_each_authored_phase_pair() {
+        let mut row = vec![0xFF_u8; MILESTONE_DEFINITION_ROW_SIZE];
+        row[MILESTONE_PRIMARY_OBJECTIVE_INDEX_OFFSET..MILESTONE_PRIMARY_OBJECTIVE_INDEX_OFFSET + 2]
+            .copy_from_slice(&835_u16.to_le_bytes());
+        row[MILESTONE_PHASE_COUNT_OFFSET..MILESTONE_PHASE_COUNT_OFFSET + 4]
+            .copy_from_slice(&3_u32.to_le_bytes());
+        for (offset, objective_index) in [836_u16, 839, 837, 840, 838, 841].into_iter().enumerate()
+        {
+            let field = MILESTONE_PHASE_OBJECTIVES_OFFSET + offset * 2;
+            row[field..field + 2].copy_from_slice(&objective_index.to_le_bytes());
+        }
+
+        assert_eq!(
+            milestone_objective_indices(&row, 0, 1_000).unwrap(),
+            vec![835, 836, 839, 837, 840, 838, 841]
+        );
+    }
+
+    #[test]
+    fn milestone_objectives_reject_an_impossible_phase_count() {
+        let mut row = vec![0_u8; MILESTONE_DEFINITION_ROW_SIZE];
+        row[MILESTONE_PHASE_COUNT_OFFSET..MILESTONE_PHASE_COUNT_OFFSET + 4]
+            .copy_from_slice(&7_u32.to_le_bytes());
+
+        assert!(
+            milestone_objective_indices(&row, 0, 1_000)
+                .unwrap_err()
+                .contains("expected at most 6")
+        );
     }
 
     #[test]

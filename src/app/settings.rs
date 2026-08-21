@@ -248,9 +248,10 @@ pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Val
         }
         // The resource remains valid while the data-file module is loaded; clone before releasing it.
         let encoded = unsafe { std::slice::from_raw_parts(bytes, size) }.to_vec();
-        let document: Value = serde_json::from_slice(&encoded).map_err(|error| {
+        let mut document: Value = serde_json::from_slice(&encoded).map_err(|error| {
             format!("Project Sunrise's bundled defaults are invalid JSON: {error}")
         })?;
+        game_settings::ensure_schema_v8_preferences(&mut document);
         if game_settings::schema_version(&document).is_none() {
             return Err("Project Sunrise's bundled defaults have no valid schema version".into());
         }
@@ -276,7 +277,10 @@ pub(super) fn load_json(path: &Path) -> Result<Value, String> {
             format!("Could not read {}: {error}", path.display())
         }
     })?;
-    serde_json::from_str(&raw).map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))
+    let mut document: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))?;
+    game_settings::ensure_schema_v8_preferences(&mut document);
+    Ok(document)
 }
 
 pub(super) fn verify_source_unchanged(path: &Path, expected: &Value) -> Result<(), String> {

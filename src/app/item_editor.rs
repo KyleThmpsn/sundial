@@ -2,9 +2,17 @@ use std::hash::Hash;
 
 use eframe::egui;
 
-use crate::{catalog::Catalog, hash::format_hash};
+use crate::{
+    catalog::{Catalog, SocketDef},
+    hash::format_hash,
+};
 
-use super::glyphs::{self, Glyph};
+use super::{
+    PlugSelectionMode,
+    glyphs::{self, Glyph},
+    progression::request_hash_inspection,
+    ui::single_line_galley,
+};
 
 const POWER_PER_LEVEL: i64 = 10;
 const MINIMUM_POWERED_ITEM_POWER: i64 = 750;
@@ -20,7 +28,7 @@ pub(crate) fn draw_trash_button(
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_action_button(ui, enabled, accessible_label, Glyph::Trash, None, true)
+    draw_action_button(ui, enabled, accessible_label, Glyph::Trash, None, false)
 }
 
 /// Draws the active lock state in a muted green.
@@ -65,17 +73,23 @@ fn draw_action_button(
     framed: bool,
 ) -> egui::Response {
     let use_icon_color = enabled && ui.is_enabled();
-    let button_side = (ui.text_style_height(&egui::TextStyle::Body)
-        + 2.0 * ui.spacing().button_padding.y)
-        .max(20.0);
-    let side = (button_side - 4.0).max(16.0);
+    let button_side = (ui.text_style_height(&egui::TextStyle::Body) + 4.0).max(18.0);
+    let side = if framed {
+        (button_side - 6.0).max(14.0)
+    } else {
+        (button_side - 4.0).max(16.0)
+    };
     let response = if framed {
-        ui.add_enabled(
-            enabled,
-            egui::Button::new("")
-                .small()
-                .min_size(egui::vec2(side, side)),
-        )
+        ui.scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::splat(1.0);
+            ui.add_enabled(
+                enabled,
+                egui::Button::new("")
+                    .small()
+                    .min_size(egui::vec2(side, side)),
+            )
+        })
+        .inner
     } else {
         ui.add_enabled_ui(enabled, |ui| {
             ui.allocate_response(egui::vec2(side, side), egui::Sense::click())
@@ -92,11 +106,13 @@ fn draw_action_button(
     });
 
     if ui.is_rect_visible(response.rect) {
-        let base_icon_size = (response.rect.height() - 9.0).clamp(9.0, 12.0);
+        let base_icon_size = (response.rect.height() - 6.0).clamp(10.0, 12.0);
         let icon_size = match icon {
             Glyph::Trash => base_icon_size + 1.0,
-            Glyph::Lock | Glyph::Unlock => base_icon_size + 1.0,
-            Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronRight => base_icon_size,
+            Glyph::Lock | Glyph::Unlock => base_icon_size + 2.0,
+            Glyph::ChevronUp | Glyph::ChevronDown | Glyph::ChevronLeft | Glyph::ChevronRight => {
+                base_icon_size
+            }
         };
         let icon_rect =
             egui::Rect::from_center_size(response.rect.center(), egui::vec2(icon_size, icon_size));
@@ -209,6 +225,34 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
 ) -> egui::Response {
     header.icon = hash.and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
     let response = draw_item_header_with_trailing(ui, header, trailing);
+    if let Some(hash) = hash {
+        let mut font = egui::TextStyle::Monospace.resolve(ui.style());
+        font.size += ITEM_HEADER_TITLE_SIZE_DELTA;
+        let hash_width = ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(format_hash(hash), font, ui.visuals().text_color())
+                .size()
+                .x
+        });
+        let hash_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                (response.rect.right() - hash_width - 6.0).max(response.rect.left()),
+                response.rect.top(),
+            ),
+            egui::pos2(response.rect.right(), response.rect.top() + 24.0),
+        );
+        let hash_response = ui
+            .interact(
+                hash_rect,
+                response.id.with(("definition_hash", hash)),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("Open details for {}", format_hash(hash)));
+        if hash_response.clicked() {
+            request_hash_inspection(ui.ctx(), hash);
+        }
+    }
     finish_catalog_item_header(catalog, hash, response)
 }
 
@@ -958,6 +1002,67 @@ pub(crate) struct PlugPickerSnapshot {
     pub show_types: bool,
 }
 
+pub(crate) fn plug_choices_for_socket(
+    catalog: &Catalog,
+    socket: Option<&SocketDef>,
+    mode: PlugSelectionMode,
+) -> (Vec<PlugChoice>, bool) {
+    let show_types = mode == PlugSelectionMode::AnyPlug;
+    let allowed = socket
+        .map(|socket| match mode {
+            PlugSelectionMode::Supported => catalog.socket_options(socket),
+            PlugSelectionMode::MatchingSocketType => {
+                catalog.socket_type_options(socket.socket_type)
+            }
+            PlugSelectionMode::AnyPlug => catalog.all_plug_options(),
+        })
+        .unwrap_or_default();
+    let choices = allowed
+        .iter()
+        .map(|hash| PlugChoice {
+            hash: *hash,
+            label: catalog.plug_label(*hash, true),
+            type_name: if show_types {
+                catalog
+                    .plug_type_name(*hash)
+                    .unwrap_or("Unknown type")
+                    .to_owned()
+            } else {
+                String::new()
+            },
+        })
+        .collect();
+    (choices, show_types)
+}
+
+pub(crate) fn plug_picker_snapshot(
+    catalog: &Catalog,
+    socket_index: usize,
+    socket: Option<&SocketDef>,
+    current_hash: Option<u64>,
+    current_label: String,
+    native_default: Option<NativePlugDefault>,
+    mode: PlugSelectionMode,
+) -> PlugPickerSnapshot {
+    let (choices, show_types) = plug_choices_for_socket(catalog, socket, mode);
+    PlugPickerSnapshot {
+        socket_index,
+        socket_label: socket.map_or_else(
+            || format!("Socket {}", socket_index + 1),
+            |socket| socket.display_label(socket_index),
+        ),
+        current_hash,
+        current_label,
+        native_default,
+        native_default_label: match native_default {
+            Some(NativePlugDefault::Plug(hash)) => Some(catalog.plug_label(hash, true)),
+            _ => None,
+        },
+        choices,
+        show_types,
+    }
+}
+
 pub(crate) fn draw_plug_picker(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -1293,27 +1398,6 @@ fn draw_catalog_picker_row(
         );
     }
     response
-}
-
-fn single_line_galley(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    color: egui::Color32,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat {
-            font_id,
-            color,
-            ..Default::default()
-        },
-    );
-    job.wrap.max_width = max_width;
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
 }
 
 fn single_line_text(text: &str) -> String {

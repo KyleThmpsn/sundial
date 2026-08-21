@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT,
-    PlugSelectionMode, SLOTS, SundialApp,
+    SLOTS, SundialApp,
     equipment::{
         EquipmentSlotCard, EquippedItemSnapshot, class_name, equipped_item_snapshots,
         inferred_item_level, native_plug_default,
@@ -31,9 +31,9 @@ use super::{
     },
     item_editor::{
         self, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary, ItemEditorAction,
-        ItemHeader, NativePlugDefault, NumericItemFields, PickerHeight, PlugChoice,
-        PlugPickerSnapshot,
+        ItemHeader, NumericItemFields, PickerHeight,
     },
+    ui::single_line_galley as transfer_menu_galley,
 };
 
 const BUCKET_HEADER_SIZE_DELTA: f32 = 1.0;
@@ -889,16 +889,11 @@ impl SundialApp {
                                             manifest.profile_item_candidates(query).filter(
                                                 |definition| {
                                                     u32::try_from(definition.hash).is_ok()
-                                                        && definition
-                                                            .metadata
-                                                            .max_stack_size
-                                                            .is_some_and(|maximum| {
-                                                                maximum >= snapshot.quantity as u32
-                                                            })
-                                                        && bucket_has_room(
+                                                        && profile_swap_candidate(
                                                             definition.metadata,
-                                                            bucket_usage,
                                                             current_bucket,
+                                                            snapshot.quantity,
+                                                            bucket_usage,
                                                             replacing_unresolved,
                                                         )
                                                 },
@@ -1631,34 +1626,6 @@ impl SundialApp {
                         .flatten()
                         .map(u64::from);
                     let native_default = native_plug_default(&item.default_plugs, socket_index);
-                    let allowed = item
-                        .sockets
-                        .get(socket_index)
-                        .map(|socket| match self.plug_selection_mode {
-                            PlugSelectionMode::Supported => self.manifest.socket_options(socket),
-                            PlugSelectionMode::MatchingSocketType => {
-                                self.manifest.socket_type_options(socket.socket_type)
-                            }
-                            PlugSelectionMode::AnyPlug => self.manifest.all_plug_options(),
-                        })
-                        .unwrap_or_default();
-                    let show_types = self.plug_selection_mode == PlugSelectionMode::AnyPlug;
-                    let choices = allowed
-                        .iter()
-                        .map(|hash| PlugChoice {
-                            hash: *hash,
-                            label: self.manifest.plug_label(*hash, true),
-                            type_name: if show_types {
-                                self.manifest
-                                    .plug_type_name(*hash)
-                                    .unwrap_or("Unknown type")
-                                    .to_owned()
-                            } else {
-                                String::new()
-                            },
-                        })
-                        .collect::<Vec<_>>();
-                    let searchable = choices.len() > 12;
                     let query_key = format!(
                         "{}:plug:{socket_index}",
                         inventory_item_state_key(ui_identity)
@@ -1668,28 +1635,19 @@ impl SundialApp {
                         .get(&query_key)
                         .cloned()
                         .unwrap_or_default();
-                    let socket_label = item.sockets.get(socket_index).map_or_else(
-                        || format!("Socket {}", socket_index + 1),
-                        |socket| socket.display_label(socket_index),
-                    );
-                    let picker_snapshot = PlugPickerSnapshot {
+                    let picker_snapshot = item_editor::plug_picker_snapshot(
+                        &self.manifest,
                         socket_index,
-                        socket_label,
+                        item.sockets.get(socket_index),
                         current_hash,
-                        current_label: current_hash.map_or_else(
+                        current_hash.map_or_else(
                             || "None".to_owned(),
                             |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
                         ),
                         native_default,
-                        native_default_label: match native_default {
-                            Some(NativePlugDefault::Plug(hash)) => {
-                                Some(self.manifest.plug_label(hash, true))
-                            }
-                            _ => None,
-                        },
-                        choices,
-                        show_types,
-                    };
+                        self.plug_selection_mode,
+                    );
+                    let searchable = picker_snapshot.choices.len() > 12;
                     let action = ui
                         .add_enabled_ui(editable, |ui| {
                             item_editor::draw_plug_picker(
@@ -2675,27 +2633,6 @@ fn draw_inventory_item_menu_text(
     response
 }
 
-fn transfer_menu_galley(
-    ui: &egui::Ui,
-    text: &str,
-    font_id: egui::FontId,
-    color: egui::Color32,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat {
-            font_id,
-            color,
-            ..Default::default()
-        },
-    );
-    job.wrap.max_width = max_width;
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
-}
-
 fn inventory_item_ui_identities(items: &[InventoryItemSnapshot]) -> Vec<InventoryItemUiId> {
     let mut totals = HashMap::<u64, usize>::new();
     for item in items {
@@ -2782,6 +2719,21 @@ fn bucket_has_room(
     })
 }
 
+fn profile_swap_candidate(
+    metadata: &InventoryMetadata,
+    current_bucket: Option<u8>,
+    quantity: i32,
+    usage: &BucketUsage,
+    replacing_unresolved: bool,
+) -> bool {
+    current_bucket.is_none_or(|bucket| {
+        metadata.scope == InventoryScope::Profile && metadata.native_bucket_id == bucket
+    }) && metadata
+        .max_stack_size
+        .is_some_and(|maximum| maximum >= quantity as u32)
+        && bucket_has_room(metadata, usage, current_bucket, replacing_unresolved)
+}
+
 fn displayed_inventory_plugs(
     inventory: &InventoryItemSnapshot,
     item: &ItemDef,
@@ -2860,6 +2812,40 @@ mod tests {
                 .iter()
                 .any(|choice| choice.group.as_deref() == Some("Glimmer"))
         );
+    }
+
+    #[test]
+    fn shared_item_swap_candidates_stay_in_the_current_bucket() {
+        let metadata = |native_bucket_id| InventoryMetadata {
+            scope: InventoryScope::Profile,
+            native_bucket_id,
+            stackability: ItemStackability::Stackable,
+            max_stack_size: Some(999_999),
+            bucket_capacity: Some(10),
+        };
+        let current = metadata(15);
+        let other = metadata(21);
+        let usage = BucketUsage {
+            counts: HashMap::from([(15, 1), (21, 1)]),
+            unresolved_count: 0,
+            occupancy_complete: true,
+        };
+
+        assert!(profile_swap_candidate(
+            &current,
+            Some(15),
+            100,
+            &usage,
+            false
+        ));
+        assert!(!profile_swap_candidate(
+            &other,
+            Some(15),
+            100,
+            &usage,
+            false
+        ));
+        assert!(profile_swap_candidate(&other, None, 100, &usage, true));
     }
 
     #[test]
