@@ -294,25 +294,29 @@ mod tests {
     }
 
     #[test]
-    fn trash_glyph_is_axis_aligned_and_bilaterally_symmetric() {
+    fn trash_glyph_is_simple_open_and_bilaterally_symmetric() {
         let trash = &actions().trash;
         assert!(
             trash.segments.is_empty(),
             "tiny trash glyph must not contain uneven interior strokes"
         );
+        assert_eq!(trash.paths.len(), 2, "trash needs only a lid and body");
+        assert_eq!(trash.paths[0].len(), 2, "lid must be a single line");
+        assert_eq!(trash.paths[1].len(), 4, "body must remain open at the top");
+        assert_ne!(trash.paths[1][0], trash.paths[1][3]);
+        assert!(trash.rounded_rects.is_empty());
+        assert_eq!(trash.filled_rounded_rects.len(), 1);
 
         let mirrored = |left: [f32; 2], right: [f32; 2]| {
             assert_eq!(left[0] + right[0], GLYPH_VIEWBOX);
             assert_eq!(left[1], right[1]);
         };
         mirrored(trash.paths[0][0], trash.paths[0][1]);
-        assert_eq!(trash.paths[1][0], trash.paths[1][4]);
         mirrored(trash.paths[1][0], trash.paths[1][3]);
         mirrored(trash.paths[1][1], trash.paths[1][2]);
-        for point in 0..trash.paths[2].len() / 2 {
-            let mirror = trash.paths[2].len() - 1 - point;
-            mirrored(trash.paths[2][point], trash.paths[2][mirror]);
-        }
+        let handle = &trash.filled_rounded_rects[0];
+        assert_eq!(handle.min[0] + handle.max[0], GLYPH_VIEWBOX);
+        assert_eq!(handle.corner_radius * 2.0, handle.max[1] - handle.min[1]);
     }
 
     #[test]

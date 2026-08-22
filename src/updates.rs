@@ -1,28 +1,15 @@
 use std::{
-    ffi::c_void,
-    ptr,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
 };
 
 use eframe::egui;
 use serde::Deserialize;
-use windows_sys::Win32::{
-    Foundation::GetLastError,
-    Networking::WinHttp::{
-        INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
-        WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
-        WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
-        WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
-    },
-};
 
 pub(crate) const RELEASES_URL: &str = "https://github.com/kylethmpsn/sundial/releases";
 
-const API_HOST: &str = "api.github.com";
-const LATEST_RELEASE_PATH: &str = "/repos/kylethmpsn/sundial/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/kylethmpsn/sundial/releases/latest";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-const NETWORK_TIMEOUT_MS: i32 = 5_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UpdateStatus {
@@ -104,7 +91,8 @@ struct LatestRelease {
 }
 
 fn latest_available_version() -> Result<Option<String>, String> {
-    let body = winhttp_get(API_HOST, LATEST_RELEASE_PATH)?;
+    let body = crate::http::get(LATEST_RELEASE_URL, MAX_RESPONSE_BYTES)
+        .map_err(|error| format!("Could not check GitHub for updates: {error}"))?;
     available_version_from_response(&body, env!("CARGO_PKG_VERSION"))
 }
 
@@ -142,135 +130,6 @@ fn version_components(version: &str) -> Option<Vec<u64>> {
             }
         })
         .collect()
-}
-
-struct HttpHandle(*mut c_void);
-
-impl HttpHandle {
-    fn new(raw: *mut c_void, operation: &str) -> Result<Self, String> {
-        if raw.is_null() {
-            Err(last_error(operation))
-        } else {
-            Ok(Self(raw))
-        }
-    }
-}
-
-impl Drop for HttpHandle {
-    fn drop(&mut self) {
-        // SAFETY: The handle is non-null, owned by this wrapper, and closed exactly once here.
-        unsafe {
-            WinHttpCloseHandle(self.0);
-        }
-    }
-}
-
-fn winhttp_get(host: &str, path: &str) -> Result<Vec<u8>, String> {
-    let agent = wide(&format!("Sundial/{}", env!("CARGO_PKG_VERSION")));
-    let host = wide(host);
-    let path = wide(path);
-    let get = wide("GET");
-
-    // SAFETY: All strings are owned, NUL-terminated UTF-16 buffers. Handles are checked after
-    // creation and kept alive until every dependent WinHTTP operation has completed.
-    unsafe {
-        let session = HttpHandle::new(
-            WinHttpOpen(
-                agent.as_ptr(),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                ptr::null(),
-                ptr::null(),
-                0,
-            ),
-            "starting the update check",
-        )?;
-        if WinHttpSetTimeouts(
-            session.0,
-            NETWORK_TIMEOUT_MS,
-            NETWORK_TIMEOUT_MS,
-            NETWORK_TIMEOUT_MS,
-            NETWORK_TIMEOUT_MS,
-        ) == 0
-        {
-            return Err(last_error("setting update-check timeouts"));
-        }
-        let connection = HttpHandle::new(
-            WinHttpConnect(session.0, host.as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0),
-            "connecting to GitHub",
-        )?;
-        let request = HttpHandle::new(
-            WinHttpOpenRequest(
-                connection.0,
-                get.as_ptr(),
-                path.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                WINHTTP_FLAG_SECURE,
-            ),
-            "creating the GitHub request",
-        )?;
-        if WinHttpSendRequest(request.0, ptr::null(), 0, ptr::null(), 0, 0, 0) == 0 {
-            return Err(last_error("sending the GitHub request"));
-        }
-        if WinHttpReceiveResponse(request.0, ptr::null_mut()) == 0 {
-            return Err(last_error("receiving the GitHub response"));
-        }
-
-        let mut status_code = 0_u32;
-        let mut status_size = 4_u32;
-        let mut header_index = 0_u32;
-        if WinHttpQueryHeaders(
-            request.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            ptr::null(),
-            (&raw mut status_code).cast(),
-            &raw mut status_size,
-            &raw mut header_index,
-        ) == 0
-        {
-            return Err(last_error("reading the GitHub response status"));
-        }
-        if status_code != 200 {
-            return Err(format!("GitHub returned HTTP status {status_code}"));
-        }
-
-        let mut response = Vec::new();
-        let mut buffer = [0_u8; 8 * 1024];
-        let buffer_size = u32::try_from(buffer.len())
-            .map_err(|_| "Update-check read buffer is too large for WinHTTP")?;
-        loop {
-            let mut read = 0_u32;
-            if WinHttpReadData(
-                request.0,
-                buffer.as_mut_ptr().cast(),
-                buffer_size,
-                &raw mut read,
-            ) == 0
-            {
-                return Err(last_error("reading the GitHub response"));
-            }
-            if read == 0 {
-                break;
-            }
-            let read = read as usize;
-            if response.len().saturating_add(read) > MAX_RESPONSE_BYTES {
-                return Err("GitHub returned an unexpectedly large release response".into());
-            }
-            response.extend_from_slice(&buffer[..read]);
-        }
-        Ok(response)
-    }
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
-}
-
-fn last_error(operation: &str) -> String {
-    // SAFETY: GetLastError has no preconditions and reads the calling thread's error state.
-    let code = unsafe { GetLastError() };
-    format!("Could not finish {operation} (Windows error {code})")
 }
 
 #[cfg(test)]

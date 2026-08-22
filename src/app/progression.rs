@@ -1,6 +1,7 @@
 use std::{
     cmp::{Ordering, Reverse},
     collections::{HashMap, HashSet},
+    sync::Arc,
 };
 
 use eframe::egui;
@@ -8,9 +9,10 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{
     Catalog, CollectibleDef, CollectionConditionDef, InventoryMetadata, ItemDef,
-    ItemMaterialRequirementSetIndices, MaterialRequirementDef, MaterialRequirementSetDef,
-    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
-    ProgressionContextDef, ProgressionContextKind, ProgressionScope, UnlockDefinition,
+    ItemInvestmentStat, ItemMaterialRequirementSetIndices, ItemPackageMetadata, ItemStatDefinition,
+    MaterialRequirementDef, MaterialRequirementSetDef, ObjectiveDef, ObjectiveOwnerDef,
+    ObjectiveOwnerKind, ObjectiveOwnerTraitDef, ProgressionContextDef, ProgressionContextKind,
+    ProgressionDefinition, ProgressionFactionDefinition, ProgressionScope, UnlockDefinition,
 };
 
 use super::{
@@ -62,10 +64,11 @@ enum UnlockTable {
     CharacterObjectObjectiveValues,
     AccountProgressions,
     CharacterProgressions,
+    UnreplicatedProgressions,
 }
 
 impl UnlockTable {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::AccountFlagRuns,
         Self::ProfileFlagRuns,
         Self::CharacterFlags,
@@ -74,6 +77,7 @@ impl UnlockTable {
         Self::CharacterObjectObjectiveValues,
         Self::AccountProgressions,
         Self::CharacterProgressions,
+        Self::UnreplicatedProgressions,
     ];
 
     const fn label(self) -> &'static str {
@@ -86,20 +90,29 @@ impl UnlockTable {
             Self::CharacterObjectObjectiveValues => "Character object objective values",
             Self::AccountProgressions => "Account progressions",
             Self::CharacterProgressions => "Character progressions",
+            Self::UnreplicatedProgressions => "Unreplicated progressions",
         }
     }
 
-    const fn field_name(self) -> &'static str {
+    const fn field_name(self) -> Option<&'static str> {
         match self {
-            Self::AccountFlagRuns => "account_flag_runs",
-            Self::ProfileFlagRuns => "profile_flag_runs",
-            Self::CharacterFlags => "character_flags",
-            Self::ObjectiveValues => "objective_values",
-            Self::CharacterObjectFlagRuns => "character_flag_runs",
-            Self::CharacterObjectObjectiveValues => "character_objective_values",
-            Self::AccountProgressions => "account_progressions",
-            Self::CharacterProgressions => "character_progressions",
+            Self::AccountFlagRuns => Some("account_flag_runs"),
+            Self::ProfileFlagRuns => Some("profile_flag_runs"),
+            Self::CharacterFlags => Some("character_flags"),
+            Self::ObjectiveValues => Some("objective_values"),
+            Self::CharacterObjectFlagRuns => Some("character_flag_runs"),
+            Self::CharacterObjectObjectiveValues => Some("character_objective_values"),
+            Self::AccountProgressions => Some("account_progressions"),
+            Self::CharacterProgressions => Some("character_progressions"),
+            Self::UnreplicatedProgressions => None,
         }
+    }
+
+    const fn is_progression(self) -> bool {
+        matches!(
+            self,
+            Self::AccountProgressions | Self::CharacterProgressions
+        )
     }
 }
 
@@ -154,6 +167,9 @@ pub(super) struct UiState {
     hash_inspection: HashInspectionState,
     override_filter: OverrideFilter,
     last_investment_change: Option<InvestmentUndo>,
+    edit_progression_lanes: bool,
+    progression_baselines: HashMap<(&'static str, usize), Option<[i32; 3]>>,
+    last_progression_change: Option<ProgressionUndo>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -217,6 +233,24 @@ impl InvestmentUndo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProgressionUndo {
+    table: &'static str,
+    definition_index: usize,
+    previous: Option<[i32; 3]>,
+}
+
+impl ProgressionUndo {
+    fn label(self) -> String {
+        let action = if self.previous.is_some() {
+            "Restore"
+        } else {
+            "Remove newly added"
+        };
+        format!("{action} progression #{}", self.definition_index)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MetadataSelection {
     FlagDefinition(usize),
     ValueDefinition(usize),
@@ -251,6 +285,43 @@ impl UiState {
 
     pub(super) fn invalidate_document(&mut self) {
         self.cached_progression = None;
+        self.progression_baselines.clear();
+        self.last_progression_change = None;
+    }
+
+    pub(super) fn mark_saved(&mut self) {
+        self.progression_baselines.clear();
+        self.last_progression_change = None;
+    }
+
+    fn record_progression_change(
+        &mut self,
+        table: &'static str,
+        definition_index: usize,
+        previous: Option<[i32; 3]>,
+        current: Option<[i32; 3]>,
+    ) {
+        let key = (table, definition_index);
+        let baseline = *self.progression_baselines.entry(key).or_insert(previous);
+        if current == baseline {
+            self.progression_baselines.remove(&key);
+        }
+
+        let keep_previous = self.last_progression_change.is_some_and(|change| {
+            change.table == table && change.definition_index == definition_index
+        });
+        if !keep_previous {
+            self.last_progression_change = Some(ProgressionUndo {
+                table,
+                definition_index,
+                previous,
+            });
+        }
+    }
+
+    fn progression_changed(&self, table: &'static str, definition_index: usize) -> bool {
+        self.progression_baselines
+            .contains_key(&(table, definition_index))
     }
 
     fn open_metadata(&mut self, selection: MetadataSelection) {
@@ -318,6 +389,98 @@ struct ProgressionValue {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProgressionDisplayRow {
+    definition_index: usize,
+    lanes: Option<[i32; 3]>,
+}
+
+fn progression_display_rows(
+    authored: &[ProgressionValue],
+    definitions: &[ProgressionDefinition],
+    scope: ProgressionScope,
+) -> Vec<ProgressionDisplayRow> {
+    let authored = authored
+        .iter()
+        .map(|row| (row.definition_index, row.lanes))
+        .collect::<HashMap<_, _>>();
+    let mut rows = definitions
+        .iter()
+        .filter(|definition| definition.scope == scope)
+        .map(|definition| {
+            let definition_index = usize::from(definition.definition_index);
+            ProgressionDisplayRow {
+                definition_index,
+                lanes: authored.get(&definition_index).copied(),
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.extend(
+        authored
+            .iter()
+            .filter(|(definition_index, _)| {
+                !definitions.iter().any(|definition| {
+                    usize::from(definition.definition_index) == **definition_index
+                        && definition.scope == scope
+                })
+            })
+            .map(|(&definition_index, &lanes)| ProgressionDisplayRow {
+                definition_index,
+                lanes: Some(lanes),
+            }),
+    );
+    rows.sort_by_key(|row| row.definition_index);
+    rows
+}
+
+fn progression_definition_matches(query: &str, definition: &ProgressionDefinition) -> bool {
+    definition.definition_index.to_string().contains(query)
+        || format!("{:08x}", definition.hash).contains(query)
+        || definition.hash.to_string().contains(query)
+        || definition.name.to_lowercase().contains(query)
+        || definition.description.to_lowercase().contains(query)
+        || definition.source.to_lowercase().contains(query)
+        || definition.display_units_name.to_lowercase().contains(query)
+        || definition.factions.iter().any(|faction| {
+            format!("{:08x}", faction.hash).contains(query)
+                || faction.hash.to_string().contains(query)
+                || faction.name.to_lowercase().contains(query)
+                || faction.description.to_lowercase().contains(query)
+        })
+        || definition.steps.iter().any(|step| {
+            step.name.to_lowercase().contains(query)
+                || step.progress_total.to_string().contains(query)
+        })
+        || definition.reward_items.iter().any(|reward| {
+            format!("{:08x}", reward.item_hash).contains(query)
+                || reward.item_hash.to_string().contains(query)
+                || reward
+                    .rewarded_at_progression_level
+                    .to_string()
+                    .contains(query)
+                || reward.quantity.to_string().contains(query)
+        })
+        || definition
+            .scope_slot
+            .is_some_and(|slot| slot.to_string().contains(query))
+}
+
+fn progression_display_name(definition: &ProgressionDefinition) -> Option<String> {
+    let name = definition.name.trim();
+    if !name.is_empty() {
+        return Some(name.to_owned());
+    }
+    let mut faction_names = definition
+        .factions
+        .iter()
+        .map(|faction| faction.name.trim())
+        .filter(|name| !name.is_empty());
+    let faction_name = faction_names.next()?;
+    faction_names
+        .all(|name| name == faction_name)
+        .then(|| format!("Faction: {faction_name}"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FlagOverride {
     definition_index: usize,
     value: u8,
@@ -342,7 +505,7 @@ impl ContextDisplayLine<'_> {
             (false, false) => format!("{}: {}", self.path.join(" > "), self.name),
             (false, true) => self.name.clone(),
             (true, false) => self.path.join(" > "),
-            (true, true) => "—".into(),
+            (true, true) => "-".into(),
         }
     }
 }
@@ -939,7 +1102,13 @@ pub(super) fn draw_content(
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
         state.hash_inspection.open(hash);
     }
-    draw_catalog_hash_window(ui.ctx(), catalog, &mut state.hash_inspection);
+    draw_catalog_hash_window(
+        ui.ctx(),
+        catalog,
+        Some(document),
+        &mut state.hash_inspection,
+        "progression",
+    );
     if !changed {
         state.cached_progression = Some(Ok(policy));
     }
@@ -954,6 +1123,7 @@ fn draw_unlocks(
     state: &mut UiState,
 ) -> bool {
     let mut table_changed = false;
+    let mut undo_progression_requested = false;
     progression_toolbar(ui, |ui| {
         ui.label(egui::RichText::new("Table").strong());
         let table_picker = egui::ComboBox::from_id_salt("progression_unlock_table")
@@ -966,21 +1136,45 @@ fn draw_unlocks(
                         .changed();
                 }
             });
-        table_picker.response.on_hover_text(format!(
-            "Settings field: {}",
-            state.unlock_table.field_name()
-        ));
+        if let Some(field_name) = state.unlock_table.field_name() {
+            table_picker
+                .response
+                .on_hover_text(format!("Settings field: {field_name}"));
+        }
         ui.add_space(8.0);
         draw_filter(ui, &mut state.query);
-        if ui.button("+ Add").clicked() {
+        if state.unlock_table != UnlockTable::UnreplicatedProgressions
+            && !state.unlock_table.is_progression()
+            && ui.button("+ Add").clicked()
+        {
             state.add_open = true;
             state.add_query.clear();
             state.add_value = 0;
             state.add_progression_lanes = [0; 3];
         }
+        if state.unlock_table.is_progression() {
+            ui.checkbox(&mut state.edit_progression_lanes, "Edit Lane 1–2")
+                .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
+            if let Some(last_change) = state.last_progression_change
+                && ui
+                    .button("Undo progression change")
+                    .on_hover_text(last_change.label())
+                    .clicked()
+            {
+                undo_progression_requested = true;
+            }
+            if !state.progression_baselines.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("{} changed", state.progression_baselines.len()))
+                        .color(ui.visuals().warn_fg_color),
+                );
+            }
+        }
     });
     if table_changed {
         state.query.clear();
+        state.add_open = false;
+        state.edit_progression_lanes = false;
     }
     let query = state.query.clone();
 
@@ -1081,7 +1275,12 @@ fn draw_unlocks(
             state,
             document,
         ),
+        UnlockTable::UnreplicatedProgressions => {
+            draw_unreplicated_progressions(ui, catalog, &query, state);
+            false
+        }
     };
+    changed |= undo_progression_requested && undo_progression_change(document, state);
     changed |= draw_add_unlock_window(ui.ctx(), document, unlocks, catalog, state);
     changed
 }
@@ -1236,7 +1435,9 @@ fn add_table_spec(table: UnlockTable) -> AddTableSpec {
             capacity: CHARACTER_OBJECT_VALUE_CAPACITY,
             value: true,
         },
-        UnlockTable::AccountProgressions | UnlockTable::CharacterProgressions => {
+        UnlockTable::AccountProgressions
+        | UnlockTable::CharacterProgressions
+        | UnlockTable::UnreplicatedProgressions => {
             unreachable!("progression tables use their package definition picker")
         }
     }
@@ -1250,6 +1451,10 @@ fn draw_add_unlock_window(
     state: &mut UiState,
 ) -> bool {
     if !state.add_open {
+        return false;
+    }
+    if state.unlock_table == UnlockTable::UnreplicatedProgressions {
+        state.add_open = false;
         return false;
     }
     if matches!(
@@ -1414,11 +1619,7 @@ fn draw_add_progression_window(
         .filter(|definition| {
             definition.scope == scope
                 && !occupied.contains(&usize::from(definition.definition_index))
-                && (query.is_empty()
-                    || definition.definition_index.to_string().contains(&query)
-                    || definition
-                        .scope_slot
-                        .is_some_and(|slot| slot.to_string().contains(&query)))
+                && (query.is_empty() || progression_definition_matches(&query, definition))
         })
         .collect::<Vec<_>>();
     let mut open = state.add_open;
@@ -1437,7 +1638,13 @@ fn draw_add_progression_window(
             );
             ui.horizontal(|ui| {
                 for lane in 0..3 {
-                    ui.label(format!("Lane {lane}"));
+                    ui.label(if lane == 0 {
+                        "Progress"
+                    } else if lane == 1 {
+                        "Lane 1"
+                    } else {
+                        "Lane 2"
+                    });
                     ui.add(
                         egui::DragValue::new(&mut state.add_progression_lanes[lane])
                             .speed(1.0)
@@ -1454,6 +1661,15 @@ fn draw_add_progression_window(
                         let definition = candidates[row];
                         ui.horizontal(|ui| {
                             ui.monospace(format!("#{}", definition.definition_index));
+                            draw_hash_link(
+                                ui,
+                                definition.hash,
+                                format!("0x{:08X}", definition.hash),
+                            );
+                            ui.label(progression_display_name(definition).map_or_else(
+                                || egui::RichText::new("-").weak(),
+                                egui::RichText::new,
+                            ));
                             ui.label(definition.scope_slot.map_or_else(
                                 || "<unreplicated>".into(),
                                 |slot| format!("Slot {slot}"),
@@ -1506,6 +1722,9 @@ fn occupied_slots(unlocks: &UnlockPolicy, table: UnlockTable, capacity: usize) -
             .iter()
             .map(|row| row.definition_index)
             .collect(),
+        UnlockTable::UnreplicatedProgressions => {
+            unreachable!("unreplicated progressions have no Sunrise settings bank")
+        }
     };
     for slot in slots {
         if let Some(value) = occupied.get_mut(slot) {
@@ -1884,9 +2103,9 @@ fn draw_flag_slots(
                                     );
                                     draw_definition_hash_cell(ui, hash_width, Some(definition));
                                 } else {
-                                    table_cell(ui, index_width, egui::RichText::new("—").weak())
+                                    table_cell(ui, index_width, egui::RichText::new("-").weak())
                                         .on_hover_text("No package definition");
-                                    table_cell(ui, hash_width, egui::RichText::new("—").weak());
+                                    table_cell(ui, hash_width, egui::RichText::new("-").weak());
                                 }
                             } else {
                                 table_cell(ui, index_width, "");
@@ -2068,7 +2287,7 @@ fn draw_objective_values(
                                             ui,
                                             objective_width,
                                             depth,
-                                            egui::RichText::new("—").weak(),
+                                            egui::RichText::new("-").weak(),
                                         );
                                         let response =
                                             response.on_hover_text(if leaf.definition.is_some() {
@@ -2088,7 +2307,7 @@ fn draw_objective_values(
                                         }
                                     }
                                     let objective_index_text = leaf.objective_index.map_or_else(
-                                        || egui::RichText::new("—").weak(),
+                                        || egui::RichText::new("-").weak(),
                                         |objective_index| {
                                             egui::RichText::new(format!("#{objective_index}"))
                                                 .monospace()
@@ -2159,32 +2378,40 @@ fn draw_progression_values(
     document: &mut Value,
 ) -> bool {
     let query = query.trim().to_lowercase();
-    let mut filtered = rows
-        .iter()
-        .copied()
+    let mut filtered = progression_display_rows(rows, catalog.progression_definitions(), scope)
+        .into_iter()
         .filter(|row| {
             let definition = catalog.progression_definition(row.definition_index);
             query.is_empty()
                 || row.definition_index.to_string().contains(&query)
+                || definition
+                    .is_some_and(|definition| progression_definition_matches(&query, definition))
                 || row
                     .lanes
-                    .iter()
+                    .into_iter()
+                    .flatten()
                     .any(|lane| lane.to_string().contains(&query))
                 || definition
                     .and_then(|definition| definition.scope_slot)
                     .is_some_and(|slot| slot.to_string().contains(&query))
         })
         .collect::<Vec<_>>();
-    let definition_width = 118.0;
+    let definition_width = 72.0;
+    let hash_width = 118.0;
+    let name_width = 180.0;
     let slot_width = 72.0;
-    let lane_width = 92.0;
+    let lane_width = 82.0;
+    let target_width = 92.0;
     let sort = sortable_table_header(
         ui,
         id,
         &[
             (definition_width, "Index"),
+            (hash_width, "Hash"),
+            (name_width, "Name"),
             (slot_width, "Slot"),
-            (lane_width, "Lane 0"),
+            (lane_width, "Progress"),
+            (target_width, "Target"),
             (lane_width, "Lane 1"),
             (lane_width, "Lane 2"),
             (TABLE_ACTION_WIDTH, ""),
@@ -2197,10 +2424,52 @@ fn draw_progression_values(
         let right_definition = catalog.progression_definition(right.definition_index);
         let order = match sort.column {
             0 => left.definition_index.cmp(&right.definition_index),
-            1 => left_definition
-                .and_then(|definition| definition.scope_slot)
-                .cmp(&right_definition.and_then(|definition| definition.scope_slot)),
-            2..=4 => left.lanes[sort.column - 2].cmp(&right.lanes[sort.column - 2]),
+            1 => {
+                return compare_optional(
+                    left_definition.map(|definition| definition.hash),
+                    right_definition.map(|definition| definition.hash),
+                    sort.descending,
+                );
+            }
+            2 => {
+                return compare_optional(
+                    left_definition
+                        .and_then(progression_display_name)
+                        .map(|name| name.to_lowercase()),
+                    right_definition
+                        .and_then(progression_display_name)
+                        .map(|name| name.to_lowercase()),
+                    sort.descending,
+                );
+            }
+            3 => {
+                return compare_optional(
+                    left_definition.and_then(|definition| definition.scope_slot),
+                    right_definition.and_then(|definition| definition.scope_slot),
+                    sort.descending,
+                );
+            }
+            4 => {
+                return compare_optional(
+                    left.lanes.map(|lanes| lanes[0]),
+                    right.lanes.map(|lanes| lanes[0]),
+                    sort.descending,
+                );
+            }
+            5 => {
+                return compare_optional(
+                    left_definition.and_then(progression_target),
+                    right_definition.and_then(progression_target),
+                    sort.descending,
+                );
+            }
+            6..=7 => {
+                return compare_optional(
+                    left.lanes.map(|lanes| lanes[sort.column - 5]),
+                    right.lanes.map(|lanes| lanes[sort.column - 5]),
+                    sort.descending,
+                );
+            }
             _ => Ordering::Equal,
         };
         if sort.descending {
@@ -2222,18 +2491,38 @@ fn draw_progression_values(
             .auto_shrink([false, false])
             .show_rows(ui, TABLE_CELL_HEIGHT, filtered.len(), |ui, range| {
                 egui::Grid::new((id, "rows"))
-                    .num_columns(6)
+                    .num_columns(9)
                     .striped(true)
                     .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
                     .show(ui, |ui| {
                         for row_index in range {
                             let row = filtered[row_index];
                             let definition = catalog.progression_definition(row.definition_index);
+                            let index = egui::RichText::new(format!("#{}", row.definition_index))
+                                .monospace();
+                            let index = if state.progression_changed(id, row.definition_index) {
+                                index.color(ui.visuals().warn_fg_color)
+                            } else {
+                                index
+                            };
+                            table_cell(ui, definition_width, index);
+                            draw_hash_cell(
+                                ui,
+                                hash_width,
+                                definition.map(|definition| definition.hash),
+                            );
                             table_cell(
                                 ui,
-                                definition_width,
-                                egui::RichText::new(format!("#{}", row.definition_index))
-                                    .monospace(),
+                                name_width,
+                                definition.map_or_else(
+                                    || egui::RichText::new("-").weak(),
+                                    |definition| {
+                                        progression_display_name(definition).map_or_else(
+                                            || egui::RichText::new("-").weak(),
+                                            egui::RichText::new,
+                                        )
+                                    },
+                                ),
                             );
                             let scope_slot = definition
                                 .filter(|definition| definition.scope == scope)
@@ -2242,28 +2531,98 @@ fn draw_progression_values(
                                 ui,
                                 slot_width,
                                 egui::RichText::new(
-                                    scope_slot.map_or_else(|| "—".into(), |slot| slot.to_string()),
+                                    scope_slot.map_or_else(|| "-".into(), |slot| slot.to_string()),
                                 )
                                 .monospace(),
                             );
-                            let mut lanes = row.lanes;
-                            let mut row_changed = false;
-                            for lane in &mut lanes {
-                                row_changed |= table_drag_value(ui, lane_width, lane).changed();
-                            }
-                            if row_changed {
-                                changed |= set_progression_value(
-                                    document,
-                                    id,
-                                    row.definition_index,
-                                    lanes,
+                            let target = definition.and_then(progression_target);
+                            if let Some(previous_lanes) = row.lanes {
+                                let mut lanes = previous_lanes;
+                                let mut row_changed =
+                                    table_drag_value(ui, lane_width, &mut lanes[0]).changed();
+                                table_cell(
+                                    ui,
+                                    target_width,
+                                    target.map_or_else(
+                                        || egui::RichText::new("-").weak(),
+                                        |target| {
+                                            egui::RichText::new(target.to_string()).monospace()
+                                        },
+                                    ),
                                 );
-                            }
-                            if draw_remove_cell(ui, TABLE_ACTION_WIDTH, "Remove progression")
-                                .clicked()
-                            {
-                                changed |=
-                                    remove_progression_value(document, id, row.definition_index);
+                                for lane in &mut lanes[1..] {
+                                    if state.edit_progression_lanes {
+                                        row_changed |=
+                                            table_drag_value(ui, lane_width, lane).changed();
+                                    } else {
+                                        table_cell(
+                                            ui,
+                                            lane_width,
+                                            egui::RichText::new(lane.to_string())
+                                                .monospace()
+                                                .weak(),
+                                        );
+                                    }
+                                }
+                                if row_changed
+                                    && set_progression_value(
+                                        document,
+                                        id,
+                                        row.definition_index,
+                                        lanes,
+                                    )
+                                {
+                                    state.record_progression_change(
+                                        id,
+                                        row.definition_index,
+                                        Some(previous_lanes),
+                                        Some(lanes),
+                                    );
+                                    changed = true;
+                                }
+                                if draw_remove_cell(ui, TABLE_ACTION_WIDTH, "Remove progression")
+                                    .clicked()
+                                    && remove_progression_value(document, id, row.definition_index)
+                                {
+                                    state.record_progression_change(
+                                        id,
+                                        row.definition_index,
+                                        Some(previous_lanes),
+                                        None,
+                                    );
+                                    changed = true;
+                                }
+                            } else {
+                                let add = missing_progression_cell(ui, lane_width);
+                                table_cell(
+                                    ui,
+                                    target_width,
+                                    target.map_or_else(
+                                        || egui::RichText::new("-").weak(),
+                                        |target| {
+                                            egui::RichText::new(target.to_string()).monospace()
+                                        },
+                                    ),
+                                );
+                                table_cell(ui, lane_width, egui::RichText::new("-").weak());
+                                table_cell(ui, lane_width, egui::RichText::new("-").weak());
+                                table_cell(ui, TABLE_ACTION_WIDTH, "");
+                                if add
+                                    && set_progression_value(
+                                        document,
+                                        id,
+                                        row.definition_index,
+                                        [0; 3],
+                                    )
+                                {
+                                    state.record_progression_change(
+                                        id,
+                                        row.definition_index,
+                                        None,
+                                        Some([0; 3]),
+                                    );
+                                    changed = true;
+                                }
                             }
                             ui.end_row();
                         }
@@ -2271,6 +2630,153 @@ fn draw_progression_values(
             });
     });
     changed
+}
+
+fn progression_target(definition: &ProgressionDefinition) -> Option<i32> {
+    definition
+        .steps
+        .iter()
+        .map(|step| step.progress_total)
+        .max()
+}
+
+fn saved_progression_lanes(
+    document: &Value,
+    scope: ProgressionScope,
+    definition_index: usize,
+) -> Option<[i32; 3]> {
+    let key = match scope {
+        ProgressionScope::Account => "account_progressions",
+        ProgressionScope::Character => "character_progressions",
+        ProgressionScope::Unreplicated => return None,
+    };
+    let rows = document
+        .pointer(&format!("/state/unlocks/{key}"))?
+        .as_array()?;
+    let mut saved = None::<[i32; 3]>;
+    for row in rows {
+        let Some(values) = row.as_array() else {
+            continue;
+        };
+        let [index, lane_0, lane_1, lane_2] = values.as_slice() else {
+            continue;
+        };
+        if index.as_u64().and_then(|index| usize::try_from(index).ok()) != Some(definition_index) {
+            continue;
+        }
+        let lanes = [lane_0, lane_1, lane_2]
+            .map(|lane| lane.as_i64().and_then(|lane| i32::try_from(lane).ok()));
+        let [Some(lane_0), Some(lane_1), Some(lane_2)] = lanes else {
+            continue;
+        };
+        let lanes = [lane_0, lane_1, lane_2];
+        if let Some(current) = saved.as_mut() {
+            for lane in 0..3 {
+                current[lane] = current[lane].max(lanes[lane]);
+            }
+        } else {
+            saved = Some(lanes);
+        }
+    }
+    saved
+}
+
+fn missing_progression_cell(ui: &mut egui::Ui, width: f32) -> bool {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, TABLE_CELL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(egui::RichText::new("Missing").weak());
+            ui.small_button("Add").clicked()
+        },
+    )
+    .inner
+}
+
+fn draw_unreplicated_progressions(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    query: &str,
+    state: &mut UiState,
+) {
+    let query = query.trim().to_lowercase();
+    let mut definitions = catalog
+        .progression_definitions()
+        .iter()
+        .filter(|definition| {
+            definition.scope == ProgressionScope::Unreplicated
+                && (query.is_empty() || progression_definition_matches(&query, definition))
+        })
+        .collect::<Vec<_>>();
+    let index_width = 72.0;
+    let hash_width = 118.0;
+    let name_width =
+        (ui.available_width() - index_width - hash_width - TABLE_COLUMN_GAP * 2.0).max(180.0);
+    let sort = sortable_table_header(
+        ui,
+        "unreplicated_progressions",
+        &[
+            (index_width, "Index"),
+            (hash_width, "Hash"),
+            (name_width, "Name"),
+        ],
+        TableSort::ascending(0),
+        state,
+    );
+    definitions.sort_by(|left, right| {
+        let order = match sort.column {
+            0 => left.definition_index.cmp(&right.definition_index),
+            1 => left.hash.cmp(&right.hash),
+            2 => {
+                return compare_optional(
+                    progression_display_name(left).map(|name| name.to_lowercase()),
+                    progression_display_name(right).map(|name| name.to_lowercase()),
+                    sort.descending,
+                );
+            }
+            _ => Ordering::Equal,
+        };
+        compare_ordering(order, sort.descending)
+    });
+    ui.separator();
+    if definitions.is_empty() {
+        ui.label(egui::RichText::new("No matching rows").weak());
+        return;
+    }
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = TABLE_ROW_GAP;
+        egui::ScrollArea::vertical()
+            .id_salt("unreplicated_progression_table")
+            .auto_shrink([false, false])
+            .show_rows(ui, TABLE_CELL_HEIGHT, definitions.len(), |ui, range| {
+                egui::Grid::new("unreplicated_progression_rows")
+                    .num_columns(3)
+                    .striped(true)
+                    .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
+                    .show(ui, |ui| {
+                        for row in range {
+                            let definition = definitions[row];
+                            table_cell(
+                                ui,
+                                index_width,
+                                egui::RichText::new(format!("#{}", definition.definition_index))
+                                    .monospace(),
+                            );
+                            draw_hash_cell(ui, hash_width, Some(definition.hash));
+                            table_cell(
+                                ui,
+                                name_width,
+                                progression_display_name(definition).map_or_else(
+                                    || egui::RichText::new("-").weak(),
+                                    egui::RichText::new,
+                                ),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
+    });
 }
 
 fn draw_flag_overrides(
@@ -2781,7 +3287,7 @@ fn draw_definition_hash_cell(ui: &mut egui::Ui, width: f32, definition: Option<&
             if let Some(definition) = definition {
                 draw_hash_link(ui, definition.hash, definition_hash(definition));
             } else {
-                ui.label(egui::RichText::new("—").weak());
+                ui.label(egui::RichText::new("-").weak());
             }
         },
     );
@@ -2796,7 +3302,7 @@ fn draw_hash_cell(ui: &mut egui::Ui, width: f32, hash: Option<u64>) {
             if let Some(hash) = hash.filter(|hash| *hash != 0) {
                 draw_hash_link(ui, hash, format!("0x{hash:08X}"));
             } else {
-                ui.label(egui::RichText::new("—").weak());
+                ui.label(egui::RichText::new("-").weak());
             }
         },
     );
@@ -3017,6 +3523,7 @@ fn metadata_selection_short_label(selection: MetadataSelection, catalog: &Catalo
 pub(super) struct HashInspectionState {
     current: Option<u64>,
     history: Vec<u64>,
+    match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
 }
 
 impl HashInspectionState {
@@ -3028,6 +3535,7 @@ impl HashInspectionState {
             self.history.push(current);
         }
         self.current = Some(hash);
+        self.match_index = None;
     }
 
     pub(super) const fn is_open(&self) -> bool {
@@ -3037,16 +3545,64 @@ impl HashInspectionState {
     fn back(&mut self) {
         if let Some(previous) = self.history.pop() {
             self.current = Some(previous);
+            self.match_index = None;
         }
+    }
+
+    fn navigate_history(&mut self, history_index: usize) {
+        let Some(hash) = self.history.get(history_index).copied() else {
+            return;
+        };
+        self.current = Some(hash);
+        self.history.truncate(history_index);
+        self.match_index = None;
+    }
+
+    fn match_index(&mut self, catalog: &Catalog, hash: u64) -> Arc<CatalogHashMatchIndex> {
+        if self
+            .match_index
+            .as_ref()
+            .is_none_or(|(cached_hash, _)| *cached_hash != hash)
+        {
+            self.match_index = Some((
+                hash,
+                Arc::new(CatalogHashMatchIndex::collect(catalog, hash)),
+            ));
+        }
+        Arc::clone(&self.match_index.as_ref().expect("match index was set").1)
     }
 
     pub(super) fn close(&mut self) {
         self.current = None;
         self.history.clear();
+        self.match_index = None;
     }
 }
 
+#[derive(Debug, Default)]
+struct CatalogHashMatchIndex {
+    progression_definitions: Vec<usize>,
+    progression_reward_matches: Vec<(usize, usize)>,
+    progression_faction_matches: Vec<(usize, usize)>,
+    flag_definitions: Vec<usize>,
+    value_definitions: Vec<usize>,
+    objectives: Vec<usize>,
+    owner_matches: Vec<(usize, usize)>,
+    trait_matches: Vec<(usize, usize, usize)>,
+    context_matches: Vec<(&'static str, usize, usize)>,
+    collectible_matches: Vec<usize>,
+    material_requirement_set_matches: Vec<usize>,
+}
+
 struct CatalogHashMatches<'a> {
+    progression_definitions: Vec<(usize, &'a ProgressionDefinition)>,
+    progression_reward_matches: Vec<(usize, &'a ProgressionDefinition, usize)>,
+    progression_faction_matches: Vec<(
+        usize,
+        &'a ProgressionDefinition,
+        usize,
+        &'a ProgressionFactionDefinition,
+    )>,
     flag_definitions: Vec<(usize, &'a UnlockDefinition)>,
     value_definitions: Vec<(usize, &'a UnlockDefinition)>,
     objectives: Vec<(usize, &'a ObjectiveDef)>,
@@ -3062,29 +3618,69 @@ struct CatalogHashMatches<'a> {
     material_requirement_set_matches: Vec<&'a MaterialRequirementSetDef>,
     bucket_items: Vec<&'a ItemDef>,
     item: Option<&'a ItemDef>,
+    item_package_metadata: Option<&'a ItemPackageMetadata>,
+    item_stat_definition: Option<&'a ItemStatDefinition>,
+    investment_stat_references: Vec<(u64, &'a ItemInvestmentStat)>,
+    intrinsic_perk_item_references: &'a [u64],
     inventory_metadata: Option<&'a InventoryMetadata>,
     item_material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
 }
 
-impl<'a> CatalogHashMatches<'a> {
-    fn collect(catalog: &'a Catalog, hash: u64) -> Self {
+impl CatalogHashMatchIndex {
+    fn collect(catalog: &Catalog, hash: u64) -> Self {
+        let progression_definitions = catalog
+            .progression_definitions()
+            .iter()
+            .enumerate()
+            .filter(|(_, definition)| definition.hash == hash)
+            .map(|(index, _)| index)
+            .collect();
+        let progression_reward_matches = catalog
+            .progression_definitions()
+            .iter()
+            .enumerate()
+            .flat_map(|(definition_index, definition)| {
+                definition
+                    .reward_items
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, reward)| reward.item_hash == hash)
+                    .map(move |(reward_index, _)| (definition_index, reward_index))
+            })
+            .collect();
+        let progression_faction_matches = catalog
+            .progression_definitions()
+            .iter()
+            .enumerate()
+            .flat_map(|(definition_index, definition)| {
+                definition
+                    .factions
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, faction)| faction.hash == hash)
+                    .map(move |(faction_index, _)| (definition_index, faction_index))
+            })
+            .collect();
         let flag_definitions = catalog
             .unlock_flag_definitions()
             .iter()
             .enumerate()
             .filter(|(_, definition)| definition.hash == hash)
+            .map(|(index, _)| index)
             .collect();
         let value_definitions = catalog
             .unlock_value_definitions()
             .iter()
             .enumerate()
             .filter(|(_, definition)| definition.hash == hash)
+            .map(|(index, _)| index)
             .collect();
         let objectives = catalog
             .objectives()
             .iter()
             .enumerate()
             .filter(|(_, objective)| objective.hash == hash)
+            .map(|(index, _)| index)
             .collect();
         let owner_matches = catalog
             .objectives()
@@ -3094,8 +3690,10 @@ impl<'a> CatalogHashMatches<'a> {
                 objective
                     .owners
                     .iter()
-                    .filter(move |owner| owner.hash == hash)
-                    .map(move |owner| (objective_index, objective, owner))
+                    .enumerate()
+                    .filter_map(move |(owner_index, owner)| {
+                        (owner.hash == hash).then_some((objective_index, owner_index))
+                    })
             })
             .collect();
         let trait_matches = catalog
@@ -3103,15 +3701,21 @@ impl<'a> CatalogHashMatches<'a> {
             .iter()
             .enumerate()
             .flat_map(|(objective_index, objective)| {
-                objective.owners.iter().flat_map(move |owner| {
-                    owner
-                        .traits
-                        .iter()
-                        .filter(move |trait_definition| trait_definition.hash == hash)
-                        .map(move |trait_definition| {
-                            (objective_index, objective, owner, trait_definition)
-                        })
-                })
+                objective
+                    .owners
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(owner_index, owner)| {
+                        owner.traits.iter().enumerate().filter_map(
+                            move |(trait_index, trait_definition)| {
+                                (trait_definition.hash == hash).then_some((
+                                    objective_index,
+                                    owner_index,
+                                    trait_index,
+                                ))
+                            },
+                        )
+                    })
             })
             .collect();
         let context_matches = catalog
@@ -3119,11 +3723,11 @@ impl<'a> CatalogHashMatches<'a> {
             .iter()
             .enumerate()
             .flat_map(|(index, definition)| {
-                definition
-                    .tested_by
-                    .iter()
-                    .filter(move |context| context.hash == hash)
-                    .map(move |context| ("Flag", index, context))
+                definition.tested_by.iter().enumerate().filter_map(
+                    move |(context_index, context)| {
+                        (context.hash == hash).then_some(("Flag", index, context_index))
+                    },
+                )
             })
             .chain(
                 catalog
@@ -3131,39 +3735,164 @@ impl<'a> CatalogHashMatches<'a> {
                     .iter()
                     .enumerate()
                     .flat_map(|(index, definition)| {
-                        definition
-                            .tested_by
-                            .iter()
-                            .filter(move |context| context.hash == hash)
-                            .map(move |context| ("Value", index, context))
+                        definition.tested_by.iter().enumerate().filter_map(
+                            move |(context_index, context)| {
+                                (context.hash == hash).then_some(("Value", index, context_index))
+                            },
+                        )
                     }),
             )
             .collect();
         let collectible_matches = catalog
             .collectibles()
             .iter()
-            .filter(|definition| {
-                definition.hash == hash
+            .enumerate()
+            .filter_map(|(index, definition)| {
+                (definition.hash == hash
                     || definition.item_hash == hash
                     || definition.material_requirement_set_hash == hash
                     || definition
                         .material_requirements
                         .iter()
-                        .any(|requirement| requirement.item_hash == hash)
+                        .any(|requirement| requirement.item_hash == hash))
+                .then_some(index)
             })
             .collect();
         let material_requirement_set_matches = catalog
             .material_requirement_sets()
             .iter()
-            .filter(|set| {
-                set.hash == hash
+            .enumerate()
+            .filter_map(|(index, set)| {
+                (set.hash == hash
                     || set
                         .requirements
                         .iter()
-                        .any(|requirement| requirement.item_hash == hash)
+                        .any(|requirement| requirement.item_hash == hash))
+                .then_some(index)
             })
             .collect();
         Self {
+            progression_definitions,
+            progression_reward_matches,
+            progression_faction_matches,
+            flag_definitions,
+            value_definitions,
+            objectives,
+            owner_matches,
+            trait_matches,
+            context_matches,
+            collectible_matches,
+            material_requirement_set_matches,
+        }
+    }
+}
+
+impl<'a> CatalogHashMatches<'a> {
+    fn from_index(catalog: &'a Catalog, hash: u64, index: &CatalogHashMatchIndex) -> Self {
+        let progression_definitions = index
+            .progression_definitions
+            .iter()
+            .filter_map(|definition_index| {
+                catalog
+                    .progression_definitions()
+                    .get(*definition_index)
+                    .map(|definition| (*definition_index, definition))
+            })
+            .collect();
+        let progression_reward_matches = index
+            .progression_reward_matches
+            .iter()
+            .filter_map(|(definition_index, reward_index)| {
+                let definition = catalog.progression_definitions().get(*definition_index)?;
+                definition.reward_items.get(*reward_index)?;
+                Some((*definition_index, definition, *reward_index))
+            })
+            .collect();
+        let progression_faction_matches = index
+            .progression_faction_matches
+            .iter()
+            .filter_map(|(definition_index, faction_index)| {
+                let definition = catalog.progression_definitions().get(*definition_index)?;
+                let faction = definition.factions.get(*faction_index)?;
+                Some((*definition_index, definition, *faction_index, faction))
+            })
+            .collect();
+        let flag_definitions = index
+            .flag_definitions
+            .iter()
+            .filter_map(|definition_index| {
+                catalog
+                    .unlock_flag_definition(*definition_index)
+                    .map(|definition| (*definition_index, definition))
+            })
+            .collect();
+        let value_definitions = index
+            .value_definitions
+            .iter()
+            .filter_map(|definition_index| {
+                catalog
+                    .unlock_value_definition(*definition_index)
+                    .map(|definition| (*definition_index, definition))
+            })
+            .collect();
+        let objectives = index
+            .objectives
+            .iter()
+            .filter_map(|objective_index| {
+                catalog
+                    .objectives()
+                    .get(*objective_index)
+                    .map(|objective| (*objective_index, objective))
+            })
+            .collect();
+        let owner_matches = index
+            .owner_matches
+            .iter()
+            .filter_map(|(objective_index, owner_index)| {
+                let objective = catalog.objectives().get(*objective_index)?;
+                let owner = objective.owners.get(*owner_index)?;
+                Some((*objective_index, objective, owner))
+            })
+            .collect();
+        let trait_matches = index
+            .trait_matches
+            .iter()
+            .filter_map(|(objective_index, owner_index, trait_index)| {
+                let objective = catalog.objectives().get(*objective_index)?;
+                let owner = objective.owners.get(*owner_index)?;
+                let trait_definition = owner.traits.get(*trait_index)?;
+                Some((*objective_index, objective, owner, trait_definition))
+            })
+            .collect();
+        let context_matches = index
+            .context_matches
+            .iter()
+            .filter_map(|(kind, definition_index, context_index)| {
+                let definition = match *kind {
+                    "Flag" => catalog.unlock_flag_definition(*definition_index),
+                    "Value" => catalog.unlock_value_definition(*definition_index),
+                    _ => None,
+                }?;
+                let context = definition.tested_by.get(*context_index)?;
+                Some((*kind, *definition_index, context))
+            })
+            .collect();
+        let collectible_matches = index
+            .collectible_matches
+            .iter()
+            .filter_map(|definition_index| catalog.collectibles().get(*definition_index))
+            .collect();
+        let material_requirement_set_matches = index
+            .material_requirement_set_matches
+            .iter()
+            .filter_map(|definition_index| {
+                catalog.material_requirement_sets().get(*definition_index)
+            })
+            .collect();
+        Self {
+            progression_definitions,
+            progression_reward_matches,
+            progression_faction_matches,
             flag_definitions,
             value_definitions,
             objectives,
@@ -3174,6 +3903,10 @@ impl<'a> CatalogHashMatches<'a> {
             material_requirement_set_matches,
             bucket_items: catalog.items_for_bucket(hash).collect(),
             item: catalog.item(hash),
+            item_package_metadata: catalog.item_package_metadata(hash),
+            item_stat_definition: catalog.item_stat_definition_by_hash(hash),
+            investment_stat_references: catalog.item_investment_stat_references(hash),
+            intrinsic_perk_item_references: catalog.intrinsic_perk_references(hash),
             inventory_metadata: catalog.inventory_metadata(hash),
             item_material_requirement_set_indices: catalog
                 .item_material_requirement_set_indices(hash),
@@ -3181,8 +3914,11 @@ impl<'a> CatalogHashMatches<'a> {
     }
 
     fn count(&self) -> usize {
-        usize::from(self.item.is_some())
+        usize::from(self.item_package_metadata.is_some() || self.item.is_some())
             + usize::from(self.inventory_metadata.is_some())
+            + self.progression_definitions.len()
+            + self.progression_reward_matches.len()
+            + self.progression_faction_matches.len()
             + self.flag_definitions.len()
             + self.value_definitions.len()
             + self.objectives.len()
@@ -3191,6 +3927,8 @@ impl<'a> CatalogHashMatches<'a> {
             + self.context_matches.len()
             + self.collectible_matches.len()
             + self.material_requirement_set_matches.len()
+            + usize::from(self.item_stat_definition.is_some())
+            + usize::from(!self.intrinsic_perk_item_references.is_empty())
             + usize::from(!self.bucket_items.is_empty())
     }
 }
@@ -3198,92 +3936,295 @@ impl<'a> CatalogHashMatches<'a> {
 pub(super) fn draw_catalog_hash_window(
     ctx: &egui::Context,
     catalog: &Catalog,
+    document: Option<&Value>,
     hash_inspection: &mut HashInspectionState,
+    viewport_salt: &'static str,
 ) {
     let Some(hash) = hash_inspection.current else {
         return;
     };
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let match_index = hash_inspection.match_index(catalog, hash);
+    let matches = CatalogHashMatches::from_index(catalog, hash, &match_index);
+    let match_count = matches.count();
+    let resolved_name = if matches.item_package_metadata.is_some() {
+        catalog.package_item_name(hash).map(str::to_owned)
+    } else if let Some(definition) = matches.item_stat_definition {
+        (!definition.name.trim().is_empty()).then(|| definition.name.clone())
+    } else if !matches.progression_definitions.is_empty() {
+        matches
+            .progression_definitions
+            .iter()
+            .find_map(|(_, definition)| progression_display_name(definition))
+    } else {
+        catalog.display_name(hash).map(str::to_owned).or_else(|| {
+            matches
+                .bucket_items
+                .iter()
+                .find_map(|item| catalog.inventory_metadata(item.hash))
+                .map(|metadata| metadata.bucket_label())
+        })
+    };
+    let title = resolved_name.as_deref().map_or_else(
+        || format!("Definition inspector: 0x{hash:08X}"),
+        |name| format!("Definition inspector: {name}"),
+    );
+    let default_size = hash_inspector_default_size(&matches);
+    let history = hash_inspection.history.clone();
+    let content = HashInspectorContent {
+        catalog,
+        document,
+        hash,
+        resolved_name: &resolved_name,
+        history: &history,
+        matches: &matches,
+        match_count,
+    };
+    let viewport_id = egui::ViewportId::from_hash_of(("catalog_hash_inspector", viewport_salt));
+    let (action, close_requested) = ctx.show_viewport_immediate(
+        viewport_id,
+        egui::ViewportBuilder::default()
+            .with_title(&title)
+            .with_inner_size(default_size)
+            .with_min_inner_size([560.0, 360.0])
+            .with_max_inner_size([1_200.0, 900.0])
+            .with_resizable(true),
+        |child_ctx, class| {
+            let mut action = HashInspectorAction::default();
+            let mut embedded_open = true;
+            if class == egui::ViewportClass::Embedded {
+                egui::Window::new(&title)
+                    .id(egui::Id::new((
+                        "embedded_catalog_hash_inspector",
+                        viewport_salt,
+                    )))
+                    .open(&mut embedded_open)
+                    .resizable(true)
+                    .default_size(default_size)
+                    .show(child_ctx, |ui| {
+                        draw_hash_inspector_contents(ui, &content, &mut action);
+                    });
+            } else {
+                egui::CentralPanel::default().show(child_ctx, |ui| {
+                    draw_hash_inspector_contents(ui, &content, &mut action);
+                });
+            }
+            action.open_hash = take_hash_inspection_request(child_ctx);
+            let close_requested = !embedded_open
+                || child_ctx.input(|input| {
+                    input.viewport().close_requested() || input.key_pressed(egui::Key::Escape)
+                });
+            (action, close_requested)
+        },
+    );
+
+    if close_requested {
         hash_inspection.close();
-        return;
+    } else if let Some(history_index) = action.history_index {
+        hash_inspection.navigate_history(history_index);
+    } else if action.navigate_back {
+        hash_inspection.back();
+    } else if let Some(requested_hash) = action.open_hash {
+        hash_inspection.open(requested_hash);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HashInspectorAction {
+    navigate_back: bool,
+    history_index: Option<usize>,
+    open_hash: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HashInspectorSection {
+    Item,
+    Progression,
+    Collections,
+    Unlocks,
+}
+
+struct HashInspectorContent<'a> {
+    catalog: &'a Catalog,
+    document: Option<&'a Value>,
+    hash: u64,
+    resolved_name: &'a Option<String>,
+    history: &'a [u64],
+    matches: &'a CatalogHashMatches<'a>,
+    match_count: usize,
+}
+
+impl HashInspectorSection {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Item => "Inventory item",
+            Self::Progression => "Progression",
+            Self::Collections => "Collections",
+            Self::Unlocks => "Unlocks",
+        }
+    }
+}
+
+fn draw_hash_inspector_contents(
+    ui: &mut egui::Ui,
+    content: &HashInspectorContent<'_>,
+    action: &mut HashInspectorAction,
+) {
+    let HashInspectorContent {
+        catalog,
+        document,
+        hash,
+        resolved_name,
+        history,
+        matches,
+        match_count,
+    } = content;
+    if let Some(previous) = history.last().copied() {
+        let previous_label = hash_history_label(catalog, previous);
+        if ui.button(format!("Back to {previous_label}")).clicked() {
+            action.navigate_back = true;
+        }
+        if history.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("History").weak());
+                for (index, previous_hash) in history.iter().copied().enumerate() {
+                    if ui
+                        .small_button(hash_history_label(catalog, previous_hash))
+                        .clicked()
+                    {
+                        action.history_index = Some(index);
+                    }
+                }
+            });
+        }
+        ui.separator();
     }
 
-    let matches = CatalogHashMatches::collect(catalog, hash);
-    let match_count = matches.count();
-
-    let mut open = true;
-    let screen_size = ctx.screen_rect().size();
-    let maximum_size = egui::vec2(
-        (screen_size.x - 48.0).max(360.0),
-        (screen_size.y - 64.0).max(280.0),
-    );
-    let minimum_size = egui::vec2(maximum_size.x.min(520.0), maximum_size.y.min(320.0));
-    let default_size = egui::vec2(maximum_size.x.min(720.0), maximum_size.y.min(560.0));
-    let resolved_name = catalog.display_name(hash).map(str::to_owned).or_else(|| {
-        matches
-            .bucket_items
-            .iter()
-            .find_map(|item| catalog.inventory_metadata(item.hash))
-            .map(|metadata| metadata.bucket_label())
-    });
-    let title = resolved_name.as_deref().map_or_else(
-        || format!("Definition hash 0x{hash:08X}"),
-        |name| format!("Definition hash 0x{hash:08X} — {name}"),
-    );
-    let mut navigate_back = false;
-    egui::Window::new(title)
-        .id(egui::Id::new("catalog_hash_metadata"))
-        .open(&mut open)
-        .order(egui::Order::Foreground)
-        .collapsible(false)
-        .movable(true)
-        .resizable(true)
-        .default_size(default_size)
-        .min_size(minimum_size)
-        .max_size(maximum_size)
-        .show(ctx, |ui| {
-            if let Some(previous) = hash_inspection.history.last().copied() {
-                let previous_label = catalog.display_name(previous).map_or_else(
-                    || format!("0x{previous:08X}"),
-                    |name| format!("0x{previous:08X} · {name}"),
-                );
-                if back_button(ui, &previous_label)
-                    .on_hover_text("Return to the previous definition hash")
-                    .clicked()
-                {
-                    navigate_back = true;
+    let sections = hash_inspector_sections(matches);
+    let mut jump_to = None;
+    if sections.len() > 1 {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Sections").weak());
+            for section in &sections {
+                if ui.small_button(section.label()).clicked() {
+                    jump_to = Some(*section);
                 }
-                ui.separator();
             }
-            egui::ScrollArea::vertical()
-                .id_salt(("catalog_hash_metadata_scroll", hash))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Grid::new("catalog_hash_identity")
-                        .num_columns(2)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            hash_detail_field(ui, "Definition hash", format!("0x{hash:08X}"), true);
-                        });
-
-                    draw_hash_item_matches(ui, catalog, hash, &resolved_name, &matches);
-                    draw_hash_progression_matches(ui, catalog, &matches);
-                    draw_hash_collection_matches(ui, catalog, hash, &matches);
-                    if match_count == 0 {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "No directly indexed package entity uses this hash.",
-                            )
-                            .weak(),
-                        );
-                    }
-                });
         });
-    if navigate_back {
-        hash_inspection.back();
-    } else if !open {
-        hash_inspection.close();
+        ui.separator();
+    }
+
+    egui::ScrollArea::vertical()
+        .id_salt(("catalog_hash_metadata_scroll", *hash))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if matches.item_package_metadata.is_none() && matches.item.is_none() {
+                egui::Grid::new("catalog_hash_identity")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        hash_detail_field(ui, "Definition hash", format!("0x{hash:08X}"), true);
+                    });
+            }
+
+            if sections.contains(&HashInspectorSection::Item) {
+                scroll_to_hash_section(ui, jump_to, HashInspectorSection::Item);
+                draw_hash_item_matches(ui, catalog, *hash, resolved_name, matches);
+            }
+            if sections.contains(&HashInspectorSection::Progression) {
+                scroll_to_hash_section(ui, jump_to, HashInspectorSection::Progression);
+                draw_hash_progression_matches(ui, catalog, *document, *hash, matches);
+            }
+            if sections.contains(&HashInspectorSection::Collections) {
+                scroll_to_hash_section(ui, jump_to, HashInspectorSection::Collections);
+                draw_hash_collection_matches(ui, catalog, *hash, matches);
+            }
+            if sections.contains(&HashInspectorSection::Unlocks) {
+                scroll_to_hash_section(ui, jump_to, HashInspectorSection::Unlocks);
+                draw_hash_unlock_matches(
+                    ui,
+                    catalog,
+                    "Unlock flag definitions",
+                    &matches.flag_definitions,
+                );
+                draw_hash_unlock_matches(
+                    ui,
+                    catalog,
+                    "Unlock value definitions",
+                    &matches.value_definitions,
+                );
+            }
+            if *match_count == 0 {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("No directly indexed package entity uses this hash.")
+                        .weak(),
+                );
+            }
+        });
+}
+
+fn hash_history_label(catalog: &Catalog, hash: u64) -> String {
+    catalog.display_name(hash).map_or_else(
+        || format!("0x{hash:08X}"),
+        |name| format!("0x{hash:08X} · {name}"),
+    )
+}
+
+fn scroll_to_hash_section(
+    ui: &mut egui::Ui,
+    requested: Option<HashInspectorSection>,
+    section: HashInspectorSection,
+) {
+    if requested == Some(section) {
+        ui.scroll_to_cursor(Some(egui::Align::Min));
+    }
+}
+
+fn hash_inspector_sections(matches: &CatalogHashMatches<'_>) -> Vec<HashInspectorSection> {
+    let mut sections = Vec::with_capacity(4);
+    if matches.item.is_some()
+        || matches.item_package_metadata.is_some()
+        || matches.item_stat_definition.is_some()
+        || !matches.investment_stat_references.is_empty()
+        || !matches.intrinsic_perk_item_references.is_empty()
+        || matches.inventory_metadata.is_some()
+        || !matches.bucket_items.is_empty()
+    {
+        sections.push(HashInspectorSection::Item);
+    }
+    if !matches.progression_definitions.is_empty()
+        || !matches.progression_reward_matches.is_empty()
+        || !matches.progression_faction_matches.is_empty()
+        || !matches.objectives.is_empty()
+        || !matches.owner_matches.is_empty()
+        || !matches.trait_matches.is_empty()
+        || !matches.context_matches.is_empty()
+    {
+        sections.push(HashInspectorSection::Progression);
+    }
+    if !matches.collectible_matches.is_empty()
+        || !matches.material_requirement_set_matches.is_empty()
+    {
+        sections.push(HashInspectorSection::Collections);
+    }
+    if !matches.flag_definitions.is_empty() || !matches.value_definitions.is_empty() {
+        sections.push(HashInspectorSection::Unlocks);
+    }
+    sections
+}
+
+fn hash_inspector_default_size(matches: &CatalogHashMatches<'_>) -> egui::Vec2 {
+    if matches.item.is_some() || matches.item_package_metadata.is_some() {
+        return egui::vec2(900.0, 720.0);
+    }
+    if matches.progression_definitions.len() == 1 && matches.count() == 1 {
+        let steps = matches.progression_definitions[0].1.steps.len() as f32;
+        return egui::vec2(760.0, (430.0 + steps.min(12.0) * 24.0).clamp(520.0, 720.0));
+    }
+    if matches.count() <= 2 {
+        egui::vec2(760.0, 520.0)
+    } else {
+        egui::vec2(900.0, 720.0)
     }
 }
 
@@ -3295,58 +4236,92 @@ fn draw_hash_item_matches(
     matches: &CatalogHashMatches<'_>,
 ) {
     let item = matches.item;
+    let item_package_metadata = matches.item_package_metadata;
     let inventory_metadata = matches.inventory_metadata;
     let bucket_items = &matches.bucket_items;
     let item_material_requirement_set_indices = matches.item_material_requirement_set_indices;
-    let flag_definitions = &matches.flag_definitions;
-    let value_definitions = &matches.value_definitions;
 
-    if let Some(item) = item {
+    if item_package_metadata.is_some() || item.is_some() {
         ui.add_space(8.0);
-        hash_metadata_section(ui, "Inventory item", true, |ui| {
-            egui::Grid::new("hash_inventory_item")
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    hash_detail_field(
-                        ui,
-                        "Name",
-                        if item.name.trim().is_empty() {
-                            resolved_name.as_deref().unwrap_or("<not resolved>")
-                        } else {
-                            &item.name
-                        },
-                        false,
+        hash_metadata_section(ui, "Inventory item definition", true, |ui| {
+            ui.horizontal_top(|ui| {
+                if let Some(icon) = catalog.icon_texture(ui.ctx(), hash) {
+                    ui.add(
+                        egui::Image::new(&icon)
+                            .fit_to_exact_size(egui::vec2(88.0, 88.0))
+                            .maintain_aspect_ratio(true),
                     );
-                    hash_detail_field(ui, "Type", metadata_text(&item.type_name), false);
-                    hash_detail_field(ui, "Bucket hash", metadata_hash(item.bucket_hash), true);
-                    hash_detail_field(ui, "Class type", item.class_type.to_string(), true);
-                    hash_detail_field(ui, "Sockets", item.sockets.len().to_string(), true);
-                    hash_detail_field(
-                        ui,
-                        "Default plugs",
-                        item.default_plugs.len().to_string(),
-                        true,
+                    ui.add_space(10.0);
+                }
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(resolved_name.as_deref().unwrap_or("Unnamed item"))
+                            .strong()
+                            .size(18.0),
                     );
-                    if let Some(indices) = item_material_requirement_set_indices {
-                        draw_item_material_requirement_set_link(
-                            ui,
-                            catalog,
-                            "Insertion material requirement set",
-                            indices.insertion,
-                        );
-                        draw_item_material_requirement_set_link(
-                            ui,
-                            catalog,
-                            "Enabled material requirement set",
-                            indices.enabled,
-                        );
+                    ui.label(
+                        egui::RichText::new(
+                            catalog
+                                .package_item_type_name(hash)
+                                .unwrap_or("Type not present"),
+                        )
+                        .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Definition hash").weak());
+                        ui.monospace(format!("0x{hash:08X}"));
+                    });
+                    if let Some(item) = item {
+                        ui.add_space(6.0);
+                        egui::Grid::new("hash_inventory_item_summary")
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                metadata_hash_field(ui, "Bucket hash", item.bucket_hash);
+                                hash_detail_field(
+                                    ui,
+                                    "Class type",
+                                    format!(
+                                        "{} ({})",
+                                        item_class_type_label(item.class_type),
+                                        item.class_type
+                                    ),
+                                    false,
+                                );
+                            });
                     }
                 });
-            draw_hash_item_sockets(ui, catalog, item);
-            draw_hash_item_abilities(ui, item);
+            });
+            if let Some(description) = catalog
+                .description(hash)
+                .filter(|description| !description.trim().is_empty())
+            {
+                ui.add_space(6.0);
+                ui.label(description);
+            }
+            if let Some(metadata) = item_package_metadata {
+                draw_hash_item_package_metadata(
+                    ui,
+                    catalog,
+                    hash,
+                    metadata,
+                    item_material_requirement_set_indices,
+                );
+            }
+            if let Some(metadata) = item_package_metadata {
+                draw_hash_item_investment_stats(ui, catalog, hash, metadata);
+                draw_hash_item_intrinsic_perks(ui, hash, metadata);
+            }
+            if let Some(item) = item {
+                draw_hash_item_sockets(ui, catalog, item);
+                draw_hash_item_abilities(ui, item);
+            }
         });
     }
+
+    draw_hash_item_stat_matches(ui, catalog, matches);
+    draw_hash_intrinsic_perk_matches(ui, catalog, hash, matches);
+
     if let Some(metadata) = inventory_metadata {
         ui.add_space(8.0);
         hash_metadata_section(ui, "Inventory metadata", true, |ui| {
@@ -3385,20 +4360,429 @@ fn draw_hash_item_matches(
     if !bucket_items.is_empty() {
         draw_hash_inventory_bucket(ui, catalog, hash, bucket_items);
     }
+}
 
-    draw_hash_unlock_matches(ui, catalog, "Unlock flag definitions", flag_definitions);
-    draw_hash_unlock_matches(ui, catalog, "Unlock value definitions", value_definitions);
+fn draw_hash_item_package_metadata(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    item_hash: u64,
+    metadata: &ItemPackageMetadata,
+    material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
+) {
+    ui.add_space(8.0);
+    egui::CollapsingHeader::new("Package metadata")
+        .id_salt(("hash_item_package_metadata", item_hash))
+        .show(ui, |ui| {
+            egui::Grid::new(("hash_item_package_identity", item_hash))
+                .num_columns(3)
+                .spacing([16.0, 4.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Index");
+                    ui.strong("Tag");
+                    ui.strong("Hash");
+                    ui.end_row();
+                    ui.monospace(metadata.definition_index.to_string());
+                    ui.monospace(format!("0x{:08X}", metadata.definition_tag));
+                    draw_hash_link(ui, item_hash, item_hash.to_string());
+                    ui.end_row();
+                });
+            ui.add_space(6.0);
+            egui::Grid::new(("hash_item_package_metadata_rows", item_hash))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    hash_detail_field(
+                        ui,
+                        "Package",
+                        catalog
+                            .item_package_name(item_hash)
+                            .unwrap_or("<not present>"),
+                        false,
+                    );
+                    if let Some(category_hash) = metadata.plug_category_hash {
+                        metadata_hash_field(ui, "Plug category hash", category_hash);
+                    }
+                    if let Some(indices) = material_requirement_set_indices {
+                        draw_item_material_requirement_set_link(
+                            ui,
+                            catalog,
+                            "Insertion material requirement set",
+                            indices.insertion,
+                        );
+                        draw_item_material_requirement_set_link(
+                            ui,
+                            catalog,
+                            "Enabled material requirement set",
+                            indices.enabled,
+                        );
+                    }
+                });
+        });
+}
+
+fn draw_hash_item_investment_stats(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    item_hash: u64,
+    metadata: &ItemPackageMetadata,
+) {
+    if metadata.investment_stats.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    egui::CollapsingHeader::new(format!(
+        "Investment stats ({})",
+        metadata.investment_stats.len()
+    ))
+    .id_salt(("hash_item_investment_stats", item_hash))
+    .default_open(true)
+    .show(ui, |ui| {
+        egui::Grid::new(("hash_item_investment_stat_rows", item_hash))
+            .num_columns(5)
+            .spacing([16.0, 3.0])
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Index");
+                ui.strong("Stat");
+                ui.strong("Hex");
+                ui.strong("Hash");
+                ui.strong("Value");
+                ui.end_row();
+                for stat in &metadata.investment_stats {
+                    let definition = catalog.item_stat_definition(stat.definition_index);
+                    ui.monospace(stat.definition_index.to_string());
+                    let stat_name = definition
+                        .map(|definition| definition.name.as_str())
+                        .filter(|name| !name.trim().is_empty());
+                    ui.label(stat_name.unwrap_or("-"));
+                    if let Some(definition) = definition {
+                        draw_split_hash_cells(ui, definition.hash);
+                    } else {
+                        ui.label(egui::RichText::new("-").weak());
+                        ui.label(egui::RichText::new("-").weak());
+                    }
+                    ui.monospace(stat.value.to_string());
+                    ui.end_row();
+                }
+            });
+    });
+}
+
+fn draw_hash_item_intrinsic_perks(
+    ui: &mut egui::Ui,
+    item_hash: u64,
+    metadata: &ItemPackageMetadata,
+) {
+    if metadata.intrinsic_perks.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    egui::CollapsingHeader::new(format!(
+        "Intrinsic perks ({})",
+        metadata.intrinsic_perks.len()
+    ))
+    .id_salt(("hash_item_intrinsic_perks", item_hash))
+    .default_open(metadata.intrinsic_perks.len() <= 4)
+    .show(ui, |ui| {
+        egui::Grid::new(("hash_item_intrinsic_perk_rows", item_hash))
+            .num_columns(3)
+            .spacing([16.0, 3.0])
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Index");
+                ui.strong("Hex");
+                ui.strong("Hash");
+                ui.end_row();
+                for perk in &metadata.intrinsic_perks {
+                    ui.monospace(perk.definition_index.to_string());
+                    draw_split_hash_cells(ui, perk.hash);
+                    ui.end_row();
+                }
+            });
+    });
+}
+
+fn draw_hash_item_stat_matches(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let Some(definition) = matches.item_stat_definition else {
+        return;
+    };
+    ui.add_space(8.0);
+    hash_metadata_section(ui, "Investment stat definition", true, |ui| {
+        egui::Grid::new(("hash_item_stat_definition", definition.hash))
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                hash_detail_field(
+                    ui,
+                    "Name",
+                    if definition.name.trim().is_empty() {
+                        "<not present>"
+                    } else {
+                        &definition.name
+                    },
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Definition index",
+                    definition.definition_index.to_string(),
+                    true,
+                );
+            });
+
+        let references = &matches.investment_stat_references;
+        if references.is_empty() {
+            return;
+        }
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(format!("Item references ({})", references.len()))
+            .id_salt(("hash_item_stat_references", definition.hash))
+            .default_open(references.len() <= 12)
+            .show(ui, |ui| {
+                egui::Grid::new(("hash_item_stat_reference_rows", definition.hash))
+                    .num_columns(4)
+                    .spacing([16.0, 3.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Item");
+                        ui.strong("Hex");
+                        ui.strong("Hash");
+                        ui.strong("Value");
+                        ui.end_row();
+                        for (item_hash, stat) in references {
+                            ui.label(
+                                catalog
+                                    .package_item_name(*item_hash)
+                                    .unwrap_or("<not present>"),
+                            );
+                            draw_split_hash_cells(ui, *item_hash);
+                            ui.monospace(stat.value.to_string());
+                            ui.end_row();
+                        }
+                    });
+            });
+    });
+}
+
+fn draw_hash_intrinsic_perk_matches(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let references = matches.intrinsic_perk_item_references;
+    if references.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    hash_metadata_section(
+        ui,
+        &format!("Intrinsic perk references ({})", references.len()),
+        references.len() <= 12,
+        |ui| {
+            egui::Grid::new(("hash_intrinsic_perk_reference_rows", hash))
+                .num_columns(3)
+                .spacing([16.0, 3.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Item");
+                    ui.strong("Hex");
+                    ui.strong("Hash");
+                    ui.end_row();
+                    for item_hash in references {
+                        ui.label(
+                            catalog
+                                .package_item_name(*item_hash)
+                                .unwrap_or("<not present>"),
+                        );
+                        draw_split_hash_cells(ui, *item_hash);
+                        ui.end_row();
+                    }
+                });
+        },
+    );
 }
 
 fn draw_hash_progression_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
+    document: Option<&Value>,
+    inspected_hash: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
+    let progression_definitions = &matches.progression_definitions;
+    let progression_reward_matches = &matches.progression_reward_matches;
+    let progression_faction_matches = &matches.progression_faction_matches;
     let objectives = &matches.objectives;
     let owner_matches = &matches.owner_matches;
     let trait_matches = &matches.trait_matches;
     let context_matches = &matches.context_matches;
+
+    if !progression_definitions.is_empty() {
+        ui.add_space(8.0);
+        let heading = if progression_definitions.len() == 1 {
+            "Progression definition".to_owned()
+        } else {
+            format!(
+                "Progression definitions ({})",
+                progression_definitions.len()
+            )
+        };
+        hash_metadata_section(ui, &heading, true, |ui| {
+            for (index, definition) in progression_definitions {
+                if progression_definitions.len() == 1 {
+                    draw_hash_progression_definition(ui, catalog, document, *index, definition);
+                } else {
+                    metadata_subsection(ui, &format!("Definition #{index}"), |ui| {
+                        draw_hash_progression_definition(ui, catalog, document, *index, definition);
+                    });
+                }
+            }
+        });
+    }
+
+    if !progression_reward_matches.is_empty() {
+        ui.add_space(8.0);
+        hash_metadata_section(
+            ui,
+            &format!(
+                "Progression reward references ({})",
+                progression_reward_matches.len()
+            ),
+            progression_reward_matches.len() <= 12,
+            |ui| {
+                let progression_width = 220.0;
+                let hash_width = 126.0;
+                let reward_index_width = 88.0;
+                let level_width = 72.0;
+                let quantity_width = 88.0;
+                ui.horizontal(|ui| {
+                    table_cell(
+                        ui,
+                        progression_width,
+                        egui::RichText::new("Progression").strong(),
+                    );
+                    table_cell(ui, hash_width, egui::RichText::new("Hash").strong());
+                    table_cell(
+                        ui,
+                        reward_index_width,
+                        egui::RichText::new("Reward index").strong(),
+                    );
+                    table_cell(ui, level_width, egui::RichText::new("Level").strong());
+                    table_cell(ui, quantity_width, egui::RichText::new("Quantity").strong());
+                });
+                egui::ScrollArea::vertical()
+                    .id_salt(("hash_progression_reward_references", inspected_hash))
+                    .max_height(280.0)
+                    .auto_shrink([false, true])
+                    .show_rows(
+                        ui,
+                        TABLE_CELL_HEIGHT,
+                        progression_reward_matches.len(),
+                        |ui, range| {
+                            egui::Grid::new((
+                                "hash_progression_reward_reference_rows",
+                                inspected_hash,
+                            ))
+                            .num_columns(5)
+                            .striped(true)
+                            .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
+                            .show(ui, |ui| {
+                                for row in range {
+                                    let (definition_index, definition, reward_index) =
+                                        progression_reward_matches[row];
+                                    let reward = &definition.reward_items[reward_index];
+                                    table_cell(
+                                        ui,
+                                        progression_width,
+                                        if definition.name.trim().is_empty() {
+                                            format!("Definition #{definition_index}")
+                                        } else {
+                                            format!(
+                                                "Definition #{definition_index} · {}",
+                                                definition.name
+                                            )
+                                        },
+                                    );
+                                    draw_hash_cell(ui, hash_width, Some(definition.hash));
+                                    table_cell(
+                                        ui,
+                                        reward_index_width,
+                                        egui::RichText::new(reward_index.to_string()).monospace(),
+                                    );
+                                    table_cell(
+                                        ui,
+                                        level_width,
+                                        egui::RichText::new(
+                                            reward.rewarded_at_progression_level.to_string(),
+                                        )
+                                        .monospace(),
+                                    );
+                                    table_cell(
+                                        ui,
+                                        quantity_width,
+                                        egui::RichText::new(reward.quantity.to_string())
+                                            .monospace(),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                        },
+                    );
+            },
+        );
+    }
+
+    if !progression_faction_matches.is_empty() {
+        ui.add_space(8.0);
+        hash_metadata_section(
+            ui,
+            &format!(
+                "Faction progression references ({})",
+                progression_faction_matches.len()
+            ),
+            true,
+            |ui| {
+                egui::Grid::new(("hash_progression_faction_references", inspected_hash))
+                    .num_columns(4)
+                    .striped(true)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.strong("Faction");
+                        ui.strong("Progression");
+                        ui.strong("Index");
+                        ui.strong("Hash");
+                        ui.end_row();
+                        for (definition_index, definition, _, faction) in
+                            progression_faction_matches
+                        {
+                            ui.label(if faction.name.trim().is_empty() {
+                                egui::RichText::new("-").weak()
+                            } else {
+                                egui::RichText::new(&faction.name)
+                            });
+                            ui.label(if definition.name.trim().is_empty() {
+                                format!("Definition #{definition_index}")
+                            } else {
+                                definition.name.clone()
+                            });
+                            ui.monospace(definition_index.to_string());
+                            draw_hash_link(
+                                ui,
+                                definition.hash,
+                                format!("0x{:08X}", definition.hash),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            },
+        );
+    }
 
     if !objectives.is_empty() {
         ui.add_space(8.0);
@@ -3499,11 +4883,46 @@ fn draw_hash_progression_matches(
                                 );
                                 hash_detail_field(
                                     ui,
-                                    "Traits",
-                                    owner.traits.len().to_string(),
-                                    true,
+                                    "Description",
+                                    metadata_text(&owner.description),
+                                    false,
                                 );
                             });
+                        let detail_id = egui::Id::new((
+                            "hash_objective_owner_detail",
+                            *objective_index,
+                            owner.hash,
+                        ));
+                        draw_hash_package_paths(ui, detail_id, &owner.paths);
+                        if !owner.traits.is_empty() {
+                            egui::CollapsingHeader::new(format!("Traits ({})", owner.traits.len()))
+                                .id_salt(detail_id.with("traits"))
+                                .default_open(owner.traits.len() <= 4)
+                                .show(ui, |ui| {
+                                    egui::Grid::new(detail_id.with("trait_rows"))
+                                        .num_columns(3)
+                                        .striped(true)
+                                        .spacing([16.0, 4.0])
+                                        .show(ui, |ui| {
+                                            ui.strong("Hash");
+                                            ui.strong("Name");
+                                            ui.strong("Description");
+                                            ui.end_row();
+                                            for trait_definition in &owner.traits {
+                                                draw_hash_link(
+                                                    ui,
+                                                    trait_definition.hash,
+                                                    metadata_hash(trait_definition.hash),
+                                                );
+                                                ui.label(metadata_text(&trait_definition.name));
+                                                ui.label(metadata_text(
+                                                    &trait_definition.description,
+                                                ));
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        }
                     });
                 }
             },
@@ -3639,6 +5058,285 @@ fn draw_hash_progression_matches(
     }
 }
 
+fn draw_hash_progression_definition(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    document: Option<&Value>,
+    index: usize,
+    definition: &ProgressionDefinition,
+) {
+    let saved_lanes = document.and_then(|document| {
+        saved_progression_lanes(
+            document,
+            definition.scope,
+            usize::from(definition.definition_index),
+        )
+    });
+    let target = progression_target(definition);
+    ui.horizontal_top(|ui| {
+        if let Some(container) = definition.icon_container
+            && let Some(icon) = catalog.icon_texture_from_container(
+                ui.ctx(),
+                0x1_0000_0000 | definition.hash,
+                container,
+            )
+        {
+            ui.add(
+                egui::Image::new(&icon)
+                    .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                    .maintain_aspect_ratio(true),
+            );
+            ui.add_space(8.0);
+        }
+        egui::Grid::new(("hash_progression_definition", index))
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                hash_detail_field(
+                    ui,
+                    "Definition index",
+                    definition.definition_index.to_string(),
+                    true,
+                );
+                hash_detail_field(
+                    ui,
+                    "Name",
+                    if definition.name.trim().is_empty() {
+                        "<not present>"
+                    } else {
+                        &definition.name
+                    },
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Description",
+                    if definition.description.trim().is_empty() {
+                        "<not present>"
+                    } else {
+                        &definition.description
+                    },
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Source",
+                    if definition.source.trim().is_empty() {
+                        "<not present>"
+                    } else {
+                        &definition.source
+                    },
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Display units name",
+                    if definition.display_units_name.trim().is_empty() {
+                        "<not present>"
+                    } else {
+                        &definition.display_units_name
+                    },
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Scope",
+                    progression_scope_label(definition.scope),
+                    false,
+                );
+                hash_detail_field(
+                    ui,
+                    "Slot",
+                    definition
+                        .scope_slot
+                        .map_or_else(|| "<unreplicated>".into(), |slot| slot.to_string()),
+                    true,
+                );
+                hash_detail_field(
+                    ui,
+                    "Repeat last step",
+                    yes_no(definition.repeat_last_step),
+                    false,
+                );
+                hash_detail_field(ui, "Lane 0", "Progress", false);
+                hash_detail_field(ui, "Lane 1", "<not decoded>", false);
+                hash_detail_field(ui, "Lane 2", "<not decoded>", false);
+            });
+    });
+
+    metadata_subsection(ui, "Referenced save state", |ui| {
+        egui::Grid::new(("hash_progression_save_state", index))
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                hash_detail_field(
+                    ui,
+                    "State",
+                    if saved_lanes.is_some() {
+                        "Present"
+                    } else {
+                        "Missing"
+                    },
+                    false,
+                );
+                match saved_lanes {
+                    Some(lanes) => {
+                        hash_detail_field(
+                            ui,
+                            "Progress",
+                            target.map_or_else(
+                                || lanes[0].to_string(),
+                                |target| format!("{} / {target}", lanes[0]),
+                            ),
+                            true,
+                        );
+                        hash_detail_field(ui, "Lane 1", lanes[1].to_string(), true);
+                        hash_detail_field(ui, "Lane 2", lanes[2].to_string(), true);
+                    }
+                    None => {
+                        hash_detail_field(ui, "Progress", "<not present>", true);
+                        hash_detail_field(ui, "Lane 1", "<not present>", true);
+                        hash_detail_field(ui, "Lane 2", "<not present>", true);
+                    }
+                }
+                hash_detail_field(
+                    ui,
+                    "Target",
+                    target.map_or_else(|| "<not present>".into(), |target| target.to_string()),
+                    true,
+                );
+            });
+    });
+
+    if !definition.factions.is_empty() {
+        egui::CollapsingHeader::new(format!("Factions ({})", definition.factions.len()))
+            .id_salt(("hash_progression_factions", index))
+            .default_open(true)
+            .show(ui, |ui| {
+                for (faction_index, faction) in definition.factions.iter().enumerate() {
+                    let heading = if faction.name.trim().is_empty() {
+                        format!("Faction #{faction_index}")
+                    } else {
+                        faction.name.clone()
+                    };
+                    metadata_subsection(ui, &heading, |ui| {
+                        egui::Grid::new(("hash_progression_faction", index, faction_index))
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                metadata_hash_field(ui, "Hash", faction.hash);
+                                hash_detail_field(
+                                    ui,
+                                    "Description",
+                                    if faction.description.trim().is_empty() {
+                                        "<not present>"
+                                    } else {
+                                        &faction.description
+                                    },
+                                    false,
+                                );
+                            });
+                    });
+                }
+            });
+    }
+
+    if !definition.steps.is_empty() {
+        let has_step_icons = definition
+            .steps
+            .iter()
+            .any(|step| step.icon_container.is_some());
+        egui::CollapsingHeader::new(format!("Steps ({})", definition.steps.len()))
+            .id_salt(("hash_progression_steps", index))
+            .default_open(definition.steps.len() <= 12)
+            .show(ui, |ui| {
+                egui::Grid::new(("hash_progression_step_rows", index))
+                    .num_columns(if has_step_icons { 4 } else { 3 })
+                    .striped(true)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        if has_step_icons {
+                            ui.strong("Icon");
+                        }
+                        ui.strong("Index");
+                        ui.strong("Name");
+                        ui.strong("Progress total");
+                        ui.end_row();
+                        for (step_index, step) in definition.steps.iter().enumerate() {
+                            if has_step_icons {
+                                if let Some(container) = step.icon_container
+                                    && let Some(icon) = catalog.icon_texture_from_container(
+                                        ui.ctx(),
+                                        0x2_0000_0000
+                                            | (u64::from(definition.definition_index) << 16)
+                                            | u64::try_from(step_index).unwrap_or_default(),
+                                        container,
+                                    )
+                                {
+                                    ui.add(
+                                        egui::Image::new(&icon)
+                                            .fit_to_exact_size(egui::vec2(24.0, 24.0))
+                                            .maintain_aspect_ratio(true),
+                                    );
+                                } else {
+                                    ui.label(egui::RichText::new("-").weak());
+                                }
+                            }
+                            ui.monospace(step_index.to_string());
+                            if step.name.trim().is_empty() {
+                                ui.label(egui::RichText::new("-").weak());
+                            } else {
+                                ui.label(&step.name);
+                            }
+                            ui.monospace(step.progress_total.to_string());
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    if !definition.reward_items.is_empty() {
+        egui::CollapsingHeader::new(format!("Reward items ({})", definition.reward_items.len()))
+            .id_salt(("hash_progression_reward_items", index))
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(("hash_progression_reward_rows_scroll", index))
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        egui::Grid::new(("hash_progression_reward_rows", index))
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.strong("Level");
+                                ui.strong("Item");
+                                ui.strong("Hash");
+                                ui.strong("Quantity");
+                                ui.end_row();
+                                for reward in &definition.reward_items {
+                                    ui.monospace(reward.rewarded_at_progression_level.to_string());
+                                    if let Some(name) = catalog.package_item_name(reward.item_hash)
+                                    {
+                                        ui.label(name);
+                                    } else {
+                                        ui.label(egui::RichText::new("-").weak());
+                                    }
+                                    draw_hash_link(
+                                        ui,
+                                        reward.item_hash,
+                                        format!("0x{:08X}", reward.item_hash),
+                                    );
+                                    ui.monospace(reward.quantity.to_string());
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+    }
+}
+
 fn draw_hash_collection_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -3685,12 +5383,7 @@ fn draw_hash_collection_matches(
                                     collectible.index.to_string(),
                                     true,
                                 );
-                                hash_detail_field(
-                                    ui,
-                                    "Collectible hash",
-                                    metadata_hash(collectible.hash),
-                                    true,
-                                );
+                                metadata_hash_field(ui, "Collectible hash", collectible.hash);
                                 hash_detail_field(
                                     ui,
                                     "Item definition index",
@@ -3701,11 +5394,10 @@ fn draw_hash_collection_matches(
                                     },
                                     true,
                                 );
-                                hash_detail_field(
+                                metadata_hash_field(
                                     ui,
                                     "Item definition hash",
-                                    metadata_hash(collectible.item_hash),
-                                    true,
+                                    collectible.item_hash,
                                 );
                                 hash_detail_field(
                                     ui,
@@ -3716,11 +5408,10 @@ fn draw_hash_collection_matches(
                                     ),
                                     true,
                                 );
-                                hash_detail_field(
+                                metadata_hash_field(
                                     ui,
                                     "Material requirement set hash",
-                                    metadata_hash(collectible.material_requirement_set_hash),
-                                    true,
+                                    collectible.material_requirement_set_hash,
                                 );
                                 hash_detail_field(
                                     ui,
@@ -3948,7 +5639,9 @@ fn draw_item_material_requirement_set_link(
     };
     hash_detail_field(ui, &format!("{label} index"), index.to_string(), true);
     if let Some(set) = catalog.material_requirement_set(usize::from(index)) {
-        hash_detail_field(ui, &format!("{label} hash"), metadata_hash(set.hash), true);
+        ui.label(egui::RichText::new(format!("{label} hash")).weak());
+        draw_hash_link(ui, set.hash, metadata_hash(set.hash));
+        ui.end_row();
     }
 }
 
@@ -3987,14 +5680,14 @@ fn draw_hash_item_sockets(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::ca
                         }));
                         ui.monospace(
                             socket.map_or_else(
-                                || "—".into(),
+                                || "-".into(),
                                 |socket| socket.socket_type.to_string(),
                             ),
                         );
                         if let Some(default_hash) = default_hash {
                             draw_hash_link(ui, default_hash, metadata_hash(default_hash));
                         } else {
-                            ui.label(egui::RichText::new("—").weak());
+                            ui.label(egui::RichText::new("-").weak());
                         }
                         ui.monospace(
                             socket
@@ -4183,14 +5876,14 @@ fn draw_hash_item_rows(
                         table_cell(
                             ui,
                             name_width,
-                            catalog.display_name(hash).unwrap_or("<not resolved>"),
+                            catalog.package_item_name(hash).unwrap_or("<not present>"),
                         );
                         table_cell(
                             ui,
                             type_width,
                             catalog
-                                .item(hash)
-                                .map_or("<not resolved>", |item| metadata_text(&item.type_name)),
+                                .package_item_type_name(hash)
+                                .unwrap_or("<not present>"),
                         );
                         ui.end_row();
                     }
@@ -4227,12 +5920,7 @@ fn draw_hash_material_requirement_set(
                         set.index.to_string(),
                         true,
                     );
-                    hash_detail_field(
-                        ui,
-                        "Material requirement set hash",
-                        metadata_hash(set.hash),
-                        true,
-                    );
+                    metadata_hash_field(ui, "Material requirement set hash", set.hash);
                 });
             draw_hash_material_requirements(
                 ui,
@@ -4872,7 +6560,7 @@ fn condition_token_resolution(kind: u32, operand: u32, catalog: &Catalog) -> Str
     let definition = match kind {
         1 => catalog.unlock_flag_definition(index),
         10 => catalog.unlock_value_definition(index),
-        _ => return "—".into(),
+        _ => return "-".into(),
     };
     let Some(definition) = definition else {
         return format!("Definition #{index} unavailable");
@@ -5253,18 +6941,45 @@ fn metadata_field(
 
 fn metadata_hash_field(ui: &mut egui::Ui, label: &'static str, hash: u64) {
     ui.label(egui::RichText::new(label).weak());
-    draw_hash_link(ui, hash, metadata_hash(hash));
+    if hash == 0 || hash == u64::from(u32::MAX) {
+        ui.label(egui::RichText::new("<not present>").weak().italics());
+    } else {
+        draw_hash_link(ui, hash, metadata_hash(hash));
+    }
     ui.end_row();
 }
 
+const fn item_class_type_label(class_type: u64) -> &'static str {
+    match class_type {
+        0 => "Titan",
+        1 => "Hunter",
+        2 => "Warlock",
+        3 => "Any",
+        _ => "Unknown",
+    }
+}
+
 fn draw_hash_link(ui: &mut egui::Ui, hash: u64, text: impl Into<String>) -> egui::Response {
+    let link_color = ui.visuals().hyperlink_color;
     let response = ui
-        .add(egui::Button::new(egui::RichText::new(text.into()).monospace()).frame(false))
+        .add(
+            egui::Button::new(
+                egui::RichText::new(text.into())
+                    .monospace()
+                    .color(link_color),
+            )
+            .frame(false),
+        )
         .on_hover_text(format!("Open details for 0x{hash:08X}"));
     if response.clicked() {
         request_hash_inspection(ui.ctx(), hash);
     }
     response
+}
+
+fn draw_split_hash_cells(ui: &mut egui::Ui, hash: u64) {
+    draw_hash_link(ui, hash, format!("0x{hash:08X}"));
+    ui.monospace(hash.to_string());
 }
 
 fn metadata_hash_hex_text(value: &str) -> &str {
@@ -5311,11 +7026,11 @@ const fn objective_owner_kind_label(kind: ObjectiveOwnerKind) -> &'static str {
 
 fn draw_context_cell(ui: &mut egui::Ui, width: f32, context: Option<&ContextDisplayLine<'_>>) {
     let Some(context) = context else {
-        table_cell(ui, width, egui::RichText::new("—").weak());
+        table_cell(ui, width, egui::RichText::new("-").weak());
         return;
     };
     let text = context.text();
-    let rich_text = if text == "—" {
+    let rich_text = if text == "-" {
         egui::RichText::new(&text).weak()
     } else {
         egui::RichText::new(&text)
@@ -5473,6 +7188,14 @@ const fn progression_context_kind_label(kind: ProgressionContextKind) -> &'stati
         ProgressionContextKind::Location => "Location",
         ProgressionContextKind::LocationRelease => "Location release",
         ProgressionContextKind::ExpressionMapping => "Expression mapping",
+    }
+}
+
+const fn progression_scope_label(scope: ProgressionScope) -> &'static str {
+    match scope {
+        ProgressionScope::Account => "Account",
+        ProgressionScope::Character => "Character",
+        ProgressionScope::Unreplicated => "Unreplicated",
     }
 }
 
@@ -6515,6 +8238,28 @@ fn undo_investment_change(document: &mut Value, state: &mut UiState) -> bool {
     changed
 }
 
+fn undo_progression_change(document: &mut Value, state: &mut UiState) -> bool {
+    let Some(change) = state.last_progression_change else {
+        return false;
+    };
+    let changed = match change.previous {
+        Some(lanes) => {
+            set_progression_value(document, change.table, change.definition_index, lanes)
+        }
+        None => remove_progression_value(document, change.table, change.definition_index),
+    };
+    if changed {
+        state.record_progression_change(
+            change.table,
+            change.definition_index,
+            change.previous,
+            change.previous,
+        );
+        state.last_progression_change = None;
+    }
+    changed
+}
+
 fn set_investment_override(
     document: &mut Value,
     table: InvestmentTable,
@@ -6989,9 +8734,151 @@ mod tests {
         assert_eq!(inspection.current, Some(0x2222_2222));
         assert_eq!(inspection.history, [0x1111_1111]);
 
+        inspection.open(0x3333_3333);
+        inspection.open(0x4444_4444);
+        inspection.navigate_history(0);
+        assert_eq!(inspection.current, Some(0x1111_1111));
+        assert!(inspection.history.is_empty());
+
         inspection.close();
         assert!(!inspection.is_open());
         assert!(inspection.history.is_empty());
+    }
+
+    #[test]
+    fn progression_tables_include_package_definitions_without_authored_values() {
+        let definitions = [
+            ProgressionDefinition {
+                definition_index: 3,
+                hash: 0x1111_1111,
+                scope: ProgressionScope::Account,
+                scope_slot: Some(0),
+                repeat_last_step: false,
+                name: String::new(),
+                description: String::new(),
+                source: String::new(),
+                display_units_name: String::new(),
+                icon_container: None,
+                factions: Vec::new(),
+                steps: Vec::new(),
+                reward_items: Vec::new(),
+            },
+            ProgressionDefinition {
+                definition_index: 7,
+                hash: 0x2222_2222,
+                scope: ProgressionScope::Account,
+                scope_slot: Some(1),
+                repeat_last_step: false,
+                name: String::new(),
+                description: String::new(),
+                source: String::new(),
+                display_units_name: String::new(),
+                icon_container: None,
+                factions: Vec::new(),
+                steps: Vec::new(),
+                reward_items: Vec::new(),
+            },
+            ProgressionDefinition {
+                definition_index: 9,
+                hash: 0x3333_3333,
+                scope: ProgressionScope::Character,
+                scope_slot: Some(0),
+                repeat_last_step: false,
+                name: String::new(),
+                description: String::new(),
+                source: String::new(),
+                display_units_name: String::new(),
+                icon_container: None,
+                factions: Vec::new(),
+                steps: Vec::new(),
+                reward_items: Vec::new(),
+            },
+        ];
+        let authored = [ProgressionValue {
+            definition_index: 7,
+            lanes: [1, 2, 3],
+        }];
+
+        assert_eq!(
+            progression_display_rows(&authored, &definitions, ProgressionScope::Account),
+            [
+                ProgressionDisplayRow {
+                    definition_index: 3,
+                    lanes: None,
+                },
+                ProgressionDisplayRow {
+                    definition_index: 7,
+                    lanes: Some([1, 2, 3]),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn progression_definition_search_includes_package_step_metadata() {
+        let definition: ProgressionDefinition = serde_json::from_value(serde_json::json!({
+            "definition_index": 4,
+            "hash": 0x1234_ABCD_u64,
+            "scope": "Unreplicated",
+            "scope_slot": null,
+            "repeat_last_step": false,
+            "name": "Crucible Rank",
+            "description": "Earn rank progress",
+            "source": "Complete matches",
+            "steps": [{ "progress_total": 850, "name": "Heroic" }]
+        }))
+        .unwrap();
+
+        assert!(progression_definition_matches("crucible", &definition));
+        assert!(progression_definition_matches("complete", &definition));
+        assert!(progression_definition_matches("heroic", &definition));
+        assert!(progression_definition_matches("850", &definition));
+        assert!(progression_definition_matches("1234abcd", &definition));
+        assert!(!progression_definition_matches("vanguard", &definition));
+    }
+
+    #[test]
+    fn progression_save_state_distinguishes_missing_rows_and_merges_duplicates() {
+        let document = json!({
+            "state": {"unlocks": {
+                "account_progressions": [
+                    [23, 5, 1, -2],
+                    [23, 8, 0, 4]
+                ]
+            }}
+        });
+
+        assert_eq!(
+            saved_progression_lanes(&document, ProgressionScope::Account, 23),
+            Some([8, 1, 4])
+        );
+        assert_eq!(
+            saved_progression_lanes(&document, ProgressionScope::Account, 24),
+            None
+        );
+        assert_eq!(
+            saved_progression_lanes(&document, ProgressionScope::Character, 23),
+            None
+        );
+    }
+
+    #[test]
+    fn progression_target_uses_the_highest_package_progress_total() {
+        let definition: ProgressionDefinition = serde_json::from_value(json!({
+            "definition_index": 4,
+            "hash": 1,
+            "scope": "Account",
+            "scope_slot": 0,
+            "repeat_last_step": false,
+            "steps": [
+                {"progress_total": 100},
+                {"progress_total": 50},
+                {"progress_total": 250}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(progression_target(&definition), Some(250));
     }
 
     #[test]
@@ -7128,7 +9015,10 @@ mod tests {
 
     #[test]
     fn progression_mutations_are_sorted_updated_and_removable() {
-        let mut document = json!({"state": {"unlocks": {}}});
+        let mut document = json!({
+            "future_root": {"preserved": true},
+            "state": {"unlocks": {"future_unlock": ["preserved"]}}
+        });
 
         assert!(set_progression_value(
             &mut document,
@@ -7161,6 +9051,58 @@ mod tests {
             document.pointer("/state/unlocks/account_progressions"),
             Some(&json!([[5, 4, 5, 6]]))
         );
+        assert_eq!(
+            document.pointer("/state/unlocks/future_unlock"),
+            Some(&json!(["preserved"]))
+        );
+        assert_eq!(
+            document.pointer("/future_root/preserved"),
+            Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
+        let mut document = json!({
+            "state": {"unlocks": {
+                "account_progressions": [[23, 1, 2, 3]]
+            }}
+        });
+        let mut state = UiState::default();
+
+        assert!(set_progression_value(
+            &mut document,
+            "account_progressions",
+            23,
+            [9, 8, 7],
+        ));
+        state.record_progression_change(
+            "account_progressions",
+            23,
+            Some([1, 2, 3]),
+            Some([9, 8, 7]),
+        );
+        assert!(state.progression_changed("account_progressions", 23));
+        assert!(undo_progression_change(&mut document, &mut state));
+        assert_eq!(
+            saved_progression_lanes(&document, ProgressionScope::Account, 23),
+            Some([1, 2, 3])
+        );
+        assert!(!state.progression_changed("account_progressions", 23));
+
+        assert!(set_progression_value(
+            &mut document,
+            "account_progressions",
+            24,
+            [0; 3],
+        ));
+        state.record_progression_change("account_progressions", 24, None, Some([0; 3]));
+        assert!(undo_progression_change(&mut document, &mut state));
+        assert_eq!(
+            saved_progression_lanes(&document, ProgressionScope::Account, 24),
+            None
+        );
+        assert!(!state.progression_changed("account_progressions", 24));
     }
 
     #[test]

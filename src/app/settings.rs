@@ -1,172 +1,41 @@
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use pelite::resources::Name;
 use serde_json::Value;
 
-use crate::{game_settings, storage};
+use crate::{game_settings, paths, storage};
 
 use crate::hash::parse_unsigned_value;
 
 use super::{Preferences, SLOTS, SettingsLayout, SettingsPathResolution, inventory, progression};
 
-const SUNRISE_MODULE_RELATIVE_PATH: &str = r"bin\x64\steam_api64.dll";
-const MAX_VERSION_INFO_BYTES: u32 = 1024 * 1024;
-const VERSION_INFO_SIGNATURE: u32 = 0xFEEF_04BD;
+const SUNRISE_MODULE_RELATIVE_PATH: &str = "bin/x64/steam_api64.dll";
 
 pub(super) fn detect_sunrise_version(install_path: &Path) -> String {
     installed_sunrise_module_version(install_path).unwrap_or_else(|| "Not detected".into())
 }
 
 fn installed_sunrise_module_version(install_path: &Path) -> Option<String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW};
-
     let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
-    let wide_path = module_path
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let mut ignored = 0_u32;
-    // SAFETY: `wide_path` is a valid NUL-terminated UTF-16 path and `ignored` is writable.
-    let size = unsafe { GetFileVersionInfoSizeW(wide_path.as_ptr(), &raw mut ignored) };
-    if size == 0 || size > MAX_VERSION_INFO_BYTES {
-        return None;
-    }
-    let mut version_info = vec![0_u8; usize::try_from(size).ok()?];
-    // SAFETY: The output buffer is valid for the exact size returned by Windows.
-    if unsafe {
-        GetFileVersionInfoW(
-            wide_path.as_ptr(),
-            0,
-            size,
-            version_info.as_mut_ptr().cast(),
-        )
-    } == 0
-    {
-        return None;
-    }
-
-    let is_sunrise = ["ProductName", "FileDescription"]
-        .into_iter()
-        .filter_map(|key| query_version_string(&version_info, key))
-        .any(|value| value.trim().eq_ignore_ascii_case("Sunrise"));
+    let bytes = fs::read(module_path).ok()?;
+    let image = pelite::PeFile::from_bytes(&bytes).ok()?;
+    let version_info = image.resources().ok()?.version_info().ok()?.file_info();
+    let is_sunrise = version_info.strings.values().any(|strings| {
+        strings.iter().any(|(key, value)| {
+            (key.eq_ignore_ascii_case("ProductName") || key.eq_ignore_ascii_case("FileDescription"))
+                && value.trim().eq_ignore_ascii_case("Sunrise")
+        })
+    });
     if !is_sunrise {
         return None;
     }
-    query_product_version(&version_info)
-}
-
-fn query_version_string(version_info: &[u8], key: &str) -> Option<String> {
-    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
-
-    let mut tables = version_string_tables(version_info);
-    if !tables.contains(&(0x0409, 1200)) {
-        tables.push((0x0409, 1200));
-    }
-    for (language, code_page) in tables {
-        let sub_block = format!(r"\StringFileInfo\{language:04X}{code_page:04X}\{key}")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        let mut value = std::ptr::null_mut();
-        let mut length = 0_u32;
-        // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
-        if unsafe {
-            VerQueryValueW(
-                version_info.as_ptr().cast(),
-                sub_block.as_ptr(),
-                &raw mut value,
-                &raw mut length,
-            )
-        } == 0
-            || value.is_null()
-            || length == 0
-        {
-            continue;
-        }
-        // SAFETY: A successful string query returns `length` UTF-16 units inside `version_info`.
-        let units = unsafe { std::slice::from_raw_parts(value.cast::<u16>(), length as usize) };
-        let units = units.strip_suffix(&[0]).unwrap_or(units);
-        if let Ok(value) = String::from_utf16(units) {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn version_string_tables(version_info: &[u8]) -> Vec<(u16, u16)> {
-    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
-
-    let sub_block = r"\VarFileInfo\Translation"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let mut value = std::ptr::null_mut();
-    let mut length = 0_u32;
-    // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
-    if unsafe {
-        VerQueryValueW(
-            version_info.as_ptr().cast(),
-            sub_block.as_ptr(),
-            &raw mut value,
-            &raw mut length,
-        )
-    } == 0
-        || value.is_null()
-        || length < 4
-    {
-        return Vec::new();
-    }
-    // SAFETY: A successful translation query returns `length` bytes inside `version_info`.
-    let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
-    bytes
-        .chunks_exact(4)
-        .map(|entry| {
-            (
-                u16::from_ne_bytes([entry[0], entry[1]]),
-                u16::from_ne_bytes([entry[2], entry[3]]),
-            )
-        })
-        .collect()
-}
-
-fn query_product_version(version_info: &[u8]) -> Option<String> {
-    use windows_sys::Win32::Storage::FileSystem::{VS_FIXEDFILEINFO, VerQueryValueW};
-
-    let root = ['\\' as u16, 0];
-    let mut value = std::ptr::null_mut();
-    let mut length = 0_u32;
-    // SAFETY: The version-info block is live for this call; Windows returns a pointer into it.
-    if unsafe {
-        VerQueryValueW(
-            version_info.as_ptr().cast(),
-            root.as_ptr(),
-            &raw mut value,
-            &raw mut length,
-        )
-    } == 0
-        || value.is_null()
-        || (length as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
-    {
-        return None;
-    }
-    // SAFETY: The root query returned at least one complete fixed-version structure. An
-    // unaligned read avoids relying on the alignment of the opaque Windows-owned block.
-    let fixed = unsafe { value.cast::<VS_FIXEDFILEINFO>().read_unaligned() };
-    if fixed.dwSignature != VERSION_INFO_SIGNATURE {
-        return None;
-    }
-    normalize_sunrise_version(&format!(
-        "{}.{}.{}.{}",
-        fixed.dwProductVersionMS >> 16,
-        fixed.dwProductVersionMS & 0xFFFF,
-        fixed.dwProductVersionLS >> 16,
-        fixed.dwProductVersionLS & 0xFFFF,
-    ))
+    let fixed = version_info.fixed?;
+    (fixed.dwSignature == pelite::image::VS_FIXEDFILEINFO_SIGNATURE)
+        .then(|| normalize_sunrise_version(&fixed.dwProductVersion.to_string()))?
 }
 
 pub(super) fn normalize_sunrise_version(version: &str) -> Option<String> {
@@ -192,78 +61,47 @@ pub(super) fn normalize_sunrise_version(version: &str) -> Option<String> {
 }
 
 pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Value, String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::{
-        Foundation::FreeLibrary,
-        System::LibraryLoader::{
-            FindResourceW, LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE, LoadLibraryExW, LoadResource,
-            LockResource, SizeofResource,
-        },
-    };
-
-    const DEFAULT_SETTINGS_RESOURCE: *const u16 = 101usize as *const u16;
-    const RESOURCE_DATA_TYPE: *const u16 = 10usize as *const u16;
-
     let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
-    let wide_path: Vec<u16> = module_path
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    // Loading as a data file reads resources without running Project Sunrise's DLL entry point.
-    let module = unsafe {
-        LoadLibraryExW(
-            wide_path.as_ptr(),
-            std::ptr::null_mut(),
-            LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE,
+    let bytes = fs::read(&module_path).map_err(|error| {
+        format!(
+            "Could not read Project Sunrise's bundled defaults from {}: {error}",
+            module_path.display()
         )
-    };
-    if module.is_null() {
-        return Err(format!(
-            "Could not read Project Sunrise's bundled defaults from {}: {}",
-            module_path.display(),
-            io::Error::last_os_error()
-        ));
-    }
-
-    let result = (|| {
-        // Resource 101 is IDR_DEFAULT_SETTINGS in every supported Sunrise release.
-        let resource =
-            unsafe { FindResourceW(module, DEFAULT_SETTINGS_RESOURCE, RESOURCE_DATA_TYPE) };
-        if resource.is_null() {
-            return Err(format!(
+    })?;
+    let image = pelite::PeFile::from_bytes(&bytes).map_err(|error| {
+        format!(
+            "The installed Project Sunrise module is not a valid PE file ({}): {error}",
+            module_path.display()
+        )
+    })?;
+    let resources = image.resources().map_err(|error| {
+        format!(
+            "Could not read resources from the installed Project Sunrise module ({}): {error}",
+            module_path.display()
+        )
+    })?;
+    // Resource 101 is IDR_DEFAULT_SETTINGS in every supported Sunrise release.
+    let encoded = resources
+        .find_resource(&[Name::Id(10), Name::Id(101)])
+        .map_err(|_| {
+            format!(
                 "The installed Project Sunrise module does not contain its default settings resource: {}",
                 module_path.display()
-            ));
-        }
-        let size = unsafe { SizeofResource(module, resource) } as usize;
-        let loaded = unsafe { LoadResource(module, resource) };
-        let bytes = if loaded.is_null() {
-            std::ptr::null()
-        } else {
-            unsafe { LockResource(loaded) }.cast::<u8>()
-        };
-        if size == 0 || bytes.is_null() {
-            return Err("The installed Project Sunrise default settings resource is empty".into());
-        }
-        // The resource remains valid while the data-file module is loaded; clone before releasing it.
-        let encoded = unsafe { std::slice::from_raw_parts(bytes, size) }.to_vec();
-        let mut document: Value = serde_json::from_slice(&encoded).map_err(|error| {
-            format!("Project Sunrise's bundled defaults are invalid JSON: {error}")
+            )
         })?;
-        game_settings::ensure_schema_v8_preferences(&mut document);
-        if game_settings::schema_version(&document).is_none() {
-            return Err("Project Sunrise's bundled defaults have no valid schema version".into());
-        }
-        validate_document(&document).map_err(|error| {
-            format!("Project Sunrise's bundled defaults contain an unexpected setting: {error}")
-        })?;
-        Ok(document)
-    })();
-    unsafe {
-        FreeLibrary(module);
+    if encoded.is_empty() {
+        return Err("The installed Project Sunrise default settings resource is empty".into());
     }
-    result
+    let mut document: Value = serde_json::from_slice(encoded)
+        .map_err(|error| format!("Project Sunrise's bundled defaults are invalid JSON: {error}"))?;
+    game_settings::ensure_schema_v8_preferences(&mut document);
+    if game_settings::schema_version(&document).is_none() {
+        return Err("Project Sunrise's bundled defaults have no valid schema version".into());
+    }
+    validate_document(&document).map_err(|error| {
+        format!("Project Sunrise's bundled defaults contain an unexpected setting: {error}")
+    })?;
+    Ok(document)
 }
 
 pub(super) fn load_json(path: &Path) -> Result<Value, String> {
@@ -1017,27 +855,26 @@ const fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, 
 }
 
 pub(super) fn preferences_path() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("Sundial").join("preferences.json"))
+    paths::config_dir().map(|path| path.join("preferences.json"))
 }
 
 pub(super) fn backups_path() -> Option<PathBuf> {
-    preferences_path()?
-        .parent()
-        .map(|path| path.join("backups"))
+    paths::data_dir().map(|path| path.join("backups"))
 }
 
 fn legacy_preferences_path() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("Sundial").join("paths.json"))
+    #[cfg(windows)]
+    {
+        paths::data_dir().map(|path| path.join("paths.json"))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 pub(super) fn catalog_path() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("Sundial").join("catalog").join("d2sk-86657.json"))
+    paths::cache_dir().map(|path| path.join("catalog").join("d2sk-86657.json"))
 }
 
 pub(super) fn settings_path_for_install(install: &Path, layout: SettingsLayout) -> PathBuf {

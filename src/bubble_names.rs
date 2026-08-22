@@ -9,11 +9,12 @@ use std::{
     thread,
 };
 
-use tiger_pkg::{DestinyVersion, GameVersion, PackageManager};
+use tiger_pkg::PackageManager;
 
 use crate::{
     catalog::package::{array_at, u32_at},
     hash::fnv1_name_hash,
+    package_runtime,
 };
 
 const FILE_NAME: &str = "bubble_names.txt";
@@ -39,12 +40,7 @@ pub(crate) fn generate_for_install(
     settings_path: &Path,
     progress: impl FnMut(usize, usize),
 ) -> Result<PathBuf, String> {
-    let manager = PackageManager::new(
-        install.join("packages"),
-        GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
-        None,
-    )
-    .map_err(|error| format!("Could not open the Shadowkeep packages: {error}"))?;
+    let manager = package_runtime::open_shadowkeep_packages(install)?;
     let names = scan(&manager, progress)?;
     save(settings_path, &document(&names))
 }

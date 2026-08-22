@@ -397,7 +397,7 @@ pub(super) fn draw_content(
                                         ui,
                                         type_width,
                                         if leaf.definition.type_name.trim().is_empty() {
-                                            egui::RichText::new("—").weak()
+                        egui::RichText::new("-").weak()
                                         } else {
                                             egui::RichText::new(&leaf.definition.type_name)
                                         },
@@ -421,7 +421,13 @@ pub(super) fn draw_content(
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
         state.hash_inspection.open(hash);
     }
-    draw_catalog_hash_window(ui.ctx(), catalog, &mut state.hash_inspection);
+    draw_catalog_hash_window(
+        ui.ctx(),
+        catalog,
+        Some(document),
+        &mut state.hash_inspection,
+        "collections",
+    );
     changed
 }
 
@@ -591,7 +597,7 @@ fn state_lines(
                 _ => continue,
             };
             let text = format!(
-                "{} — {label}: {state}",
+                "{} - {label}: {state}",
                 condition_field_label(condition.field)
             );
             if !lines.contains(&text) {
@@ -1610,7 +1616,7 @@ fn condition_token_state(
             format!("{scope}: {state}")
         }
         OBJECTIVE_INSTRUCTION => objective_reference(token, snapshot, catalog).1,
-        _ => "—".into(),
+        _ => "-".into(),
     }
 }
 
@@ -1896,7 +1902,7 @@ fn collection_hash_cell(ui: &mut egui::Ui, width: f32, hash: u64) {
         |ui| {
             ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
             if hash == 0 {
-                ui.label(egui::RichText::new("—").weak());
+                ui.label(egui::RichText::new("-").weak());
                 return;
             }
             let response = ui

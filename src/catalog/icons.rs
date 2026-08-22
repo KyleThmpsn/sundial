@@ -4,7 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
+use tiger_pkg::{PackageManager, TagHash};
+
+use crate::package_runtime;
 
 use super::package::{array_at, i64_at, relative_offset, u16_at, u32_at};
 
@@ -45,11 +47,7 @@ impl IconRuntime {
         }
         self.textures.remove(&hash);
         if self.manager.is_none() {
-            match PackageManager::new(
-                install_path.join("packages"),
-                GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
-                None,
-            ) {
+            match package_runtime::open_shadowkeep_packages(install_path) {
                 Ok(manager) => self.manager = Some(manager),
                 Err(error) => {
                     self.cache(

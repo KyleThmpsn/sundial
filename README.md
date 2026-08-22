@@ -28,6 +28,7 @@ Sundial is designed for:
 
 - Project Sunrise 0.1 through 0.3.2 (schema v6), with settings support through
   schema v8, using Destiny 2 Shadowkeep build `86657.20.08.23`
+- Windows 10 or later (x86-64) and Linux x86-64
 
 Sundial handles the known differences between Sunrise settings schemas.
 Newer schemas display a warning and may be opened with caution. Sundial keeps
@@ -52,24 +53,32 @@ compatibility is not guaranteed.
 - Automatic backups, version-matched Sunrise default restoration, and a locally
   cached catalog for faster startup
 
-The catalog is stored at:
-
-`%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json`
-
-Sundial automatically rebuilds it after an app update or if the installed
-package files change. You can also rebuild it manually from
+Sundial automatically rebuilds its catalog after an app update or if the
+installed package files change. You can also rebuild it manually from
 **Preferences > Paths**.
 
 ## Usage
 
-Download `sundial.exe` or `Sundial-v0.3.3-windows-x86_64.zip` from the GitHub
-[Releases](https://github.com/kylethmpsn/sundial/releases) page and run it. Or,
-build it yourself from source using the instructions below.
+On Windows, download the ZIP or `sundial.exe` from
+[Releases](https://github.com/kylethmpsn/sundial/releases), extract if needed,
+and run it.
+
+On Linux, download the Linux tarball, extract it, and run `sundial`. The bundled
+`install.sh` optionally adds Sundial to your application launcher. Linux
+releases require glibc 2.35 or newer.
 
 On first launch, select the root of the Destiny 2 installation you use for
-Project Sunrise. Sundial only reads the game's package files. It writes the
-selected Sunrise settings file and stores its own cache, preferences, and
-backups under `%LOCALAPPDATA%\Sundial`.
+Project Sunrise. Sundial reads the installed packages to build its catalog and
+writes only the selected Sunrise settings file when you save.
+
+### Data locations
+
+| Data | Windows | Linux |
+| --- | --- | --- |
+| Preferences | `%LOCALAPPDATA%\Sundial\preferences.json` | `${XDG_CONFIG_HOME:-~/.config}/sundial/preferences.json` |
+| Backups | `%LOCALAPPDATA%\Sundial\backups` | `${XDG_DATA_HOME:-~/.local/share}/sundial/backups` |
+| Catalog | `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json` | `${XDG_CACHE_HOME:-~/.cache}/sundial/catalog/d2sk-86657.json` |
+| Linux helper | Not used | `${XDG_CACHE_HOME:-~/.cache}/sundial/runtime/linoodle3-0167cfd2/liblinoodle3.so` |
 
 Before each save, Sundial confirms the source file has not changed and creates
 a timestamped backup. Unexpected files also receive a same-folder
@@ -77,22 +86,21 @@ a timestamped backup. Unexpected files also receive a same-folder
 
 ## Building from source
 
-Build the standalone executable with Rust/Cargo:
+Build the standalone executable with Rust 1.88 or newer and Cargo:
 
-```powershell
+```text
 cargo build --release
 ```
 
-The executable is written to `target\release\sundial.exe`.
+The result is `target\release\sundial.exe` on Windows or
+`target/release/sundial` on Linux. Linux builds support both X11 and Wayland.
 
 ## Frequently asked questions
 
 ### Can I use Sundial with the current live version of Destiny 2?
 
-No. Sundial is designed for Project Sunrise 0.1 through 0.3.2 (schema v6), with
-settings support through schema v8, using Destiny 2 Shadowkeep build
-`86657.20.08.23`. Select only the Shadowkeep installation used with Project
-Sunrise.
+No. Sundial supports only the Project Sunrise Shadowkeep versions listed under
+**Compatibility**, not the current live game.
 
 ### Does Sundial change my loadout while Destiny 2 is running?
 
@@ -115,18 +123,19 @@ Sundial repairs the known ability pairings during save. If the problem remains,
 reselect that character's class, subclass, and attunement before saving.
 
 If all else fails, use **Preferences > Recovery** to restore the Sunrise
-defaults. Earlier saves remain available under `%LOCALAPPDATA%\Sundial\backups`.
+defaults. Earlier saves remain available in Sundial's backups folder.
 
 ### Can I undo a change after saving?
 
 Sundial creates a timestamped backup before every save. Backups are stored in
-`%LOCALAPPDATA%\Sundial\backups`. Unexpected files also receive a
+the platform-native data location above. Unexpected files also receive a
 `settings.json.bak` beside the original.
 
 ### Why does the first launch take longer, and does Sundial download Destiny data?
 
 Sundial scans your existing Shadowkeep packages to build a local catalog; it
-does not download or include Destiny game data. Later launches use the cached
+does not download or include Destiny game data. On Linux, the first scan also
+downloads a verified `liblinoodle3.so` helper. Later launches use the cached
 catalog unless the package files change or you rebuild it. Sundial includes a
 small definition list for armor plugs whose manifest names are missing or
 generic, including derived stat allocations.
@@ -154,9 +163,10 @@ Sundial was built with assistance from AI and reviewed by a real person. If you
 are not comfortable with the use of AI in programming, you may want to avoid
 this project.
 
-Sundial is licensed under GPL-3.0-only. `tiger-pkg` is MIT-licensed. See
-`THIRD_PARTY_NOTICES.md` in the release bundle for dependency notices. No
-Bungie code, databases, or game assets are distributed with Sundial.
+Sundial is licensed under GPL-3.0-only. `tiger-pkg` and its Linoodle helper are
+MIT-licensed. See `THIRD_PARTY_NOTICES.md` in the release bundle for dependency
+notices. No Bungie code, databases, or game assets are distributed with
+Sundial.
 
 This project is not affiliated with or endorsed by Bungie Inc. or Sony
 Interactive Entertainment. Destiny and related intellectual property are owned

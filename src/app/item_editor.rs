@@ -21,6 +21,7 @@ const ITEM_HEADER_TITLE_SIZE_DELTA: f32 = 2.0;
 const ITEM_HEADER_ICON_SIZE: f32 = 48.0;
 const ITEM_HEADER_ROW_HEIGHT: f32 = 48.0;
 const ITEM_HEADER_WITH_METADATA_ROW_HEIGHT: f32 = 54.0;
+const TRASH_HOVER_COLOR: egui::Color32 = egui::Color32::from_rgb(166, 111, 114);
 
 /// Draws a compact, neutral delete button.
 pub(crate) fn draw_trash_button(
@@ -28,7 +29,15 @@ pub(crate) fn draw_trash_button(
     enabled: bool,
     accessible_label: &str,
 ) -> egui::Response {
-    draw_action_button(ui, enabled, accessible_label, Glyph::Trash, None, false)
+    draw_action_button(
+        ui,
+        enabled,
+        accessible_label,
+        Glyph::Trash,
+        None,
+        Some(TRASH_HOVER_COLOR),
+        true,
+    )
 }
 
 /// Draws the active lock state in a muted green.
@@ -43,6 +52,7 @@ pub(crate) fn draw_lock_button(
         accessible_label,
         Glyph::Lock,
         Some(egui::Color32::from_rgb(102, 153, 113)),
+        None,
         false,
     )
 }
@@ -60,6 +70,7 @@ pub(crate) fn draw_unlock_button(
         accessible_label,
         Glyph::Unlock,
         Some(color),
+        None,
         false,
     )
 }
@@ -70,18 +81,20 @@ fn draw_action_button(
     accessible_label: &str,
     icon: Glyph,
     icon_color: Option<egui::Color32>,
+    hover_icon_color: Option<egui::Color32>,
     framed: bool,
 ) -> egui::Response {
     let use_icon_color = enabled && ui.is_enabled();
-    let button_side = (ui.text_style_height(&egui::TextStyle::Body) + 4.0).max(18.0);
+    let text_button_height = ui.text_style_height(&egui::TextStyle::Body);
     let side = if framed {
-        (button_side - 6.0).max(14.0)
+        text_button_height
     } else {
-        (button_side - 4.0).max(16.0)
+        (text_button_height + 2.0).max(16.0)
     };
     let response = if framed {
         ui.scope(|ui| {
-            ui.spacing_mut().button_padding = egui::Vec2::splat(1.0);
+            ui.style_mut().visuals.widgets.hovered.expansion = 0.0;
+            ui.style_mut().visuals.widgets.active.expansion = 0.0;
             ui.add_enabled(
                 enabled,
                 egui::Button::new("")
@@ -116,10 +129,13 @@ fn draw_action_button(
         };
         let icon_rect =
             egui::Rect::from_center_size(response.rect.center(), egui::vec2(icon_size, icon_size));
-        let color = if use_icon_color {
-            icon_color.unwrap_or_else(|| ui.style().interact(&response).fg_stroke.color)
+        let interaction_color = ui.style().interact(&response).fg_stroke.color;
+        let color = if use_icon_color && response.hovered() {
+            hover_icon_color.or(icon_color).unwrap_or(interaction_color)
+        } else if use_icon_color {
+            icon_color.unwrap_or(interaction_color)
         } else {
-            ui.style().interact(&response).fg_stroke.color
+            interaction_color
         };
         let stroke = egui::Stroke::new((icon_size / 12.0).max(1.0), color);
         glyphs::paint_with_stroke(ui, icon_rect, icon, stroke);

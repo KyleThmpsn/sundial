@@ -17,6 +17,9 @@ use super::{
     },
 };
 
+#[cfg(target_os = "linux")]
+use super::draw_linux_title_bar;
+
 enum StartupEvent {
     Progress(CatalogProgress),
     SettingsChoice(PathBuf),
@@ -31,6 +34,8 @@ pub(super) struct StartupApp {
     progress: CatalogProgress,
     error: Option<String>,
     logo: Option<egui::TextureHandle>,
+    #[cfg(target_os = "linux")]
+    title_bar_icon: Option<egui::TextureHandle>,
     pending_settings_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
     preferences: Preferences,
@@ -51,6 +56,8 @@ impl StartupApp {
             },
             error: None,
             logo: None,
+            #[cfg(target_os = "linux")]
+            title_bar_icon: None,
             pending_settings_choice: None,
             pending_future_schema: None,
             preferences,
@@ -214,6 +221,17 @@ impl StartupApp {
             .logo
             .get_or_insert_with(|| load_logo_texture(ctx))
             .clone();
+        #[cfg(target_os = "linux")]
+        {
+            let title_bar_icon = self
+                .title_bar_icon
+                .get_or_insert_with(|| super::load_linux_title_bar_texture(ctx))
+                .clone();
+            if draw_linux_title_bar(ctx, &title_bar_icon) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             let top_space = ((ui.available_height() - 440.0) / 2.0).max(16.0);
             ui.add_space(top_space);
@@ -307,7 +325,11 @@ impl StartupApp {
                                 ui.add_space(10.0);
                                 ui.label(
                                     egui::RichText::new(
-                                        "Sundial will read the installed packages once to build its local item catalog. Nothing is downloaded.",
+                                        if cfg!(target_os = "linux") {
+                    "Sundial will read the installed packages to build its local item catalog. On first use, it downloads a small, verified Linux package-decompression helper, not Destiny data."
+                                        } else {
+                                            "Sundial will read the installed packages once to build its local item catalog. No Destiny data is downloaded."
+                                        },
                                     )
                                     .weak(),
                                 );

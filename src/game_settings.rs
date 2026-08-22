@@ -172,11 +172,11 @@ const STICK_LAYOUTS: &[(u64, &str)] = &[
     (3, "Legacy Southpaw"),
 ];
 const DOUBLE_PRESS_DELAYS: &[(u64, &str)] = &[
-    (0, "1 — 167 ms (Default)"),
-    (1, "2 — 212 ms"),
-    (2, "3 — 302 ms"),
-    (3, "4 — 347 ms"),
-    (4, "5 — 392 ms"),
+    (0, "1 - 167 ms (Default)"),
+    (1, "2 - 212 ms"),
+    (2, "3 - 302 ms"),
+    (3, "4 - 347 ms"),
+    (4, "5 - 392 ms"),
 ];
 const VOICE_OUTPUT_MODES: &[(u64, &str)] = &[
     (0, "Blended"),
@@ -1216,6 +1216,7 @@ fn display_refresh_rate_hz() -> Option<u32> {
     *REFRESH_RATE_HZ.get_or_init(query_display_refresh_rate_hz)
 }
 
+#[cfg(any(windows, test))]
 fn nominal_refresh_rate_hz(reported: u32) -> u32 {
     const COMMON_REFRESH_RATES: &[u32] = &[
         24, 25, 30, 50, 60, 72, 75, 90, 100, 120, 144, 165, 170, 175, 180, 200, 240, 360, 480, 500,

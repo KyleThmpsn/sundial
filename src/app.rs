@@ -52,8 +52,8 @@ mod progression;
 
 mod collections_page;
 
-const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
-const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
+const ROOT_SETTINGS_RELATIVE_PATH: &str = "Sunrise/settings.json";
+const BIN_X64_SETTINGS_RELATIVE_PATH: &str = "bin/x64/Sunrise/settings.json";
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
@@ -66,8 +66,8 @@ const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
 const PLUG_PICKER_MAX_HEIGHT: f32 = 420.0;
 const MAIN_SIDEBAR_WIDTH: f32 = 168.0;
 const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
-    ("Destiny Symbols 360", r"fonts\Destiny_Symbols_360.ttf"),
-    ("Destiny Symbols PC", r"fonts\Destiny_Symbols_PC.otf"),
+    ("Destiny Symbols 360", "fonts/Destiny_Symbols_360.ttf"),
+    ("Destiny Symbols PC", "fonts/Destiny_Symbols_PC.otf"),
 ];
 const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
 const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
@@ -445,6 +445,8 @@ struct SundialApp {
     json_editor: JsonEditorState,
     json_editor_window_open: bool,
     logo: Option<egui::TextureHandle>,
+    #[cfg(target_os = "linux")]
+    title_bar_icon: Option<egui::TextureHandle>,
     about_open: bool,
     update_check: UpdateCheck,
     confirmation: Option<ConfirmationDialog>,
@@ -540,6 +542,8 @@ impl SundialApp {
             json_editor: JsonEditorState::default(),
             json_editor_window_open: preferences.always_open_json_editor_in_second_window,
             logo: None,
+            #[cfg(target_os = "linux")]
+            title_bar_icon: None,
             about_open: false,
             update_check: UpdateCheck::default(),
             confirmation: None,
@@ -654,6 +658,7 @@ impl SundialApp {
                 self.persisted_document = self.document.clone();
                 self.source_warning = current_warning;
                 self.dirty = false;
+                self.progression_ui.mark_saved();
                 self.sync_raw_json();
                 let repair_note = match repaired_ability_pairs {
                     0 => String::new(),
@@ -1115,6 +1120,9 @@ impl SundialApp {
         self.settings_path = settings_path;
         self.settings_layout = settings_layout;
         self.manifest = manifest;
+        self.hash_inspection.close();
+        self.progression_ui.reset_navigation();
+        self.collections_ui.reset_navigation();
         self.class_armor_defaults = collect_class_armor_defaults(&document);
         self.persisted_document = document.clone();
         self.document = document;
@@ -1223,6 +1231,9 @@ impl SundialApp {
                         }
                         (CatalogTaskKind::Rebuild, Ok(manifest)) => {
                             self.manifest = manifest;
+                            self.hash_inspection.close();
+                            self.progression_ui.reset_navigation();
+                            self.collections_ui.reset_navigation();
                             self.clear_picker_state();
                             self.set_status(
                                 "Catalog rebuilt from the installed game packages",
@@ -1959,7 +1970,7 @@ impl SundialApp {
         let (response, close_requested) = ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("sundial_json_editor"),
             egui::ViewportBuilder::default()
-                .with_title("Sundial — All settings (JSON)")
+                .with_title("Sundial: All settings (JSON)")
                 .with_inner_size([960.0, 720.0])
                 .with_min_inner_size([640.0, 420.0]),
             |child_ctx, class| {
@@ -2003,6 +2014,21 @@ impl SundialApp {
 
 impl eframe::App for SundialApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "linux")]
+        {
+            let title_bar_icon = self
+                .title_bar_icon
+                .get_or_insert_with(|| load_linux_title_bar_texture(ctx))
+                .clone();
+            if draw_linux_title_bar(ctx, &title_bar_icon) {
+                if self.has_unsaved_changes() {
+                    self.confirmation = Some(ConfirmationDialog::Exit);
+                } else {
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
         self.ensure_destiny_symbol_font(ctx);
         self.update_check.start_if_needed(ctx);
         self.update_check.poll();
@@ -2189,7 +2215,13 @@ impl eframe::App for SundialApp {
         if let Some(hash) = progression::take_hash_inspection_request(ctx) {
             self.hash_inspection.open(hash);
         }
-        progression::draw_catalog_hash_window(ctx, &self.manifest, &mut self.hash_inspection);
+        progression::draw_catalog_hash_window(
+            ctx,
+            &self.manifest,
+            Some(&self.document),
+            &mut self.hash_inspection,
+            "global",
+        );
 
         self.draw_json_editor_window(ctx);
 
@@ -2413,11 +2445,11 @@ impl eframe::App for SundialApp {
                 ui.add_space(8.0);
                 ui.label("Even basic settings edits can theoretically cause problems, but this mode makes every discovered plug available in every socket. Saving arbitrary or incompatible combinations greatly increases the risk of leaving a character or the entire settings file unusable.");
                 ui.add_space(8.0);
-                ui.label("Every Sundial save creates a timestamped backup under %LOCALAPPDATA%\\Sundial\\backups.");
+                ui.label("Every Sundial save creates a timestamped backup in Sundial's local data folder.");
                 ui.label("If the game no longer loads, open Preferences > Recovery. Sundial backs up the current file again before restoring the defaults bundled with Project Sunrise.");
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("I understand — enable").clicked() {
+                    if ui.button("I understand and enable").clicked() {
                         enable = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -2603,6 +2635,192 @@ fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
     ctx.load_texture("sundial-logo", image, egui::TextureOptions::LINEAR)
 }
 
+#[cfg(target_os = "linux")]
+fn load_linux_title_bar_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!(
+        "../assets/linux/io.github.kylethmpsn.Sundial-window.png"
+    ))
+    .expect("embedded Sundial title bar icon must be a valid PNG");
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width as usize, icon.height as usize],
+        &icon.rgba,
+    );
+    ctx.load_texture(
+        "sundial-title-bar-icon",
+        image,
+        egui::TextureOptions::LINEAR,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum LinuxTitleBarButton {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_title_bar_button(ui: &mut egui::Ui, button: LinuxTitleBarButton) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(42.0, 36.0), egui::Sense::click());
+    let response = response.on_hover_text(match button {
+        LinuxTitleBarButton::Minimize => "Minimize",
+        LinuxTitleBarButton::Maximize => "Maximize",
+        LinuxTitleBarButton::Restore => "Restore",
+        LinuxTitleBarButton::Close => "Close",
+    });
+    if response.hovered() {
+        let fill = if matches!(button, LinuxTitleBarButton::Close) {
+            egui::Color32::from_rgb(196, 43, 28)
+        } else {
+            ui.visuals().widgets.hovered.weak_bg_fill
+        };
+        ui.painter().rect_filled(rect, 0.0, fill);
+    }
+
+    let color = if response.hovered() && matches!(button, LinuxTitleBarButton::Close) {
+        egui::Color32::WHITE
+    } else {
+        ui.visuals().text_color()
+    };
+    let stroke = egui::Stroke::new(1.25, color);
+    let center = rect.center();
+    match button {
+        LinuxTitleBarButton::Minimize => {
+            ui.painter().line_segment(
+                [
+                    center + egui::vec2(-5.0, 4.0),
+                    center + egui::vec2(5.0, 4.0),
+                ],
+                stroke,
+            );
+        }
+        LinuxTitleBarButton::Maximize => {
+            let min = center + egui::vec2(-5.0, -5.0);
+            let max = center + egui::vec2(5.0, 5.0);
+            ui.painter()
+                .line_segment([min, egui::pos2(max.x, min.y)], stroke);
+            ui.painter()
+                .line_segment([egui::pos2(max.x, min.y), max], stroke);
+            ui.painter()
+                .line_segment([max, egui::pos2(min.x, max.y)], stroke);
+            ui.painter()
+                .line_segment([egui::pos2(min.x, max.y), min], stroke);
+        }
+        LinuxTitleBarButton::Restore => {
+            let back_min = center + egui::vec2(-3.0, -6.0);
+            let back_max = center + egui::vec2(6.0, 3.0);
+            ui.painter()
+                .line_segment([back_min, egui::pos2(back_max.x, back_min.y)], stroke);
+            ui.painter()
+                .line_segment([egui::pos2(back_max.x, back_min.y), back_max], stroke);
+            let front_min = center + egui::vec2(-6.0, -3.0);
+            let front_max = center + egui::vec2(3.0, 6.0);
+            ui.painter()
+                .line_segment([front_min, egui::pos2(front_max.x, front_min.y)], stroke);
+            ui.painter()
+                .line_segment([egui::pos2(front_max.x, front_min.y), front_max], stroke);
+            ui.painter()
+                .line_segment([front_max, egui::pos2(front_min.x, front_max.y)], stroke);
+            ui.painter()
+                .line_segment([egui::pos2(front_min.x, front_max.y), front_min], stroke);
+        }
+        LinuxTitleBarButton::Close => {
+            ui.painter().line_segment(
+                [
+                    center + egui::vec2(-5.0, -5.0),
+                    center + egui::vec2(5.0, 5.0),
+                ],
+                stroke,
+            );
+            ui.painter().line_segment(
+                [
+                    center + egui::vec2(-5.0, 5.0),
+                    center + egui::vec2(5.0, -5.0),
+                ],
+                stroke,
+            );
+        }
+    }
+    response
+}
+
+#[cfg(target_os = "linux")]
+fn draw_linux_title_bar(ctx: &egui::Context, logo: &egui::TextureHandle) -> bool {
+    let mut close_clicked = false;
+    egui::TopBottomPanel::top("linux_title_bar")
+        .exact_height(36.0)
+        .frame(
+            egui::Frame::new()
+                .fill(ctx.style().visuals.window_fill)
+                .inner_margin(0.0),
+        )
+        .show(ctx, |ui| {
+            let rect = ui.max_rect();
+            let response = ui.interact(
+                rect,
+                egui::Id::new("linux_title_bar_drag"),
+                egui::Sense::click_and_drag(),
+            );
+            if response.double_clicked() {
+                let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
+            ui.painter().image(
+                logo.id(),
+                egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + 21.0, rect.center().y),
+                    egui::vec2(24.0, 24.0),
+                ),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 41.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Sundial",
+                egui::FontId::proportional(14.0),
+                ui.visuals().text_color(),
+            );
+            ui.painter().line_segment(
+                [rect.left_bottom(), rect.right_bottom()],
+                ui.visuals().widgets.noninteractive.bg_stroke,
+            );
+
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    close_clicked =
+                        linux_title_bar_button(ui, LinuxTitleBarButton::Close).clicked();
+                    let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                    let maximize_button = if maximized {
+                        LinuxTitleBarButton::Restore
+                    } else {
+                        LinuxTitleBarButton::Maximize
+                    };
+                    if linux_title_bar_button(ui, maximize_button).clicked() {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                    }
+                    if linux_title_bar_button(ui, LinuxTitleBarButton::Minimize).clicked() {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                },
+            );
+        });
+    close_clicked
+}
+
 fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLoad) {
     ui.heading("Newer Sunrise settings detected");
     ui.add_space(6.0);
@@ -2724,10 +2942,17 @@ pub(crate) fn run() -> eframe::Result {
     }
     #[cfg(windows)]
     set_windows_app_identity();
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/sundial-alt.png"))
+    #[cfg(target_os = "linux")]
+    let icon_bytes = include_bytes!("../assets/linux/io.github.kylethmpsn.Sundial-window.png");
+    #[cfg(not(target_os = "linux"))]
+    let icon_bytes = include_bytes!("../assets/sundial-alt.png");
+    let icon = eframe::icon_data::from_png_bytes(icon_bytes)
         .expect("embedded Sundial icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_title("Sundial")
+            .with_app_id("io.github.kylethmpsn.Sundial")
+            .with_decorations(!cfg!(target_os = "linux"))
             .with_inner_size([1_240.0, 880.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),

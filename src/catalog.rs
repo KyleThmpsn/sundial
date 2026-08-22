@@ -7,12 +7,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
+use tiger_pkg::{PackageManager, TagHash};
 
 use crate::{
     class_items,
     hash::{format_hash, parse_hash},
-    orbit_map, unnamed_plugs,
+    orbit_map, package_runtime, unnamed_plugs,
 };
 
 mod collections;
@@ -43,21 +43,31 @@ use progression::{
 };
 pub(crate) use progression::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
-    ProgressionContextDef, ProgressionContextKind, ProgressionDefinition, ProgressionScope,
-    UnlockDefinition,
+    ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
+    ProgressionFactionDefinition, ProgressionScope, UnlockDefinition,
 };
 
-const CACHE_SCHEMA: u32 = 68;
+const CACHE_SCHEMA: u32 = 76;
 const MAX_ITEM_SCAN_PROGRESS_UPDATES: usize = 200;
 const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
 const INVESTMENT_STAT_CLASS: u32 = 0x8080_3033;
+const INVESTMENT_STAT_RESOURCE_CLASS: u32 = 0x8080_77B9;
+const INVESTMENT_STAT_DEFINITION_CLASS: u32 = 0x8080_7D09;
 const STAT_STRING_MAP_CLASS: u32 = 0x8080_5CC9;
+const INTRINSIC_PERK_CLASS: u32 = 0x8080_2C50;
+const SANDBOX_PERK_DEFINITION_CLASS: u32 = 0x8080_748C;
 const NO_PLUG_SOURCE: u32 = 0x811C_9DC5;
 const INVESTMENT_STAT_DESCRIPTOR: usize = 0x2C0;
 const INVESTMENT_STAT_ROW_SIZE: usize = 40;
 const STAT_STRING_MAP_INDEX: usize = 59;
 const STAT_STRING_ROW_SIZE: usize = 36;
+const STAT_DEFINITION_TABLE_SLOT: usize = 95;
+const STAT_DEFINITION_ROW_SIZE: usize = 32;
+const SANDBOX_PERK_TABLE_SLOT: usize = 88;
+const SANDBOX_PERK_ROW_SIZE: usize = 24;
+const ITEM_INVESTMENT_STAT_POINTER_OFFSET: usize = 0x70;
+const ITEM_INTRINSIC_PERK_DESCRIPTOR: usize = 0xE0;
 const INVENTORY_BUCKET_TABLE_SLOT: usize = 17;
 const INVENTORY_BUCKET_COUNT_OFFSET: usize = 140;
 const INVENTORY_BUCKET_FIRST_DESCRIPTOR: usize = 144;
@@ -121,6 +131,37 @@ pub(crate) struct ItemDef {
     pub sockets: Vec<SocketDef>,
     #[serde(default)]
     pub abilities: AbilityOptions,
+}
+
+/// Structural metadata read directly from the installed inventory item definition table.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ItemPackageMetadata {
+    pub definition_index: u32,
+    pub definition_tag: u32,
+    pub plug_category_hash: Option<u64>,
+    #[serde(default)]
+    pub investment_stats: Vec<ItemInvestmentStat>,
+    #[serde(default)]
+    pub intrinsic_perks: Vec<ItemIntrinsicPerk>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemInvestmentStat {
+    pub definition_index: u16,
+    pub value: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemIntrinsicPerk {
+    pub definition_index: u16,
+    pub hash: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ItemStatDefinition {
+    pub definition_index: u16,
+    pub hash: u64,
+    pub name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -419,9 +460,19 @@ struct CatalogContents {
     names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
     #[serde(default)]
+    package_item_names: HashMap<u64, String>,
+    #[serde(default)]
+    package_item_type_names: HashMap<u64, String>,
+    #[serde(default)]
     descriptions: HashMap<u64, String>,
     #[serde(default)]
     icon_containers: HashMap<u64, u32>,
+    #[serde(default)]
+    item_package_metadata: HashMap<u64, ItemPackageMetadata>,
+    #[serde(default)]
+    item_stat_definitions: Vec<ItemStatDefinition>,
+    #[serde(default)]
+    package_names: HashMap<u16, String>,
     #[serde(default)]
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     objectives: Vec<ObjectiveDef>,
@@ -442,8 +493,14 @@ pub(crate) struct Catalog {
     orbit_map_entries: Vec<orbit_map::Entry>,
     pub names: HashMap<u64, String>,
     type_names: HashMap<u64, String>,
+    package_item_names: HashMap<u64, String>,
+    package_item_type_names: HashMap<u64, String>,
     descriptions: HashMap<u64, String>,
     icon_containers: HashMap<u64, u32>,
+    item_package_metadata: HashMap<u64, ItemPackageMetadata>,
+    item_stat_definitions: Vec<ItemStatDefinition>,
+    intrinsic_perk_items: HashMap<u64, Vec<u64>>,
+    package_names: HashMap<u16, String>,
     pub cache_path: PathBuf,
     pub loaded_from_cache: bool,
     install_path: PathBuf,
@@ -575,8 +632,13 @@ impl Catalog {
             mut orbit_map_entries,
             names,
             type_names,
+            package_item_names,
+            package_item_type_names,
             descriptions,
             icon_containers,
+            item_package_metadata,
+            item_stat_definitions,
+            package_names,
             inventory_metadata,
             objectives,
             unlock_flag_definitions,
@@ -607,6 +669,19 @@ impl Catalog {
         }
         let mut all_plug_options = plug_pools.iter().flatten().copied().collect();
         sort_plug_options(&mut all_plug_options, &names);
+        let mut intrinsic_perk_items = HashMap::<u64, Vec<u64>>::new();
+        for (&item_hash, metadata) in &item_package_metadata {
+            for perk in &metadata.intrinsic_perks {
+                intrinsic_perk_items
+                    .entry(perk.hash)
+                    .or_default()
+                    .push(item_hash);
+            }
+        }
+        for item_hashes in intrinsic_perk_items.values_mut() {
+            item_hashes.sort_unstable();
+            item_hashes.dedup();
+        }
         items.sort_by_key(|item| item.name.to_lowercase());
         orbit_backdrops.sort();
         orbit_map_entries.sort_by(|first, second| first.destination.cmp(&second.destination));
@@ -719,8 +794,14 @@ impl Catalog {
             orbit_map_entries,
             names,
             type_names,
+            package_item_names,
+            package_item_type_names,
             descriptions,
             icon_containers,
+            item_package_metadata,
+            item_stat_definitions,
+            intrinsic_perk_items,
+            package_names,
             cache_path,
             loaded_from_cache,
             install_path,
@@ -1025,7 +1106,93 @@ impl Catalog {
     }
 
     pub(crate) fn plug_type_name(&self, hash: u64) -> Option<&str> {
-        self.type_names.get(&hash).map(String::as_str)
+        self.type_names
+            .get(&hash)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    pub(crate) fn package_item_name(&self, hash: u64) -> Option<&str> {
+        self.package_item_names
+            .get(&hash)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    pub(crate) fn package_item_type_name(&self, hash: u64) -> Option<&str> {
+        self.package_item_type_names
+            .get(&hash)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    pub(crate) fn item_package_metadata(&self, hash: u64) -> Option<&ItemPackageMetadata> {
+        self.item_package_metadata.get(&hash)
+    }
+
+    pub(crate) fn item_stat_definition(
+        &self,
+        definition_index: u16,
+    ) -> Option<&ItemStatDefinition> {
+        self.item_stat_definitions
+            .get(usize::from(definition_index))
+            .filter(|definition| definition.definition_index == definition_index)
+    }
+
+    pub(crate) fn item_stat_definition_by_hash(&self, hash: u64) -> Option<&ItemStatDefinition> {
+        self.item_stat_definitions
+            .iter()
+            .find(|definition| definition.hash == hash)
+    }
+
+    pub(crate) fn item_investment_stat_references(
+        &self,
+        hash: u64,
+    ) -> Vec<(u64, &ItemInvestmentStat)> {
+        let Some(definition_index) = self
+            .item_stat_definition_by_hash(hash)
+            .map(|definition| definition.definition_index)
+        else {
+            return Vec::new();
+        };
+        let mut references = self
+            .item_package_metadata
+            .iter()
+            .flat_map(|(&item_hash, metadata)| {
+                metadata
+                    .investment_stats
+                    .iter()
+                    .filter(move |stat| stat.definition_index == definition_index)
+                    .map(move |stat| (item_hash, stat))
+            })
+            .collect::<Vec<_>>();
+        references.sort_by(|(first_hash, _), (second_hash, _)| {
+            self.package_item_name(*first_hash)
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(
+                    &self
+                        .package_item_name(*second_hash)
+                        .unwrap_or("")
+                        .to_lowercase(),
+                )
+                .then_with(|| first_hash.cmp(second_hash))
+        });
+        references
+    }
+
+    pub(crate) fn intrinsic_perk_references(&self, hash: u64) -> &[u64] {
+        self.intrinsic_perk_items
+            .get(&hash)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn item_package_name(&self, hash: u64) -> Option<&str> {
+        let metadata = self.item_package_metadata.get(&hash)?;
+        self.package_names
+            .get(&TagHash(metadata.definition_tag).pkg_id())
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
     }
 
     pub(crate) fn display_name(&self, hash: u64) -> Option<&str> {
@@ -1066,6 +1233,19 @@ impl Catalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         runtime.texture(context, &self.install_path, hash, container)
+    }
+
+    pub(crate) fn icon_texture_from_container(
+        &self,
+        context: &eframe::egui::Context,
+        cache_key: u64,
+        container: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture(context, &self.install_path, cache_key, container)
     }
 
     pub(crate) fn icon_diagnostic(&self, hash: u64) -> Option<String> {
@@ -1274,12 +1454,7 @@ fn scan_packages(
     report(CatalogProgress::stage(
         "Opening the installed game packages…",
     ));
-    let manager = PackageManager::new(
-        install.join("packages"),
-        GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
-        None,
-    )
-    .map_err(|e| format!("Could not open the Shadowkeep packages: {e}"))?;
+    let manager = package_runtime::open_shadowkeep_packages(install)?;
     let globals = manager
         .lookup
         .named_tags
@@ -1301,17 +1476,23 @@ fn scan_packages(
         })
         .collect();
     let mut localized_cache = HashMap::<u32, HashMap<u32, String>>::new();
+    let root = manager
+        .read_tag(TagHash(u32_at(&globals_data, 16)?))
+        .map_err(|e| format!("Could not read investment root: {e}"))?;
     report(CatalogProgress::stage("Reading subclass ability names…"));
     let ability_displays = scan_ability_displays(&manager, &localized_tags, &mut localized_cache);
-    let stat_names = scan_stat_names(
+    let item_stat_definitions = scan_stat_definitions(
         &manager,
+        &root,
         &globals_data,
         &localized_tags,
         &mut localized_cache,
     );
-    let root = manager
-        .read_tag(TagHash(u32_at(&globals_data, 16)?))
-        .map_err(|e| format!("Could not read investment root: {e}"))?;
+    let stat_names = item_stat_definitions
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect::<Vec<_>>();
+    let sandbox_perk_hashes = scan_sandbox_perk_hashes(&manager, &root);
     report(CatalogProgress::stage("Reading Orbit backdrops…"));
     let orbit_map::Scan {
         backdrops: orbit_backdrops,
@@ -1441,11 +1622,6 @@ fn scan_packages(
             &mut progression_package_errors,
         )
     };
-    let progression_definitions = retain_progression_scan(
-        "Progression definitions",
-        scan_progression_definitions(&manager, &root),
-        &mut progression_package_errors,
-    );
     let inventory_buckets = scan_inventory_bucket_descriptors(&manager, &root)?;
     let plug_set_table = manager
         .read_tag(TagHash(u32_at(&root, 8 + 51 * 16)?))
@@ -1465,6 +1641,45 @@ fn scan_packages(
     let hashes: Vec<u64> = (0..count)
         .map(|i| u32_at(&item_table, rows + i * 24).map(u64::from))
         .collect::<Result<_, _>>()?;
+    let definition_tags: Vec<u32> = (0..count)
+        .map(|i| u32_at(&item_table, rows + i * 24 + 16))
+        .collect::<Result<_, _>>()?;
+    let icon_containers_by_index = scan_item_icon_containers(&manager, &globals_data)?;
+    let progression_definitions = retain_progression_scan(
+        "Progression definitions",
+        scan_progression_definitions(
+            &manager,
+            &root,
+            &globals_data,
+            &localized_tags,
+            &mut localized_cache,
+            &hashes,
+            &icon_containers_by_index,
+        ),
+        &mut progression_package_errors,
+    );
+    let mut item_package_metadata = hashes
+        .iter()
+        .copied()
+        .zip(definition_tags.iter().copied())
+        .enumerate()
+        .filter_map(|(definition_index, (hash, definition_tag))| {
+            u32::try_from(definition_index)
+                .ok()
+                .map(|definition_index| {
+                    (
+                        hash,
+                        ItemPackageMetadata {
+                            definition_index,
+                            definition_tag,
+                            plug_category_hash: None,
+                            investment_stats: Vec::new(),
+                            intrinsic_perks: Vec::new(),
+                        },
+                    )
+                })
+        })
+        .collect::<HashMap<_, _>>();
     let string_tags: HashMap<u64, TagHash> = (0..string_count)
         .filter_map(|i| {
             let base = string_rows + i * 24;
@@ -1474,9 +1689,10 @@ fn scan_packages(
             ))
         })
         .collect();
-    let icon_containers_by_index = scan_item_icon_containers(&manager, &globals_data)?;
     let mut names = HashMap::new();
     let mut type_names = HashMap::new();
+    let mut package_item_names = HashMap::new();
+    let mut package_item_type_names = HashMap::new();
     let mut descriptions = HashMap::new();
     let mut icon_containers = HashMap::new();
     let mut inventory_metadata = HashMap::new();
@@ -1503,7 +1719,7 @@ fn scan_packages(
             });
         }
         let hash = hashes[index];
-        let item_tag = TagHash(u32_at(&item_table, rows + index * 24 + 16)?);
+        let item_tag = TagHash(definition_tags[index]);
         let Ok(item) = manager.read_tag(item_tag) else {
             unreadable_item_definitions += 1;
             continue;
@@ -1511,6 +1727,20 @@ fn scan_packages(
         if item.len() < 188 {
             short_item_definitions += 1;
             continue;
+        }
+        if let Some(metadata) = item_package_metadata.get_mut(&hash) {
+            metadata.investment_stats = item_investment_stats(&item, &item_stat_definitions);
+            metadata.intrinsic_perks = item_intrinsic_perk_hashes(&item, &sandbox_perk_hashes);
+        }
+        if let Ok(category) = u32_at(&item, 392)
+            && category != 0
+            && category != u32::MAX
+        {
+            if let Some(metadata) = item_package_metadata.get_mut(&hash) {
+                metadata.plug_category_hash = Some(u64::from(category));
+            }
+            plug_category_by_hash.insert(hash, category);
+            plug_category_items.entry(category).or_default().push(hash);
         }
         let metadata = item_inventory_metadata(&item, &inventory_buckets);
         if let Some(metadata) = metadata {
@@ -1576,6 +1806,11 @@ fn scan_packages(
             0x84,
         )
         .unwrap_or_default();
+        if !name.trim().is_empty() {
+            package_item_names
+                .entry(hash)
+                .or_insert_with(|| name.clone());
+        }
         let mut derived_masterwork_name = false;
         if let Some(label) = masterwork_label(&item, &stat_names, &name) {
             name = label;
@@ -1589,6 +1824,11 @@ fn scan_packages(
             0x90,
         )
         .unwrap_or_default();
+        if !type_name.trim().is_empty() {
+            package_item_type_names
+                .entry(hash)
+                .or_insert_with(|| type_name.clone());
+        }
         if let Some(description) = resolve_string(
             &manager,
             &localized_tags,
@@ -1657,12 +1897,6 @@ fn scan_packages(
             metadata,
             objective_paths,
         );
-        if let Ok(category) = u32_at(&item, 392) {
-            if category != 0 && category != u32::MAX {
-                plug_category_by_hash.insert(hash, category);
-                plug_category_items.entry(category).or_default().push(hash);
-            }
-        }
         let Some(bucket_hash) = bucket_hash(item[184]) else {
             continue;
         };
@@ -1730,6 +1964,9 @@ fn scan_packages(
                     if let Some(name) =
                         resolve_string(&manager, &localized_tags, &mut localized_cache, &s, 0x84)
                     {
+                        package_item_names
+                            .entry(plug)
+                            .or_insert_with(|| name.clone());
                         names.entry(plug).or_insert(name);
                     }
                 }
@@ -1802,14 +2039,25 @@ fn scan_packages(
     }
     let progression_package_error =
         (!progression_package_errors.is_empty()).then(|| progression_package_errors.join("\n"));
+    let package_names = manager
+        .package_paths
+        .iter()
+        .filter(|(_, package)| !package.name.trim().is_empty())
+        .map(|(&package_id, package)| (package_id, package.name.clone()))
+        .collect();
     Ok(CatalogContents {
         items,
         orbit_backdrops,
         orbit_map_entries,
         names,
         type_names,
+        package_item_names,
+        package_item_type_names,
         descriptions,
         icon_containers,
+        item_package_metadata,
+        item_stat_definitions,
+        package_names,
         inventory_metadata,
         objectives,
         unlock_flag_definitions,
@@ -2615,14 +2863,66 @@ fn resolve_localized_hash(
     None
 }
 
-fn scan_stat_names(
+fn scan_stat_definitions(
     manager: &PackageManager,
+    root: &[u8],
     globals: &[u8],
     localized_tags: &[TagHash],
     localized_cache: &mut HashMap<u32, HashMap<u32, String>>,
-) -> Vec<String> {
-    let tag_offset = 16 + STAT_STRING_MAP_INDEX * 16;
-    let Ok(tag) = u32_at(globals, tag_offset) else {
+) -> Vec<ItemStatDefinition> {
+    let Ok(definition_tag) = u32_at(root, 8 + STAT_DEFINITION_TABLE_SLOT * 16) else {
+        return Vec::new();
+    };
+    let Ok(definition_table) = manager.read_tag(TagHash(definition_tag)) else {
+        return Vec::new();
+    };
+    let Ok((definition_count, definition_rows, definition_class)) = array_at(&definition_table, 8)
+    else {
+        return Vec::new();
+    };
+    let Ok(string_tag) = u32_at(globals, 16 + STAT_STRING_MAP_INDEX * 16) else {
+        return Vec::new();
+    };
+    let Ok(string_table) = manager.read_tag(TagHash(string_tag)) else {
+        return Vec::new();
+    };
+    let Ok((string_count, string_rows, string_class)) = array_at(&string_table, 8) else {
+        return Vec::new();
+    };
+    if definition_class != INVESTMENT_STAT_DEFINITION_CLASS
+        || string_class != STAT_STRING_MAP_CLASS
+        || definition_count != string_count
+        || definition_count > 256
+    {
+        return Vec::new();
+    }
+    (0..definition_count)
+        .map(|index| {
+            let definition_row = definition_rows + index * STAT_DEFINITION_ROW_SIZE;
+            let string_row = string_rows + index * STAT_STRING_ROW_SIZE;
+            let definition_hash = u32_at(&definition_table, definition_row).ok()?;
+            if u32_at(&string_table, string_row).ok()? != definition_hash {
+                return None;
+            }
+            Some(ItemStatDefinition {
+                definition_index: u16::try_from(index).ok()?,
+                hash: u64::from(definition_hash),
+                name: resolve_string(
+                    manager,
+                    localized_tags,
+                    localized_cache,
+                    &string_table,
+                    string_row + 4,
+                )
+                .unwrap_or_default(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
+}
+
+fn scan_sandbox_perk_hashes(manager: &PackageManager, root: &[u8]) -> Vec<u64> {
+    let Ok(tag) = u32_at(root, 8 + SANDBOX_PERK_TABLE_SLOT * 16) else {
         return Vec::new();
     };
     let Ok(table) = manager.read_tag(TagHash(tag)) else {
@@ -2631,19 +2931,71 @@ fn scan_stat_names(
     let Ok((count, rows, class)) = array_at(&table, 8) else {
         return Vec::new();
     };
-    if class != STAT_STRING_MAP_CLASS || count > 256 {
+    if class != SANDBOX_PERK_DEFINITION_CLASS || count > 4096 {
         return Vec::new();
     }
     (0..count)
         .map(|index| {
-            resolve_string(
-                manager,
-                localized_tags,
-                localized_cache,
-                &table,
-                rows + index * STAT_STRING_ROW_SIZE + 4,
-            )
-            .unwrap_or_default()
+            u32_at(&table, rows + index * SANDBOX_PERK_ROW_SIZE)
+                .map(u64::from)
+                .ok()
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
+}
+
+fn item_investment_stats(
+    item: &[u8],
+    definitions: &[ItemStatDefinition],
+) -> Vec<ItemInvestmentStat> {
+    let Ok(relative) = i64_at(item, ITEM_INVESTMENT_STAT_POINTER_OFFSET) else {
+        return Vec::new();
+    };
+    if relative == 0 {
+        return Vec::new();
+    }
+    let Ok(resource) = relative_offset(ITEM_INVESTMENT_STAT_POINTER_OFFSET, 0, relative) else {
+        return Vec::new();
+    };
+    if resource < 4 || u32_at(item, resource - 4).ok() != Some(INVESTMENT_STAT_RESOURCE_CLASS) {
+        return Vec::new();
+    }
+    let Ok((count, rows, class)) = array_at(item, resource) else {
+        return Vec::new();
+    };
+    if class != INVESTMENT_STAT_CLASS || count > 256 {
+        return Vec::new();
+    }
+    (0..count)
+        .filter_map(|row_index| {
+            let row = rows.checked_add(row_index.checked_mul(INVESTMENT_STAT_ROW_SIZE)?)?;
+            let definition_index = u16_at(item, row).ok()?;
+            definitions.get(usize::from(definition_index))?;
+            Some(ItemInvestmentStat {
+                definition_index,
+                value: i32_at(item, row + 4).ok()?,
+            })
+        })
+        .collect()
+}
+
+fn item_intrinsic_perk_hashes(item: &[u8], sandbox_perk_hashes: &[u64]) -> Vec<ItemIntrinsicPerk> {
+    let Ok((count, rows, class)) = array_at(item, ITEM_INTRINSIC_PERK_DESCRIPTOR) else {
+        return Vec::new();
+    };
+    if class != INTRINSIC_PERK_CLASS || count > 64 {
+        return Vec::new();
+    }
+    (0..count)
+        .filter_map(|index| {
+            let definition_index = u16_at(item, rows + index * 2).ok()?;
+            let hash = sandbox_perk_hashes
+                .get(usize::from(definition_index))
+                .copied()?;
+            Some(ItemIntrinsicPerk {
+                definition_index,
+                hash,
+            })
         })
         .collect()
 }
@@ -2889,8 +3241,13 @@ mod tests {
                 orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
+                package_item_names: HashMap::new(),
+                package_item_type_names: HashMap::new(),
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
+                item_package_metadata: HashMap::new(),
+                item_stat_definitions: Vec::new(),
+                package_names: HashMap::new(),
                 inventory_metadata: HashMap::new(),
                 objectives: vec![ObjectiveDef {
                     hash: value.hash,
@@ -3244,8 +3601,13 @@ mod tests {
                 orbit_map_entries: Vec::new(),
                 names,
                 type_names,
+                package_item_names: HashMap::new(),
+                package_item_type_names: HashMap::new(),
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
+                item_package_metadata: HashMap::new(),
+                item_stat_definitions: Vec::new(),
+                package_names: HashMap::new(),
                 inventory_metadata,
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
@@ -3326,8 +3688,13 @@ mod tests {
                 orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
+                package_item_names: HashMap::new(),
+                package_item_type_names: HashMap::new(),
                 descriptions: HashMap::from([(10_042, "A description-only match".to_owned())]),
                 icon_containers: HashMap::new(),
+                item_package_metadata: HashMap::new(),
+                item_stat_definitions: Vec::new(),
+                package_names: HashMap::new(),
                 inventory_metadata: HashMap::new(),
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
@@ -3398,8 +3765,13 @@ mod tests {
                 orbit_map_entries: Vec::new(),
                 names: HashMap::new(),
                 type_names: HashMap::new(),
+                package_item_names: HashMap::new(),
+                package_item_type_names: HashMap::new(),
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
+                item_package_metadata: HashMap::new(),
+                item_stat_definitions: Vec::new(),
+                package_names: HashMap::new(),
                 inventory_metadata: HashMap::new(),
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
@@ -3562,8 +3934,13 @@ mod tests {
                 orbit_map_entries: Vec::new(),
                 names,
                 type_names: HashMap::new(),
+                package_item_names: HashMap::new(),
+                package_item_type_names: HashMap::new(),
                 descriptions: HashMap::new(),
                 icon_containers: HashMap::new(),
+                item_package_metadata: HashMap::new(),
+                item_stat_definitions: Vec::new(),
+                package_names: HashMap::new(),
                 inventory_metadata: HashMap::new(),
                 objectives: Vec::new(),
                 unlock_flag_definitions: Vec::new(),
@@ -3692,6 +4069,79 @@ mod tests {
                 "13 Mobility / 1 Resilience / 7 Recovery".into(),
                 "Top Stat Allocation"
             ))
+        );
+    }
+
+    #[test]
+    fn item_investment_stats_follow_the_typed_item_resource() {
+        let mut item = vec![0_u8; 0x1A0];
+        item[ITEM_INVESTMENT_STAT_POINTER_OFFSET..ITEM_INVESTMENT_STAT_POINTER_OFFSET + 8]
+            .copy_from_slice(&(0x90_i64).to_le_bytes());
+        item[0xFC..0x100].copy_from_slice(&INVESTMENT_STAT_RESOURCE_CLASS.to_le_bytes());
+        item[0x100..0x108].copy_from_slice(&2_u64.to_le_bytes());
+        item[0x108..0x110].copy_from_slice(&(0x38_i64).to_le_bytes());
+        item[0x140..0x148].copy_from_slice(&2_u64.to_le_bytes());
+        item[0x148..0x14C].copy_from_slice(&INVESTMENT_STAT_CLASS.to_le_bytes());
+        item[0x150..0x152].copy_from_slice(&1_u16.to_le_bytes());
+        item[0x154..0x158].copy_from_slice(&67_i32.to_le_bytes());
+        item[0x178..0x17A].copy_from_slice(&0_u16.to_le_bytes());
+        item[0x17C..0x180].copy_from_slice(&(-12_i32).to_le_bytes());
+        let definitions = vec![
+            ItemStatDefinition {
+                definition_index: 0,
+                hash: 10,
+                name: "Impact".into(),
+            },
+            ItemStatDefinition {
+                definition_index: 1,
+                hash: 20,
+                name: "Range".into(),
+            },
+        ];
+
+        assert_eq!(
+            item_investment_stats(&item, &definitions),
+            vec![
+                ItemInvestmentStat {
+                    definition_index: 1,
+                    value: 67,
+                },
+                ItemInvestmentStat {
+                    definition_index: 0,
+                    value: -12,
+                },
+            ]
+        );
+
+        item[0xFC..0x100].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(item_investment_stats(&item, &definitions).is_empty());
+    }
+
+    #[test]
+    fn intrinsic_perks_resolve_only_valid_package_indices() {
+        let mut item = vec![0_u8; 0x160];
+        item[ITEM_INTRINSIC_PERK_DESCRIPTOR..ITEM_INTRINSIC_PERK_DESCRIPTOR + 8]
+            .copy_from_slice(&3_u64.to_le_bytes());
+        item[ITEM_INTRINSIC_PERK_DESCRIPTOR + 8..ITEM_INTRINSIC_PERK_DESCRIPTOR + 16]
+            .copy_from_slice(&(0x38_i64).to_le_bytes());
+        item[0x120..0x128].copy_from_slice(&3_u64.to_le_bytes());
+        item[0x128..0x12C].copy_from_slice(&INTRINSIC_PERK_CLASS.to_le_bytes());
+        item[0x130..0x132].copy_from_slice(&1_u16.to_le_bytes());
+        item[0x132..0x134].copy_from_slice(&3_u16.to_le_bytes());
+        item[0x134..0x136].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert_eq!(
+            item_intrinsic_perk_hashes(&item, &[10, 20, 30, 40]),
+            vec![
+                ItemIntrinsicPerk {
+                    definition_index: 1,
+                    hash: 20,
+                },
+                ItemIntrinsicPerk {
+                    definition_index: 3,
+                    hash: 40,
+                },
+            ]
         );
     }
 
