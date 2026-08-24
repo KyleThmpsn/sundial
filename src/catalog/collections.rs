@@ -1,13 +1,19 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
 use super::{
+    Catalog,
     package::{array_at, bool_at, i64_at, relative_offset, u16_at, u32_at, u64_at},
     progression::{
         PRESENTATION_NODE_INDEX_ROW_CLASS, PresentationNodeDef, definition_index_list,
         presentation_paths,
     },
 };
+
+const INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x1E8;
+const ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x200;
 
 const COLLECTIBLE_DEFINITION_TABLE_SLOT: usize = 19;
 const COLLECTIBLE_DEFINITION_ROW_CLASS: u32 = 0x8080_3475;
@@ -72,6 +78,12 @@ pub(crate) struct MaterialRequirementSetDef {
     pub requirements: Vec<MaterialRequirementDef>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemMaterialRequirementSetIndices {
+    pub insertion: Option<u16>,
+    pub enabled: Option<u16>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PendingMaterialRequirementDef {
     pub item_definition_index: u16,
@@ -96,6 +108,110 @@ pub(super) struct PendingCollectibleDef {
     pub material_requirements: Vec<PendingMaterialRequirementDef>,
     pub paths: Vec<Vec<String>>,
     pub conditions: Vec<CollectionConditionDef>,
+}
+
+pub(super) fn item_material_requirement_set_indices_from_data(
+    item: &[u8],
+) -> Option<ItemMaterialRequirementSetIndices> {
+    fn read(item: &[u8], offset: usize) -> Option<u16> {
+        let bytes = item.get(offset..offset + 2)?;
+        let index = u16::from_le_bytes([bytes[0], bytes[1]]);
+        (index != u16::MAX).then_some(index)
+    }
+
+    let insertion = read(item, INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET);
+    let enabled = read(item, ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET);
+    (insertion.is_some() || enabled.is_some())
+        .then_some(ItemMaterialRequirementSetIndices { insertion, enabled })
+}
+
+pub(super) fn materialize_collectibles(
+    pending: Vec<PendingCollectibleDef>,
+    item_hashes: &[u64],
+    names: &HashMap<u64, String>,
+    type_names: &HashMap<u64, String>,
+) -> Result<Vec<CollectibleDef>, String> {
+    pending
+        .into_iter()
+        .map(|collectible| {
+            let item_hash = if collectible.item_definition_index == u16::MAX {
+                0
+            } else {
+                item_hashes
+                    .get(usize::from(collectible.item_definition_index))
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "Collectible #{} references item definition index {}, which is outside the package table",
+                            collectible.index, collectible.item_definition_index
+                        )
+                    })?
+            };
+            let material_requirements = collectible
+                .material_requirements
+                .into_iter()
+                .enumerate()
+                .map(|(row, requirement)| {
+                    let item_hash = item_hashes
+                        .get(usize::from(requirement.item_definition_index))
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "Collectible #{} material requirement row #{row} references item definition index {}, which is outside the package table",
+                                collectible.index, requirement.item_definition_index
+                            )
+                        })?;
+                    Ok(MaterialRequirementDef {
+                        item_definition_index: requirement.item_definition_index,
+                        item_hash,
+                        quantity: requirement.quantity,
+                        delete_on_action: requirement.delete_on_action,
+                        omit_from_requirements: requirement.omit_from_requirements,
+                        condition: requirement.condition,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(CollectibleDef {
+                index: collectible.index,
+                hash: collectible.hash,
+                item_definition_index: collectible.item_definition_index,
+                item_hash,
+                material_requirement_set_index: collectible.material_requirement_set_index,
+                material_requirement_set_hash: collectible.material_requirement_set_hash,
+                material_requirements,
+                name: names.get(&item_hash).cloned().unwrap_or_default(),
+                type_name: type_names.get(&item_hash).cloned().unwrap_or_default(),
+                paths: collectible.paths,
+                conditions: collectible.conditions,
+            })
+        })
+        .collect()
+}
+
+impl Catalog {
+    pub(crate) fn collectibles(&self) -> &[CollectibleDef] {
+        &self.collectibles
+    }
+
+    pub(crate) fn material_requirement_sets(&self) -> &[MaterialRequirementSetDef] {
+        &self.material_requirement_sets
+    }
+
+    pub(crate) fn material_requirement_set(
+        &self,
+        index: usize,
+    ) -> Option<&MaterialRequirementSetDef> {
+        self.material_requirement_sets.get(index)
+    }
+
+    pub(crate) fn item_material_requirement_set_indices(
+        &self,
+        hash: u64,
+    ) -> Option<ItemMaterialRequirementSetIndices> {
+        self.item_material_requirement_set_indices
+            .get(&hash)
+            .copied()
+    }
 }
 
 pub(super) fn scan_collectibles(
@@ -425,5 +541,38 @@ mod tests {
         assert_eq!(materialized[0].index, 0);
         assert_eq!(materialized[0].hash, 0x1234_5678);
         assert_eq!(materialized[0].requirements[0].item_definition_index, 321);
+    }
+
+    #[test]
+    fn item_material_requirement_links_use_sunrise_offsets_and_sentinels() {
+        let mut item = vec![0_u8; ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2];
+        item[INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&2_u16.to_le_bytes());
+        item[ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item),
+            Some(ItemMaterialRequirementSetIndices {
+                insertion: Some(2),
+                enabled: None,
+            })
+        );
+        item[INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&60_000_u16.to_le_bytes());
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item),
+            Some(ItemMaterialRequirementSetIndices {
+                insertion: Some(60_000),
+                enabled: None,
+            })
+        );
+        assert_eq!(
+            item_material_requirement_set_indices_from_data(&item[..188]),
+            None
+        );
     }
 }

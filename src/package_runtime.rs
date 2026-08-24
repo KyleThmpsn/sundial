@@ -131,7 +131,8 @@ mod linux {
         }
 
         let installed_dll = install
-            .join("bin/x64")
+            .join("bin")
+            .join("x64")
             .join(OODLE_DLL_FILE_NAME)
             .canonicalize()
             .map_err(|error| {

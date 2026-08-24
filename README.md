@@ -41,6 +41,8 @@ compatibility is not guaranteed.
   ability choices
 - Search and browse for equipment, plugs, and perks, with options to show dummy
   items or equip plugs not normally allowed on an item
+- Random Item and loadout generation
+- Armor-stat targeting for individual items and full loadouts
 - Character and profile (shared) inventory editing, including moving exact item
   instances between character inventory and equipment slots
 - Remove equipped weapons completely (great for screenshots!)
@@ -105,14 +107,20 @@ No. Sundial supports only the Project Sunrise Shadowkeep versions listed under
 ### Does Sundial change my loadout while Destiny 2 is running?
 
 No. After saving changes, fully exit Destiny 2 to the desktop and relaunch it
-for Project Sunrise to load them.
+for Project Sunrise to load them. For live in-game equipment editing, check out
+[Sunrise Gear Editor](https://github.com/WalterGerig/SunriseGearEditor), a
+separate project.
 
-### What do the unsafe plug-selection modes do?
+### What do the plug-safety levels do?
 
-Unsafe mode shows every plug matching the socket type. “Really unsafe” mode
-allows any discovered plug in any socket, greatly increasing the risk of
-loading failures or crashes. Sundial warns once before enabling it. Every save
-is backed up, and **Preferences > Recovery** can recover the defaults.
+**Compatible** shows plugs known to work with the item (i.e. would normally
+appear on that item in game). **Socket type** includes all discovered plugs
+matching that socket type. **Gear type** broadens the
+selection to plugs found on the same general kind of gear, and **All** allows
+every discovered plug regardless of compatibility. Risk increases at each
+level; incompatible choices may cause loading failures or crashes. Sundial
+warns before enabling **All**. Every save is backed up, and
+**Preferences > Recovery** can recover the defaults.
 
 ### Why does Destiny 2 send me to character creation?
 
@@ -153,6 +161,13 @@ and fix it for future releases. You can reach me on Discord or Twitter/X at
 [tiger-pkg](https://github.com/v4nguard/tiger-pkg) does most of the work required
 to parse the packages from the locally installed game files. Package-layout
 behavior was also informed by the Sunrise and Charm projects.
+
+Thanks to [Kjam0678](https://github.com/Kjam0678/panoptes/) for their work on
+the Panoptes fork, which inspired Sundial's Panoptes-style socket grid layout
+and Randomize Loadout features.
+
+Thanks to xSkullHD for the original Random Item design and contributions to
+Sundial's armor stat targeting.
 
 Thanks to Nox for his help in researching
 [unnamed armor plugs](https://docs.google.com/spreadsheets/d/1U2DNRla6--q8PbU41QcqT2ku50hq5ew8uxy7r1tKe4c/edit).

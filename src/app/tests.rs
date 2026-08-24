@@ -1,6 +1,6 @@
 use crate::{
     catalog::{self, AbilityChoice},
-    hash::format_hash,
+    hash::format_hash_hex,
     orbit_map,
     test_support::TestDirectory,
 };
@@ -293,7 +293,7 @@ fn character_with_abilities(
                 "equipment": {
                     "subclass": {
                         "instance_soid": "0x2",
-                        "definition_hash": format_hash(subclass_hash),
+            "definition_hash": format_hash_hex(subclass_hash),
                         "level": 0,
                         "quantity": 1,
                         "plugs": []
@@ -342,11 +342,6 @@ fn character_validation_keeps_sunrise_limits() {
         .pointer_mut("/state/characters/0/equipment/kinetic/flags")
         .unwrap()
         .clone_from(&Value::String("0x4".into()));
-    assert_eq!(validate_characters(&document), Ok(()));
-    document
-        .pointer_mut("/state/characters/0/equipment/kinetic/flags")
-        .unwrap()
-        .clone_from(&Value::String("0x8".into()));
     assert!(validate_characters(&document).is_err());
 }
 
@@ -473,8 +468,89 @@ fn legacy_preferences_default_to_supported_plugs_with_warnings() {
     assert!(!decoded.always_open_json_editor_in_second_window);
     assert!(!decoded.show_plug_hashes);
     assert_eq!(decoded.item_card_width, ItemCardWidth::Standard);
-    assert!(!decoded.experimental_bubble_names);
+    assert_eq!(
+        decoded.character_inventory_layout,
+        CharacterInventoryLayout::Cards
+    );
+    assert!(!decoded.experimental_orbit_backdrops);
     assert!(!decoded.experimental_progression);
+    assert!(!decoded.experimental_power_above_cap);
+}
+
+#[test]
+fn experimental_power_above_cap_round_trips() {
+    let preferences = Preferences {
+        experimental_power_above_cap: true,
+        ..Preferences::default()
+    };
+
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(encoded["experimental_power_above_cap"], true);
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert!(decoded.experimental_power_above_cap);
+}
+
+#[test]
+fn orbit_map_generation_requires_the_experimental_preference_and_schema_field() {
+    let supported = serde_json::json!({"client": {"orbit_slice_set": 2}});
+    let unsupported = serde_json::json!({"client": {}});
+
+    assert!(!orbit_map_generation_enabled(false, &supported));
+    assert!(orbit_map_generation_enabled(true, &supported));
+    assert!(!orbit_map_generation_enabled(true, &unsupported));
+}
+
+#[test]
+fn reopening_a_detached_window_uses_a_fresh_viewport_generation() {
+    let mut open = true;
+    let mut generation = 0;
+
+    update_detached_window_state(&mut open, &mut generation, false);
+    assert!(!open);
+    assert_eq!(generation, 1);
+
+    update_detached_window_state(&mut open, &mut generation, true);
+    assert!(open);
+    assert_eq!(generation, 1);
+
+    update_detached_window_state(&mut open, &mut generation, false);
+    assert!(!open);
+    assert_eq!(generation, 2);
+
+    update_detached_window_state(&mut open, &mut generation, false);
+    assert_eq!(generation, 2);
+}
+
+#[test]
+fn panoptes_character_inventory_layout_round_trips() {
+    let preferences = Preferences {
+        character_inventory_layout: CharacterInventoryLayout::Panoptes,
+        ..Preferences::default()
+    };
+
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(encoded["character_inventory_layout"], "panoptes");
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        decoded.character_inventory_layout,
+        CharacterInventoryLayout::Panoptes
+    );
+}
+
+#[test]
+fn gear_type_plug_selection_mode_round_trips() {
+    let preferences = Preferences {
+        default_plug_selection_mode: PlugSelectionMode::GearType,
+        ..Preferences::default()
+    };
+
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(encoded["default_plug_selection_mode"], "gear_type");
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        decoded.default_plug_selection_mode,
+        PlugSelectionMode::GearType
+    );
 }
 
 #[test]
@@ -519,6 +595,40 @@ fn settings_resolution_requires_a_choice_when_both_files_exist() {
         fs::read_to_string(bin_x64).unwrap(),
         "{\"layout\":\"bin\"}\n"
     );
+}
+
+#[test]
+fn generated_settings_paths_use_platform_native_separators() {
+    let install = std::path::Path::new("install");
+    let root = settings_path_for_install(install, SettingsLayout::Root);
+    let bin_x64 = settings_path_for_install(install, SettingsLayout::BinX64);
+
+    assert_eq!(root, install.join("Sunrise").join("settings.json"));
+    assert_eq!(
+        bin_x64,
+        install
+            .join("bin")
+            .join("x64")
+            .join("Sunrise")
+            .join("settings.json")
+    );
+
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            bin_x64.display().to_string(),
+            r"install\bin\x64\Sunrise\settings.json"
+        );
+        assert!(!bin_x64.display().to_string().contains('/'));
+    }
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            bin_x64.display().to_string(),
+            "install/bin/x64/Sunrise/settings.json"
+        );
+        assert!(!bin_x64.display().to_string().contains('\\'));
+    }
 }
 
 #[test]

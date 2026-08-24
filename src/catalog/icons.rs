@@ -8,8 +8,15 @@ use tiger_pkg::{PackageManager, TagHash};
 
 use crate::package_runtime;
 
-use super::package::{array_at, i64_at, relative_offset, u16_at, u32_at};
+use super::{
+    Catalog,
+    package::{array_at, i64_at, relative_offset, u16_at, u32_at},
+};
 
+const ITEM_ICON_INDEX_OFFSET: usize = 0x80;
+const ITEM_ICON_TABLE_SLOT: usize = 75;
+const ITEM_ICON_TABLE_ROW_SIZE: usize = 24;
+const ITEM_ICON_CONTAINER_OFFSET: usize = 16;
 const ICON_PRIMARY_CONTAINER_OFFSET: usize = 0x14;
 // Shadowkeep stores the opaque rarity background before its translucent watermark treatment.
 const ICON_BACKGROUND_CONTAINER_OFFSET: usize = 0x1C;
@@ -18,12 +25,109 @@ const ICON_OVERLAY_CONTAINER_OFFSET: usize = 0x24;
 const CATALOG_ICON_SIZE: usize = 96;
 const MAX_CACHED_CATALOG_ICONS: usize = 512;
 const FAILED_ICON_RETRY_DELAY: Duration = Duration::from_secs(5);
+const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
 
 #[derive(Default)]
 pub(super) struct IconRuntime {
     manager: Option<PackageManager>,
     textures: HashMap<u64, (CachedIcon, u64)>,
     access_counter: u64,
+}
+
+impl Catalog {
+    /// Loads an installed package icon on demand and keeps only displayed icons on the GPU.
+    pub(crate) fn icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        hash: u64,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let &container = self.icon_containers.get(&hash)?;
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture(context, &self.install_path, hash, container)
+    }
+
+    pub(crate) fn icon_texture_from_container(
+        &self,
+        context: &eframe::egui::Context,
+        cache_key: u64,
+        container: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture(context, &self.install_path, cache_key, container)
+    }
+
+    /// Loads the icon authored on an installed investment-stat definition.
+    pub(crate) fn armor_stat_icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        stat_name: &str,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let definition = self
+            .item_stat_definitions
+            .iter()
+            .find(|definition| definition.name.trim().eq_ignore_ascii_case(stat_name))?;
+        let container = definition.icon_container?;
+        let cache_key = STAT_ICON_CACHE_PREFIX | definition.hash;
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture(context, &self.install_path, cache_key, container)
+    }
+
+    pub(crate) fn icon_diagnostic(&self, hash: u64) -> Option<String> {
+        let runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.diagnostic(hash)
+    }
+}
+
+pub(super) fn scan_item_icon_containers(
+    manager: &PackageManager,
+    globals: &[u8],
+) -> Result<Vec<Option<u32>>, String> {
+    let slot = 16 + ITEM_ICON_TABLE_SLOT * 16;
+    let table_tag = TagHash(u32_at(globals, slot)?);
+    let table = manager
+        .read_tag(table_tag)
+        .map_err(|error| format!("Could not read item icon table: {error}"))?;
+    let (count, rows, _) = array_at(&table, 8)?;
+    (0..count)
+        .map(|index| {
+            let row = rows
+                .checked_add(
+                    index
+                        .checked_mul(ITEM_ICON_TABLE_ROW_SIZE)
+                        .ok_or("Item icon table offset overflowed")?,
+                )
+                .ok_or("Item icon table offset overflowed")?;
+            let tag = u32_at(&table, row + ITEM_ICON_CONTAINER_OFFSET)?;
+            Ok((tag != u32::MAX && TagHash(tag).is_valid()).then_some(tag))
+        })
+        .collect()
+}
+
+pub(super) fn item_icon_container(
+    item_strings: &[u8],
+    containers_by_index: &[Option<u32>],
+) -> Option<u32> {
+    let index = u16_at(item_strings, ITEM_ICON_INDEX_OFFSET).ok()?;
+    (index != u16::MAX)
+        .then(|| {
+            containers_by_index
+                .get(usize::from(index))
+                .copied()
+                .flatten()
+        })
+        .flatten()
 }
 
 impl IconRuntime {
@@ -193,6 +297,16 @@ fn load_catalog_icon_layer(
     icon_container: &[u8],
     layer_offset: usize,
 ) -> Result<Option<eframe::egui::ColorImage>, String> {
+    load_catalog_icon_layer_at(manager, icon_container, layer_offset, 0, 0)
+}
+
+fn load_catalog_icon_layer_at(
+    manager: &PackageManager,
+    icon_container: &[u8],
+    layer_offset: usize,
+    lane_index: usize,
+    texture_index: usize,
+) -> Result<Option<eframe::egui::ColorImage>, String> {
     let layer_tag = TagHash(u32_at(icon_container, layer_offset)?);
     if !layer_tag.is_valid() {
         return Ok(None);
@@ -202,14 +316,28 @@ fn load_catalog_icon_layer(
         .map_err(|error| format!("Could not read icon layer container: {error}"))?;
     let resource = relative_offset(0x10, 0, i64_at(&layer, 0x10)?)?;
     let (lane_count, lanes, _) = array_at(&layer, resource)?;
-    if lane_count == 0 {
+    if lane_index >= lane_count {
         return Ok(None);
     }
-    let (texture_count, textures, _) = array_at(&layer, lanes)?;
-    if texture_count == 0 {
+    let lane = lanes
+        .checked_add(
+            lane_index
+                .checked_mul(0x10)
+                .ok_or("Icon texture lane offset overflowed")?,
+        )
+        .ok_or("Icon texture lane offset overflowed")?;
+    let (texture_count, textures, _) = array_at(&layer, lane)?;
+    if texture_index >= texture_count {
         return Ok(None);
     }
-    let texture_tag = TagHash(u32_at(&layer, textures)?);
+    let texture = textures
+        .checked_add(
+            texture_index
+                .checked_mul(4)
+                .ok_or("Icon texture offset overflowed")?,
+        )
+        .ok_or("Icon texture offset overflowed")?;
+    let texture_tag = TagHash(u32_at(&layer, texture)?);
     let header = manager
         .read_tag(texture_tag)
         .map_err(|error| format!("Could not read icon layer texture header: {error}"))?;

@@ -1,9 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod bubble_names;
 mod catalog;
-mod catalyst_plugs;
 mod class_items;
 mod dummy_items;
 mod game_settings;

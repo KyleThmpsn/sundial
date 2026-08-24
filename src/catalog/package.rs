@@ -1,13 +1,17 @@
 use std::{fs, path::Path, time::UNIX_EPOCH};
 
 pub(crate) fn validate_install(install: &Path) -> Result<(), String> {
+    let oodle_relative = Path::new("bin").join("x64").join("oo2core_3_win64.dll");
     if install.join("destiny2.exe").is_file()
         && install.join("packages").is_dir()
-        && install.join("bin/x64/oo2core_3_win64.dll").is_file()
+        && install.join(&oodle_relative).is_file()
     {
         Ok(())
     } else {
-        Err("Not a Shadowkeep install: expected destiny2.exe, packages, and bin\\x64\\oo2core_3_win64.dll".into())
+        Err(format!(
+            "Not a Shadowkeep install: expected destiny2.exe, packages, and {}",
+            oodle_relative.display()
+        ))
     }
 }
 

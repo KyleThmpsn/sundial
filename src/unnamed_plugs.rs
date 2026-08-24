@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use serde::Deserialize;
 
-use crate::hash::parse_hash;
+use crate::hash::parse_hash_hex;
 
 const DEFINITION_DATABASE_JSON: &str = include_str!("../assets/unnamed-plugs.json");
 const DEFINITION_DATABASE_SCHEMA: u32 = 2;
@@ -16,7 +16,8 @@ struct DefinitionDatabase {
 
 #[derive(Debug, Deserialize)]
 struct SerializedPlugDefinition {
-    hash: String,
+    #[serde(rename = "hash")]
+    hash_hex: String,
     name: String,
     type_name: String,
 }
@@ -60,7 +61,7 @@ pub(crate) fn manifest_version() -> &'static str {
 fn definitions() -> impl Iterator<Item = PlugDefinition<'static>> {
     definition_database().plugs.iter().filter_map(|definition| {
         Some(PlugDefinition {
-            hash: parse_hash(&definition.hash)?,
+            hash: parse_hash_hex(&definition.hash_hex)?,
             name: definition.name.trim(),
             type_name: definition.type_name.trim(),
         })

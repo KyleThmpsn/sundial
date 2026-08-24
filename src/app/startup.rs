@@ -258,7 +258,7 @@ impl StartupApp {
                                             [400.0, 34.0],
                                             egui::Button::new(format!(
                                                 "Use {}",
-                                                layout.relative_path()
+                                                layout.relative_path().display()
                                             )),
                                         )
                                         .clicked()

@@ -191,6 +191,26 @@ pub(super) fn paint_with_stroke(
     }
 }
 
+pub(super) fn inline_right_arrow(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(13.0, ui.spacing().interact_size.y),
+        egui::Sense::hover(),
+    );
+    if ui.is_rect_visible(rect) {
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        let stroke = pixel_fitted_stroke(egui::Stroke::new(1.5, color), pixels_per_point);
+        let point = |point| pixel_snap_stroke_point(point, stroke, pixels_per_point);
+        let tip = point(egui::pos2(rect.right() - 1.5, rect.center().y));
+        let tail = point(egui::pos2(rect.left() + 1.5, rect.center().y));
+        ui.painter().line_segment([tail, tip], stroke);
+        ui.painter()
+            .line_segment([point(egui::pos2(tip.x - 4.0, tip.y - 3.0)), tip], stroke);
+        ui.painter()
+            .line_segment([point(egui::pos2(tip.x - 4.0, tip.y + 3.0)), tip], stroke);
+    }
+    response
+}
+
 fn pixel_fitted_square(rect: egui::Rect, pixels_per_point: f32) -> egui::Rect {
     let side_pixels = (rect.width().min(rect.height()) * pixels_per_point)
         .round()

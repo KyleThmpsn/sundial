@@ -13,14 +13,12 @@ use crate::hash::parse_unsigned_value;
 
 use super::{Preferences, SLOTS, SettingsLayout, SettingsPathResolution, inventory, progression};
 
-const SUNRISE_MODULE_RELATIVE_PATH: &str = "bin/x64/steam_api64.dll";
-
 pub(super) fn detect_sunrise_version(install_path: &Path) -> String {
     installed_sunrise_module_version(install_path).unwrap_or_else(|| "Not detected".into())
 }
 
 fn installed_sunrise_module_version(install_path: &Path) -> Option<String> {
-    let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
+    let module_path = sunrise_module_path(install_path);
     let bytes = fs::read(module_path).ok()?;
     let image = pelite::PeFile::from_bytes(&bytes).ok()?;
     let version_info = image.resources().ok()?.version_info().ok()?.file_info();
@@ -61,7 +59,7 @@ pub(super) fn normalize_sunrise_version(version: &str) -> Option<String> {
 }
 
 pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Value, String> {
-    let module_path = install_path.join(SUNRISE_MODULE_RELATIVE_PATH);
+    let module_path = sunrise_module_path(install_path);
     let bytes = fs::read(&module_path).map_err(|error| {
         format!(
             "Could not read Project Sunrise's bundled defaults from {}: {error}",
@@ -879,6 +877,10 @@ pub(super) fn catalog_path() -> Option<PathBuf> {
 
 pub(super) fn settings_path_for_install(install: &Path, layout: SettingsLayout) -> PathBuf {
     install.join(layout.relative_path())
+}
+
+fn sunrise_module_path(install: &Path) -> PathBuf {
+    install.join("bin").join("x64").join("steam_api64.dll")
 }
 
 pub(super) fn resolve_settings_path(

@@ -6,7 +6,7 @@ cd "$repo_dir"
 
 version=${1:-}
 if [ -z "$version" ]; then
-    version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+    version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1 | tr -d '\r')
 fi
 version=${version#v}
 

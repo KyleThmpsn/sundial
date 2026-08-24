@@ -61,8 +61,11 @@ pub(super) fn sortable_header_cell(
 pub(super) fn back_button(ui: &mut egui::Ui, destination: &str) -> egui::Response {
     let accessible_label = format!("Back to {destination}");
     let response = ui
-        .button(format!("    {accessible_label}"))
-        .on_hover_text(&accessible_label);
+        .button("    Back")
+        .on_hover_text(format!("{accessible_label} (Alt+Left)"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label.clone())
+    });
     if ui.is_rect_visible(response.rect) {
         let icon_size = 11.0;
         let icon_center = egui::pos2(
@@ -77,6 +80,45 @@ pub(super) fn back_button(ui: &mut egui::Ui, destination: &str) -> egui::Respons
             ui.style().interact(&response).fg_stroke,
         );
     }
+    response
+}
+
+pub(super) fn glyph_button(
+    ui: &mut egui::Ui,
+    glyph: Glyph,
+    accessible_label: &str,
+) -> egui::Response {
+    let side = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
+    let response = ui
+        .scope(|ui| {
+            ui.style_mut().visuals.widgets.hovered.expansion = 0.0;
+            ui.style_mut().visuals.widgets.active.expansion = 0.0;
+            ui.add(
+                egui::Button::new("")
+                    .small()
+                    .min_size(egui::Vec2::splat(side)),
+            )
+        })
+        .inner
+        .on_hover_text(accessible_label);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
+    });
+
+    if ui.is_rect_visible(response.rect) {
+        let icon_size = (response.rect.height() - 8.0).clamp(10.0, 12.0);
+        let icon_rect =
+            egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(icon_size));
+        glyphs::paint_with_stroke(
+            ui,
+            icon_rect,
+            glyph,
+            ui.style().interact(&response).fg_stroke,
+        );
+    }
+
     response
 }
 
@@ -160,20 +202,6 @@ pub(super) fn hierarchy_leaf_cell(
         },
     )
     .inner
-}
-
-pub(super) fn inspector_heading(ui: &mut egui::Ui, title: impl Into<String>) -> bool {
-    let mut close = false;
-    ui.horizontal(|ui| {
-        ui.heading("Inspector");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Close").clicked() {
-                close = true;
-            }
-        });
-    });
-    ui.label(egui::RichText::new(title).strong());
-    close
 }
 
 pub(super) fn single_line_galley(
