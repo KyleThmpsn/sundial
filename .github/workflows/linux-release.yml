@@ -1,0 +1,66 @@
+name: Linux release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release executable
+        run: cargo build --release --locked
+
+      - name: Generate Linux dependency notices
+        shell: pwsh
+        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
+
+      - name: Package Linux release
+        run: bash ./scripts/package-linux.sh
+
+      - name: Report compatibility baseline
+        run: |
+          file target/release/sundial
+          ldd target/release/sundial
+          printf 'Maximum required glibc symbol: '
+          readelf --version-info target/release/sundial \
+            | grep -o 'GLIBC_[0-9.]*' \
+            | sort -Vu \
+            | tail -n 1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sundial-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach files to GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber

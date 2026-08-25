@@ -5,8 +5,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$metadata = cargo metadata --format-version 1 --locked --offline | ConvertFrom-Json
+$metadataJson = cargo metadata --format-version 1 --locked --offline
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo metadata failed; run cargo fetch --locked for the target first"
+}
+$metadata = $metadataJson | ConvertFrom-Json
 $tree = cargo tree --locked --offline --target $Target -e normal --prefix none --format "{p}"
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo tree failed; run cargo fetch --locked --target $Target first"
+}
 
 $wanted = @{}
 foreach ($line in $tree) {

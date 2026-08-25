@@ -1,34 +1,56 @@
 use std::{
     collections::HashMap,
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, TryRecvError},
-    },
+    fs,
+    path::PathBuf,
+    sync::mpsc::{self, TryRecvError},
     thread,
 };
 
 use eframe::egui;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     catalog::{Catalog as Manifest, CatalogProgress},
-    game_settings, storage, unnamed_plugs,
+    game_settings, orbit_map, storage, unnamed_plugs,
     updates::{RELEASES_URL, UpdateCheck, UpdateStatus},
 };
 
 mod startup;
 use startup::StartupApp;
 
+mod background_tasks;
+use background_tasks::{CatalogTask, CatalogTaskEvent, CatalogTaskKind, PendingInstallLoad};
+
+mod bootstrap;
+use bootstrap::parse_args;
+
+mod generated_files;
+use generated_files::{
+    GeneratedFileDecision, GeneratedFileKind, GeneratedFilePlan, GeneratedFileSaveAction,
+    PendingGeneratedFile, generated_file_diff, normalized_generated_document, settings_size_label,
+    settings_size_note,
+};
+
+mod platform;
+#[cfg(target_os = "linux")]
+use platform::{draw_linux_title_bar, load_linux_title_bar_texture};
+use platform::{load_logo_texture, open_directory};
+#[cfg(windows)]
+use platform::{set_windows_app_identity, set_windows_taskbar_icon};
+
+mod preferences;
+use preferences::{
+    CharacterInventoryLayout, ColorTheme, InstallSelection, ItemCardWidth, PlugSelectionMode,
+    Preferences, SettingsLayout, SettingsPathResolution, configure_destiny_symbol_fonts,
+    draw_plug_selection_warning,
+};
+
 mod settings;
 use settings::{
     backups_path, catalog_path, create_adjacent_backup, detect_sunrise_version, encode_settings,
-    load_installed_sunrise_defaults, load_json, load_preferences, missing_settings_message,
-    preferences_path, prepare_settings, repair_known_ability_pairs, resolve_settings_path,
-    save_json, settings_path_for_install, validate_document, verify_source_unchanged,
+    load_installed_sunrise_defaults, load_json, missing_settings_message, preferences_path,
+    prepare_settings, repair_known_ability_pairs, resolve_settings_path, save_json,
+    settings_path_for_install, validate_document, verify_source_unchanged,
 };
 
 mod json_editor;
@@ -39,9 +61,15 @@ use equipment::{class_name, collect_class_armor_defaults};
 
 mod inventory;
 
+mod components;
+
 mod item_editor;
 
 mod glyphs;
+
+mod ui;
+
+mod inspector;
 
 mod inventory_page;
 
@@ -49,8 +77,6 @@ mod progression;
 
 mod collections_page;
 
-const ROOT_SETTINGS_RELATIVE_PATH: &str = r"Sunrise\settings.json";
-const BIN_X64_SETTINGS_RELATIVE_PATH: &str = r"bin\x64\Sunrise\settings.json";
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
@@ -62,12 +88,6 @@ const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
 const PLUG_PICKER_MAX_HEIGHT: f32 = 420.0;
 const MAIN_SIDEBAR_WIDTH: f32 = 168.0;
-const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
-    ("Destiny Symbols 360", r"fonts\Destiny_Symbols_360.ttf"),
-    ("Destiny Symbols PC", r"fonts\Destiny_Symbols_PC.otf"),
-];
-const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
-const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
 
 const SLOTS: &[(&str, &str, u64)] = &[
     ("kinetic", "Kinetic", 1_498_876_634),
@@ -99,6 +119,13 @@ enum ViewMode {
     Preferences,
 }
 
+fn update_detached_window_state(open: &mut bool, generation: &mut u64, requested_open: bool) {
+    if *open && !requested_open {
+        *generation = generation.wrapping_add(1);
+    }
+    *open = requested_open;
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ProgressionSection {
     #[default]
@@ -115,221 +142,12 @@ enum ConfirmationDialog {
     Exit,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PlugSelectionMode {
-    #[default]
-    Supported,
-    MatchingSocketType,
-    AnyPlug,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ColorTheme {
-    #[default]
-    Dark,
-    Light,
-}
-
-impl ColorTheme {
-    const fn egui_theme(self) -> egui::Theme {
-        match self {
-            Self::Dark => egui::Theme::Dark,
-            Self::Light => egui::Theme::Light,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ItemCardWidth {
-    Compact,
-    #[default]
-    Standard,
-    Wide,
-}
-
-impl ItemCardWidth {
-    const fn dimensions(self) -> (f32, f32) {
-        match self {
-            Self::Compact => (285.0, 315.0),
-            Self::Standard => (335.0, 390.0),
-            Self::Wide => (430.0, 520.0),
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsLayout {
-    Root,
-    BinX64,
-}
-
-impl SettingsLayout {
-    const ALL: [Self; 2] = [Self::Root, Self::BinX64];
-
-    const fn relative_path(self) -> &'static str {
-        match self {
-            Self::Root => ROOT_SETTINGS_RELATIVE_PATH,
-            Self::BinX64 => BIN_X64_SETTINGS_RELATIVE_PATH,
-        }
-    }
-
-    const fn preference_value(self) -> &'static str {
-        match self {
-            Self::Root => "root",
-            Self::BinX64 => "bin_x64",
-        }
-    }
-
-    fn from_preference(value: &str) -> Option<Self> {
-        match value {
-            "root" => Some(Self::Root),
-            "bin_x64" => Some(Self::BinX64),
-            _ => None,
-        }
-    }
-}
-
-enum SettingsPathResolution {
-    Found(SettingsLayout, PathBuf),
-    Missing,
-    Ambiguous,
-}
-
-#[derive(Clone)]
-struct InstallSelection {
-    install_path: PathBuf,
-    preferred_layout: Option<SettingsLayout>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct Preferences {
-    #[serde(default)]
-    install: Option<PathBuf>,
-    #[serde(default)]
-    settings_layout: Option<String>,
-    #[serde(default)]
-    really_unsafe_warning_acknowledged: bool,
-    #[serde(default)]
-    default_plug_selection_mode: PlugSelectionMode,
-    #[serde(default = "default_show_safety_warnings")]
-    show_safety_warnings: bool,
-    #[serde(default)]
-    color_theme: ColorTheme,
-    #[serde(default)]
-    always_open_json_editor_in_second_window: bool,
-    #[serde(default)]
-    show_plug_hashes: bool,
-    #[serde(default)]
-    item_card_width: ItemCardWidth,
-    #[serde(default)]
-    show_progression: bool,
-}
-
-const fn default_show_safety_warnings() -> bool {
-    true
-}
-
-fn configure_destiny_symbol_fonts(ctx: &egui::Context, install: &Path) -> Result<(), String> {
-    let mut fonts = egui::FontDefinitions::default();
-    let mut loaded = Vec::new();
-    let mut errors = Vec::new();
-    for &(name, relative_path) in DESTINY_SYMBOL_FONTS {
-        let path = install.join(relative_path);
-        match fs::read(&path) {
-            Ok(bytes) => {
-                fonts
-                    .font_data
-                    .insert(name.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
-                loaded.push(name.to_owned());
-            }
-            Err(error) => errors.push(format!("Could not read {}: {error}", path.display())),
-        }
-    }
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .extend(loaded.clone());
-    }
-    ctx.set_fonts(fonts);
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
-}
-
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            install: None,
-            settings_layout: None,
-            really_unsafe_warning_acknowledged: false,
-            default_plug_selection_mode: PlugSelectionMode::Supported,
-            show_safety_warnings: true,
-            color_theme: ColorTheme::Dark,
-            always_open_json_editor_in_second_window: false,
-            show_plug_hashes: false,
-            item_card_width: ItemCardWidth::Standard,
-            show_progression: false,
-        }
-    }
-}
-
-impl Preferences {
-    fn install_selection(&self) -> Option<InstallSelection> {
-        Some(InstallSelection {
-            install_path: self.install.clone()?,
-            preferred_layout: self
-                .settings_layout
-                .as_deref()
-                .and_then(SettingsLayout::from_preference),
-        })
-    }
-}
-
 #[derive(Clone)]
 struct PendingFutureSchemaLoad {
     install_path: PathBuf,
     settings_path: PathBuf,
     settings_layout: SettingsLayout,
     schema_version: u64,
-}
-
-struct PendingInstallLoad {
-    install_path: PathBuf,
-    settings_path: PathBuf,
-    settings_layout: SettingsLayout,
-    document: Value,
-}
-
-enum CatalogTaskKind {
-    LoadInstall(PendingInstallLoad),
-    Rebuild,
-}
-
-impl CatalogTaskKind {
-    const fn title(&self) -> &'static str {
-        match self {
-            Self::LoadInstall(_) => "Loading Shadowkeep installation",
-            Self::Rebuild => "Rebuilding local catalog",
-        }
-    }
-}
-
-enum CatalogTaskEvent {
-    Progress(CatalogProgress),
-    Finished(Box<Result<Manifest, String>>),
-}
-
-struct CatalogTask {
-    kind: CatalogTaskKind,
-    receiver: Receiver<CatalogTaskEvent>,
-    progress: CatalogProgress,
 }
 
 struct SundialApp {
@@ -345,6 +163,7 @@ struct SundialApp {
     selected_character: usize,
     searches: HashMap<String, String>,
     plug_searches: HashMap<String, String>,
+    armor_stats_adjuster: equipment::ArmorStatsAdjusterState,
     plug_selection_mode: PlugSelectionMode,
     default_plug_selection_mode: PlugSelectionMode,
     show_safety_warnings: bool,
@@ -352,7 +171,10 @@ struct SundialApp {
     always_open_json_editor_in_second_window: bool,
     show_plug_hashes: bool,
     item_card_width: ItemCardWidth,
-    show_progression: bool,
+    character_inventory_layout: CharacterInventoryLayout,
+    experimental_orbit_backdrops: bool,
+    experimental_progression: bool,
+    experimental_power_above_cap: bool,
     really_unsafe_warning_acknowledged: bool,
     remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
@@ -362,14 +184,20 @@ struct SundialApp {
     key_binding_ui: game_settings::KeyBindingUiState,
     progression_ui: progression::UiState,
     collections_ui: collections_page::UiState,
+    hash_inspection: inspector::HashInspectionState,
     raw_json: String,
     raw_json_document: Value,
     json_editor: JsonEditorState,
     json_editor_window_open: bool,
+    json_editor_window_generation: u64,
     logo: Option<egui::TextureHandle>,
+    #[cfg(target_os = "linux")]
+    title_bar_icon: Option<egui::TextureHandle>,
     about_open: bool,
     update_check: UpdateCheck,
     confirmation: Option<ConfirmationDialog>,
+    pending_generated_file: Option<PendingGeneratedFile>,
+    generated_file_decisions: Vec<(GeneratedFileKind, GeneratedFileDecision)>,
     exit_confirmed: bool,
     dirty: bool,
     status: String,
@@ -433,6 +261,7 @@ impl SundialApp {
             selected_character: 0,
             searches: HashMap::new(),
             plug_searches: HashMap::new(),
+            armor_stats_adjuster: equipment::ArmorStatsAdjusterState::default(),
             plug_selection_mode: default_plug_selection_mode,
             default_plug_selection_mode,
             show_safety_warnings: preferences.show_safety_warnings,
@@ -441,7 +270,10 @@ impl SundialApp {
                 .always_open_json_editor_in_second_window,
             show_plug_hashes: preferences.show_plug_hashes,
             item_card_width: preferences.item_card_width,
-            show_progression: preferences.show_progression,
+            character_inventory_layout: preferences.character_inventory_layout,
+            experimental_orbit_backdrops: preferences.experimental_orbit_backdrops,
+            experimental_progression: preferences.experimental_progression,
+            experimental_power_above_cap: preferences.experimental_power_above_cap,
             really_unsafe_warning_acknowledged: preferences
                 .really_unsafe_warning_acknowledged,
             remember_plug_selection_mode_after_confirmation: false,
@@ -452,14 +284,20 @@ impl SundialApp {
             key_binding_ui: game_settings::KeyBindingUiState::default(),
             progression_ui: progression::UiState::default(),
             collections_ui: collections_page::UiState::default(),
+            hash_inspection: inspector::HashInspectionState::default(),
             raw_json,
             raw_json_document,
             json_editor: JsonEditorState::default(),
             json_editor_window_open: preferences.always_open_json_editor_in_second_window,
+            json_editor_window_generation: 0,
             logo: None,
+            #[cfg(target_os = "linux")]
+            title_bar_icon: None,
             about_open: false,
             update_check: UpdateCheck::default(),
             confirmation: None,
+            pending_generated_file: None,
+            generated_file_decisions: Vec::new(),
             exit_confirmed: false,
             dirty: false,
             status: source_warning.as_ref().map_or_else(
@@ -496,6 +334,7 @@ impl SundialApp {
                 self.class_armor_defaults = collect_class_armor_defaults(&doc);
                 self.persisted_document = doc.clone();
                 self.document = doc;
+                self.progression_ui.invalidate_document();
                 self.refresh_sunrise_version();
                 self.source_warning.clone_from(&warning);
                 self.selected_character = self
@@ -519,7 +358,10 @@ impl SundialApp {
         }
     }
 
-    fn save(&mut self) -> bool {
+    fn save_with_generated_files(&mut self, action: GeneratedFileSaveAction) -> bool {
+        if game_settings::ensure_schema_v8_preferences(&mut self.document) {
+            self.dirty = true;
+        }
         if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Not saved: {error}"), true);
             return false;
@@ -533,6 +375,16 @@ impl SundialApp {
             .source_warning
             .clone()
             .or_else(|| current_warning.clone());
+        let orbit_supported =
+            orbit_map_generation_enabled(self.experimental_orbit_backdrops, &self.document);
+        let generated_file_plans = match self.prepare_generated_files(orbit_supported, action) {
+            Ok(Some(plans)) => plans,
+            Ok(None) => return false,
+            Err(error) => {
+                self.set_status(format!("Not saved: {error}"), true);
+                return false;
+            }
+        };
         let safety_backup = if detected_warning.is_some() {
             match create_adjacent_backup(&self.settings_path) {
                 Ok(path) => Some(path),
@@ -555,6 +407,7 @@ impl SundialApp {
                 self.persisted_document = self.document.clone();
                 self.source_warning = current_warning;
                 self.dirty = false;
+                self.progression_ui.mark_saved();
                 self.sync_raw_json();
                 let repair_note = match repaired_ability_pairs {
                     0 => String::new(),
@@ -562,10 +415,27 @@ impl SundialApp {
                     count => format!(" Corrected {count} invalid ability pairings."),
                 };
                 let size_note = settings_size_note(&result);
+                let generated_file_note = match self
+                    .complete_generated_file_plans(generated_file_plans)
+                {
+                    Ok(note) => note,
+                    Err(error) => {
+                        self.generated_file_decisions.clear();
+                        self.set_status(
+                            format!(
+                                "Saved settings, but a package-generated Sunrise file could not be written: {error}. Backup: {}",
+                                result.backup.display()
+                            ),
+                            true,
+                        );
+                        return false;
+                    }
+                };
+                self.generated_file_decisions.clear();
                 if let (Some(warning), Some(safety_backup)) = (detected_warning, safety_backup) {
                     self.set_status(
                         format!(
-                            "Saved after detecting an unexpected setting ({warning}).{repair_note}{size_note} The untouched source is at {}. Backup: {}",
+                            "Saved after detecting an unexpected setting ({warning}).{repair_note}{size_note}{generated_file_note} The untouched source is at {}. Backup: {}",
                             safety_backup.display(),
                             result.backup.display()
                         ),
@@ -574,7 +444,7 @@ impl SundialApp {
                 } else {
                     self.set_status(
                         format!(
-                            "Saved.{repair_note}{size_note} Backup: {}",
+                            "Saved.{repair_note}{size_note}{generated_file_note} Backup: {}",
                             result.backup.display()
                         ),
                         result.exceeds_size_limit,
@@ -583,6 +453,7 @@ impl SundialApp {
                 safe_to_close
             }
             Err(error) => {
+                self.generated_file_decisions.clear();
                 let suffix = safety_backup.map_or_else(String::new, |path| {
                     format!(" The untouched source is at {}.", path.display())
                 });
@@ -593,10 +464,140 @@ impl SundialApp {
     }
 
     fn save_all_edits(&mut self) -> bool {
+        self.save_all_edits_with_action(GeneratedFileSaveAction::Save)
+    }
+
+    fn save_all_edits_with_action(&mut self, action: GeneratedFileSaveAction) -> bool {
         if self.json_editor.has_unapplied_changes() && !self.apply_raw_json() {
             return false;
         }
-        self.save()
+        self.generated_file_decisions.clear();
+        self.save_with_generated_files(action)
+    }
+
+    fn prepare_generated_files(
+        &mut self,
+        orbit_supported: bool,
+        action: GeneratedFileSaveAction,
+    ) -> Result<Option<Vec<GeneratedFilePlan>>, String> {
+        let mut files = Vec::new();
+        if orbit_supported {
+            files.push((
+                GeneratedFileKind::OrbitMap,
+                orbit_map::path(&self.settings_path)?,
+                orbit_map::document(self.manifest.orbit_map_entries()),
+            ));
+        }
+        let mut plans = Vec::with_capacity(files.len());
+        for (kind, path, generated) in files {
+            let decision = self
+                .generated_file_decisions
+                .iter()
+                .rev()
+                .find_map(|(saved_kind, decision)| (*saved_kind == kind).then_some(*decision))
+                .unwrap_or(GeneratedFileDecision::Ask);
+            match decision {
+                GeneratedFileDecision::Replace => {
+                    plans.push(GeneratedFilePlan::Write(kind, generated));
+                }
+                GeneratedFileDecision::KeepExisting => {
+                    plans.push(GeneratedFilePlan::KeepExisting(kind, path));
+                }
+                GeneratedFileDecision::Ask => match fs::read(&path) {
+                    Ok(raw) => {
+                        let existing = String::from_utf8_lossy(&raw).into_owned();
+                        if normalized_generated_document(&existing)
+                            == normalized_generated_document(&generated)
+                        {
+                            plans.push(GeneratedFilePlan::Current(kind, path));
+                        } else {
+                            let diff = generated_file_diff(kind.file_name(), &existing, &generated);
+                            self.pending_generated_file = Some(PendingGeneratedFile {
+                                kind,
+                                path: path.clone(),
+                                existing,
+                                generated,
+                                diff,
+                                action,
+                            });
+                            self.set_status(
+                                format!(
+                                    "Save paused: {} differs from Sundial's package-generated {}",
+                                    path.display(),
+                                    kind.label()
+                                ),
+                                false,
+                            );
+                            return Ok(None);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        plans.push(GeneratedFilePlan::Write(kind, generated));
+                    }
+                    Err(error) => {
+                        return Err(format!("Could not read {}: {error}", path.display()));
+                    }
+                },
+            }
+        }
+        Ok(Some(plans))
+    }
+
+    fn complete_generated_file_plans(
+        &self,
+        plans: Vec<GeneratedFilePlan>,
+    ) -> Result<String, String> {
+        let mut note = String::new();
+        for plan in plans {
+            match plan {
+                GeneratedFilePlan::Current(kind, path) => {
+                    note.push_str(&format!(" {} unchanged: {}.", kind.label(), path.display()))
+                }
+                GeneratedFilePlan::KeepExisting(kind, path) => note.push_str(&format!(
+                    " Existing {} kept: {}.",
+                    kind.label(),
+                    path.display()
+                )),
+                GeneratedFilePlan::Write(kind, document) => {
+                    let path = match kind {
+                        GeneratedFileKind::OrbitMap => {
+                            orbit_map::save(&self.settings_path, &document)?
+                        }
+                    };
+                    note.push_str(&format!(" {}: {}.", kind.label(), path.display()));
+                }
+            }
+        }
+        Ok(note)
+    }
+
+    fn resume_generated_file_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: GeneratedFileSaveAction,
+        kind: GeneratedFileKind,
+        decision: GeneratedFileDecision,
+    ) {
+        self.generated_file_decisions
+            .retain(|(saved_kind, _)| *saved_kind != kind);
+        if decision != GeneratedFileDecision::Ask {
+            self.generated_file_decisions.push((kind, decision));
+        }
+        match action {
+            GeneratedFileSaveAction::Save => {
+                let _ = self.save_with_generated_files(action);
+            }
+            GeneratedFileSaveAction::SaveAndExit => {
+                let safe_to_close = self.save_with_generated_files(action);
+                if !self.has_unsaved_changes() && safe_to_close {
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            GeneratedFileSaveAction::ResetDefaults => {
+                self.reset_to_sunrise_defaults_with_generated_files();
+            }
+        }
     }
 
     fn has_unsaved_changes(&self) -> bool {
@@ -604,7 +605,18 @@ impl SundialApp {
     }
 
     fn select_view(&mut self, view: ViewMode) {
+        if view == ViewMode::Progression && !self.experimental_progression {
+            return;
+        }
         if self.view_mode == view {
+            if view == ViewMode::AdvancedJson
+                && self.always_open_json_editor_in_second_window
+                && !self.json_editor_window_open
+            {
+                self.sync_raw_json_if_stale();
+                self.json_editor.restore_location_next_draw();
+                self.set_json_editor_window_open(true);
+            }
             return;
         }
         if self.view_mode == ViewMode::AdvancedJson
@@ -617,6 +629,9 @@ impl SundialApp {
         if view == ViewMode::AdvancedJson {
             self.sync_raw_json_if_stale();
             self.json_editor.restore_location_next_draw();
+            if self.always_open_json_editor_in_second_window {
+                self.set_json_editor_window_open(true);
+            }
         }
         if self.view_mode == ViewMode::Progression || view == ViewMode::Progression {
             self.progression_ui.reset_navigation();
@@ -625,6 +640,11 @@ impl SundialApp {
     }
 
     fn reset_to_sunrise_defaults(&mut self) {
+        self.generated_file_decisions.clear();
+        self.reset_to_sunrise_defaults_with_generated_files();
+    }
+
+    fn reset_to_sunrise_defaults_with_generated_files(&mut self) {
         if let Err(error) = verify_source_unchanged(&self.settings_path, &self.persisted_document) {
             self.set_status(format!("Defaults not restored: {error}"), true);
             return;
@@ -633,6 +653,18 @@ impl SundialApp {
             Ok(document) => document,
             Err(error) => {
                 self.set_status(error, true);
+                return;
+            }
+        };
+        let orbit_supported =
+            orbit_map_generation_enabled(self.experimental_orbit_backdrops, &default_document);
+        let generated_file_plans = match self
+            .prepare_generated_files(orbit_supported, GeneratedFileSaveAction::ResetDefaults)
+        {
+            Ok(Some(plans)) => plans,
+            Ok(None) => return,
+            Err(error) => {
+                self.set_status(format!("Defaults not restored: {error}"), true);
                 return;
             }
         };
@@ -649,7 +681,10 @@ impl SundialApp {
         match save_json(&self.settings_path, &default_document) {
             Ok(result) => {
                 let size_note = settings_size_note(&result);
+                let generated_file_result =
+                    self.complete_generated_file_plans(generated_file_plans);
                 self.document = default_document;
+                self.progression_ui.invalidate_document();
                 self.persisted_document = self.document.clone();
                 self.refresh_sunrise_version();
                 self.source_warning = validate_document(&self.document).err();
@@ -660,22 +695,41 @@ impl SundialApp {
                 self.clear_picker_state();
                 self.sync_raw_json();
                 self.dirty = false;
+                let generated_file_note = match generated_file_result {
+                    Ok(note) => note,
+                    Err(error) => {
+                        self.generated_file_decisions.clear();
+                        self.set_status(
+                            format!(
+                                "Restored the settings defaults, but a package-generated Sunrise file could not be written: {error}. Original: {}. Backup: {}",
+                                adjacent_backup.display(),
+                                result.backup.display()
+                            ),
+                            true,
+                        );
+                        return;
+                    }
+                };
+                self.generated_file_decisions.clear();
                 self.set_status(
                     format!(
-                        "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}",
+                        "Restored the defaults bundled with the installed Project Sunrise.{size_note}{generated_file_note} Original: {}. Backup: {}",
                         adjacent_backup.display(),
                         result.backup.display()
                     ),
                     result.exceeds_size_limit,
                 );
             }
-            Err(error) => self.set_status(
-                format!(
-                    "Defaults not restored: {error}. The untouched source is at {}",
-                    adjacent_backup.display()
-                ),
-                true,
-            ),
+            Err(error) => {
+                self.generated_file_decisions.clear();
+                self.set_status(
+                    format!(
+                        "Defaults not restored: {error}. The untouched source is at {}",
+                        adjacent_backup.display()
+                    ),
+                    true,
+                );
+            }
         }
     }
 
@@ -705,7 +759,10 @@ impl SundialApp {
             always_open_json_editor_in_second_window: self.always_open_json_editor_in_second_window,
             show_plug_hashes: self.show_plug_hashes,
             item_card_width: self.item_card_width,
-            show_progression: self.show_progression,
+            character_inventory_layout: self.character_inventory_layout,
+            experimental_orbit_backdrops: self.experimental_orbit_backdrops,
+            experimental_progression: self.experimental_progression,
+            experimental_power_above_cap: self.experimental_power_above_cap,
         };
         let encoded = serde_json::to_vec_pretty(&preferences)
             .map_err(|e| format!("Could not encode Sundial's preferences: {e}"))?;
@@ -824,9 +881,13 @@ impl SundialApp {
         self.settings_path = settings_path;
         self.settings_layout = settings_layout;
         self.manifest = manifest;
+        self.hash_inspection.close();
+        self.progression_ui.reset_navigation();
+        self.collections_ui.reset_navigation();
         self.class_armor_defaults = collect_class_armor_defaults(&document);
         self.persisted_document = document.clone();
         self.document = document;
+        self.progression_ui.invalidate_document();
         self.refresh_sunrise_version();
         self.source_warning.clone_from(&warning);
         self.selected_character = 0;
@@ -931,6 +992,9 @@ impl SundialApp {
                         }
                         (CatalogTaskKind::Rebuild, Ok(manifest)) => {
                             self.manifest = manifest;
+                            self.hash_inspection.close();
+                            self.progression_ui.reset_navigation();
+                            self.collections_ui.reset_navigation();
                             self.clear_picker_state();
                             self.set_status(
                                 "Catalog rebuilt from the installed game packages",
@@ -1038,18 +1102,27 @@ impl SundialApp {
             .exact_width(MAIN_SIDEBAR_WIDTH)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                for (view, label, visible) in [
-                    (ViewMode::Characters, "Characters & loadouts", true),
-                    (ViewMode::ProfileInventory, "Profile inventory", true),
-                    (ViewMode::CharacterInventory, "Character inventory", true),
-                    (ViewMode::GameSettings, "Game settings", true),
-                    (ViewMode::Progression, "Progression", self.show_progression),
-                    (ViewMode::AdvancedJson, "All settings (JSON)", true),
-                    (ViewMode::Preferences, "Preferences", true),
+                for (view, label) in [
+                    (ViewMode::Characters, "Characters & loadouts"),
+                    (ViewMode::ProfileInventory, "Profile inventory"),
+                    (ViewMode::CharacterInventory, "Character inventory"),
+                    (ViewMode::GameSettings, "Game settings"),
                 ] {
-                    if !visible {
-                        continue;
+                    if ui.selectable_label(self.view_mode == view, label).clicked() {
+                        self.select_view(view);
                     }
+                }
+                if self.experimental_progression
+                    && ui
+                        .selectable_label(self.view_mode == ViewMode::Progression, "Progression")
+                        .clicked()
+                {
+                    self.select_view(ViewMode::Progression);
+                }
+                for (view, label) in [
+                    (ViewMode::AdvancedJson, "All settings (JSON)"),
+                    (ViewMode::Preferences, "Preferences"),
+                ] {
                     if ui.selectable_label(self.view_mode == view, label).clicked() {
                         self.select_view(view);
                     }
@@ -1231,6 +1304,7 @@ impl SundialApp {
                 let changed = document != self.document;
                 self.raw_json_document = document.clone();
                 self.document = document;
+                self.progression_ui.invalidate_document();
                 self.selected_character = self
                     .selected_character
                     .min(self.character_count().saturating_sub(1));
@@ -1267,6 +1341,14 @@ impl SundialApp {
         }
     }
 
+    fn set_json_editor_window_open(&mut self, open: bool) {
+        update_detached_window_state(
+            &mut self.json_editor_window_open,
+            &mut self.json_editor_window_generation,
+            open,
+        );
+    }
+
     fn handle_json_editor_response(&mut self, response: json_editor::JsonEditorResponse) {
         if response.save {
             let _ = self.save_all_edits();
@@ -1276,7 +1358,7 @@ impl SundialApp {
             self.set_status("JSON editor reset to current settings", false);
         }
         if response.toggle_window {
-            self.json_editor_window_open = !self.json_editor_window_open;
+            self.set_json_editor_window_open(!self.json_editor_window_open);
             self.json_editor.restore_location_next_draw();
             if !self.json_editor_window_open {
                 self.view_mode = ViewMode::AdvancedJson;
@@ -1317,6 +1399,30 @@ impl SundialApp {
             self.item_card_width = requested_card_width;
             preferences_changed = true;
         }
+        let mut requested_inventory_layout = self.character_inventory_layout;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Character inventory layout:");
+            ui.radio_value(
+                &mut requested_inventory_layout,
+                CharacterInventoryLayout::Cards,
+                "Sundial cards (default)",
+            );
+            ui.radio_value(
+                &mut requested_inventory_layout,
+                CharacterInventoryLayout::Panoptes,
+                "Panoptes slot grid",
+            );
+        });
+        ui.label(
+            egui::RichText::new(
+                "Changes how equipped and stored items are presented on Characters & loadouts. The full Character inventory manager and stored data are unchanged.",
+            )
+            .weak(),
+        );
+        if requested_inventory_layout != self.character_inventory_layout {
+            self.character_inventory_layout = requested_inventory_layout;
+            preferences_changed = true;
+        }
         if ui
             .checkbox(
                 &mut self.always_open_json_editor_in_second_window,
@@ -1324,7 +1430,7 @@ impl SundialApp {
             )
             .changed()
         {
-            self.json_editor_window_open = self.always_open_json_editor_in_second_window;
+            self.set_json_editor_window_open(self.always_open_json_editor_in_second_window);
             self.json_editor.restore_location_next_draw();
             if !self.json_editor_window_open && self.json_editor.has_unapplied_changes() {
                 self.view_mode = ViewMode::AdvancedJson;
@@ -1343,17 +1449,22 @@ impl SundialApp {
             ui.radio_value(
                 &mut requested_mode,
                 PlugSelectionMode::Supported,
-                "Supported only",
+                PlugSelectionMode::Supported.label(),
             );
             ui.radio_value(
                 &mut requested_mode,
                 PlugSelectionMode::MatchingSocketType,
-                "Matching socket type (unsafe)",
+                PlugSelectionMode::MatchingSocketType.label(),
+            );
+            ui.radio_value(
+                &mut requested_mode,
+                PlugSelectionMode::GearType,
+                PlugSelectionMode::GearType.label(),
             );
             ui.radio_value(
                 &mut requested_mode,
                 PlugSelectionMode::AnyPlug,
-                "Any plug (really unsafe)",
+                PlugSelectionMode::AnyPlug.label(),
             );
         });
 
@@ -1381,31 +1492,54 @@ impl SundialApp {
         preferences_changed |= hash_response.changed();
 
         if self.show_safety_warnings {
-            match self.default_plug_selection_mode {
-                PlugSelectionMode::Supported => {}
-                PlugSelectionMode::MatchingSocketType => {
-                    ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-                }
-                PlugSelectionMode::AnyPlug => {
-                    ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-                }
-            }
+            draw_plug_selection_warning(ui, self.default_plug_selection_mode);
         }
 
         ui.add_space(12.0);
         ui.strong("Experimental");
-        let progression_response = ui.checkbox(
-            &mut self.show_progression,
-            "Show Progression in the sidebar",
+        let power_above_cap_response = ui.checkbox(
+            &mut self.experimental_power_above_cap,
+            "Allow Power above item caps",
         );
-        preferences_changed |= progression_response.changed();
-        ui.label("Progression is still being worked on and is hidden by default.");
-
+        preferences_changed |= power_above_cap_response.changed();
+        ui.label(
+            egui::RichText::new(
+                "Allows manual Power values above an item's package-defined cap. Destiny may display the item at its cap, but the stored value may still affect overall character Power. Newly added items still start at their normal cap.",
+            )
+            .weak(),
+        );
+        ui.add_space(6.0);
+        let progression_response =
+            ui.checkbox(&mut self.experimental_progression, "Enable Progression");
+        if progression_response.changed() {
+            preferences_changed = true;
+            if !self.experimental_progression && self.view_mode == ViewMode::Progression {
+                self.select_view(ViewMode::Characters);
+            }
+        }
+        ui.label(
+            egui::RichText::new(
+                "Shows package-backed Unlocks, Investment, and Collections editing.",
+            )
+            .weak(),
+        );
+        ui.add_space(6.0);
+        let orbit_backdrops_response = ui.checkbox(
+            &mut self.experimental_orbit_backdrops,
+            "Enable Orbit backdrop selection",
+        );
+        preferences_changed |= orbit_backdrops_response.changed();
+        ui.label(
+            egui::RichText::new(
+                "Adds package-backed Orbit backdrop selection to Game settings > Player. Requires an unmerged Sunrise PR.",
+            )
+            .weak(),
+        );
         ui.add_space(8.0);
         if ui
             .button("Reset preferences to defaults")
             .on_hover_text(
-                "Reset appearance, item editing, and experimental preferences. Paths, catalog data, and backups are not changed.",
+                "Reset appearance, item-editing, and experimental preferences. Paths, catalog data, and backups are not changed.",
             )
             .clicked()
         {
@@ -1413,9 +1547,10 @@ impl SundialApp {
             self.color_theme = defaults.color_theme;
             ctx.set_theme(defaults.color_theme.egui_theme());
             self.item_card_width = defaults.item_card_width;
+            self.character_inventory_layout = defaults.character_inventory_layout;
             self.always_open_json_editor_in_second_window =
                 defaults.always_open_json_editor_in_second_window;
-            self.json_editor_window_open = defaults.always_open_json_editor_in_second_window;
+            self.set_json_editor_window_open(defaults.always_open_json_editor_in_second_window);
             self.json_editor.restore_location_next_draw();
             if !self.json_editor_window_open && self.json_editor.has_unapplied_changes() {
                 self.view_mode = ViewMode::AdvancedJson;
@@ -1424,7 +1559,9 @@ impl SundialApp {
             self.plug_selection_mode = defaults.default_plug_selection_mode;
             self.show_safety_warnings = defaults.show_safety_warnings;
             self.show_plug_hashes = defaults.show_plug_hashes;
-            self.show_progression = defaults.show_progression;
+            self.experimental_orbit_backdrops = defaults.experimental_orbit_backdrops;
+            self.experimental_progression = defaults.experimental_progression;
+            self.experimental_power_above_cap = defaults.experimental_power_above_cap;
             self.really_unsafe_warning_acknowledged =
                 defaults.really_unsafe_warning_acknowledged;
             self.remember_plug_selection_mode_after_confirmation = false;
@@ -1532,9 +1669,12 @@ impl SundialApp {
 
         self.sync_raw_json_if_stale();
         let (response, close_requested) = ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("sundial_json_editor"),
+            egui::ViewportId::from_hash_of((
+                "sundial_json_editor",
+                self.json_editor_window_generation,
+            )),
             egui::ViewportBuilder::default()
-                .with_title("Sundial — All settings (JSON)")
+                .with_title("Sundial: All settings (JSON)")
                 .with_inner_size([960.0, 720.0])
                 .with_min_inner_size([640.0, 420.0]),
             |child_ctx, class| {
@@ -1567,7 +1707,7 @@ impl SundialApp {
             let _ = self.apply_raw_json_silently();
         }
         if close_requested {
-            self.json_editor_window_open = false;
+            self.set_json_editor_window_open(false);
             self.json_editor.restore_location_next_draw();
             if self.json_editor.has_unapplied_changes() {
                 self.view_mode = ViewMode::AdvancedJson;
@@ -1578,6 +1718,21 @@ impl SundialApp {
 
 impl eframe::App for SundialApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "linux")]
+        {
+            let title_bar_icon = self
+                .title_bar_icon
+                .get_or_insert_with(|| load_linux_title_bar_texture(ctx))
+                .clone();
+            if draw_linux_title_bar(ctx, &title_bar_icon) {
+                if self.has_unsaved_changes() {
+                    self.confirmation = Some(ConfirmationDialog::Exit);
+                } else {
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
         self.ensure_destiny_symbol_font(ctx);
         self.update_check.start_if_needed(ctx);
         self.update_check.poll();
@@ -1644,6 +1799,10 @@ impl eframe::App for SundialApp {
                     if game_settings::draw_page(
                         ui,
                         &mut self.document,
+                        self.manifest.orbit_backdrops(),
+                        game_settings::PlayerTools {
+                            orbit_backdrops_enabled: self.experimental_orbit_backdrops,
+                        },
                         &mut self.game_settings_tab,
                         &mut self.key_binding_ui,
                     ) {
@@ -1652,14 +1811,7 @@ impl eframe::App for SundialApp {
                     }
                 }
                 ViewMode::Progression => {
-                    ui.horizontal(|ui| {
-                        ui.heading("Progression");
-                        ui.label(
-                            egui::RichText::new("EXPERIMENTAL")
-                                .small()
-                                .color(ui.visuals().warn_fg_color),
-                        );
-                    });
+                    ui.heading("Progression");
                     ui.add_space(8.0);
                     let section_changed = ui
                         .horizontal(|ui| {
@@ -1690,6 +1842,7 @@ impl eframe::App for SundialApp {
                         .inner;
                     if section_changed {
                         self.progression_ui.reset_navigation();
+                        self.collections_ui.reset_navigation();
                     }
                     ui.separator();
 
@@ -1715,12 +1868,20 @@ impl eframe::App for SundialApp {
                                 );
                             }
                         }
-                        ProgressionSection::Collections => collections_page::draw_content(
-                            ui,
-                            &self.document,
-                            &self.manifest,
-                            &mut self.collections_ui,
-                        ),
+                        ProgressionSection::Collections => {
+                            if collections_page::draw_content(
+                                ui,
+                                &mut self.document,
+                                &self.manifest,
+                                &mut self.collections_ui,
+                            ) {
+                                self.dirty = true;
+                                self.set_status(
+                                    "Collection acquisition state updated; click Save to write it",
+                                    false,
+                                );
+                            }
+                        }
                     }
                 }
                 ViewMode::AdvancedJson => {
@@ -1728,7 +1889,7 @@ impl eframe::App for SundialApp {
                         ui.heading("All settings");
                         ui.label("The JSON editor is open in a separate window.");
                         if ui.button("Dock in main window").clicked() {
-                            self.json_editor_window_open = false;
+                            self.set_json_editor_window_open(false);
                             self.json_editor.restore_location_next_draw();
                         }
                     } else {
@@ -1745,6 +1906,17 @@ impl eframe::App for SundialApp {
                 ViewMode::Preferences => self.draw_preferences_page(ui, ctx),
             }
         });
+
+        if let Some(hash) = inspector::take_definition_request(ctx) {
+            self.hash_inspection.open(hash);
+        }
+        inspector::draw_catalog_hash_window(
+            ctx,
+            &self.manifest,
+            Some(&self.document),
+            &mut self.hash_inspection,
+            "global",
+        );
 
         self.draw_json_editor_window(ctx);
 
@@ -1764,7 +1936,7 @@ impl eframe::App for SundialApp {
                 for layout in SettingsLayout::ALL {
                     let path = settings_path_for_install(&install_path, layout);
                     if ui
-                        .button(format!("Use {}", layout.relative_path()))
+                        .button(format!("Use {}", layout.relative_path().display()))
                         .clicked()
                     {
                         selected = Some((layout, path.clone()));
@@ -1786,6 +1958,110 @@ impl eframe::App for SundialApp {
                 self.load_install(ctx, install_path, path, layout);
             } else if cancel {
                 self.pending_install_choice = None;
+            }
+        }
+
+        if let Some(pending) = self.pending_generated_file.take() {
+            let mut replace = false;
+            let mut keep_existing = false;
+            let response = egui::Modal::new("generated_file_replace_confirmation".into()).show(
+                ctx,
+                |ui| {
+                    ui.set_width(760.0);
+                    ui.heading(format!("Replace the existing {}?", pending.kind.label()));
+                    ui.add_space(6.0);
+                    ui.label(format!(
+                        "Sunrise already has a different {}. Review the line diff before deciding; Sundial has not changed this file.",
+                        pending.kind.file_name()
+                    ));
+                    ui.label(
+                        egui::RichText::new(pending.path.display().to_string())
+                            .weak()
+                            .small(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(format!(
+                        "Existing: {} lines · Package-generated: {} lines",
+                        normalized_generated_document(&pending.existing).lines().count(),
+                        normalized_generated_document(&pending.generated)
+                            .lines()
+                            .count()
+                    ));
+                    egui::ScrollArea::vertical()
+                        .id_salt("generated_file_diff")
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(720.0);
+                            for line in pending.diff.lines() {
+                                let color = if line.starts_with('+') {
+                                    ui.visuals().selection.bg_fill
+                                } else if line.starts_with('-') {
+                                    ui.visuals().error_fg_color
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                ui.label(egui::RichText::new(line).monospace().color(color));
+                            }
+                        });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, replace").clicked() {
+                            replace = true;
+                        }
+                        if ui.button("No, keep existing").clicked() {
+                            keep_existing = true;
+                        }
+                    });
+                },
+            );
+            let cancel = response.should_close();
+            if replace {
+                match fs::read(&pending.path) {
+                    Ok(raw)
+                        if normalized_generated_document(&String::from_utf8_lossy(&raw))
+                            == normalized_generated_document(&pending.existing) =>
+                    {
+                        self.resume_generated_file_action(
+                            ctx,
+                            pending.action,
+                            pending.kind,
+                            GeneratedFileDecision::Replace,
+                        );
+                    }
+                    Ok(_) | Err(_) => {
+                        self.set_status(
+                            format!(
+                                "The existing {} changed while the comparison was open; checking it again",
+                                pending.kind.label()
+                            ),
+                            false,
+                        );
+                        self.resume_generated_file_action(
+                            ctx,
+                            pending.action,
+                            pending.kind,
+                            GeneratedFileDecision::Ask,
+                        );
+                    }
+                }
+            } else if keep_existing {
+                self.resume_generated_file_action(
+                    ctx,
+                    pending.action,
+                    pending.kind,
+                    GeneratedFileDecision::KeepExisting,
+                );
+            } else if cancel {
+                self.generated_file_decisions.clear();
+                self.set_status(
+                    format!(
+                        "Save cancelled; the existing {} was not changed",
+                        pending.kind.label()
+                    ),
+                    false,
+                );
+            } else {
+                self.pending_generated_file = Some(pending);
             }
         }
 
@@ -1863,11 +2139,11 @@ impl eframe::App for SundialApp {
                 ui.add_space(8.0);
                 ui.label("Even basic settings edits can theoretically cause problems, but this mode makes every discovered plug available in every socket. Saving arbitrary or incompatible combinations greatly increases the risk of leaving a character or the entire settings file unusable.");
                 ui.add_space(8.0);
-                ui.label("Every Sundial save creates a timestamped backup under %LOCALAPPDATA%\\Sundial\\backups.");
+                ui.label("Every Sundial save creates a timestamped backup in Sundial's local data folder.");
                 ui.label("If the game no longer loads, open Preferences > Recovery. Sundial backs up the current file again before restoring the defaults bundled with Project Sunrise.");
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("I understand — enable").clicked() {
+                    if ui.button("I understand and enable").clicked() {
                         enable = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -1946,7 +2222,8 @@ impl eframe::App for SundialApp {
             self.confirmation = (!save_and_exit && !discard_and_exit && !cancel)
                 .then_some(ConfirmationDialog::Exit);
             if save_and_exit {
-                let safe_to_close = self.save_all_edits();
+                let safe_to_close =
+                    self.save_all_edits_with_action(GeneratedFileSaveAction::SaveAndExit);
                 if !self.has_unsaved_changes() && safe_to_close {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1959,45 +2236,12 @@ impl eframe::App for SundialApp {
     }
 }
 
-fn settings_size_note(result: &settings::SaveJsonResult) -> String {
-    let limit = settings_size_label(result.size_limit_bytes);
-    if result.exceeds_size_limit {
-        format!(
-            " Warning: the compacted file is {} bytes, above this Sunrise schema's {limit} settings limit, and may not load.",
-            result.encoded_bytes,
-        )
-    } else if result.compacted {
-        format!(
-            " Sunrise-style formatting exceeded this schema's {limit} limit, so Sundial compacted the file to {} bytes.",
-            result.encoded_bytes,
-        )
-    } else {
-        String::new()
-    }
-}
-
-fn settings_size_label(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = 1024 * KIB;
-    if bytes % MIB == 0 {
-        format!("{} MiB", bytes / MIB)
-    } else {
-        format!("{} KiB", bytes / KIB)
-    }
-}
-
 fn encode_settings_for_editor(document: &Value) -> Result<String, String> {
     encode_settings(document).map(|encoded| encoded.replace("\r\n", "\n"))
 }
 
-fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/sundial.png"))
-        .expect("embedded Sundial logo must be a valid PNG");
-    let image = egui::ColorImage::from_rgba_unmultiplied(
-        [icon.width as usize, icon.height as usize],
-        &icon.rgba,
-    );
-    ctx.load_texture("sundial-logo", image, egui::TextureOptions::LINEAR)
+fn orbit_map_generation_enabled(preference_enabled: bool, document: &Value) -> bool {
+    preference_enabled && document.pointer("/client/orbit_slice_set").is_some()
 }
 
 fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLoad) {
@@ -2020,28 +2264,6 @@ fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLo
             .weak()
             .small(),
     );
-}
-
-fn parse_args() -> (Option<InstallSelection>, bool, Preferences) {
-    let preferences = load_preferences();
-    let mut install = preferences.install_selection();
-    let mut check_only = false;
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--install" => {
-                if let Some(value) = args.next() {
-                    install = Some(InstallSelection {
-                        install_path: value.into(),
-                        preferred_layout: None,
-                    });
-                }
-            }
-            "--check" => check_only = true,
-            _ => {}
-        }
-    }
-    (install, check_only, preferences)
 }
 
 fn check_install(selection: InstallSelection) -> Result<String, String> {
@@ -2086,23 +2308,6 @@ fn validate_for_check(document: &Value) -> Result<(), String> {
     validate_document(document).map_err(|error| format!("Invalid settings: {error}"))
 }
 
-fn open_directory(path: &std::path::Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("Could not create {}: {error}", path.display()))?;
-    let mut command = if cfg!(target_os = "windows") {
-        Command::new("explorer.exe")
-    } else if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else {
-        Command::new("xdg-open")
-    };
-    command
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))
-}
-
 pub(crate) fn run() -> eframe::Result {
     let (install, check_only, preferences) = parse_args();
     if check_only {
@@ -2121,11 +2326,18 @@ pub(crate) fn run() -> eframe::Result {
     }
     #[cfg(windows)]
     set_windows_app_identity();
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/sundial-alt.png"))
+    #[cfg(target_os = "linux")]
+    let icon_bytes = include_bytes!("../assets/linux/io.github.kylethmpsn.Sundial-window.png");
+    #[cfg(not(target_os = "linux"))]
+    let icon_bytes = include_bytes!("../assets/sundial-alt.png");
+    let icon = eframe::icon_data::from_png_bytes(icon_bytes)
         .expect("embedded Sundial icon must be a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1_240.0, 800.0])
+            .with_title("Sundial")
+            .with_app_id("io.github.kylethmpsn.Sundial")
+            .with_decorations(!cfg!(target_os = "linux"))
+            .with_inner_size([1_240.0, 880.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
         ..Default::default()
@@ -2140,65 +2352,6 @@ pub(crate) fn run() -> eframe::Result {
             Ok(Box::new(StartupApp::new(install, preferences)))
         }),
     )
-}
-
-#[cfg(windows)]
-fn set_windows_app_identity() {
-    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-
-    let app_id = "KyleThompson.Sundial\0".encode_utf16().collect::<Vec<_>>();
-    let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
-}
-
-#[cfg(windows)]
-fn set_windows_taskbar_icon(context: &eframe::CreationContext<'_>) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::{
-        Foundation::HWND,
-        System::LibraryLoader::GetModuleHandleW,
-        UI::WindowsAndMessaging::{
-            GCLP_HICON, GCLP_HICONSM, GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON,
-            LR_SHARED, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW,
-            SetClassLongPtrW, WM_SETICON,
-        },
-    };
-
-    let Ok(window_handle) = context.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::Win32(window_handle) = window_handle.as_raw() else {
-        return;
-    };
-    let window = window_handle.hwnd.get() as HWND;
-
-    // build.rs embeds the ICO as resource 1. Shared resource handles remain valid
-    // for the process lifetime and do not need application-side destruction.
-    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
-    for (kind, class_index, width_metric, height_metric) in [
-        (ICON_BIG, GCLP_HICON, SM_CXICON, SM_CYICON),
-        (ICON_SMALL, GCLP_HICONSM, SM_CXSMICON, SM_CYSMICON),
-    ] {
-        let width = unsafe { GetSystemMetrics(width_metric) };
-        let height = unsafe { GetSystemMetrics(height_metric) };
-        let icon = unsafe {
-            LoadImageW(
-                module,
-                std::ptr::without_provenance(1),
-                IMAGE_ICON,
-                width,
-                height,
-                LR_SHARED,
-            )
-        };
-        if icon.is_null() {
-            continue;
-        }
-
-        unsafe {
-            SendMessageW(window, WM_SETICON, kind as usize, icon as isize);
-            SetClassLongPtrW(window, class_index, icon as isize);
-        }
-    }
 }
 
 #[cfg(test)]

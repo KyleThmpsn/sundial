@@ -1,12 +1,16 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
 mod catalog;
-mod catalyst_plugs;
 mod class_items;
 mod dummy_items;
 mod game_settings;
+mod generated_file;
 mod hash;
+mod http;
+mod orbit_map;
+mod package_runtime;
+mod paths;
 mod storage;
 #[cfg(test)]
 mod test_support;

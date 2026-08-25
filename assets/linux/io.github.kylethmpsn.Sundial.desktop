@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sundial
+Comment=Edit Project Sunrise character and loadout settings
+Exec=sundial
+Icon=io.github.kylethmpsn.Sundial
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
