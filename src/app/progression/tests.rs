@@ -432,6 +432,29 @@ fn rendered_definition_identifiers_are_filterable() {
     assert!(!definition_matches("0xdeadbeef", 12_913, &definition));
 }
 
+fn assert_objective_summary_context(objective: &ObjectiveDef) {
+    assert_eq!(objective_goal_text(objective), "Arc Final Blows: Arc");
+    assert_eq!(
+        objective_traits_text(objective).as_deref(),
+        Some("All, Seasonal")
+    );
+    assert_eq!(
+        objective_hierarchy_paths(objective),
+        vec![vec!["Metrics".to_owned(), "Account".to_owned()]]
+    );
+    assert_eq!(objective_target_text(objective), "≥5000");
+    assert!(objective_target_tooltip(objective).contains("Over-completion: allowed"));
+    assert!(objective_matches("account", objective));
+    assert!(objective_matches("metric", objective));
+    assert!(objective_matches("seasonal", objective));
+    assert!(objective_matches("84ece10b", objective));
+    let details_tooltip = objective_details_tooltip(objective);
+    assert!(!details_tooltip.contains("Seasonal"));
+    let traits_tooltip = objective_traits_tooltip(objective);
+    assert!(traits_tooltip.contains("All: 0x557C63B3"));
+    assert!(traits_tooltip.contains("Seasonal: 0x84ECE10B"));
+}
+
 #[test]
 fn objective_summary_includes_goal_hierarchy_and_limit_semantics() {
     let mut objective = ObjectiveDef {
@@ -463,26 +486,7 @@ fn objective_summary_includes_goal_hierarchy_and_limit_semantics() {
         ..ObjectiveDef::default()
     };
 
-    assert_eq!(objective_goal_text(&objective), "Arc Final Blows: Arc");
-    assert_eq!(
-        objective_traits_text(&objective).as_deref(),
-        Some("All, Seasonal")
-    );
-    assert_eq!(
-        objective_hierarchy_paths(&objective),
-        vec![vec!["Metrics".to_owned(), "Account".to_owned()]]
-    );
-    assert_eq!(objective_target_text(&objective), "≥5000");
-    assert!(objective_target_tooltip(&objective).contains("Over-completion: allowed"));
-    assert!(objective_matches("account", &objective));
-    assert!(objective_matches("metric", &objective));
-    assert!(objective_matches("seasonal", &objective));
-    assert!(objective_matches("84ece10b", &objective));
-    let details_tooltip = objective_details_tooltip(&objective);
-    assert!(!details_tooltip.contains("Seasonal"));
-    let traits_tooltip = objective_traits_tooltip(&objective);
-    assert!(traits_tooltip.contains("All: 0x557C63B3"));
-    assert!(traits_tooltip.contains("Seasonal: 0x84ECE10B"));
+    assert_objective_summary_context(&objective);
 
     objective.allow_overcompletion = false;
     assert_eq!(objective_target_text(&objective), "5000 max");

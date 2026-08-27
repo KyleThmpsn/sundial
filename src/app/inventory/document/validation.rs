@@ -113,6 +113,7 @@ pub(in crate::app::inventory) fn validate_known_item_members(
     }
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn character_object_mut(
     document: &mut Value,
     character_index: usize,
@@ -132,6 +133,7 @@ pub(in crate::app::inventory) fn character_object_mut(
         })
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn ensure_account_object(document: &Value) -> InventoryResult<()> {
     let state = document
         .get("state")
@@ -144,6 +146,7 @@ pub(in crate::app::inventory) fn ensure_account_object(document: &Value) -> Inve
         .ok_or_else(|| InventoryError::new("/state/account", "account must be an object"))
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn account_object_mut(
     document: &mut Value,
 ) -> InventoryResult<&mut Map<String, Value>> {
@@ -160,6 +163,7 @@ pub(in crate::app::inventory) fn account_object_mut(
         })
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn profile_array_mut(
     document: &mut Value,
 ) -> InventoryResult<&mut Vec<Value>> {
@@ -174,6 +178,7 @@ pub(in crate::app::inventory) fn profile_array_mut(
         })
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn inventory_array_mut(
     document: &mut Value,
     character_index: usize,
@@ -189,6 +194,7 @@ pub(in crate::app::inventory) fn inventory_array_mut(
         })
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn inventory_object_mut(
     items: &mut [Value],
     item_index: usize,

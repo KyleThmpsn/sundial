@@ -22,10 +22,14 @@ impl WorkspacePlacement {
     }
 }
 
+pub(in crate::app) fn uses_side_workspace(width: f32) -> bool {
+    WorkspacePlacement::for_width(width) == WorkspacePlacement::Side
+}
+
 pub(in crate::app) fn workspace<R>(
     ui: &mut egui::Ui,
     side_id: &'static str,
-    bottom_id: &'static str,
+    _bottom_id: &'static str,
     add_contents: impl FnOnce(&mut egui::Ui, WorkspacePlacement) -> R,
 ) -> R {
     let placement = WorkspacePlacement::for_width(ui.available_width());
@@ -47,31 +51,37 @@ pub(in crate::app) fn workspace<R>(
         WorkspacePlacement::Bottom => {
             let maximum_height = (ui.available_height() * 0.7).max(260.0);
             let preferred_height = (ui.available_height() * 0.48).clamp(280.0, 360.0);
-            egui::TopBottomPanel::bottom(bottom_id)
-                .resizable(true)
-                .default_height(maximum_height.min(preferred_height))
-                .height_range(220.0..=maximum_height)
-                .frame(
+            let height = maximum_height.min(preferred_height);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
                     egui::Frame::side_top_panel(ui.style())
-                        .inner_margin(egui::Margin::symmetric(12, 8)),
-                )
-                .show_inside(ui, |ui| add_contents(ui, placement))
-                .inner
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.set_min_height((height - 16.0).max(0.0));
+                            add_contents(ui, placement)
+                        })
+                        .inner
+                },
+            )
+            .inner
         }
     }
 }
 
 pub(in crate::app) fn heading(ui: &mut egui::Ui, title: impl Into<String>) -> bool {
     let mut close = false;
+    let title = title.into();
     ui.horizontal(|ui| {
-        ui.heading("Inspector");
+        ui.label(egui::RichText::new(title).strong().size(17.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Close").clicked() {
                 close = true;
             }
         });
     });
-    ui.label(egui::RichText::new(title).strong());
     close
 }
 
@@ -98,5 +108,11 @@ mod tests {
                 .clamp(SIDE_WORKSPACE_MIN_WIDTH, SIDE_WORKSPACE_MAX_WIDTH);
             assert!(available_width - maximum_width >= PRIMARY_WORKSPACE_MIN_WIDTH);
         }
+    }
+
+    #[test]
+    fn compact_widths_do_not_use_a_side_workspace() {
+        assert!(!uses_side_workspace(SIDE_WORKSPACE_BREAKPOINT - 1.0));
+        assert!(uses_side_workspace(SIDE_WORKSPACE_BREAKPOINT));
     }
 }

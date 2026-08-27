@@ -47,6 +47,12 @@ pub(super) struct CatalogHashMatches<'a> {
     pub(super) item_material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CatalogMatchGroup {
+    pub(super) label: &'static str,
+    pub(super) count: usize,
+}
+
 impl CatalogHashMatchIndex {
     pub(super) fn collect(catalog: &Catalog, hash: u64) -> Self {
         let progression_definitions = catalog
@@ -339,23 +345,100 @@ impl<'a> CatalogHashMatches<'a> {
         }
     }
 
+    pub(super) fn match_groups(&self) -> Vec<CatalogMatchGroup> {
+        let mut groups = Vec::with_capacity(18);
+        push_match_group(
+            &mut groups,
+            "Item definition",
+            usize::from(self.item_package_metadata.is_some() || self.item.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Inventory metadata",
+            usize::from(self.inventory_metadata.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression definition",
+            self.progression_definitions.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression reward reference",
+            self.progression_reward_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Faction progression reference",
+            self.progression_faction_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Unlock flag definition",
+            self.flag_definitions.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Unlock value definition",
+            self.value_definitions.len(),
+        );
+        push_match_group(&mut groups, "Objective", self.objectives.len());
+        push_match_group(
+            &mut groups,
+            "Objective owner reference",
+            self.owner_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Objective trait reference",
+            self.trait_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression reader reference",
+            self.context_matches.len(),
+        );
+        push_match_group(&mut groups, "Collectible", self.collectible_matches.len());
+        push_match_group(
+            &mut groups,
+            "Material requirement set",
+            self.material_requirement_set_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Item stat definition",
+            usize::from(self.item_stat_definition.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Sandbox perk definition",
+            usize::from(self.sandbox_perk_definition.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Investment stat reference",
+            self.investment_stat_references.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Intrinsic perk item reference",
+            self.intrinsic_perk_item_references.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Inventory bucket item",
+            self.bucket_items.len(),
+        );
+        groups
+    }
+
     pub(super) fn count(&self) -> usize {
-        usize::from(self.item_package_metadata.is_some() || self.item.is_some())
-            + usize::from(self.inventory_metadata.is_some())
-            + self.progression_definitions.len()
-            + self.progression_reward_matches.len()
-            + self.progression_faction_matches.len()
-            + self.flag_definitions.len()
-            + self.value_definitions.len()
-            + self.objectives.len()
-            + self.owner_matches.len()
-            + self.trait_matches.len()
-            + self.context_matches.len()
-            + self.collectible_matches.len()
-            + self.material_requirement_set_matches.len()
-            + usize::from(self.item_stat_definition.is_some())
-            + usize::from(self.sandbox_perk_definition.is_some())
-            + usize::from(!self.intrinsic_perk_item_references.is_empty())
-            + usize::from(!self.bucket_items.is_empty())
+        self.match_groups().iter().map(|group| group.count).sum()
+    }
+}
+
+fn push_match_group(groups: &mut Vec<CatalogMatchGroup>, label: &'static str, count: usize) {
+    if count > 0 {
+        groups.push(CatalogMatchGroup { label, count });
     }
 }

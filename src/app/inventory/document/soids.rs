@@ -1,6 +1,9 @@
 //! Instance SOID discovery, uniqueness validation, and allocation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
@@ -10,9 +13,13 @@ use super::{
     fields::format_instance_soid,
     model::{InventoryError, InventoryResult},
     parsing::{optional_object_member, optional_root_object_member, parse_nonzero_soid},
-    schema::{GENERATED_INSTANCE_SOID_START, schema_mode},
+    schema::schema_mode,
 };
 
+#[cfg(test)]
+use super::schema::GENERATED_INSTANCE_SOID_START;
+
+#[cfg(test)]
 pub(crate) fn collect_used_soids(document: &Value) -> InventoryResult<BTreeSet<u64>> {
     let mut used = BTreeSet::new();
     visit_soids(document, |soid, _path| {
@@ -22,10 +29,12 @@ pub(crate) fn collect_used_soids(document: &Value) -> InventoryResult<BTreeSet<u
     Ok(used)
 }
 
+#[cfg(test)]
 pub(crate) fn allocate_instance_soid(document: &Value) -> InventoryResult<u64> {
     next_available_instance_soid(document, GENERATED_INSTANCE_SOID_START)
 }
 
+#[cfg(test)]
 pub(crate) fn next_available_instance_soid(
     document: &Value,
     first_candidate: u64,

@@ -5,10 +5,10 @@
 //! review and change its randomized socket plugs. A roll remains a preview until
 //! it is equipped or added to inventory.
 //!
-//! After explicit confirmation, the loadout action replaces the selected equipment
-//! sections and their held inventory in one validated transaction.
+//! The loadout action replaces the selected equipment sections and optional held
+//! inventory in one validated transaction.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
 use serde_json::Value;
@@ -23,8 +23,8 @@ use crate::{
 };
 
 use super::{
-    EquippedItemPlugs, EquippedPlugValue, armor_stat_allocation, displayed_plugs, equip_definition,
-    equip_subclass_with_default_abilities, equipped_item_snapshots, set_equipment_item_plug,
+    EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue, armor_stat_allocation,
+    displayed_plugs, equip_subclass_with_default_abilities,
 };
 
 const MAX_VISIBLE_SEARCH_RESULTS: usize = 12;
@@ -34,8 +34,8 @@ const PLUG_ROW_HEIGHT: f32 = 36.0;
 const MIN_PLUG_LIST_HEIGHT: f32 = 170.0;
 const PLUG_SECTION_CHROME_HEIGHT: f32 = 58.0;
 const FOOTER_RESERVE_HEIGHT: f32 = 34.0;
-const WINDOW_MIN_SIZE: egui::Vec2 = egui::vec2(640.0, 460.0);
 const BASE_FILTER_INLINE_WIDTH: f32 = 380.0;
+const WINDOW_MIN_SIZE: egui::Vec2 = egui::vec2(640.0, 460.0);
 const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
 const HELD_ITEMS_PER_SLOT: usize = 9;
 const SUBCLASS_SLOT: &str = "subclass";
@@ -118,15 +118,19 @@ struct LoadoutOptions {
     armor: bool,
     equipment_flair: bool,
     subclass: bool,
+    replace_held_inventory: bool,
+    keep_locked_items: bool,
 }
 
 impl Default for LoadoutOptions {
     fn default() -> Self {
         Self {
-            weapons: true,
-            armor: true,
-            equipment_flair: true,
-            subclass: true,
+            weapons: false,
+            armor: false,
+            equipment_flair: false,
+            subclass: false,
+            replace_held_inventory: false,
+            keep_locked_items: true,
         }
     }
 }
@@ -373,7 +377,7 @@ fn draw_item_workspace(
     } else if normal_open_requested
         && let Err(error) = roll_family(
             &app.manifest,
-            character_class(&app.document, character_index),
+            character_class(app.account_workspace, &app.document, character_index),
             app.show_dummy_items,
             app.plug_selection_mode,
             &mut state,
@@ -407,9 +411,12 @@ fn draw_item_workspace(
                     let plug_mode = app.plug_selection_mode;
                     draw_base_section(
                         ui,
-                        &app.document,
-                        &app.manifest,
-                        character_index,
+                        RandomizerSource {
+                            workspace: app.account_workspace,
+                            document: &app.document,
+                            catalog: &app.manifest,
+                            character_index,
+                        },
                         app.show_dummy_items,
                         plug_mode,
                         &mut state,
@@ -433,12 +440,14 @@ fn draw_item_workspace(
                 });
             ui.add_space(6.0);
             let inventory_blocker = inventory_add_blocker(
+                app.account_workspace,
                 &app.document,
                 &app.manifest,
                 character_index,
                 state.candidate.as_ref(),
             );
             let equip_warning = equip_replacement_warning(
+                app.account_workspace,
                 &app.document,
                 &app.manifest,
                 character_index,
@@ -455,6 +464,7 @@ fn draw_item_workspace(
 
     if let Some(candidate) = state.pending_destructive_equip.clone() {
         if let Some(warning) = equip_replacement_warning(
+            app.account_workspace,
             &app.document,
             &app.manifest,
             character_index,
@@ -506,6 +516,7 @@ fn draw_item_workspace(
                 discard_replaced,
             } => (
                 apply_candidate(
+                    app.account_workspace,
                     &mut app.document,
                     &app.manifest,
                     character_index,
@@ -517,6 +528,7 @@ fn draw_item_workspace(
             ),
             CandidateAction::AddToInventory(candidate) => (
                 add_candidate_to_inventory(
+                    app.account_workspace,
                     &mut app.document,
                     &app.manifest,
                     character_index,
@@ -573,18 +585,35 @@ fn draw_loadout_confirmation(
     }
 
     let mut cancel_requested = false;
-    let mut confirm_requested = false;
+    let mut randomize_requested = false;
     let mut options = context
         .data_mut(|data| data.get_temp::<LoadoutOptions>(options_id))
         .unwrap_or_default();
+    let character_name = app
+        .account_workspace
+        .character_metadata(&app.document, character_index)
+        .ok()
+        .map(|metadata| u64::from(metadata.class_type))
+        .map_or_else(
+            || format!("Character {}", character_index + 1),
+            |class_type| {
+                format!(
+                    "Character {} · {}",
+                    character_index + 1,
+                    class_name(class_type)
+                )
+            },
+        );
     egui::Window::new("Randomize Loadout")
         .id(dialog_id.with("window"))
         .collapsible(false)
         .resizable(true)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .default_width(430.0)
+        .default_width(560.0)
         .open(&mut open)
         .show(context, |ui| {
+            ui.heading(character_name);
+            ui.add_space(4.0);
             ui.label("Choose which parts of this character to regenerate.");
             ui.add_space(8.0);
             egui::Grid::new(dialog_id.with("scopes"))
@@ -602,13 +631,24 @@ fn draw_loadout_confirmation(
                         .on_hover_text("A class-compatible subclass with valid default abilities");
                     ui.end_row();
                 });
+            ui.checkbox(
+                &mut options.replace_held_inventory,
+                "Replace held inventory in selected sections",
+            )
+            .on_hover_text(
+                "Off by default. When enabled, held items in the selected sections are removed and regenerated.",
+            );
+            ui.checkbox(&mut options.keep_locked_items, "Keep locked items")
+                .on_hover_text(
+                    "Preserves locked equipped and held items while randomizing the rest.",
+                );
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(6.0);
             app.draw_plug_safety_controls(ui);
             ui.label(
                 egui::RichText::new(
-                    "Checked sections replace their equipped items and held character inventory. Unchecked sections stay unchanged. One equipped exotic is kept per weapon and armor set.",
+                    "Checked sections regenerate equipped items immediately. Held inventory is preserved unless its replacement option is enabled. One equipped exotic is kept per weapon and armor set.",
                 )
                 .weak(),
             );
@@ -620,7 +660,7 @@ fn draw_loadout_confirmation(
                         .on_disabled_hover_text("Select at least one section")
                         .clicked()
                     {
-                        confirm_requested = true;
+                        randomize_requested = true;
                     }
                     if ui.button("Cancel").clicked() {
                         cancel_requested = true;
@@ -629,9 +669,9 @@ fn draw_loadout_confirmation(
             });
         });
 
-    if confirm_requested {
-        open = false;
+    if randomize_requested {
         match randomize_full_loadout(
+            app.account_workspace,
             &mut app.document,
             &app.manifest,
             character_index,
@@ -640,6 +680,7 @@ fn draw_loadout_confirmation(
             options,
         ) {
             Ok(message) => {
+                open = false;
                 app.dirty = true;
                 app.set_status(format!("{message}; click Save to write it"), false);
             }
@@ -656,16 +697,28 @@ fn draw_loadout_confirmation(
     });
 }
 
+#[derive(Clone, Copy)]
+struct RandomizerSource<'a> {
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &'a super::super::account_workspace::WorkspaceDocument,
+    catalog: &'a Catalog,
+    character_index: usize,
+}
+
 fn draw_base_section(
     ui: &mut egui::Ui,
-    document: &Value,
-    catalog: &Catalog,
-    character_index: usize,
+    source: RandomizerSource<'_>,
     show_dummy_items: bool,
     plug_mode: PlugSelectionMode,
     state: &mut WorkspaceState,
 ) {
-    let class_type = character_class(document, character_index);
+    let RandomizerSource {
+        workspace,
+        document,
+        catalog,
+        character_index,
+    } = source;
+    let class_type = character_class(workspace, document, character_index);
     ui.vertical(|ui| {
         ui.set_width(ui.available_width());
 
@@ -790,7 +843,7 @@ fn draw_base_section(
                 .map(|item| item.hash)
                 .collect::<HashSet<_>>();
             let instance_results =
-                matching_item_instances(document, character_index, &matching_hashes);
+                matching_item_instances(workspace, document, character_index, &matching_hashes);
             egui::popup::popup_below_widget(
                 ui,
                 search_popup_id,
@@ -1613,6 +1666,10 @@ fn random_plug(
     let socket = item.sockets.get(socket_index)?;
     match plug_mode {
         PlugSelectionMode::Supported => rng.pick_valid_hash(catalog.socket_options(socket)),
+        PlugSelectionMode::SocketAndGearType => {
+            let options = catalog.socket_and_gear_type_options(item, socket_index);
+            rng.pick_valid_hash(options)
+        }
         PlugSelectionMode::MatchingSocketType => {
             rng.pick_valid_hash(catalog.socket_type_options(socket.socket_type))
         }
@@ -1625,13 +1682,14 @@ fn random_plug(
 }
 
 fn apply_candidate(
-    document: &mut Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     candidate: &Candidate,
     discard_replaced: bool,
 ) -> Result<String, String> {
-    if !inventory::schema_mode(document).can_mutate_equipment() {
+    if !workspace.can_mutate_equipment(document) {
         return Err("Randomizing requires a writable equipment schema".to_owned());
     }
     if candidate.plugs.len() > inventory::MAX_ITEM_PLUGS {
@@ -1643,7 +1701,7 @@ fn apply_candidate(
         .ok_or("The generated base item is no longer available")?;
     let (slot, slot_label) = slot_for_bucket(item.bucket_hash)
         .ok_or("The generated item does not belong to a weapon or armor slot")?;
-    let class_type = character_class(document, character_index);
+    let class_type = character_class(workspace, document, character_index);
     if class_type > 2 {
         return Err(format!(
             "Character {} has no valid class",
@@ -1658,12 +1716,13 @@ fn apply_candidate(
         ));
     }
 
-    let equipped_item = equipped_item_row(document, character_index, slot)?;
+    let equipped_item = equipped_item_row(workspace, document, character_index, slot)?;
     let mut updated = document.clone();
     let mut previous_item_preserved = false;
     let mut previous_item_discarded = false;
     if let Some(equipped_item) = equipped_item.as_ref() {
         if let Some(reason) = equipped_item_preservation_blocker(
+            workspace,
             document,
             catalog,
             character_index,
@@ -1677,14 +1736,15 @@ fn apply_candidate(
             }
             previous_item_discarded = true;
         } else {
-            inventory::move_equipment_item_to_inventory(&mut updated, character_index, slot)
+            workspace
+                .move_equipment_item_to_inventory(&mut updated, character_index, slot)
                 .map_err(|error| {
                     format!("The currently equipped item could not be moved to inventory: {error}")
                 })?;
             previous_item_preserved = true;
         }
     }
-    equip_definition(
+    workspace.equip_definition(
         &mut updated,
         character_index,
         slot,
@@ -1692,7 +1752,7 @@ fn apply_candidate(
         &item.default_plugs,
     )?;
     for (socket_index, hash) in candidate.plugs.iter().copied().enumerate() {
-        set_equipment_item_plug(
+        workspace.set_equipment_item_plug(
             &mut updated,
             character_index,
             slot,
@@ -1701,7 +1761,7 @@ fn apply_candidate(
             hash,
         )?;
     }
-    settings::validate_document(&updated)
+    settings::validate_workspace_document(&updated)
         .map_err(|error| format!("The generated item did not pass validation: {error}"))?;
     *document = updated;
     let result = if previous_item_preserved {
@@ -1721,7 +1781,8 @@ fn apply_candidate(
 }
 
 fn equip_replacement_warning(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     candidate: Option<&Candidate>,
@@ -1729,15 +1790,15 @@ fn equip_replacement_warning(
     let candidate = candidate?;
     let candidate_item = catalog.item(candidate.item_hash)?;
     let (slot, slot_label) = slot_for_bucket(candidate_item.bucket_hash)?;
-    let equipped_item = equipped_item_row(document, character_index, slot)
+    let equipped_item = equipped_item_row(workspace, document, character_index, slot)
         .ok()
         .flatten()?;
     let current_item_name = equipped_item
-        .get("definition_hash")
-        .and_then(parse_unsigned_value)
+        .definition_hash
         .and_then(|hash| catalog.item(hash).map(|item| item.name.clone()))
         .unwrap_or_else(|| format!("The currently equipped {slot_label} item"));
     let reason = equipped_item_preservation_blocker(
+        workspace,
         document,
         catalog,
         character_index,
@@ -1752,39 +1813,30 @@ fn equip_replacement_warning(
 }
 
 fn equipped_item_row(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     character_index: usize,
     slot: &str,
-) -> Result<Option<Value>, String> {
-    let equipment = document
-        .get("state")
-        .and_then(|state| state.get("characters"))
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("equipment"))
-        .and_then(Value::as_object)
-        .ok_or("Character equipment is unavailable")?;
-    match equipment.get(slot) {
-        Some(Value::Object(_)) => Ok(equipment.get(slot).cloned()),
-        Some(Value::Null) | None => Ok(None),
-        Some(_) => Err(format!("The equipped {slot} item is malformed")),
-    }
+) -> Result<Option<EquippedItemSnapshot>, String> {
+    Ok(workspace
+        .equipped_item_snapshots(document, character_index)?
+        .into_iter()
+        .find(|item| item.slot == slot))
 }
 
 fn equipped_item_preservation_blocker(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     slot: &str,
-    equipped_item: &Value,
+    equipped_item: &EquippedItemSnapshot,
 ) -> Option<String> {
-    let Some(definition_hash) = equipped_item
-        .get("definition_hash")
-        .and_then(parse_unsigned_value)
-    else {
+    let Some(definition_hash) = equipped_item.definition_hash else {
         return Some("Its definition hash is unreadable".to_owned());
     };
     if let Some(reason) = definition_inventory_add_blocker(
+        workspace,
         document,
         catalog,
         character_index,
@@ -1795,13 +1847,15 @@ fn equipped_item_preservation_blocker(
     }
 
     let mut preview = document.clone();
-    inventory::move_equipment_item_to_inventory(&mut preview, character_index, slot)
+    workspace
+        .move_equipment_item_to_inventory(&mut preview, character_index, slot)
         .err()
         .map(|error| error.to_string())
 }
 
 fn inventory_add_blocker(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     candidate: Option<&Candidate>,
@@ -1811,6 +1865,7 @@ fn inventory_add_blocker(
         return Some("The generated base item is unavailable".to_owned());
     };
     definition_inventory_add_blocker(
+        workspace,
         document,
         catalog,
         character_index,
@@ -1820,22 +1875,23 @@ fn inventory_add_blocker(
 }
 
 fn definition_inventory_add_blocker(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     definition_hash: u64,
     unavailable_message: &str,
 ) -> Option<String> {
-    if !inventory::schema_mode(document).can_mutate_character_inventory() {
+    if !workspace.can_mutate_character_inventory(document) {
         return Some("Requires writable character inventory".to_owned());
     }
-    let inventory = match inventory::character_inventory(document, character_index) {
+    let inventory = match workspace.character_inventory(document, character_index) {
         Ok(inventory) => inventory,
         Err(error) => return Some(format!("Character inventory is unavailable: {error}")),
     };
     if inventory
         .as_ref()
-        .is_some_and(|items| items.len() >= inventory::CHARACTER_INVENTORY_CAPACITY)
+        .is_some_and(|items| items.len() >= workspace.character_inventory_capacity(document))
     {
         return Some("Character inventory is full".to_owned());
     }
@@ -1846,6 +1902,7 @@ fn definition_inventory_add_blocker(
         return Some(unavailable_message.to_owned());
     };
     if let Some(reason) = character_bucket_add_blocker(
+        workspace,
         document,
         catalog,
         character_index,
@@ -1858,7 +1915,8 @@ fn definition_inventory_add_blocker(
 }
 
 fn character_bucket_add_blocker(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     inventory: &[inventory::InventoryItemSnapshot],
@@ -1867,15 +1925,9 @@ fn character_bucket_add_blocker(
     let Some(capacity) = candidate.authored_row_capacity().map(usize::from) else {
         return Some("This inventory bucket has no safe capacity".to_owned());
     };
-    let Some(equipment) = document
-        .get("state")
-        .and_then(|state| state.get("characters"))
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("equipment"))
-        .and_then(Value::as_object)
-    else {
-        return Some("Character equipment is unavailable".to_owned());
+    let equipment = match workspace.equipped_item_snapshots(document, character_index) {
+        Ok(equipment) => equipment,
+        Err(_) => return Some("Character equipment is unavailable".to_owned()),
     };
     let mut occupied = 0usize;
     let mut unresolved = 0usize;
@@ -1890,8 +1942,8 @@ fn character_bucket_add_blocker(
         Some(metadata) if metadata.scope == InventoryScope::Character => {}
         Some(_) | None => unresolved += 1,
     };
-    for item in equipment.values().filter(|item| !item.is_null()) {
-        count(item.get("definition_hash").and_then(parse_unsigned_value));
+    for item in equipment {
+        count(item.definition_hash);
     }
     for item in inventory {
         count(Some(u64::from(item.definition_hash)));
@@ -1914,13 +1966,19 @@ const fn bucket_has_room_for_add(occupied: usize, unresolved: usize, capacity: u
 }
 
 fn add_candidate_to_inventory(
-    document: &mut Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     candidate: &Candidate,
 ) -> Result<String, String> {
-    if let Some(reason) = inventory_add_blocker(document, catalog, character_index, Some(candidate))
-    {
+    if let Some(reason) = inventory_add_blocker(
+        workspace,
+        document,
+        catalog,
+        character_index,
+        Some(candidate),
+    ) {
         return Err(reason);
     }
     if candidate.plugs.len() > inventory::MAX_ITEM_PLUGS {
@@ -1930,7 +1988,7 @@ fn add_candidate_to_inventory(
         .item(candidate.item_hash)
         .filter(|item| item_can_be_authored(item))
         .ok_or("The generated base item is no longer available")?;
-    let class_type = character_class(document, character_index);
+    let class_type = character_class(workspace, document, character_index);
     if class_type > 2 {
         return Err(format!(
             "Character {} has no valid class",
@@ -1960,62 +2018,129 @@ fn add_candidate_to_inventory(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut updated = document.clone();
-    let location = inventory::add_inventory_item(
-        &mut updated,
-        character_index,
-        inventory::NewInventoryItem::single(definition_hash, item_level),
-    )
-    .map_err(|error| error.to_string())?;
-    inventory::apply_inventory_item_action(
-        &mut updated,
-        location,
-        inventory::InventoryItemAction::SetPlugs(inventory::ItemPlugs::Authored(plugs)),
-    )
-    .map_err(|error| error.to_string())?;
-    settings::validate_document(&updated)
+    let location = workspace
+        .add_inventory_item(
+            &mut updated,
+            character_index,
+            inventory::NewInventoryItem::single(definition_hash, item_level),
+        )
+        .map_err(|error| error.to_string())?;
+    workspace
+        .apply_inventory_item_action(
+            &mut updated,
+            location,
+            inventory::InventoryItemAction::SetPlugs(inventory::ItemPlugs::Authored(plugs)),
+        )
+        .map_err(|error| error.to_string())?;
+    settings::validate_workspace_document(&updated)
         .map_err(|error| format!("The generated item did not pass validation: {error}"))?;
     *document = updated;
     Ok(format!("Added {} to character inventory", item.name))
 }
 
-fn randomize_full_loadout(
-    document: &mut Value,
-    catalog: &Catalog,
+fn validate_loadout_request(
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     character_index: usize,
-    plug_mode: PlugSelectionMode,
-    show_dummy_items: bool,
     options: LoadoutOptions,
-) -> Result<String, String> {
+) -> Result<u64, String> {
     if !options.any() {
         return Err("Select at least one loadout section".to_owned());
     }
-    let schema_mode = inventory::schema_mode(document);
-    if !schema_mode.can_mutate_equipment() {
+    if !workspace.can_mutate_equipment(document) {
         return Err("Randomizing a loadout requires writable equipment".to_owned());
     }
-    if !schema_mode.can_mutate_character_inventory() {
+    if !workspace.can_mutate_character_inventory(document) {
         return Err("Randomizing a loadout requires writable character inventory".to_owned());
     }
-
-    let class_type = character_class(document, character_index);
+    let class_type = character_class(workspace, document, character_index);
     if class_type > 2 {
         return Err(format!(
             "Character {} has no valid class",
             character_index + 1
         ));
     }
-    inventory::character_inventory(document, character_index).map_err(|error| error.to_string())?;
+    workspace
+        .character_inventory(document, character_index)
+        .map_err(|error| error.to_string())?;
+    Ok(class_type)
+}
+
+fn has_locked_exotic(
+    equipped_items: &[EquippedItemSnapshot],
+    slots: &[&str],
+    keep_locked_items: bool,
+    catalog: &Catalog,
+) -> bool {
+    keep_locked_items
+        && equipped_items.iter().any(|item| {
+            slots.contains(&item.slot)
+                && loadout_item_is_locked(item.flags)
+                && item
+                    .definition_hash
+                    .and_then(|hash| catalog.item(hash))
+                    .is_some_and(|item| is_exotic(catalog, item))
+        })
+}
+
+fn held_item_counts(
+    held_inventory: &[inventory::InventoryItemSnapshot],
+    catalog: &Catalog,
+) -> (usize, HashMap<u64, usize>) {
+    let mut by_bucket = HashMap::new();
+    for item in held_inventory {
+        if let Some(definition) = catalog.item(u64::from(item.definition_hash)) {
+            *by_bucket.entry(definition.bucket_hash).or_default() += 1;
+        }
+    }
+    (held_inventory.len(), by_bucket)
+}
+
+fn randomize_full_loadout(
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
+    catalog: &Catalog,
+    character_index: usize,
+    plug_mode: PlugSelectionMode,
+    show_dummy_items: bool,
+    options: LoadoutOptions,
+) -> Result<String, String> {
+    let class_type = validate_loadout_request(workspace, document, character_index, options)?;
 
     let mut updated = document.clone();
-    clear_selected_inventory(&mut updated, catalog, character_index, options)?;
+    if options.replace_held_inventory {
+        clear_selected_inventory(workspace, &mut updated, catalog, character_index, options)?;
+    }
+    let equipped_items = workspace
+        .equipped_item_snapshots(&updated, character_index)
+        .map_err(|error| error.to_string())?;
     let mut rng = Rng::from_clock();
-    let mut exotic_weapon_equipped = false;
-    let mut exotic_armor_equipped = false;
+    let locked_equipped = |slot: &str| {
+        options.keep_locked_items.then(|| {
+            equipped_items
+                .iter()
+                .find(|item| item.slot == slot && loadout_item_is_locked(item.flags))
+        })?
+    };
+    let mut exotic_weapon_equipped = has_locked_exotic(
+        &equipped_items,
+        WEAPON_SLOTS,
+        options.keep_locked_items,
+        catalog,
+    );
+    let mut exotic_armor_equipped = has_locked_exotic(
+        &equipped_items,
+        ARMOR_SLOTS,
+        options.keep_locked_items,
+        catalog,
+    );
     let mut generated_items = 0usize;
     let mut generated_slots = 0usize;
-    let mut held_items = inventory::character_inventory(&updated, character_index)
+    let held_inventory = workspace
+        .character_inventory(&updated, character_index)
         .map_err(|error| error.to_string())?
-        .map_or(0, |items| items.len());
+        .unwrap_or_default();
+    let (mut held_items, mut held_items_by_bucket) = held_item_counts(&held_inventory, catalog);
 
     for &(slot, _, bucket_hash) in SLOTS {
         let scope = loadout_scope_for_slot(slot);
@@ -2030,54 +2155,78 @@ fn randomize_full_loadout(
         if candidates.is_empty() {
             continue;
         }
-        let ordinary = candidates
-            .iter()
-            .copied()
-            .filter(|item| !is_exotic(catalog, item))
-            .collect::<Vec<_>>();
-        let equipped_candidates = if (WEAPON_SLOTS.contains(&slot) && exotic_weapon_equipped)
-            || (ARMOR_SLOTS.contains(&slot) && exotic_armor_equipped)
-        {
-            ordinary.as_slice()
-        } else {
-            candidates.as_slice()
-        };
         let mut used_hashes = Vec::new();
-        let equipped = pick_avoiding(&mut rng, equipped_candidates, &used_hashes)
-            .ok_or_else(|| format!("No usable non-exotic item is available for the {slot} slot"))?;
-        if slot == SUBCLASS_SLOT {
-            equip_subclass_with_default_abilities(&mut updated, character_index, equipped)?;
+        let mut slot_changed = false;
+        if let Some(locked) = locked_equipped(slot) {
+            if let Some(hash) = locked.definition_hash {
+                used_hashes.push(hash);
+            }
         } else {
-            install_random_equipped(
-                &mut updated,
-                catalog,
-                character_index,
-                slot,
-                equipped,
-                plug_mode,
-                &mut rng,
-            )?;
+            let ordinary = candidates
+                .iter()
+                .copied()
+                .filter(|item| !is_exotic(catalog, item))
+                .collect::<Vec<_>>();
+            let equipped_candidates = if (WEAPON_SLOTS.contains(&slot) && exotic_weapon_equipped)
+                || (ARMOR_SLOTS.contains(&slot) && exotic_armor_equipped)
+            {
+                ordinary.as_slice()
+            } else {
+                candidates.as_slice()
+            };
+            let equipped =
+                pick_avoiding(&mut rng, equipped_candidates, &used_hashes).ok_or_else(|| {
+                    format!("No usable non-exotic item is available for the {slot} slot")
+                })?;
+            if slot == SUBCLASS_SLOT {
+                equip_subclass_with_default_abilities(
+                    workspace,
+                    &mut updated,
+                    character_index,
+                    equipped,
+                )?;
+            } else {
+                install_random_equipped(
+                    workspace,
+                    &mut updated,
+                    catalog,
+                    character_index,
+                    slot,
+                    equipped,
+                    plug_mode,
+                    &mut rng,
+                )?;
+            }
+            if WEAPON_SLOTS.contains(&slot) && is_exotic(catalog, equipped) {
+                exotic_weapon_equipped = true;
+            }
+            if ARMOR_SLOTS.contains(&slot) && is_exotic(catalog, equipped) {
+                exotic_armor_equipped = true;
+            }
+            used_hashes.push(equipped.hash);
+            generated_items += 1;
+            slot_changed = true;
         }
-        if WEAPON_SLOTS.contains(&slot) && is_exotic(catalog, equipped) {
-            exotic_weapon_equipped = true;
-        }
-        if ARMOR_SLOTS.contains(&slot) && is_exotic(catalog, equipped) {
-            exotic_armor_equipped = true;
-        }
-        used_hashes.push(equipped.hash);
-        generated_items += 1;
-        generated_slots += 1;
 
-        let held_target = if matches!(slot, SUBCLASS_SLOT | CLAN_BANNER_SLOT) {
+        let held_target = if !options.replace_held_inventory
+            || matches!(slot, SUBCLASS_SLOT | CLAN_BANNER_SLOT)
+        {
             0
         } else {
             HELD_ITEMS_PER_SLOT
+                .saturating_sub(
+                    held_items_by_bucket
+                        .get(&bucket_hash)
+                        .copied()
+                        .unwrap_or_default(),
+                )
                 .min(inventory::CHARACTER_INVENTORY_CAPACITY.saturating_sub(held_items))
         };
         for _ in 0..held_target {
             let held = pick_avoiding(&mut rng, &candidates, &used_hashes)
                 .ok_or_else(|| format!("No usable held item is available for the {slot} slot"))?;
             install_random_held(
+                workspace,
                 &mut updated,
                 catalog,
                 character_index,
@@ -2087,14 +2236,19 @@ fn randomize_full_loadout(
             )?;
             used_hashes.push(held.hash);
             held_items += 1;
+            *held_items_by_bucket.entry(bucket_hash).or_default() += 1;
             generated_items += 1;
+            slot_changed = true;
+        }
+        if slot_changed {
+            generated_slots += 1;
         }
     }
 
     if generated_slots == 0 {
         return Err("No usable item definitions were found for this character".to_owned());
     }
-    settings::validate_document(&updated)
+    settings::validate_workspace_document(&updated)
         .map_err(|error| format!("The generated loadout did not pass validation: {error}"))?;
     *document = updated;
     Ok(format!(
@@ -2103,39 +2257,34 @@ fn randomize_full_loadout(
 }
 
 fn clear_selected_inventory(
-    document: &mut Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     options: LoadoutOptions,
 ) -> Result<(), String> {
-    let character = document
-        .pointer_mut("/state/characters")
-        .and_then(Value::as_array_mut)
-        .and_then(|characters| characters.get_mut(character_index))
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("Character {} must be an object", character_index + 1))?;
-    let inventory = character
-        .get_mut("inventory")
-        .and_then(Value::as_array_mut)
+    let inventory = workspace
+        .character_inventory(document, character_index)
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| {
             format!(
                 "Character {} inventory must be an array",
                 character_index + 1
             )
         })?;
-    inventory.retain(|value| {
-        let scope = value
-            .get("definition_hash")
-            .and_then(|value| {
-                value
-                    .as_u64()
-                    .or_else(|| value.as_str().and_then(parse_hash_hex))
-            })
-            .and_then(|hash| catalog.item(hash))
+    let removed_indices = inventory.into_iter().filter_map(|item| {
+        if options.keep_locked_items && loadout_item_is_locked(item.flags) {
+            return None;
+        }
+        let scope = catalog
+            .item(u64::from(item.definition_hash))
             .map(|item| loadout_scope_for_bucket(item.bucket_hash))
             .unwrap_or(LoadoutScope::EquipmentFlair);
-        !options.includes(scope)
+        options.includes(scope).then_some(item.location.item_index)
     });
+    workspace
+        .remove_character_inventory_items(document, character_index, removed_indices)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2146,6 +2295,10 @@ fn loadout_scope_for_bucket(bucket_hash: u64) -> LoadoutScope {
             (*bucket == bucket_hash).then(|| loadout_scope_for_slot(slot))
         })
         .unwrap_or(LoadoutScope::EquipmentFlair)
+}
+
+fn loadout_item_is_locked(flags: Option<u8>) -> bool {
+    flags.unwrap_or_default() & inventory::INVENTORY_FLAG_LOCKED != 0
 }
 
 fn loadout_scope_for_slot(slot: &str) -> LoadoutScope {
@@ -2162,7 +2315,8 @@ fn loadout_scope_for_slot(slot: &str) -> LoadoutScope {
 
 #[allow(clippy::too_many_arguments)]
 fn install_random_equipped(
-    document: &mut Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     slot: &str,
@@ -2170,7 +2324,7 @@ fn install_random_equipped(
     plug_mode: PlugSelectionMode,
     rng: &mut Rng,
 ) -> Result<(), String> {
-    equip_definition(
+    workspace.equip_definition(
         document,
         character_index,
         slot,
@@ -2179,7 +2333,7 @@ fn install_random_equipped(
     )?;
     for socket_index in 0..item.sockets.len().min(inventory::MAX_ITEM_PLUGS) {
         if let Some(hash) = random_plug(catalog, item, socket_index, plug_mode, rng) {
-            set_equipment_item_plug(
+            workspace.set_equipment_item_plug(
                 document,
                 character_index,
                 slot,
@@ -2194,7 +2348,8 @@ fn install_random_equipped(
 
 #[allow(clippy::too_many_arguments)]
 fn install_random_held(
-    document: &mut Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     item: &ItemDef,
@@ -2204,12 +2359,13 @@ fn install_random_held(
     let definition_hash = u32::try_from(item.hash)
         .map_err(|_| format!("{} has an invalid definition hash", item.name))?;
     let item_level = capped_inventory_item_level(catalog, item)?;
-    let location = inventory::add_inventory_item(
-        document,
-        character_index,
-        inventory::NewInventoryItem::single(definition_hash, item_level),
-    )
-    .map_err(|error| error.to_string())?;
+    let location = workspace
+        .add_inventory_item(
+            document,
+            character_index,
+            inventory::NewInventoryItem::single(definition_hash, item_level),
+        )
+        .map_err(|error| error.to_string())?;
     let mut plugs = default_candidate(item)?
         .plugs
         .into_iter()
@@ -2233,12 +2389,13 @@ fn install_random_held(
             );
         }
     }
-    inventory::apply_inventory_item_action(
-        document,
-        location,
-        inventory::InventoryItemAction::SetPlugs(inventory::ItemPlugs::Authored(plugs)),
-    )
-    .map_err(|error| error.to_string())
+    workspace
+        .apply_inventory_item_action(
+            document,
+            location,
+            inventory::InventoryItemAction::SetPlugs(inventory::ItemPlugs::Authored(plugs)),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn capped_inventory_item_level(catalog: &Catalog, item: &ItemDef) -> Result<i32, String> {
@@ -2280,12 +2437,13 @@ fn pick_avoiding<'a>(
 }
 
 fn matching_item_instances(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     character_index: usize,
     matching_hashes: &HashSet<u64>,
 ) -> Vec<ItemInstanceChoice> {
     let mut choices = Vec::new();
-    if let Ok(equipped) = equipped_item_snapshots(document, character_index) {
+    if let Ok(equipped) = workspace.equipped_item_snapshots(document, character_index) {
         choices.extend(equipped.into_iter().filter_map(|snapshot| {
             let item_hash = snapshot.definition_hash?;
             if !matching_hashes.contains(&item_hash) {
@@ -2300,7 +2458,7 @@ fn matching_item_instances(
             })
         }));
     }
-    if let Ok(Some(stored)) = inventory::character_inventory(document, character_index) {
+    if let Ok(Some(stored)) = workspace.character_inventory(document, character_index) {
         choices.extend(stored.into_iter().filter_map(|snapshot| {
             let item_hash = u64::from(snapshot.definition_hash);
             matching_hashes
@@ -2398,13 +2556,15 @@ fn slot_for_bucket(bucket_hash: u64) -> Option<(&'static str, &'static str)> {
         .find_map(|(slot, label, bucket)| (*bucket == bucket_hash).then_some((*slot, *label)))
 }
 
-fn character_class(document: &Value, character_index: usize) -> u64 {
-    document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("class"))
-        .and_then(Value::as_u64)
+fn character_class(
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
+    character_index: usize,
+) -> u64 {
+    workspace
+        .character_metadata(document, character_index)
+        .ok()
+        .map(|metadata| u64::from(metadata.class_type))
         .unwrap_or(99)
 }
 
@@ -2499,7 +2659,14 @@ mod tests {
 
     #[test]
     fn loadout_inventory_plan_matches_panoptes_distribution() {
-        let options = LoadoutOptions::default();
+        let options = LoadoutOptions {
+            weapons: true,
+            armor: true,
+            equipment_flair: true,
+            subclass: true,
+            replace_held_inventory: true,
+            keep_locked_items: true,
+        };
         let equipment_slots = SLOTS
             .iter()
             .filter(|(slot, _, _)| options.includes(loadout_scope_for_slot(slot)))
@@ -2518,18 +2685,15 @@ mod tests {
     }
 
     #[test]
-    fn loadout_scopes_default_on_and_partition_every_slot() {
+    fn loadout_scopes_default_off_and_partition_every_slot() {
         let options = LoadoutOptions::default();
-        assert!(options.weapons && options.armor && options.equipment_flair && options.subclass);
+        assert!(!options.any());
+        assert!(!options.replace_held_inventory);
+        assert!(options.keep_locked_items);
         assert_eq!(loadout_scope_for_slot("kinetic"), LoadoutScope::Weapons);
         assert_eq!(loadout_scope_for_slot("helmet"), LoadoutScope::Armor);
         assert_eq!(loadout_scope_for_slot("subclass"), LoadoutScope::Subclass);
         assert_eq!(loadout_scope_for_slot("ship"), LoadoutScope::EquipmentFlair);
-        assert!(
-            SLOTS
-                .iter()
-                .all(|(slot, _, _)| options.includes(loadout_scope_for_slot(slot)))
-        );
     }
 
     #[test]
@@ -2539,6 +2703,8 @@ mod tests {
             armor: true,
             equipment_flair: false,
             subclass: true,
+            replace_held_inventory: false,
+            keep_locked_items: true,
         };
         let selected = SLOTS
             .iter()
@@ -2555,9 +2721,27 @@ mod tests {
     #[test]
     fn loadout_confirmation_uses_the_visible_safety_labels() {
         assert_eq!(PlugSelectionMode::Supported.label(), "Compatible");
+        assert_eq!(
+            PlugSelectionMode::SocketAndGearType.label(),
+            "Socket + gear type"
+        );
         assert_eq!(PlugSelectionMode::MatchingSocketType.label(), "Socket type");
         assert_eq!(PlugSelectionMode::GearType.label(), "Gear type");
         assert_eq!(PlugSelectionMode::AnyPlug.label(), "All");
+    }
+
+    #[test]
+    fn loadout_lock_detection_only_uses_the_locked_flag() {
+        assert!(loadout_item_is_locked(Some(
+            inventory::INVENTORY_FLAG_LOCKED
+        )));
+        assert!(loadout_item_is_locked(Some(
+            inventory::INVENTORY_FLAG_LOCKED | inventory::INVENTORY_FLAG_TRACKED
+        )));
+        assert!(!loadout_item_is_locked(None));
+        assert!(!loadout_item_is_locked(Some(
+            inventory::INVENTORY_FLAG_TRACKED
+        )));
     }
 
     #[test]
@@ -2570,7 +2754,8 @@ mod tests {
 
     #[test]
     fn random_item_search_preserves_equipped_and_inventory_rolls() {
-        let document = serde_json::json!({
+        let document =
+            crate::app::account_workspace::WorkspaceDocument::json_only(serde_json::json!({
             "version": 6,
             "state": {
                 "characters": [{
@@ -2592,10 +2777,15 @@ mod tests {
                     }]
                 }]
             }
-        });
+            }));
         let matching_hashes = HashSet::from([11, 22]);
 
-        let choices = matching_item_instances(&document, 0, &matching_hashes);
+        let choices = matching_item_instances(
+            crate::app::account_workspace::AccountWorkspace::json(),
+            &document,
+            0,
+            &matching_hashes,
+        );
 
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].request.item_hash, 11);

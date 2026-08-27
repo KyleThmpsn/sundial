@@ -1,5 +1,29 @@
 use super::*;
 
+pub(in crate::app) fn collect_class_armor_default_characters(
+    document: &Value,
+) -> HashMap<u64, usize> {
+    let Some(characters) = document
+        .pointer("/state/characters")
+        .and_then(Value::as_array)
+    else {
+        return HashMap::new();
+    };
+    characters
+        .iter()
+        .enumerate()
+        .filter_map(|(character_index, character)| {
+            let class_type = character.get("class").and_then(Value::as_u64)?;
+            character.get("equipment").and_then(Value::as_object)?;
+            Some((class_type, character_index))
+        })
+        .fold(HashMap::new(), |mut defaults, (class_type, index)| {
+            defaults.entry(class_type).or_insert(index);
+            defaults
+        })
+}
+
+#[cfg(test)]
 pub(in crate::app) fn collect_class_armor_defaults(
     document: &Value,
 ) -> HashMap<u64, HashMap<String, Value>> {
@@ -31,6 +55,7 @@ pub(in crate::app) fn collect_class_armor_defaults(
     defaults
 }
 
+#[cfg(test)]
 pub(in crate::app) fn restore_class_armor(
     character: &mut serde_json::Map<String, Value>,
     defaults: &HashMap<String, Value>,

@@ -162,7 +162,7 @@ pub(crate) fn catalog_item_tooltip_immediate(
     response
 }
 
-fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bool {
+pub(crate) fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bool {
     catalog.display_name(hash).is_some()
         || catalog
             .plug_type_name(hash)
@@ -192,11 +192,11 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(name) = name {
-                    ui.label(egui::RichText::new(name).strong());
+                    ui.label(crate::app::ui::destiny_text(ui, name).strong());
                 }
                 ui.horizontal_wrapped(|ui| {
                     if let Some(type_name) = type_name {
-                        ui.label(type_name);
+                        ui.label(crate::app::ui::destiny_text(ui, type_name));
                         ui.label(egui::RichText::new("·").small().weak());
                     }
                     ui.label(
@@ -209,7 +209,7 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             });
             if let Some(description) = description {
                 ui.separator();
-                ui.label(description);
+                ui.label(crate::app::ui::destiny_text(ui, description));
             }
             if let Some(diagnostic) = icon_diagnostic {
                 ui.separator();

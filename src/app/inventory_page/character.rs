@@ -6,15 +6,15 @@ use eframe::egui;
 
 use crate::{
     catalog::{InventoryScope, ItemDef},
-    hash::{format_hash_hex, parse_unsigned_value},
+    hash::format_hash_hex,
 };
 
 use super::super::{
-    ARMOR_SLOTS, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, SLOTS, SundialApp, WEAPON_SLOTS,
-    equipment::{
-        self, EquipmentSlotCard, EquippedItemSnapshot, class_name, equipped_item_snapshots,
-        native_plug_default,
-    },
+    ARMOR_SLOTS, CharacterInventoryLockFilter, CharacterInventorySort,
+    CharacterInventorySourceFilter, PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, SundialApp,
+    WEAPON_SLOTS,
+    equipment::{self, EquipmentSlotCard, EquippedItemSnapshot, class_name, native_plug_default},
+    inspector::DefinitionInspectionContext,
     inventory::{
         self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, InventoryItemAction,
         InventoryItemSnapshot, ItemPlugs, NewInventoryItem, SchemaMode, set_inventory_locked_flag,
@@ -27,8 +27,7 @@ use super::super::{
 use super::{
     buckets::{
         add_candidate_buckets, bucket_add_tooltip, bucket_has_room, bucket_header_label,
-        bucket_header_text, bucket_key_has_room, distinct_candidate_buckets, draw_bucket_details,
-        scope_id,
+        bucket_header_text, bucket_key_has_room, draw_bucket_details, scope_id,
     },
     definitions::{
         character_bucket_definition_choices, character_definition_choices,
@@ -51,50 +50,188 @@ use super::{
     },
 };
 
+struct CharacterInventorySources {
+    class_type: u64,
+    items: Vec<InventoryItemSnapshot>,
+    inventory_error: Option<String>,
+    equipped_items: Vec<EquippedItemSnapshot>,
+    equipment_error: Option<String>,
+}
+
 impl SundialApp {
     pub(in crate::app) fn draw_character_inventory_page(&mut self, ui: &mut egui::Ui) {
         let mode = inventory::schema_mode(&self.document);
+        let editable = self
+            .account_workspace
+            .can_mutate_character_inventory(&self.document);
+        let equipment_editable = self.account_workspace.can_mutate_equipment(&self.document);
         ui.heading("Character inventory");
         ui.label(
             "Items stored separately for each character, with equipped items shown in their native buckets.",
         );
-        draw_schema_notice(ui, mode, InventoryPageKind::Character);
+        if self.document.uses_json_account() {
+            draw_schema_notice(ui, mode, InventoryPageKind::Character);
+        }
         ui.add_space(4.0);
-        self.draw_character_inventory_section(ui, mode);
+        self.draw_character_inventory_section(ui, mode, editable, equipment_editable);
     }
 
-    fn draw_character_inventory_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
-        self.draw_character_tabs(ui);
-        ui.separator();
+    fn draw_character_inventory_view_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.character_inventory_query)
+                    .hint_text("Search inventory by name, type, hash, or instance…")
+                    .desired_width(360.0),
+            );
+            egui::ComboBox::from_id_salt("character-inventory-source-filter")
+                .selected_text(self.character_inventory_source_filter.label())
+                .show_ui(ui, |ui| {
+                    for filter in [
+                        CharacterInventorySourceFilter::All,
+                        CharacterInventorySourceFilter::Stored,
+                        CharacterInventorySourceFilter::Equipped,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.character_inventory_source_filter,
+                            filter,
+                            filter.label(),
+                        );
+                    }
+                });
+            egui::ComboBox::from_id_salt("character-inventory-sort")
+                .selected_text(self.character_inventory_sort.label())
+                .show_ui(ui, |ui| {
+                    for sort in [
+                        CharacterInventorySort::InventoryOrder,
+                        CharacterInventorySort::Name,
+                        CharacterInventorySort::PowerDescending,
+                    ] {
+                        ui.selectable_value(&mut self.character_inventory_sort, sort, sort.label());
+                    }
+                });
+            egui::ComboBox::from_id_salt("character-inventory-lock-filter")
+                .selected_text(self.character_inventory_lock_filter.label())
+                .show_ui(ui, |ui| {
+                    for filter in [
+                        CharacterInventoryLockFilter::All,
+                        CharacterInventoryLockFilter::Locked,
+                        CharacterInventoryLockFilter::Unlocked,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.character_inventory_lock_filter,
+                            filter,
+                            filter.label(),
+                        );
+                    }
+                });
+            if (!self.character_inventory_query.is_empty()
+                || self.character_inventory_source_filter != CharacterInventorySourceFilter::All
+                || self.character_inventory_lock_filter != CharacterInventoryLockFilter::All
+                || self.character_inventory_sort != CharacterInventorySort::InventoryOrder)
+                && ui.button("Reset view").clicked()
+            {
+                self.character_inventory_query.clear();
+                self.character_inventory_source_filter = CharacterInventorySourceFilter::All;
+                self.character_inventory_lock_filter = CharacterInventoryLockFilter::All;
+                self.character_inventory_sort = CharacterInventorySort::InventoryOrder;
+            }
+        });
+    }
 
-        let character_index = self.selected_character;
+    fn character_inventory_entry_matches(
+        &self,
+        entry: &CharacterInventoryEntry,
+        query: &str,
+    ) -> bool {
+        let source_matches = match self.character_inventory_source_filter {
+            CharacterInventorySourceFilter::All => true,
+            CharacterInventorySourceFilter::Stored => entry.is_stored(),
+            CharacterInventorySourceFilter::Equipped => !entry.is_stored(),
+        };
+        let lock_matches = match self.character_inventory_lock_filter {
+            CharacterInventoryLockFilter::All => true,
+            CharacterInventoryLockFilter::Locked => entry.locked(),
+            CharacterInventoryLockFilter::Unlocked => !entry.locked(),
+        };
+        if !source_matches || !lock_matches || query.is_empty() {
+            return source_matches && lock_matches;
+        }
+        let hash = entry.definition_hash();
+        let definition_matches =
+            hash.and_then(|hash| self.manifest.item(hash))
+                .is_some_and(|item| {
+                    item.name.to_ascii_lowercase().contains(query)
+                        || item.type_name.to_ascii_lowercase().contains(query)
+                });
+        let hash_matches = hash.is_some_and(|hash| {
+            hash.to_string().contains(query)
+                || format_hash_hex(hash).to_ascii_lowercase().contains(query)
+        });
+        let instance_matches = match entry {
+            CharacterInventoryEntry::Equipped(snapshot) => snapshot
+                .instance_soid
+                .is_some_and(|soid| format_hash_hex(soid).to_ascii_lowercase().contains(query)),
+            CharacterInventoryEntry::Stored { snapshot, .. } => {
+                format_hash_hex(snapshot.instance_soid)
+                    .to_ascii_lowercase()
+                    .contains(query)
+            }
+        };
+        definition_matches || hash_matches || instance_matches
+    }
+
+    fn character_inventory_sources(&self, character_index: usize) -> CharacterInventorySources {
         let class_type = self
-            .characters()
-            .and_then(|characters| characters.get(character_index))
-            .and_then(|character| character.get("class"))
-            .and_then(serde_json::Value::as_u64)
+            .account_workspace
+            .character_metadata(&self.document, character_index)
+            .ok()
+            .map(|metadata| u64::from(metadata.class_type))
             .unwrap_or(99);
-        let (items, inventory_error) =
-            match inventory::character_inventory(&self.document, character_index) {
-                Ok(items) => (items.unwrap_or_default(), None),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            };
-        let (equipped_items, equipment_error) =
-            match equipped_item_snapshots(&self.document, character_index) {
-                Ok(items) => (items, None),
-                Err(error) => (Vec::new(), Some(error)),
-            };
-        let stored_count = items.len();
-        let equipped_count = equipped_items.len();
-        let editable = mode.can_mutate_character_inventory();
-        let equipment_editable = mode.can_mutate_equipment();
+        let (items, inventory_error) = match self
+            .account_workspace
+            .character_inventory(&self.document, character_index)
+        {
+            Ok(items) => (items.unwrap_or_default(), None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        let (equipped_items, equipment_error) = match self
+            .account_workspace
+            .equipped_item_snapshots(&self.document, character_index)
+        {
+            Ok(items) => (items, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        CharacterInventorySources {
+            class_type,
+            items,
+            inventory_error,
+            equipped_items,
+            equipment_error,
+        }
+    }
 
+    fn draw_character_inventory_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        character_index: usize,
+        sources: &CharacterInventorySources,
+        editable: bool,
+        equipment_editable: bool,
+    ) {
+        let stored_count = sources.items.len();
+        let equipped_count = sources.equipped_items.len();
+        let inventory_capacity = self
+            .account_workspace
+            .character_inventory_capacity(&self.document);
         let randomize_request = ui
             .horizontal_wrapped(|ui| {
                 ui.strong(format!("Character {}", character_index + 1));
-                ui.label(egui::RichText::new(format!(
-                "{stored_count} / {CHARACTER_INVENTORY_CAPACITY} stored · {equipped_count} equipped"
-            )).weak());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{stored_count} / {inventory_capacity} stored · {equipped_count} equipped"
+                    ))
+                    .weak(),
+                );
                 let request = equipment::draw_randomize_menu(ui, equipment_editable, editable);
                 if equipment::draw_armor_stats_button(ui, equipment_editable).clicked() {
                     self.armor_stats_adjuster.open(character_index);
@@ -107,7 +244,15 @@ impl SundialApp {
         self.draw_equipped_armor_stat_row(ui, character_index);
         ui.add_enabled_ui(equipment_editable, |ui| self.draw_item_safety_controls(ui));
         ui.separator();
+    }
 
+    fn draw_character_inventory_notices(
+        &self,
+        ui: &mut egui::Ui,
+        sources: &CharacterInventorySources,
+        editable: bool,
+        equipment_editable: bool,
+    ) {
         if !editable {
             let message = if equipment_editable {
                 "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout items remain editable."
@@ -115,17 +260,53 @@ impl SundialApp {
                 "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout editing is also disabled for this schema."
             };
             ui.label(egui::RichText::new(message).weak());
-        } else if stored_count >= CHARACTER_INVENTORY_CAPACITY {
+        } else if sources.items.len() >= CHARACTER_INVENTORY_CAPACITY {
             ui.label(egui::RichText::new("This character inventory is full.").weak());
         }
-        if let Some(error) = &inventory_error {
+        if let Some(error) = &sources.inventory_error {
             draw_inventory_source_error(ui, "Stored inventory", error);
         }
-        if let Some(error) = &equipment_error {
+        if let Some(error) = &sources.equipment_error {
             draw_inventory_source_error(ui, "Equipped items", error);
         }
+    }
 
-        let mut bucket_usage = self.inventory_bucket_usage(&items, character_index);
+    fn draw_character_inventory_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        _mode: SchemaMode,
+        editable: bool,
+        equipment_editable: bool,
+    ) {
+        self.draw_character_tabs(ui);
+        ui.separator();
+
+        let character_index = self.selected_character;
+        let sources = self.character_inventory_sources(character_index);
+        self.draw_character_inventory_header(
+            ui,
+            character_index,
+            &sources,
+            editable,
+            equipment_editable,
+        );
+        self.draw_character_inventory_notices(ui, &sources, editable, equipment_editable);
+        let CharacterInventorySources {
+            class_type,
+            items,
+            inventory_error,
+            equipped_items,
+            equipment_error,
+        } = sources;
+        let stored_count = items.len();
+        self.draw_character_inventory_view_controls(ui);
+
+        let mut bucket_usage = self.inventory_bucket_usage(
+            &items,
+            equipment_error
+                .is_none()
+                .then_some(equipped_items.as_slice()),
+        );
         if inventory_error.is_some() || equipment_error.is_some() {
             bucket_usage.occupancy_complete = false;
         }
@@ -135,6 +316,10 @@ impl SundialApp {
         ui.add_space(4.0);
 
         let ui_identities = inventory_item_ui_identities(&items);
+        let occupied_equipment_slots = equipped_items
+            .iter()
+            .map(|item| item.slot)
+            .collect::<Vec<_>>();
         let transfer_targets = self.character_transfer_targets(character_index);
         let mut entries = equipped_items
             .into_iter()
@@ -149,19 +334,56 @@ impl SundialApp {
                     ui_identity,
                 }),
         );
-        let candidate_buckets = distinct_candidate_buckets(
-            self.manifest
-                .character_inventory_candidates("", class_type, self.show_dummy_items)
-                .map(|definition| *definition.metadata),
-        );
+        let filters_active = !self.character_inventory_query.trim().is_empty()
+            || self.character_inventory_source_filter != CharacterInventorySourceFilter::All
+            || self.character_inventory_lock_filter != CharacterInventoryLockFilter::All;
+        let query = self.character_inventory_query.trim().to_ascii_lowercase();
+        entries.retain(|entry| self.character_inventory_entry_matches(entry, &query));
+        if filters_active {
+            ui.label(
+                egui::RichText::new(format!("Showing {} matching items", entries.len())).weak(),
+            );
+        }
+        let candidate_buckets = self
+            .manifest
+            .character_inventory_candidate_buckets(class_type, self.show_dummy_items)
+            .iter()
+            .copied();
         let mut groups = self.group_items_by_bucket(
             entries,
             CharacterInventoryEntry::definition_hash,
             InventoryScope::Character,
         );
-        add_candidate_buckets(&mut groups, candidate_buckets, InventoryScope::Character);
+        if !filters_active {
+            add_candidate_buckets(&mut groups, candidate_buckets, InventoryScope::Character);
+        }
+        if self.character_inventory_sort != CharacterInventorySort::InventoryOrder {
+            for group in &mut groups {
+                match self.character_inventory_sort {
+                    CharacterInventorySort::InventoryOrder => {}
+                    CharacterInventorySort::Name => group.items.sort_by_cached_key(|entry| {
+                        entry
+                            .definition_hash()
+                            .and_then(|hash| self.manifest.item(hash))
+                            .map_or_else(String::new, |item| item.name.to_ascii_lowercase())
+                    }),
+                    CharacterInventorySort::PowerDescending => {
+                        group
+                            .items
+                            .sort_by_key(|entry| std::cmp::Reverse(entry.level()));
+                    }
+                }
+            }
+        }
         if groups.is_empty() {
-            ui.label(egui::RichText::new("No character inventory buckets are available.").weak());
+            ui.label(
+                egui::RichText::new(if filters_active {
+                    "No inventory items match the current view."
+                } else {
+                    "No character inventory buckets are available."
+                })
+                .weak(),
+            );
             return;
         }
 
@@ -306,12 +528,13 @@ impl SundialApp {
                                                     .to_owned()
                                             })
                                             .and_then(|level| {
-                                                inventory::add_inventory_item(
-                                                    &mut self.document,
-                                                    character_index,
-                                                    NewInventoryItem::single(hash, level),
-                                                )
-                                                .map_err(|error| error.to_string())
+                                                self.account_workspace
+                                                    .add_inventory_item(
+                                                        &mut self.document,
+                                                        character_index,
+                                                        NewInventoryItem::single(hash, level),
+                                                    )
+                                                    .map_err(|error| error.to_string())
                                             })
                                     }) {
                                     Ok(_) => {
@@ -326,11 +549,25 @@ impl SundialApp {
                         }
                         let (minimum_card_width, maximum_card_width) =
                             self.item_card_width.dimensions();
-                        item_editor::draw_responsive_item_cards(
+                        item_editor::draw_virtualized_responsive_item_cards(
                             ui,
+                            (
+                                "character-inventory-cards",
+                                character_index,
+                                scope_id(group.key.scope),
+                                group.key.native_id,
+                            ),
                             &group.items,
                             minimum_card_width,
                             maximum_card_width,
+                            |entry| match entry {
+                                CharacterInventoryEntry::Equipped(snapshot) => {
+                                    egui::Id::new(("equipped", snapshot.slot))
+                                }
+                                CharacterInventoryEntry::Stored { ui_identity, .. } => {
+                                    egui::Id::new(("stored", ui_identity))
+                                }
+                            },
                             |ui, entry| match entry {
                                 CharacterInventoryEntry::Equipped(snapshot) => {
                                     self.draw_equipped_item_card(
@@ -354,6 +591,7 @@ impl SundialApp {
                                         CharacterInventoryCardContext {
                                             bucket_usage: &bucket_usage,
                                             transfer_targets: &transfer_targets,
+                                            occupied_equipment_slots: &occupied_equipment_slots,
                                         },
                                     );
                                     if pending.is_none()
@@ -410,8 +648,12 @@ impl SundialApp {
                 let definition_changed = actions
                     .iter()
                     .any(|action| matches!(action, InventoryItemAction::SetDefinitionHash(_)));
-                match apply_inventory_actions_atomic(&mut self.document, snapshot.location, actions)
-                {
+                match apply_inventory_actions_atomic(
+                    self.account_workspace,
+                    &mut self.document,
+                    snapshot.location,
+                    actions,
+                ) {
                     Ok(()) => {
                         self.mark_inventory_changed(if structural {
                             "Removed an item from character inventory"
@@ -431,17 +673,17 @@ impl SundialApp {
                 }
             }
             CharacterInventoryItemRequest::MoveTo(destination_character_index) => {
-                match inventory::move_inventory_item_to_character(
+                match self.account_workspace.move_inventory_item_to_character(
                     &mut self.document,
                     snapshot.location,
                     destination_character_index,
                 ) {
                     Ok(_) => {
                         let class_type = self
-                            .characters()
-                            .and_then(|characters| characters.get(destination_character_index))
-                            .and_then(|character| character.get("class"))
-                            .and_then(serde_json::Value::as_u64)
+                            .account_workspace
+                            .character_metadata(&self.document, destination_character_index)
+                            .ok()
+                            .map(|metadata| u64::from(metadata.class_type))
                             .unwrap_or(99);
                         self.mark_inventory_changed(&format!(
                             "Moved an item to Character {} · {}",
@@ -521,14 +763,8 @@ impl SundialApp {
             .as_ref()
             .and_then(|definition| definition.item.as_ref())
             .and_then(|item| equipment_target_for_bucket(item.bucket_hash));
-        let target_occupied = equipment_target.is_some_and(|(slot, _)| {
-            self.characters()
-                .and_then(|characters| characters.get(snapshot.location.character_index))
-                .and_then(|character| character.get("equipment"))
-                .and_then(serde_json::Value::as_object)
-                .and_then(|equipment| equipment.get(slot))
-                .is_some_and(|item| !item.is_null())
-        });
+        let target_occupied = equipment_target
+            .is_some_and(|(slot, _)| context.occupied_equipment_slots.contains(&slot));
 
         ui.push_id(
             ("character-inventory-item", ui_identity),
@@ -551,6 +787,23 @@ impl SundialApp {
                         ui,
                         &self.manifest,
                         Some(u64::from(snapshot.definition_hash)),
+                        Some(DefinitionInspectionContext {
+                            source: format!(
+                                "Character {} inventory · item {}",
+                                snapshot.location.character_index + 1,
+                                snapshot.location.item_index + 1
+                            ),
+                            instance_id: Some(soid_text.clone()),
+                            authored_level: Some(i64::from(snapshot.level)),
+                            flags: snapshot.flags,
+                            plug_count: Some(match &snapshot.plugs {
+                                ItemPlugs::NativeDefaults => resolved
+                                    .as_ref()
+                                    .and_then(|definition| definition.item.as_ref())
+                                    .map_or(0, |item| item.default_plugs.len()),
+                                ItemPlugs::Authored(plugs) => plugs.len(),
+                            }),
+                        }),
                         ItemHeader {
                             label: None,
                             soid: Some(&soid_text),
@@ -874,18 +1127,14 @@ impl SundialApp {
         &self,
         source_character_index: usize,
     ) -> Vec<CharacterTransferTarget> {
-        let Some(characters) = self.characters() else {
-            return Vec::new();
-        };
-
-        characters
-            .iter()
-            .enumerate()
-            .filter(|(character_index, _)| *character_index != source_character_index)
-            .map(|(character_index, character)| {
-                let class_type = character
-                    .get("class")
-                    .and_then(serde_json::Value::as_u64)
+        (0..self.character_count())
+            .filter(|character_index| *character_index != source_character_index)
+            .map(|character_index| {
+                let class_type = self
+                    .account_workspace
+                    .character_metadata(&self.document, character_index)
+                    .ok()
+                    .map(|metadata| u64::from(metadata.class_type))
                     .unwrap_or(99);
                 let label = format!(
                     "Character {} · {}",
@@ -902,7 +1151,10 @@ impl SundialApp {
                         unavailable_reason: Some("Invalid character class".to_owned()),
                     };
                 }
-                match inventory::character_inventory(&self.document, character_index) {
+                match self
+                    .account_workspace
+                    .character_inventory(&self.document, character_index)
+                {
                     Err(_) => CharacterTransferTarget {
                         character_index,
                         label,
@@ -913,12 +1165,16 @@ impl SundialApp {
                     },
                     Ok(items) => {
                         let items = items.unwrap_or_default();
+                        let equipment = self
+                            .account_workspace
+                            .equipped_item_snapshots(&self.document, character_index);
+                        let usage = self.inventory_bucket_usage(&items, equipment.as_deref().ok());
                         CharacterTransferTarget {
                             character_index,
                             label,
                             class_type,
                             stored_count: Some(items.len()),
-                            usage: Some(self.inventory_bucket_usage(&items, character_index)),
+                            usage: Some(usage),
                             unavailable_reason: None,
                         }
                     }
@@ -959,10 +1215,12 @@ impl SundialApp {
                             };
                             bucket_detail =
                                 character_bucket_usage_detail(definition.metadata, usage);
-                            if target
-                                .stored_count
-                                .is_some_and(|count| count >= CHARACTER_INVENTORY_CAPACITY)
-                            {
+                            if target.stored_count.is_some_and(|count| {
+                                count
+                                    >= self
+                                        .account_workspace
+                                        .character_inventory_capacity(&self.document)
+                            }) {
                                 Some("Inventory is full".to_owned())
                             } else if definition.metadata.authored_row_capacity().is_none() {
                                 Some("Bucket capacity could not be verified".to_owned())
@@ -1001,26 +1259,15 @@ impl SundialApp {
     fn inventory_bucket_usage(
         &self,
         items: &[InventoryItemSnapshot],
-        character_index: usize,
+        equipment: Option<&[EquippedItemSnapshot]>,
     ) -> BucketUsage {
         let mut counts = HashMap::new();
         let mut unresolved_count = 0;
-        let character = self
-            .characters()
-            .and_then(|characters| characters.get(character_index));
-        let mut occupancy_complete = character.is_some();
-        let equipment_value = character.and_then(|character| character.get("equipment"));
-        if let Some(equipment) = equipment_value.and_then(serde_json::Value::as_object) {
-            if equipment
-                .keys()
-                .any(|slot| !SLOTS.iter().any(|(known_slot, _, _)| *known_slot == slot))
-            {
-                occupancy_complete = false;
-            }
-            for equipped in equipment.values().filter(|value| !value.is_null()) {
+        let mut occupancy_complete = equipment.is_some();
+        if let Some(equipment) = equipment {
+            for equipped in equipment {
                 let metadata = equipped
-                    .get("definition_hash")
-                    .and_then(parse_unsigned_value)
+                    .definition_hash
                     .and_then(|hash| self.manifest.inventory_metadata(hash));
                 match metadata {
                     Some(metadata) if metadata.scope == InventoryScope::Character => {
@@ -1033,8 +1280,6 @@ impl SundialApp {
                     Some(_) | None => unresolved_count += 1,
                 }
             }
-        } else if equipment_value.is_some() {
-            occupancy_complete = false;
         }
 
         for item in items {

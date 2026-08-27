@@ -15,13 +15,15 @@ pub(super) fn equipment_definition_choices<'a>(
 }
 
 pub(super) fn equipment_inventory_choices(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     bucket: u64,
     class_type: u64,
 ) -> Vec<ExistingInventoryChoice> {
-    super::inventory::character_inventory(document, character_index)
+    workspace
+        .character_inventory(document, character_index)
         .ok()
         .flatten()
         .unwrap_or_default()

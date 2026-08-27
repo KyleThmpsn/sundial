@@ -192,6 +192,15 @@ pub(in crate::catalog) struct InventoryBucketDescriptor {
 }
 
 impl Catalog {
+    pub(crate) fn character_inventory_candidate_buckets(
+        &self,
+        class_type: u64,
+        show_dummy_items: bool,
+    ) -> &[InventoryMetadata] {
+        self.character_inventory_candidate_buckets
+            .get(class_type, show_dummy_items)
+    }
+
     pub(crate) fn inventory_metadata(&self, hash: u64) -> Option<&InventoryMetadata> {
         self.inventory_metadata.get(&hash)
     }

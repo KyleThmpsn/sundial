@@ -227,25 +227,26 @@ fn bucket_capacity_counts_only_present_rows_and_allows_same_bucket_replacement()
 
 #[test]
 fn multi_field_inventory_edits_are_atomic() {
-    let mut document = json!({
-        "version": 6,
-        "state": {
-            "account": {},
-            "characters": [{
-                "soid": 1,
-                "equipment": {},
-                "inventory": [{
-                    "instance_soid": "0x4000000000000001",
-                    "definition_hash": "0x0000002A",
-                    "level": 106,
-                    "quantity": 1,
-                    "plugs": null
-                }]
+    let mut document = super::super::account_workspace::WorkspaceDocument::json_only(json!({
+    "version": 6,
+    "state": {
+        "account": {},
+        "characters": [{
+            "soid": 1,
+            "equipment": {},
+            "inventory": [{
+                "instance_soid": "0x4000000000000001",
+                "definition_hash": "0x0000002A",
+                "level": 106,
+                "quantity": 1,
+                "plugs": null
             }]
-        }
-    });
+        }]
+    }
+    }));
     let before = document.clone();
     let error = apply_inventory_actions_atomic(
+        super::super::account_workspace::AccountWorkspace::json(),
         &mut document,
         InventoryItemLocation {
             character_index: 0,

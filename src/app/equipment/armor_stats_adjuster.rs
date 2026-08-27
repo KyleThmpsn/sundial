@@ -16,19 +16,18 @@ use std::{
     time::Duration,
 };
 
-use eframe::egui;
-use serde_json::Value;
-
 use crate::{
     app::{
         ARMOR_SLOTS, ConfirmationDialog, PlugSelectionMode, SLOTS, SundialApp, inventory, settings,
     },
     catalog::{Catalog, ItemDef, ItemRarity},
-    hash::{parse_hash_hex, parse_unsigned_value},
+    hash::parse_hash_hex,
 };
+use eframe::egui;
 
 use super::{
-    armor_stat_allocation, displayed_plugs, equip_inventory_item, set_equipment_item_plug,
+    EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue, armor_stat_allocation,
+    equip_inventory_item,
 };
 
 const WINDOW_SIZE: egui::Vec2 = egui::vec2(980.0, 720.0);
@@ -52,6 +51,7 @@ pub(in crate::app) struct State {
     feedback: Option<Feedback>,
     preserve_feedback_once: bool,
     window_generation: u64,
+    allow_inventory_swaps: Option<bool>,
 }
 
 impl State {
@@ -83,6 +83,7 @@ struct Feedback {
 struct SourceKey {
     character_index: usize,
     plug_mode: PlugSelectionMode,
+    allow_inventory_swaps: bool,
     armor_json: String,
 }
 
@@ -215,16 +216,14 @@ pub(in crate::app) fn draw_entry_button(ui: &mut egui::Ui, editable: bool) -> eg
 }
 
 pub(super) fn equipped_totals(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
 ) -> [u16; 6] {
-    let equipment = document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("equipment"))
-        .and_then(Value::as_object);
+    let equipment = workspace
+        .equipped_item_snapshots(document, character_index)
+        .unwrap_or_default();
     let mut totals = [0_u16; 6];
 
     for slot in ARMOR_SLOTS {
@@ -232,12 +231,12 @@ pub(super) fn equipped_totals(
             .iter()
             .find_map(|(known, label, bucket)| (*known == *slot).then_some((*label, *bucket)))
             .unwrap_or((slot, 0));
-        let piece = read_piece(
+        let piece = read_snapshot_piece(
             catalog,
             slot,
             label,
             bucket_hash,
-            equipment.and_then(|equipment| equipment.get(*slot)),
+            equipment.iter().find(|item| item.slot == *slot),
         );
         let Some(item) = piece.item.as_ref() else {
             continue;
@@ -266,12 +265,15 @@ pub(in crate::app) fn draw_window(
         return;
     }
 
+    let allow_inventory_swaps = state.allow_inventory_swaps.unwrap_or(true);
     refresh_input(
         &mut state,
+        app.account_workspace,
         &app.document,
         &app.manifest,
         character_index,
         app.plug_selection_mode,
+        allow_inventory_swaps,
     );
     refresh_preview(&mut state, context);
 
@@ -309,13 +311,21 @@ pub(in crate::app) fn draw_window(
                     ui.add_space(6.0);
                     targets_changed |= draw_targets(ui, &app.manifest, &mut state);
                     ui.add_space(8.0);
-                    draw_controls(
+                    let swap_setting_changed = draw_controls(
                         ui,
-                        &state,
+                        &mut state,
                         &mut requested_mode,
                         &mut clear_requested,
                         &mut apply_requested,
                     );
+                    if swap_setting_changed {
+                        state.source_key = None;
+                        state.input = None;
+                        state.preview = None;
+                        state.preview_task = None;
+                        state.preview_due_at =
+                            Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
+                    }
                     if app.show_safety_warnings {
                         super::super::draw_plug_selection_warning(ui, requested_mode);
                     }
@@ -568,17 +578,19 @@ fn draw_stat_readout(ui: &mut egui::Ui, width: f32, label: &str, value: u16, sho
 
 fn draw_controls(
     ui: &mut egui::Ui,
-    state: &State,
+    state: &mut State,
     requested_mode: &mut PlugSelectionMode,
     clear_requested: &mut bool,
     apply_requested: &mut bool,
-) {
+) -> bool {
     let has_targets = state.targets.iter().any(|target| *target > 0);
     let can_apply = state
         .preview
         .as_ref()
         .is_some_and(|solution| !solution.assignments.is_empty() || !solution.swaps.is_empty());
     let narrow = ui.available_width() < 760.0;
+    let mut allow_inventory_swaps = state.allow_inventory_swaps.unwrap_or(true);
+    let mut swap_setting_changed = false;
     ui.horizontal_wrapped(|ui| {
         ui.label("Plug safety:");
         egui::ComboBox::from_id_salt("armor-stats-adjuster-safety")
@@ -586,6 +598,7 @@ fn draw_controls(
             .show_ui(ui, |ui| {
                 for mode in [
                     PlugSelectionMode::Supported,
+                    PlugSelectionMode::SocketAndGearType,
                     PlugSelectionMode::MatchingSocketType,
                     PlugSelectionMode::GearType,
                     PlugSelectionMode::AnyPlug,
@@ -593,7 +606,16 @@ fn draw_controls(
                     ui.selectable_value(requested_mode, mode, mode.label());
                 }
             });
-        ui.label(egui::RichText::new("Locked armor is preserved").weak());
+        swap_setting_changed = ui
+            .checkbox(
+                &mut allow_inventory_swaps,
+                "Use better armor from character inventory",
+            )
+            .on_hover_text(
+                "When enabled, the preview may equip unlocked armor stored on this character. The currently equipped piece is moved back to inventory.",
+            )
+            .changed();
+        ui.label(egui::RichText::new("Locked armor is always preserved").weak());
         if !narrow {
             draw_control_actions(ui, has_targets, can_apply, clear_requested, apply_requested);
         }
@@ -604,6 +626,8 @@ fn draw_controls(
             draw_control_actions(ui, has_targets, can_apply, clear_requested, apply_requested);
         });
     }
+    state.allow_inventory_swaps = Some(allow_inventory_swaps);
+    swap_setting_changed
 }
 
 fn draw_control_actions(
@@ -1023,17 +1047,32 @@ fn single_stat_value(values: [i32; 6]) -> Option<(usize, i32)> {
 
 fn refresh_input(
     state: &mut State,
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     plug_mode: PlugSelectionMode,
+    allow_inventory_swaps: bool,
 ) {
-    let key = source_key(document, character_index, plug_mode);
+    let key = source_key(
+        workspace,
+        document,
+        character_index,
+        plug_mode,
+        allow_inventory_swaps,
+    );
     if state.source_key.as_ref() == Some(&key) {
         return;
     }
     state.source_key = Some(key);
-    state.input = Some(build_input(document, catalog, character_index, plug_mode));
+    state.input = Some(build_input(
+        workspace,
+        document,
+        catalog,
+        character_index,
+        plug_mode,
+        allow_inventory_swaps,
+    ));
     state.preview = None;
     state.preview_task = None;
     if state.preserve_feedback_once {
@@ -1096,57 +1135,53 @@ fn refresh_preview(state: &mut State, context: &egui::Context) {
     context.request_repaint_after(Duration::from_millis(16));
 }
 
-fn source_key(document: &Value, character_index: usize, plug_mode: PlugSelectionMode) -> SourceKey {
-    let character = document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(Value::as_object);
-    let equipment_json = character
-        .and_then(|character| character.get("equipment"))
-        .and_then(Value::as_object)
-        .map(|equipment| {
-            ARMOR_SLOTS
-                .iter()
-                .map(|slot| {
-                    serde_json::to_string(equipment.get(*slot).unwrap_or(&Value::Null))
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join("|")
-        })
-        .unwrap_or_default();
-    let inventory_json = character
-        .and_then(|character| character.get("inventory"))
-        .map(|inventory| serde_json::to_string(inventory).unwrap_or_default())
-        .unwrap_or_default();
+fn source_key(
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
+    character_index: usize,
+    plug_mode: PlugSelectionMode,
+    allow_inventory_swaps: bool,
+) -> SourceKey {
+    let equipment_json = format!(
+        "{:?}",
+        workspace
+            .equipped_item_snapshots(document, character_index)
+            .unwrap_or_default()
+    );
+    let inventory_json = format!(
+        "{:?}",
+        workspace
+            .character_inventory(document, character_index)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    );
     SourceKey {
         character_index,
         plug_mode,
+        allow_inventory_swaps,
         armor_json: format!("{equipment_json}|{inventory_json}"),
     }
 }
 
 fn build_input(
-    document: &Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     plug_mode: PlugSelectionMode,
+    allow_inventory_swaps: bool,
 ) -> LoadoutInput {
-    let equipment = document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("equipment"))
-        .and_then(Value::as_object);
-    let class_type = document
-        .pointer("/state/characters")
-        .and_then(Value::as_array)
-        .and_then(|characters| characters.get(character_index))
-        .and_then(|character| character.get("class"))
-        .and_then(Value::as_u64)
+    let equipment = workspace
+        .equipped_item_snapshots(document, character_index)
+        .unwrap_or_default();
+    let class_type = workspace
+        .character_metadata(document, character_index)
+        .ok()
+        .map(|metadata| u64::from(metadata.class_type))
         .unwrap_or(99);
-    let stored = inventory::character_inventory(document, character_index)
+    let stored = workspace
+        .character_inventory(document, character_index)
         .ok()
         .flatten()
         .unwrap_or_default();
@@ -1158,8 +1193,8 @@ fn build_input(
             .iter()
             .find_map(|(known, label, bucket)| (*known == slot).then_some((*label, *bucket)))
             .unwrap_or((slot, 0));
-        let value = equipment.and_then(|equipment| equipment.get(slot));
-        let mut equipped_piece = read_piece(catalog, slot, label, bucket_hash, value);
+        let snapshot = equipment.iter().find(|item| item.slot == slot);
+        let mut equipped_piece = read_snapshot_piece(catalog, slot, label, bucket_hash, snapshot);
         if let Some(item) = equipped_piece.item.as_ref() {
             equipped_piece.current_totals = cap_u16_totals(armor_stat_allocation::selected_totals(
                 catalog,
@@ -1174,7 +1209,7 @@ fn build_input(
             ArmorOrigin::Equipped,
             plug_mode,
         )];
-        if !preserve_slot && class_type <= 2 {
+        if allow_inventory_swaps && !preserve_slot && class_type <= 2 {
             for snapshot in &stored {
                 if snapshot.quantity != 1
                     || snapshot.flags.unwrap_or_default() & inventory::INVENTORY_FLAG_LOCKED != 0
@@ -1429,68 +1464,52 @@ fn piece_is_masterworked(catalog: &Catalog, item: &ItemDef, plugs: &[Option<u64>
         })
 }
 
-fn read_piece(
+fn read_snapshot_piece(
     catalog: &Catalog,
     slot: &'static str,
     label: &'static str,
     bucket_hash: u64,
-    value: Option<&Value>,
+    snapshot: Option<&EquippedItemSnapshot>,
 ) -> ArmorPiece {
-    let Some(object) = value.and_then(Value::as_object) else {
+    let Some(snapshot) = snapshot else {
         return unavailable_piece(slot, label, "No equipped armor");
     };
-    let Some(definition_hash) = object.get("definition_hash").and_then(parse_unsigned_value) else {
+    let Some(definition_hash) = snapshot.definition_hash else {
         return unavailable_piece(slot, label, "Invalid definition");
     };
     let Some(item) = catalog.item_handle_for_bucket(definition_hash, bucket_hash) else {
         return unavailable_piece(slot, label, "Definition unavailable");
     };
-
-    let mut issue = None;
-    let (raw_plugs, _) = displayed_plugs(object.get("plugs"), &item.default_plugs);
-    if !matches!(object.get("plugs"), Some(Value::Null | Value::Array(_))) {
-        issue = Some("Plugs unavailable".to_owned());
-    }
-    let mut current_plugs = raw_plugs
-        .iter()
-        .map(|value| {
-            if value.is_null() {
-                None
-            } else {
-                parse_unsigned_value(value).or_else(|| value.as_str().and_then(parse_hash_hex))
-            }
-        })
-        .collect::<Vec<_>>();
-    if raw_plugs
-        .iter()
-        .zip(&current_plugs)
-        .any(|(value, hash)| !value.is_null() && hash.is_none())
-    {
-        issue = Some("Invalid authored plug".to_owned());
-    }
+    let mut issue = snapshot.issues.first().cloned();
+    let mut current_plugs = match &snapshot.plugs {
+        EquippedItemPlugs::NativeDefaults => item
+            .default_plugs
+            .iter()
+            .map(|plug| plug.as_deref().and_then(parse_hash_hex))
+            .collect(),
+        EquippedItemPlugs::Authored(plugs) => plugs
+            .iter()
+            .map(|plug| match plug {
+                EquippedPlugValue::Empty => None,
+                EquippedPlugValue::Hash(hash) => Some(*hash),
+                EquippedPlugValue::Malformed(_) => {
+                    issue = Some("Invalid authored plug".to_owned());
+                    None
+                }
+            })
+            .collect(),
+        EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => {
+            issue = Some("Plugs unavailable".to_owned());
+            Vec::new()
+        }
+    };
     let socket_count = item
         .sockets
         .len()
         .max(item.default_plugs.len())
         .min(inventory::MAX_ITEM_PLUGS);
     current_plugs.resize(socket_count, None);
-
-    let flags = match object.get("flags") {
-        None => None,
-        Some(value) => match parse_unsigned_value(value)
-            .and_then(|flags| u8::try_from(flags).ok())
-            .filter(|flags| *flags <= inventory::INVENTORY_FLAG_MASK)
-        {
-            Some(flags) => Some(flags),
-            None => {
-                issue = Some("Invalid item flags".to_owned());
-                None
-            }
-        },
-    };
-
     let masterworked = piece_is_masterworked(catalog, &item, &current_plugs);
-
     ArmorPiece {
         slot,
         label,
@@ -1498,7 +1517,7 @@ fn read_piece(
         item: Some(item),
         current_plugs,
         current_totals: [0; 6],
-        locked: flags.unwrap_or_default() & inventory::INVENTORY_FLAG_LOCKED != 0,
+        locked: snapshot.flags.unwrap_or_default() & inventory::INVENTORY_FLAG_LOCKED != 0,
         masterworked,
         issue,
     }
@@ -1536,6 +1555,9 @@ fn socket_choices(
     }
     let mut hashes = match mode {
         PlugSelectionMode::Supported => catalog.socket_options(socket).to_vec(),
+        PlugSelectionMode::SocketAndGearType => catalog
+            .socket_and_gear_type_options(item, socket_index)
+            .to_vec(),
         PlugSelectionMode::MatchingSocketType => {
             catalog.socket_type_options(socket.socket_type).to_vec()
         }
@@ -2011,7 +2033,9 @@ fn apply_preview(app: &mut SundialApp, state: &mut State, character_index: usize
                     "The selected inventory armor changed before it could be equipped".to_owned(),
                 );
             }
-            let location = inventory::character_inventory(&updated, character_index)
+            let location = app
+                .account_workspace
+                .character_inventory(&updated, character_index)
                 .map_err(|error| error.to_string())?
                 .and_then(|items| {
                     items
@@ -2020,7 +2044,13 @@ fn apply_preview(app: &mut SundialApp, state: &mut State, character_index: usize
                         .map(|snapshot| snapshot.location)
                 })
                 .ok_or("The selected inventory armor no longer exists")?;
-            equip_inventory_item(&mut updated, location, current.slot, item)?;
+            equip_inventory_item(
+                app.account_workspace,
+                &mut updated,
+                location,
+                current.slot,
+                item,
+            )?;
         }
         for assignment in &solution.assignments {
             let candidate = selected_candidate(input, &solution, assignment.piece_index)
@@ -2033,7 +2063,7 @@ fn apply_preview(app: &mut SundialApp, state: &mut State, character_index: usize
                 .item
                 .as_ref()
                 .ok_or("An armor definition is unavailable")?;
-            set_equipment_item_plug(
+            app.account_workspace.set_equipment_item_plug(
                 &mut updated,
                 character_index,
                 piece.slot,
@@ -2042,7 +2072,7 @@ fn apply_preview(app: &mut SundialApp, state: &mut State, character_index: usize
                 assignment.selected,
             )?;
         }
-        settings::validate_document(&updated)
+        settings::validate_workspace_document(&updated)
             .map_err(|error| format!("Adjusted armor did not pass validation: {error}"))?;
         Ok::<(), String>(())
     })();
@@ -2160,6 +2190,17 @@ fn plug_name(catalog: &Catalog, hash: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_swap_choice_invalidates_the_armor_preview_source() {
+        let workspace = super::super::super::account_workspace::AccountWorkspace::json();
+        let document = super::super::super::account_workspace::WorkspaceDocument::json_only(
+            serde_json::json!({}),
+        );
+        let enabled = source_key(workspace, &document, 0, PlugSelectionMode::Supported, true);
+        let disabled = source_key(workspace, &document, 0, PlugSelectionMode::Supported, false);
+        assert_ne!(enabled, disabled);
+    }
 
     #[test]
     fn preview_columns_fit_supported_window_widths() {

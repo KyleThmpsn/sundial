@@ -31,7 +31,8 @@ use super::{
         objective_details_tooltip, objective_owner_type, objective_table_text,
         objective_target_text, objective_traits_text, override_filter_matches, override_meaning,
         override_meaning_contexts, progression_context_kind_label, progression_type_label,
-        resolved_objective_table_text, take_definition_request as take_hash_inspection_request,
+        resolved_objective_table_text, take_definition_context as take_hash_inspection_context,
+        take_definition_request as take_hash_inspection_request,
     },
     ui::{
         TABLE_CELL_HEIGHT, TABLE_COLUMN_GAP, hierarchy_branch_cell as draw_hierarchy_branch_cell,

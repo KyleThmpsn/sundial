@@ -6,7 +6,8 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
+use sundial_account as account_domain;
 
 mod document;
 
@@ -19,21 +20,32 @@ pub(crate) use document::{
     INVENTORY_FLAG_TRACKED, INVENTORY_SCHEMA_VERSION, InventoryError, InventoryItemAction,
     InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, LEGACY_PROFILE_ITEM_CAPACITY,
     MAX_ITEM_PLUGS, NewInventoryItem, PROFILE_ITEM_CAPACITY, ProfileItemAction,
-    ProfileItemLocation, ProfileItemSnapshot, SchemaMode, allocate_instance_soid,
-    character_inventory, collect_used_soids, dismantle_rewards, next_available_instance_soid,
+    ProfileItemLocation, ProfileItemSnapshot, SchemaMode, character_inventory, dismantle_rewards,
     profile_item_capacity, profile_item_target_exists, profile_items, schema_mode,
     set_inventory_locked_flag, validate_document_items,
 };
 
 pub(super) use document::KNOWN_ITEM_MEMBERS;
 
+use crate::persistence::json_account::{
+    JsonAccountError, JsonCharacterAdapter, JsonProfileAdapter, JsonProfileError,
+};
 use document::{
-    InventoryResult, account_object_mut, character_object, character_object_mut, encode_plugs,
-    ensure_account_object, format_definition_hash_hex, format_instance_soid, inventory_array_mut,
-    inventory_item_path, inventory_object_mut, profile_array_mut, read_only_schema_error,
-    require_inventory_mutation, require_profile_mutation, require_readable_schema,
-    validate_existing_character_inventories, validate_inventory_action,
+    InventoryResult, inventory_item_path, require_inventory_mutation, validate_inventory_action,
     validate_inventory_definition_hash, validate_nonnegative_i32, validate_positive_i32,
+};
+
+#[cfg(test)]
+use document::{
+    account_object_mut, character_object, character_object_mut, encode_plugs,
+    ensure_account_object, format_definition_hash_hex, format_instance_soid, inventory_array_mut,
+    inventory_object_mut, profile_array_mut, read_only_schema_error, require_profile_mutation,
+    require_readable_schema, validate_existing_character_inventories,
+};
+
+#[cfg(test)]
+pub(in crate::app) use document::{
+    allocate_instance_soid, collect_used_soids, next_available_instance_soid,
 };
 
 #[cfg(test)]
@@ -44,45 +56,24 @@ pub(crate) fn add_profile_item(
     definition_hash: u32,
     quantity: i32,
 ) -> InventoryResult<ProfileItemLocation> {
-    let mode = require_profile_mutation(document)?;
-    validate_inventory_definition_hash(
-        definition_hash,
-        "/state/account/profile_items/<new>/definition_hash",
-    )?;
-    validate_positive_i32(quantity, "/state/account/profile_items/<new>/quantity")?;
-
-    let existing = profile_items(document)?;
-    let length = existing.as_ref().map_or(0, Vec::len);
-    let capacity = mode
-        .profile_item_capacity()
-        .expect("writable schemas always have a known profile capacity");
-    if length >= capacity {
-        return Err(InventoryError::new(
-            "/state/account/profile_items",
-            format!("profile_items is full for this schema (maximum {capacity})"),
-        ));
-    }
-    ensure_account_object(document)?;
-
-    let mut item = Map::new();
-    item.insert(
-        "definition_hash".into(),
-        Value::String(format_definition_hash_hex(definition_hash)),
-    );
-    item.insert("quantity".into(), Value::from(quantity));
-
-    let account = account_object_mut(document)?;
-    match account.get_mut("profile_items") {
-        Some(Value::Array(items)) => items.push(Value::Object(item)),
-        Some(_) => unreachable!("profile_items shape was validated before mutation"),
-        None => {
-            account.insert(
-                "profile_items".into(),
-                Value::Array(vec![Value::Object(item)]),
-            );
-        }
-    }
-    Ok(ProfileItemLocation { index: length })
+    let adapter = load_json_profile_items(document, "/state/account/profile_items")?;
+    let index = adapter.state().profile_items().len();
+    let item = account_domain::ProfileItem {
+        id: adapter.next_entity_id(),
+        definition_hash: account_domain::DefinitionHash::new(definition_hash),
+        quantity,
+    };
+    let (_, candidate) = adapter
+        .apply_profile_item(document, account_domain::ProfileItemCommand::Add(item))
+        .map_err(|error| {
+            json_profile_error(
+                error,
+                "/state/account/profile_items/<new>",
+                "/state/account/profile_items",
+            )
+        })?;
+    *document = candidate;
+    Ok(ProfileItemLocation { index })
 }
 
 pub(crate) fn apply_profile_item_action(
@@ -90,55 +81,36 @@ pub(crate) fn apply_profile_item_action(
     location: ProfileItemLocation,
     action: ProfileItemAction,
 ) -> InventoryResult<()> {
-    require_profile_mutation(document)?;
-    let snapshots = profile_items(document)?.ok_or_else(|| {
-        InventoryError::new(
+    let row_path = format!("/state/account/profile_items/{}", location.index);
+    let adapter = load_json_profile_items(document, &row_path)?;
+    if document.pointer("/state/account/profile_items").is_none() {
+        return Err(InventoryError::new(
             "/state/account/profile_items",
             "profile_items is missing; add an item before editing a row",
-        )
-    })?;
-    if location.index >= snapshots.len() {
-        return Err(InventoryError::new(
-            format!("/state/account/profile_items/{}", location.index),
-            "profile item index is out of range",
         ));
     }
-    match &action {
-        ProfileItemAction::SetDefinitionHash(hash) => validate_inventory_definition_hash(
-            *hash,
-            &format!(
-                "/state/account/profile_items/{}/definition_hash",
-                location.index
-            ),
-        )?,
-        ProfileItemAction::SetQuantity(quantity) => validate_positive_i32(
-            *quantity,
-            &format!("/state/account/profile_items/{}/quantity", location.index),
-        )?,
-        ProfileItemAction::Remove => {}
-    }
-
-    let items = profile_array_mut(document)?;
-    match action {
-        ProfileItemAction::Remove => {
-            items.remove(location.index);
-        }
+    let id = adapter
+        .state()
+        .profile_items()
+        .get(location.index)
+        .map(|item| item.id)
+        .ok_or_else(|| InventoryError::new(&row_path, "profile item index is out of range"))?;
+    let command = match action {
         ProfileItemAction::SetDefinitionHash(hash) => {
-            let item = items[location.index]
-                .as_object_mut()
-                .expect("profile row shape was validated before mutation");
-            item.insert(
-                "definition_hash".into(),
-                Value::String(format_definition_hash_hex(hash)),
-            );
+            account_domain::ProfileItemCommand::SetDefinitionHash {
+                id,
+                definition_hash: account_domain::DefinitionHash::new(hash),
+            }
         }
         ProfileItemAction::SetQuantity(quantity) => {
-            let item = items[location.index]
-                .as_object_mut()
-                .expect("profile row shape was validated before mutation");
-            item.insert("quantity".into(), Value::from(quantity));
+            account_domain::ProfileItemCommand::SetQuantity { id, quantity }
         }
-    }
+        ProfileItemAction::Remove => account_domain::ProfileItemCommand::Remove { id },
+    };
+    let (_, candidate) = adapter
+        .apply_profile_item(document, command)
+        .map_err(|error| json_profile_error(error, &row_path, "/state/account/profile_items"))?;
+    *document = candidate;
     Ok(())
 }
 
@@ -146,103 +118,24 @@ pub(crate) fn add_dismantle_reward(
     document: &mut Value,
     definition_hash: u32,
 ) -> InventoryResult<DismantleRewardLocation> {
-    let mode = require_dismantle_reward_mutation(document)?;
-    validate_inventory_definition_hash(
-        definition_hash,
-        "/state/account/dismantle_rewards/<new>/definition_hash",
-    )?;
-    let existing = dismantle_rewards(document)?.unwrap_or_default();
-    let capacity = mode
-        .dismantle_reward_capacity()
-        .expect("writable dismantle schemas have a known capacity");
-    if existing.len() >= capacity {
-        return Err(InventoryError::new(
-            "/state/account/dismantle_rewards",
-            format!("dismantle_rewards is full for this schema (maximum {capacity})"),
-        ));
-    }
-
-    let occupied = existing
-        .iter()
-        .map(dismantle_policy_key)
-        .collect::<BTreeSet<_>>();
-    let mut selected = None;
-    let rarity_masks = if mode.supports_filtered_dismantle_rewards() {
-        0..32
-    } else {
-        0..1
+    let adapter = load_json_profile(document, "/state/account/dismantle_rewards")?;
+    let index = adapter.state().dismantle_rewards().len();
+    let command = account_domain::DismantleRewardCommand::AddForDefinition {
+        id: adapter.next_entity_id(),
+        definition_hash: account_domain::DefinitionHash::new(definition_hash),
     };
-    let gear_classes: &[Option<DismantleGearClass>] = if mode.supports_filtered_dismantle_rewards()
-    {
-        &[
-            None,
-            Some(DismantleGearClass::Weapon),
-            Some(DismantleGearClass::Armor),
-        ]
-    } else {
-        &[None]
-    };
-    let masterwork_filters: &[Option<bool>] = if mode.supports_filtered_dismantle_rewards() {
-        &[None, Some(false), Some(true)]
-    } else {
-        &[None]
-    };
-    'policies: for rarity_mask in rarity_masks {
-        let rarities = DismantleRarity::ALL
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, rarity)| (rarity_mask & (1 << index) != 0).then_some(rarity))
-            .collect::<Vec<_>>();
-        for &gear_class in gear_classes {
-            for &masterworked in masterwork_filters {
-                let candidate = (
-                    definition_hash,
-                    rarity_mask_of(&rarities),
-                    gear_class.map_or(0, DismantleGearClass::mask),
-                    masterworked.map_or(0, |value| if value { 1 } else { 2 }),
-                );
-                if !occupied.contains(&candidate) {
-                    selected = Some((rarities, gear_class, masterworked));
-                    break 'policies;
-                }
-            }
-        }
-    }
-    let Some((rarities, gear_class, masterworked)) = selected else {
-        return Err(InventoryError::new(
-            "/state/account/dismantle_rewards",
-            "every supported filter combination for this material is already present",
-        ));
-    };
-
-    let mut candidate = document.clone();
-    ensure_account_object(&candidate)?;
-    let mut reward = Map::new();
-    write_dismantle_policy(
-        &mut reward,
-        definition_hash,
-        1,
-        &rarities,
-        gear_class,
-        masterworked,
-        mode.supports_filtered_dismantle_rewards(),
-    );
-    let account = account_object_mut(&mut candidate)?;
-    match account.get_mut("dismantle_rewards") {
-        Some(Value::Array(rewards)) => rewards.push(Value::Object(reward)),
-        Some(_) => unreachable!("dismantle rewards were validated before mutation"),
-        None => {
-            account.insert(
-                "dismantle_rewards".into(),
-                Value::Array(vec![Value::Object(reward)]),
-            );
-        }
-    }
+    let (_, candidate) = adapter
+        .apply_dismantle_reward(document, command)
+        .map_err(|error| {
+            json_profile_error(
+                error,
+                "/state/account/dismantle_rewards/<new>",
+                "/state/account/dismantle_rewards",
+            )
+        })?;
     validate_document_items(&candidate)?;
     *document = candidate;
-    Ok(DismantleRewardLocation {
-        index: existing.len(),
-    })
+    Ok(DismantleRewardLocation { index })
 }
 
 pub(crate) fn apply_dismantle_reward_action(
@@ -250,153 +143,256 @@ pub(crate) fn apply_dismantle_reward_action(
     location: DismantleRewardLocation,
     action: DismantleRewardAction,
 ) -> InventoryResult<()> {
-    let mode = require_dismantle_reward_mutation(document)?;
-    let snapshots = dismantle_rewards(document)?.ok_or_else(|| {
-        InventoryError::new(
+    let row_path = format!("/state/account/dismantle_rewards/{}", location.index);
+    let adapter = load_json_profile(document, &row_path)?;
+    if document
+        .pointer("/state/account/dismantle_rewards")
+        .is_none()
+    {
+        return Err(InventoryError::new(
             "/state/account/dismantle_rewards",
             "dismantle_rewards is missing; add a policy before editing a row",
-        )
-    })?;
-    if location.index >= snapshots.len() {
-        return Err(InventoryError::new(
-            format!("/state/account/dismantle_rewards/{}", location.index),
-            "dismantle reward index is out of range",
         ));
     }
-    if let DismantleRewardAction::SetPolicy {
-        definition_hash,
-        quantity,
-        rarities,
-        gear_class,
-        masterworked,
-    } = &action
-    {
-        validate_inventory_definition_hash(
-            *definition_hash,
-            &format!(
-                "/state/account/dismantle_rewards/{}/definition_hash",
-                location.index
-            ),
-        )?;
-        validate_positive_i32(
-            *quantity,
-            &format!(
-                "/state/account/dismantle_rewards/{}/quantity",
-                location.index
-            ),
-        )?;
-        if !mode.supports_filtered_dismantle_rewards()
-            && (!rarities.is_empty() || gear_class.is_some() || masterworked.is_some())
-        {
-            return Err(InventoryError::new(
-                format!("/state/account/dismantle_rewards/{}", location.index),
-                "dismantle filters require settings schema 8",
-            ));
-        }
-    }
-
-    let mut candidate = document.clone();
-    let rewards = candidate
-        .pointer_mut("/state/account/dismantle_rewards")
-        .and_then(Value::as_array_mut)
-        .expect("dismantle rewards were validated before mutation");
-    match action {
-        DismantleRewardAction::Remove => {
-            rewards.remove(location.index);
-        }
+    let id = adapter
+        .state()
+        .dismantle_rewards()
+        .get(location.index)
+        .map(|reward| reward.id)
+        .ok_or_else(|| InventoryError::new(&row_path, "dismantle reward index is out of range"))?;
+    let command = match action {
+        DismantleRewardAction::Remove => account_domain::DismantleRewardCommand::Remove { id },
         DismantleRewardAction::SetPolicy {
             definition_hash,
             quantity,
             rarities,
             gear_class,
             masterworked,
-        } => {
-            let reward = rewards[location.index]
-                .as_object_mut()
-                .expect("dismantle reward row was validated before mutation");
-            write_dismantle_policy(
-                reward,
-                definition_hash,
-                quantity,
-                &rarities,
-                gear_class,
-                masterworked,
-                mode.supports_filtered_dismantle_rewards(),
-            );
-        }
-    }
+        } => account_domain::DismantleRewardCommand::SetPolicy(account_domain::DismantleReward {
+            id,
+            definition_hash: account_domain::DefinitionHash::new(definition_hash),
+            quantity,
+            rarities: rarities.into_iter().map(domain_dismantle_rarity).collect(),
+            gear_class: gear_class.map(domain_dismantle_gear_class),
+            masterworked,
+        }),
+    };
+    let (_, candidate) = adapter
+        .apply_dismantle_reward(document, command)
+        .map_err(|error| {
+            json_profile_error(error, &row_path, "/state/account/dismantle_rewards")
+        })?;
     validate_document_items(&candidate)?;
     *document = candidate;
     Ok(())
 }
 
-fn require_dismantle_reward_mutation(document: &Value) -> InventoryResult<SchemaMode> {
-    let mode = require_readable_schema(document)?;
-    if mode.can_mutate_dismantle_rewards() {
-        Ok(mode)
-    } else {
-        Err(read_only_schema_error(mode, "dismantle rewards"))
-    }
+fn load_json_profile(document: &Value, fallback_path: &str) -> InventoryResult<JsonProfileAdapter> {
+    JsonProfileAdapter::load(document)
+        .map_err(|error| json_profile_error(error, fallback_path, fallback_path))
 }
 
-fn dismantle_policy_key(snapshot: &DismantleRewardSnapshot) -> (u32, u8, u8, u8) {
-    (
-        snapshot.definition_hash,
-        rarity_mask_of(&snapshot.rarities),
-        snapshot.gear_class.map_or(0, DismantleGearClass::mask),
-        snapshot
-            .masterworked
-            .map_or(0, |value| if value { 1 } else { 2 }),
-    )
+fn load_json_profile_items(
+    document: &Value,
+    fallback_path: &str,
+) -> InventoryResult<JsonProfileAdapter> {
+    JsonProfileAdapter::load_profile_items(document)
+        .map_err(|error| json_profile_error(error, fallback_path, fallback_path))
 }
 
-fn rarity_mask_of(rarities: &[DismantleRarity]) -> u8 {
-    rarities.iter().fold(0, |mask, rarity| mask | rarity.bit())
-}
-
-fn write_dismantle_policy(
-    reward: &mut Map<String, Value>,
-    definition_hash: u32,
-    quantity: i32,
-    rarities: &[DismantleRarity],
-    gear_class: Option<DismantleGearClass>,
-    masterworked: Option<bool>,
-    filtered: bool,
-) {
-    reward.insert(
-        "definition_hash".into(),
-        Value::String(format_definition_hash_hex(definition_hash)),
-    );
-    reward.insert("quantity".into(), Value::from(quantity));
-    if filtered && !rarities.is_empty() {
-        let value = if rarities.len() == 1 {
-            Value::String(rarities[0].token().into())
-        } else {
-            Value::Array(
-                rarities
-                    .iter()
-                    .map(|rarity| Value::String(rarity.token().into()))
-                    .collect(),
+fn json_profile_error(
+    error: JsonProfileError,
+    entity_path: &str,
+    collection_path: &str,
+) -> InventoryError {
+    let (path, message): (String, String) = match error.domain_error() {
+        Some(account_domain::AccountError::ReadOnly(_)) => {
+            ("/version".into(), "dismantle rewards is read-only".into())
+        }
+        Some(account_domain::AccountError::CapacityExceeded {
+            entity, capacity, ..
+        }) => {
+            let collection = match entity {
+                account_domain::EntityKind::ProfileItem => "profile_items",
+                account_domain::EntityKind::DismantleReward => "dismantle_rewards",
+                account_domain::EntityKind::Character => "characters",
+                account_domain::EntityKind::ItemInstance => "items",
+            };
+            (
+                collection_path.into(),
+                format!("{collection} is full for this schema (maximum {capacity})"),
             )
-        };
-        reward.insert("rarity".into(), value);
-    } else {
-        reward.remove("rarity");
+        }
+        Some(account_domain::AccountError::InvalidDefinitionHash) => (
+            format!("{entity_path}/definition_hash"),
+            "the engine no-definition sentinel is not a valid authored hash".into(),
+        ),
+        Some(account_domain::AccountError::InvalidQuantity) => (
+            format!("{entity_path}/quantity"),
+            "quantity must be a positive signed 32-bit integer".into(),
+        ),
+        Some(account_domain::AccountError::UnsupportedDismantleFilters) => (
+            entity_path.into(),
+            "dismantle filters require settings schema 8".into(),
+        ),
+        Some(account_domain::AccountError::DuplicateDismantlePolicy) => (
+            format!("{entity_path}/definition_hash"),
+            "dismantle reward material and filter combinations must be unique".into(),
+        ),
+        Some(account_domain::AccountError::NoAvailableDismantlePolicy) => (
+            collection_path.into(),
+            "every supported filter combination for this material is already present".into(),
+        ),
+        _ => (error.path().unwrap_or(entity_path).into(), error.detail()),
+    };
+    InventoryError::new(path, message)
+}
+
+fn domain_dismantle_rarity(value: DismantleRarity) -> account_domain::DismantleRarity {
+    match value {
+        DismantleRarity::Common => account_domain::DismantleRarity::Common,
+        DismantleRarity::Uncommon => account_domain::DismantleRarity::Uncommon,
+        DismantleRarity::Rare => account_domain::DismantleRarity::Rare,
+        DismantleRarity::Legendary => account_domain::DismantleRarity::Legendary,
+        DismantleRarity::Exotic => account_domain::DismantleRarity::Exotic,
     }
-    if filtered {
-        if let Some(gear_class) = gear_class {
-            reward.insert("class".into(), Value::String(gear_class.token().into()));
-        } else {
-            reward.remove("class");
+}
+
+fn domain_dismantle_gear_class(value: DismantleGearClass) -> account_domain::DismantleGearClass {
+    match value {
+        DismantleGearClass::Weapon => account_domain::DismantleGearClass::Weapon,
+        DismantleGearClass::Armor => account_domain::DismantleGearClass::Armor,
+        DismantleGearClass::Both => account_domain::DismantleGearClass::Both,
+    }
+}
+
+fn json_character_error(
+    error: JsonAccountError,
+    entity_path: &str,
+    inventory_path: &str,
+) -> InventoryError {
+    let (path, message): (String, String) = match error.domain_error() {
+        Some(account_domain::AccountError::CapacityExceeded {
+            entity: account_domain::EntityKind::ItemInstance,
+            capacity,
+        }) => (
+            inventory_path.into(),
+            format!("character inventory is full (maximum {capacity} items)"),
+        ),
+        Some(account_domain::AccountError::InvalidDefinitionHash) => (
+            entity_path.into(),
+            "the engine no-definition sentinel is not a valid authored hash".into(),
+        ),
+        Some(account_domain::AccountError::InvalidLevel) => (
+            entity_path.into(),
+            "level must be a non-negative signed 32-bit integer".into(),
+        ),
+        Some(account_domain::AccountError::InvalidQuantity) => (
+            entity_path.into(),
+            "quantity must be a positive signed 32-bit integer".into(),
+        ),
+        Some(account_domain::AccountError::TooManyItemPlugs { maximum }) => (
+            entity_path.into(),
+            format!("plugs cannot contain more than {maximum} entries"),
+        ),
+        Some(account_domain::AccountError::InvalidItemFlags { maximum }) => (
+            entity_path.into(),
+            format!("flags must be between 0 and {maximum}"),
+        ),
+        Some(account_domain::AccountError::InventoryReadOnly) => {
+            ("/version".into(), "character inventory is read-only".into())
         }
-        if let Some(masterworked) = masterworked {
-            reward.insert("masterworked".into(), Value::Bool(masterworked));
-        } else {
-            reward.remove("masterworked");
+        Some(account_domain::AccountError::EquipmentReadOnly) => {
+            ("/version".into(), "equipment is read-only".into())
         }
-    } else {
-        reward.remove("class");
-        reward.remove("masterworked");
+        Some(account_domain::AccountError::EquipmentFlagsReadOnly) => {
+            ("/version".into(), "equipment flags are read-only".into())
+        }
+        Some(account_domain::AccountError::SameCharacterMove) => (
+            entity_path.into(),
+            "source and destination characters must be different".into(),
+        ),
+        Some(account_domain::AccountError::EquipmentSlotEmpty) => {
+            (entity_path.into(), "equipment slot is already empty".into())
+        }
+        Some(account_domain::AccountError::NoAvailableInstanceSoid) => (
+            "instance_soid".into(),
+            "no unused instance SOID remains at or above the requested start".into(),
+        ),
+        _ => (error.path().unwrap_or(entity_path).into(), error.detail()),
+    };
+    InventoryError::new(path, message)
+}
+
+fn json_character_error_with_required_inventory(
+    error: JsonAccountError,
+    entity_path: &str,
+    inventory_path: &str,
+    missing_message: &str,
+) -> InventoryError {
+    if error.is_missing_character_inventory() {
+        return InventoryError::new(error.path().unwrap_or(inventory_path), missing_message);
+    }
+    json_character_error(error, entity_path, inventory_path)
+}
+
+fn json_character_id(
+    adapter: &JsonCharacterAdapter,
+    character_index: usize,
+) -> InventoryResult<account_domain::EntityId> {
+    adapter
+        .character_id_at_index(character_index)
+        .ok_or_else(|| {
+            InventoryError::new(
+                format!("/state/characters/{character_index}"),
+                "character index is out of range",
+            )
+        })
+}
+
+fn json_character_inventory_length(
+    adapter: &JsonCharacterAdapter,
+    character_index: usize,
+) -> InventoryResult<usize> {
+    let character_id = json_character_id(adapter, character_index)?;
+    adapter
+        .state()
+        .characters()
+        .iter()
+        .find(|character| character.id == character_id)
+        .map(|character| character.inventory.len())
+        .ok_or_else(|| {
+            InventoryError::new(
+                format!("/state/characters/{character_index}"),
+                "character index is out of range",
+            )
+        })
+}
+
+fn json_character_inventory_item_id(
+    adapter: &JsonCharacterAdapter,
+    location: InventoryItemLocation,
+) -> Option<account_domain::EntityId> {
+    let character_id = adapter.character_id_at_index(location.character_index)?;
+    adapter
+        .state()
+        .characters()
+        .iter()
+        .find(|character| character.id == character_id)?
+        .inventory
+        .get(location.item_index)
+        .map(|item| item.id)
+}
+
+fn domain_item_plugs(plugs: ItemPlugs) -> account_domain::ItemPlugs {
+    match plugs {
+        ItemPlugs::NativeDefaults => account_domain::ItemPlugs::NativeDefaults,
+        ItemPlugs::Authored(plugs) => account_domain::ItemPlugs::Authored(
+            plugs
+                .into_iter()
+                .map(|plug| plug.map(account_domain::DefinitionHash::new))
+                .collect(),
+        ),
     }
 }
 
@@ -405,55 +401,43 @@ pub(crate) fn add_inventory_item(
     character_index: usize,
     item: NewInventoryItem,
 ) -> InventoryResult<InventoryItemLocation> {
-    let mode = require_inventory_mutation(document)?;
+    require_inventory_mutation(document)?;
+    let row_path = format!("/state/characters/{character_index}/inventory/<new>");
+    let inventory_path = format!("/state/characters/{character_index}/inventory");
     validate_inventory_definition_hash(
         item.definition_hash,
-        &format!("/state/characters/{character_index}/inventory/<new>/definition_hash"),
+        &format!("{row_path}/definition_hash"),
     )?;
-    validate_nonnegative_i32(
-        item.level,
-        &format!("/state/characters/{character_index}/inventory/<new>/level"),
-    )?;
-    validate_positive_i32(
-        item.quantity,
-        &format!("/state/characters/{character_index}/inventory/<new>/quantity"),
-    )?;
+    validate_nonnegative_i32(item.level, &format!("{row_path}/level"))?;
+    validate_positive_i32(item.quantity, &format!("{row_path}/quantity"))?;
 
-    validate_existing_character_inventories(document, mode)?;
-    let existing = character_inventory(document, character_index)?;
-    let length = existing.as_ref().map_or(0, Vec::len);
-    if length >= CHARACTER_INVENTORY_CAPACITY {
-        return Err(InventoryError::new(
-            format!("/state/characters/{character_index}/inventory"),
-            format!("character inventory is full (maximum {CHARACTER_INVENTORY_CAPACITY} items)"),
-        ));
-    }
-
-    let instance_soid = allocate_instance_soid(document)?;
-    let mut object = Map::new();
-    object.insert(
-        "instance_soid".into(),
-        Value::String(format_instance_soid(instance_soid)),
-    );
-    object.insert(
-        "definition_hash".into(),
-        Value::String(format_definition_hash_hex(item.definition_hash)),
-    );
-    object.insert("level".into(), Value::from(item.level));
-    object.insert("quantity".into(), Value::from(item.quantity));
-    object.insert("plugs".into(), Value::Null);
-
-    let character = character_object_mut(document, character_index)?;
-    match character.get_mut("inventory") {
-        Some(Value::Array(items)) => items.push(Value::Object(object)),
-        Some(_) => unreachable!("inventory shape was validated before mutation"),
-        None => {
-            character.insert(
-                "inventory".into(),
-                Value::Array(vec![Value::Object(object)]),
-            );
-        }
-    }
+    let adapter = JsonCharacterAdapter::load_for_inventory_add(document)
+        .map_err(|error| json_character_error(error, &row_path, &inventory_path))?;
+    let character_id = json_character_id(&adapter, character_index)?;
+    let length = json_character_inventory_length(&adapter, character_index)?;
+    let first_instance_soid =
+        account_domain::InstanceSoid::try_from_u64(GENERATED_INSTANCE_SOID_START)
+            .expect("the generated instance SOID range starts at a nonzero value");
+    let instance_soid = adapter
+        .state()
+        .next_available_instance_soid(first_instance_soid)
+        .map_err(|error| json_character_error(error.into(), &row_path, &inventory_path))?;
+    let command = account_domain::CharacterCommand::AddInventoryItem {
+        character_id,
+        item: account_domain::ItemInstance {
+            id: adapter.next_entity_id(),
+            instance_soid,
+            definition_hash: account_domain::DefinitionHash::new(item.definition_hash),
+            level: item.level,
+            quantity: item.quantity,
+            plugs: account_domain::ItemPlugs::NativeDefaults,
+            flags: None,
+        },
+    };
+    let (_, candidate, _) = adapter
+        .apply(document, command)
+        .map_err(|error| json_character_error(error, &row_path, &inventory_path))?;
+    *document = candidate;
     Ok(InventoryItemLocation {
         character_index,
         item_index: length,
@@ -466,52 +450,118 @@ pub(crate) fn apply_inventory_item_action(
     action: InventoryItemAction,
 ) -> InventoryResult<()> {
     require_inventory_mutation(document)?;
-    let snapshots = character_inventory(document, location.character_index)?.ok_or_else(|| {
-        InventoryError::new(
-            format!("/state/characters/{}/inventory", location.character_index),
-            "character inventory is missing; add an item before editing a row",
-        )
-    })?;
-    if location.item_index >= snapshots.len() {
-        return Err(InventoryError::new(
-            inventory_item_path(location),
-            "inventory item index is out of range",
-        ));
-    }
+    let row_path = inventory_item_path(location);
+    let inventory_path = format!("/state/characters/{}/inventory", location.character_index);
+    let adapter = JsonCharacterAdapter::load_inventory_item(document, location.character_index)
+        .map_err(|error| {
+            json_character_error_with_required_inventory(
+                error,
+                &row_path,
+                &inventory_path,
+                "character inventory is missing; add an item before editing a row",
+            )
+        })?;
+    let _ = json_character_id(&adapter, location.character_index)?;
+    let item_id = json_character_inventory_item_id(&adapter, location)
+        .ok_or_else(|| InventoryError::new(&row_path, "inventory item index is out of range"))?;
     validate_inventory_action(location, &action)?;
-
-    let items = inventory_array_mut(document, location.character_index)?;
-    match action {
-        InventoryItemAction::Remove => {
-            items.remove(location.item_index);
-        }
+    let command = match action {
         InventoryItemAction::SetDefinitionHash(hash) => {
-            inventory_object_mut(items, location.item_index).insert(
-                "definition_hash".into(),
-                Value::String(format_definition_hash_hex(hash)),
-            );
+            account_domain::CharacterCommand::UpdateInventoryItem {
+                item_id,
+                update: account_domain::ItemUpdate::SetDefinitionHash(
+                    account_domain::DefinitionHash::new(hash),
+                ),
+            }
         }
         InventoryItemAction::SetLevel(level) => {
-            inventory_object_mut(items, location.item_index)
-                .insert("level".into(), Value::from(level));
+            account_domain::CharacterCommand::UpdateInventoryItem {
+                item_id,
+                update: account_domain::ItemUpdate::SetLevel(level),
+            }
         }
         InventoryItemAction::SetQuantity(quantity) => {
-            inventory_object_mut(items, location.item_index)
-                .insert("quantity".into(), Value::from(quantity));
+            account_domain::CharacterCommand::UpdateInventoryItem {
+                item_id,
+                update: account_domain::ItemUpdate::SetQuantity(quantity),
+            }
         }
         InventoryItemAction::SetPlugs(plugs) => {
-            inventory_object_mut(items, location.item_index)
-                .insert("plugs".into(), encode_plugs(plugs));
+            account_domain::CharacterCommand::UpdateInventoryItem {
+                item_id,
+                update: account_domain::ItemUpdate::SetPlugs(domain_item_plugs(plugs)),
+            }
         }
-        InventoryItemAction::SetFlags(Some(flags)) => {
-            inventory_object_mut(items, location.item_index)
-                .insert("flags".into(), Value::from(flags));
+        InventoryItemAction::SetFlags(flags) => {
+            account_domain::CharacterCommand::UpdateInventoryItem {
+                item_id,
+                update: account_domain::ItemUpdate::SetFlags(flags.map(u32::from)),
+            }
         }
-        InventoryItemAction::SetFlags(None) => {
-            inventory_object_mut(items, location.item_index).remove("flags");
+        InventoryItemAction::Remove => {
+            account_domain::CharacterCommand::RemoveInventoryItem { item_id }
         }
-    }
+    };
+    let (_, candidate, _) = adapter
+        .apply(document, command)
+        .map_err(|error| json_character_error(error, &row_path, &inventory_path))?;
+    *document = candidate;
     Ok(())
+}
+
+/// Removes a selected set of stored rows in one character-aggregate transaction.
+pub(crate) fn remove_character_inventory_items(
+    document: &mut Value,
+    character_index: usize,
+    item_indices: impl IntoIterator<Item = usize>,
+) -> InventoryResult<usize> {
+    require_inventory_mutation(document)?;
+    let indices = item_indices.into_iter().collect::<BTreeSet<_>>();
+    let inventory_path = format!("/state/characters/{character_index}/inventory");
+    let adapter =
+        JsonCharacterAdapter::load_inventory_item(document, character_index).map_err(|error| {
+            json_character_error_with_required_inventory(
+                error,
+                &inventory_path,
+                &inventory_path,
+                "character inventory is missing",
+            )
+        })?;
+    let character_id = json_character_id(&adapter, character_index)?;
+    let character = adapter
+        .state()
+        .characters()
+        .iter()
+        .find(|character| character.id == character_id)
+        .expect("the adapter character ID belongs to its loaded state");
+    let commands = indices
+        .iter()
+        .map(|item_index| {
+            character
+                .inventory
+                .get(*item_index)
+                .map(
+                    |item| account_domain::CharacterCommand::RemoveInventoryItem {
+                        item_id: item.id,
+                    },
+                )
+                .ok_or_else(|| {
+                    InventoryError::new(
+                        format!("{inventory_path}/{item_index}"),
+                        "inventory item index is out of range",
+                    )
+                })
+        })
+        .collect::<InventoryResult<Vec<_>>>()?;
+    if commands.is_empty() {
+        return Ok(0);
+    }
+    let removed = commands.len();
+    let (_, candidate, _) = adapter
+        .apply(document, account_domain::CharacterCommand::Batch(commands))
+        .map_err(|error| json_character_error(error, &inventory_path, &inventory_path))?;
+    *document = candidate;
+    Ok(removed)
 }
 
 /// Moves a stored item into an equipment slot and puts the previous equipped item in its place.
@@ -539,66 +589,35 @@ pub(crate) fn swap_inventory_item_with_equipment(
         ));
     }
 
-    let snapshots = character_inventory(document, location.character_index)?.ok_or_else(|| {
-        InventoryError::new(
-            format!("/state/characters/{}/inventory", location.character_index),
-            "character inventory is missing; add an item before equipping a row",
-        )
-    })?;
-    if location.item_index >= snapshots.len() {
-        return Err(InventoryError::new(
-            inventory_item_path(location),
-            "inventory item index is out of range",
-        ));
-    }
-
-    let character = character_object(document, location.character_index)?;
-    let stored_item = character
-        .get("inventory")
-        .and_then(Value::as_array)
-        .and_then(|items| items.get(location.item_index))
-        .cloned()
-        .expect("the selected inventory row was validated before the swap");
+    let row_path = inventory_item_path(location);
+    let inventory_path = format!("/state/characters/{}/inventory", location.character_index);
     let equipment_path = format!("/state/characters/{}/equipment", location.character_index);
-    let equipment = character
-        .get("equipment")
-        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment is missing"))?
-        .as_object()
-        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment must be an object"))?;
-    let previous_item = match equipment.get(slot) {
-        Some(Value::Object(_)) => equipment.get(slot).cloned(),
-        Some(Value::Null) | None => None,
-        Some(_) => {
-            return Err(InventoryError::new(
-                format!("{equipment_path}/{slot}"),
-                "equipped item must be an object or null",
-            ));
-        }
+    let slot_path = format!("{equipment_path}/{slot}");
+    let adapter =
+        JsonCharacterAdapter::load_inventory_swap(document, location.character_index, slot)
+            .map_err(|error| {
+                json_character_error_with_required_inventory(
+                    error,
+                    &slot_path,
+                    &inventory_path,
+                    "character inventory is missing; add an item before equipping a row",
+                )
+            })?;
+    let _ = json_character_id(&adapter, location.character_index)?;
+    let item_id = json_character_inventory_item_id(&adapter, location)
+        .ok_or_else(|| InventoryError::new(&row_path, "inventory item index is out of range"))?;
+    let command = account_domain::CharacterCommand::SwapInventoryItemWithEquipment {
+        item_id,
+        slot: account_domain::EquipmentSlot::new(slot),
     };
-    let replaced_item = previous_item.is_some();
-
-    let mut candidate = document.clone();
-    let candidate_character = character_object_mut(&mut candidate, location.character_index)?;
-    candidate_character
-        .get_mut("equipment")
-        .and_then(Value::as_object_mut)
-        .expect("the equipment object was validated before the swap")
-        .insert(slot.to_owned(), stored_item);
-    let inventory = candidate_character
-        .get_mut("inventory")
-        .and_then(Value::as_array_mut)
-        .expect("the inventory array was validated before the swap");
-    if let Some(previous_item) = previous_item {
-        inventory[location.item_index] = previous_item;
-    } else {
-        inventory.remove(location.item_index);
-    }
-
-    // An equipped row can be more malformed than a stored row. Refuse the swap if moving it into
-    // inventory would make that inventory unreadable by the guided editor.
-    let _ = character_inventory(&candidate, location.character_index)?;
+    let (_, candidate, result) = adapter
+        .apply(document, command)
+        .map_err(|error| json_character_error(error, &slot_path, &inventory_path))?;
+    let account_domain::CharacterCommandResult::EquipmentSwapped { replaced } = result else {
+        unreachable!("a swap command must return its replacement status")
+    };
     *document = candidate;
-    Ok(replaced_item)
+    Ok(replaced)
 }
 
 /// Moves a complete authored inventory row from one character to another.
@@ -619,54 +638,35 @@ pub(crate) fn move_inventory_item_to_character(
         ));
     }
 
-    let source_inventory =
-        character_inventory(document, location.character_index)?.ok_or_else(|| {
-            InventoryError::new(
-                format!("/state/characters/{}/inventory", location.character_index),
-                "character inventory is missing; add an item before moving a row",
-            )
-        })?;
-    if location.item_index >= source_inventory.len() {
-        return Err(InventoryError::new(
-            inventory_item_path(location),
-            "inventory item index is out of range",
-        ));
-    }
-
-    let destination_inventory = character_inventory(document, destination_character_index)?;
-    let destination_length = destination_inventory.as_ref().map_or(0, Vec::len);
-    if destination_length >= CHARACTER_INVENTORY_CAPACITY {
-        return Err(InventoryError::new(
-            format!("/state/characters/{destination_character_index}/inventory"),
-            format!("character inventory is full (maximum {CHARACTER_INVENTORY_CAPACITY} items)"),
-        ));
-    }
-
-    let source_character = character_object(document, location.character_index)?;
-    let moved_item = source_character
-        .get("inventory")
-        .and_then(Value::as_array)
-        .and_then(|items| items.get(location.item_index))
-        .cloned()
-        .expect("the selected inventory row was validated before the move");
-
-    let mut candidate = document.clone();
-    character_object_mut(&mut candidate, location.character_index)?
-        .get_mut("inventory")
-        .and_then(Value::as_array_mut)
-        .expect("the source inventory array was validated before the move")
-        .remove(location.item_index);
-    let destination_character = character_object_mut(&mut candidate, destination_character_index)?;
-    match destination_character.get_mut("inventory") {
-        Some(Value::Array(items)) => items.push(moved_item),
-        Some(_) => unreachable!("the destination inventory shape was validated before the move"),
-        None => {
-            destination_character.insert("inventory".into(), Value::Array(vec![moved_item]));
-        }
-    }
-
-    let _ = character_inventory(&candidate, location.character_index)?;
-    let _ = character_inventory(&candidate, destination_character_index)?;
+    let row_path = inventory_item_path(location);
+    let destination_inventory_path =
+        format!("/state/characters/{destination_character_index}/inventory");
+    let adapter = JsonCharacterAdapter::load_inventory_move(
+        document,
+        location.character_index,
+        destination_character_index,
+    )
+    .map_err(|error| {
+        json_character_error_with_required_inventory(
+            error,
+            &row_path,
+            &destination_inventory_path,
+            "character inventory is missing; add an item before moving a row",
+        )
+    })?;
+    let _ = json_character_id(&adapter, location.character_index)?;
+    let item_id = json_character_inventory_item_id(&adapter, location)
+        .ok_or_else(|| InventoryError::new(&row_path, "inventory item index is out of range"))?;
+    let destination_character_id = json_character_id(&adapter, destination_character_index)?;
+    let destination_length =
+        json_character_inventory_length(&adapter, destination_character_index)?;
+    let command = account_domain::CharacterCommand::MoveInventoryItem {
+        item_id,
+        destination_character_id,
+    };
+    let (_, candidate, _) = adapter
+        .apply(document, command)
+        .map_err(|error| json_character_error(error, &row_path, &destination_inventory_path))?;
     *document = candidate;
     Ok(InventoryItemLocation {
         character_index: destination_character_index,
@@ -694,60 +694,31 @@ pub(crate) fn move_equipment_item_to_inventory(
         ));
     }
 
-    let existing_inventory = character_inventory(document, character_index)?;
-    let inventory_length = existing_inventory.as_ref().map_or(0, Vec::len);
-    if inventory_length >= CHARACTER_INVENTORY_CAPACITY {
-        return Err(InventoryError::new(
-            format!("/state/characters/{character_index}/inventory"),
-            format!("character inventory is full (maximum {CHARACTER_INVENTORY_CAPACITY} items)"),
-        ));
-    }
-
-    let character = character_object(document, character_index)?;
     let equipment_path = format!("/state/characters/{character_index}/equipment");
-    let equipment = character
-        .get("equipment")
-        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment is missing"))?
-        .as_object()
-        .ok_or_else(|| InventoryError::new(&equipment_path, "equipment must be an object"))?;
-    let equipped_item = match equipment.get(slot) {
-        Some(Value::Object(_)) => equipment
-            .get(slot)
-            .cloned()
-            .expect("the equipped item was just found"),
-        Some(Value::Null) | None => {
-            return Err(InventoryError::new(
-                format!("{equipment_path}/{slot}"),
-                "equipment slot is already empty",
-            ));
-        }
-        Some(_) => {
-            return Err(InventoryError::new(
-                format!("{equipment_path}/{slot}"),
-                "equipped item must be an object or null",
-            ));
-        }
+    let slot_path = format!("{equipment_path}/{slot}");
+    let inventory_path = format!("/state/characters/{character_index}/inventory");
+    let adapter =
+        JsonCharacterAdapter::load_inventory_equipment_slot(document, character_index, slot)
+            .map_err(|error| json_character_error(error, &slot_path, &inventory_path))?;
+    let character_id = json_character_id(&adapter, character_index)?;
+    let command = account_domain::CharacterCommand::MoveEquipmentItemToInventory {
+        character_id,
+        slot: account_domain::EquipmentSlot::new(slot),
     };
-
-    let mut candidate = document.clone();
-    let candidate_character = character_object_mut(&mut candidate, character_index)?;
-    candidate_character
-        .get_mut("equipment")
-        .and_then(Value::as_object_mut)
-        .expect("the equipment object was validated before the move")
-        .insert(slot.to_owned(), Value::Null);
-    match candidate_character.get_mut("inventory") {
-        Some(Value::Array(items)) => items.push(equipped_item),
-        Some(_) => unreachable!("the inventory shape was validated before the move"),
-        None => {
-            candidate_character.insert("inventory".into(), Value::Array(vec![equipped_item]));
-        }
-    }
-
-    let _ = character_inventory(&candidate, character_index)?;
+    let (_, candidate, _) = adapter
+        .apply(document, command)
+        .map_err(|error| json_character_error(error, &slot_path, &inventory_path))?;
     *document = candidate;
     Ok(())
 }
 
+#[cfg(test)]
+mod character_domain_parity_tests;
+#[cfg(test)]
+mod domain_parity_tests;
+#[cfg(test)]
+mod legacy_character_tests;
+#[cfg(test)]
+mod legacy_profile_tests;
 #[cfg(test)]
 mod tests;

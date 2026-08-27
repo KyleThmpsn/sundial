@@ -39,6 +39,15 @@ pub(crate) struct SandboxPerkDefinition {
 }
 
 impl Catalog {
+    pub(crate) fn sandbox_perk_definition(
+        &self,
+        definition_index: u16,
+    ) -> Option<&SandboxPerkDefinition> {
+        self.sandbox_perk_definitions
+            .get(usize::from(definition_index))
+            .filter(|definition| definition.definition_index == definition_index)
+    }
+
     pub(crate) fn sandbox_perk_definition_by_hash(
         &self,
         hash: u64,

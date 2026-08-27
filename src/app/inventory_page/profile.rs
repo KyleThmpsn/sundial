@@ -6,6 +6,7 @@ use crate::{catalog::InventoryScope, hash::format_hash_hex};
 
 use super::super::{
     SundialApp,
+    inspector::DefinitionInspectionContext,
     inventory::{
         self, DismantleGearClass, DismantleRarity, DismantleRewardAction, DismantleRewardSnapshot,
         ProfileItemAction, ProfileItemSnapshot, SchemaMode,
@@ -41,16 +42,20 @@ impl SundialApp {
             data.get_temp::<ProfileInventorySection>(section_id)
                 .unwrap_or_default()
         });
-        let dismantle_rewards_available = mode.supports_dismantle_rewards() && !mode.is_future();
+        let dismantle_rewards_available = self
+            .account_workspace
+            .dismantle_rewards_available(&self.document);
         if !dismantle_rewards_available {
             section = ProfileInventorySection::SharedItems;
         }
 
         ui.heading("Profile inventory");
         ui.label(
-            "Items shared by the account and available to every character. Profile inventory is supported by every Sunrise settings schema Sundial can edit.",
+            "Items shared by the account and available to every character. Storage and limits follow the active Sunrise account source.",
         );
-        draw_schema_notice(ui, mode, InventoryPageKind::Profile);
+        if self.document.uses_json_account() {
+            draw_schema_notice(ui, mode, InventoryPageKind::Profile);
+        }
         ui.add_space(4.0);
 
         if dismantle_rewards_available {
@@ -82,11 +87,14 @@ impl SundialApp {
             });
     }
 
-    fn draw_dismantle_reward_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
-        if !mode.supports_dismantle_rewards() || mode.is_future() {
+    fn draw_dismantle_reward_section(&mut self, ui: &mut egui::Ui, _mode: SchemaMode) {
+        if !self
+            .account_workspace
+            .dismantle_rewards_available(&self.document)
+        {
             return;
         }
-        let rewards = match inventory::dismantle_rewards(&self.document) {
+        let rewards = match self.account_workspace.dismantle_rewards(&self.document) {
             Ok(rewards) => rewards.unwrap_or_default(),
             Err(error) => {
                 ui.strong("Dismantle rewards");
@@ -94,9 +102,21 @@ impl SundialApp {
                 return;
             }
         };
-        let editable = mode.can_mutate_dismantle_rewards();
-        let capacity = mode.dismantle_reward_capacity();
-        let account_ready = inventory::profile_item_target_exists(&self.document).unwrap_or(false);
+        let editable = self
+            .account_workspace
+            .dismantle_rewards_editable(&self.document);
+        let capacity = self
+            .account_workspace
+            .dismantle_reward_capacity(&self.document);
+        let account_ready = self
+            .account_workspace
+            .account_collection_ready(&self.document);
+        let filtered = self
+            .account_workspace
+            .filtered_dismantle_rewards(&self.document);
+        let combined_gear_class = self
+            .account_workspace
+            .supports_combined_dismantle_gear_class(&self.document);
         let has_room = capacity.is_some_and(|capacity| rewards.len() < capacity);
         let picker_key = "dismantle-rewards:add".to_owned();
         let mut picker_anchor = None;
@@ -115,9 +135,9 @@ impl SundialApp {
                 response.on_hover_text("Add a dismantle payout policy")
             } else {
                 response.on_disabled_hover_text(if !editable {
-                    "Dismantle-policy editing is disabled for this schema"
+                    "Dismantle-policy editing is unavailable for the active account source"
                 } else if !account_ready {
-                    "An existing state.account object is required"
+                    "The active account source has no account collection to edit"
                 } else {
                     "The dismantle-policy array is full"
                 })
@@ -131,7 +151,7 @@ impl SundialApp {
         ui.label(
             "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together.",
         );
-        if mode.supports_filtered_dismantle_rewards() {
+        if filtered {
             ui.label(
                 egui::RichText::new(
                     "Leave a filter on Any to match every rarity, gear class, or masterwork state.",
@@ -170,7 +190,10 @@ impl SundialApp {
             if let Some(ItemEditorAction::SetDefinition { hash }) = action
                 && let Ok(hash) = u32::try_from(hash)
             {
-                match inventory::add_dismantle_reward(&mut self.document, hash) {
+                match self
+                    .account_workspace
+                    .add_dismantle_reward(&mut self.document, hash)
+                {
                     Ok(_) => {
                         self.searches.remove(&picker_key);
                         self.mark_inventory_changed("Added a dismantle reward policy");
@@ -194,8 +217,13 @@ impl SundialApp {
             maximum_card_width,
             |ui, reward| {
                 if pending.is_none()
-                    && let Some(action) =
-                        self.draw_dismantle_reward_card(ui, reward, editable, mode)
+                    && let Some(action) = self.draw_dismantle_reward_card(
+                        ui,
+                        reward,
+                        editable,
+                        filtered,
+                        combined_gear_class,
+                    )
                 {
                     pending = Some((reward.location, action));
                 }
@@ -203,7 +231,11 @@ impl SundialApp {
         );
         if let Some((location, action)) = pending {
             let structural = matches!(action, DismantleRewardAction::Remove);
-            match inventory::apply_dismantle_reward_action(&mut self.document, location, action) {
+            match self.account_workspace.apply_dismantle_reward_action(
+                &mut self.document,
+                location,
+                action,
+            ) {
                 Ok(()) => {
                     self.mark_inventory_changed(if structural {
                         "Removed a dismantle reward policy"
@@ -225,7 +257,8 @@ impl SundialApp {
         ui: &mut egui::Ui,
         snapshot: &DismantleRewardSnapshot,
         editable: bool,
-        mode: SchemaMode,
+        filtered: bool,
+        combined_gear_class: bool,
     ) -> Option<DismantleRewardAction> {
         let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
         let valid = resolved
@@ -262,6 +295,16 @@ impl SundialApp {
                         ui,
                         &self.manifest,
                         Some(u64::from(snapshot.definition_hash)),
+                        Some(DefinitionInspectionContext {
+                            source: format!(
+                                "Dismantle reward policy · row {}",
+                                snapshot.location.index + 1
+                            ),
+                            instance_id: None,
+                            authored_level: None,
+                            flags: None,
+                            plug_count: None,
+                        }),
                         ItemHeader {
                             label: None,
                             soid: None,
@@ -303,7 +346,7 @@ impl SundialApp {
                                 )
                                 .changed();
 
-                            if mode.supports_filtered_dismantle_rewards() {
+                            if filtered {
                                 ui.label("Rarity");
                                 egui::ComboBox::from_id_salt("rarity")
                                     .selected_text(dismantle_rarity_summary(&rarities))
@@ -337,7 +380,7 @@ impl SundialApp {
                             }
                         });
 
-                        if mode.supports_filtered_dismantle_rewards() {
+                        if filtered {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label("Class");
                                 egui::ComboBox::from_id_salt("class")
@@ -360,6 +403,15 @@ impl SundialApp {
                                                 "Armor",
                                             )
                                             .changed();
+                                        if combined_gear_class {
+                                            changed |= ui
+                                                .selectable_value(
+                                                    &mut gear_class,
+                                                    Some(DismantleGearClass::Both),
+                                                    "Weapon + armor",
+                                                )
+                                                .changed();
+                                        }
                                     });
 
                                 ui.label("Masterwork");
@@ -440,8 +492,8 @@ impl SundialApp {
         }
     }
 
-    fn draw_profile_items_section(&mut self, ui: &mut egui::Ui, mode: SchemaMode) {
-        let snapshots = match inventory::profile_items(&self.document) {
+    fn draw_profile_items_section(&mut self, ui: &mut egui::Ui, _mode: SchemaMode) {
+        let snapshots = match self.account_workspace.profile_items(&self.document) {
             Ok(items) => items,
             Err(error) => {
                 draw_section_error(ui, &error.to_string());
@@ -450,8 +502,10 @@ impl SundialApp {
         };
         let items = snapshots.unwrap_or_default();
         let profile_item_count = items.len();
-        let editable = mode.can_mutate_profile_items();
-        let capacity = mode.profile_item_capacity();
+        let editable = self
+            .account_workspace
+            .profile_items_editable(&self.document);
+        let capacity = self.account_workspace.profile_item_capacity(&self.document);
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("Shared items");
@@ -464,17 +518,25 @@ impl SundialApp {
         ui.label("Stackable profile-scoped definitions only.");
 
         let bucket_usage = self.profile_bucket_usage(&items);
-        let account_ready = inventory::profile_item_target_exists(&self.document).unwrap_or(false);
+        let account_ready = self
+            .account_workspace
+            .account_collection_ready(&self.document);
         if !editable {
             ui.label(
-                egui::RichText::new("Profile-item editing is disabled for this schema.").weak(),
+                egui::RichText::new(
+                    "Profile-item editing is unavailable for the active account source.",
+                )
+                .weak(),
             );
         } else if capacity.is_some_and(|capacity| items.len() >= capacity) {
-            ui.label(egui::RichText::new("The profile-item array is full for this schema.").weak());
+            ui.label(
+                egui::RichText::new("The profile-item collection is full for this account source.")
+                    .weak(),
+            );
         } else if !account_ready {
             ui.label(
                 egui::RichText::new(
-                    "Add controls require an existing state.account object; existing rows remain visible.",
+                    "Add controls require an account collection in the active source; existing rows remain visible.",
                 )
                 .weak(),
             );
@@ -612,7 +674,8 @@ impl SundialApp {
                                 "The selected profile-item hash does not fit in 32 bits".to_owned()
                             })
                             .and_then(|hash| {
-                                inventory::add_profile_item(&mut self.document, hash, 1)
+                                self.account_workspace
+                                    .add_profile_item(&mut self.document, hash, 1)
                                     .map_err(|error| error.to_string())
                             }) {
                             Ok(_) => {
@@ -643,7 +706,11 @@ impl SundialApp {
         }
         if let Some((location, action)) = pending {
             let structural = matches!(action, ProfileItemAction::Remove);
-            match inventory::apply_profile_item_action(&mut self.document, location, action) {
+            match self.account_workspace.apply_profile_item_action(
+                &mut self.document,
+                location,
+                action,
+            ) {
                 Ok(()) => {
                     self.mark_inventory_changed(if structural {
                         "Removed a shared profile item"
@@ -714,6 +781,16 @@ impl SundialApp {
                         ui,
                         &self.manifest,
                         Some(u64::from(snapshot.definition_hash)),
+                        Some(DefinitionInspectionContext {
+                            source: format!(
+                                "Profile inventory · item {}",
+                                snapshot.location.index + 1
+                            ),
+                            instance_id: None,
+                            authored_level: None,
+                            flags: None,
+                            plug_count: None,
+                        }),
                         ItemHeader {
                             label: None,
                             soid: None,

@@ -131,19 +131,27 @@ pub(super) fn draw_compact_item_header(
         | header_area.response)
         .interact(egui::Sense::click());
     if let Some(hash) = header.hash {
+        let card_response = ui.interact(
+            response.rect,
+            response.id.with(("item_card", hash)),
+            egui::Sense::click(),
+        );
+        let tooltip_response =
+            item_editor::catalog_item_tooltip(card_response.clone(), catalog, hash);
         if let Some(hash_rect) = hash_rect {
             let hash_response = ui
                 .interact(
-                    hash_rect,
+                    hash_rect.expand2(egui::vec2(4.0, 2.0)),
                     response.id.with(("definition_hash", hash)),
                     egui::Sense::click(),
                 )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Inspect definition");
             if hash_response.clicked() {
                 request_definition(ui.ctx(), hash);
             }
         }
-        response.context_menu(|ui| {
+        card_response.context_menu(|ui| {
             if ui.button("Inspect definition").clicked() {
                 request_definition(ui.ctx(), hash);
                 ui.close_menu();
@@ -157,7 +165,7 @@ pub(super) fn draw_compact_item_header(
                 ui.close_menu();
             }
         });
-        item_editor::catalog_item_tooltip(response, catalog, hash)
+        response | card_response | tooltip_response
     } else {
         response
     }

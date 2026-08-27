@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::inspector::DefinitionInspectionContext;
 
 struct EquipmentPlugEditor<'a> {
     id_scope: &'static str,
@@ -22,14 +23,15 @@ impl SundialApp {
     }
 
     fn draw_sundial_equipment(&mut self, ui: &mut egui::Ui, character_index: usize) {
-        let schema_mode = super::inventory::schema_mode(&self.document);
-        let editable = schema_mode.can_mutate_equipment();
-        let inventory_editable = schema_mode.can_mutate_character_inventory();
+        let editable = self.account_workspace.can_mutate_equipment(&self.document);
+        let inventory_editable = self
+            .account_workspace
+            .can_mutate_character_inventory(&self.document);
         let class_type = self
-            .characters()
-            .and_then(|chars| chars.get(character_index))
-            .and_then(|ch| ch.get("class"))
-            .and_then(Value::as_u64)
+            .account_workspace
+            .character_metadata(&self.document, character_index)
+            .ok()
+            .map(|metadata| u64::from(metadata.class_type))
             .unwrap_or(0);
 
         ui.add_space(14.0);
@@ -91,8 +93,12 @@ impl SundialApp {
         ui: &mut egui::Ui,
         character_index: usize,
     ) {
-        let totals =
-            armor_stats_adjuster::equipped_totals(&self.document, &self.manifest, character_index);
+        let totals = armor_stats_adjuster::equipped_totals(
+            self.account_workspace,
+            &self.document,
+            &self.manifest,
+            character_index,
+        );
         ui.add_space(3.0);
         ui.separator();
         ui.add_space(3.0);
@@ -136,6 +142,13 @@ impl SundialApp {
             header_fill,
             snapshot,
         } = card;
+        let loaded_snapshot = snapshot.is_none().then(|| {
+            self.account_workspace
+                .equipped_item_snapshots(&self.document, character_index)
+                .ok()
+                .and_then(|items| items.into_iter().find(|item| item.slot == slot))
+        });
+        let snapshot = snapshot.or_else(|| loaded_snapshot.as_ref().and_then(Option::as_ref));
         let (
             is_empty,
             current_level,
@@ -145,42 +158,28 @@ impl SundialApp {
             current_soid_text,
             authored_plugs,
         ) = {
-            let equipped = self
-                .characters()
-                .and_then(|characters| characters.get(character_index))
-                .and_then(|character| character.get("equipment"))
-                .and_then(Value::as_object)
-                .and_then(|equipment| equipment.get(slot));
-            let hash_value = equipped.and_then(|item| item.get("definition_hash"));
-            let hash = hash_value.and_then(parse_unsigned_value);
+            let hash = snapshot.and_then(|item| item.definition_hash);
             (
-                equipped.is_some_and(Value::is_null),
-                equipped
-                    .and_then(|item| item.get("level"))
-                    .and_then(Value::as_i64),
-                equipped
-                    .and_then(|item| item.get("flags"))
-                    .and_then(parse_unsigned_value)
-                    .and_then(|flags| u8::try_from(flags).ok()),
+                snapshot.is_none(),
+                snapshot.and_then(|item| item.level),
+                snapshot.and_then(|item| item.flags),
                 hash,
-                hash.map_or_else(
-                    || {
-                        hash_value
-                            .and_then(Value::as_str)
-                            .unwrap_or("<missing>")
-                            .to_owned()
-                    },
-                    format_hash_hex,
-                ),
-                equipped
-                    .and_then(|item| item.get("instance_soid"))
-                    .map(|value| {
-                        parse_unsigned_value(value).map_or_else(
-                            || field_display_text(Some(value)),
-                            |soid| format!("0x{soid:016X}"),
-                        )
-                    }),
-                equipped.and_then(|item| item.get("plugs")).cloned(),
+                snapshot.map_or_else(|| "<empty>".to_owned(), |item| item.definition_text.clone()),
+                snapshot.map(|item| item.instance_soid_text.clone()),
+                snapshot.and_then(|item| match &item.plugs {
+                    EquippedItemPlugs::NativeDefaults => Some(Value::Null),
+                    EquippedItemPlugs::Authored(plugs) => Some(Value::Array(
+                        plugs
+                            .iter()
+                            .map(|plug| match plug {
+                                EquippedPlugValue::Empty => Value::Null,
+                                EquippedPlugValue::Hash(hash) => Value::from(*hash),
+                                EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
+                            })
+                            .collect(),
+                    )),
+                    EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => None,
+                }),
             )
         };
         let current =
@@ -193,15 +192,18 @@ impl SundialApp {
         let snapshot_valid = snapshot.is_none_or(|snapshot| snapshot.issues.is_empty());
         let valid = definition_valid && snapshot_valid;
         let guided_editable = editable && snapshot_valid;
-        let flags_editable =
-            super::inventory::schema_mode(&self.document).can_mutate_equipment_flags();
-        let inventory_editable =
-            super::inventory::schema_mode(&self.document).can_mutate_character_inventory();
+        let flags_editable = self
+            .account_workspace
+            .can_mutate_equipment_flags(&self.document);
+        let inventory_editable = self
+            .account_workspace
+            .can_mutate_character_inventory(&self.document);
         let equipped_label = equipped_header_label(id_scope, label);
         let header_soid = snapshot
             .map(|snapshot| snapshot.instance_soid_text.as_str())
             .or(current_soid_text.as_deref());
         let existing_inventory = equipment_inventory_choices(
+            self.account_workspace,
             &self.document,
             &self.manifest,
             character_index,
@@ -244,6 +246,16 @@ impl SundialApp {
                         ui,
                         &self.manifest,
                         current_hash,
+                        current_hash.map(|_| DefinitionInspectionContext {
+                            source: format!(
+                                "Character {} equipment · {equipped_label}",
+                                character_index + 1
+                            ),
+                            instance_id: header_soid.map(str::to_owned),
+                            authored_level: current_level,
+                            flags: current_flags,
+                            plug_count: authored_plugs.as_ref().and_then(Value::as_array).map(Vec::len),
+                        }),
                         header,
                         |_| {},
                     );
@@ -377,8 +389,10 @@ impl SundialApp {
                     let picker_anchor = header_response.clone() | swap_response;
                     let key = format!("{id_scope}:{character_index}:{slot}");
                     if empty_requested {
-                        self.empty_weapon(character_index, slot);
-                        self.searches.insert(key.clone(), String::new());
+                        let item_name = current
+                            .as_ref()
+                            .map_or("this equipped item", |item| item.name.as_str());
+                        self.request_equipment_delete(character_index, slot, item_name);
                     }
                     if unequip_requested {
                         self.unequip_weapon(character_index, slot);

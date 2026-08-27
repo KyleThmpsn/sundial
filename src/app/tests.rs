@@ -12,15 +12,31 @@ use super::{
         displayed_plugs, equip_definition, materialize_authored_plugs, native_plug_default,
         restore_class_armor, selected_attunement_index, set_weapon_slot_empty,
     },
+    generated_files::generated_file_diff,
     inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION,
     item_editor::NativePlugDefault,
     settings::{
         character_ability_issue, create_adjacent_backup, encode_settings, load_json,
-        normalize_sunrise_version, repair_known_ability_pairs, resolve_settings_path,
-        save_json_with_backup_root, settings_path_for_install, settings_size_limit_for_schema,
-        validate_characters, verify_source_unchanged,
+        load_workspace_json, normalize_sunrise_version, prune_automatic_backups,
+        repair_known_ability_pairs, resolve_settings_path, save_json_with_backup_root,
+        settings_path_for_install, settings_size_limit_for_schema, validate_characters,
+        verify_source_unchanged, verify_workspace_source_unchanged,
     },
 };
+
+#[test]
+fn settings_change_review_reports_nested_values_and_respects_its_limit() {
+    let before = serde_json::json!({"state": {"characters": [{"class": 0, "race": 1}]}});
+    let after = serde_json::json!({"state": {"characters": [{"class": 2, "race": 3}]}});
+
+    let changes = collect_change_summaries(&before, &after, 10);
+    assert_eq!(changes.len(), 2);
+    assert!(changes[0].contains("/state/characters/0/class"));
+    assert!(changes[1].contains("/state/characters/0/race"));
+
+    let limited = collect_change_summaries(&before, &after, 1);
+    assert_eq!(limited.len(), 1);
+}
 
 #[test]
 fn sunrise_versions_are_normalized_for_display() {
@@ -247,11 +263,17 @@ fn every_known_super_and_melee_pair_is_valid_after_save_repair() {
         let supported = [(10, 11), (10, 15), (middle_super, 21)];
         for super_ability in 0..=63 {
             for melee_ability in 0..=63 {
-                let mut document =
+                let mut raw_document =
                     character_with_abilities(subclass_hash, 6, 8, super_ability, melee_ability, 3);
-                document["future_data"] = serde_json::json!({"keep": true});
+                raw_document["future_data"] = serde_json::json!({"keep": true});
+                let mut document =
+                    super::account_workspace::WorkspaceDocument::json_only(raw_document);
 
-                let repaired = repair_known_ability_pairs(&mut document);
+                let repaired = repair_known_ability_pairs(
+                    super::account_workspace::AccountWorkspace::json(),
+                    &mut document,
+                )
+                .unwrap();
                 let was_supported = supported.contains(&(super_ability, melee_ability));
                 assert_eq!(repaired, usize::from(!was_supported));
                 assert_eq!(validate_characters(&document), Ok(()));
@@ -266,10 +288,18 @@ fn every_known_super_and_melee_pair_is_valid_after_save_repair() {
 
 #[test]
 fn unknown_subclasses_keep_loose_ability_validation() {
-    let mut document = character_with_abilities(0x1234_5678, 12, 13, 14, 15, 16);
-    assert_eq!(validate_characters(&document), Ok(()));
+    let raw_document = character_with_abilities(0x1234_5678, 12, 13, 14, 15, 16);
+    assert_eq!(validate_characters(&raw_document), Ok(()));
+    let mut document = super::account_workspace::WorkspaceDocument::json_only(raw_document);
     let original = document.clone();
-    assert_eq!(repair_known_ability_pairs(&mut document), 0);
+    assert_eq!(
+        repair_known_ability_pairs(
+            super::account_workspace::AccountWorkspace::json(),
+            &mut document,
+        )
+        .unwrap(),
+        0
+    );
     assert_eq!(document, original);
 }
 
@@ -282,6 +312,7 @@ fn character_with_abilities(
     class_ability: u64,
 ) -> Value {
     serde_json::json!({
+        "version": 8,
         "state": {
             "characters": [{
                 "soid": "0x1",
@@ -464,6 +495,9 @@ fn legacy_preferences_default_to_supported_plugs_with_warnings() {
         PlugSelectionMode::Supported
     );
     assert!(decoded.show_safety_warnings);
+    assert!(!decoded.review_changes_before_saving);
+    assert!(!decoded.limit_automatic_backups);
+    assert_eq!(decoded.automatic_backup_limit, 20);
     assert_eq!(decoded.color_theme, ColorTheme::Dark);
     assert!(!decoded.always_open_json_editor_in_second_window);
     assert!(!decoded.show_plug_hashes);
@@ -550,6 +584,112 @@ fn gear_type_plug_selection_mode_round_trips() {
     assert_eq!(
         decoded.default_plug_selection_mode,
         PlugSelectionMode::GearType
+    );
+}
+
+#[test]
+fn save_review_preference_is_opt_in_and_round_trips() {
+    assert!(!Preferences::default().review_changes_before_saving);
+    let preferences = Preferences {
+        review_changes_before_saving: true,
+        ..Preferences::default()
+    };
+
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(encoded["review_changes_before_saving"], true);
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert!(decoded.review_changes_before_saving);
+}
+
+#[test]
+fn automatic_backup_retention_is_opt_in_and_round_trips() {
+    let defaults = Preferences::default();
+    assert!(!defaults.limit_automatic_backups);
+    assert_eq!(defaults.automatic_backup_limit, 20);
+
+    let preferences = Preferences {
+        limit_automatic_backups: true,
+        automatic_backup_limit: 35,
+        ..Preferences::default()
+    };
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(encoded["limit_automatic_backups"], true);
+    assert_eq!(encoded["automatic_backup_limit"], 35);
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert!(decoded.limit_automatic_backups);
+    assert_eq!(decoded.automatic_backup_limit, 35);
+}
+
+#[test]
+fn automatic_backup_limit_is_clamped_to_the_supported_range() {
+    assert_eq!(normalized_automatic_backup_limit(0), 5);
+    assert_eq!(normalized_automatic_backup_limit(50), 50);
+    assert_eq!(normalized_automatic_backup_limit(u16::MAX), 100);
+}
+
+#[test]
+fn focus_refresh_only_runs_on_a_clean_focus_transition() {
+    assert!(should_refresh_workspace_on_focus(false, true, false));
+    assert!(!should_refresh_workspace_on_focus(true, true, false));
+    assert!(!should_refresh_workspace_on_focus(false, false, false));
+    assert!(!should_refresh_workspace_on_focus(false, true, true));
+
+    assert!(should_poll_pending_workspace_refresh(true, false, true));
+    assert!(!should_poll_pending_workspace_refresh(false, false, true));
+    assert!(!should_poll_pending_workspace_refresh(true, true, true));
+    assert!(!should_poll_pending_workspace_refresh(true, false, false));
+}
+
+#[test]
+fn failed_generated_file_writes_remain_save_work() {
+    assert!(!has_save_work(false, false, false));
+    assert!(has_save_work(true, false, false));
+    assert!(has_save_work(false, true, false));
+    assert!(has_save_work(false, false, true));
+}
+
+#[test]
+fn detached_json_editor_preference_only_applies_when_json_view_is_selected() {
+    assert!(should_open_json_editor_window_on_selection(
+        true,
+        ViewMode::AdvancedJson
+    ));
+    assert!(!should_open_json_editor_window_on_selection(
+        true,
+        ViewMode::Characters
+    ));
+    assert!(!should_open_json_editor_window_on_selection(
+        false,
+        ViewMode::AdvancedJson
+    ));
+}
+
+#[test]
+fn preferences_tabs_are_task_focused_and_default_to_interface() {
+    assert_eq!(PreferencesTab::default(), PreferencesTab::Interface);
+    assert_eq!(PreferencesTab::ALL.len(), 4);
+    assert_eq!(PreferencesTab::Interface.label(), "Interface");
+    assert_eq!(PreferencesTab::Editing.label(), "Editing");
+    assert_eq!(PreferencesTab::Sunrise.label(), "Sunrise");
+    assert_eq!(PreferencesTab::SavingRecovery.label(), "Saving & recovery");
+}
+
+#[test]
+fn socket_and_gear_type_plug_selection_mode_round_trips() {
+    let preferences = Preferences {
+        default_plug_selection_mode: PlugSelectionMode::SocketAndGearType,
+        ..Preferences::default()
+    };
+
+    let encoded = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(
+        encoded["default_plug_selection_mode"],
+        "socket_and_gear_type"
+    );
+    let decoded: Preferences = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        decoded.default_plug_selection_mode,
+        PlugSelectionMode::SocketAndGearType
     );
 }
 
@@ -945,6 +1085,155 @@ fn external_settings_changes_are_detected_before_saving() {
     let error = verify_source_unchanged(&settings, &loaded).unwrap_err();
     assert!(error.contains("changed outside Sundial"));
     assert_eq!(load_json(&settings).unwrap(), newer);
+}
+
+#[test]
+fn automatic_backup_retention_is_per_source_and_preserves_recovery_files() {
+    let directory = TestDirectory::new("backup-retention");
+    let backups = directory.0.join("backups");
+    fs::create_dir_all(&backups).unwrap();
+    for index in 1..=4 {
+        fs::write(backups.join(format!("settings-v8-{index}.json")), b"{}").unwrap();
+        fs::write(
+            backups.join(format!("state-sqlite-v1-{index}.sqlite3")),
+            b"sqlite",
+        )
+        .unwrap();
+    }
+    for untouched in [
+        "state-sqlite-recovery-1.sqlite3",
+        "settings.json.bak",
+        "settings-not-an-automatic-backup.json",
+    ] {
+        fs::write(backups.join(untouched), b"keep").unwrap();
+    }
+
+    assert_eq!(prune_automatic_backups(&backups, 2).unwrap(), 4);
+    let names = fs::read_dir(&backups)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.starts_with("settings-v8-") && name.ends_with(".json"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| { name.starts_with("state-sqlite-v1-") && name.ends_with(".sqlite3") })
+            .count(),
+        2
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "state-sqlite-recovery-1.sqlite3")
+    );
+    assert!(names.iter().any(|name| name == "settings.json.bak"));
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "settings-not-an-automatic-backup.json")
+    );
+}
+
+#[test]
+fn workspace_source_checks_normalize_only_for_json_account_mode() {
+    let directory = TestDirectory::new("workspace-source-check");
+    let settings = directory.0.join("settings.json");
+    let raw = serde_json::json!({
+        "version": 8,
+        "state": {"account": {"settings": {"display": {}}}}
+    });
+    fs::write(&settings, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+    assert_eq!(load_workspace_json(&settings).unwrap(), raw);
+    assert_eq!(
+        verify_workspace_source_unchanged(&settings, &raw, false),
+        Ok(())
+    );
+    assert!(verify_workspace_source_unchanged(&settings, &raw, true).is_err());
+}
+
+#[test]
+fn sqlite_default_restore_preserves_only_inactive_json_account_domains() {
+    let mut defaults = serde_json::json!({
+        "version": 8,
+        "state": {
+            "account": {"settings": {"from": "defaults"}},
+            "characters": [{"from": "defaults"}],
+            "server": {"port": 1}
+        }
+    });
+    let source = serde_json::json!({
+        "version": 8,
+        "state": {
+            "account": {"settings": {"sentinel": true}},
+            "characters": "stale but untouched",
+            "server": {"port": 2}
+        }
+    });
+
+    preserve_inactive_json_account_domains(&mut defaults, &source);
+
+    assert_eq!(
+        defaults.pointer("/state/account/settings/sentinel"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        defaults.pointer("/state/characters"),
+        Some(&serde_json::json!("stale but untouched"))
+    );
+    assert_eq!(
+        defaults.pointer("/state/server/port"),
+        Some(&serde_json::json!(1))
+    );
+}
+
+#[test]
+fn sqlite_default_restore_does_not_create_missing_json_account_domains() {
+    let mut defaults = serde_json::json!({
+        "state": {"account": {}, "characters": [], "server": {}}
+    });
+
+    preserve_inactive_json_account_domains(&mut defaults, &serde_json::json!({"state": {}}));
+
+    assert!(defaults.pointer("/state/account").is_none());
+    assert!(defaults.pointer("/state/characters").is_none());
+    assert!(defaults.pointer("/state/server").is_some());
+}
+
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
+    let compatible = TestDirectory::new("check-compatible-sqlite");
+    let compatible_settings = compatible.0.join("settings.json");
+    crate::persistence::sqlite_account::tests::create_fixture(
+        &compatible.0.join("state.sqlite3"),
+        3,
+    );
+    let compatible_document = WorkspaceDocument::load(
+        serde_json::json!({
+            "version": 8,
+            "state": {"account": "stale", "characters": "stale"}
+        }),
+        &compatible_settings,
+    );
+    assert_eq!(validate_for_check(&compatible_document), Ok(()));
+
+    let blocked = TestDirectory::new("check-blocked-sqlite");
+    let blocked_settings = blocked.0.join("settings.json");
+    fs::write(blocked.0.join("state.sqlite3"), b"not SQLite").unwrap();
+    let blocked_document =
+        WorkspaceDocument::load(serde_json::json!({"version": 8}), &blocked_settings);
+    assert!(
+        validate_for_check(&blocked_document)
+            .unwrap_err()
+            .contains("Account source is incompatible")
+    );
 }
 
 #[test]

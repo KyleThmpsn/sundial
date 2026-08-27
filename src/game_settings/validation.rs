@@ -103,6 +103,12 @@ pub(crate) fn validate(document: &Value) -> Result<(), String> {
     validate_key_bindings(settings, schema)
 }
 
+pub(crate) fn validate_non_account(document: &Value) -> Result<(), String> {
+    SettingsSchema::from_document(document)?;
+    validate_game_language(document)?;
+    validate_orbit_slice_set(document)
+}
+
 pub(super) fn validate_game_language(document: &Value) -> Result<(), String> {
     let Some(value) = document.pointer("/steam/language") else {
         return Ok(());

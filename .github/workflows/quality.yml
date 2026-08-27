@@ -1,0 +1,75 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default 1.88.0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config
+
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint all features and targets
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Lint without default features
+        run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Test all features
+        run: cargo test --all-features --locked
+
+      - name: Test without default features
+        run: cargo test --no-default-features --locked
+
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+      # quick-xml 0.30 is pulled into Linux accessibility support by eframe 0.31.
+      # Keep these exact exceptions visible until an egui/eframe upgrade removes them; any other
+      # RustSec vulnerability still fails this job.
+      - name: Audit dependencies
+        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+  windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
+          rustup default 1.88.0
+
+      - name: Lint Windows targets
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Test on Windows
+        run: cargo test --all-features --locked

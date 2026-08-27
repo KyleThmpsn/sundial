@@ -11,6 +11,7 @@ mod http;
 mod orbit_map;
 mod package_runtime;
 mod paths;
+mod persistence;
 mod storage;
 #[cfg(test)]
 mod test_support;

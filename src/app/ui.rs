@@ -2,9 +2,21 @@ use eframe::egui;
 
 use super::glyphs::{self, Glyph};
 
+const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
+
 pub(super) const TABLE_CELL_HEIGHT: f32 = 24.0;
 pub(super) const TABLE_COLUMN_GAP: f32 = 12.0;
 pub(super) const HIERARCHY_INDENT: f32 = 14.0;
+
+pub(super) fn destiny_text_font_family() -> egui::FontFamily {
+    egui::FontFamily::Name(DESTINY_TEXT_FONT_FAMILY.into())
+}
+
+pub(super) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let mut font_id = egui::TextStyle::Body.resolve(ui.style());
+    font_id.family = destiny_text_font_family();
+    egui::RichText::new(text.into()).font(font_id)
+}
 
 pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::NONE
@@ -55,31 +67,6 @@ pub(super) fn sortable_header_cell(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Sort by {label}"))
     });
-    response
-}
-
-pub(super) fn back_button(ui: &mut egui::Ui, destination: &str) -> egui::Response {
-    let accessible_label = format!("Back to {destination}");
-    let response = ui
-        .button("    Back")
-        .on_hover_text(format!("{accessible_label} (Alt+Left)"));
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label.clone())
-    });
-    if ui.is_rect_visible(response.rect) {
-        let icon_size = 11.0;
-        let icon_center = egui::pos2(
-            response.rect.left() + ui.spacing().button_padding.x + icon_size * 0.5,
-            response.rect.center().y,
-        );
-        let icon_rect = egui::Rect::from_center_size(icon_center, egui::Vec2::splat(icon_size));
-        glyphs::paint_with_stroke(
-            ui,
-            icon_rect,
-            Glyph::ChevronLeft,
-            ui.style().interact(&response).fg_stroke,
-        );
-    }
     response
 }
 

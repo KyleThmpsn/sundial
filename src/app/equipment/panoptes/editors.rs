@@ -22,7 +22,8 @@ use crate::{
 
 use super::{layout, widgets};
 use crate::app::equipment::{
-    EquippedItemSnapshot, displayed_plugs, equipment_definition_choices, native_plug_default,
+    EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue, displayed_plugs,
+    equipment_definition_choices, native_plug_default,
 };
 
 const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
@@ -77,33 +78,25 @@ impl SundialApp {
             snapshot,
             group_sockets,
         } = editor;
-        let (is_empty, current_level, current_hash, current_hash_display_text, authored_plugs) = {
-            let equipped = self
-                .characters()
-                .and_then(|characters| characters.get(character_index))
-                .and_then(|character| character.get("equipment"))
-                .and_then(Value::as_object)
-                .and_then(|equipment| equipment.get(slot));
-            let hash_value = equipped.and_then(|item| item.get("definition_hash"));
-            let hash = hash_value.and_then(parse_unsigned_value);
-            (
-                equipped.is_some_and(Value::is_null),
-                equipped
-                    .and_then(|item| item.get("level"))
-                    .and_then(Value::as_i64),
-                hash,
-                hash.map_or_else(
-                    || {
-                        hash_value
-                            .and_then(Value::as_str)
-                            .unwrap_or("<missing>")
-                            .to_owned()
-                    },
-                    format_hash_hex,
-                ),
-                equipped.and_then(|item| item.get("plugs")).cloned(),
-            )
-        };
+        let current_hash = snapshot.and_then(|item| item.definition_hash);
+        let is_empty = snapshot.is_none();
+        let current_level = snapshot.and_then(|item| item.level);
+        let current_hash_display_text =
+            snapshot.map_or_else(|| "<empty>".to_owned(), |item| item.definition_text.clone());
+        let authored_plugs = snapshot.and_then(|item| match &item.plugs {
+            EquippedItemPlugs::NativeDefaults => Some(Value::Null),
+            EquippedItemPlugs::Authored(plugs) => Some(Value::Array(
+                plugs
+                    .iter()
+                    .map(|plug| match plug {
+                        EquippedPlugValue::Empty => Value::Null,
+                        EquippedPlugValue::Hash(hash) => Value::from(*hash),
+                        EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
+                    })
+                    .collect(),
+            )),
+            EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => None,
+        });
         let current =
             current_hash.and_then(|hash| self.manifest.item_handle_for_bucket(hash, bucket_hash));
         let definition_valid = is_empty
@@ -692,6 +685,11 @@ mod tests {
     fn blank_panoptes_sockets_only_surface_for_broad_safety_modes() {
         assert!(!panoptes_socket_is_visible(
             PlugSelectionMode::Supported,
+            None,
+            false
+        ));
+        assert!(!panoptes_socket_is_visible(
+            PlugSelectionMode::SocketAndGearType,
             None,
             false
         ));

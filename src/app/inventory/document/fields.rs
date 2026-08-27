@@ -1,5 +1,6 @@
 //! Authored field validation, normalization, and JSON encoding helpers.
 
+#[cfg(test)]
 use serde_json::Value;
 
 use super::{
@@ -70,6 +71,7 @@ pub(in crate::app::inventory) fn validate_plug_snapshot(
     Ok(())
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn encode_plugs(plugs: ItemPlugs) -> Value {
     match plugs {
         ItemPlugs::NativeDefaults => Value::Null,
@@ -85,6 +87,7 @@ pub(in crate::app::inventory) fn encode_plugs(plugs: ItemPlugs) -> Value {
     }
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn format_definition_hash_hex(hash: u32) -> String {
     crate::hash::format_hash_hex(u64::from(hash))
 }

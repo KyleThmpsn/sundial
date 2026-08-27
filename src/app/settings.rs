@@ -7,6 +7,7 @@ use std::{
 use pelite::resources::Name;
 use serde_json::Value;
 
+use crate::persistence::json_account::ensure_schema_v8_preferences;
 use crate::{game_settings, paths, storage};
 
 use crate::hash::parse_unsigned_value;
@@ -92,7 +93,7 @@ pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Val
     }
     let mut document: Value = serde_json::from_slice(encoded)
         .map_err(|error| format!("Project Sunrise's bundled defaults are invalid JSON: {error}"))?;
-    game_settings::ensure_schema_v8_preferences(&mut document);
+    ensure_schema_v8_preferences(&mut document);
     if game_settings::schema_version(&document).is_none() {
         return Err("Project Sunrise's bundled defaults have no valid schema version".into());
     }
@@ -102,7 +103,7 @@ pub(super) fn load_installed_sunrise_defaults(install_path: &Path) -> Result<Val
     Ok(document)
 }
 
-pub(super) fn load_json(path: &Path) -> Result<Value, String> {
+pub(super) fn load_workspace_json(path: &Path) -> Result<Value, String> {
     let raw = fs::read_to_string(path).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             format!(
@@ -113,14 +114,30 @@ pub(super) fn load_json(path: &Path) -> Result<Value, String> {
             format!("Could not read {}: {error}", path.display())
         }
     })?;
-    let mut document: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))?;
-    game_settings::ensure_schema_v8_preferences(&mut document);
+    serde_json::from_str(&raw).map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+pub(super) fn load_json(path: &Path) -> Result<Value, String> {
+    let mut document = load_workspace_json(path)?;
+    ensure_schema_v8_preferences(&mut document);
     Ok(document)
 }
 
+#[cfg(test)]
 pub(super) fn verify_source_unchanged(path: &Path, expected: &Value) -> Result<(), String> {
-    let current = load_json(path)?;
+    verify_workspace_source_unchanged(path, expected, true)
+}
+
+pub(super) fn verify_workspace_source_unchanged(
+    path: &Path,
+    expected: &Value,
+    normalize_json_account: bool,
+) -> Result<(), String> {
+    let mut current = load_workspace_json(path)?;
+    if normalize_json_account {
+        ensure_schema_v8_preferences(&mut current);
+    }
     if current == *expected {
         Ok(())
     } else {
@@ -222,7 +239,7 @@ pub(super) fn save_json_with_backup_root(
 
     storage::replace_file(path, prepared.encoded.as_bytes())
         .map_err(|e| format!("Could not safely replace {}: {e}", path.display()))?;
-    let verification = load_json(path).and_then(|saved| {
+    let verification = load_workspace_json(path).and_then(|saved| {
         if saved == *document {
             Ok(())
         } else {
@@ -560,6 +577,17 @@ pub(super) fn validate_document(document: &Value) -> Result<(), String> {
     inventory::validate_document_items(document).map_err(|error| error.to_string())
 }
 
+pub(super) fn validate_workspace_document(
+    document: &super::account_workspace::WorkspaceDocument,
+) -> Result<(), String> {
+    if document.uses_json_account() {
+        validate_document(document.json())
+    } else {
+        game_settings::validate_non_account(document.json())?;
+        progression::validate(document.json())
+    }
+}
+
 pub(super) fn validate_characters(document: &Value) -> Result<(), String> {
     const MAX_CHARACTERS: usize = 3;
     const MAX_PLUGS: usize = 12;
@@ -749,14 +777,33 @@ pub(super) fn character_ability_issue(
         .as_object()?
         .get("definition_hash")
         .and_then(parse_unsigned_value)?;
+    character_ability_issue_for_values(
+        subclass_hash,
+        character.get("movement_ability").and_then(Value::as_u64),
+        character.get("grenade_ability").and_then(Value::as_u64),
+        character.get("super_ability").and_then(Value::as_u64),
+        character.get("melee_ability").and_then(Value::as_u64),
+        character.get("class_ability").and_then(Value::as_u64),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn character_ability_issue_for_values(
+    subclass_hash: u64,
+    movement_ability: Option<u64>,
+    grenade_ability: Option<u64>,
+    super_ability: Option<u64>,
+    melee_ability: Option<u64>,
+    class_ability: Option<u64>,
+) -> Option<String> {
     let (subclass_name, middle_super) = shadowkeep_subclass_rules(subclass_hash)?;
 
-    for (key, range, label) in [
-        ("movement_ability", 4..=6, "movement ability"),
-        ("grenade_ability", 7..=9, "grenade ability"),
-        ("class_ability", 2..=3, "class ability"),
+    for (value, range, label) in [
+        (movement_ability, 4..=6, "movement ability"),
+        (grenade_ability, 7..=9, "grenade ability"),
+        (class_ability, 2..=3, "class ability"),
     ] {
-        if let Some(value) = character.get(key).and_then(Value::as_u64)
+        if let Some(value) = value
             && !range.contains(&value)
         {
             return Some(format!(
@@ -765,10 +812,7 @@ pub(super) fn character_ability_issue(
         }
     }
 
-    let (Some(super_ability), Some(melee_ability)) = (
-        character.get("super_ability").and_then(Value::as_u64),
-        character.get("melee_ability").and_then(Value::as_u64),
-    ) else {
+    let (Some(super_ability), Some(melee_ability)) = (super_ability, melee_ability) else {
         return None;
     };
     let supported = [(10, 11), (10, 15), (middle_super, 21)];
@@ -779,38 +823,26 @@ pub(super) fn character_ability_issue(
     })
 }
 
-pub(super) fn repair_known_ability_pairs(document: &mut Value) -> usize {
-    let Some(characters) = document
-        .pointer_mut("/state/characters")
-        .and_then(Value::as_array_mut)
-    else {
-        return 0;
-    };
-
-    let mut repaired = 0;
-    for character in characters {
-        let Some(character) = character.as_object_mut() else {
-            continue;
-        };
-        let Some(subclass_hash) = character
-            .get("equipment")
-            .and_then(Value::as_object)
-            .and_then(|equipment| equipment.get("subclass"))
-            .and_then(Value::as_object)
-            .and_then(|subclass| subclass.get("definition_hash"))
-            .and_then(parse_unsigned_value)
+pub(super) fn repair_known_ability_pairs(
+    workspace: super::account_workspace::AccountWorkspace,
+    document: &mut super::account_workspace::WorkspaceDocument,
+) -> Result<usize, String> {
+    let mut repairs = Vec::new();
+    for character_index in 0..workspace.character_count(document) {
+        let Some(subclass_hash) = workspace
+            .equipped_item_snapshots(document, character_index)?
+            .into_iter()
+            .find(|item| item.slot == "subclass")
+            .and_then(|item| item.definition_hash)
         else {
             continue;
         };
         let Some((_, middle_super)) = shadowkeep_subclass_rules(subclass_hash) else {
             continue;
         };
-        let (Some(super_ability), Some(melee_ability)) = (
-            character.get("super_ability").and_then(Value::as_u64),
-            character.get("melee_ability").and_then(Value::as_u64),
-        ) else {
-            continue;
-        };
+        let metadata = workspace.character_metadata(document, character_index)?;
+        let super_ability = u64::from(metadata.abilities.super_ability);
+        let melee_ability = u64::from(metadata.abilities.melee);
         let supported = [(10, 11), (10, 15), (middle_super, 21)];
         if supported.contains(&(super_ability, melee_ability)) {
             continue;
@@ -826,11 +858,25 @@ pub(super) fn repair_known_ability_pairs(document: &mut Value) -> usize {
             _ if super_ability == 20 => (middle_super, 21),
             _ => (10, 11),
         };
-        character.insert("super_ability".into(), Value::from(corrected.0));
-        character.insert("melee_ability".into(), Value::from(corrected.1));
-        repaired += 1;
+        repairs.push((character_index, corrected));
     }
-    repaired
+
+    let mut candidate = document.clone();
+    for (character_index, (super_ability, melee)) in &repairs {
+        workspace.apply_character_updates(
+            &mut candidate,
+            *character_index,
+            vec![sundial_account::CharacterMetadataUpdate::SetSuperAndMelee {
+                super_ability: u8::try_from(*super_ability)
+                    .expect("known ability repair entries fit in u8"),
+                melee: u8::try_from(*melee).expect("known ability repair entries fit in u8"),
+            }],
+        )?;
+    }
+    if !repairs.is_empty() {
+        *document = candidate;
+    }
+    Ok(repairs.len())
 }
 
 const fn shadowkeep_subclass_rules(subclass_hash: u64) -> Option<(&'static str, u64)> {
@@ -858,6 +904,109 @@ pub(super) fn preferences_path() -> Option<PathBuf> {
 
 pub(super) fn backups_path() -> Option<PathBuf> {
     paths::data_dir().map(|path| path.join("backups"))
+}
+
+#[derive(Debug)]
+struct AutomaticBackup {
+    modified: SystemTime,
+    file_name: String,
+    path: PathBuf,
+}
+
+pub(super) fn prune_automatic_backups(
+    root: &Path,
+    keep_per_source: usize,
+) -> Result<usize, String> {
+    if !root
+        .try_exists()
+        .map_err(|error| format!("Could not inspect {}: {error}", root.display()))?
+    {
+        return Ok(0);
+    }
+
+    let mut json_backups = Vec::new();
+    let mut sqlite_backups = Vec::new();
+    for entry in
+        fs::read_dir(root).map_err(|error| format!("Could not read {}: {error}", root.display()))?
+    {
+        let entry = entry
+            .map_err(|error| format!("Could not read an entry in {}: {error}", root.display()))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect {}: {error}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        let destination = if is_automatic_json_backup(&file_name) {
+            &mut json_backups
+        } else if is_automatic_sqlite_backup(&file_name) {
+            &mut sqlite_backups
+        } else {
+            continue;
+        };
+        let path = entry.path();
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+        destination.push(AutomaticBackup {
+            modified,
+            file_name,
+            path,
+        });
+    }
+
+    let json_removed = prune_automatic_backup_family(json_backups, keep_per_source)?;
+    let sqlite_removed = prune_automatic_backup_family(sqlite_backups, keep_per_source)?;
+    Ok(json_removed + sqlite_removed)
+}
+
+fn is_automatic_json_backup(file_name: &str) -> bool {
+    let Some(name) = file_name
+        .strip_prefix("settings-v")
+        .and_then(|name| name.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let Some((schema, timestamp)) = name.split_once('-') else {
+        return false;
+    };
+    !schema.is_empty()
+        && schema.bytes().all(|byte| byte.is_ascii_digit())
+        && !timestamp.is_empty()
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_automatic_sqlite_backup(file_name: &str) -> bool {
+    let Some(name) = file_name
+        .strip_prefix("state-sqlite-v1-")
+        .and_then(|name| name.strip_suffix(".sqlite3"))
+    else {
+        return false;
+    };
+    name.split('-')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn prune_automatic_backup_family(
+    mut backups: Vec<AutomaticBackup>,
+    keep: usize,
+) -> Result<usize, String> {
+    backups.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| right.file_name.cmp(&left.file_name))
+    });
+    let mut removed = 0;
+    for backup in backups.into_iter().skip(keep) {
+        fs::remove_file(&backup.path)
+            .map_err(|error| format!("Could not remove {}: {error}", backup.path.display()))?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 fn legacy_preferences_path() -> Option<PathBuf> {

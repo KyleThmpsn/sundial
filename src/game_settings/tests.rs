@@ -2,7 +2,29 @@
 
 use super::*;
 use super::{key_bindings::*, page::*, preferences::*, schema::*, validation::*, widgets::*};
+use crate::persistence::json_account::ensure_schema_v8_preferences;
 use serde_json::{Map, Value};
+
+#[test]
+fn guided_key_binding_catalog_matches_the_account_domain() {
+    for &(action, _) in ACTIONS {
+        assert!(
+            sundial_account::is_supported_key_binding_action(action),
+            "guided action {action} is missing from the account domain"
+        );
+    }
+    for &input in NAMED_INPUTS {
+        assert!(
+            sundial_account::is_valid_named_binding_input(input),
+            "guided input {input} is missing from the account domain"
+        );
+    }
+    for &modifier in MODIFIER_INPUTS {
+        assert!(sundial_account::is_valid_named_binding_input(&format!(
+            "{modifier}+f"
+        )));
+    }
+}
 
 fn valid_game_settings_document(version: u64) -> Value {
     let key_bindings = ACTIONS

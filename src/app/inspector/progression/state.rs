@@ -1,6 +1,6 @@
 //! Navigation state for the progression metadata inspector.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::app) enum MetadataSelection {
     FlagDefinition(usize),
     ValueDefinition(usize),
@@ -9,7 +9,7 @@ pub(in crate::app) enum MetadataSelection {
 }
 
 impl MetadataSelection {
-    pub(super) const fn definition_index(self) -> usize {
+    pub(in crate::app) const fn definition_index(self) -> usize {
         match self {
             Self::FlagDefinition(index)
             | Self::ValueDefinition(index)
@@ -18,7 +18,7 @@ impl MetadataSelection {
         }
     }
 
-    pub(super) const fn is_value(self) -> bool {
+    pub(in crate::app) const fn is_value(self) -> bool {
         matches!(self, Self::ValueDefinition(_) | Self::ValueOverride(_, _))
     }
 }
@@ -27,6 +27,8 @@ impl MetadataSelection {
 pub(in crate::app) struct ProgressionInspectorState {
     selection: Option<MetadataSelection>,
     history: Vec<MetadataSelection>,
+    pub(super) full_width: bool,
+    reveal_request: Option<MetadataSelection>,
 }
 
 impl ProgressionInspectorState {
@@ -52,6 +54,7 @@ impl ProgressionInspectorState {
         }
         if let Some(current) = self.selection {
             self.history.push(current);
+            trim_navigation_stack(&mut self.history);
         }
         self.selection = Some(selection);
     }
@@ -60,13 +63,32 @@ impl ProgressionInspectorState {
         self.selection = self.history.pop();
     }
 
+    pub(super) fn request_reveal(&mut self) {
+        self.reveal_request = self.selection;
+        self.full_width = false;
+    }
+
+    pub(in crate::app) fn take_reveal_request(&mut self) -> Option<MetadataSelection> {
+        self.reveal_request.take()
+    }
+
     pub(super) fn close(&mut self) {
         self.selection = None;
         self.history.clear();
+        self.full_width = false;
+        self.reveal_request = None;
     }
 
     pub(in crate::app) fn reset(&mut self) {
         self.close();
+    }
+}
+
+fn trim_navigation_stack(stack: &mut Vec<MetadataSelection>) {
+    const LIMIT: usize = 32;
+    let overflow = stack.len().saturating_sub(LIMIT);
+    if overflow > 0 {
+        stack.drain(0..overflow);
     }
 }
 
@@ -88,7 +110,6 @@ mod tests {
         state.back();
         assert_eq!(state.selection(), Some(first));
         assert!(!state.can_go_back());
-
         state.close();
         assert_eq!(state.selection(), None);
         assert!(!state.can_go_back());

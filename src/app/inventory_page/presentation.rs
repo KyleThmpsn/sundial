@@ -89,6 +89,7 @@ pub(super) fn dismantle_class_label(gear_class: Option<DismantleGearClass>) -> &
         None => "Any gear",
         Some(DismantleGearClass::Weapon) => "Weapon",
         Some(DismantleGearClass::Armor) => "Armor",
+        Some(DismantleGearClass::Both) => "Weapon + armor",
     }
 }
 

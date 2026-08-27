@@ -12,7 +12,7 @@ use super::{
     ProgressionDefinition, SandboxPerkDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 81;
+pub(super) const CACHE_SCHEMA: u32 = 84;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]

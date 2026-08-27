@@ -5,6 +5,9 @@ pub(super) fn draw_hash_collection_matches(
     catalog: &Catalog,
     hash: u64,
     matches: &CatalogHashMatches<'_>,
+    snapshot: Option<&CollectionStateSnapshot>,
+    progression_editable: bool,
+    action: &mut HashInspectorAction,
 ) {
     let collectible_matches = &matches.collectible_matches;
     let material_requirement_set_matches = &matches.material_requirement_set_matches;
@@ -16,107 +19,15 @@ pub(super) fn draw_hash_collection_matches(
             &format!("Collectibles ({})", collectible_matches.len()),
             collectible_matches.len() <= 3,
             |ui| {
-                for collectible in collectible_matches {
-                    metadata_subsection(ui, &format!("Collectible #{}", collectible.index), |ui| {
-                        egui::Grid::new(("hash_collectible", collectible.index))
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                let mut matched_as = Vec::new();
-                                if collectible.hash == hash {
-                                    matched_as.push("Collectible hash");
-                                }
-                                if collectible.item_hash == hash {
-                                    matched_as.push("Definition hash");
-                                }
-                                if collectible.material_requirement_set_hash == hash {
-                                    matched_as.push("Material requirement set hash");
-                                }
-                                if collectible
-                                    .material_requirements
-                                    .iter()
-                                    .any(|requirement| requirement.item_hash == hash)
-                                {
-                                    matched_as.push("Material requirement definition hash");
-                                }
-                                hash_detail_field(ui, "Matched as", matched_as.join(" · "), false);
-                                hash_detail_field(
-                                    ui,
-                                    "Collectible index",
-                                    collectible.index.to_string(),
-                                    true,
-                                );
-                                hash_hex_and_decimal_field(
-                                    ui,
-                                    "Collectible hash",
-                                    collectible.hash,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Item definition index",
-                                    if collectible.item_definition_index == u16::MAX {
-                                        "<unavailable>".into()
-                                    } else {
-                                        collectible.item_definition_index.to_string()
-                                    },
-                                    true,
-                                );
-                                hash_hex_and_decimal_field(
-                                    ui,
-                                    "Item definition hash",
-                                    collectible.item_hash,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Material requirement set index",
-                                    collectible.material_requirement_set_index.map_or_else(
-                                        || "<unavailable>".into(),
-                                        |index| index.to_string(),
-                                    ),
-                                    true,
-                                );
-                                hash_hex_and_decimal_field(
-                                    ui,
-                                    "Material requirement set hash",
-                                    collectible.material_requirement_set_hash,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Name",
-                                    if collectible.name.trim().is_empty() {
-                                        catalog.display_name(hash).unwrap_or("<not resolved>")
-                                    } else {
-                                        &collectible.name
-                                    },
-                                    false,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Type",
-                                    metadata_text(&collectible.type_name),
-                                    false,
-                                );
-                            });
-                        let detail_id = egui::Id::new((
-                            "hash_collectible_detail",
-                            collectible.index,
-                            collectible.hash,
-                        ));
-                        draw_hash_package_paths(ui, detail_id, &collectible.paths);
-                        draw_hash_collection_conditions(
-                            ui,
-                            detail_id,
-                            &collectible.conditions,
-                            catalog,
-                        );
-                        draw_hash_material_requirements(
-                            ui,
-                            catalog,
-                            detail_id,
-                            &collectible.material_requirements,
-                        );
-                    });
-                }
+                draw_hash_collectible_table(
+                    ui,
+                    catalog,
+                    collectible_matches,
+                    snapshot,
+                    progression_editable,
+                    action,
+                );
+                draw_hash_collectible_technical_details(ui, catalog, hash, collectible_matches);
             },
         );
     }
@@ -137,6 +48,220 @@ pub(super) fn draw_hash_collection_matches(
             },
         );
     }
+}
+
+fn draw_hash_collectible_table(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    collectibles: &[&CollectibleDef],
+    snapshot: Option<&CollectionStateSnapshot>,
+    progression_editable: bool,
+    action: &mut HashInspectorAction,
+) {
+    let show_actions = progression_editable && snapshot.is_some();
+    egui::Grid::new("hash_collectible_rows")
+        .num_columns(if show_actions { 6 } else { 5 })
+        .spacing([16.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("Index");
+            ui.strong("Item");
+            ui.strong("Hash");
+            ui.strong("Type");
+            ui.strong("State");
+            if show_actions {
+                ui.strong("Action");
+            }
+            ui.end_row();
+            for collectible in collectibles {
+                ui.monospace(format!("#{}", collectible.index));
+                let item_name = collectible_item_name(catalog, collectible);
+                draw_named_catalog_hash_link(ui, catalog, collectible.item_hash, item_name);
+                draw_catalog_hash_link(
+                    ui,
+                    catalog,
+                    collectible.item_hash,
+                    format_hash_hex(collectible.item_hash),
+                );
+                ui.label(metadata_text(&collectible.type_name));
+                if let Some(snapshot) = snapshot {
+                    let (state, tooltip) = crate::app::collections_page::collectible_state(
+                        collectible,
+                        snapshot,
+                        catalog,
+                    );
+                    ui.label(state).on_hover_text(tooltip);
+                } else {
+                    ui.label(egui::RichText::new("Unavailable").weak());
+                }
+                if show_actions {
+                    draw_collectible_state_action(ui, catalog, collectible, snapshot, action);
+                }
+                ui.end_row();
+            }
+        });
+}
+
+fn draw_collectible_state_action(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    collectible: &CollectibleDef,
+    snapshot: Option<&CollectionStateSnapshot>,
+    action: &mut HashInspectorAction,
+) {
+    let Some(snapshot) = snapshot else {
+        ui.label(egui::RichText::new("-").weak());
+        return;
+    };
+    let Some(acquired) =
+        crate::app::collections_page::collectible_acquired_state(collectible, snapshot, catalog)
+    else {
+        ui.label(egui::RichText::new("-").weak())
+            .on_hover_text("This collectible does not have a reversible acquisition condition");
+        return;
+    };
+    let desired = !acquired;
+    let available = crate::app::collections_page::collectible_acquisition_edit_available(
+        collectible,
+        snapshot,
+        catalog,
+        desired,
+    );
+    let label = if desired {
+        "Mark acquired"
+    } else {
+        "Mark missing"
+    };
+    if ui
+        .add_enabled(available, egui::Button::new(label).small())
+        .on_disabled_hover_text("No validated reversible edit can produce this state")
+        .clicked()
+    {
+        action.progression_edit = Some(InspectorProgressionEdit::Collectible {
+            collectible_index: collectible.index,
+            acquired: desired,
+        });
+    }
+}
+
+fn draw_hash_collectible_technical_details(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    inspected_hash: u64,
+    collectibles: &[&CollectibleDef],
+) {
+    for collectible in collectibles {
+        egui::CollapsingHeader::new(format!(
+            "Technical fields · Collectible #{}",
+            collectible.index
+        ))
+        .id_salt(("hash_collectible_technical", collectible.index))
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new(("hash_collectible_technical_fields", collectible.index))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    hash_detail_field(
+                        ui,
+                        "Relationship",
+                        collectible_match_relationships(inspected_hash, collectible).join(" · "),
+                        false,
+                    );
+                    hash_detail_field(ui, "Collectible index", collectible.index.to_string(), true);
+                    catalog_hash_hex_and_decimal_field(
+                        ui,
+                        catalog,
+                        "Collectible hash",
+                        collectible.hash,
+                    );
+                    if collectible.item_definition_index != u16::MAX {
+                        hash_detail_field(
+                            ui,
+                            "Item definition index",
+                            collectible.item_definition_index.to_string(),
+                            true,
+                        );
+                    }
+                    catalog_hash_hex_and_decimal_field(
+                        ui,
+                        catalog,
+                        "Item definition hash",
+                        collectible.item_hash,
+                    );
+                    if let Some(index) = collectible.material_requirement_set_index {
+                        hash_detail_field(
+                            ui,
+                            "Material requirement set index",
+                            index.to_string(),
+                            true,
+                        );
+                    }
+                    if collectible.material_requirement_set_hash != 0
+                        && collectible.material_requirement_set_hash != u64::from(u32::MAX)
+                    {
+                        catalog_hash_hex_and_decimal_field(
+                            ui,
+                            catalog,
+                            "Material requirement set hash",
+                            collectible.material_requirement_set_hash,
+                        );
+                    }
+                    let item_name = collectible_item_name(catalog, collectible);
+                    if !collectible.name.trim().is_empty() && collectible.name.trim() != item_name {
+                        hash_detail_field(ui, "Collectible name", collectible.name.trim(), false);
+                    }
+                });
+            let detail_id = egui::Id::new((
+                "hash_collectible_detail",
+                collectible.index,
+                collectible.hash,
+            ));
+            draw_hash_package_paths(ui, detail_id, &collectible.paths);
+            draw_hash_collection_conditions(ui, detail_id, &collectible.conditions, catalog);
+            draw_hash_material_requirements(
+                ui,
+                catalog,
+                detail_id,
+                &collectible.material_requirements,
+            );
+        });
+    }
+}
+
+pub(super) fn collectible_item_name<'a>(
+    catalog: &'a Catalog,
+    collectible: &'a CollectibleDef,
+) -> &'a str {
+    catalog
+        .package_item_name(collectible.item_hash)
+        .or_else(|| catalog.display_name(collectible.item_hash))
+        .or_else(|| (!collectible.name.trim().is_empty()).then_some(collectible.name.trim()))
+        .unwrap_or("Name not resolved")
+}
+
+fn collectible_match_relationships(
+    inspected_hash: u64,
+    collectible: &CollectibleDef,
+) -> Vec<&'static str> {
+    let mut relationships = Vec::new();
+    if collectible.hash == inspected_hash {
+        relationships.push("Collectible definition");
+    }
+    if collectible.item_hash == inspected_hash {
+        relationships.push("Item definition");
+    }
+    if collectible.material_requirement_set_hash == inspected_hash {
+        relationships.push("Material requirement set");
+    }
+    if collectible
+        .material_requirements
+        .iter()
+        .any(|requirement| requirement.item_hash == inspected_hash)
+    {
+        relationships.push("Material requirement item");
+    }
+    relationships
 }
 
 pub(super) fn draw_hash_package_paths(ui: &mut egui::Ui, id: egui::Id, paths: &[Vec<String>]) {
@@ -169,8 +294,38 @@ pub(super) fn draw_hash_condition_programs(
         .id_salt((id, "condition_programs"))
         .default_open(false)
         .show(ui, |ui| {
+            draw_hash_condition_program_table(ui, id, programs, catalog);
+        });
+}
+
+fn draw_hash_condition_program_table(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    programs: &[Vec<[u32; 2]>],
+    catalog: &Catalog,
+) {
+    egui::Grid::new(("hash_condition_program_rows", id))
+        .num_columns(5)
+        .spacing([16.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("Program");
+            ui.strong("Step");
+            ui.strong("Operation");
+            ui.strong("Operand").on_hover_text(
+                "Raw package operand. Hover a value to see how this operation uses it.",
+            );
+            ui.strong("Referenced entry");
+            ui.end_row();
             for (program_index, program) in programs.iter().enumerate() {
-                draw_hash_condition_tokens(ui, (id, program_index), program, catalog);
+                for (token_index, token) in program.iter().enumerate() {
+                    ui.monospace((program_index + 1).to_string());
+                    ui.monospace((token_index + 1).to_string());
+                    ui.label(condition_opcode_label(token[0]));
+                    draw_hash_condition_operand(ui, token[0], token[1], catalog);
+                    draw_hash_condition_reference(ui, token[0], token[1], catalog);
+                    ui.end_row();
+                }
             }
         });
 }
@@ -220,17 +375,77 @@ fn draw_hash_condition_tokens(
         .show(ui, |ui| {
             ui.strong("Index");
             ui.strong("Operation");
-            ui.strong("Operand");
+            ui.strong("Operand").on_hover_text(
+                "Raw package operand. Hover a value to see how this operation uses it.",
+            );
             ui.strong("Referenced entry");
             ui.end_row();
             for (token_index, token) in program.iter().enumerate() {
                 ui.monospace((token_index + 1).to_string());
                 ui.label(condition_opcode_label(token[0]));
-                ui.monospace(token[1].to_string());
+                draw_hash_condition_operand(ui, token[0], token[1], catalog);
                 draw_hash_condition_reference(ui, token[0], token[1], catalog);
                 ui.end_row();
             }
         });
+}
+
+fn draw_hash_condition_operand(ui: &mut egui::Ui, kind: u32, operand: u32, catalog: &Catalog) {
+    ui.monospace(operand.to_string())
+        .on_hover_text(condition_operand_tooltip(kind, operand, catalog));
+}
+
+fn condition_operand_tooltip(kind: u32, operand: u32, catalog: &Catalog) -> String {
+    let index = operand as usize;
+    match kind {
+        1 => catalog.unlock_flag_definition(index).map_or_else(
+            || format!("Unlock flag definition index {index}. The referenced definition is unavailable."),
+            |definition| {
+                format!(
+                    "Unlock flag definition index {index}. Reads {} and pushes its true/false state.",
+                    definition
+                        .name
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or("the referenced unlock flag")
+                )
+            },
+        ),
+        10 => catalog.unlock_value_definition(index).map_or_else(
+            || format!("Unlock value definition index {index}. The referenced definition is unavailable."),
+            |definition| {
+                format!(
+                    "Unlock value definition index {index}. Reads {} and pushes its numeric value.",
+                    definition
+                        .name
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or("the referenced unlock value")
+                )
+            },
+        ),
+        11 => format!("Literal numeric value {operand}. Pushes this value onto the condition stack."),
+        12 => catalog.objective_definition(index).map_or_else(
+            || format!("Objective definition index {index}. The referenced objective is unavailable."),
+            |objective| {
+                let name = if objective.name.trim().is_empty() {
+                    format_hash_hex(objective.hash)
+                } else {
+                    objective.name.clone()
+                };
+                format!(
+                    "Objective definition index {index}. Evaluates {name} and pushes whether it is complete."
+                )
+            },
+        ),
+        22 if operand == 0 => {
+            "Legacy literal-encoding marker. Operand 0 preserves the preceding literal for the next comparison.".into()
+        }
+        2 | 3 | 4 | 8 | 9 | 13 | 14 | 15 => format!(
+            "This operation does not read its operand. {operand} is retained as the raw package value."
+        ),
+        _ => format!("Raw operand {operand}; this operation has not been decoded."),
+    }
 }
 
 fn draw_hash_condition_reference(ui: &mut egui::Ui, kind: u32, operand: u32, catalog: &Catalog) {
@@ -249,7 +464,7 @@ fn draw_hash_condition_reference(ui: &mut egui::Ui, kind: u32, operand: u32, cat
     };
     let text = condition_token_resolution(kind, operand, catalog);
     if let Some(hash) = hash {
-        draw_hash_link(ui, hash, text);
+        draw_named_catalog_hash_link(ui, catalog, hash, text);
     } else {
         ui.add(egui::Label::new(text).wrap());
     }

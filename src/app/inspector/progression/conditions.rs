@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+use crate::app::progression::CollectionStateSnapshot;
 use crate::catalog::{Catalog, UnlockDefinition};
 
 use super::{
@@ -56,18 +57,245 @@ pub(super) fn direct_value_comparison(
     Some((label, result))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ConditionEvaluation {
+    Passed,
+    Failed,
+    Value(i32),
+    Unresolved(String),
+}
+
+impl ConditionEvaluation {
+    pub(super) fn label(&self) -> String {
+        match self {
+            Self::Passed => "Pass".into(),
+            Self::Failed => "Fail".into(),
+            Self::Value(value) => format!("Value {value}"),
+            Self::Unresolved(reason) => format!("Unresolved · {reason}"),
+        }
+    }
+
+    pub(super) const fn is_resolved(&self) -> bool {
+        !matches!(self, Self::Unresolved(_))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StackValue {
+    Unknown(String),
+    Bool(bool),
+    Int(i32),
+}
+
+impl StackValue {
+    fn truthy(&self) -> Option<bool> {
+        match self {
+            Self::Unknown(_) => None,
+            Self::Bool(value) => Some(*value),
+            Self::Int(value) => Some(*value != 0),
+        }
+    }
+
+    fn number(&self) -> Option<i32> {
+        match self {
+            Self::Unknown(_) => None,
+            Self::Bool(value) => Some(i32::from(*value)),
+            Self::Int(value) => Some(*value),
+        }
+    }
+
+    fn unresolved_reason(&self) -> String {
+        match self {
+            Self::Unknown(reason) => reason.clone(),
+            Self::Bool(_) | Self::Int(_) => "operation received incompatible values".into(),
+        }
+    }
+}
+
+pub(super) fn evaluate_condition_program(
+    program: &[[u32; 2]],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+) -> ConditionEvaluation {
+    let mut stack = Vec::<StackValue>::new();
+    for &[opcode, operand] in program {
+        let value = match opcode {
+            1 => catalog
+                .unlock_flag_definition(operand as usize)
+                .and_then(|definition| {
+                    snapshot.and_then(|snapshot| {
+                        snapshot
+                            .flag_value(operand as usize, definition)
+                            .map(StackValue::Bool)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    StackValue::Unknown(format!("flag #{operand} or save state is unavailable"))
+                }),
+            10 => catalog
+                .unlock_value_definition(operand as usize)
+                .and_then(|definition| {
+                    snapshot.and_then(|snapshot| {
+                        snapshot
+                            .value(operand as usize, definition)
+                            .map(StackValue::Int)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    StackValue::Unknown(format!("value #{operand} or save state is unavailable"))
+                }),
+            11 => StackValue::Int(operand as i32),
+            12 => objective_condition_value(operand as usize, catalog, snapshot),
+            22 if operand == 0 => match stack.pop() {
+                Some(value) => value,
+                None => {
+                    return ConditionEvaluation::Unresolved(
+                        "literal encoding requires one value".into(),
+                    );
+                }
+            },
+            2 => match stack.pop() {
+                Some(value) => value.truthy().map_or_else(
+                    || StackValue::Unknown(value.unresolved_reason()),
+                    |value| StackValue::Bool(!value),
+                ),
+                None => return ConditionEvaluation::Unresolved("Not requires one value".into()),
+            },
+            3 | 4 => match pop_two_values(&mut stack) {
+                Some((left, right)) => logical_values(opcode, left, right),
+                None => {
+                    return ConditionEvaluation::Unresolved(
+                        "logical operation requires two values".into(),
+                    );
+                }
+            },
+            8 | 9 | 13 | 14 | 15 => match pop_two_values(&mut stack) {
+                Some((left, right)) => compare_values(opcode, left, right).map_or_else(
+                    || StackValue::Unknown("comparison is unresolved".into()),
+                    StackValue::Bool,
+                ),
+                None => {
+                    return ConditionEvaluation::Unresolved(
+                        "comparison requires two values".into(),
+                    );
+                }
+            },
+            22 => StackValue::Unknown(format!("literal encoding mode {operand} is not decoded")),
+            _ => StackValue::Unknown(format!("opcode {opcode} is not decoded")),
+        };
+        stack.push(value);
+    }
+    match stack.as_slice() {
+        [StackValue::Bool(true)] => ConditionEvaluation::Passed,
+        [StackValue::Bool(false)] => ConditionEvaluation::Failed,
+        [StackValue::Int(value)] => ConditionEvaluation::Value(*value),
+        [StackValue::Unknown(reason)] => ConditionEvaluation::Unresolved(reason.clone()),
+        [] => ConditionEvaluation::Unresolved("program produced no result".into()),
+        _ => ConditionEvaluation::Unresolved(format!(
+            "program left {} values on the evaluation stack",
+            stack.len()
+        )),
+    }
+}
+
+fn pop_two_values(stack: &mut Vec<StackValue>) -> Option<(StackValue, StackValue)> {
+    let right = stack.pop()?;
+    let left = stack.pop()?;
+    Some((left, right))
+}
+
+fn logical_values(opcode: u32, left: StackValue, right: StackValue) -> StackValue {
+    match (opcode, left.truthy(), right.truthy()) {
+        (3, Some(true), _) | (3, _, Some(true)) => StackValue::Bool(true),
+        (3, Some(false), Some(false)) => StackValue::Bool(false),
+        (4, Some(false), _) | (4, _, Some(false)) => StackValue::Bool(false),
+        (4, Some(true), Some(true)) => StackValue::Bool(true),
+        _ => StackValue::Unknown(format!(
+            "{}; {}",
+            left.unresolved_reason(),
+            right.unresolved_reason()
+        )),
+    }
+}
+
+fn compare_values(opcode: u32, left: StackValue, right: StackValue) -> Option<bool> {
+    match (left.number(), right.number()) {
+        (Some(left), Some(right)) => match opcode {
+            8 => Some(left == right),
+            9 => Some(left != right),
+            13 => Some(left > right),
+            14 => Some(left >= right),
+            15 => Some(left < right),
+            _ => None,
+        },
+        (None, _) | (_, None) => None,
+    }
+}
+
+fn objective_condition_value(
+    objective_index: usize,
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+) -> StackValue {
+    let Some(objective) = catalog.objective_definition(objective_index) else {
+        return StackValue::Unknown(format!("objective #{objective_index} is unavailable"));
+    };
+    let Some(definition_index) = objective
+        .related_unlock_value_definition_index
+        .map(usize::from)
+    else {
+        return StackValue::Unknown(format!(
+            "objective #{objective_index} has no related unlock value"
+        ));
+    };
+    let current = catalog
+        .unlock_value_definition(definition_index)
+        .and_then(|definition| {
+            snapshot.and_then(|snapshot| snapshot.value(definition_index, definition))
+        });
+    current.map_or_else(
+        || {
+            StackValue::Unknown(format!(
+                "objective #{objective_index} or save state is unavailable"
+            ))
+        },
+        |current| {
+            StackValue::Bool(if objective.is_counting_downward {
+                current <= objective.completion_value
+            } else {
+                current >= objective.completion_value
+            })
+        },
+    )
+}
+
 pub(super) fn draw_condition_programs(
     ui: &mut egui::Ui,
     id_source: &'static str,
     owner_hash: u64,
     programs: &[Vec<[u32; 2]>],
     catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
     state: &mut ProgressionInspectorState,
 ) {
     for (program_index, program) in programs.iter().enumerate() {
         egui::CollapsingHeader::new(format!("Condition program {}", program_index + 1))
             .id_salt((id_source, owner_hash, program_index))
             .show(ui, |ui| {
+                let evaluation = evaluate_condition_program(program, catalog, snapshot);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Effective result").strong());
+                    let color = match evaluation {
+                        ConditionEvaluation::Passed => ui.visuals().selection.bg_fill,
+                        ConditionEvaluation::Failed => ui.visuals().error_fg_color,
+                        ConditionEvaluation::Value(_) | ConditionEvaluation::Unresolved(_) => {
+                            ui.visuals().warn_fg_color
+                        }
+                    };
+                    ui.colored_label(color, evaluation.label());
+                });
+                draw_condition_dependencies(ui, program, catalog, snapshot, state);
+                ui.add_space(4.0);
                 if ui.available_width() >= 700.0 {
                     egui::Grid::new((id_source, "condition_tokens", owner_hash, program_index))
                         .num_columns(4)
@@ -130,6 +358,69 @@ pub(super) fn draw_condition_programs(
     }
 }
 
+fn draw_condition_dependencies(
+    ui: &mut egui::Ui,
+    program: &[[u32; 2]],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    state: &mut ProgressionInspectorState,
+) {
+    let dependencies = program
+        .iter()
+        .filter(|token| matches!(token[0], 1 | 10 | 12))
+        .collect::<Vec<_>>();
+    if dependencies.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(format!("Evaluated dependencies ({})", dependencies.len()))
+        .default_open(true)
+        .show(ui, |ui| {
+            for token in dependencies {
+                ui.horizontal_wrapped(|ui| {
+                    draw_condition_token_resolution(ui, token, catalog, state);
+                    ui.label(egui::RichText::new("Current:").weak());
+                    ui.monospace(condition_dependency_value(token, catalog, snapshot));
+                });
+            }
+        });
+}
+
+fn condition_dependency_value(
+    token: &[u32; 2],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+) -> String {
+    let Some(snapshot) = snapshot else {
+        return "save state unavailable".into();
+    };
+    let index = token[1] as usize;
+    match token[0] {
+        1 => catalog.unlock_flag_definition(index).map_or_else(
+            || "definition unavailable".into(),
+            |definition| snapshot.flag_text(index, definition),
+        ),
+        10 => catalog.unlock_value_definition(index).map_or_else(
+            || "definition unavailable".into(),
+            |definition| snapshot.value_text(index, definition),
+        ),
+        12 => catalog.objective_definition(index).map_or_else(
+            || "objective unavailable".into(),
+            |objective| {
+                objective
+                    .related_unlock_value_definition_index
+                    .map(usize::from)
+                    .and_then(|definition_index| {
+                        catalog
+                            .unlock_value_definition(definition_index)
+                            .map(|definition| snapshot.value_text(definition_index, definition))
+                    })
+                    .unwrap_or_else(|| "objective value unavailable".into())
+            },
+        ),
+        _ => "not a dependency".into(),
+    }
+}
+
 fn draw_condition_token_resolution(
     ui: &mut egui::Ui,
     token: &[u32; 2],
@@ -139,14 +430,14 @@ fn draw_condition_token_resolution(
     let resolution = condition_token_resolution(token[0], token[1], catalog);
     if let Some(selection) = condition_token_selection(token[0], token[1], catalog) {
         if ui
-            .add(egui::Button::new(resolution).frame(false))
+            .add(egui::Button::new(crate::app::ui::destiny_text(ui, resolution)).frame(false))
             .on_hover_text("Open referenced metadata")
             .clicked()
         {
             state.open(selection);
         }
     } else {
-        ui.label(resolution);
+        ui.label(crate::app::ui::destiny_text(ui, resolution));
     }
 }
 
@@ -233,7 +524,10 @@ pub(in crate::app) fn condition_token_resolution(
 mod tests {
     use crate::catalog::{ProgressionContextDef, ProgressionContextKind, UnlockDefinition};
 
-    use super::{condition_opcode_label, definition_has_undecoded_opcodes};
+    use super::{
+        StackValue, compare_values, condition_opcode_label, definition_has_undecoded_opcodes,
+        logical_values,
+    };
 
     #[test]
     fn objective_reference_opcode_is_decoded() {
@@ -254,5 +548,45 @@ mod tests {
         assert_eq!(condition_opcode_label(15), "Less than (15)");
         assert_eq!(condition_opcode_label(4), "And (4)");
         assert_eq!(condition_opcode_label(9), "Not equal (9)");
+    }
+
+    #[test]
+    fn condition_comparisons_preserve_rpn_operand_order() {
+        assert_eq!(
+            compare_values(13, StackValue::Int(10), StackValue::Int(4)),
+            Some(true)
+        );
+        assert_eq!(
+            compare_values(15, StackValue::Int(10), StackValue::Int(4)),
+            Some(false)
+        );
+        assert_eq!(
+            compare_values(8, StackValue::Bool(true), StackValue::Bool(true)),
+            Some(true)
+        );
+        assert_eq!(
+            compare_values(13, StackValue::Bool(true), StackValue::Bool(false)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn logical_evaluation_short_circuits_unknown_dependencies() {
+        assert_eq!(
+            logical_values(
+                3,
+                StackValue::Unknown("missing flag".into()),
+                StackValue::Bool(true),
+            ),
+            StackValue::Bool(true)
+        );
+        assert_eq!(
+            logical_values(
+                4,
+                StackValue::Unknown("missing flag".into()),
+                StackValue::Bool(false),
+            ),
+            StackValue::Bool(false)
+        );
     }
 }

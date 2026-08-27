@@ -19,8 +19,8 @@ pub(super) fn draw_hash_material_requirements(
                 .striped(true)
                 .show(ui, |ui| {
                     ui.strong("Index");
-                    ui.strong("Hash");
                     ui.strong("Name");
+                    ui.strong("Hash");
                     ui.strong("Quantity");
                     ui.strong("Delete").on_hover_text("Delete on action");
                     ui.strong("Omit").on_hover_text("Omit from requirements");
@@ -28,12 +28,13 @@ pub(super) fn draw_hash_material_requirements(
                     ui.end_row();
                     for requirement in requirements {
                         ui.monospace(requirement.item_definition_index.to_string());
-                        draw_hash_link(
+                        item_definition_name_cell(ui, catalog, requirement.item_hash, 190.0);
+                        draw_catalog_hash_link(
                             ui,
+                            catalog,
                             requirement.item_hash,
                             format_hash_hex(requirement.item_hash),
                         );
-                        item_definition_name_cell(ui, catalog, requirement.item_hash, 190.0);
                         ui.monospace(requirement.quantity.to_string());
                         ui.label(yes_no(requirement.delete_on_action));
                         ui.label(yes_no(requirement.omit_from_requirements));
@@ -74,7 +75,12 @@ pub(super) fn draw_hash_material_requirement_set(
                         set.index.to_string(),
                         true,
                     );
-                    hash_hex_and_decimal_field(ui, "Material requirement set hash", set.hash);
+                    catalog_hash_hex_and_decimal_field(
+                        ui,
+                        catalog,
+                        "Material requirement set hash",
+                        set.hash,
+                    );
                 });
             draw_hash_material_requirements(
                 ui,

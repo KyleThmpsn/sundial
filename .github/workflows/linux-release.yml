@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Rust 1.88
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
           rustup default 1.88.0
 
       - name: Install build tools
@@ -28,8 +28,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential pkg-config
 
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
       - name: Test
-        run: cargo test --locked
+        run: cargo test --all-features --locked
+
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+      # eframe 0.31's Linux accessibility stack pins quick-xml 0.30. These exact exceptions are
+      # temporary; any other RustSec vulnerability still blocks a release.
+      - name: Audit dependencies
+        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
 
       - name: Build release executable
         run: cargo build --release --locked

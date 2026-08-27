@@ -15,6 +15,9 @@ pub(crate) fn plug_choices_for_socket(
     };
     let allowed = match mode {
         PlugSelectionMode::Supported => catalog.socket_options(socket).to_vec(),
+        PlugSelectionMode::SocketAndGearType => catalog
+            .socket_and_gear_type_options(item, socket_index)
+            .to_vec(),
         PlugSelectionMode::MatchingSocketType => {
             catalog.socket_type_options(socket.socket_type).to_vec()
         }

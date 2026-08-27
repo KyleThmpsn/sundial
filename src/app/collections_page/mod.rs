@@ -13,6 +13,7 @@ use super::{
     inspector::{
         HashInspectionState, draw_catalog_hash_window,
         request_definition as request_hash_inspection,
+        take_definition_context as take_hash_inspection_context,
         take_definition_request as take_hash_inspection_request,
     },
     progression::{CollectionStateSnapshot, collection_state_snapshot},
@@ -30,6 +31,10 @@ mod hierarchy;
 use acquisition::{
     AcquisitionState, FLAG_INSTRUCTION, OBJECTIVE_INSTRUCTION, VALUE_INSTRUCTION,
     acquisition_status, condition_metadata_lines, condition_program, state_lines,
+};
+pub(in crate::app) use acquisition::{
+    collectible_acquired_state, collectible_acquisition_edit_available, collectible_state,
+    set_collectible_acquisition_state,
 };
 use details::draw_collection_metadata_workspace;
 use hierarchy::{
@@ -133,7 +138,7 @@ pub(super) fn draw_content(
         return false;
     };
 
-    let changed = draw_collection_metadata_workspace(ui, document, catalog, &snapshot, state);
+    let mut changed = draw_collection_metadata_workspace(ui, document, catalog, &snapshot, state);
 
     let mut expansion_action = None;
     collection_toolbar(ui, |ui| {
@@ -358,12 +363,14 @@ pub(super) fn draw_content(
             });
     });
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
-        state.hash_inspection.open(hash);
+        let context = take_hash_inspection_context(ui.ctx(), hash);
+        state.hash_inspection.open_with_context(hash, context);
     }
-    draw_catalog_hash_window(
+    changed |= draw_catalog_hash_window(
         ui.ctx(),
         catalog,
         Some(document),
+        true,
         &mut state.hash_inspection,
         "collections",
     );

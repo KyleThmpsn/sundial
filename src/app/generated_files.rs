@@ -1,6 +1,9 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
-use super::settings;
+use eframe::egui;
+
+use super::{SundialApp, settings};
+use crate::orbit_map;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum GeneratedFileSaveAction {
@@ -48,6 +51,133 @@ pub(super) enum GeneratedFilePlan {
     Current(GeneratedFileKind, PathBuf),
     Write(GeneratedFileKind, String),
     KeepExisting(GeneratedFileKind, PathBuf),
+}
+
+impl SundialApp {
+    pub(super) fn prepare_generated_files(
+        &mut self,
+        orbit_supported: bool,
+        action: GeneratedFileSaveAction,
+    ) -> Result<Option<Vec<GeneratedFilePlan>>, String> {
+        let mut files = Vec::new();
+        if orbit_supported {
+            files.push((
+                GeneratedFileKind::OrbitMap,
+                orbit_map::path(&self.settings_path)?,
+                orbit_map::document(self.manifest.orbit_map_entries()),
+            ));
+        }
+        let mut plans = Vec::with_capacity(files.len());
+        for (kind, path, generated) in files {
+            let decision = self
+                .generated_file_decisions
+                .iter()
+                .rev()
+                .find_map(|(saved_kind, decision)| (*saved_kind == kind).then_some(*decision))
+                .unwrap_or(GeneratedFileDecision::Ask);
+            match decision {
+                GeneratedFileDecision::Replace => {
+                    plans.push(GeneratedFilePlan::Write(kind, generated));
+                }
+                GeneratedFileDecision::KeepExisting => {
+                    plans.push(GeneratedFilePlan::KeepExisting(kind, path));
+                }
+                GeneratedFileDecision::Ask => match fs::read(&path) {
+                    Ok(raw) => {
+                        let existing = String::from_utf8_lossy(&raw).into_owned();
+                        if normalized_generated_document(&existing)
+                            == normalized_generated_document(&generated)
+                        {
+                            plans.push(GeneratedFilePlan::Current(kind, path));
+                        } else {
+                            let diff = generated_file_diff(kind.file_name(), &existing, &generated);
+                            self.pending_generated_file = Some(PendingGeneratedFile {
+                                kind,
+                                path: path.clone(),
+                                existing,
+                                generated,
+                                diff,
+                                action,
+                            });
+                            self.set_status(
+                                format!(
+                                    "Save paused: {} differs from Sundial's package-generated {}",
+                                    path.display(),
+                                    kind.label()
+                                ),
+                                false,
+                            );
+                            return Ok(None);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        plans.push(GeneratedFilePlan::Write(kind, generated));
+                    }
+                    Err(error) => {
+                        return Err(format!("Could not read {}: {error}", path.display()));
+                    }
+                },
+            }
+        }
+        Ok(Some(plans))
+    }
+
+    pub(super) fn complete_generated_file_plans(
+        &self,
+        plans: Vec<GeneratedFilePlan>,
+    ) -> Result<String, String> {
+        let mut note = String::new();
+        for plan in plans {
+            match plan {
+                GeneratedFilePlan::Current(kind, path) => {
+                    note.push_str(&format!(" {} unchanged: {}.", kind.label(), path.display()))
+                }
+                GeneratedFilePlan::KeepExisting(kind, path) => note.push_str(&format!(
+                    " Existing {} kept: {}.",
+                    kind.label(),
+                    path.display()
+                )),
+                GeneratedFilePlan::Write(kind, document) => {
+                    let path = match kind {
+                        GeneratedFileKind::OrbitMap => {
+                            orbit_map::save(&self.settings_path, &document)?
+                        }
+                    };
+                    note.push_str(&format!(" {}: {}.", kind.label(), path.display()));
+                }
+            }
+        }
+        Ok(note)
+    }
+
+    pub(super) fn resume_generated_file_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: GeneratedFileSaveAction,
+        kind: GeneratedFileKind,
+        decision: GeneratedFileDecision,
+    ) {
+        self.generated_file_decisions
+            .retain(|(saved_kind, _)| *saved_kind != kind);
+        if decision != GeneratedFileDecision::Ask {
+            self.generated_file_decisions.push((kind, decision));
+        }
+        match action {
+            GeneratedFileSaveAction::Save => {
+                let _ = self.save_with_generated_files(action);
+            }
+            GeneratedFileSaveAction::SaveAndExit => {
+                let safe_to_close = self.save_with_generated_files(action);
+                if !self.has_unsaved_changes() && safe_to_close {
+                    self.exit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            GeneratedFileSaveAction::ResetDefaults => {
+                self.reset_to_sunrise_defaults_with_generated_files();
+            }
+        }
+    }
 }
 
 pub(super) fn settings_size_note(result: &settings::SaveJsonResult) -> String {

@@ -216,10 +216,92 @@ pub(super) fn open_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+pub(super) fn destiny_is_running() -> Result<bool, String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+
+    // SAFETY: This snapshot mode takes no caller-owned pointers; the returned handle is checked
+    // against INVALID_HANDLE_VALUE and closed exactly once below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Could not check whether Destiny 2 is running: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: PROCESSENTRY32W is a Windows C data structure for which all-zero is a valid initial
+    // state. Its required dwSize field is initialized before the structure is passed to Windows.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>())
+        .expect("PROCESSENTRY32W size fits in u32");
+    let mut found = false;
+    // SAFETY: snapshot is a live ToolHelp handle and entry points to writable storage with dwSize
+    // initialized to the exact PROCESSENTRY32W size.
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let length = entry
+            .szExeFile
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let executable = String::from_utf16_lossy(&entry.szExeFile[..length]);
+        if executable.eq_ignore_ascii_case("destiny2.exe") {
+            found = true;
+            break;
+        }
+        // SAFETY: The same live snapshot handle and initialized writable entry remain valid for
+        // the duration of the enumeration.
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: snapshot was returned successfully above and has not been closed or transferred.
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    Ok(found)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn destiny_is_running() -> Result<bool, String> {
+    let processes = fs::read_dir("/proc")
+        .map_err(|error| format!("Could not check whether Destiny 2 is running: {error}"))?;
+    for process in processes.flatten() {
+        if !process
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        {
+            continue;
+        }
+        if fs::read_to_string(process.path().join("comm"))
+            .is_ok_and(|name| name.trim().eq_ignore_ascii_case("destiny2.exe"))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub(super) fn destiny_is_running() -> Result<bool, String> {
+    let output = Command::new("pgrep")
+        .args(["-ix", "destiny2.exe"])
+        .output()
+        .map_err(|error| format!("Could not check whether Destiny 2 is running: {error}"))?;
+    Ok(output.status.success())
+}
+
+#[cfg(windows)]
 pub(super) fn set_windows_app_identity() {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 
     let app_id = "KyleThompson.Sundial\0".encode_utf16().collect::<Vec<_>>();
+    // SAFETY: app_id is NUL-terminated and remains alive for the duration of the synchronous call.
     let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
 }
 
@@ -246,13 +328,21 @@ pub(super) fn set_windows_taskbar_icon(context: &eframe::CreationContext<'_>) {
 
     // build.rs embeds the ICO as resource 1. Shared resource handles remain valid
     // for the process lifetime and do not need application-side destruction.
+    // SAFETY: A null module-name pointer requests the module for the current executable.
     let module = unsafe { GetModuleHandleW(std::ptr::null()) };
     for (kind, class_index, width_metric, height_metric) in [
         (ICON_BIG, GCLP_HICON, SM_CXICON, SM_CYICON),
         (ICON_SMALL, GCLP_HICONSM, SM_CXSMICON, SM_CYSMICON),
     ] {
-        let width = unsafe { GetSystemMetrics(width_metric) };
-        let height = unsafe { GetSystemMetrics(height_metric) };
+        // SAFETY: These calls take validated Windows metric constants and no caller-owned pointers.
+        let (width, height) = unsafe {
+            (
+                GetSystemMetrics(width_metric),
+                GetSystemMetrics(height_metric),
+            )
+        };
+        // SAFETY: module is the current executable module, resource ID 1 is encoded with the
+        // MAKEINTRESOURCEW pointer convention, and all remaining arguments are valid icon values.
         let icon = unsafe {
             LoadImageW(
                 module,
@@ -267,6 +357,8 @@ pub(super) fn set_windows_taskbar_icon(context: &eframe::CreationContext<'_>) {
             continue;
         }
 
+        // SAFETY: window comes from eframe's live Win32 window handle, and icon is a successful
+        // LR_SHARED resource handle that remains valid for the lifetime of the process.
         unsafe {
             SendMessageW(window, WM_SETICON, kind as usize, icon as isize);
             SetClassLongPtrW(window, class_index, icon as isize);

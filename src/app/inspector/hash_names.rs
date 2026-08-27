@@ -24,28 +24,19 @@ pub(in crate::app) fn item_definition_name_cell(
     width: f32,
 ) -> egui::Response {
     if let Some(name) = resolved_item_definition_name(catalog, hash) {
-        table_cell(ui, width, name).on_hover_text(name)
+        crate::app::item_editor::catalog_item_tooltip(table_cell(ui, width, name), catalog, hash)
     } else {
-        table_cell(
+        let response = table_cell(
             ui,
             width,
             egui::RichText::new("<not resolved>").weak().italics(),
-        )
-        .on_hover_text(format!(
-            "No package item name resolves for definition hash 0x{hash:08X}"
-        ))
+        );
+        if crate::app::item_editor::catalog_item_tooltip_available(catalog, hash) {
+            crate::app::item_editor::catalog_item_tooltip(response, catalog, hash)
+        } else {
+            response.on_hover_text(format!(
+                "No package item name resolves for definition hash 0x{hash:08X}"
+            ))
+        }
     }
-}
-
-pub(in crate::app) fn unresolved_name_cell(
-    ui: &mut egui::Ui,
-    width: f32,
-    explanation: &'static str,
-) -> egui::Response {
-    table_cell(
-        ui,
-        width,
-        egui::RichText::new("<not resolved>").weak().italics(),
-    )
-    .on_hover_text(explanation)
 }

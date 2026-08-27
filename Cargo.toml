@@ -9,13 +9,38 @@ repository = "https://github.com/kylethmpsn/sundial"
 readme = "README.md"
 publish = false
 
+[workspace]
+members = ["crates/sundial-account"]
+default-members = [".", "crates/sundial-account"]
+resolver = "2"
+
+[workspace.lints.clippy]
+cognitive_complexity = "deny"
+dbg_macro = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints]
+workspace = true
+
+[features]
+default = ["sqlite-account"]
+sqlite-account = ["dep:rusqlite"]
+
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui-phosphor = "0.9.0"
 directories = "6.0.0"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+sundial-account = { path = "crates/sundial-account" }
 rfd = "0.15.4"
+rusqlite = { version = "0.37.0", features = ["backup", "bundled"], optional = true }
 tiger-pkg = "0.21.0"
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
@@ -25,7 +50,7 @@ winit = { version = "0.30.13", default-features = false, features = ["wayland-cs
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 winresource = "0.1.31"

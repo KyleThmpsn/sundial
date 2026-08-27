@@ -38,6 +38,72 @@ impl ExpressionValue {
     }
 }
 
+fn pop_pair(stack: &mut Vec<ExpressionValue>) -> Option<(ExpressionValue, ExpressionValue)> {
+    let right = stack.pop()?;
+    let left = stack.pop()?;
+    Some((left, right))
+}
+
+fn push_numeric_comparison(
+    stack: &mut Vec<ExpressionValue>,
+    compare: impl FnOnce(i32, i32) -> bool,
+) -> Option<()> {
+    let (left, right) = pop_pair(stack)?;
+    let result = match (left.number(), right.number()) {
+        (Some(left), Some(right)) => ExpressionValue::Boolean(compare(left, right)),
+        _ => ExpressionValue::Unknown,
+    };
+    stack.push(result);
+    Some(())
+}
+
+fn apply_stack_instruction(
+    kind: u32,
+    operand: u32,
+    stack: &mut Vec<ExpressionValue>,
+) -> Option<bool> {
+    let result = match kind {
+        NOT_INSTRUCTION => {
+            let value = stack.pop()?;
+            value.truthy().map_or(ExpressionValue::Unknown, |value| {
+                ExpressionValue::Boolean(!value)
+            })
+        }
+        OR_INSTRUCTION => {
+            let (left, right) = pop_pair(stack)?;
+            match (left.truthy(), right.truthy()) {
+                (Some(true), _) | (_, Some(true)) => ExpressionValue::Boolean(true),
+                (Some(false), Some(false)) => ExpressionValue::Boolean(false),
+                _ => ExpressionValue::Unknown,
+            }
+        }
+        AND_INSTRUCTION => {
+            let (left, right) = pop_pair(stack)?;
+            match (left.truthy(), right.truthy()) {
+                (Some(false), _) | (_, Some(false)) => ExpressionValue::Boolean(false),
+                (Some(true), Some(true)) => ExpressionValue::Boolean(true),
+                _ => ExpressionValue::Unknown,
+            }
+        }
+        EQUAL_INSTRUCTION => {
+            return push_numeric_comparison(stack, |left, right| left == right).map(|()| true);
+        }
+        NOT_EQUAL_INSTRUCTION => {
+            return push_numeric_comparison(stack, |left, right| left != right).map(|()| true);
+        }
+        GREATER_THAN_INSTRUCTION => {
+            return push_numeric_comparison(stack, |left, right| left > right).map(|()| true);
+        }
+        GREATER_OR_EQUAL_INSTRUCTION => {
+            return push_numeric_comparison(stack, |left, right| left >= right).map(|()| true);
+        }
+        LEGACY_LITERAL_ENCODING_INSTRUCTION if operand == 0 => stack.pop()?,
+        _ => return Some(false),
+    };
+    stack.push(result);
+    Some(true)
+}
+
 pub(super) fn evaluate_expression_with(
     tokens: &[CollectionConditionTokenDef],
     mut flag: impl FnMut(usize) -> Option<bool>,
@@ -51,46 +117,6 @@ pub(super) fn evaluate_expression_with(
                 let index = token.operand as usize;
                 stack.push(flag(index).map_or(ExpressionValue::Unknown, ExpressionValue::Boolean));
             }
-            NOT_INSTRUCTION => {
-                let value = stack.pop()?;
-                stack.push(value.truthy().map_or(ExpressionValue::Unknown, |value| {
-                    ExpressionValue::Boolean(!value)
-                }));
-            }
-            OR_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.truthy(), right.truthy()) {
-                    (Some(true), _) | (_, Some(true)) => ExpressionValue::Boolean(true),
-                    (Some(false), Some(false)) => ExpressionValue::Boolean(false),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
-            AND_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.truthy(), right.truthy()) {
-                    (Some(false), _) | (_, Some(false)) => ExpressionValue::Boolean(false),
-                    (Some(true), Some(true)) => ExpressionValue::Boolean(true),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
-            EQUAL_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.number(), right.number()) {
-                    (Some(left), Some(right)) => ExpressionValue::Boolean(left == right),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
-            NOT_EQUAL_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.number(), right.number()) {
-                    (Some(left), Some(right)) => ExpressionValue::Boolean(left != right),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
             VALUE_INSTRUCTION => {
                 let index = token.operand as usize;
                 stack.push(value(index).map_or(ExpressionValue::Unknown, ExpressionValue::Number));
@@ -102,28 +128,7 @@ pub(super) fn evaluate_expression_with(
                     objective(index).map_or(ExpressionValue::Unknown, ExpressionValue::Boolean),
                 );
             }
-            GREATER_THAN_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.number(), right.number()) {
-                    (Some(left), Some(right)) => ExpressionValue::Boolean(left > right),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
-            GREATER_OR_EQUAL_INSTRUCTION => {
-                let right = stack.pop()?;
-                let left = stack.pop()?;
-                stack.push(match (left.number(), right.number()) {
-                    (Some(left), Some(right)) => ExpressionValue::Boolean(left >= right),
-                    _ => ExpressionValue::Unknown,
-                });
-            }
-            LEGACY_LITERAL_ENCODING_INSTRUCTION if token.operand == 0 => {
-                // Pre-Beyond Light package programs use this immediately after a literal.
-                // Encoding mode zero preserves the literal's numeric value.
-                let value = stack.pop()?;
-                stack.push(value);
-            }
+            _ if apply_stack_instruction(token.kind, token.operand, &mut stack)? => {}
             _ => return None,
         }
     }

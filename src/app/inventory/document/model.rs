@@ -9,10 +9,7 @@ pub(crate) struct InventoryError {
 }
 
 impl InventoryError {
-    pub(in crate::app::inventory) fn new(
-        path: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    pub(in crate::app) fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             message: message.into(),
@@ -74,6 +71,7 @@ impl DismantleRarity {
         Self::Exotic,
     ];
 
+    #[cfg(test)]
     pub(crate) const fn token(self) -> &'static str {
         match self {
             Self::Common => "common",
@@ -110,20 +108,25 @@ impl DismantleRarity {
 pub(crate) enum DismantleGearClass {
     Weapon,
     Armor,
+    Both,
 }
 
 impl DismantleGearClass {
+    #[cfg(test)]
     pub(crate) const fn token(self) -> &'static str {
         match self {
             Self::Weapon => "weapon",
             Self::Armor => "armor",
+            Self::Both => "both",
         }
     }
 
+    #[cfg(test)]
     pub(in crate::app::inventory) const fn mask(self) -> u8 {
         match self {
             Self::Weapon => 1,
             Self::Armor => 2,
+            Self::Both => 3,
         }
     }
 }

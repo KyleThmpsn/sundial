@@ -4,7 +4,7 @@
 
 Sundial is a quick, simple GUI for editing
 [Project Sunrise](https://github.com/stanuwu/Sunrise)'s characters, loadouts,
-and more in `settings.json`.
+inventory, and game settings.
 
 Edit any of the three default characters' weapons, subclass abilities, armor,
 Ghost shells, Sparrows, ships, emblems, character properties, and more. You can
@@ -35,6 +35,13 @@ Newer schemas display a warning and may be opened with caution. Sundial keeps
 recognized fields editable and preserves unrecognized JSON, but future
 compatibility is not guaranteed.
 
+This development branch also recognizes the exact SQLite account contract from
+Sunrise PR 88 commit `5a5583ab0cc4244bca11974a928bdc1a0b49f4b7`. Missing, empty, or
+uninitialized databases retain the existing JSON behavior for older Sunrise
+builds. A compatible database becomes authoritative for account data; an
+incompatible or corrupt database blocks account editing rather than falling
+back to possibly stale JSON account data.
+
 ## Features
 
 - Guided character properties, subclasses, attunements, and attunement-aware
@@ -52,8 +59,12 @@ compatibility is not guaranteed.
 - A straightforward JSON editor for anything not covered by the guided interface
 - Preservation of unrecognized data, with warnings and extra safety copies for
   unexpected settings
-- Automatic backups, version-matched Sunrise default restoration, and a locally
-  cached catalog for faster startup
+- Automatic backups with optional per-source retention, version-matched Sunrise
+  default restoration, and a locally cached catalog for faster startup
+- Source-aware account persistence with no automatic mirroring between
+  `settings.json` and `state.sqlite3`
+- Guided restoration of verified SQLite account backups, with an integrity-checked snapshot of the
+  database being replaced
 
 Sundial automatically rebuilds its catalog after an app update or if the
 installed package files change. You can also rebuild it manually from
@@ -71,7 +82,9 @@ releases require glibc 2.35 or newer.
 
 On first launch, select the root of the Destiny 2 installation you use for
 Project Sunrise. Sundial reads the installed packages to build its catalog and
-writes only the selected Sunrise settings file when you save.
+selects the account source for that installation. **Preferences > Paths and
+catalog** shows the detected `state.sqlite3` path, active account source, and
+format contract.
 
 ### Data locations
 
@@ -82,9 +95,17 @@ writes only the selected Sunrise settings file when you save.
 | Catalog | `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json` | `${XDG_CACHE_HOME:-~/.cache}/sundial/catalog/d2sk-86657.json` |
 | Linux helper | Not used | `${XDG_CACHE_HOME:-~/.cache}/sundial/runtime/linoodle3-0167cfd2/liblinoodle3.so` |
 
-Before each save, Sundial confirms the source file has not changed and creates
-a timestamped backup. Unexpected files also receive a same-folder
-`settings.json.bak` safety copy. Unrelated JSON fields are preserved.
+Before each save, Sundial confirms each changed source has not changed outside
+the app and creates timestamped backups. When Sundial regains focus with no
+unsaved edits and Destiny 2 is closed, it refreshes changed Sunrise data before
+the next edit begins. SQLite account saves are transactional, require Destiny 2
+to be closed, and use a verified SQLite-native backup.
+Unexpected JSON files also receive a same-folder `settings.json.bak` safety
+copy. Unrelated JSON fields are preserved. The optional save-review gate and
+automatic-backup retention are disabled by default. Retention never deletes
+recovery snapshots or manual safety copies. Preferences places reset and restore
+actions beside their corresponding Sunrise paths and provides **Browse backups…**;
+Sundial never synchronizes account data between sources.
 
 ## Building from source
 
@@ -120,7 +141,8 @@ selection to plugs found on the same general kind of gear, and **All** allows
 every discovered plug regardless of compatibility. Risk increases at each
 level; incompatible choices may cause loading failures or crashes. Sundial
 warns before enabling **All**. Every save is backed up, and
-**Preferences > Recovery** can recover the defaults.
+Preferences can restore the relevant JSON defaults or a verified SQLite account
+backup beside its corresponding Sunrise path.
 
 ### Why does Destiny 2 send me to character creation?
 
@@ -130,14 +152,18 @@ combination. Fully exit Destiny 2, open the file in Sundial, and save it again;
 Sundial repairs the known ability pairings during save. If the problem remains,
 reselect that character's class, subclass, and attunement before saving.
 
-If all else fails, use **Preferences > Recovery** to restore the Sunrise
-defaults. Earlier saves remain available in Sundial's backups folder.
+If all else fails, open Preferences. JSON-account installations can reset the
+Sunrise settings beside the settings path; SQLite-account installations can
+restore a verified account database backup beside the database path. Earlier
+saves remain available through **Browse backups…**.
 
 ### Can I undo a change after saving?
 
 Sundial creates a timestamped backup before every save. Backups are stored in
 the platform-native data location above. Unexpected files also receive a
-`settings.json.bak` beside the original.
+`settings.json.bak` beside the original. Verified `state.sqlite3` backups can be restored from
+Preferences beside the database path; the database being replaced is preserved again before
+restoration.
 
 ### Why does the first launch take longer, and does Sundial download Destiny data?
 

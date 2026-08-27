@@ -46,9 +46,8 @@ fn add_character(document: &mut Value, soid: u64, class_type: u64) {
 }
 
 #[test]
-fn schema_modes_are_explicit_about_mutability() {
+fn schema_modes_classify_supported_and_future_versions() {
     let future_version = MAX_SUPPORTED_SCHEMA + 1;
-    let future = SchemaMode::Future(future_version);
 
     assert_eq!(schema_mode(&json!({})), SchemaMode::MissingOrInvalid);
     assert_eq!(
@@ -65,7 +64,16 @@ fn schema_modes_are_explicit_about_mutability() {
             SchemaMode::Inventory(version)
         );
     }
-    assert_eq!(schema_mode(&json!({"version": future_version})), future);
+    assert_eq!(
+        schema_mode(&json!({"version": future_version})),
+        SchemaMode::Future(future_version)
+    );
+}
+
+#[test]
+fn future_and_unsupported_schema_capabilities_are_explicit() {
+    let future = SchemaMode::Future(MAX_SUPPORTED_SCHEMA + 1);
+
     assert!(!future.is_read_only());
     assert!(future.is_future());
     assert!(SchemaMode::Unsupported(1).is_read_only());
@@ -80,6 +88,10 @@ fn schema_modes_are_explicit_about_mutability() {
     assert!(future.supports_equipment_flags());
     assert!(future.can_mutate_equipment_flags());
     assert_eq!(future.profile_item_capacity(), Some(PROFILE_ITEM_CAPACITY));
+}
+
+#[test]
+fn legacy_schema_capabilities_follow_feature_introduction_versions() {
     for version in 2..=5 {
         let mode = schema_mode(&json!({"version": version}));
         assert!(mode.can_mutate_profile_items());
@@ -89,15 +101,20 @@ fn schema_modes_are_explicit_about_mutability() {
         assert_eq!(mode.can_mutate_equipment_flags(), version >= 4);
         assert_eq!(mode.supports_dismantle_rewards(), version >= 5);
     }
+    assert_eq!(profile_item_capacity(3), 32);
+    assert_eq!(profile_item_capacity(4), 701);
+}
+
+#[test]
+fn current_schema_exposes_every_supported_inventory_capability() {
     let current = SchemaMode::Inventory(MAX_SUPPORTED_SCHEMA);
+
     assert!(current.can_mutate_profile_items());
     assert!(current.can_mutate_character_inventory());
     assert!(current.can_mutate_equipment());
     assert!(current.supports_equipment_flags());
     assert!(current.can_mutate_equipment_flags());
     assert!(current.supports_dismantle_rewards());
-    assert_eq!(profile_item_capacity(3), 32);
-    assert_eq!(profile_item_capacity(4), 701);
 }
 
 #[test]
@@ -267,6 +284,61 @@ fn unsupported_and_pre_inventory_schemas_keep_unsupported_edits_read_only() {
     assert_eq!(old, before);
 }
 
+fn assert_future_schema_data_before_swap(document: &Value) {
+    assert_eq!(
+        document.pointer("/state/account/profile_items/0/quantity"),
+        Some(&Value::from(9))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/inventory/0/quantity"),
+        Some(&Value::from(7))
+    );
+    assert_eq!(
+        document.pointer("/state/account/profile_items/0/future_profile_data/keep"),
+        Some(&json!([1, 2, 3]))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/inventory/0/future_item_data/keep"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/kinetic/future_equipment_data"),
+        Some(&json!([4, 5, 6]))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/future_slot/opaque/keep"),
+        Some(&Value::String("all of this".into()))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/future_scalar_slot"),
+        Some(&json!(["an", "unknown", "shape"]))
+    );
+    assert_eq!(
+        document.pointer("/state/account/dismantle_rewards/future_layout"),
+        Some(&json!(["leave", "untouched"]))
+    );
+    assert_eq!(
+        document.pointer("/future_root_data/keep"),
+        Some(&Value::Bool(true))
+    );
+}
+
+fn assert_future_schema_data_after_swap(document: &Value) {
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/kinetic/future_item_data/keep"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/inventory/0/future_equipment_data"),
+        Some(&json!([4, 5, 6]))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/future_scalar_slot"),
+        Some(&json!(["an", "unknown", "shape"]))
+    );
+    assert_eq!(validate_document_items(document), Ok(()));
+}
+
 #[test]
 fn future_schema_edits_known_item_fields_and_preserves_opaque_data() {
     let future_version = MAX_SUPPORTED_SCHEMA + 73;
@@ -344,42 +416,7 @@ fn future_schema_edits_known_item_fields_and_preserves_opaque_data() {
     )
     .unwrap();
 
-    assert_eq!(
-        future.pointer("/state/account/profile_items/0/quantity"),
-        Some(&Value::from(9))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/inventory/0/quantity"),
-        Some(&Value::from(7))
-    );
-    assert_eq!(
-        future.pointer("/state/account/profile_items/0/future_profile_data/keep"),
-        Some(&json!([1, 2, 3]))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/inventory/0/future_item_data/keep"),
-        Some(&Value::Bool(true))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/equipment/kinetic/future_equipment_data"),
-        Some(&json!([4, 5, 6]))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/equipment/future_slot/opaque/keep"),
-        Some(&Value::String("all of this".into()))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/equipment/future_scalar_slot"),
-        Some(&json!(["an", "unknown", "shape"]))
-    );
-    assert_eq!(
-        future.pointer("/state/account/dismantle_rewards/future_layout"),
-        Some(&json!(["leave", "untouched"]))
-    );
-    assert_eq!(
-        future.pointer("/future_root_data/keep"),
-        Some(&Value::Bool(true))
-    );
+    assert_future_schema_data_before_swap(&future);
 
     assert!(
         swap_inventory_item_with_equipment(
@@ -392,19 +429,7 @@ fn future_schema_edits_known_item_fields_and_preserves_opaque_data() {
         )
         .unwrap()
     );
-    assert_eq!(
-        future.pointer("/state/characters/0/equipment/kinetic/future_item_data/keep"),
-        Some(&Value::Bool(true))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/inventory/0/future_equipment_data"),
-        Some(&json!([4, 5, 6]))
-    );
-    assert_eq!(
-        future.pointer("/state/characters/0/equipment/future_scalar_slot"),
-        Some(&json!(["an", "unknown", "shape"]))
-    );
-    assert_eq!(validate_document_items(&future), Ok(()));
+    assert_future_schema_data_after_swap(&future);
 
     let encoded = super::super::settings::encode_settings(&future).unwrap();
     let reparsed: Value = serde_json::from_str(&encoded).unwrap();

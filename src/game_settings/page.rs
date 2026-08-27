@@ -10,8 +10,8 @@ use super::{
     preferences::{
         GAME_LANGUAGES, draw_audio, draw_controls, draw_display, draw_interface, draw_social,
     },
-    schema::{ORBIT_SLICE_SET_PATH, key_bindings_editable},
-    widgets::string_choice,
+    schema::ORBIT_SLICE_SET_PATH,
+    widgets::{CommandBatch, json_string_choice},
 };
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
@@ -25,15 +25,26 @@ pub(crate) enum Tab {
     KeyBindings,
 }
 
-pub(crate) fn draw_page(
-    ui: &mut egui::Ui,
-    document: &mut Value,
-    orbit_backdrops: &[String],
-    player_tools: PlayerTools,
-    tab: &mut Tab,
-    key_bindings: &mut KeyBindingUiState,
-) -> bool {
-    let bindings_editable = key_bindings_editable(document);
+pub(crate) struct PageContext<'a> {
+    pub json_document: &'a mut Value,
+    pub account_settings: Result<&'a Map<String, Value>, &'a str>,
+    pub bindings_editable: bool,
+    pub orbit_backdrops: &'a [String],
+    pub player_tools: PlayerTools,
+    pub tab: &'a mut Tab,
+    pub key_bindings: &'a mut KeyBindingUiState,
+}
+
+pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdits {
+    let PageContext {
+        json_document,
+        account_settings,
+        bindings_editable,
+        orbit_backdrops,
+        player_tools,
+        tab,
+        key_bindings,
+    } = context;
     ui.heading("Game settings");
     ui.label("Edit the settings replicated to Destiny 2 by Project Sunrise.");
     ui.add_space(8.0);
@@ -48,7 +59,7 @@ pub(crate) fn draw_page(
             .on_hover_text(if bindings_editable {
                 "Edit named key bindings used by supported Sunrise schemas."
             } else {
-                "Key bindings are shown read-only for this settings schema."
+                "Key bindings are shown read-only for the active account source or settings schema."
             });
     });
     ui.separator();
@@ -56,17 +67,26 @@ pub(crate) fn draw_page(
     egui::ScrollArea::vertical()
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
-            Tab::Player => draw_player(ui, document, orbit_backdrops, &player_tools),
-            Tab::Controls => draw_account_settings(ui, document, draw_controls),
-            Tab::Audio => draw_account_settings(ui, document, draw_audio),
-            Tab::Display => draw_account_settings(ui, document, draw_display),
-            Tab::Interface => draw_account_settings(ui, document, draw_interface),
-            Tab::Social => draw_account_settings(ui, document, draw_social),
-            Tab::KeyBindings => draw_account_settings(ui, document, |ui, settings| {
+            Tab::Player => PageEdits {
+                json_changed: draw_player(ui, json_document, orbit_backdrops, &player_tools),
+                account_commands: Vec::new(),
+            },
+            Tab::Controls => draw_account_settings(ui, account_settings, draw_controls),
+            Tab::Audio => draw_account_settings(ui, account_settings, draw_audio),
+            Tab::Display => draw_account_settings(ui, account_settings, draw_display),
+            Tab::Interface => draw_account_settings(ui, account_settings, draw_interface),
+            Tab::Social => draw_account_settings(ui, account_settings, draw_social),
+            Tab::KeyBindings => draw_account_settings(ui, account_settings, |ui, settings| {
                 draw_key_bindings(ui, settings, key_bindings, bindings_editable)
             }),
         })
         .inner
+}
+
+#[derive(Default)]
+pub(crate) struct PageEdits {
+    pub(crate) json_changed: bool,
+    pub(crate) account_commands: Vec<sundial_account::AccountSettingsCommand>,
 }
 
 pub(crate) struct PlayerTools {
@@ -75,20 +95,20 @@ pub(crate) struct PlayerTools {
 
 pub(super) fn draw_account_settings(
     ui: &mut egui::Ui,
-    document: &mut Value,
-    draw: impl FnOnce(&mut egui::Ui, &mut Map<String, Value>) -> bool,
-) -> bool {
-    let Some(settings) = document
-        .pointer_mut("/state/account/settings")
-        .and_then(Value::as_object_mut)
-    else {
+    settings: Result<&Map<String, Value>, &str>,
+    draw: impl FnOnce(&mut egui::Ui, &Map<String, Value>) -> CommandBatch,
+) -> PageEdits {
+    let Ok(settings) = settings else {
         ui.colored_label(
             ui.visuals().error_fg_color,
-            "This settings.json has no state.account.settings object.",
+            settings.expect_err("the account settings result was checked"),
         );
-        return false;
+        return PageEdits::default();
     };
-    draw(ui, settings)
+    PageEdits {
+        json_changed: false,
+        account_commands: draw(ui, settings).into_vec(),
+    }
 }
 
 pub(super) fn draw_player(
@@ -147,7 +167,7 @@ pub(super) fn draw_player(
                 .num_columns(2)
                 .spacing([18.0, 9.0])
                 .show(ui, |ui| {
-                    string_choice(ui, steam, "language", "Language", GAME_LANGUAGES)
+                    json_string_choice(ui, steam, "language", "Language", GAME_LANGUAGES)
                 })
                 .inner;
         }
@@ -242,11 +262,11 @@ pub(super) fn set_existing_orbit_slice_set(document: &mut Value, name: &str) -> 
     true
 }
 
-pub(super) fn group_mut<'a>(
-    settings: &'a mut Map<String, Value>,
+pub(super) fn group<'a>(
+    settings: &'a Map<String, Value>,
     name: &str,
-) -> Option<&'a mut Map<String, Value>> {
-    settings.get_mut(name)?.as_object_mut()
+) -> Option<&'a Map<String, Value>> {
+    settings.get(name)?.as_object()
 }
 
 pub(super) fn missing_group(ui: &mut egui::Ui, name: &str) {

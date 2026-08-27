@@ -39,50 +39,60 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     hash: Option<u64>,
+    inspection_context: Option<DefinitionInspectionContext>,
     mut header: ItemHeader<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    header.icon = hash.and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
+    let header_rect = egui::Rect::from_min_size(
+        ui.next_widget_position(),
+        egui::vec2(ui.available_width(), ITEM_HEADER_WITH_METADATA_ROW_HEIGHT),
+    );
+    header.icon = hash
+        .filter(|_| ui.is_rect_visible(header_rect))
+        .and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
     let response = draw_item_header_with_trailing(ui, header, trailing);
-    if let Some(hash) = hash {
-        let mut font = egui::TextStyle::Monospace.resolve(ui.style());
-        font.size += ITEM_HEADER_TITLE_SIZE_DELTA;
-        let hash_width = ui.fonts(|fonts| {
-            fonts
-                .layout_no_wrap(format_hash_hex(hash), font, ui.visuals().text_color())
-                .size()
-                .x
-        });
-        let hash_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                (response.rect.right() - hash_width - 6.0).max(response.rect.left()),
-                response.rect.top(),
-            ),
-            egui::pos2(response.rect.right(), response.rect.top() + 24.0),
-        );
-        let hash_response = ui
-            .interact(
-                hash_rect,
-                response.id.with(("definition_hash", hash)),
-                egui::Sense::click(),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        if hash_response.clicked() {
-            request_hash_inspection(ui.ctx(), hash);
-        }
-    }
-    finish_catalog_item_header(catalog, hash, response)
-}
-
-fn finish_catalog_item_header(
-    catalog: &Catalog,
-    hash: Option<u64>,
-    response: egui::Response,
-) -> egui::Response {
     let Some(hash) = hash else {
         return response;
     };
-    catalog_item_tooltip(response, catalog, hash)
+    let card_response = ui.interact(
+        response.rect,
+        response.id.with(("item_card", hash)),
+        egui::Sense::click(),
+    );
+    let tooltip_response = catalog_item_tooltip(card_response.clone(), catalog, hash);
+
+    let mut font = egui::TextStyle::Monospace.resolve(ui.style());
+    font.size += ITEM_HEADER_TITLE_SIZE_DELTA;
+    let hash_width = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(format_hash_hex(hash), font, ui.visuals().text_color())
+            .size()
+            .x
+    });
+    let hash_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            (response.rect.right() - hash_width - 6.0).max(response.rect.left()),
+            response.rect.top(),
+        ),
+        egui::pos2(response.rect.right(), response.rect.top() + 24.0),
+    );
+    let hash_response = ui
+        .interact(
+            hash_rect.expand2(egui::vec2(4.0, 2.0)),
+            response.id.with(("definition_hash", hash)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Inspect definition");
+    if hash_response.clicked() {
+        if let Some(context) = inspection_context {
+            request_hash_inspection_with_context(ui.ctx(), hash, context);
+        } else {
+            request_hash_inspection(ui.ctx(), hash);
+        }
+    }
+
+    response | card_response | tooltip_response
 }
 
 fn draw_item_header_contents(
@@ -138,7 +148,7 @@ fn draw_item_header_contents(
     };
     let title_hash_weak = egui::TextFormat {
         font_id: title_monospace_font.clone(),
-        color: text_color,
+        color: weak_color,
         ..Default::default()
     };
     let title_hash_error = egui::TextFormat {

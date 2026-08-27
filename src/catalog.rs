@@ -40,8 +40,8 @@ pub(crate) use items::{
     ItemStatDefinition,
 };
 use items::{
-    GearKind, build_gear_type_options, format_plug_label, index_intrinsic_perk_references,
-    intern_socket_pools, sort_plug_options,
+    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
+    index_intrinsic_perk_references, intern_socket_pools, sort_plug_options,
 };
 #[cfg(test)]
 use items::{
@@ -179,13 +179,79 @@ pub(crate) struct Catalog {
     objectives_by_unlock_value: HashMap<usize, Vec<usize>>,
     progression_names: HashMap<u64, String>,
     inventory_hashes: Vec<u64>,
+    character_inventory_candidate_buckets: CharacterInventoryCandidateBuckets,
     item_indices: HashMap<u64, usize>,
     bucket_item_indices: HashMap<u64, Vec<usize>>,
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
+    socket_and_gear_type_options: HashMap<String, HashMap<u16, Vec<u64>>>,
     gear_type_options: HashMap<GearKind, Vec<u64>>,
     cosmetic_socket_pools: HashSet<u32>,
     all_plug_options: Vec<u64>,
+}
+
+#[derive(Default)]
+struct CharacterInventoryCandidateBuckets {
+    standard: [Vec<InventoryMetadata>; 4],
+    including_dummy_items: [Vec<InventoryMetadata>; 4],
+}
+
+impl CharacterInventoryCandidateBuckets {
+    fn build(
+        inventory_hashes: &[u64],
+        item_indices: &HashMap<u64, usize>,
+        items: &[ItemDef],
+        metadata: &HashMap<u64, InventoryMetadata>,
+    ) -> Self {
+        let mut buckets = Self::default();
+        for hash in inventory_hashes {
+            let Some(item) = item_indices.get(hash).and_then(|index| items.get(*index)) else {
+                continue;
+            };
+            let Some(metadata) = metadata
+                .get(hash)
+                .filter(|metadata| metadata.is_character_inventory_candidate())
+                .copied()
+            else {
+                continue;
+            };
+            let class_indices = match item.class_type {
+                0 => &[0][..],
+                1 => &[1][..],
+                2 => &[2][..],
+                3 => &[0, 1, 2, 3][..],
+                _ => continue,
+            };
+            for class_index in class_indices {
+                Self::push_unique(&mut buckets.including_dummy_items[*class_index], metadata);
+                if !crate::dummy_items::contains(*hash) {
+                    Self::push_unique(&mut buckets.standard[*class_index], metadata);
+                }
+            }
+        }
+        buckets
+    }
+
+    fn push_unique(buckets: &mut Vec<InventoryMetadata>, candidate: InventoryMetadata) {
+        if !buckets.iter().any(|existing| {
+            existing.scope == candidate.scope
+                && existing.native_bucket_id == candidate.native_bucket_id
+        }) {
+            buckets.push(candidate);
+        }
+    }
+
+    fn get(&self, class_type: u64, show_dummy_items: bool) -> &[InventoryMetadata] {
+        let class_index = usize::try_from(class_type)
+            .ok()
+            .filter(|class_index| *class_index <= 2)
+            .unwrap_or(3);
+        if show_dummy_items {
+            &self.including_dummy_items[class_index]
+        } else {
+            &self.standard[class_index]
+        }
+    }
 }
 
 fn insert_progression_name(names: &mut HashMap<u64, String>, hash: u64, candidate: &str) {
@@ -193,6 +259,112 @@ fn insert_progression_name(names: &mut HashMap<u64, String>, hash: u64, candidat
     if !candidate.is_empty() {
         names.entry(hash).or_insert_with(|| candidate.to_owned());
     }
+}
+
+fn bucket_item_indices(items: &[ItemDef]) -> HashMap<u64, Vec<usize>> {
+    let mut indices = HashMap::<u64, Vec<usize>>::new();
+    for (index, item) in items.iter().enumerate() {
+        if item.bucket_hash != 0 {
+            indices.entry(item.bucket_hash).or_default().push(index);
+        }
+    }
+    indices
+}
+
+fn add_objective_progression_names(names: &mut HashMap<u64, String>, objectives: &[ObjectiveDef]) {
+    for objective in objectives {
+        for candidate in [
+            objective.name.as_str(),
+            objective.progress_description.as_str(),
+            objective.display_description.as_str(),
+            objective.description.as_str(),
+        ] {
+            insert_progression_name(names, objective.hash, candidate);
+        }
+        for owner in &objective.owners {
+            insert_progression_name(names, objective.hash, &owner.name);
+            insert_progression_name(names, owner.hash, &owner.name);
+            for trait_definition in &owner.traits {
+                insert_progression_name(names, trait_definition.hash, &trait_definition.name);
+            }
+        }
+    }
+}
+
+fn add_referenced_objective_names(names: &mut HashMap<u64, String>, objectives: &[ObjectiveDef]) {
+    for objective in objectives {
+        if names.contains_key(&objective.hash) {
+            continue;
+        }
+        let referenced_name = objective
+            .referenced_objective_indices
+            .iter()
+            .filter_map(|index| objectives.get(usize::from(*index)))
+            .find_map(|target| names.get(&target.hash))
+            .cloned();
+        if let Some(name) = referenced_name {
+            insert_progression_name(names, objective.hash, &name);
+        }
+    }
+}
+
+fn add_unlock_progression_names(
+    names: &mut HashMap<u64, String>,
+    flag_definitions: &[UnlockDefinition],
+    value_definitions: &[UnlockDefinition],
+) {
+    for definition in flag_definitions.iter().chain(value_definitions) {
+        if let Some(name) = definition.name.as_deref() {
+            insert_progression_name(names, definition.hash, name);
+        }
+        for context in &definition.tested_by {
+            for candidate in [
+                context.name.as_str(),
+                context.type_name.as_str(),
+                context.description.as_str(),
+            ] {
+                insert_progression_name(names, definition.hash, candidate);
+            }
+            for component in context.paths.iter().flatten() {
+                insert_progression_name(names, definition.hash, component);
+            }
+            insert_progression_name(names, context.hash, &context.name);
+        }
+    }
+}
+
+fn progression_names(
+    objectives: &[ObjectiveDef],
+    unlock_flag_definitions: &[UnlockDefinition],
+    unlock_value_definitions: &[UnlockDefinition],
+    collectibles: &[CollectibleDef],
+) -> HashMap<u64, String> {
+    let mut names = HashMap::new();
+    add_objective_progression_names(&mut names, objectives);
+    add_referenced_objective_names(&mut names, objectives);
+    add_unlock_progression_names(
+        &mut names,
+        unlock_flag_definitions,
+        unlock_value_definitions,
+    );
+    for definition in collectibles {
+        insert_progression_name(&mut names, definition.hash, &definition.name);
+        insert_progression_name(&mut names, definition.item_hash, &definition.name);
+    }
+    names
+}
+
+fn objectives_by_unlock_value(objectives: &[ObjectiveDef]) -> HashMap<usize, Vec<usize>> {
+    let mut indices = HashMap::<usize, Vec<usize>>::new();
+    for (objective_index, objective) in objectives.iter().enumerate() {
+        if let Some(definition_index) = objective.related_unlock_value_definition_index {
+            indices
+                .entry(usize::from(definition_index))
+                .or_default()
+                .push(objective_index);
+        }
+    }
+    indices
 }
 
 impl Catalog {
@@ -306,20 +478,8 @@ impl Catalog {
         for pool in &mut plug_pools {
             sort_plug_options(pool, &names);
         }
-        let mut socket_type_options = HashMap::<u16, Vec<u64>>::new();
-        for item in &items {
-            for socket in &item.sockets {
-                if let Some(pool) = plug_pools.get(socket.pool as usize) {
-                    socket_type_options
-                        .entry(socket.socket_type)
-                        .or_default()
-                        .extend(pool.iter().copied());
-                }
-            }
-        }
-        for options in socket_type_options.values_mut() {
-            sort_plug_options(options, &names);
-        }
+        let (socket_type_options, socket_and_gear_type_options) =
+            build_socket_type_options(&items, &plug_pools, &names);
         let (gear_type_options, cosmetic_socket_pools) =
             build_gear_type_options(&items, &plug_pools, &names);
         let mut all_plug_options = plug_pools.iter().flatten().copied().collect();
@@ -345,92 +505,23 @@ impl Catalog {
             .iter()
             .enumerate()
             .map(|(index, item)| (item.hash, index))
-            .collect();
-        let mut bucket_item_indices = HashMap::<u64, Vec<usize>>::new();
-        for (index, item) in items.iter().enumerate() {
-            if item.bucket_hash != 0 {
-                bucket_item_indices
-                    .entry(item.bucket_hash)
-                    .or_default()
-                    .push(index);
-            }
-        }
+            .collect::<HashMap<_, _>>();
+        let character_inventory_candidate_buckets = CharacterInventoryCandidateBuckets::build(
+            &inventory_hashes,
+            &item_indices,
+            &items,
+            &inventory_metadata,
+        );
+        let bucket_item_indices = bucket_item_indices(&items);
         let unlock_flag_state_indices = unlock_state_indices(&unlock_flag_definitions);
         let unlock_value_state_indices = unlock_state_indices(&unlock_value_definitions);
-        let mut progression_names = HashMap::new();
-        for objective in &objectives {
-            for candidate in [
-                objective.name.as_str(),
-                objective.progress_description.as_str(),
-                objective.display_description.as_str(),
-                objective.description.as_str(),
-            ] {
-                insert_progression_name(&mut progression_names, objective.hash, candidate);
-            }
-            for owner in &objective.owners {
-                insert_progression_name(&mut progression_names, objective.hash, &owner.name);
-                insert_progression_name(&mut progression_names, owner.hash, &owner.name);
-                for trait_definition in &owner.traits {
-                    insert_progression_name(
-                        &mut progression_names,
-                        trait_definition.hash,
-                        &trait_definition.name,
-                    );
-                }
-            }
-        }
-        for objective in &objectives {
-            if progression_names.contains_key(&objective.hash) {
-                continue;
-            }
-            if let Some(name) = objective
-                .referenced_objective_indices
-                .iter()
-                .filter_map(|index| objectives.get(usize::from(*index)))
-                .find_map(|target| progression_names.get(&target.hash))
-                .cloned()
-            {
-                insert_progression_name(&mut progression_names, objective.hash, &name);
-            }
-        }
-        for definition in unlock_flag_definitions
-            .iter()
-            .chain(&unlock_value_definitions)
-        {
-            if let Some(name) = definition.name.as_deref() {
-                insert_progression_name(&mut progression_names, definition.hash, name);
-            }
-            for context in &definition.tested_by {
-                for candidate in [
-                    context.name.as_str(),
-                    context.type_name.as_str(),
-                    context.description.as_str(),
-                ] {
-                    insert_progression_name(&mut progression_names, definition.hash, candidate);
-                }
-                for component in context.paths.iter().flatten() {
-                    insert_progression_name(&mut progression_names, definition.hash, component);
-                }
-                insert_progression_name(&mut progression_names, context.hash, &context.name);
-            }
-        }
-        for definition in &collectibles {
-            insert_progression_name(&mut progression_names, definition.hash, &definition.name);
-            insert_progression_name(
-                &mut progression_names,
-                definition.item_hash,
-                &definition.name,
-            );
-        }
-        let mut objectives_by_unlock_value = HashMap::<usize, Vec<usize>>::new();
-        for (objective_index, objective) in objectives.iter().enumerate() {
-            if let Some(definition_index) = objective.related_unlock_value_definition_index {
-                objectives_by_unlock_value
-                    .entry(usize::from(definition_index))
-                    .or_default()
-                    .push(objective_index);
-            }
-        }
+        let progression_names = progression_names(
+            &objectives,
+            &unlock_flag_definitions,
+            &unlock_value_definitions,
+            &collectibles,
+        );
+        let objectives_by_unlock_value = objectives_by_unlock_value(&objectives);
         Self {
             items: items.into_iter().map(Arc::new).collect(),
             orbit_backdrops,
@@ -464,10 +555,12 @@ impl Catalog {
             objectives_by_unlock_value,
             progression_names,
             inventory_hashes,
+            character_inventory_candidate_buckets,
             item_indices,
             bucket_item_indices,
             plug_pools,
             socket_type_options,
+            socket_and_gear_type_options,
             gear_type_options,
             cosmetic_socket_pools,
             all_plug_options,
@@ -915,6 +1008,22 @@ mod tests {
                 .unwrap()
                 .hash,
             30
+        );
+        assert_eq!(
+            catalog
+                .character_inventory_candidate_buckets(0, false)
+                .iter()
+                .map(|metadata| metadata.native_bucket_id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(
+            catalog
+                .character_inventory_candidate_buckets(99, false)
+                .iter()
+                .map(|metadata| metadata.native_bucket_id)
+                .collect::<Vec<_>>(),
+            vec![3]
         );
         assert_eq!(
             catalog

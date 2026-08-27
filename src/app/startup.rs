@@ -13,7 +13,8 @@ use super::{
     DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, Preferences, SettingsLayout,
     SettingsPathResolution, SundialApp, draw_future_schema_warning, load_logo_texture,
     settings::{
-        load_json, missing_settings_message, resolve_settings_path, settings_path_for_install,
+        load_workspace_json, missing_settings_message, resolve_settings_path,
+        settings_path_for_install,
     },
 };
 
@@ -84,7 +85,7 @@ impl StartupApp {
         thread::spawn(
             move || match resolve_settings_path(&install_path, preferred_layout) {
                 SettingsPathResolution::Found(settings_layout, settings_path) => {
-                    match load_json(&settings_path) {
+                    match load_workspace_json(&settings_path) {
                         Ok(document) => {
                             if let Some(schema_version) =
                                 game_settings::future_schema_version(&document)

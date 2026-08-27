@@ -4,11 +4,11 @@ use eframe::egui;
 use serde_json::{Map, Value};
 
 use super::{
-    page::{group_mut, missing_group},
+    page::{group, missing_group},
     schema::{FIELD_OF_VIEW_KEY, VERTICAL_SYNC_INTERVAL_KEY, show_presence_gated_preference},
     widgets::{
-        boolean, choice, display_refresh_rate_hz, fixed, float_slider, integer_slider,
-        offset_slider, vertical_sync_intervals,
+        CommandBatch, boolean, choice, display_refresh_rate_hz, fixed, float_slider,
+        integer_slider, offset_slider, vertical_sync_intervals,
     },
 };
 
@@ -103,10 +103,10 @@ pub(super) const WHISPER_CHAT_MODES: &[(u64, &str)] = &[(0, "On (Default)"), (1,
 pub(super) const MANUAL_AUTOMATIC: &[(u64, &str)] = &[(0, "Manual"), (1, "Automatic")];
 pub(super) const AUTO_HIDE_MODES: &[(u64, &str)] = &[(0, "Off"), (1, "On")];
 
-pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
-    let Some(values) = group_mut(settings, "controls") else {
+pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+    let Some(values) = group(settings, "controls") else {
         missing_group(ui, "controls");
-        return false;
+        return CommandBatch::default();
     };
     ui.heading("Controls");
     ui.label("Controller and mouse behavior.");
@@ -116,7 +116,7 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &mut Map<String, Value>
         .spacing([18.0, 9.0])
         .striped(true)
         .show(ui, |ui| {
-            let mut changed = false;
+            let mut changed = CommandBatch::default();
             changed |= choice(ui, values, "button_layout", "Button layout", BUTTON_LAYOUTS);
             changed |= choice(ui, values, "movement_mode", "Stick layout", STICK_LAYOUTS);
             changed |= offset_slider(
@@ -201,10 +201,10 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &mut Map<String, Value>
         .inner
 }
 
-pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
-    let Some(values) = group_mut(settings, "audio") else {
+pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+    let Some(values) = group(settings, "audio") else {
         missing_group(ui, "audio");
-        return false;
+        return CommandBatch::default();
     };
     ui.heading("Audio");
     ui.label("Voice, volume, and focus behavior.");
@@ -214,7 +214,7 @@ pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -
         .spacing([18.0, 9.0])
         .striped(true)
         .show(ui, |ui| {
-            let mut changed = false;
+            let mut changed = CommandBatch::default();
             changed |= choice(
                 ui,
                 values,
@@ -254,10 +254,10 @@ pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -
         .inner
 }
 
-pub(super) fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
-    let Some(values) = group_mut(settings, "display") else {
+pub(super) fn draw_display(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+    let Some(values) = group(settings, "display") else {
         missing_group(ui, "display");
-        return false;
+        return CommandBatch::default();
     };
     ui.heading("Display");
     ui.label("Brightness and display overlays. Renderer calibration is shown but kept at Sunrise's required values.");
@@ -267,7 +267,7 @@ pub(super) fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>)
         .spacing([18.0, 9.0])
         .striped(true)
         .show(ui, |ui| {
-            let mut changed = false;
+            let mut changed = CommandBatch::default();
             changed |= integer_slider(ui, values, "brightness", "Brightness", 0, 6);
             changed |= boolean(ui, values, "show_fps", "Show FPS");
             changed |= choice(ui, values, "hdr_mode", "HDR mode", HDR_MODES);
@@ -302,10 +302,10 @@ pub(super) fn draw_display(ui: &mut egui::Ui, settings: &mut Map<String, Value>)
         .inner
 }
 
-pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
-    let Some(values) = group_mut(settings, "interface") else {
+pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+    let Some(values) = group(settings, "interface") else {
         missing_group(ui, "interface");
-        return false;
+        return CommandBatch::default();
     };
     ui.heading("Interface");
     ui.label("HUD, subtitle, reticle, and text presentation.");
@@ -315,7 +315,7 @@ pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &mut Map<String, Value
         .spacing([18.0, 9.0])
         .striped(true)
         .show(ui, |ui| {
-            let mut changed = false;
+            let mut changed = CommandBatch::default();
             changed |= choice(
                 ui,
                 values,
@@ -378,10 +378,10 @@ pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &mut Map<String, Value
         .inner
 }
 
-pub(super) fn draw_social(ui: &mut egui::Ui, settings: &mut Map<String, Value>) -> bool {
-    let Some(values) = group_mut(settings, "social") else {
+pub(super) fn draw_social(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+    let Some(values) = group(settings, "social") else {
         missing_group(ui, "social");
-        return false;
+        return CommandBatch::default();
     };
     ui.heading("Social");
     ui.label("Chat, voice, names, and notifications.");
@@ -391,7 +391,7 @@ pub(super) fn draw_social(ui: &mut egui::Ui, settings: &mut Map<String, Value>) 
         .spacing([18.0, 9.0])
         .striped(true)
         .show(ui, |ui| {
-            let mut changed = false;
+            let mut changed = CommandBatch::default();
             changed |= boolean(
                 ui,
                 values,

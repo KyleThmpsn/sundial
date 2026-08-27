@@ -29,7 +29,8 @@ pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(in crate::catalog) use scan::{attach_item_objective_owners, item_scan_progress_stride};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
-    GearKind, build_gear_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
+    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
+    intern_socket_pools, sort_plug_options,
 };
 #[cfg(test)]
 pub(in crate::catalog) use sockets::{
@@ -91,6 +92,17 @@ impl ItemRarity {
             Self::Exotic => "Exotic",
         }
     }
+
+    pub(crate) const fn package_value(self) -> Option<u8> {
+        match self {
+            Self::Unknown => None,
+            Self::Common => Some(1),
+            Self::Uncommon => Some(2),
+            Self::Rare => Some(3),
+            Self::Legendary => Some(4),
+            Self::Exotic => Some(5),
+        }
+    }
 }
 
 /// Structural metadata read directly from the installed inventory item definition table.
@@ -98,7 +110,30 @@ impl ItemRarity {
 pub(crate) struct ItemPackageMetadata {
     pub definition_index: u32,
     pub definition_tag: u32,
+    #[serde(default)]
+    pub definition_size: Option<u32>,
+    #[serde(default)]
+    pub string_definition_tag: Option<u32>,
+    #[serde(default)]
+    pub icon_container_tag: Option<u32>,
+    #[serde(default)]
     pub plug_category_hash: Option<u64>,
+    #[serde(default)]
+    pub equipment_slot: Option<u8>,
+    #[serde(default)]
+    pub socket_entry_list_index: Option<u16>,
+    #[serde(default)]
+    pub roll_set_index: Option<u16>,
+    #[serde(default)]
+    pub linked_plug_index: Option<u16>,
+    #[serde(default)]
+    pub linked_plug_hash: Option<u64>,
+    #[serde(default)]
+    pub gear_art_index: Option<u16>,
+    #[serde(default)]
+    pub art_arrangement_indices: [Option<u16>; 4],
+    #[serde(default)]
+    pub render_overrides: Vec<ItemRenderOverride>,
     #[serde(default)]
     pub rarity: ItemRarity,
     #[serde(default)]
@@ -109,4 +144,11 @@ pub(crate) struct ItemPackageMetadata {
     pub investment_stats: Vec<ItemInvestmentStat>,
     #[serde(default)]
     pub intrinsic_perks: Vec<ItemIntrinsicPerk>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemRenderOverride {
+    pub stage: u8,
+    pub key: i8,
+    pub value: u16,
 }

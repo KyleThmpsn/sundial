@@ -39,24 +39,35 @@ pub(in crate::app) fn draw_content(
     };
 
     let hash_inspector_open = state.hash_inspection.is_open();
-    draw_progression_metadata_workspace(
+    let inspector_full_width = draw_progression_metadata_workspace(
         ui,
         catalog,
+        document,
         &mut state.metadata_inspector,
         hash_inspector_open,
     );
 
-    let changed = match view {
-        View::Unlocks => draw_unlocks(ui, document, &policy.unlocks, catalog, state),
-        View::Investment => draw_investment(ui, document, &policy.investment, catalog, state),
+    if let Some(selection) = state.metadata_inspector.take_reveal_request() {
+        reveal_metadata_selection(view, selection, catalog, state);
+    }
+
+    let mut changed = if inspector_full_width {
+        false
+    } else {
+        match view {
+            View::Unlocks => draw_unlocks(ui, document, &policy.unlocks, catalog, state),
+            View::Investment => draw_investment(ui, document, &policy.investment, catalog, state),
+        }
     };
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
-        state.hash_inspection.open(hash);
+        let context = take_hash_inspection_context(ui.ctx(), hash);
+        state.hash_inspection.open_with_context(hash, context);
     }
-    draw_catalog_hash_window(
+    changed |= draw_catalog_hash_window(
         ui.ctx(),
         catalog,
         Some(document),
+        true,
         &mut state.hash_inspection,
         "progression",
     );
@@ -64,6 +75,54 @@ pub(in crate::app) fn draw_content(
         state.cached_progression = Some(Ok(policy));
     }
     changed
+}
+
+fn reveal_metadata_selection(
+    view: View,
+    selection: MetadataSelection,
+    catalog: &Catalog,
+    state: &mut UiState,
+) {
+    let index = selection.definition_index();
+    state.query = catalog
+        .unlock_value_definition(index)
+        .filter(|_| selection.is_value())
+        .or_else(|| {
+            catalog
+                .unlock_flag_definition(index)
+                .filter(|_| !selection.is_value())
+        })
+        .map_or_else(
+            || index.to_string(),
+            |definition| format_hash_hex(definition.hash),
+        );
+    match view {
+        View::Investment => {
+            state.investment_table = if selection.is_value() {
+                InvestmentTable::ValueOverrides
+            } else {
+                InvestmentTable::FlagOverrides
+            };
+        }
+        View::Unlocks => {
+            let definition = if selection.is_value() {
+                catalog.unlock_value_definition(index)
+            } else {
+                catalog.unlock_flag_definition(index)
+            };
+            state.unlock_table = match (selection.is_value(), definition.map(|value| value.bank()))
+            {
+                (false, Some(ACCOUNT_FLAG_BANK)) => UnlockTable::AccountFlagRuns,
+                (false, Some(PROFILE_FLAG_BANK)) => UnlockTable::ProfileFlagRuns,
+                (false, Some(CHARACTER_OBJECT_FLAG_BANK)) => UnlockTable::CharacterObjectFlagRuns,
+                (false, Some(CHARACTER_FLAG_BANK)) | (false, _) => UnlockTable::CharacterFlags,
+                (true, Some(CHARACTER_OBJECTIVE_BANK)) => {
+                    UnlockTable::CharacterObjectObjectiveValues
+                }
+                (true, _) => UnlockTable::ObjectiveValues,
+            };
+        }
+    }
 }
 
 pub(super) fn draw_unlocks(

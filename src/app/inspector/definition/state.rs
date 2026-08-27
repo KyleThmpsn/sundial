@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{catalog::Catalog, hash::format_hash_hex};
 
 use super::matches::CatalogHashMatchIndex;
+use crate::app::inspector::DefinitionInspectionContext;
 #[derive(Debug, Default)]
 pub(in crate::app) struct HashInspectionState {
     pub(super) current: Option<u64>,
@@ -11,13 +12,26 @@ pub(in crate::app) struct HashInspectionState {
     pub(super) match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
     pub(super) lookup: String,
     pub(super) lookup_error: bool,
+    pub(super) source_context: Option<DefinitionInspectionContext>,
+    pub(super) mutation_feedback: Option<(bool, String)>,
 }
 
 pub(super) const HASH_INSPECTOR_HISTORY_LIMIT: usize = 32;
 
 impl HashInspectionState {
     pub(in crate::app) fn open(&mut self, hash: u64) {
+        self.open_with_context(hash, None);
+    }
+
+    pub(in crate::app) fn open_with_context(
+        &mut self,
+        hash: u64,
+        context: Option<DefinitionInspectionContext>,
+    ) {
         if hash == 0 || self.current == Some(hash) {
+            if context.is_some() {
+                self.source_context = context;
+            }
             return;
         }
         if let Some(current) = self.current {
@@ -29,6 +43,8 @@ impl HashInspectionState {
         self.match_index = None;
         self.lookup = format_hash_hex(hash);
         self.lookup_error = false;
+        self.source_context = context;
+        self.mutation_feedback = None;
     }
 
     pub(in crate::app) const fn is_open(&self) -> bool {
@@ -45,6 +61,8 @@ impl HashInspectionState {
             self.match_index = None;
             self.lookup = format_hash_hex(previous);
             self.lookup_error = false;
+            self.source_context = None;
+            self.mutation_feedback = None;
         }
     }
 
@@ -58,6 +76,8 @@ impl HashInspectionState {
             self.match_index = None;
             self.lookup = format_hash_hex(next);
             self.lookup_error = false;
+            self.source_context = None;
+            self.mutation_feedback = None;
         }
     }
 
@@ -79,6 +99,8 @@ impl HashInspectionState {
         self.match_index = None;
         self.lookup = format_hash_hex(hash);
         self.lookup_error = false;
+        self.source_context = None;
+        self.mutation_feedback = None;
     }
 
     pub(super) fn match_index(
@@ -106,6 +128,8 @@ impl HashInspectionState {
         self.match_index = None;
         self.lookup.clear();
         self.lookup_error = false;
+        self.source_context = None;
+        self.mutation_feedback = None;
     }
 }
 
@@ -119,6 +143,18 @@ fn trim_navigation_stack(stack: &mut Vec<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::inspector::DefinitionInspectionContext;
+
+    fn assert_navigation_state(
+        inspection: &HashInspectionState,
+        current: Option<u64>,
+        history: &[u64],
+        forward: &[u64],
+    ) {
+        assert_eq!(inspection.current, current);
+        assert_eq!(inspection.history, history);
+        assert_eq!(inspection.forward, forward);
+    }
 
     #[test]
     fn navigation_keeps_a_real_history() {
@@ -128,26 +164,34 @@ mod tests {
 
         inspection.open(0x1111_1111);
         inspection.open(0x1111_1111);
-        assert_eq!(inspection.current, Some(0x1111_1111));
-        assert!(inspection.history.is_empty());
+        assert_navigation_state(&inspection, Some(0x1111_1111), &[], &[]);
 
         inspection.open(0x2222_2222);
         inspection.open(0x3333_3333);
-        assert_eq!(inspection.current, Some(0x3333_3333));
-        assert_eq!(inspection.history, [0x1111_1111, 0x2222_2222]);
-        assert!(inspection.forward.is_empty());
+        assert_navigation_state(
+            &inspection,
+            Some(0x3333_3333),
+            &[0x1111_1111, 0x2222_2222],
+            &[],
+        );
 
         inspection.back();
-        assert_eq!(inspection.current, Some(0x2222_2222));
-        assert_eq!(inspection.history, [0x1111_1111]);
-        assert_eq!(inspection.forward, [0x3333_3333]);
+        assert_navigation_state(
+            &inspection,
+            Some(0x2222_2222),
+            &[0x1111_1111],
+            &[0x3333_3333],
+        );
 
         inspection.open(0x3333_3333);
         inspection.open(0x4444_4444);
         inspection.navigate_history(0);
-        assert_eq!(inspection.current, Some(0x1111_1111));
-        assert!(inspection.history.is_empty());
-        assert_eq!(inspection.forward, [0x4444_4444, 0x3333_3333, 0x2222_2222]);
+        assert_navigation_state(
+            &inspection,
+            Some(0x1111_1111),
+            &[],
+            &[0x4444_4444, 0x3333_3333, 0x2222_2222],
+        );
         assert_eq!(inspection.lookup, "0x11111111");
 
         inspection.close();
@@ -156,6 +200,28 @@ mod tests {
         assert!(inspection.forward.is_empty());
         assert!(inspection.lookup.is_empty());
         assert!(!inspection.lookup_error);
+    }
+
+    #[test]
+    fn opened_item_context_tracks_only_the_current_definition() {
+        let mut inspection = HashInspectionState::default();
+        let context = DefinitionInspectionContext {
+            source: "Character 1 equipment · Kinetic".into(),
+            instance_id: Some("0x4000000000000001".into()),
+            authored_level: Some(1_950),
+            flags: Some(1),
+            plug_count: Some(8),
+        };
+
+        inspection.open_with_context(0xD980_2C4F, Some(context.clone()));
+        assert_eq!(inspection.source_context, Some(context));
+
+        inspection.open(0x395D_3E2F);
+        assert_eq!(inspection.source_context, None);
+
+        inspection.back();
+        assert_eq!(inspection.current, Some(0xD980_2C4F));
+        assert_eq!(inspection.source_context, None);
     }
 
     #[test]

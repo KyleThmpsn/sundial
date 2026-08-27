@@ -8,40 +8,91 @@ impl SundialApp {
         editable: bool,
     ) {
         let settings_schema = game_settings::schema_version(&self.document);
-        let Some(character) = self.characters().and_then(|chars| chars.get(index)) else {
+        let metadata = self
+            .account_workspace
+            .character_metadata(&self.document, index)
+            .ok();
+        let fallback_character = self
+            .characters()
+            .and_then(|characters| characters.get(index))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let character = &fallback_character;
+        if metadata.is_none() && character.is_null() {
             return;
-        };
-        let soid = character
-            .get("soid")
-            .and_then(parse_unsigned_value)
-            .map_or_else(|| "Unknown".to_owned(), format_hash_hex);
-        let mut race = character.get("race").and_then(Value::as_u64).unwrap_or(0);
-        let mut gender = character.get("gender").and_then(Value::as_u64).unwrap_or(0);
-        let mut class_type = character.get("class").and_then(Value::as_u64).unwrap_or(0);
-        let mut movement = character
-            .get("movement_ability")
-            .and_then(Value::as_u64)
-            .unwrap_or(4);
-        let mut grenade = character
-            .get("grenade_ability")
-            .and_then(Value::as_u64)
-            .unwrap_or(7);
-        let mut super_ability = character
-            .get("super_ability")
-            .and_then(Value::as_u64)
-            .unwrap_or(10);
-        let mut melee = character
-            .get("melee_ability")
-            .and_then(Value::as_u64)
-            .unwrap_or(11);
-        let mut class_ability = character
-            .get("class_ability")
-            .and_then(Value::as_u64)
-            .unwrap_or(2);
+        }
+        let soid = self
+            .account_workspace
+            .character_soid(&self.document, index)
+            .map_or_else(|| "Unknown".to_owned(), |soid| format!("0x{soid:016X}"));
+        let mut race = metadata.map_or_else(
+            || character.get("race").and_then(Value::as_u64).unwrap_or(0),
+            |metadata| u64::from(metadata.race),
+        );
+        let mut gender = metadata.map_or_else(
+            || character.get("gender").and_then(Value::as_u64).unwrap_or(0),
+            |metadata| u64::from(metadata.gender),
+        );
+        let mut class_type = metadata.map_or_else(
+            || character.get("class").and_then(Value::as_u64).unwrap_or(0),
+            |metadata| u64::from(metadata.class_type),
+        );
+        let mut movement = metadata.map_or_else(
+            || {
+                character
+                    .get("movement_ability")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(4)
+            },
+            |metadata| u64::from(metadata.abilities.movement),
+        );
+        let mut grenade = metadata.map_or_else(
+            || {
+                character
+                    .get("grenade_ability")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(7)
+            },
+            |metadata| u64::from(metadata.abilities.grenade),
+        );
+        let mut super_ability = metadata.map_or_else(
+            || {
+                character
+                    .get("super_ability")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(10)
+            },
+            |metadata| u64::from(metadata.abilities.super_ability),
+        );
+        let mut melee = metadata.map_or_else(
+            || {
+                character
+                    .get("melee_ability")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(11)
+            },
+            |metadata| u64::from(metadata.abilities.melee),
+        );
+        let mut class_ability = metadata.map_or_else(
+            || {
+                character
+                    .get("class_ability")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(2)
+            },
+            |metadata| u64::from(metadata.abilities.class_ability),
+        );
         let original_class_type = class_type;
-        let mut current_subclass_hash = character
-            .pointer("/equipment/subclass/definition_hash")
-            .and_then(parse_unsigned_value);
+        let mut current_subclass_hash = self
+            .account_workspace
+            .equipped_item_snapshots(&self.document, index)
+            .ok()
+            .and_then(|items| {
+                items
+                    .into_iter()
+                    .find(|item| item.slot == "subclass")
+                    .and_then(|item| item.definition_hash)
+            });
         let mut abilities = current_subclass_hash
             .and_then(|hash| self.manifest.get_for_bucket(hash, 3_284_755_031))
             .map(|item| item.abilities.clone())
@@ -60,18 +111,33 @@ impl SundialApp {
             .cloned()
             .collect();
         let mut selected_subclass = None::<Arc<ItemDef>>;
-        let stored_warning = self
-            .source_warning
-            .as_deref()
-            .filter(|warning| {
-                warning.starts_with(&format!("Character {} ", index + 1))
-                    && (warning.contains("ability") || warning.contains("super and melee"))
+        let stored_warning = self.document.uses_json_account().then(|| {
+            self.source_warning
+                .as_deref()
+                .filter(|warning| {
+                    warning.starts_with(&format!("Character {} ", index + 1))
+                        && (warning.contains("ability") || warning.contains("super and melee"))
+                })
+                .map(str::to_owned)
+        });
+        let ability_warning = current_subclass_hash
+            .and_then(|subclass_hash| {
+                character_ability_issue_for_values(
+                    subclass_hash,
+                    Some(movement),
+                    Some(grenade),
+                    Some(super_ability),
+                    Some(melee),
+                    Some(class_ability),
+                )
             })
-            .map(str::to_owned);
-        let ability_warning = character
-            .as_object()
-            .and_then(character_ability_issue)
-            .or(stored_warning);
+            .or_else(|| {
+                metadata
+                    .is_none()
+                    .then(|| character.as_object().and_then(character_ability_issue))
+                    .flatten()
+            })
+            .or_else(|| stored_warning.flatten());
 
         ui.heading(format!("Character {}", index + 1));
         ui.label(egui::RichText::new(soid).monospace().weak());
@@ -311,47 +377,66 @@ impl SundialApp {
             return;
         }
 
-        let mut changed = false;
         let selecting_subclass = selected_subclass.is_some();
         let armor_template = (class_type != original_class_type)
             .then(|| self.class_armor_defaults.get(&class_type).cloned())
             .flatten();
-        {
-            let Some(character) = self.characters_mut().and_then(|chars| chars.get_mut(index))
-            else {
-                return;
-            };
-            let Some(object) = character.as_object_mut() else {
-                return;
-            };
-            for (key, new_value) in [("race", race), ("gender", gender), ("class", class_type)] {
-                let old = object.get(key).and_then(Value::as_u64);
-                if old != Some(new_value) {
-                    object.insert(key.into(), Value::from(new_value));
-                    changed = true;
-                }
-            }
-            if !selecting_subclass {
-                for (key, new_value) in [
-                    ("movement_ability", movement),
-                    ("grenade_ability", grenade),
-                    ("super_ability", super_ability),
-                    ("melee_ability", melee),
-                    ("class_ability", class_ability),
-                ] {
-                    if object.get(key).and_then(Value::as_u64) != Some(new_value) {
-                        object.insert(key.into(), Value::from(new_value));
-                        changed = true;
-                    }
-                }
-            }
-            if let Some(template) = armor_template.as_ref() {
-                changed |= restore_class_armor(object, template);
-            }
+        let mut candidate = self.document.clone();
+        let mut metadata_updates = vec![
+            sundial_account::CharacterMetadataUpdate::SetAppearanceAndClass {
+                race: u8::try_from(race).expect("character race selectors contain u8 values"),
+                gender: u8::try_from(gender).expect("character gender selectors contain u8 values"),
+                class_type: u8::try_from(class_type)
+                    .expect("character class selectors contain u8 values"),
+            },
+        ];
+        if !selecting_subclass {
+            metadata_updates.push(sundial_account::CharacterMetadataUpdate::SetAbilities(
+                sundial_account::CharacterAbilities {
+                    movement: u8::try_from(movement).expect("movement selectors contain u8 values"),
+                    grenade: u8::try_from(grenade).expect("grenade selectors contain u8 values"),
+                    super_ability: u8::try_from(super_ability)
+                        .expect("super selectors contain u8 values"),
+                    melee: u8::try_from(melee).expect("melee selectors contain u8 values"),
+                    class_ability: u8::try_from(class_ability)
+                        .expect("class ability selectors contain u8 values"),
+                },
+            ));
         }
-        self.dirty |= changed;
-        if let Some(subclass) = selected_subclass {
-            self.select_subclass_item(index, &subclass);
+        if let Err(error) =
+            self.account_workspace
+                .apply_character_updates(&mut candidate, index, metadata_updates)
+        {
+            self.set_status(error, true);
+            return;
+        }
+        if let Some(source_character_index) = armor_template
+            && let Err(error) = self.account_workspace.restore_class_armor(
+                &mut candidate,
+                source_character_index,
+                index,
+            )
+        {
+            self.set_status(error, true);
+            return;
+        }
+        if let Some(subclass) = selected_subclass.as_ref()
+            && let Err(error) = equip_subclass_with_default_abilities(
+                self.account_workspace,
+                &mut candidate,
+                index,
+                subclass,
+            )
+        {
+            self.set_status(error, true);
+            return;
+        }
+        if candidate != self.document {
+            self.document = candidate;
+            self.dirty = true;
+            if let Some(subclass) = selected_subclass {
+                self.set_status(format!("Equipped {}", subclass.name), false);
+            }
         }
     }
 
@@ -371,6 +456,11 @@ impl SundialApp {
                 &mut requested_plug_selection_mode,
                 PlugSelectionMode::Supported,
                 PlugSelectionMode::Supported.label(),
+            );
+            ui.radio_value(
+                &mut requested_plug_selection_mode,
+                PlugSelectionMode::SocketAndGearType,
+                PlugSelectionMode::SocketAndGearType.label(),
             );
             ui.radio_value(
                 &mut requested_plug_selection_mode,

@@ -2,7 +2,7 @@
 //!
 //! Panoptes introduced the useful idea of editing one selected item beside an
 //! equipped-plus-inventory icon grid. This module ports that presentation only:
-//! Sundial's package-scanned catalog, stable inventory identities, schema gates,
+//! Sundial's package-scanned catalog, stable inventory identities, adapter capability gates,
 //! and atomic equipment/inventory actions remain authoritative.
 
 mod editors;
@@ -12,12 +12,10 @@ mod widgets;
 
 use eframe::egui;
 
-use crate::hash::parse_unsigned_value;
-
-use super::{EquippedItemSnapshot, equipped_item_snapshots};
+use super::EquippedItemSnapshot;
 use crate::app::{
     ConfirmationDialog, PlugSelectionMode, SLOTS, SundialApp, ViewMode,
-    inventory::{self, InventoryItemSnapshot},
+    inventory::InventoryItemSnapshot,
     inventory_page::{
         CharacterInventoryEditorContext, InventoryItemUiId, inventory_item_ui_identities,
     },
@@ -49,33 +47,61 @@ struct PanoptesGrid<'a> {
 }
 
 impl SundialApp {
+    pub(in crate::app) fn draw_panoptes_layout_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &EquippedItemSnapshot,
+        class_type: u64,
+    ) {
+        let inventory_context = self.character_inventory_editor_context(false, class_type);
+        self.draw_panoptes_slot(
+            ui,
+            0,
+            snapshot.slot,
+            snapshot.slot_label,
+            snapshot.bucket_hash,
+            class_type,
+            false,
+            true,
+            Some(snapshot),
+            snapshot.definition_hash,
+            &[],
+            &inventory_context,
+        );
+    }
+
     pub(super) fn draw_panoptes_equipment(&mut self, ui: &mut egui::Ui, character_index: usize) {
         let group_sockets_id = ui.make_persistent_id("panoptes-group-sockets");
         let mut group_sockets = ui
             .data_mut(|data| data.get_temp::<bool>(group_sockets_id))
             .unwrap_or(true);
-        let schema_mode = inventory::schema_mode(&self.document);
-        let equipment_editable = schema_mode.can_mutate_equipment();
-        let inventory_editable = schema_mode.can_mutate_character_inventory();
+        let equipment_editable = self.account_workspace.can_mutate_equipment(&self.document);
+        let inventory_editable = self
+            .account_workspace
+            .can_mutate_character_inventory(&self.document);
         let class_type = self
-            .characters()
-            .and_then(|characters| characters.get(character_index))
-            .and_then(|character| character.get("class"))
-            .and_then(serde_json::Value::as_u64)
+            .account_workspace
+            .character_metadata(&self.document, character_index)
+            .ok()
+            .map(|metadata| u64::from(metadata.class_type))
             .unwrap_or(99);
-        let (inventory_items, inventory_error) =
-            match inventory::character_inventory(&self.document, character_index) {
-                Ok(items) => (items.unwrap_or_default(), None),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            };
+        let (inventory_items, inventory_error) = match self
+            .account_workspace
+            .character_inventory(&self.document, character_index)
+        {
+            Ok(items) => (items.unwrap_or_default(), None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         let inventory_ui_identities = inventory_item_ui_identities(&inventory_items);
         let inventory_context =
             self.character_inventory_editor_context(inventory_editable, class_type);
-        let (equipped_items, equipment_error) =
-            match equipped_item_snapshots(&self.document, character_index) {
-                Ok(items) => (items, None),
-                Err(error) => (Vec::new(), Some(error)),
-            };
+        let (equipped_items, equipment_error) = match self
+            .account_workspace
+            .equipped_item_snapshots(&self.document, character_index)
+        {
+            Ok(items) => (items, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
 
         ui.add_space(10.0);
         ui.heading("Loadout");
@@ -91,12 +117,10 @@ impl SundialApp {
         self.draw_equipped_armor_stat_row(ui, character_index);
         ui.data_mut(|data| data.insert_temp(group_sockets_id, group_sockets));
         if !inventory_editable {
-            ui.label(
-                egui::RichText::new(
-                    "Stored items are read-only because character inventory editing requires settings schema 6.",
-                )
-                .weak(),
+            let reason = self.document.account_editing_blocked().unwrap_or(
+                "Character inventory editing is unavailable for this settings.json schema.",
             );
+            ui.label(egui::RichText::new(format!("Stored items are read-only. {reason}")).weak());
         }
         if let Some(error) = inventory_error {
             ui.colored_label(
@@ -133,14 +157,7 @@ impl SundialApp {
 
         for &(slot, label, bucket_hash) in SLOTS.iter().filter(|(slot, _, _)| *slot != "subclass") {
             let equipped_snapshot = equipped_items.iter().find(|snapshot| snapshot.slot == slot);
-            let equipped_hash = self
-                .characters()
-                .and_then(|characters| characters.get(character_index))
-                .and_then(|character| character.get("equipment"))
-                .and_then(serde_json::Value::as_object)
-                .and_then(|equipment| equipment.get(slot))
-                .and_then(|item| item.get("definition_hash"))
-                .and_then(parse_unsigned_value);
+            let equipped_hash = equipped_snapshot.and_then(|snapshot| snapshot.definition_hash);
             let stored_items = inventory_items
                 .iter()
                 .zip(inventory_ui_identities.iter().copied())
@@ -191,6 +208,11 @@ impl SundialApp {
                         PlugSelectionMode::Supported,
                         PlugSelectionMode::Supported.label(),
                         "Only plugs explicitly supported by this socket",
+                    ),
+                    (
+                        PlugSelectionMode::SocketAndGearType,
+                        PlugSelectionMode::SocketAndGearType.label(),
+                        "All plugs discovered for this socket type on the same item type, such as Hand Cannon or Helmet. Safer, but not guaranteed compatible.",
                     ),
                     (
                         PlugSelectionMode::MatchingSocketType,
@@ -493,6 +515,7 @@ fn valid_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::inventory::{InventoryItemLocation, ItemPlugs};
 
     fn identity(instance_soid: u64) -> InventoryItemUiId {
         InventoryItemUiId::new(0, instance_soid, None)
@@ -500,7 +523,7 @@ mod tests {
 
     fn snapshot(instance_soid: u64) -> InventoryItemSnapshot {
         InventoryItemSnapshot {
-            location: inventory::InventoryItemLocation {
+            location: InventoryItemLocation {
                 character_index: 0,
                 item_index: 0,
             },
@@ -508,7 +531,7 @@ mod tests {
             definition_hash: 1,
             level: 0,
             quantity: 1,
-            plugs: inventory::ItemPlugs::NativeDefaults,
+            plugs: ItemPlugs::NativeDefaults,
             flags: None,
         }
     }

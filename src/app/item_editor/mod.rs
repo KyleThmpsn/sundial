@@ -13,7 +13,9 @@ mod plug_picker;
 mod tests;
 
 pub(crate) use super::components::{draw_lock_button, draw_trash_button, draw_unlock_button};
-pub(crate) use catalog_picker::{catalog_item_tooltip, catalog_item_tooltip_immediate};
+pub(crate) use catalog_picker::{
+    catalog_item_tooltip, catalog_item_tooltip_available, catalog_item_tooltip_immediate,
+};
 pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request, draw_definition_picker_with_open_request_and_footer,
 };
@@ -23,7 +25,7 @@ pub(crate) use filters::{ItemFilter, ItemFilterScope, draw_item_filter_bar};
 pub(crate) use header::{
     draw_catalog_item_header_with_trailing, draw_item_header_with_trailing, muted_item_header_fill,
 };
-pub(crate) use layout::draw_responsive_item_cards;
+pub(crate) use layout::{draw_responsive_item_cards, draw_virtualized_responsive_item_cards};
 pub(crate) use model::{
     ClearDefinitionChoice, DefinitionChoice, DefinitionPickerChoices, DefinitionSummary,
     ExistingInventoryChoice, ItemEditorAction, ItemHeader, NativePlugDefault, NumericItemFields,
@@ -55,6 +57,10 @@ use crate::{
 };
 
 use super::{
-    PlugSelectionMode, inspector::request_definition as request_hash_inspection,
+    PlugSelectionMode,
+    inspector::{
+        DefinitionInspectionContext, request_definition as request_hash_inspection,
+        request_definition_with_context as request_hash_inspection_with_context,
+    },
     ui::single_line_galley,
 };

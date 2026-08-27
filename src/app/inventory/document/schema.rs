@@ -183,6 +183,7 @@ pub(in crate::app::inventory) fn require_readable_schema(
     }
 }
 
+#[cfg(test)]
 pub(in crate::app::inventory) fn require_profile_mutation(
     document: &Value,
 ) -> InventoryResult<SchemaMode> {

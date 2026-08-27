@@ -772,6 +772,9 @@ fn allocation_choices_for_socket(
     };
     let hashes = match mode {
         PlugSelectionMode::Supported => catalog.socket_options(socket).to_vec(),
+        PlugSelectionMode::SocketAndGearType => catalog
+            .socket_and_gear_type_options(item, socket_index)
+            .to_vec(),
         PlugSelectionMode::MatchingSocketType => {
             catalog.socket_type_options(socket.socket_type).to_vec()
         }
@@ -817,7 +820,9 @@ fn cross_group_choices_for_socket(
     let mut hashes = match mode {
         PlugSelectionMode::GearType => catalog.gear_type_options(item, socket_index),
         PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
-        PlugSelectionMode::Supported | PlugSelectionMode::MatchingSocketType => Vec::new(),
+        PlugSelectionMode::Supported
+        | PlugSelectionMode::SocketAndGearType
+        | PlugSelectionMode::MatchingSocketType => Vec::new(),
     };
     if let Some(current) = current {
         hashes.push(current);
@@ -1167,6 +1172,9 @@ mod tests {
     fn only_gear_type_and_all_allow_cross_group_allocations() {
         assert!(!mode_allows_cross_group_allocations(
             PlugSelectionMode::Supported
+        ));
+        assert!(!mode_allows_cross_group_allocations(
+            PlugSelectionMode::SocketAndGearType
         ));
         assert!(!mode_allows_cross_group_allocations(
             PlugSelectionMode::MatchingSocketType

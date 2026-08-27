@@ -38,6 +38,15 @@ impl ItemDamageType {
         }
     }
 
+    pub(crate) const fn sandbox_perk_definition_index(self) -> Option<u16> {
+        match self {
+            Self::Kinetic => None,
+            Self::Arc => Some(ARC_DAMAGE_PERK_INDEX as u16),
+            Self::Solar => Some(SOLAR_DAMAGE_PERK_INDEX as u16),
+            Self::Void => Some(VOID_DAMAGE_PERK_INDEX as u16),
+        }
+    }
+
     const fn from_package_perk_index(index: i32) -> Option<Self> {
         match index {
             ARC_DAMAGE_PERK_INDEX => Some(Self::Arc),

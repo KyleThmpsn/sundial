@@ -1,6 +1,8 @@
 use std::{
-    collections::HashMap,
-    path::Path,
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -29,9 +31,26 @@ const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
 
 #[derive(Default)]
 pub(super) struct IconRuntime {
-    manager: Option<PackageManager>,
     textures: HashMap<u64, (CachedIcon, u64)>,
+    pending: HashSet<u64>,
+    worker: Option<IconWorker>,
     access_counter: u64,
+}
+
+struct IconWorker {
+    requests: Sender<IconLoadRequest>,
+    results: Receiver<IconLoadResult>,
+}
+
+#[derive(Clone, Copy)]
+struct IconLoadRequest {
+    hash: u64,
+    container: u32,
+}
+
+struct IconLoadResult {
+    hash: u64,
+    loaded: Result<LoadedCatalogIcon, String>,
 }
 
 impl Catalog {
@@ -138,6 +157,7 @@ impl IconRuntime {
         hash: u64,
         container: u32,
     ) -> Option<eframe::egui::TextureHandle> {
+        self.install_completed(context);
         self.access_counter = self.access_counter.wrapping_add(1);
         let access = self.access_counter;
         let now = Instant::now();
@@ -150,14 +170,17 @@ impl IconRuntime {
             }
         }
         self.textures.remove(&hash);
-        if self.manager.is_none() {
-            match package_runtime::open_shadowkeep_packages(install_path) {
-                Ok(manager) => self.manager = Some(manager),
+        if self.pending.contains(&hash) {
+            return None;
+        }
+        if self.worker.is_none() {
+            match IconWorker::spawn(install_path.to_owned(), context.clone()) {
+                Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     self.cache(
                         hash,
                         CachedIcon::Failed {
-                            error: format!("Could not open the installed packages: {error}"),
+                            error,
                             retry_after: now + FAILED_ICON_RETRY_DELAY,
                         },
                         access,
@@ -166,32 +189,25 @@ impl IconRuntime {
                 }
             }
         }
-        let loaded = load_catalog_icon(
-            self.manager
-                .as_ref()
-                .expect("icon package manager was initialized"),
-            TagHash(container),
-        );
-        let cached = match loaded {
-            Ok(loaded) => CachedIcon::Loaded {
-                texture: context.load_texture(
-                    format!("catalog-icon-{hash:08X}"),
-                    loaded.image,
-                    eframe::egui::TextureOptions::LINEAR,
-                ),
-                warnings: loaded.warnings,
-            },
-            Err(error) => CachedIcon::Failed {
-                error,
-                retry_after: now + FAILED_ICON_RETRY_DELAY,
-            },
-        };
-        let texture = match &cached {
-            CachedIcon::Loaded { texture, .. } => Some(texture.clone()),
-            CachedIcon::Failed { .. } => None,
-        };
-        self.cache(hash, cached, access);
-        texture
+        let request = IconLoadRequest { hash, container };
+        let queued = self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.requests.send(request).is_ok());
+        if queued {
+            self.pending.insert(hash);
+        } else {
+            self.worker = None;
+            self.cache(
+                hash,
+                CachedIcon::Failed {
+                    error: "The package icon loader stopped unexpectedly".to_owned(),
+                    retry_after: now + FAILED_ICON_RETRY_DELAY,
+                },
+                access,
+            );
+        }
+        None
     }
 
     pub(super) fn diagnostic(&self, hash: u64) -> Option<String> {
@@ -216,6 +232,75 @@ impl IconRuntime {
             self.textures.remove(&oldest);
         }
         self.textures.insert(hash, (icon, access));
+    }
+
+    fn install_completed(&mut self, context: &eframe::egui::Context) {
+        let completed = self.worker.as_ref().map_or_else(Vec::new, |worker| {
+            worker.results.try_iter().collect::<Vec<_>>()
+        });
+        for result in completed {
+            self.pending.remove(&result.hash);
+            self.access_counter = self.access_counter.wrapping_add(1);
+            let access = self.access_counter;
+            let cached = match result.loaded {
+                Ok(loaded) => CachedIcon::Loaded {
+                    texture: context.load_texture(
+                        format!("catalog-icon-{:08X}", result.hash),
+                        loaded.image,
+                        eframe::egui::TextureOptions::LINEAR,
+                    ),
+                    warnings: loaded.warnings,
+                },
+                Err(error) => CachedIcon::Failed {
+                    error,
+                    retry_after: Instant::now() + FAILED_ICON_RETRY_DELAY,
+                },
+            };
+            self.cache(result.hash, cached, access);
+        }
+    }
+}
+
+impl IconWorker {
+    fn spawn(install_path: PathBuf, context: eframe::egui::Context) -> Result<Self, String> {
+        let (request_sender, request_receiver) = mpsc::channel::<IconLoadRequest>();
+        let (result_sender, result_receiver) = mpsc::channel::<IconLoadResult>();
+        thread::Builder::new()
+            .name("sundial-icon-loader".to_owned())
+            .spawn(move || {
+                run_icon_worker(&install_path, &context, request_receiver, result_sender)
+            })
+            .map_err(|error| format!("Could not start the package icon loader: {error}"))?;
+        Ok(Self {
+            requests: request_sender,
+            results: result_receiver,
+        })
+    }
+}
+
+fn run_icon_worker(
+    install_path: &Path,
+    context: &eframe::egui::Context,
+    requests: Receiver<IconLoadRequest>,
+    results: Sender<IconLoadResult>,
+) {
+    let manager = package_runtime::open_shadowkeep_packages(install_path)
+        .map_err(|error| format!("Could not open the installed packages: {error}"));
+    while let Ok(request) = requests.recv() {
+        let loaded = match &manager {
+            Ok(manager) => load_catalog_icon(manager, TagHash(request.container)),
+            Err(error) => Err(error.clone()),
+        };
+        if results
+            .send(IconLoadResult {
+                hash: request.hash,
+                loaded,
+            })
+            .is_err()
+        {
+            break;
+        }
+        context.request_repaint();
     }
 }
 

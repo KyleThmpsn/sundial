@@ -19,6 +19,9 @@ mod edits;
 mod expression;
 
 pub(super) use edits::draw_collection_acquisition_action;
+pub(in crate::app) use edits::{
+    collectible_acquisition_edit_available, set_collectible_acquisition_state,
+};
 use expression::{
     AND_INSTRUCTION, EQUAL_INSTRUCTION, GREATER_OR_EQUAL_INSTRUCTION, GREATER_THAN_INSTRUCTION,
     LEGACY_LITERAL_ENCODING_INSTRUCTION, LITERAL_INSTRUCTION, NOT_EQUAL_INSTRUCTION,
@@ -206,6 +209,27 @@ pub(super) fn acquisition_status(
                 state: AcquisitionState::Unknown,
             }
         }
+    }
+}
+
+pub(in crate::app) fn collectible_state(
+    definition: &CollectibleDef,
+    snapshot: &CollectionStateSnapshot,
+    catalog: &Catalog,
+) -> (String, String) {
+    let state = acquisition_status(definition, snapshot, catalog);
+    (state.text, state.tooltip)
+}
+
+pub(in crate::app) fn collectible_acquired_state(
+    definition: &CollectibleDef,
+    snapshot: &CollectionStateSnapshot,
+    catalog: &Catalog,
+) -> Option<bool> {
+    match acquisition_status(definition, snapshot, catalog).state {
+        AcquisitionState::Acquired => Some(true),
+        AcquisitionState::Missing => Some(false),
+        AcquisitionState::NoRule | AcquisitionState::Unknown => None,
     }
 }
 

@@ -12,9 +12,7 @@ use crate::{
 use super::{
     super::{
         SundialApp,
-        inventory::{
-            self, InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs,
-        },
+        inventory::{InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs},
         ui::single_line_galley as transfer_menu_galley,
     },
     model::{
@@ -262,13 +260,15 @@ pub(in crate::app) fn displayed_inventory_plugs(
 }
 
 pub(super) fn apply_inventory_actions_atomic(
-    document: &mut serde_json::Value,
+    workspace: super::super::account_workspace::AccountWorkspace,
+    document: &mut super::super::account_workspace::WorkspaceDocument,
     location: InventoryItemLocation,
     actions: Vec<InventoryItemAction>,
 ) -> Result<(), String> {
     let mut candidate = document.clone();
     for action in actions {
-        inventory::apply_inventory_item_action(&mut candidate, location, action)
+        workspace
+            .apply_inventory_item_action(&mut candidate, location, action)
             .map_err(|error| error.to_string())?;
     }
     *document = candidate;
