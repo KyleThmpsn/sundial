@@ -8,6 +8,7 @@ mod actions;
 mod armor_stat_allocation;
 mod armor_stats_adjuster;
 mod character;
+mod character_runtime;
 mod defaults;
 mod document;
 mod model;
@@ -25,10 +26,9 @@ pub(in crate::app) use armor_stats_adjuster::{
 };
 pub(super) use defaults::{
     class_name, collect_class_armor_default_characters, default_ability_values,
-    default_subclass_name, selected_attunement_index,
+    default_subclass_name, item_class_is_compatible, selected_attunement_index,
+    subclass_display_name,
 };
-#[cfg(test)]
-pub(super) use defaults::{collect_class_armor_defaults, restore_class_armor};
 #[cfg(test)]
 pub(in crate::app) use document::legacy as legacy_document_tests;
 pub(super) use document::{

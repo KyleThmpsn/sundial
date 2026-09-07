@@ -19,7 +19,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use super::inspector::{objective_goal_text, objective_target_tooltip, objective_traits_tooltip};
+use super::inspector::objective_goal_text;
 use super::{
     glyphs::Glyph,
     inspector::{
@@ -61,8 +61,8 @@ use document::{
     FAMILY5_FLAG_VALUE_MAXIMUM, FAMILY5_OVERRIDE_CAPACITY, FAMILY5_VALUE_SLOT_MAXIMUM, FlagIndex,
     FlagOverride, FlagRun, IndexedValue, InvestmentPolicy, OBJECTIVE_VALUE_CAPACITY,
     PROFILE_FLAG_BANK, PROFILE_FLAG_CAPACITY, PROGRESSION_DEFINITION_CAPACITY, Progression,
-    ProgressionValue, UnlockPolicy, ValueOverride, compress_flag_slots, expanded_flag_slots, parse,
-    parse_investment, parse_unlocks,
+    ProgressionValue, RESERVED_CHARACTER_OBJECTIVE_VALUES, UnlockPolicy, ValueOverride,
+    compress_flag_slots, expanded_flag_slots, parse, parse_investment, parse_unlocks,
 };
 pub(super) use document::{
     CollectionStateSnapshot, collection_flag_state_text, collection_state_snapshot,
@@ -76,6 +76,7 @@ const TABLE_ACTION_WIDTH: f32 = 24.0;
 const CANONICAL_ROOTS: [&str; 5] = ["Items", "Triumphs", "Metrics", "Activities", "Presentation"];
 
 pub(super) use hierarchy::progression_display_name;
+pub(in crate::app) use mutations::remove_authored_collection_state;
 pub(super) use mutations::{set_collection_flag, set_collection_value};
 pub(super) use page::draw_content;
 pub(super) use state::{UiState, View};

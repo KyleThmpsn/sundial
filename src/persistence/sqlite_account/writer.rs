@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -8,6 +7,8 @@ use rusqlite::{Connection, MAIN_DB, OpenFlags, Transaction, TransactionBehavior,
 use sundial_account::{
     CharacterAbilities, DismantleGearClass, DismantleRarity, ItemInstance, ItemPlugs,
 };
+
+use crate::storage;
 
 use super::{
     SqliteAccountDocument, SqliteAccountDocumentLoad, SqliteAccountError,
@@ -18,6 +19,7 @@ use super::{
 
 pub(crate) struct SqliteSaveReceipt {
     pub(crate) backup: PathBuf,
+    pub(crate) checkpoint_warning: Option<String>,
 }
 
 pub(crate) struct SqliteRestoreReceipt {
@@ -27,7 +29,8 @@ pub(crate) struct SqliteRestoreReceipt {
 pub(crate) fn save(
     document: &mut SqliteAccountDocument,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    save_with_backup(document, backup_path()?)
+    let backup = backup_path(document.path())?;
+    save_with_backup(document, backup)
 }
 
 fn save_with_backup(
@@ -58,11 +61,16 @@ fn save_with_backup(
     transaction
         .commit()
         .map_err(|error| SqliteAccountError::sqlite("commit", error))?;
-    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    let checkpoint_warning = truncate_wal(&connection)
+        .err()
+        .map(|error| error.to_string());
     let revision = document::database_revision(&connection)?;
     candidate.set_revision(revision);
     *document = candidate;
-    Ok(SqliteSaveReceipt { backup })
+    Ok(SqliteSaveReceipt {
+        backup,
+        checkpoint_warning,
+    })
 }
 
 #[cfg(test)]
@@ -80,7 +88,7 @@ pub(crate) fn restore_backup(destination: &Path, backup: &Path) -> Result<(), Sq
     connection
         .restore(MAIN_DB, backup, None::<fn(rusqlite::backup::Progress)>)
         .map_err(|error| SqliteAccountError::sqlite("restore", error))?;
-    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    truncate_wal(&connection)?;
     if document::database_revision(&connection)? != expected {
         return Err(SqliteAccountError::Backup(format!(
             "SQLite backup {} was restored but did not verify",
@@ -98,7 +106,7 @@ pub(crate) fn restore_backup_safely(
     destination: &Path,
     backup: &Path,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    let safety_backup = recovery_backup_path()?;
+    let safety_backup = recovery_backup_path(destination)?;
     restore_backup_safely_with_path(destination, backup, safety_backup)
 }
 
@@ -165,10 +173,7 @@ fn create_integrity_checked_snapshot(
             .map_err(|error| SqliteAccountError::sqlite("open a recovery snapshot for", error))?;
         validate_integrity(&snapshot, "the recovery snapshot")
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(backup);
-    }
-    result
+    finish_backup_attempt(backup, result)
 }
 
 fn restore_integrity_checked_snapshot(
@@ -184,8 +189,35 @@ fn restore_integrity_checked_snapshot(
     destination_connection
         .restore(MAIN_DB, snapshot, None::<fn(rusqlite::backup::Progress)>)
         .map_err(|error| SqliteAccountError::sqlite("restore the recovery snapshot to", error))?;
-    let _ = destination_connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    truncate_wal(&destination_connection)?;
     validate_integrity(&destination_connection, "the restored state.sqlite3")
+}
+
+fn truncate_wal(connection: &Connection) -> Result<(), SqliteAccountError> {
+    let (busy, log_frames, checkpointed_frames) = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|error| SqliteAccountError::sqlite("checkpoint", error))?;
+    validate_checkpoint_status(busy, log_frames, checkpointed_frames)
+}
+
+fn validate_checkpoint_status(
+    busy: i64,
+    log_frames: i64,
+    checkpointed_frames: i64,
+) -> Result<(), SqliteAccountError> {
+    if busy == 0 {
+        Ok(())
+    } else {
+        Err(SqliteAccountError::Backup(format!(
+            "could not truncate the SQLite write-ahead log because another database connection kept it busy ({checkpointed_frames} of {log_frames} frames checkpointed)"
+        )))
+    }
 }
 
 fn validate_integrity(
@@ -233,29 +265,41 @@ fn create_verified_backup(
         }
         Ok(())
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(backup);
+    finish_backup_attempt(backup, result)
+}
+
+fn finish_backup_attempt(
+    backup: &Path,
+    result: Result<(), SqliteAccountError>,
+) -> Result<(), SqliteAccountError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(operation_error) => match storage::remove_file_if_present(backup) {
+            Ok(()) => Err(operation_error),
+            Err(cleanup_error) => Err(SqliteAccountError::Backup(format!(
+                "{operation_error}; the incomplete SQLite backup at {} could not be removed: {cleanup_error}",
+                backup.display()
+            ))),
+        },
     }
-    result
 }
 
-fn backup_path() -> Result<PathBuf, SqliteAccountError> {
-    unique_backup_path("state-sqlite-v1")
+fn backup_path(source: &Path) -> Result<PathBuf, SqliteAccountError> {
+    unique_backup_path(source, "state-sqlite-v1")
 }
 
-fn recovery_backup_path() -> Result<PathBuf, SqliteAccountError> {
-    unique_backup_path("state-sqlite-recovery")
+fn recovery_backup_path(source: &Path) -> Result<PathBuf, SqliteAccountError> {
+    unique_backup_path(source, "state-sqlite-recovery")
 }
 
-fn unique_backup_path(prefix: &str) -> Result<PathBuf, SqliteAccountError> {
-    let root = crate::paths::data_dir()
-        .map(|path| path.join("backups"))
-        .ok_or_else(|| {
-            SqliteAccountError::Backup(
-                "could not locate Sundial's local backup folder for state.sqlite3".to_owned(),
-            )
-        })?;
-    fs::create_dir_all(&root).map_err(SqliteAccountError::FileSystem)?;
+fn unique_backup_path(source: &Path, prefix: &str) -> Result<PathBuf, SqliteAccountError> {
+    let root = crate::backups::root().ok_or_else(|| {
+        SqliteAccountError::Backup(
+            "could not locate Sundial's local backup folder for state.sqlite3".to_owned(),
+        )
+    })?;
+    let root = crate::backups::create_source_directory(&root, source)
+        .map_err(SqliteAccountError::Backup)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -529,4 +573,41 @@ fn sql_count(value: usize) -> Result<i64, SqliteAccountError> {
 
 const fn sql_u64(value: u64) -> i64 {
     value as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDirectory;
+    use std::fs;
+
+    #[test]
+    fn busy_checkpoint_is_reported_as_incomplete() {
+        let error = validate_checkpoint_status(1, 8, 3).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "could not truncate the SQLite write-ahead log because another database connection kept it busy (3 of 8 frames checkpointed)"
+        );
+    }
+
+    #[test]
+    fn failed_backup_cleanup_preserves_the_primary_error_and_names_the_residue() {
+        let directory = TestDirectory::new("sqlite-backup-cleanup-failure");
+        let residue = directory.0.join("incomplete.sqlite3");
+        fs::create_dir(&residue).unwrap();
+
+        let error = finish_backup_attempt(
+            &residue,
+            Err(SqliteAccountError::Backup(
+                "injected backup failure".to_owned(),
+            )),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("injected backup failure"));
+        assert!(error.contains("incomplete SQLite backup"));
+        assert!(error.contains(&residue.display().to_string()));
+    }
 }

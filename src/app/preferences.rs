@@ -1,3 +1,8 @@
+pub use crate::investment::PlugSelectionMode;
+pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
+
+pub(super) mod store;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -13,55 +18,9 @@ const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
     ("Destiny Symbols PC", "Destiny_Symbols_PC.otf"),
     ("Destiny Symbols 360", "Destiny_Symbols_360.ttf"),
 ];
-const SOCKET_AND_GEAR_TYPE_WARNING: &str = "Use caution: these plugs match both the socket type and gear type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
-const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
-const GEAR_TYPE_WARNING: &str = "High risk: this exposes plugs used anywhere on the same broad gear type, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
-const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
-
 pub(super) const MIN_AUTOMATIC_BACKUP_LIMIT: u16 = 5;
 pub(super) const MAX_AUTOMATIC_BACKUP_LIMIT: u16 = 100;
 const DEFAULT_AUTOMATIC_BACKUP_LIMIT: u16 = 20;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum PlugSelectionMode {
-    #[default]
-    Supported,
-    SocketAndGearType,
-    MatchingSocketType,
-    GearType,
-    AnyPlug,
-}
-
-impl PlugSelectionMode {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Supported => "Compatible",
-            Self::SocketAndGearType => "Socket + gear type",
-            Self::MatchingSocketType => "Socket type",
-            Self::GearType => "Gear type",
-            Self::AnyPlug => "All",
-        }
-    }
-}
-
-pub(super) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
-    match mode {
-        PlugSelectionMode::Supported => {}
-        PlugSelectionMode::SocketAndGearType => {
-            ui.colored_label(ui.visuals().warn_fg_color, SOCKET_AND_GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::MatchingSocketType => {
-            ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-        }
-        PlugSelectionMode::GearType => {
-            ui.colored_label(ui.visuals().error_fg_color, GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::AnyPlug => {
-            ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,15 +68,17 @@ pub(super) enum CharacterInventoryLayout {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsLayout {
+    GameRoot,
     Root,
     BinX64,
 }
 
 impl SettingsLayout {
-    pub(super) const ALL: [Self; 2] = [Self::Root, Self::BinX64];
+    pub(super) const ALL: [Self; 3] = [Self::GameRoot, Self::Root, Self::BinX64];
 
     pub(super) fn relative_path(self) -> PathBuf {
         match self {
+            Self::GameRoot => PathBuf::from("settings.json"),
             Self::Root => PathBuf::from("Sunrise").join("settings.json"),
             Self::BinX64 => PathBuf::from("bin")
                 .join("x64")
@@ -128,6 +89,7 @@ impl SettingsLayout {
 
     pub(super) const fn preference_value(self) -> &'static str {
         match self {
+            Self::GameRoot => "game_root",
             Self::Root => "root",
             Self::BinX64 => "bin_x64",
         }
@@ -135,6 +97,7 @@ impl SettingsLayout {
 
     pub(super) fn from_preference(value: &str) -> Option<Self> {
         match value {
+            "game_root" => Some(Self::GameRoot),
             "root" => Some(Self::Root),
             "bin_x64" => Some(Self::BinX64),
             _ => None,
@@ -183,11 +146,21 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) character_inventory_layout: CharacterInventoryLayout,
     #[serde(default)]
-    pub(super) experimental_orbit_backdrops: bool,
-    #[serde(default)]
     pub(super) experimental_progression: bool,
     #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
+    #[serde(default)]
+    pub(super) experimental_extended_fov: bool,
+    #[serde(default)]
+    pub(super) experimental_cross_class_subclasses: bool,
+    #[serde(default)]
+    pub(super) experimental_package_authoring: bool,
+    #[serde(default)]
+    pub(super) parhelion_warning_acknowledged: bool,
+    #[serde(default)]
+    pub(super) show_parhelion_experimental_options: bool,
+    #[serde(default)]
+    pub(super) troubleshooting_logging: bool,
 }
 
 const fn default_show_safety_warnings() -> bool {
@@ -253,7 +226,7 @@ impl Default for Preferences {
             install: None,
             settings_layout: None,
             really_unsafe_warning_acknowledged: false,
-            default_plug_selection_mode: PlugSelectionMode::Supported,
+            default_plug_selection_mode: PlugSelectionMode::SocketAndGearType,
             show_safety_warnings: true,
             review_changes_before_saving: false,
             limit_automatic_backups: false,
@@ -263,14 +236,39 @@ impl Default for Preferences {
             show_plug_hashes: false,
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
-            experimental_orbit_backdrops: false,
             experimental_progression: false,
             experimental_power_above_cap: false,
+            experimental_extended_fov: false,
+            experimental_cross_class_subclasses: false,
+            experimental_package_authoring: false,
+            parhelion_warning_acknowledged: false,
+            show_parhelion_experimental_options: false,
+            troubleshooting_logging: false,
         }
     }
 }
 
 impl Preferences {
+    pub(super) fn normalize_for_runtime(&mut self) {
+        self.automatic_backup_limit =
+            normalized_automatic_backup_limit(self.automatic_backup_limit);
+        if self.default_plug_selection_mode == PlugSelectionMode::AnyPlug
+            && !self.really_unsafe_warning_acknowledged
+        {
+            self.default_plug_selection_mode = PlugSelectionMode::SocketAndGearType;
+        }
+    }
+
+    pub(super) fn reset_editable_settings(&mut self) {
+        let install = self.install.take();
+        let settings_layout = self.settings_layout.take();
+        *self = Self {
+            install,
+            settings_layout,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn install_selection(&self) -> Option<InstallSelection> {
         Some(InstallSelection {
             install_path: self.install.clone()?,

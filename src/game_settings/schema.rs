@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 
 pub(crate) const MIN_SUPPORTED_SCHEMA: u64 = 2;
-pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 8;
+pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SettingsSchema(pub(super) u64);
@@ -54,11 +54,12 @@ pub(crate) fn key_bindings_editable(document: &Value) -> bool {
 
 pub(super) const VERTICAL_SYNC_INTERVAL_KEY: &str = "vertical_sync_interval";
 pub(super) const FIELD_OF_VIEW_KEY: &str = "field_of_view";
+pub(super) const FIELD_OF_VIEW_MINIMUM: u64 = sundial_account::FIELD_OF_VIEW_MINIMUM;
+pub(super) const FIELD_OF_VIEW_MAXIMUM: u64 = sundial_account::FIELD_OF_VIEW_MAXIMUM;
 pub(super) const KEY_BINDING_SOURCE_KEY: &str = "key_binding_source";
-pub(super) const ORBIT_SLICE_SET_PATH: &str = "/client/orbit_slice_set";
 
-// Older schemas only expose these preferences when they already contain them. Schema v8 files are
-// populated with their effective defaults before reaching the editor.
+// Older schemas only expose these preferences when they already contain them. Supported schemas
+// from v8 onward are populated with their effective defaults before reaching the editor.
 pub(super) fn show_presence_gated_preference(values: &Map<String, Value>, key: &str) -> bool {
     values.contains_key(key)
 }

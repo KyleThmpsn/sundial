@@ -7,21 +7,29 @@ pub(super) fn draw_hash_progression_matches(
     inspected_hash: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
-    let progression_definitions = &matches.progression_definitions;
-    let progression_reward_matches = &matches.progression_reward_matches;
-    let progression_faction_matches = &matches.progression_faction_matches;
-    let objectives = &matches.objectives;
-    let owner_matches = &matches.owner_matches;
-    let trait_matches = &matches.trait_matches;
-    let context_matches = &matches.context_matches;
+    draw_progression_definitions(ui, catalog, document, matches);
+    draw_reward_references(ui, inspected_hash, matches);
+    draw_faction_references(ui, catalog, inspected_hash, matches);
+    draw_objective_matches(ui, catalog, matches);
+    draw_objective_owners(ui, catalog, matches);
+    draw_objective_traits(ui, catalog, matches);
+    draw_progression_readers(ui, catalog, matches);
+}
 
+fn draw_progression_definitions(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    document: Option<&Value>,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let progression_definitions = &matches.progression_definitions;
     if !progression_definitions.is_empty() {
         ui.add_space(8.0);
         let heading = if progression_definitions.len() == 1 {
-            "Progression definition".to_owned()
+            "Progression Definition".to_owned()
         } else {
             format!(
-                "Progression definitions ({})",
+                "Progression Definitions ({})",
                 progression_definitions.len()
             )
         };
@@ -41,13 +49,20 @@ pub(super) fn draw_hash_progression_matches(
             }
         });
     }
+}
 
+fn draw_reward_references(
+    ui: &mut egui::Ui,
+    inspected_hash: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let progression_reward_matches = &matches.progression_reward_matches;
     if !progression_reward_matches.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
             ui,
             &format!(
-                "Progression reward references ({})",
+                "Progression Reward References ({})",
                 progression_reward_matches.len()
             ),
             progression_reward_matches.len() <= 12,
@@ -67,7 +82,7 @@ pub(super) fn draw_hash_progression_matches(
                     table_cell(
                         ui,
                         reward_index_width,
-                        egui::RichText::new("Reward index").strong(),
+                        egui::RichText::new("Reward Index").strong(),
                     );
                     table_cell(ui, level_width, egui::RichText::new("Level").strong());
                     table_cell(ui, quantity_width, egui::RichText::new("Quantity").strong());
@@ -133,13 +148,21 @@ pub(super) fn draw_hash_progression_matches(
             },
         );
     }
+}
 
+fn draw_faction_references(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    inspected_hash: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let progression_faction_matches = &matches.progression_faction_matches;
     if !progression_faction_matches.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
             ui,
             &format!(
-                "Faction progression references ({})",
+                "Faction Progression References ({})",
                 progression_faction_matches.len()
             ),
             true,
@@ -186,7 +209,10 @@ pub(super) fn draw_hash_progression_matches(
             },
         );
     }
+}
 
+fn draw_objective_matches(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
+    let objectives = &matches.objectives;
     if !objectives.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
@@ -217,7 +243,7 @@ pub(super) fn draw_hash_progression_matches(
                                 );
                                 hash_detail_field(
                                     ui,
-                                    "Completion value",
+                                    "Completion Value",
                                     objective.completion_value.to_string(),
                                     true,
                                 );
@@ -239,12 +265,15 @@ pub(super) fn draw_hash_progression_matches(
             },
         );
     }
+}
 
+fn draw_objective_owners(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
+    let owner_matches = &matches.owner_matches;
     if !owner_matches.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
             ui,
-            &format!("Objective owners ({})", owner_matches.len()),
+            &format!("Objective Owners ({})", owner_matches.len()),
             owner_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
             |ui| {
                 for (objective_index, objective, owner) in owner_matches {
@@ -332,12 +361,16 @@ pub(super) fn draw_hash_progression_matches(
             },
         );
     }
+}
 
+fn draw_objective_traits(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
+    let owner_matches = &matches.owner_matches;
+    let trait_matches = &matches.trait_matches;
     if !trait_matches.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
             ui,
-            &format!("Objective traits ({})", trait_matches.len()),
+            &format!("Objective Traits ({})", trait_matches.len()),
             trait_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT && owner_matches.is_empty(),
             |ui| {
                 for (objective_index, objective, owner, trait_definition) in trait_matches {
@@ -385,12 +418,21 @@ pub(super) fn draw_hash_progression_matches(
             },
         );
     }
+}
 
+fn draw_progression_readers(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let owner_matches = &matches.owner_matches;
+    let trait_matches = &matches.trait_matches;
+    let context_matches = &matches.context_matches;
     if !context_matches.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
             ui,
-            &format!("Progression readers ({})", context_matches.len()),
+            &format!("Progression Readers ({})", context_matches.len()),
             context_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT
                 && owner_matches.is_empty()
                 && trait_matches.is_empty(),
@@ -437,7 +479,7 @@ fn draw_hash_progression_reader_details(
 ) {
     for (kind, definition_index, context) in readers {
         let name = progression_reader_name(catalog, context);
-        egui::CollapsingHeader::new(format!("Reader details · {name}"))
+        egui::CollapsingHeader::new(format!("Reader Details · {name}"))
             .id_salt((
                 "hash_progression_reader_details",
                 *kind,
@@ -559,7 +601,7 @@ fn draw_hash_progression_definition(
                         }
                         ui.strong("Index");
                         ui.strong("Name");
-                        ui.strong("Progress total");
+                        ui.strong("Progress Total");
                         ui.end_row();
                         for (step_index, step) in definition.steps.iter().enumerate() {
                             if has_step_icons {
@@ -595,7 +637,7 @@ fn draw_hash_progression_definition(
     }
 
     if !definition.reward_items.is_empty() {
-        egui::CollapsingHeader::new(format!("Reward items ({})", definition.reward_items.len()))
+        egui::CollapsingHeader::new(format!("Reward Items ({})", definition.reward_items.len()))
             .id_salt(("hash_progression_reward_items", index))
             .default_open(false)
             .show(ui, |ui| {
@@ -677,7 +719,7 @@ fn draw_hash_progression_identity_summary(
                     .show(ui, |ui| {
                         hash_detail_field(
                             ui,
-                            "Definition index",
+                            "Definition Index",
                             definition.definition_index.to_string(),
                             true,
                         );
@@ -707,7 +749,7 @@ fn draw_hash_progression_identity_summary(
         ui.add_space(4.0);
         draw_hash_wrapped_detail(
             ui,
-            "Display units name",
+            "Display Unit Name",
             if definition.display_units_name.trim().is_empty() {
                 "<not present>"
             } else {
@@ -752,17 +794,17 @@ fn draw_hash_progression_persistence_summary(
                 );
                 hash_detail_field(
                     ui,
-                    "Repeat last step",
+                    "Repeat Last Step",
                     yes_no(definition.repeat_last_step),
                     false,
                 );
-                hash_detail_field(ui, "Lane 0 meaning", "Progress", false);
-                hash_detail_field(ui, "Lane 1 meaning", "<not decoded>", false);
-                hash_detail_field(ui, "Lane 2 meaning", "<not decoded>", false);
+                hash_detail_field(ui, "Lane 0 Meaning", "Progress", false);
+                hash_detail_field(ui, "Lane 1 Meaning", "<not decoded>", false);
+                hash_detail_field(ui, "Lane 2 Meaning", "<not decoded>", false);
             });
     });
     ui.add_space(8.0);
-    metadata_subsection(ui, "Referenced save state", |ui| {
+    metadata_subsection(ui, "Referenced Save State", |ui| {
         egui::Grid::new(("hash_progression_save_state", index))
             .num_columns(2)
             .spacing([16.0, 4.0])

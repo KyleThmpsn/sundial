@@ -2,12 +2,16 @@
 
 use eframe::egui;
 
-use crate::app::progression::CollectionStateSnapshot;
-use crate::catalog::{Catalog, UnlockDefinition};
+use crate::app::{
+    collections_page::{
+        ExpressionValue, evaluate_expression_value_with, is_supported_condition_instruction,
+    },
+    progression::CollectionStateSnapshot,
+};
+use crate::catalog::{Catalog, CollectionConditionTokenDef, UnlockDefinition};
 
 use super::{
     definitions::definition_name,
-    objectives::resolved_objective_table_text,
     state::{MetadataSelection, ProgressionInspectorState},
 };
 
@@ -21,10 +25,7 @@ pub(in crate::app) fn definition_has_undecoded_opcodes(definition: &UnlockDefini
 }
 
 pub(super) const fn decoded_condition_opcode(opcode: u32) -> bool {
-    matches!(
-        opcode,
-        1 | 2 | 3 | 4 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 22
-    )
+    is_supported_condition_instruction(opcode)
 }
 
 pub(super) fn direct_value_comparison(
@@ -34,7 +35,6 @@ pub(super) fn direct_value_comparison(
 ) -> Option<(String, bool)> {
     let (left, right, operator) = match program {
         [left, right, operator] => (*left, *right, *operator),
-        [left, right, encoding, operator] if *encoding == [22, 0] => (*left, *right, *operator),
         _ => return None,
     };
     let index = u32::try_from(definition_index).ok()?;
@@ -45,13 +45,15 @@ pub(super) fn direct_value_comparison(
     };
     let (label, result) = match (operator[0], reference_first) {
         (8, _) => (format!("= {literal}"), forced_value == literal),
-        (9, _) => (format!("≠ {literal}"), forced_value != literal),
+        (6 | 9, _) => (format!("≠ {literal}"), forced_value != literal),
         (13, true) => (format!("> {literal}"), forced_value > literal),
         (13, false) => (format!("< {literal}"), forced_value < literal),
         (14, true) => (format!("≥ {literal}"), forced_value >= literal),
         (14, false) => (format!("≤ {literal}"), forced_value <= literal),
         (15, true) => (format!("< {literal}"), forced_value < literal),
         (15, false) => (format!("> {literal}"), forced_value > literal),
+        (16, true) => (format!("≤ {literal}"), forced_value <= literal),
+        (16, false) => (format!("≥ {literal}"), forced_value >= literal),
         _ => return None,
     };
     Some((label, result))
@@ -80,193 +82,41 @@ impl ConditionEvaluation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum StackValue {
-    Unknown(String),
-    Bool(bool),
-    Int(i32),
-}
-
-impl StackValue {
-    fn truthy(&self) -> Option<bool> {
-        match self {
-            Self::Unknown(_) => None,
-            Self::Bool(value) => Some(*value),
-            Self::Int(value) => Some(*value != 0),
-        }
-    }
-
-    fn number(&self) -> Option<i32> {
-        match self {
-            Self::Unknown(_) => None,
-            Self::Bool(value) => Some(i32::from(*value)),
-            Self::Int(value) => Some(*value),
-        }
-    }
-
-    fn unresolved_reason(&self) -> String {
-        match self {
-            Self::Unknown(reason) => reason.clone(),
-            Self::Bool(_) | Self::Int(_) => "operation received incompatible values".into(),
-        }
-    }
-}
-
 pub(super) fn evaluate_condition_program(
     program: &[[u32; 2]],
     catalog: &Catalog,
     snapshot: Option<&CollectionStateSnapshot>,
 ) -> ConditionEvaluation {
-    let mut stack = Vec::<StackValue>::new();
-    for &[opcode, operand] in program {
-        let value = match opcode {
-            1 => catalog
-                .unlock_flag_definition(operand as usize)
+    let tokens = program
+        .iter()
+        .map(|&[kind, operand]| CollectionConditionTokenDef { kind, operand })
+        .collect::<Vec<_>>();
+    match evaluate_expression_value_with(
+        &tokens,
+        catalog.shared_expression_pool(),
+        |index| {
+            catalog
+                .unlock_flag_definition(index)
                 .and_then(|definition| {
-                    snapshot.and_then(|snapshot| {
-                        snapshot
-                            .flag_value(operand as usize, definition)
-                            .map(StackValue::Bool)
-                    })
+                    snapshot.and_then(|state| state.flag_value(index, definition))
                 })
-                .unwrap_or_else(|| {
-                    StackValue::Unknown(format!("flag #{operand} or save state is unavailable"))
-                }),
-            10 => catalog
-                .unlock_value_definition(operand as usize)
-                .and_then(|definition| {
-                    snapshot.and_then(|snapshot| {
-                        snapshot
-                            .value(operand as usize, definition)
-                            .map(StackValue::Int)
-                    })
-                })
-                .unwrap_or_else(|| {
-                    StackValue::Unknown(format!("value #{operand} or save state is unavailable"))
-                }),
-            11 => StackValue::Int(operand as i32),
-            12 => objective_condition_value(operand as usize, catalog, snapshot),
-            22 if operand == 0 => match stack.pop() {
-                Some(value) => value,
-                None => {
-                    return ConditionEvaluation::Unresolved(
-                        "literal encoding requires one value".into(),
-                    );
-                }
-            },
-            2 => match stack.pop() {
-                Some(value) => value.truthy().map_or_else(
-                    || StackValue::Unknown(value.unresolved_reason()),
-                    |value| StackValue::Bool(!value),
-                ),
-                None => return ConditionEvaluation::Unresolved("Not requires one value".into()),
-            },
-            3 | 4 => match pop_two_values(&mut stack) {
-                Some((left, right)) => logical_values(opcode, left, right),
-                None => {
-                    return ConditionEvaluation::Unresolved(
-                        "logical operation requires two values".into(),
-                    );
-                }
-            },
-            8 | 9 | 13 | 14 | 15 => match pop_two_values(&mut stack) {
-                Some((left, right)) => compare_values(opcode, left, right).map_or_else(
-                    || StackValue::Unknown("comparison is unresolved".into()),
-                    StackValue::Bool,
-                ),
-                None => {
-                    return ConditionEvaluation::Unresolved(
-                        "comparison requires two values".into(),
-                    );
-                }
-            },
-            22 => StackValue::Unknown(format!("literal encoding mode {operand} is not decoded")),
-            _ => StackValue::Unknown(format!("opcode {opcode} is not decoded")),
-        };
-        stack.push(value);
-    }
-    match stack.as_slice() {
-        [StackValue::Bool(true)] => ConditionEvaluation::Passed,
-        [StackValue::Bool(false)] => ConditionEvaluation::Failed,
-        [StackValue::Int(value)] => ConditionEvaluation::Value(*value),
-        [StackValue::Unknown(reason)] => ConditionEvaluation::Unresolved(reason.clone()),
-        [] => ConditionEvaluation::Unresolved("program produced no result".into()),
-        _ => ConditionEvaluation::Unresolved(format!(
-            "program left {} values on the evaluation stack",
-            stack.len()
-        )),
-    }
-}
-
-fn pop_two_values(stack: &mut Vec<StackValue>) -> Option<(StackValue, StackValue)> {
-    let right = stack.pop()?;
-    let left = stack.pop()?;
-    Some((left, right))
-}
-
-fn logical_values(opcode: u32, left: StackValue, right: StackValue) -> StackValue {
-    match (opcode, left.truthy(), right.truthy()) {
-        (3, Some(true), _) | (3, _, Some(true)) => StackValue::Bool(true),
-        (3, Some(false), Some(false)) => StackValue::Bool(false),
-        (4, Some(false), _) | (4, _, Some(false)) => StackValue::Bool(false),
-        (4, Some(true), Some(true)) => StackValue::Bool(true),
-        _ => StackValue::Unknown(format!(
-            "{}; {}",
-            left.unresolved_reason(),
-            right.unresolved_reason()
-        )),
-    }
-}
-
-fn compare_values(opcode: u32, left: StackValue, right: StackValue) -> Option<bool> {
-    match (left.number(), right.number()) {
-        (Some(left), Some(right)) => match opcode {
-            8 => Some(left == right),
-            9 => Some(left != right),
-            13 => Some(left > right),
-            14 => Some(left >= right),
-            15 => Some(left < right),
-            _ => None,
         },
-        (None, _) | (_, None) => None,
+        |index| {
+            catalog
+                .unlock_value_definition(index)
+                .and_then(|definition| snapshot.and_then(|state| state.value(index, definition)))
+        },
+    ) {
+        Some(ExpressionValue::Boolean(true)) => ConditionEvaluation::Passed,
+        Some(ExpressionValue::Boolean(false)) => ConditionEvaluation::Failed,
+        Some(ExpressionValue::Number(value)) => ConditionEvaluation::Value(value),
+        Some(ExpressionValue::Unknown) => {
+            ConditionEvaluation::Unresolved("referenced state is unavailable".into())
+        }
+        None => ConditionEvaluation::Unresolved(
+            "program is malformed, cyclic, or contains an unsupported opcode".into(),
+        ),
     }
-}
-
-fn objective_condition_value(
-    objective_index: usize,
-    catalog: &Catalog,
-    snapshot: Option<&CollectionStateSnapshot>,
-) -> StackValue {
-    let Some(objective) = catalog.objective_definition(objective_index) else {
-        return StackValue::Unknown(format!("objective #{objective_index} is unavailable"));
-    };
-    let Some(definition_index) = objective
-        .related_unlock_value_definition_index
-        .map(usize::from)
-    else {
-        return StackValue::Unknown(format!(
-            "objective #{objective_index} has no related unlock value"
-        ));
-    };
-    let current = catalog
-        .unlock_value_definition(definition_index)
-        .and_then(|definition| {
-            snapshot.and_then(|snapshot| snapshot.value(definition_index, definition))
-        });
-    current.map_or_else(
-        || {
-            StackValue::Unknown(format!(
-                "objective #{objective_index} or save state is unavailable"
-            ))
-        },
-        |current| {
-            StackValue::Bool(if objective.is_counting_downward {
-                current <= objective.completion_value
-            } else {
-                current >= objective.completion_value
-            })
-        },
-    )
 }
 
 pub(super) fn draw_condition_programs(
@@ -403,20 +253,30 @@ fn condition_dependency_value(
             || "definition unavailable".into(),
             |definition| snapshot.value_text(index, definition),
         ),
-        12 => catalog.objective_definition(index).map_or_else(
-            || "objective unavailable".into(),
-            |objective| {
-                objective
-                    .related_unlock_value_definition_index
-                    .map(usize::from)
-                    .and_then(|definition_index| {
-                        catalog
-                            .unlock_value_definition(definition_index)
-                            .map(|definition| snapshot.value_text(definition_index, definition))
-                    })
-                    .unwrap_or_else(|| "objective value unavailable".into())
-            },
-        ),
+        12 => {
+            let Some(program) = catalog.shared_expression(index) else {
+                return "shared expression unavailable".into();
+            };
+            match evaluate_expression_value_with(
+                program,
+                catalog.shared_expression_pool(),
+                |definition_index| {
+                    catalog
+                        .unlock_flag_definition(definition_index)
+                        .and_then(|definition| snapshot.flag_value(definition_index, definition))
+                },
+                |definition_index| {
+                    catalog
+                        .unlock_value_definition(definition_index)
+                        .and_then(|definition| snapshot.value(definition_index, definition))
+                },
+            ) {
+                Some(ExpressionValue::Boolean(value)) => value.to_string(),
+                Some(ExpressionValue::Number(value)) => value.to_string(),
+                Some(ExpressionValue::Unknown) => "referenced state unavailable".into(),
+                None => "expression is malformed, cyclic, or unsupported".into(),
+            }
+        }
         _ => "not a dependency".into(),
     }
 }
@@ -454,15 +314,6 @@ fn condition_token_selection(
         10 => catalog
             .unlock_value_definition(index)
             .map(|_| MetadataSelection::ValueDefinition(index)),
-        12 => catalog
-            .objective_definition(index)
-            .and_then(|objective| objective.related_unlock_value_definition_index)
-            .map(usize::from)
-            .and_then(|definition_index| {
-                catalog
-                    .unlock_value_definition(definition_index)
-                    .map(|_| MetadataSelection::ValueDefinition(definition_index))
-            }),
         _ => None,
     }
 }
@@ -473,15 +324,28 @@ pub(in crate::app) fn condition_opcode_label(kind: u32) -> String {
         2 => "Not (2)".into(),
         3 => "Or (3)".into(),
         4 => "And (4)".into(),
+        5 => "Nor (5)".into(),
+        6 => "Not equal (6)".into(),
+        7 => "Nand (7)".into(),
         8 => "Equal (8)".into(),
         9 => "Not equal (9)".into(),
         10 => "Value reference (10)".into(),
         11 => "Literal (11)".into(),
-        12 => "Objective reference (12)".into(),
+        12 => "Shared expression (12)".into(),
         13 => "Greater than (13)".into(),
         14 => "Greater than or equal (14)".into(),
         15 => "Less than (15)".into(),
-        22 => "Literal encoding (22)".into(),
+        16 => "Less than or equal (16)".into(),
+        17 => "Add (17)".into(),
+        18 => "Subtract (18)".into(),
+        19 => "Multiply (19)".into(),
+        20 => "Divide (20)".into(),
+        21 => "Modulo (21)".into(),
+        22 => "Negate number (22, empirical)".into(),
+        24 => "FNV-1 combine (24)".into(),
+        25 => "Bitwise and (25)".into(),
+        26 => "Bitwise or (26)".into(),
+        27 => "Bitwise xor (27)".into(),
         _ => format!("Undecoded ({kind})"),
     }
 }
@@ -493,14 +357,11 @@ pub(in crate::app) fn condition_token_resolution(
 ) -> String {
     let index = operand as usize;
     if kind == 12 {
-        let Some(objective) = catalog.objective_definition(index) else {
-            return format!("Objective #{index} unavailable");
+        return if catalog.shared_expression(index).is_some() {
+            format!("Shared expression pool row #{index}")
+        } else {
+            format!("Shared expression pool row #{index} unavailable")
         };
-        return format!(
-            "Objective #{index} · {} · 0x{:08X}",
-            resolved_objective_table_text(catalog, objective, None),
-            objective.hash
-        );
     }
     let definition = match kind {
         1 => catalog.unlock_flag_definition(index),
@@ -525,12 +386,11 @@ mod tests {
     use crate::catalog::{ProgressionContextDef, ProgressionContextKind, UnlockDefinition};
 
     use super::{
-        StackValue, compare_values, condition_opcode_label, definition_has_undecoded_opcodes,
-        logical_values,
+        condition_opcode_label, decoded_condition_opcode, definition_has_undecoded_opcodes,
     };
 
     #[test]
-    fn objective_reference_opcode_is_decoded() {
+    fn shared_expression_opcode_and_known_native_binary_range_are_decoded() {
         let definition = UnlockDefinition {
             tested_by: vec![ProgressionContextDef {
                 hash: 0,
@@ -548,45 +408,10 @@ mod tests {
         assert_eq!(condition_opcode_label(15), "Less than (15)");
         assert_eq!(condition_opcode_label(4), "And (4)");
         assert_eq!(condition_opcode_label(9), "Not equal (9)");
-    }
-
-    #[test]
-    fn condition_comparisons_preserve_rpn_operand_order() {
-        assert_eq!(
-            compare_values(13, StackValue::Int(10), StackValue::Int(4)),
-            Some(true)
-        );
-        assert_eq!(
-            compare_values(15, StackValue::Int(10), StackValue::Int(4)),
-            Some(false)
-        );
-        assert_eq!(
-            compare_values(8, StackValue::Bool(true), StackValue::Bool(true)),
-            Some(true)
-        );
-        assert_eq!(
-            compare_values(13, StackValue::Bool(true), StackValue::Bool(false)),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn logical_evaluation_short_circuits_unknown_dependencies() {
-        assert_eq!(
-            logical_values(
-                3,
-                StackValue::Unknown("missing flag".into()),
-                StackValue::Bool(true),
-            ),
-            StackValue::Bool(true)
-        );
-        assert_eq!(
-            logical_values(
-                4,
-                StackValue::Unknown("missing flag".into()),
-                StackValue::Bool(false),
-            ),
-            StackValue::Bool(false)
-        );
+        assert_eq!(condition_opcode_label(12), "Shared expression (12)");
+        assert_eq!(condition_opcode_label(22), "Negate number (22, empirical)");
+        assert_eq!(condition_opcode_label(23), "Undecoded (23)");
+        assert!(decoded_condition_opcode(22));
+        assert!(!decoded_condition_opcode(23));
     }
 }

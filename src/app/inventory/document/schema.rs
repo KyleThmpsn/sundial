@@ -2,21 +2,17 @@
 
 use serde_json::Value;
 
+pub(crate) use crate::account_contract::{
+    CHARACTER_INVENTORY_CAPACITY, DISMANTLE_REWARDS_SCHEMA_VERSION, EQUIPMENT_FLAGS_SCHEMA_VERSION,
+    FILTERED_DISMANTLE_REWARD_CAPACITY, FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION,
+    INVENTORY_FLAG_LOCKED, INVENTORY_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
+    MAX_ITEM_PLUGS, PROFILE_ITEM_CAPACITY, profile_item_capacity,
+};
 use crate::game_settings::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA};
 
 use super::model::{InventoryError, InventoryResult};
 
-pub(crate) const LEGACY_PROFILE_ITEM_CAPACITY: usize = 32;
-pub(crate) const PROFILE_ITEM_CAPACITY: usize = 701;
-pub(crate) const CHARACTER_INVENTORY_CAPACITY: usize = 135;
-pub(crate) const MAX_ITEM_PLUGS: usize = 12;
-pub(crate) const INVENTORY_SCHEMA_VERSION: u64 = 6;
-pub(crate) const EQUIPMENT_FLAGS_SCHEMA_VERSION: u64 = 4;
-pub(crate) const DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 5;
 pub(crate) const GENERATED_INSTANCE_SOID_START: u64 = 0x4000_0000_0000_0001;
-pub(crate) const INVENTORY_FLAG_LOCKED: u8 = 1;
-pub(crate) const INVENTORY_FLAG_TRACKED: u8 = 2;
-pub(crate) const INVENTORY_FLAG_MASK: u8 = INVENTORY_FLAG_LOCKED | INVENTORY_FLAG_TRACKED;
 pub(in crate::app) const KNOWN_ITEM_MEMBERS: &[&str] = &[
     "instance_soid",
     "definition_hash",
@@ -44,10 +40,8 @@ pub(in crate::app::inventory) fn set_inventory_flag(
     (flags != 0).then_some(flags)
 }
 
-pub(in crate::app::inventory) const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
-pub(in crate::app::inventory) const LEGACY_DISMANTLE_REWARD_CAPACITY: usize = 8;
-pub(crate) const FILTERED_DISMANTLE_REWARD_CAPACITY: usize = 32;
-pub(in crate::app::inventory) const FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 8;
+pub(in crate::app::inventory) const NO_DEFINITION_HASH: u32 =
+    sundial_account::NO_DEFINITION_HASH.get();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SchemaMode {
@@ -67,6 +61,29 @@ impl SchemaMode {
             | Self::Inventory(version)
             | Self::Future(version) => Some(version),
         }
+    }
+
+    pub(crate) const fn supports_v13(self) -> bool {
+        match self.version() {
+            Some(version) => crate::account_contract::supports_v13(version),
+            None => false,
+        }
+    }
+
+    pub(crate) const fn item_flag_mask(self) -> u8 {
+        crate::account_contract::item_flag_mask(match self.version() {
+            Some(version) => version,
+            None => 0,
+        })
+    }
+
+    pub(crate) const fn equipment_slots(
+        self,
+    ) -> &'static [crate::account_contract::EquipmentSlotContract] {
+        crate::account_contract::equipment_slots_for_schema(match self.version() {
+            Some(version) => version,
+            None => 0,
+        })
     }
 
     pub(crate) const fn is_read_only(self) -> bool {
@@ -163,14 +180,6 @@ pub(crate) fn schema_mode(document: &Value) -> SchemaMode {
     }
 }
 
-pub(crate) const fn profile_item_capacity(schema_version: u64) -> usize {
-    if schema_version <= 3 {
-        LEGACY_PROFILE_ITEM_CAPACITY
-    } else {
-        PROFILE_ITEM_CAPACITY
-    }
-}
-
 pub(in crate::app::inventory) fn require_readable_schema(
     document: &Value,
 ) -> InventoryResult<SchemaMode> {
@@ -233,3 +242,6 @@ pub(in crate::app::inventory) fn read_only_schema_error(
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) use crate::account_contract::{INVENTORY_FLAG_TRACKED, LEGACY_PROFILE_ITEM_CAPACITY};

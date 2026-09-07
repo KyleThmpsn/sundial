@@ -2,9 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::validation::{validate_authored_definition_hash, validate_positive_quantity};
 use crate::{AccountError, AccountResult, DefinitionHash, EntityId, EntityKind};
-
-const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
 
 /// Adapter-derived rules for the loaded account format.
 ///
@@ -102,7 +101,7 @@ impl ProfileState {
                 item.definition_hash = definition_hash;
             }
             ProfileItemCommand::SetQuantity { id, quantity } => {
-                validate_quantity(quantity)?;
+                validate_positive_quantity(quantity)?;
                 let item = find_profile_item_mut(&mut self.profile_items, id)?;
                 item.quantity = quantity;
             }
@@ -434,7 +433,7 @@ fn find_profile_item_mut(
 
 fn validate_profile_item(item: &ProfileItem) -> AccountResult<()> {
     validate_authored_definition_hash(item.definition_hash)?;
-    validate_quantity(item.quantity)
+    validate_positive_quantity(item.quantity)
 }
 
 fn validate_dismantle_reward(
@@ -442,7 +441,7 @@ fn validate_dismantle_reward(
     capabilities: ProfileCapabilities,
 ) -> AccountResult<()> {
     validate_dismantle_definition_hash(reward.definition_hash)?;
-    validate_quantity(reward.quantity)?;
+    validate_positive_quantity(reward.quantity)?;
     if !capabilities.filtered_dismantle_rewards
         && (!reward.rarities.is_empty()
             || reward.gear_class.is_some()
@@ -466,27 +465,11 @@ fn validate_dismantle_reward(
     Ok(())
 }
 
-fn validate_authored_definition_hash(hash: DefinitionHash) -> AccountResult<()> {
-    if hash.get() == NO_DEFINITION_HASH {
-        Err(AccountError::InvalidDefinitionHash)
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_dismantle_definition_hash(hash: DefinitionHash) -> AccountResult<()> {
     if hash.get() == 0 {
         Err(AccountError::InvalidDefinitionHash)
     } else {
         validate_authored_definition_hash(hash)
-    }
-}
-
-fn validate_quantity(quantity: i32) -> AccountResult<()> {
-    if quantity > 0 {
-        Ok(())
-    } else {
-        Err(AccountError::InvalidQuantity)
     }
 }
 

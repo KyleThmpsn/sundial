@@ -124,6 +124,27 @@ impl SqliteAccountDocument {
         &mut self.settings
     }
 
+    /// Returns the PR-88 ability selection persisted with one exact item instance.
+    pub(crate) fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
+        self.item_persistence
+            .get(&id)
+            .map(|persistence| persistence.abilities)
+    }
+
+    /// Keeps the PR-88 item sidecar aligned with edits made through character metadata.
+    ///
+    /// Newly-created items do not have a sidecar until [`Self::prepare_persistence`]. In that case
+    /// the equipped subclass selection is picked up from character metadata during preparation.
+    pub(crate) fn set_persisted_item_abilities(
+        &mut self,
+        id: EntityId,
+        abilities: CharacterAbilities,
+    ) {
+        if let Some(persistence) = self.item_persistence.get_mut(&id) {
+            persistence.abilities = abilities;
+        }
+    }
+
     pub(crate) const fn profile_capabilities() -> ProfileCapabilities {
         ProfileCapabilities {
             profile_items_writable: true,
@@ -154,6 +175,7 @@ impl SqliteAccountDocument {
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: false,
+            extended_field_of_view: false,
         }
     }
 

@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.night-shift",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x22A0C523",
+    "expected_name": "Loaded Question"
+  },
+  "presentation_donor": {
+    "item_hash": "0x83A19696",
+    "expected_name": "Telesto"
+  },
+  "identity": {
+    "item_hash": "0x54B303AF",
+    "collectible_hash": "0xDA5C0DD0",
+    "unlock_hash": "0x356CC09E",
+    "pattern_global_id_hash": "0x6CDC68B6",
+    "name_hash": "0x42976A0F",
+    "type_hash": "0xBDF48E4A",
+    "flavor_hash": "0x845DDE46",
+    "source_hash": "0x3D55E045",
+    "collection_name_hash": "0x30509B90",
+    "collection_description_hash": "0xD11BDFF5",
+    "inventory_hint_hash": "0x370DB82A",
+    "collection_requirement_hash": "0xDFB0D312"
+  },
+  "name": "Night Shift",
+  "flavor": "There would be no relief at dawn. We took our places anyway.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 18,
+        "value": 70
+      },
+      {
+        "definition_index": 24,
+        "value": 35
+      },
+      {
+        "definition_index": 26,
+        "value": 40
+      },
+      {
+        "definition_index": 22,
+        "value": 65
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "special",
+    "modern_damage_type": "void",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "socket_columns": [
+      {
+        "choices": [
+          "0xEEB69A10"
+        ],
+        "socket_type": 176
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xD2013CA1",
+          "0xC4BE7564",
+          "0xAB0A2647"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x55123589",
+          "0x5C2FD04F",
+          "0xF351D2CC"
+        ],
+        "socket_type": 92
+      },
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

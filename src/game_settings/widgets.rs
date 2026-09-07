@@ -252,7 +252,10 @@ pub(super) fn integer_slider(
     if let Some(value) = values.get(key) {
         if let Some(mut current) = value.as_u64() {
             if ui
-                .add(egui::Slider::new(&mut current, minimum..=maximum))
+                .add(
+                    egui::Slider::new(&mut current, minimum..=maximum)
+                        .clamping(egui::SliderClamping::Edits),
+                )
                 .changed()
             {
                 replacement = Some(command(key, AccountSettingValue::Unsigned(current)));
@@ -319,6 +322,7 @@ pub(super) fn float_slider(
             if ui
                 .add(
                     egui::Slider::new(&mut current, minimum..=maximum)
+                        .clamping(egui::SliderClamping::Edits)
                         .step_by(step)
                         .fixed_decimals(1),
                 )

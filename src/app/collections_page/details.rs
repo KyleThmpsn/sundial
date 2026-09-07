@@ -86,7 +86,7 @@ fn draw_collection_metadata_panel(
             .matches(acquisition_status(definition, snapshot, catalog).state);
     if !visible_in_current_table
         && ui
-            .button("Reveal in table")
+            .button("Reveal in Table")
             .on_hover_text("Clear collection filters and scroll to this collectible")
             .clicked()
     {
@@ -222,7 +222,7 @@ fn draw_collection_metadata_panel(
                                     definition.index,
                                     requirement_index,
                                 ))
-                                .num_columns(4)
+                                .num_columns(2)
                                 .spacing([16.0, 3.0])
                                 .show(ui, |ui| {
                                     ui.label(egui::RichText::new("Name").weak());
@@ -232,16 +232,16 @@ fn draw_collection_metadata_panel(
                                         requirement.item_hash,
                                         190.0,
                                     );
-                                    ui.label("");
-                                    ui.label("");
                                     ui.end_row();
                                     ui.label(egui::RichText::new("Quantity").weak());
                                     ui.monospace(requirement.quantity.to_string());
+                                    ui.end_row();
                                     ui.label(egui::RichText::new("Condition").weak());
                                     ui.monospace(format!("0x{:04X}", requirement.condition));
                                     ui.end_row();
                                     ui.label(egui::RichText::new("Delete on action").weak());
                                     ui.label(yes_no(requirement.delete_on_action));
+                                    ui.end_row();
                                     ui.label(egui::RichText::new("Omit from requirements").weak());
                                     ui.label(yes_no(requirement.omit_from_requirements));
                                     ui.end_row();
@@ -284,7 +284,7 @@ fn draw_collection_metadata_panel(
                                 ui.strong("Operation");
                                 ui.strong("Operand");
                                 ui.strong("Referenced entry");
-                                ui.strong("Current state");
+                                ui.strong("Current State");
                                 ui.end_row();
                                 for (token_index, token) in condition.tokens.iter().enumerate() {
                                     ui.monospace((token_index + 1).to_string());
@@ -317,7 +317,7 @@ fn draw_collection_metadata_panel(
                                 .show(ui, |ui| {
                                     ui.label(egui::RichText::new("Operand").weak());
                                     ui.monospace(token.operand.to_string());
-                                    ui.label(egui::RichText::new("Current state").weak());
+                                    ui.label(egui::RichText::new("Current State").weak());
                                     ui.label(condition_token_state(token, snapshot, catalog));
                                     ui.end_row();
                                     if !condition_token_metadata(token, catalog).is_empty() {

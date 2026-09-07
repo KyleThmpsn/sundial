@@ -1,19 +1,94 @@
-//! Installed item-version metadata used by power-aware editors.
+//! Power caps read from the installed investment root, indexed by item version rows.
 
-use super::super::{
-    Catalog,
-    package::{array_at, u16_at},
+use serde::{Deserialize, Serialize};
+use tiger_pkg::{PackageManager, TagHash};
+
+use super::super::Catalog;
+use crate::{
+    investment_schema::{
+        POWER_CAP_ROW_CLASS, POWER_CAP_ROW_SIZE, POWER_CAP_TABLE_CLASS, ROOT_POWER_CAP_TABLE_SLOT,
+        investment_root_table_tag, item_version_array,
+    },
+    package_payload::{array_at, u32_at},
 };
 
-const ITEM_VERSION_CLASS: u32 = 0x8080_5921;
-const MAX_ITEM_VERSIONS: usize = 16;
+/// One native table row. Its position is the index stored in an item's version array.
+/// Keep every row, including duplicate caps and the large native limits; neither the
+/// row count nor an index's meaning is inferred from season numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PowerCapDefinition {
+    pub hash: u32,
+    pub power_cap: u32,
+}
+
+pub(in crate::catalog) fn scan_power_cap_definitions(
+    manager: &PackageManager,
+    root: &[u8],
+) -> Result<Vec<PowerCapDefinition>, String> {
+    let tag = TagHash(investment_root_table_tag(root, ROOT_POWER_CAP_TABLE_SLOT)?);
+    let entry = manager
+        .get_entry(tag)
+        .ok_or_else(|| format!("Power-cap table {tag:?} is not live"))?;
+    if entry.reference != POWER_CAP_TABLE_CLASS {
+        return Err(format!(
+            "Power-cap table {tag:?} has class 0x{:08X}, expected 0x{POWER_CAP_TABLE_CLASS:08X}",
+            entry.reference,
+        ));
+    }
+    let data = manager
+        .read_tag(tag)
+        .map_err(|error| format!("Could not read power-cap table {tag:?}: {error}"))?;
+    decode_power_cap_definitions(&data).map_err(|error| format!("Power-cap table {tag:?}: {error}"))
+}
+
+fn decode_power_cap_definitions(data: &[u8]) -> Result<Vec<PowerCapDefinition>, String> {
+    let (count, rows, class) = array_at(data, 8)?;
+    // 0xFFFF is the native unassigned index, not a cap-definition row.
+    if count == 0 || count > usize::from(u16::MAX) || class != POWER_CAP_ROW_CLASS {
+        return Err(format!(
+            "Unexpected cap array: {count} rows, class 0x{class:08X}"
+        ));
+    }
+    let end = count
+        .checked_mul(POWER_CAP_ROW_SIZE)
+        .and_then(|size| rows.checked_add(size))
+        .ok_or("Power-cap array size overflowed")?;
+    if end != data.len() {
+        return Err("Power-cap rows do not match the table's payload size".into());
+    }
+    (0..count)
+        .map(|index| {
+            let row = rows + index * POWER_CAP_ROW_SIZE;
+            let native = f32::from_bits(u32_at(data, row + 4)?);
+            // Native investment levels use one tenth of displayed Power.
+            let power = f64::from(native) * 10.0;
+            if !power.is_finite()
+                || power <= 0.0
+                || power > f64::from(u32::MAX)
+                || (power - power.round()).abs() > 0.001
+            {
+                return Err(format!("Row {index} has invalid native power cap {native}"));
+            }
+            Ok(PowerCapDefinition {
+                hash: u32_at(data, row)?,
+                power_cap: power.round() as u32,
+            })
+        })
+        .collect()
+}
 
 impl Catalog {
-    /// Highest power cap declared by any version of this installed definition.
-    ///
-    /// A shared definition can represent both an original and a later reissue.
-    /// Sunrise settings do not store a version selector, so the highest authored
-    /// cap is the useful safe limit for generated instances of that definition.
+    pub(crate) fn power_cap_definitions(&self) -> &[PowerCapDefinition] {
+        &self.power_cap_definitions
+    }
+
+    pub(crate) fn power_cap_for_version_group(&self, index: u16) -> Option<u32> {
+        self.power_cap_definitions
+            .get(usize::from(index))
+            .map(|row| row.power_cap)
+    }
+
+    /// Highest cap across an item's versions, only when all indices resolve.
     pub(crate) fn item_power_cap(&self, hash: u64) -> Option<i64> {
         self.item_package_metadata
             .get(&hash)
@@ -22,75 +97,30 @@ impl Catalog {
     }
 }
 
-pub(in crate::catalog) fn item_power_cap(item: &[u8]) -> Option<u16> {
-    (0..item.len().saturating_sub(16))
-        .step_by(8)
-        .filter_map(|descriptor| array_at(item, descriptor).ok())
-        .filter(|(count, _, class)| {
-            *class == ITEM_VERSION_CLASS && (1..=MAX_ITEM_VERSIONS).contains(count)
+pub(in crate::catalog) fn item_power_cap(
+    groups: &[u16],
+    definitions: &[PowerCapDefinition],
+) -> Option<u32> {
+    // An unresolved version may have a higher limit. Do not claim a lower known
+    // row is the complete item's cap when another row is missing or unassigned.
+    groups
+        .iter()
+        .map(|index| {
+            definitions
+                .get(usize::from(*index))
+                .map(|row| row.power_cap)
         })
-        .flat_map(|(count, rows, _)| {
-            (0..count).filter_map(move |index| {
-                let group = u16_at(item, rows.checked_add(index.checked_mul(2)?)?).ok()?;
-                power_cap_for_version_group(group)
-            })
-        })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
         .max()
 }
 
-const fn power_cap_for_version_group(group: u16) -> Option<u16> {
-    match group {
-        // Versions through Season of the Undying share the first sunset cap.
-        7 | 8 => Some(1_060),
-        9 => Some(1_260),
-        10 => Some(1_310),
-        11 => Some(1_360),
-        // Exotics, unknown groups, and other unsunset definitions use the build-wide fallback.
-        _ => None,
-    }
+pub(in crate::catalog) fn item_power_cap_groups(item: &[u8]) -> Vec<u16> {
+    item_version_array(item)
+        .ok()
+        .flatten()
+        .map_or_else(Vec::new, |version| version.groups)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn version_data(groups: &[u16]) -> Vec<u8> {
-        let mut data = vec![0_u8; 40 + groups.len() * 2];
-        data[0..8].copy_from_slice(&(groups.len() as u64).to_le_bytes());
-        data[8..16].copy_from_slice(&16_i64.to_le_bytes());
-        data[24..32].copy_from_slice(&(groups.len() as u64).to_le_bytes());
-        data[32..36].copy_from_slice(&ITEM_VERSION_CLASS.to_le_bytes());
-        for (index, group) in groups.iter().enumerate() {
-            let offset = 40 + index * 2;
-            data[offset..offset + 2].copy_from_slice(&group.to_le_bytes());
-        }
-        data
-    }
-
-    #[test]
-    fn maps_installed_version_groups_to_their_caps() {
-        for (group, expected) in [
-            (0, None),
-            (7, Some(1_060)),
-            (8, Some(1_060)),
-            (9, Some(1_260)),
-            (10, Some(1_310)),
-            (11, Some(1_360)),
-            (12, None),
-        ] {
-            assert_eq!(power_cap_for_version_group(group), expected);
-        }
-    }
-
-    #[test]
-    fn reissued_definition_uses_its_highest_authored_cap() {
-        assert_eq!(item_power_cap(&version_data(&[7, 11])), Some(1_360));
-    }
-
-    #[test]
-    fn uncapped_or_unrecognized_definitions_have_no_item_cap() {
-        assert_eq!(item_power_cap(&version_data(&[0])), None);
-        assert_eq!(item_power_cap(&version_data(&[12])), None);
-        assert_eq!(item_power_cap(&[0; 64]), None);
-    }
-}
+mod tests;

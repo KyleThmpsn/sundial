@@ -7,15 +7,17 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::hash::{format_hash_hex, parse_hash_hex};
-
-use super::{
-    super::{
-        Catalog,
-        package::{array_at, u16_at, u32_at, u64_at},
+use crate::{
+    hash::{format_hash_hex, parse_hash_hex},
+    investment_schema::{
+        ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET, ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS,
+        ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE, ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET,
+        ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET,
     },
-    ItemDef,
+    package_payload::{array_at, u16_at, u64_at},
 };
+
+use super::{super::Catalog, ItemDef, damage::is_weapon_bucket};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::catalog) enum GearKind {
@@ -39,7 +41,7 @@ fn item_gear_type(item: &ItemDef) -> Cow<'_, str> {
 const COSMETIC_SOCKET_TYPES_WITHOUT_MARKERS: [u16; 1] = [746];
 
 pub(in crate::catalog) const fn gear_kind(bucket_hash: u64) -> GearKind {
-    if matches!(bucket_hash, 1_498_876_634 | 2_465_295_065 | 953_998_645) {
+    if is_weapon_bucket(bucket_hash) {
         GearKind::Weapon
     } else if matches!(
         bucket_hash,
@@ -56,6 +58,11 @@ fn cosmetic_marker(name: &str) -> bool {
         name,
         "Default Shader" | "Default Ornament" | "Tracker Disabled"
     ) || name.contains("Kill Tracker")
+}
+
+fn tracker_marker(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    name == "tracker disabled" || name.contains("kill tracker")
 }
 
 pub(in crate::catalog) fn build_gear_type_options(
@@ -138,7 +145,7 @@ pub(in crate::catalog) fn build_socket_type_options(
     (socket_type_options, socket_and_gear_type_options)
 }
 
-pub(in crate::catalog) const ORDINARY_SOCKET_CLASS: u32 = 0x8080_77C4;
+pub(in crate::catalog) use crate::investment_schema::ITEM_ORDINARY_SOCKET_ROW_CLASS as ORDINARY_SOCKET_CLASS;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SocketDef {
@@ -159,6 +166,13 @@ pub(crate) struct SocketOptionSource {
     pub kind: SocketOptionSourceKind,
     pub pool: u32,
     pub valid: bool,
+    /// Members in their original package order.
+    ///
+    /// `pool` points at a normalized, name-sorted picker pool. Keeping this separate prevents
+    /// catalog presentation ordering from erasing the authored order of embedded and shared
+    /// package lists.
+    #[serde(default)]
+    pub ordered_members: Vec<u64>,
     #[serde(default)]
     #[serde(skip_serializing)]
     pub allowed: Vec<u64>,
@@ -182,18 +196,45 @@ impl SocketDef {
             format!("{}. {}", index + 1, self.label)
         }
     }
+
+    /// Returns the complete native embedded list in its authored package order.
+    ///
+    /// This is deliberately distinct from the socket option pool, which is normalized and
+    /// sorted for browsing. Invalid or partially decoded lists are not safe authoring seeds.
+    pub(crate) fn ordered_embedded_choices(&self) -> &[u64] {
+        self.sources
+            .iter()
+            .find(|source| source.valid && source.kind == SocketOptionSourceKind::Embedded)
+            .map_or(&[], |source| source.ordered_members.as_slice())
+    }
+
+    pub(crate) fn reusable_set_index(&self) -> Option<u16> {
+        self.sources.iter().find_map(|source| match source.kind {
+            SocketOptionSourceKind::ReusableSet { index } => Some(index),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn randomized_set_index(&self) -> Option<u16> {
+        self.sources.iter().find_map(|source| match source.kind {
+            SocketOptionSourceKind::RandomizedSet { index } => Some(index),
+            _ => None,
+        })
+    }
 }
 
 impl SocketOptionSource {
     pub(crate) fn label(&self) -> String {
         match self.kind {
-            SocketOptionSourceKind::Embedded => "Embedded list".into(),
-            SocketOptionSourceKind::ReusableSet { index } => format!("Reusable set #{index}"),
-            SocketOptionSourceKind::RandomizedSet { index } => format!("Randomized set #{index}"),
+            SocketOptionSourceKind::Embedded => "Embedded Plug List".into(),
+            SocketOptionSourceKind::ReusableSet { index } => format!("Reusable Plug Set #{index}"),
+            SocketOptionSourceKind::RandomizedSet { index } => {
+                format!("Randomized Plug Set #{index}")
+            }
             SocketOptionSourceKind::CategoryExpansion { category_hash } => {
                 format!("Category expansion 0x{category_hash:08X}")
             }
-            SocketOptionSourceKind::SyntheticTracker => "Synthetic tracker set".into(),
+            SocketOptionSourceKind::SyntheticTracker => "Derived Tracker Set".into(),
         }
     }
 
@@ -202,8 +243,8 @@ impl SocketOptionSource {
             SocketOptionSourceKind::Embedded
             | SocketOptionSourceKind::ReusableSet { .. }
             | SocketOptionSourceKind::RandomizedSet { .. } => "Package",
-            SocketOptionSourceKind::CategoryExpansion { .. } => "Derived from category",
-            SocketOptionSourceKind::SyntheticTracker => "Sundial fallback",
+            SocketOptionSourceKind::CategoryExpansion { .. } => "Derived from Category",
+            SocketOptionSourceKind::SyntheticTracker => "Derived from Item Definitions",
         }
     }
 }
@@ -238,11 +279,47 @@ impl Catalog {
         let Some(socket) = item.sockets.get(socket_index) else {
             return &[];
         };
+        self.socket_and_gear_type_options_for_type(item, socket.socket_type)
+    }
+
+    pub(crate) fn socket_and_gear_type_options_for_type(
+        &self,
+        item: &ItemDef,
+        socket_type: u16,
+    ) -> &[u64] {
         self.socket_and_gear_type_options
             .get(item_gear_type(item).as_ref())
-            .and_then(|options| options.get(&socket.socket_type))
+            .and_then(|options| options.get(&socket_type))
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(crate) fn socket_type_is_known_for_item(&self, item: &ItemDef, socket_type: u16) -> bool {
+        self.socket_and_gear_type_options
+            .get(item_gear_type(item).as_ref())
+            .is_some_and(|options| options.contains_key(&socket_type))
+    }
+
+    pub(crate) fn socket_type_label_for_item(&self, item: &ItemDef, socket_type: u16) -> String {
+        infer_socket_label(
+            socket_type,
+            None,
+            self.socket_and_gear_type_options_for_type(item, socket_type),
+            &self.names,
+            &self.type_names,
+        )
+    }
+
+    pub(crate) fn socket_and_gear_type_option_counts(&self, item: &ItemDef) -> Vec<(u16, usize)> {
+        let mut rows = self
+            .socket_and_gear_type_options
+            .get(item_gear_type(item).as_ref())
+            .into_iter()
+            .flat_map(|options| options.iter())
+            .map(|(&socket_type, options)| (socket_type, options.len()))
+            .collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|(socket_type, _)| *socket_type);
+        rows
     }
 
     pub(crate) fn gear_type_options(&self, item: &ItemDef, socket_index: usize) -> Vec<u64> {
@@ -263,6 +340,12 @@ impl Catalog {
 
     pub(crate) fn all_plug_options(&self) -> &[u64] {
         &self.all_plug_options
+    }
+
+    /// Returns whether a hash is installed as either a selectable plug or an
+    /// item's native socket default.
+    pub(crate) fn contains_plug(&self, hash: u64) -> bool {
+        self.plug_hashes.contains(&hash)
     }
 }
 
@@ -359,6 +442,7 @@ pub(in crate::catalog) fn build_socket_choices(
                     kind: SocketOptionSourceKind::CategoryExpansion { category_hash },
                     pool: 0,
                     valid: true,
+                    ordered_members: Vec::new(),
                     allowed: category_items.clone(),
                 });
             }
@@ -367,18 +451,37 @@ pub(in crate::catalog) fn build_socket_choices(
         }
     }
     infer_socket_plug_types(items, names, type_names);
-    let tracker_plugs = [2_285_418_970, 2_302_094_943, 38_912_240];
+    let mut tracker_plugs = names
+        .iter()
+        .filter_map(|(&hash, name)| tracker_marker(name).then_some(hash))
+        .collect::<Vec<_>>();
+    tracker_plugs.extend(items.iter().flat_map(|item| {
+        item.sockets
+            .iter()
+            .enumerate()
+            .filter(|(_, socket)| socket.socket_type == 518)
+            .filter_map(|(socket_index, _)| {
+                item.default_plugs
+                    .get(socket_index)
+                    .and_then(Option::as_deref)
+                    .and_then(parse_hash_hex)
+            })
+    }));
+    tracker_plugs.sort_unstable();
+    tracker_plugs.dedup();
     for item in items.iter_mut() {
         for socket in &mut item.sockets {
             // Kill/Crucible tracker sockets use a small synthetic plug set
-            // keyed by socket type rather than a package plug-set row.
-            if socket.socket_type == 518 {
-                socket.allowed.extend(tracker_plugs);
+            // keyed by socket type rather than a package plug-set row. Derive its
+            // members from installed item definitions and native defaults.
+            if socket.socket_type == 518 && !tracker_plugs.is_empty() {
+                socket.allowed.extend(&tracker_plugs);
                 socket.sources.push(SocketOptionSource {
                     kind: SocketOptionSourceKind::SyntheticTracker,
                     pool: 0,
                     valid: true,
-                    allowed: tracker_plugs.to_vec(),
+                    ordered_members: Vec::new(),
+                    allowed: tracker_plugs.clone(),
                 });
                 socket.allowed.sort_unstable();
                 socket.allowed.dedup();
@@ -558,9 +661,6 @@ pub(in crate::catalog) fn socket_package_sources(
     item_hashes: &[u64],
     plug_set_table: &[u8],
 ) -> Vec<SocketOptionSource> {
-    const EMBEDDED_LIST_OFFSET: usize = 64;
-    const REUSABLE_SET_INDEX_OFFSET: usize = 12;
-    const RANDOMIZED_SET_INDEX_OFFSET: usize = 32;
     const PLUG_SET_TABLE_DESCRIPTOR: usize = 8;
     const PLUG_SET_ROW_STRIDE: usize = 24;
     const PLUG_SET_MEMBERS_OFFSET: usize = 8;
@@ -569,15 +669,21 @@ pub(in crate::catalog) fn socket_package_sources(
 
     // Small reusable lists, such as a fixed shader choice, are embedded in
     // the inventory item definition.
-    let Some(embedded_descriptor) = socket_base.checked_add(EMBEDDED_LIST_OFFSET) else {
+    let Some(embedded_descriptor) =
+        socket_base.checked_add(ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET)
+    else {
         return sources;
     };
     if u64_at(item, embedded_descriptor).is_ok_and(|count| count != 0) {
         let decoded = plug_member_hashes(item, embedded_descriptor, item_hashes);
+        let ordered_members = decoded
+            .as_ref()
+            .map_or_else(Vec::new, |members| members.values.clone());
         sources.push(SocketOptionSource {
             kind: SocketOptionSourceKind::Embedded,
             pool: 0,
             valid: decoded.as_ref().is_some_and(|members| members.complete),
+            ordered_members,
             allowed: decoded.map_or_else(Vec::new, |members| members.values),
         });
     }
@@ -589,8 +695,8 @@ pub(in crate::catalog) fn socket_package_sources(
         .ok()
         .filter(|(_, rows, _)| *rows <= plug_set_table.len());
     for (set_offset, randomized) in [
-        (REUSABLE_SET_INDEX_OFFSET, false),
-        (RANDOMIZED_SET_INDEX_OFFSET, true),
+        (ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET, false),
+        (ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET, true),
     ] {
         let Some(set_index_offset) = socket_base.checked_add(set_offset) else {
             continue;
@@ -621,10 +727,14 @@ pub(in crate::catalog) fn socket_package_sources(
                 _ => plug_member_hashes(plug_set_table, descriptor, item_hashes),
             }
         });
+        let ordered_members = decoded
+            .as_ref()
+            .map_or_else(Vec::new, |members| members.values.clone());
         sources.push(SocketOptionSource {
             kind,
             pool: 0,
             valid: decoded.as_ref().is_some_and(|members| members.complete),
+            ordered_members,
             allowed: decoded.map_or_else(Vec::new, |members| members.values),
         });
     }
@@ -642,9 +752,14 @@ fn plug_member_hashes(
     item_hashes: &[u64],
 ) -> Option<DecodedPlugMembers> {
     const MAXIMUM_PLUG_MEMBER_COUNT: usize = 65_535;
-    const PLUG_MEMBER_STRIDE: usize = 32;
 
-    let (count, rows, _) = array_at(data, descriptor).ok()?;
+    let (count, rows, row_class) = array_at(data, descriptor).ok()?;
+    if row_class != ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS {
+        return Some(DecodedPlugMembers {
+            values: Vec::new(),
+            complete: false,
+        });
+    }
     if rows > data.len() {
         return Some(DecodedPlugMembers {
             values: Vec::new(),
@@ -655,21 +770,17 @@ fn plug_member_hashes(
     let mut complete = count <= MAXIMUM_PLUG_MEMBER_COUNT;
     for index in 0..count.min(MAXIMUM_PLUG_MEMBER_COUNT) {
         let Some(row) = index
-            .checked_mul(PLUG_MEMBER_STRIDE)
+            .checked_mul(ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE)
             .and_then(|offset| rows.checked_add(offset))
         else {
             complete = false;
             break;
         };
-        let Ok(item_index) = u32_at(data, row) else {
+        let Ok(item_index) = u16_at(data, row) else {
             complete = false;
             break;
         };
-        let Some(hash) = usize::try_from(item_index)
-            .ok()
-            .and_then(|item_index| item_hashes.get(item_index))
-            .copied()
-        else {
+        let Some(hash) = item_hashes.get(usize::from(item_index)).copied() else {
             complete = false;
             continue;
         };
@@ -681,6 +792,31 @@ fn plug_member_hashes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plug_member_array(row_class: u32, item_index: u16, reserved: [u8; 6]) -> Vec<u8> {
+        let mut data = vec![0_u8; 72];
+        data[0..8].copy_from_slice(&1_u64.to_le_bytes());
+        data[8..16].copy_from_slice(&16_i64.to_le_bytes());
+        data[24..32].copy_from_slice(&1_u64.to_le_bytes());
+        data[32..36].copy_from_slice(&row_class.to_le_bytes());
+        data[40..42].copy_from_slice(&item_index.to_le_bytes());
+        data[42..48].copy_from_slice(&reserved);
+        data
+    }
+
+    #[test]
+    fn plug_member_indices_are_u16_and_require_the_native_row_class() {
+        let item_hashes = [0x1111_u64, 0x2222];
+        let data = plug_member_array(0x8080_2E03, 1, [0xA5; 6]);
+        let decoded = plug_member_hashes(&data, 0, &item_hashes).unwrap();
+        assert!(decoded.complete);
+        assert_eq!(decoded.values, vec![0x2222]);
+
+        let wrong_class = plug_member_array(0xDEAD_BEEF, 1, [0; 6]);
+        let decoded = plug_member_hashes(&wrong_class, 0, &item_hashes).unwrap();
+        assert!(!decoded.complete);
+        assert!(decoded.values.is_empty());
+    }
 
     fn item(bucket_hash: u64, sockets: Vec<SocketDef>) -> ItemDef {
         ItemDef {
@@ -855,15 +991,15 @@ mod tests {
         let mut item = vec![0_u8; 240];
         write_u16(&mut item, 12, 0);
         write_u16(&mut item, 32, 1);
-        write_array_descriptor(&mut item, 64, 2, 128);
-        write_u32(&mut item, 144, 1);
-        write_u32(&mut item, 176, 3);
+        write_plug_member_array(&mut item, 64, 2, 128);
+        write_u32(&mut item, 144, 3);
+        write_u32(&mut item, 176, 1);
 
         let mut plug_sets = vec![0_u8; 320];
         write_array_descriptor(&mut plug_sets, 8, 2, 64);
-        write_array_descriptor(&mut plug_sets, 88, 1, 160);
+        write_plug_member_array(&mut plug_sets, 88, 1, 160);
         write_u32(&mut plug_sets, 176, 2);
-        write_array_descriptor(&mut plug_sets, 112, 2, 224);
+        write_plug_member_array(&mut plug_sets, 112, 2, 224);
         write_u32(&mut plug_sets, 240, 4);
         write_u32(&mut plug_sets, 272, 5);
 
@@ -871,19 +1007,22 @@ mod tests {
 
         assert_eq!(sources.len(), 3);
         assert_eq!(sources[0].kind, SocketOptionSourceKind::Embedded);
-        assert_eq!(sources[0].allowed, vec![101, 103]);
+        assert_eq!(sources[0].allowed, vec![103, 101]);
+        assert_eq!(sources[0].ordered_members, vec![103, 101]);
         assert!(sources[0].valid);
         assert_eq!(
             sources[1].kind,
             SocketOptionSourceKind::ReusableSet { index: 0 }
         );
         assert_eq!(sources[1].allowed, vec![102]);
+        assert_eq!(sources[1].ordered_members, vec![102]);
         assert!(sources[1].valid);
         assert_eq!(
             sources[2].kind,
             SocketOptionSourceKind::RandomizedSet { index: 1 }
         );
         assert_eq!(sources[2].allowed, vec![104, 105]);
+        assert_eq!(sources[2].ordered_members, vec![104, 105]);
         assert!(sources[2].valid);
     }
 
@@ -913,7 +1052,7 @@ mod tests {
         write_u16(&mut item, 32, u16::MAX);
         let mut plug_sets = vec![0_u8; 160];
         write_array_descriptor(&mut plug_sets, 8, 10, 48);
-        write_array_descriptor(&mut plug_sets, 72, 1, 112);
+        write_plug_member_array(&mut plug_sets, 72, 1, 112);
         write_u32(&mut plug_sets, 128, 0);
 
         let sources = socket_package_sources(&item, 0, &[100], &plug_sets);
@@ -928,7 +1067,7 @@ mod tests {
         let mut item = vec![0_u8; 208];
         write_u16(&mut item, 12, u16::MAX);
         write_u16(&mut item, 32, u16::MAX);
-        write_array_descriptor(&mut item, 64, 2, 128);
+        write_plug_member_array(&mut item, 64, 2, 128);
         write_u32(&mut item, 144, 0);
         write_u32(&mut item, 176, 7);
 
@@ -937,6 +1076,7 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].kind, SocketOptionSourceKind::Embedded);
         assert_eq!(sources[0].allowed, vec![100]);
+        assert_eq!(sources[0].ordered_members, vec![100]);
         assert!(!sources[0].valid);
     }
 
@@ -952,19 +1092,25 @@ mod tests {
                     kind: SocketOptionSourceKind::Embedded,
                     pool: 0,
                     valid: true,
+                    ordered_members: vec![1],
                     allowed: vec![1],
                 }],
                 ..SocketDef::default()
             }],
         )];
+        let names = HashMap::from([
+            (2_285_418_970, "Tracker Disabled".to_owned()),
+            (2_302_094_943, "Crucible Kill Tracker".to_owned()),
+            (38_912_240, "Vanguard Kill Tracker".to_owned()),
+        ]);
         build_socket_choices(
             &mut items,
             &HashMap::from([(1, category)]),
             &HashMap::from([(category, vec![1, 2])]),
-            &HashMap::new(),
+            &names,
             &mut HashMap::new(),
         );
-        let pools = intern_socket_pools(&mut items, &HashMap::new()).unwrap();
+        let pools = intern_socket_pools(&mut items, &names).unwrap();
         let socket = &items[0].sockets[0];
 
         assert_eq!(socket.sources.len(), 3);
@@ -994,6 +1140,7 @@ mod tests {
                 kind: SocketOptionSourceKind::RandomizedSet { index: 42 },
                 pool: 7,
                 valid: true,
+                ordered_members: vec![200, 100],
                 allowed: vec![100, 200],
             }],
             ..SocketDef::default()
@@ -1007,7 +1154,34 @@ mod tests {
             decoded.sources[0].kind,
             SocketOptionSourceKind::RandomizedSet { index: 42 }
         );
+        assert_eq!(decoded.sources[0].ordered_members, vec![200, 100]);
         assert!(decoded.sources[0].allowed.is_empty());
+    }
+
+    #[test]
+    fn interning_sorts_picker_pool_without_erasing_package_member_order() {
+        let mut items = vec![item(
+            1_498_876_634,
+            vec![SocketDef {
+                allowed: vec![100, 200],
+                sources: vec![SocketOptionSource {
+                    kind: SocketOptionSourceKind::Embedded,
+                    pool: 0,
+                    valid: true,
+                    ordered_members: vec![200, 100],
+                    allowed: vec![200, 100],
+                }],
+                ..SocketDef::default()
+            }],
+        )];
+        let names = HashMap::from([(100, "Alpha".to_owned()), (200, "Zulu".to_owned())]);
+
+        let pools = intern_socket_pools(&mut items, &names).unwrap();
+        let source = &items[0].sockets[0].sources[0];
+
+        assert_eq!(pools[source.pool as usize], vec![100, 200]);
+        assert_eq!(source.ordered_members, vec![200, 100]);
+        assert!(source.allowed.is_empty());
     }
 
     fn write_u16(data: &mut [u8], offset: usize, value: u16) {
@@ -1031,5 +1205,10 @@ mod tests {
         let pointer = descriptor + 8;
         write_i64(data, pointer, i64::try_from(header - pointer).unwrap());
         write_u64(data, header, count);
+    }
+
+    fn write_plug_member_array(data: &mut [u8], descriptor: usize, count: u64, header: usize) {
+        write_array_descriptor(data, descriptor, count, header);
+        write_u32(data, header + 8, 0x8080_2E03);
     }
 }

@@ -122,6 +122,7 @@ pub(super) fn set_investment_override(
             let mut rows = policy.flag_overrides;
             if let Some(row) = rows
                 .iter_mut()
+                .rev()
                 .find(|row| row.definition_index == definition_index)
             {
                 if i32::from(row.value) == value {
@@ -153,6 +154,7 @@ pub(super) fn set_investment_override(
             let mut rows = policy.value_overrides;
             if let Some(row) = rows
                 .iter_mut()
+                .rev()
                 .find(|row| row.definition_index == definition_index)
             {
                 if row.value == value {
@@ -275,6 +277,7 @@ pub(super) fn set_progression_value(
     };
     if let Some(row) = values
         .iter_mut()
+        .rev()
         .find(|row| row.definition_index == definition_index)
     {
         if row.lanes == lanes {
@@ -392,6 +395,21 @@ pub(in crate::app) fn set_collection_flag(
     definition: &UnlockDefinition,
     set: bool,
 ) -> bool {
+    let Ok(investment) = parse_investment(document.pointer("/state/investment")) else {
+        return false;
+    };
+    if investment
+        .flag_overrides
+        .iter()
+        .any(|row| row.definition_index == definition_index)
+    {
+        return set_investment_override(
+            document,
+            InvestmentTable::FlagOverrides,
+            definition_index,
+            if set { 2 } else { 0 },
+        );
+    }
     let Some(slot) = definition.compact_slot.map(usize::from) else {
         return set_investment_override(
             document,
@@ -410,11 +428,47 @@ pub(in crate::app) fn set_collection_flag(
     set_unlock_flag(document, table, slot, set)
 }
 
+/// Remove both persisted lanes: an override can hide a still-set compact flag.
+/// Badge completion is computed from these flags; stock objectives and XP stay untouched.
+pub(in crate::app) fn remove_authored_collection_state(
+    document: &mut Value,
+    unlocks: &[crate::investment::AuthoredCollectionUnlock],
+) -> Result<usize, String> {
+    validate(document)?;
+    let mut changed = 0;
+    for unlock in unlocks {
+        if unlock.bank != ACCOUNT_FLAG_BANK || usize::from(unlock.slot) >= ACCOUNT_FLAG_CAPACITY {
+            return Err("Unsupported authored collection flag bank or slot".into());
+        }
+        let removed_override = remove_investment_override(
+            document,
+            InvestmentTable::FlagOverrides,
+            usize::from(unlock.definition_index),
+        );
+        let removed_flag = set_unlock_flag(
+            document,
+            "account_flag_runs",
+            usize::from(unlock.slot),
+            false,
+        );
+        changed += usize::from(removed_override || removed_flag);
+    }
+    validate(document)?;
+    Ok(changed)
+}
+
 pub(super) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, value: i32) -> bool {
     let Some((key, capacity)) = value_table_key(id) else {
         return false;
     };
     if slot >= capacity {
+        return false;
+    }
+    if id == "character_object_objective_values"
+        && RESERVED_CHARACTER_OBJECTIVE_VALUES
+            .iter()
+            .any(|(reserved, expected)| *reserved == slot && *expected != value)
+    {
         return false;
     }
     let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
@@ -425,7 +479,7 @@ pub(super) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, valu
         "character_object_objective_values" => current.character_objective_values,
         _ => return false,
     };
-    if let Some(row) = values.iter_mut().find(|row| row.index == slot) {
+    if let Some(row) = values.iter_mut().rev().find(|row| row.index == slot) {
         if row.value == value {
             return false;
         }
@@ -450,6 +504,21 @@ pub(in crate::app) fn set_collection_value(
     definition: &UnlockDefinition,
     value: i32,
 ) -> bool {
+    let Ok(investment) = parse_investment(document.pointer("/state/investment")) else {
+        return false;
+    };
+    if investment
+        .value_overrides
+        .iter()
+        .any(|row| row.definition_index == definition_index)
+    {
+        return set_investment_override(
+            document,
+            InvestmentTable::ValueOverrides,
+            definition_index,
+            value,
+        );
+    }
     let Some(slot) = definition.compact_slot.map(usize::from) else {
         return set_investment_override(
             document,
@@ -470,6 +539,13 @@ pub(super) fn remove_unlock_value(document: &mut Value, id: &str, slot: usize) -
     let Some((key, _)) = value_table_key(id) else {
         return false;
     };
+    if id == "character_object_objective_values"
+        && RESERVED_CHARACTER_OBJECTIVE_VALUES
+            .iter()
+            .any(|(reserved, _)| *reserved == slot)
+    {
+        return false;
+    }
     let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
         return false;
     };

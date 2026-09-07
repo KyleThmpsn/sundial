@@ -82,7 +82,7 @@ pub(super) fn apply_inventory_item_action(
             "inventory item index is out of range",
         ));
     }
-    validate_inventory_action(location, &action)?;
+    validate_inventory_action(location, &action, INVENTORY_FLAG_MASK)?;
 
     let items = inventory_array_mut(document, location.character_index)?;
     match action {

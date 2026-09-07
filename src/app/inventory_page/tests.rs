@@ -246,7 +246,6 @@ fn multi_field_inventory_edits_are_atomic() {
     }));
     let before = document.clone();
     let error = apply_inventory_actions_atomic(
-        super::super::account_workspace::AccountWorkspace::json(),
         &mut document,
         InventoryItemLocation {
             character_index: 0,

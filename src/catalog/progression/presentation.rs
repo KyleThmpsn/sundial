@@ -25,8 +25,13 @@ pub(in crate::catalog) fn scan_presentation_nodes(
             16 + PRESENTATION_NODE_STRING_TABLE_SLOT * 16,
         )?))
         .map_err(|error| format!("Could not read presentation-node strings: {error}"))?;
-    let (definition_count, definition_rows, _) = array_at(&definitions, 8)?;
+    let (definition_count, definition_rows, definition_class) = array_at(&definitions, 8)?;
     let (string_count, string_rows, _) = array_at(&strings, 8)?;
+    if definition_class != PRESENTATION_NODE_DEFINITION_ROW_CLASS {
+        return Err(format!(
+            "The installed presentation-node definition table has row class 0x{definition_class:08X}; expected 0x{PRESENTATION_NODE_DEFINITION_ROW_CLASS:08X}"
+        ));
+    }
     if definition_count != string_count {
         return Err(
             "The installed presentation-node definition and string tables do not match".into(),

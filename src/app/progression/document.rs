@@ -4,23 +4,29 @@ use serde_json::{Map, Value};
 
 use crate::catalog::UnlockDefinition;
 
-pub(super) const ACCOUNT_FLAG_CAPACITY: usize = 12_300;
+pub(super) const ACCOUNT_FLAG_CAPACITY: usize =
+    crate::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY;
 pub(super) const PROFILE_FLAG_CAPACITY: usize = 512;
 pub(super) const CHARACTER_FLAG_CAPACITY: usize = 256;
 pub(super) const OBJECTIVE_VALUE_CAPACITY: usize = 6_200;
 pub(super) const CHARACTER_OBJECT_FLAG_CAPACITY: usize = 4_096;
 pub(super) const CHARACTER_OBJECT_VALUE_CAPACITY: usize = 768;
+pub(super) const RESERVED_CHARACTER_OBJECTIVE_VALUES: [(usize, i32); 2] = [(443, -1), (502, -1)];
 pub(super) const PROGRESSION_DEFINITION_CAPACITY: usize = 256;
 pub(super) const FAMILY5_OVERRIDE_CAPACITY: usize = 100;
 pub(super) const FAMILY5_FLAG_SLOT_MAXIMUM: usize = 23_499;
 pub(super) const FAMILY5_VALUE_SLOT_MAXIMUM: usize = 15_499;
 pub(super) const FAMILY5_FLAG_VALUE_MAXIMUM: u8 = 2;
-pub(super) const ACCOUNT_FLAG_BANK: u8 = 1;
+pub(super) const ACCOUNT_FLAG_BANK: u8 = crate::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_BANK;
 pub(super) const PROFILE_FLAG_BANK: u8 = 2;
 pub(super) const CHARACTER_OBJECT_FLAG_BANK: u8 = 3;
 pub(super) const CHARACTER_FLAG_BANK: u8 = 6;
 pub(super) const ACCOUNT_OBJECTIVE_BANK: u8 = 1;
 pub(super) const CHARACTER_OBJECTIVE_BANK: u8 = 2;
+/// Definition kind 0 has no backing store and reads as the native zero value.
+const UNBACKED_DEFAULT_KIND: u8 = 0;
+/// Definition kind 5 is computed from inventory at runtime and cannot be reconstructed here.
+const INVENTORY_COMPUTED_KIND: u8 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct FlagRun {
@@ -94,12 +100,12 @@ impl CollectionStateSnapshot {
         definition_index: usize,
         definition: &UnlockDefinition,
     ) -> Option<bool> {
+        if let Some(value) = self.flag_overrides.get(&definition_index).copied() {
+            // Family-5 is an override by definition, including for compact-backed definitions.
+            return Some(value == 2);
+        }
         let Some(slot) = definition.compact_slot.map(usize::from) else {
-            return match self.flag_overrides.get(&definition_index).copied() {
-                Some(0) => Some(false),
-                Some(2) => Some(true),
-                _ => None,
-            };
+            return (definition.bank() == UNBACKED_DEFAULT_KIND).then_some(false);
         };
         matches!(
             definition.bank(),
@@ -116,8 +122,11 @@ impl CollectionStateSnapshot {
         definition_index: usize,
         definition: &UnlockDefinition,
     ) -> Option<i32> {
+        if let Some(value) = self.value_overrides.get(&definition_index).copied() {
+            return Some(value);
+        }
         let Some(slot) = definition.compact_slot.map(usize::from) else {
-            return self.value_overrides.get(&definition_index).copied();
+            return (definition.bank() == UNBACKED_DEFAULT_KIND).then_some(0);
         };
         matches!(
             definition.bank(),
@@ -136,11 +145,15 @@ impl CollectionStateSnapshot {
         definition_index: usize,
         definition: &UnlockDefinition,
     ) -> String {
+        if let Some(value) = self.flag_overrides.get(&definition_index) {
+            return format!("Override {value}");
+        }
         let Some(slot) = definition.compact_slot.map(usize::from) else {
-            return self
-                .flag_overrides
-                .get(&definition_index)
-                .map_or_else(|| "No override".into(), |value| format!("Override {value}"));
+            return match definition.bank() {
+                UNBACKED_DEFAULT_KIND => "Default false".into(),
+                INVENTORY_COMPUTED_KIND => "Computed at runtime".into(),
+                _ => "Unavailable".into(),
+            };
         };
         if !matches!(
             definition.bank(),
@@ -163,11 +176,14 @@ impl CollectionStateSnapshot {
         definition_index: usize,
         definition: &UnlockDefinition,
     ) -> String {
+        if let Some(value) = self.value_overrides.get(&definition_index) {
+            return format!("Override {value}");
+        }
         let Some(slot) = definition.compact_slot.map(usize::from) else {
-            return self
-                .value_overrides
-                .get(&definition_index)
-                .map_or_else(|| "No override".into(), |value| format!("Override {value}"));
+            return match definition.bank() {
+                UNBACKED_DEFAULT_KIND => "Default 0".into(),
+                _ => "Unavailable".into(),
+            };
         };
         if !matches!(
             definition.bank(),
@@ -274,6 +290,24 @@ pub(super) fn parse_unlocks(value: Option<&Value>) -> Result<UnlockPolicy, Strin
         return Ok(UnlockPolicy::default());
     };
 
+    let character_objective_values = parse_indexed_values(
+        object.get("character_objective_values"),
+        "state.unlocks.character_objective_values",
+        CHARACTER_OBJECT_VALUE_CAPACITY,
+    )?;
+    for row in &character_objective_values {
+        if let Some((_, expected)) = RESERVED_CHARACTER_OBJECTIVE_VALUES
+            .iter()
+            .find(|(index, _)| *index == row.index)
+            && row.value != *expected
+        {
+            return Err(format!(
+                "state.unlocks.character_objective_values slot {} must remain {expected}",
+                row.index
+            ));
+        }
+    }
+
     Ok(UnlockPolicy {
         account_flag_runs: parse_flag_runs(
             object.get("account_flag_runs"),
@@ -300,11 +334,7 @@ pub(super) fn parse_unlocks(value: Option<&Value>) -> Result<UnlockPolicy, Strin
             "state.unlocks.character_flag_runs",
             CHARACTER_OBJECT_FLAG_CAPACITY,
         )?,
-        character_objective_values: parse_indexed_values(
-            object.get("character_objective_values"),
-            "state.unlocks.character_objective_values",
-            CHARACTER_OBJECT_VALUE_CAPACITY,
-        )?,
+        character_objective_values,
         account_progressions: parse_progression_values(
             object.get("account_progressions"),
             "state.unlocks.account_progressions",
@@ -644,8 +674,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn collection_state_snapshot_reports_encoded_and_absent_entries_without_inference() {
+    fn collection_state_fixture() -> CollectionStateSnapshot {
         let document = json!({
             "state": {
                 "unlocks": {
@@ -653,51 +682,67 @@ mod tests {
                     "objective_values": [[20, 7]]
                 },
                 "investment": {
-                    "family5_flag_overrides": [[30, 2]],
-                    "family5_value_overrides": [[40, -1]]
+                    "family5_flag_overrides": [[30, 2], [31, 1], [60, 0]],
+                    "family5_value_overrides": [[40, -1], [61, 99]]
                 }
             }
         });
-        let snapshot = collection_state_snapshot(&document).unwrap();
-        let account_flag = UnlockDefinition {
-            hash: 1,
-            code: 1,
-            compact_slot: Some(10),
+        collection_state_snapshot(&document).unwrap()
+    }
+
+    fn unlock_definition(hash: u64, code: u16, compact_slot: Option<u16>) -> UnlockDefinition {
+        UnlockDefinition {
+            hash,
+            code,
+            compact_slot,
             name: None,
             description: None,
             tested_by: Vec::new(),
-        };
-        let absent_flag = UnlockDefinition {
-            compact_slot: Some(11),
-            ..account_flag.clone()
-        };
-        let account_value = UnlockDefinition {
-            hash: 2,
-            code: 1,
-            compact_slot: Some(20),
-            name: None,
-            description: None,
-            tested_by: Vec::new(),
-        };
-        let absent_value = UnlockDefinition {
-            compact_slot: Some(21),
-            ..account_value.clone()
-        };
-        let unbanked = UnlockDefinition {
-            hash: 3,
-            code: 0,
-            compact_slot: None,
-            name: None,
-            description: None,
-            tested_by: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn collection_state_snapshot_reads_compact_backing() {
+        let snapshot = collection_state_fixture();
+        let account_flag = unlock_definition(1, 1, Some(10));
+        let absent_flag = unlock_definition(1, 1, Some(11));
+        let account_value = unlock_definition(2, 1, Some(20));
+        let absent_value = unlock_definition(2, 1, Some(21));
 
         assert_eq!(snapshot.flag_text(0, &account_flag), "Set");
         assert_eq!(snapshot.flag_text(0, &absent_flag), "Unset");
         assert_eq!(snapshot.value_text(0, &account_value), "7");
         assert_eq!(snapshot.value_text(0, &absent_value), "Not listed");
+    }
+
+    #[test]
+    fn collection_state_snapshot_uses_native_unbacked_defaults() {
+        let snapshot = collection_state_fixture();
+        let unbanked = unlock_definition(3, 0, None);
+        let computed = unlock_definition(3, INVENTORY_COMPUTED_KIND.into(), None);
+
+        assert_eq!(snapshot.flag_value(50, &unbanked), Some(false));
+        assert_eq!(snapshot.value(50, &unbanked), Some(0));
+        assert_eq!(snapshot.flag_text(50, &unbanked), "Default false");
+        assert_eq!(snapshot.value_text(50, &unbanked), "Default 0");
+        assert_eq!(snapshot.flag_value(50, &computed), None);
+        assert_eq!(snapshot.flag_text(50, &computed), "Computed at runtime");
+    }
+
+    #[test]
+    fn collection_state_snapshot_applies_family5_overrides() {
+        let snapshot = collection_state_fixture();
+        let account_flag = unlock_definition(1, 1, Some(10));
+        let account_value = unlock_definition(2, 1, Some(20));
+        let unbanked = unlock_definition(3, 0, None);
+
         assert_eq!(snapshot.flag_text(30, &unbanked), "Override 2");
         assert_eq!(snapshot.value_text(40, &unbanked), "Override -1");
+        assert_eq!(snapshot.flag_value(31, &unbanked), Some(false));
+        assert_eq!(snapshot.flag_value(60, &account_flag), Some(false));
+        assert_eq!(snapshot.flag_text(60, &account_flag), "Override 0");
+        assert_eq!(snapshot.value(61, &account_value), Some(99));
+        assert_eq!(snapshot.value_text(61, &account_value), "Override 99");
     }
 
     #[test]

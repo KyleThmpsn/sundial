@@ -11,18 +11,20 @@ use sundial_account as account_domain;
 
 mod document;
 
-#[allow(unused_imports)]
 pub(crate) use document::{
-    CHARACTER_INVENTORY_CAPACITY, DISMANTLE_REWARDS_SCHEMA_VERSION, DismantleGearClass,
-    DismantleRarity, DismantleRewardAction, DismantleRewardLocation, DismantleRewardSnapshot,
-    EQUIPMENT_FLAGS_SCHEMA_VERSION, FILTERED_DISMANTLE_REWARD_CAPACITY,
-    GENERATED_INSTANCE_SOID_START, INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASK,
-    INVENTORY_FLAG_TRACKED, INVENTORY_SCHEMA_VERSION, InventoryError, InventoryItemAction,
-    InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, LEGACY_PROFILE_ITEM_CAPACITY,
-    MAX_ITEM_PLUGS, NewInventoryItem, PROFILE_ITEM_CAPACITY, ProfileItemAction,
-    ProfileItemLocation, ProfileItemSnapshot, SchemaMode, character_inventory, dismantle_rewards,
-    profile_item_capacity, profile_item_target_exists, profile_items, schema_mode,
+    CHARACTER_INVENTORY_CAPACITY, DismantleGearClass, DismantleRarity, DismantleRewardAction,
+    DismantleRewardLocation, DismantleRewardSnapshot, EQUIPMENT_FLAGS_SCHEMA_VERSION,
+    GENERATED_INSTANCE_SOID_START, INVENTORY_FLAG_LOCKED, InventoryError, InventoryItemAction,
+    InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, MAX_ITEM_PLUGS, NewInventoryItem,
+    ProfileItemAction, ProfileItemLocation, ProfileItemSnapshot, SchemaMode, character_inventory,
+    dismantle_rewards, profile_item_target_exists, profile_items, schema_mode,
     set_inventory_locked_flag, validate_document_items,
+};
+
+#[cfg(test)]
+pub(crate) use document::{
+    FILTERED_DISMANTLE_REWARD_CAPACITY, INVENTORY_FLAG_TRACKED, LEGACY_PROFILE_ITEM_CAPACITY,
+    PROFILE_ITEM_CAPACITY, profile_item_capacity,
 };
 
 pub(super) use document::KNOWN_ITEM_MEMBERS;
@@ -402,6 +404,7 @@ pub(crate) fn add_inventory_item(
     item: NewInventoryItem,
 ) -> InventoryResult<InventoryItemLocation> {
     require_inventory_mutation(document)?;
+    require_available_definition(document, item.definition_hash)?;
     let row_path = format!("/state/characters/{character_index}/inventory/<new>");
     let inventory_path = format!("/state/characters/{character_index}/inventory");
     validate_inventory_definition_hash(
@@ -450,6 +453,9 @@ pub(crate) fn apply_inventory_item_action(
     action: InventoryItemAction,
 ) -> InventoryResult<()> {
     require_inventory_mutation(document)?;
+    if let InventoryItemAction::SetDefinitionHash(hash) = &action {
+        require_available_definition(document, *hash)?;
+    }
     let row_path = inventory_item_path(location);
     let inventory_path = format!("/state/characters/{}/inventory", location.character_index);
     let adapter = JsonCharacterAdapter::load_inventory_item(document, location.character_index)
@@ -464,7 +470,7 @@ pub(crate) fn apply_inventory_item_action(
     let _ = json_character_id(&adapter, location.character_index)?;
     let item_id = json_character_inventory_item_id(&adapter, location)
         .ok_or_else(|| InventoryError::new(&row_path, "inventory item index is out of range"))?;
-    validate_inventory_action(location, &action)?;
+    validate_inventory_action(location, &action, schema_mode(document).item_flag_mask())?;
     let command = match action {
         InventoryItemAction::SetDefinitionHash(hash) => {
             account_domain::CharacterCommand::UpdateInventoryItem {
@@ -576,7 +582,8 @@ pub(crate) fn swap_inventory_item_with_equipment(
     slot: &str,
 ) -> InventoryResult<bool> {
     require_inventory_mutation(document)?;
-    if !super::SLOTS
+    if !schema_mode(document)
+        .equipment_slots()
         .iter()
         .any(|(known_slot, _, _)| *known_slot == slot)
     {
@@ -684,7 +691,8 @@ pub(crate) fn move_equipment_item_to_inventory(
     slot: &str,
 ) -> InventoryResult<()> {
     require_inventory_mutation(document)?;
-    if !super::SLOTS
+    if !schema_mode(document)
+        .equipment_slots()
         .iter()
         .any(|(known_slot, _, _)| *known_slot == slot)
     {
@@ -722,3 +730,20 @@ mod legacy_character_tests;
 mod legacy_profile_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use crate::account_contract::INVENTORY_FLAG_MASK;
+
+fn require_available_definition(document: &Value, hash: u32) -> InventoryResult<()> {
+    if crate::account_contract::definition_available(
+        u64::from(hash),
+        schema_mode(document).supports_v13(),
+    ) {
+        Ok(())
+    } else {
+        Err(InventoryError::new(
+            "definition_hash",
+            "The emote wheel requires JSON schema 13 or newer",
+        ))
+    }
+}

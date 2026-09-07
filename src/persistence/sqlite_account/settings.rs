@@ -351,6 +351,7 @@ pub(super) fn decode(
         AccountSettingsCapabilities {
             writable: false,
             named_key_bindings_writable: false,
+            extended_field_of_view: false,
         },
         values,
     )

@@ -11,11 +11,12 @@ mod character;
 mod error;
 mod identity;
 mod profile;
+mod validation;
 
 pub use account_settings::{
     AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCapabilities,
-    AccountSettingsCommand, AccountSettingsState, FiniteF64, KeyBindingSlot,
-    is_supported_key_binding_action, is_valid_named_binding_input,
+    AccountSettingsCommand, AccountSettingsState, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MINIMUM,
+    FiniteF64, KeyBindingSlot, is_supported_key_binding_action, is_valid_named_binding_input,
 };
 pub use character::{
     Character, CharacterAbilities, CharacterCapabilities, CharacterCommand, CharacterCommandResult,
@@ -28,3 +29,6 @@ pub use profile::{
     DismantleGearClass, DismantleRarity, DismantleReward, DismantleRewardCommand,
     ProfileCapabilities, ProfileItem, ProfileItemCommand, ProfileState,
 };
+
+/// The engine sentinel used where no valid investment definition is present.
+pub const NO_DEFINITION_HASH: DefinitionHash = DefinitionHash::new(0x811C_9DC5);

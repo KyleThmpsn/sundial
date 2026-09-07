@@ -1,4 +1,5 @@
-use std::{fs, path::Path, process::Command};
+#[cfg(target_os = "linux")]
+use std::fs;
 
 use eframe::egui;
 
@@ -198,25 +199,8 @@ pub(super) fn draw_linux_title_bar(ctx: &egui::Context, logo: &egui::TextureHand
     close_clicked
 }
 
-pub(super) fn open_directory(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("Could not create {}: {error}", path.display()))?;
-    let mut command = if cfg!(target_os = "windows") {
-        Command::new("explorer.exe")
-    } else if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else {
-        Command::new("xdg-open")
-    };
-    command
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))
-}
-
 #[cfg(windows)]
-pub(super) fn destiny_is_running() -> Result<bool, String> {
+pub(crate) fn destiny_is_running() -> Result<bool, String> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
         System::Diagnostics::ToolHelp::{
@@ -242,7 +226,18 @@ pub(super) fn destiny_is_running() -> Result<bool, String> {
     let mut found = false;
     // SAFETY: snapshot is a live ToolHelp handle and entry points to writable storage with dwSize
     // initialized to the exact PROCESSENTRY32W size.
-    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    let first_entry = unsafe { Process32FirstW(snapshot, &mut entry) };
+    if first_entry == 0 {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: snapshot was returned successfully above and has not been closed or transferred.
+        unsafe {
+            CloseHandle(snapshot);
+        }
+        return Err(format!(
+            "Could not enumerate processes while checking whether Destiny 2 is running: {error}"
+        ));
+    }
+    let mut has_entry = true;
     while has_entry {
         let length = entry
             .szExeFile
@@ -266,7 +261,7 @@ pub(super) fn destiny_is_running() -> Result<bool, String> {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn destiny_is_running() -> Result<bool, String> {
+pub(crate) fn destiny_is_running() -> Result<bool, String> {
     let processes = fs::read_dir("/proc")
         .map_err(|error| format!("Could not check whether Destiny 2 is running: {error}"))?;
     for process in processes.flatten() {
@@ -285,15 +280,6 @@ pub(super) fn destiny_is_running() -> Result<bool, String> {
         }
     }
     Ok(false)
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-pub(super) fn destiny_is_running() -> Result<bool, String> {
-    let output = Command::new("pgrep")
-        .args(["-ix", "destiny2.exe"])
-        .output()
-        .map_err(|error| format!("Could not check whether Destiny 2 is running: {error}"))?;
-    Ok(output.status.success())
 }
 
 #[cfg(windows)]

@@ -1,5 +1,7 @@
 //! Shared item interactions, transient picker state, transfers, and atomic edits.
 
+use crate::app::account_workspace as account;
+
 use std::collections::HashMap;
 
 use eframe::egui;
@@ -260,15 +262,13 @@ pub(in crate::app) fn displayed_inventory_plugs(
 }
 
 pub(super) fn apply_inventory_actions_atomic(
-    workspace: super::super::account_workspace::AccountWorkspace,
     document: &mut super::super::account_workspace::WorkspaceDocument,
     location: InventoryItemLocation,
     actions: Vec<InventoryItemAction>,
 ) -> Result<(), String> {
     let mut candidate = document.clone();
     for action in actions {
-        workspace
-            .apply_inventory_item_action(&mut candidate, location, action)
+        account::apply_inventory_item_action(&mut candidate, location, action)
             .map_err(|error| error.to_string())?;
     }
     *document = candidate;

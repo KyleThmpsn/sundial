@@ -215,20 +215,7 @@ pub(in crate::catalog) fn scan_objectives(
         .to_owned();
         let condition_references = objective_condition_references_at(&definitions, definition)?;
         let condition_programs = condition_references.programs.clone();
-        let referenced_objective_indices = condition_references
-            .objectives
-            .iter()
-            .copied()
-            .map(|objective_index| {
-                if objective_index >= definition_count {
-                    return Err(format!(
-                        "Objective row {index} references unavailable objective #{objective_index}"
-                    ));
-                }
-                u16::try_from(objective_index)
-                    .map_err(|_| format!("Objective index {objective_index} exceeds u16"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let referenced_objective_indices = Vec::new();
         let intrinsic_perk_flag_definition_indices = objective_intrinsic_perk_flag_indices_at(
             &definitions,
             definition,

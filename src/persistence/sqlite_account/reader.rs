@@ -11,7 +11,8 @@ use rusqlite::{Connection, OptionalExtension};
 use sundial_account::{
     Character, CharacterAbilities, CharacterCapabilities, CharacterMetadata, CharacterState,
     DefinitionHash, DismantleGearClass, DismantleRarity, DismantleReward, EntityId, EquipmentSlot,
-    InstanceSoid, ItemInstance, ItemPlugs, ProfileCapabilities, ProfileItem, ProfileState,
+    InstanceSoid, ItemInstance, ItemPlugs, NO_DEFINITION_HASH, ProfileCapabilities, ProfileItem,
+    ProfileState,
 };
 
 use super::{
@@ -24,7 +25,6 @@ use super::{
     settings,
 };
 
-const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
 const DEFAULT_ABILITIES: CharacterAbilities = CharacterAbilities {
     movement: 4,
     grenade: 7,
@@ -130,6 +130,12 @@ pub(super) fn load_connection(
         settings::decode(&root.settings_payload, false)?;
         ensure_child_tables_empty(connection)?;
         return Ok(SqliteAccountLoad::Empty);
+    }
+    if primary_soid & (1_u64 << 63) == 0 {
+        return Err(SqliteAccountError::invalid_data(
+            "account_state.primary_soid",
+            "nonempty accounts require a signed-negative SOID with bit 63 set",
+        ));
     }
     let primary_soid = InstanceSoid::try_from_u64(primary_soid).ok_or_else(|| {
         SqliteAccountError::invalid_data("account_state.primary_soid", "SOID must be nonzero")
@@ -1010,7 +1016,7 @@ fn require_position(
 }
 
 fn require_definition_hash(hash: u32, location: &str) -> Result<(), SqliteAccountError> {
-    if hash == NO_DEFINITION_HASH {
+    if hash == NO_DEFINITION_HASH.get() {
         Err(SqliteAccountError::invalid_data(
             format!("{location}.definition_hash"),
             "the no-definition sentinel cannot identify persisted state",

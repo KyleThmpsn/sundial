@@ -40,9 +40,7 @@ pub(super) struct CatalogHashMatches<'a> {
     pub(super) item: Option<&'a ItemDef>,
     pub(super) item_package_metadata: Option<&'a ItemPackageMetadata>,
     pub(super) item_stat_definition: Option<&'a ItemStatDefinition>,
-    pub(super) sandbox_perk_definition: Option<&'a SandboxPerkDefinition>,
     pub(super) investment_stat_references: Vec<(u64, &'a ItemInvestmentStat)>,
-    pub(super) intrinsic_perk_item_references: &'a [u64],
     pub(super) inventory_metadata: Option<&'a InventoryMetadata>,
     pub(super) item_material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
 }
@@ -336,9 +334,7 @@ impl<'a> CatalogHashMatches<'a> {
             item: catalog.item(hash),
             item_package_metadata: catalog.item_package_metadata(hash),
             item_stat_definition: catalog.item_stat_definition_by_hash(hash),
-            sandbox_perk_definition: catalog.sandbox_perk_definition_by_hash(hash),
             investment_stat_references: catalog.item_investment_stat_references(hash),
-            intrinsic_perk_item_references: catalog.intrinsic_perk_references(hash),
             inventory_metadata: catalog.inventory_metadata(hash),
             item_material_requirement_set_indices: catalog
                 .item_material_requirement_set_indices(hash),
@@ -346,87 +342,77 @@ impl<'a> CatalogHashMatches<'a> {
     }
 
     pub(super) fn match_groups(&self) -> Vec<CatalogMatchGroup> {
-        let mut groups = Vec::with_capacity(18);
+        let mut groups = Vec::with_capacity(16);
         push_match_group(
             &mut groups,
-            "Item definition",
+            "Item Definition",
             usize::from(self.item_package_metadata.is_some() || self.item.is_some()),
         );
         push_match_group(
             &mut groups,
-            "Inventory metadata",
+            "Inventory Metadata",
             usize::from(self.inventory_metadata.is_some()),
         );
         push_match_group(
             &mut groups,
-            "Progression definition",
+            "Progression Definition",
             self.progression_definitions.len(),
         );
         push_match_group(
             &mut groups,
-            "Progression reward reference",
+            "Progression Reward Reference",
             self.progression_reward_matches.len(),
         );
         push_match_group(
             &mut groups,
-            "Faction progression reference",
+            "Faction Progression Reference",
             self.progression_faction_matches.len(),
         );
         push_match_group(
             &mut groups,
-            "Unlock flag definition",
+            "Unlock Flag Definition",
             self.flag_definitions.len(),
         );
         push_match_group(
             &mut groups,
-            "Unlock value definition",
+            "Unlock Value Definition",
             self.value_definitions.len(),
         );
         push_match_group(&mut groups, "Objective", self.objectives.len());
         push_match_group(
             &mut groups,
-            "Objective owner reference",
+            "Objective Owner Reference",
             self.owner_matches.len(),
         );
         push_match_group(
             &mut groups,
-            "Objective trait reference",
+            "Objective Trait Reference",
             self.trait_matches.len(),
         );
         push_match_group(
             &mut groups,
-            "Progression reader reference",
+            "Progression Reader Reference",
             self.context_matches.len(),
         );
         push_match_group(&mut groups, "Collectible", self.collectible_matches.len());
         push_match_group(
             &mut groups,
-            "Material requirement set",
+            "Material Requirement Set",
             self.material_requirement_set_matches.len(),
         );
         push_match_group(
             &mut groups,
-            "Item stat definition",
+            "Item Stat Definition",
             usize::from(self.item_stat_definition.is_some()),
         );
         push_match_group(
             &mut groups,
-            "Sandbox perk definition",
-            usize::from(self.sandbox_perk_definition.is_some()),
-        );
-        push_match_group(
-            &mut groups,
-            "Investment stat reference",
+            "Investment Stat Reference",
             self.investment_stat_references.len(),
         );
         push_match_group(
             &mut groups,
-            "Intrinsic perk item reference",
-            self.intrinsic_perk_item_references.len(),
-        );
-        push_match_group(
-            &mut groups,
-            "Inventory bucket item",
+            "Inventory Bucket Item",
             self.bucket_items.len(),
         );
         groups

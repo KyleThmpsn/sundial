@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.holdover",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x732134AB",
+    "expected_name": "No Feelings"
+  },
+  "presentation_donor": {
+    "item_hash": "0xCB6F6266",
+    "expected_name": "Polaris Lance"
+  },
+  "identity": {
+    "item_hash": "0x89BCDD55",
+    "collectible_hash": "0x7CFAA67A",
+    "unlock_hash": "0x30D1B354",
+    "pattern_global_id_hash": "0xD117B04C",
+    "name_hash": "0xC2ACCD71",
+    "type_hash": "0x4EFDF218",
+    "flavor_hash": "0xC77F4BFC",
+    "source_hash": "0xAE98D60F",
+    "collection_name_hash": "0x579BBD46",
+    "collection_description_hash": "0xD4E5B19F",
+    "inventory_hint_hash": "0x4570E620",
+    "collection_requirement_hash": "0xAAF88CB4"
+  },
+  "name": "Holdover",
+  "flavor": "It'll get you by. Until it doesn't.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 16,
+        "value": 70
+      },
+      {
+        "definition_index": 24,
+        "value": 45
+      },
+      {
+        "definition_index": 26,
+        "value": 35
+      },
+      {
+        "definition_index": 27,
+        "value": 40
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "primary",
+    "modern_damage_type": "solar",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "socket_columns": [
+      {
+        "choices": [
+          "0x10C48979"
+        ],
+        "socket_type": 176
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xB7B19168",
+          "0x0EC3FDC8",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x980F93D6",
+          "0x5C2FD04F",
+          "0xD2013CA1"
+        ],
+        "socket_type": 92
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

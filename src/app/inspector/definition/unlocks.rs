@@ -16,7 +16,7 @@ pub(super) fn draw_hash_unlock_matches(
     draw_hash_unlock_kind(
         ui,
         catalog,
-        "Unlock flags",
+        "Unlock Flags",
         &matches.flag_definitions,
         false,
         &mut editor,
@@ -24,7 +24,7 @@ pub(super) fn draw_hash_unlock_matches(
     draw_hash_unlock_kind(
         ui,
         catalog,
-        "Unlock values",
+        "Unlock Values",
         &matches.value_definitions,
         true,
         &mut editor,
@@ -119,7 +119,7 @@ fn draw_hash_unlock_definition(
             hash_detail_field(ui, "Bank", definition.bank().to_string(), true);
             hash_detail_field(
                 ui,
-                "Compact slot",
+                "Compact Storage Slot",
                 definition
                     .compact_slot
                     .map_or_else(|| "<none>".into(), |slot| slot.to_string()),
@@ -152,9 +152,9 @@ fn draw_unlock_state_editor(
     let Some(snapshot) = snapshot else {
         return;
     };
-    ui.label(metadata_label_text(ui, "Edit state"));
+    ui.label(metadata_label_text(ui, "Edit Availability"));
     if !unlock_state_editable(definition, value_definition) {
-        ui.label(egui::RichText::new("Read only").weak())
+        ui.label(egui::RichText::new("Read Only").weak())
             .on_hover_text("This definition uses a storage bank Sundial does not write");
     } else if value_definition {
         draw_unlock_value_editor(ui, index, definition, snapshot, action);
@@ -319,7 +319,7 @@ fn draw_hash_unlock_readers(
                             catalog_hash_hex_and_decimal_field(
                                 ui,
                                 catalog,
-                                "Definition hash",
+                                "Definition Hash",
                                 context.hash,
                             );
                             hash_detail_field(ui, "Name", metadata_text(&context.name), false);
@@ -332,7 +332,7 @@ fn draw_hash_unlock_readers(
                             );
                             hash_detail_field(
                                 ui,
-                                "Condition programs",
+                                "Condition Programs",
                                 context.condition_programs.len().to_string(),
                                 true,
                             );

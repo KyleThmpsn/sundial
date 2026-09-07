@@ -1,5 +1,7 @@
 //! Profile-scoped inventory and dismantle-reward rendering.
 
+use crate::app::account_workspace as account;
+
 use eframe::egui;
 
 use crate::{catalog::InventoryScope, hash::format_hash_hex};
@@ -42,33 +44,31 @@ impl SundialApp {
             data.get_temp::<ProfileInventorySection>(section_id)
                 .unwrap_or_default()
         });
-        let dismantle_rewards_available = self
-            .account_workspace
-            .dismantle_rewards_available(&self.document);
-        if !dismantle_rewards_available {
+        let dismantle_rewards_available = account::dismantle_rewards_available(&self.document);
+        if section == ProfileInventorySection::DismantleRewards && !dismantle_rewards_available {
             section = ProfileInventorySection::SharedItems;
         }
 
-        ui.heading("Profile inventory");
-        ui.label(
-            "Items shared by the account and available to every character. Storage and limits follow the active Sunrise account source.",
-        );
+        ui.horizontal(|ui| {
+            ui.heading("Profile Inventory");
+            crate::ui_help::info(ui, "Items shared by the account and available to every character. Storage and limits follow the active Sunrise account source.");
+        });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Profile);
         }
         ui.add_space(4.0);
 
         if dismantle_rewards_available {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(
                     &mut section,
                     ProfileInventorySection::SharedItems,
-                    "Shared items",
+                    "Shared Items",
                 );
                 ui.selectable_value(
                     &mut section,
                     ProfileInventorySection::DismantleRewards,
-                    "Dismantle rewards",
+                    "Dismantle Rewards",
                 );
             });
             ui.add_space(4.0);
@@ -88,42 +88,29 @@ impl SundialApp {
     }
 
     fn draw_dismantle_reward_section(&mut self, ui: &mut egui::Ui, _mode: SchemaMode) {
-        if !self
-            .account_workspace
-            .dismantle_rewards_available(&self.document)
-        {
+        if !account::dismantle_rewards_available(&self.document) {
             return;
         }
-        let rewards = match self.account_workspace.dismantle_rewards(&self.document) {
+        let rewards = match account::dismantle_rewards(&self.document) {
             Ok(rewards) => rewards.unwrap_or_default(),
             Err(error) => {
-                ui.strong("Dismantle rewards");
+                ui.strong("Dismantle Rewards");
                 draw_section_error(ui, &error.to_string());
                 return;
             }
         };
-        let editable = self
-            .account_workspace
-            .dismantle_rewards_editable(&self.document);
-        let capacity = self
-            .account_workspace
-            .dismantle_reward_capacity(&self.document);
-        let account_ready = self
-            .account_workspace
-            .account_collection_ready(&self.document);
-        let filtered = self
-            .account_workspace
-            .filtered_dismantle_rewards(&self.document);
-        let combined_gear_class = self
-            .account_workspace
-            .supports_combined_dismantle_gear_class(&self.document);
+        let editable = account::dismantle_rewards_editable(&self.document);
+        let capacity = account::dismantle_reward_capacity(&self.document);
+        let account_ready = account::account_collection_ready(&self.document);
+        let filtered = account::filtered_dismantle_rewards(&self.document);
+        let combined_gear_class = account::supports_combined_dismantle_gear_class(&self.document);
         let has_room = capacity.is_some_and(|capacity| rewards.len() < capacity);
         let picker_key = "dismantle-rewards:add".to_owned();
         let mut picker_anchor = None;
         let mut open_picker = false;
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Dismantle rewards");
+            ui.strong("Dismantle Rewards");
             let count = capacity.map_or_else(
                 || format!("{} policies", rewards.len()),
                 |capacity| format!("{} / {capacity}", rewards.len()),
@@ -190,10 +177,7 @@ impl SundialApp {
             if let Some(ItemEditorAction::SetDefinition { hash }) = action
                 && let Ok(hash) = u32::try_from(hash)
             {
-                match self
-                    .account_workspace
-                    .add_dismantle_reward(&mut self.document, hash)
-                {
+                match account::add_dismantle_reward(&mut self.document, hash) {
                     Ok(_) => {
                         self.searches.remove(&picker_key);
                         self.mark_inventory_changed("Added a dismantle reward policy");
@@ -209,7 +193,8 @@ impl SundialApp {
         }
 
         let mut pending = None;
-        let (minimum_card_width, maximum_card_width) = self.item_card_width.dimensions();
+        let (minimum_card_width, maximum_card_width) =
+            self.preferences.item_card_width.dimensions();
         item_editor::draw_responsive_item_cards(
             ui,
             &rewards,
@@ -231,11 +216,7 @@ impl SundialApp {
         );
         if let Some((location, action)) = pending {
             let structural = matches!(action, DismantleRewardAction::Remove);
-            match self.account_workspace.apply_dismantle_reward_action(
-                &mut self.document,
-                location,
-                action,
-            ) {
+            match account::apply_dismantle_reward_action(&mut self.document, location, action) {
                 Ok(()) => {
                     self.mark_inventory_changed(if structural {
                         "Removed a dismantle reward policy"
@@ -297,13 +278,15 @@ impl SundialApp {
                         Some(u64::from(snapshot.definition_hash)),
                         Some(DefinitionInspectionContext {
                             source: format!(
-                                "Dismantle reward policy · row {}",
+                                "Dismantle Reward Policy Â· Row {}",
                                 snapshot.location.index + 1
                             ),
                             instance_id: None,
                             authored_level: None,
                             flags: None,
                             plug_count: None,
+                            plugs: None,
+                            quantity: Some(i64::from(snapshot.quantity)),
                         }),
                         ItemHeader {
                             label: None,
@@ -493,7 +476,7 @@ impl SundialApp {
     }
 
     fn draw_profile_items_section(&mut self, ui: &mut egui::Ui, _mode: SchemaMode) {
-        let snapshots = match self.account_workspace.profile_items(&self.document) {
+        let snapshots = match account::profile_items(&self.document) {
             Ok(items) => items,
             Err(error) => {
                 draw_section_error(ui, &error.to_string());
@@ -502,13 +485,11 @@ impl SundialApp {
         };
         let items = snapshots.unwrap_or_default();
         let profile_item_count = items.len();
-        let editable = self
-            .account_workspace
-            .profile_items_editable(&self.document);
-        let capacity = self.account_workspace.profile_item_capacity(&self.document);
+        let editable = account::profile_items_editable(&self.document);
+        let capacity = account::profile_item_capacity(&self.document);
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Shared items");
+            ui.strong("Shared Items");
             let count = capacity.map_or_else(
                 || format!("{} items", items.len()),
                 |capacity| format!("{} / {capacity}", items.len()),
@@ -518,9 +499,7 @@ impl SundialApp {
         ui.label("Stackable profile-scoped definitions only.");
 
         let bucket_usage = self.profile_bucket_usage(&items);
-        let account_ready = self
-            .account_workspace
-            .account_collection_ready(&self.document);
+        let account_ready = account::account_collection_ready(&self.document);
         if !editable {
             ui.label(
                 egui::RichText::new(
@@ -674,8 +653,7 @@ impl SundialApp {
                                 "The selected profile-item hash does not fit in 32 bits".to_owned()
                             })
                             .and_then(|hash| {
-                                self.account_workspace
-                                    .add_profile_item(&mut self.document, hash, 1)
+                                account::add_profile_item(&mut self.document, hash, 1)
                                     .map_err(|error| error.to_string())
                             }) {
                             Ok(_) => {
@@ -686,7 +664,8 @@ impl SundialApp {
                         }
                     }
                 }
-                let (minimum_card_width, maximum_card_width) = self.item_card_width.dimensions();
+                let (minimum_card_width, maximum_card_width) =
+                    self.preferences.item_card_width.dimensions();
                 item_editor::draw_responsive_item_cards(
                     ui,
                     &group.items,
@@ -706,11 +685,7 @@ impl SundialApp {
         }
         if let Some((location, action)) = pending {
             let structural = matches!(action, ProfileItemAction::Remove);
-            match self.account_workspace.apply_profile_item_action(
-                &mut self.document,
-                location,
-                action,
-            ) {
+            match account::apply_profile_item_action(&mut self.document, location, action) {
                 Ok(()) => {
                     self.mark_inventory_changed(if structural {
                         "Removed a shared profile item"
@@ -783,13 +758,15 @@ impl SundialApp {
                         Some(u64::from(snapshot.definition_hash)),
                         Some(DefinitionInspectionContext {
                             source: format!(
-                                "Profile inventory · item {}",
+                                "Profile Inventory Â· Item {}",
                                 snapshot.location.index + 1
                             ),
                             instance_id: None,
                             authored_level: None,
                             flags: None,
                             plug_count: None,
+                            plugs: None,
+                            quantity: Some(i64::from(snapshot.quantity)),
                         }),
                         ItemHeader {
                             label: None,

@@ -6,11 +6,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
-use super::{
-    Catalog,
-    package::{array_at, bool_at, i32_at, i64_at, relative_offset, u16_at, u32_at, u64_at},
-    resolve_string,
+use crate::package_payload::{
+    array_at, bool_at, i32_at, i64_at, relative_offset, u16_at, u32_at, u64_at,
 };
+
+use super::{Catalog, resolve_string};
 
 mod conditions;
 mod contexts;
@@ -48,7 +48,7 @@ pub(super) use models::{PendingProgressionContext, PresentationNodeDef, Progress
 pub(super) use conditions::sort_progression_contexts;
 pub(super) use contexts::{
     scan_activity_condition_contexts, scan_location_condition_contexts,
-    scan_metric_objective_owners,
+    scan_metric_objective_owners, scan_trait_definitions,
 };
 pub(super) use definitions::scan_progression_definitions;
 pub(super) use item_contexts::{
@@ -61,7 +61,6 @@ pub(super) use presentation::{
     scan_presentation_nodes,
 };
 pub(super) use records::{item_objective_indices, scan_record_objective_owners};
-pub(super) use schema::PRESENTATION_NODE_INDEX_ROW_CLASS;
 pub(super) use unlocks::{
     add_objective_owner, scan_unlock_flag_definitions, scan_unlock_flag_displays,
     scan_unlock_value_definitions, unlock_state_indices,

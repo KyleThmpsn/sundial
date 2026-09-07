@@ -50,7 +50,7 @@ pub(in crate::app) fn draw_progression_metadata_workspace(
             .show(ui, |ui| {
                 draw_metadata_panel(ui, catalog, snapshot.as_ref(), state, !compact_width)
             });
-        true
+        state.is_open()
     } else {
         inspector_workspace(
             ui,
@@ -89,6 +89,8 @@ fn draw_metadata_panel(
     let mut navigate_back = state.can_go_back()
         && ui.input(|input| input.modifiers.alt && input.key_pressed(egui::Key::ArrowLeft));
     let close = inspector_heading(ui, title);
+    let mut navigate_forward = state.next().is_some()
+        && ui.input(|input| input.modifiers.alt && input.key_pressed(egui::Key::ArrowRight));
     ui.add_space(6.0);
     toolbar(ui, |ui| {
         let back_label = state.previous().map_or_else(
@@ -109,10 +111,28 @@ fn draw_metadata_panel(
         {
             navigate_back = true;
         }
+        let forward_label = state.next().map_or_else(
+            || "No next inspection".to_owned(),
+            |next| {
+                format!(
+                    "Forward to {} (Alt+Right)",
+                    metadata_selection_short_label(next, catalog)
+                )
+            },
+        );
+        if ui
+            .add_enabled_ui(state.next().is_some(), |ui| {
+                glyph_button(ui, Glyph::ChevronRight, &forward_label)
+            })
+            .inner
+            .clicked()
+        {
+            navigate_forward = true;
+        }
         if allow_layout_toggle
             && ui
                 .button(if state.full_width {
-                    "Split view"
+                    "Split View"
                 } else {
                     "Expand"
                 })
@@ -120,18 +140,17 @@ fn draw_metadata_panel(
         {
             state.full_width = !state.full_width;
         }
+        if ui.button("Reveal in Table").clicked() {
+            state.request_reveal();
+        }
         ui.menu_button("More", |ui| {
-            if ui.button("Reveal in table").clicked() {
-                state.request_reveal();
-                ui.close_menu();
-            }
             if let Some(definition) = definition
-                && ui.button("Open definition inspector").clicked()
+                && ui.button("Open Definition Inspector").clicked()
             {
                 request_definition(ui.ctx(), definition.hash);
                 ui.close_menu();
             }
-            if ui.button("Copy technical report").clicked() {
+            if ui.button("Copy Technical Report").clicked() {
                 ui.ctx().copy_text(progression_inspector_report(
                     selection,
                     definition,
@@ -150,7 +169,7 @@ fn draw_metadata_panel(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            metadata_section(ui, "Current state", |ui| {
+            metadata_section(ui, "Current State", |ui| {
                 draw_effective_state_summary(
                     ui,
                     selection,
@@ -162,7 +181,7 @@ fn draw_metadata_panel(
             });
 
             ui.add_space(10.0);
-            egui::CollapsingHeader::new("Definition details")
+            egui::CollapsingHeader::new("Definition Details")
                 .id_salt(("progression_definition_details", selection))
                 .default_open(false)
                 .show(ui, |ui| {
@@ -178,12 +197,12 @@ fn draw_metadata_panel(
                         MetadataSelection::FlagOverride(_, _)
                             | MetadataSelection::ValueOverride(_, _)
                     ) {
-                        metadata_section(ui, "Saved override", |ui| {
+                        metadata_section(ui, "Saved Override", |ui| {
                             draw_override_metadata(ui, selection, definition);
                         });
                         ui.add_space(10.0);
                     }
-                    metadata_section(ui, "Definition and dependencies", |ui| {
+                    metadata_section(ui, "Definition and Dependencies", |ui| {
                         draw_unlock_definition_metadata(
                             ui,
                             selection.definition_index(),
@@ -213,6 +232,8 @@ fn draw_metadata_panel(
         });
     if navigate_back {
         state.back();
+    } else if navigate_forward {
+        state.forward();
     } else if close {
         state.close();
     }
@@ -224,12 +245,12 @@ fn selection_metadata(
 ) -> (String, Option<&UnlockDefinition>, Vec<&ObjectiveDef>) {
     match selection {
         MetadataSelection::FlagDefinition(index) | MetadataSelection::FlagOverride(index, _) => (
-            format!("Unlock flag definition #{index}"),
+            format!("Unlock Flag Definition #{index}"),
             catalog.unlock_flag_definition(index),
             Vec::new(),
         ),
         MetadataSelection::ValueDefinition(index) | MetadataSelection::ValueOverride(index, _) => (
-            format!("Unlock value definition #{index}"),
+            format!("Unlock Value Definition #{index}"),
             catalog.unlock_value_definition(index),
             catalog.objectives_for_unlock_value(index),
         ),
@@ -311,11 +332,11 @@ fn draw_effective_state_summary(
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
-            metadata_field(ui, "Definition index", index.to_string(), true);
+            metadata_field(ui, "Definition Index", index.to_string(), true);
             if let Some(definition) = definition {
                 metadata_field(
                     ui,
-                    "Definition hash",
+                    "Definition Hash",
                     format_hash_hex(definition.hash),
                     true,
                 );

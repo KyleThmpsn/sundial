@@ -1,7 +1,5 @@
 //! Game-settings page routing and player identity controls.
 
-use std::path::Path;
-
 use eframe::egui;
 use serde_json::{Map, Value};
 
@@ -10,7 +8,6 @@ use super::{
     preferences::{
         GAME_LANGUAGES, draw_audio, draw_controls, draw_display, draw_interface, draw_social,
     },
-    schema::ORBIT_SLICE_SET_PATH,
     widgets::{CommandBatch, json_string_choice},
 };
 
@@ -23,14 +20,15 @@ pub(crate) enum Tab {
     Interface,
     Social,
     KeyBindings,
+    Sunrise,
 }
 
 pub(crate) struct PageContext<'a> {
     pub json_document: &'a mut Value,
     pub account_settings: Result<&'a Map<String, Value>, &'a str>,
     pub bindings_editable: bool,
-    pub orbit_backdrops: &'a [String],
-    pub player_tools: PlayerTools,
+    pub json_account: bool,
+    pub extended_fov: bool,
     pub tab: &'a mut Tab,
     pub key_bindings: &'a mut KeyBindingUiState,
 }
@@ -40,22 +38,34 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         json_document,
         account_settings,
         bindings_editable,
-        orbit_backdrops,
-        player_tools,
+        json_account,
+        extended_fov,
         tab,
         key_bindings,
     } = context;
-    ui.heading("Game settings");
-    ui.label("Edit the settings replicated to Destiny 2 by Project Sunrise.");
+    let runtime_available = super::runtime::available(json_document);
+    if *tab == Tab::Sunrise && !runtime_available {
+        *tab = Tab::Player;
+    }
+    ui.horizontal(|ui| {
+        ui.heading("Game Settings");
+        crate::ui_help::info(
+            ui,
+            "Edit the settings Project Sunrise applies to Destiny 2.",
+        );
+    });
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(tab, Tab::Player, "Player");
+        if runtime_available {
+            ui.selectable_value(tab, Tab::Sunrise, "Sunrise");
+        }
         ui.selectable_value(tab, Tab::Controls, "Controls");
         ui.selectable_value(tab, Tab::Audio, "Audio");
         ui.selectable_value(tab, Tab::Display, "Display");
         ui.selectable_value(tab, Tab::Interface, "Interface");
         ui.selectable_value(tab, Tab::Social, "Social");
-        ui.selectable_value(tab, Tab::KeyBindings, "Key bindings")
+        ui.selectable_value(tab, Tab::KeyBindings, "Key Bindings")
             .on_hover_text(if bindings_editable {
                 "Edit named key bindings used by supported Sunrise schemas."
             } else {
@@ -67,13 +77,23 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
     egui::ScrollArea::vertical()
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
+            Tab::Sunrise => PageEdits {
+                json_changed: super::runtime::draw(ui, json_document, json_account),
+                account_commands: Vec::new(),
+            },
             Tab::Player => PageEdits {
-                json_changed: draw_player(ui, json_document, orbit_backdrops, &player_tools),
+                json_changed: draw_player(ui, json_document),
                 account_commands: Vec::new(),
             },
             Tab::Controls => draw_account_settings(ui, account_settings, draw_controls),
             Tab::Audio => draw_account_settings(ui, account_settings, draw_audio),
-            Tab::Display => draw_account_settings(ui, account_settings, draw_display),
+            Tab::Display => draw_account_settings(ui, account_settings, |ui, settings| {
+                draw_display(
+                    ui,
+                    settings,
+                    extended_fov && runtime_available && json_account,
+                )
+            }),
             Tab::Interface => draw_account_settings(ui, account_settings, draw_interface),
             Tab::Social => draw_account_settings(ui, account_settings, draw_social),
             Tab::KeyBindings => draw_account_settings(ui, account_settings, |ui, settings| {
@@ -87,10 +107,6 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
 pub(crate) struct PageEdits {
     pub(crate) json_changed: bool,
     pub(crate) account_commands: Vec<sundial_account::AccountSettingsCommand>,
-}
-
-pub(crate) struct PlayerTools {
-    pub orbit_backdrops_enabled: bool,
 }
 
 pub(super) fn draw_account_settings(
@@ -111,16 +127,16 @@ pub(super) fn draw_account_settings(
     }
 }
 
-pub(super) fn draw_player(
-    ui: &mut egui::Ui,
-    document: &mut Value,
-    orbit_backdrops: &[String],
-    player_tools: &PlayerTools,
-) -> bool {
-    ui.heading("Player");
-    ui.label("Change the player identity and language Project Sunrise reports to Destiny 2.");
+pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
+    ui.horizontal(|ui| {
+        ui.heading("Player");
+        crate::ui_help::info(
+            ui,
+            "Change the player identity and language Project Sunrise reports to Destiny 2.",
+        );
+    });
     ui.add_space(8.0);
-    ui.strong("Player name");
+    ui.strong("Player Name");
 
     let mut changed = false;
     match document.pointer("/steam/user/persona_name") {
@@ -156,8 +172,14 @@ pub(super) fn draw_player(
         ui.add_space(14.0);
         ui.separator();
         ui.add_space(8.0);
-        ui.strong("Game language");
-        ui.label("Controls the language Sunrise reports to Destiny 2 through Steam. Changes take effect after fully restarting Destiny 2.");
+        ui.horizontal(|ui| {
+            ui.strong("Game Language");
+            crate::ui_help::info(
+                ui,
+                "Controls the language Sunrise reports to Destiny 2 through Steam.",
+            );
+        });
+        ui.label("Fully restart Destiny 2 to apply language changes.");
         ui.add_space(4.0);
         if let Some(steam) = document
             .pointer_mut("/steam")
@@ -170,52 +192,6 @@ pub(super) fn draw_player(
                     json_string_choice(ui, steam, "language", "Language", GAME_LANGUAGES)
                 })
                 .inner;
-        }
-    }
-
-    let orbit_value = document.pointer(ORBIT_SLICE_SET_PATH).cloned();
-    if player_tools.orbit_backdrops_enabled
-        && let Some(orbit_value) = orbit_value
-    {
-        ui.add_space(14.0);
-        ui.separator();
-        ui.add_space(8.0);
-        ui.strong("Orbit backdrop");
-        if let Some(current) = orbit_value.as_str() {
-            let mut selected = current.to_owned();
-            let selected_text = if selected.is_empty() {
-                "Sunrise default"
-            } else {
-                selected.as_str()
-            };
-            egui::ComboBox::from_id_salt("orbit_slice_set")
-                .selected_text(selected_text)
-                .width(280.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, String::new(), "Sunrise default");
-                    for name in orbit_backdrops {
-                        ui.selectable_value(&mut selected, name.clone(), name);
-                    }
-                });
-            if selected != current {
-                changed |= set_existing_orbit_slice_set(document, &selected);
-            }
-            if orbit_backdrops.is_empty() {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "No supported Orbit backdrops were found in the installed game packages.",
-                );
-            }
-            let orbit_map_path = Path::new("Sunrise").join("orbit_map.txt");
-            ui.label(format!(
-                "Uses the selected internal Orbit slice set. Saving also rebuilds {} from the installed game packages; changes take effect after fully restarting Destiny 2.",
-                orbit_map_path.display()
-            ));
-        } else {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                "client.orbit_slice_set must be text.",
-            );
         }
     }
 
@@ -232,27 +208,6 @@ pub(super) fn set_player_name(document: &mut Value, name: &str) -> bool {
         return false;
     };
     let Some(value) = document.pointer_mut("/steam/user/persona_name") else {
-        return false;
-    };
-    if !value.is_string() || value.as_str() == Some(name) {
-        return false;
-    }
-    *value = Value::String(name.to_owned());
-    true
-}
-
-pub(super) fn valid_orbit_slice_set(name: &str) -> bool {
-    name.len() <= 48
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
-pub(super) fn set_existing_orbit_slice_set(document: &mut Value, name: &str) -> bool {
-    if !valid_orbit_slice_set(name) {
-        return false;
-    }
-    let Some(value) = document.pointer_mut(ORBIT_SLICE_SET_PATH) else {
         return false;
     };
     if !value.is_string() || value.as_str() == Some(name) {

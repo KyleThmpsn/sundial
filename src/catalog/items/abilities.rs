@@ -5,15 +5,12 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
-use super::{
-    super::{
-        localization::{LocalizedStringCache, resolve_localized_hash, resolve_string},
-        package::{array_at, u32_at},
-    },
-    ItemDef,
+use crate::{
+    investment_localization::{LocalizedStringCache, resolve_localized_hash, resolve_string},
+    package_payload::{array_at, u32_at},
 };
 
-const NO_PLUG_SOURCE: u32 = 0x811C_9DC5;
+use super::ItemDef;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AbilityOptions {
@@ -81,7 +78,9 @@ pub(in crate::catalog) fn build_subclass_choices(
         if let Ok(list) = manager.read_tag(list_tag)
             && let Some(display) = ability_displays.get(&list_index)
         {
-            item.abilities = parse_abilities(&list, display, list_index);
+            let middle_super = crate::subclass::shadowkeep_subclass_rules(item.hash)
+                .map_or(20, |(_, entry)| entry);
+            item.abilities = parse_abilities(&list, display, middle_super);
             item.class_type = match list_index {
                 1..=3 => 1,  // Hunter
                 5..=7 => 0,  // Titan
@@ -93,7 +92,7 @@ pub(in crate::catalog) fn build_subclass_choices(
     Ok(())
 }
 
-fn parse_abilities(list: &[u8], display: &AbilityDisplayData, list_index: u16) -> AbilityOptions {
+fn parse_abilities(list: &[u8], display: &AbilityDisplayData, middle_super: u64) -> AbilityOptions {
     let Ok((count, rows, _)) = array_at(list, 16) else {
         return AbilityOptions::default();
     };
@@ -129,7 +128,7 @@ fn parse_abilities(list: &[u8], display: &AbilityDisplayData, list_index: u16) -
             .filter_map(|&index| entries.get(index).map(|entry| entry.choice.clone()))
             .collect()
     };
-    let attunements = parse_attunements(&entries, &display.attunement_names, list_index);
+    let attunements = parse_attunements(&entries, &display.attunement_names, middle_super);
     let mut super_ability = attunements
         .iter()
         .flat_map(|attunement| attunement.super_abilities.iter().cloned())
@@ -160,12 +159,12 @@ fn parse_abilities(list: &[u8], display: &AbilityDisplayData, list_index: u16) -
 fn parse_attunements(
     entries: &[ParsedAbilityEntry],
     names: &[String],
-    list_index: u16,
+    middle_super: u64,
 ) -> Vec<AttunementChoice> {
     let mut sources = Vec::<u32>::new();
     for entry in entries {
         if entry.group == 3
-            && entry.plug_source != NO_PLUG_SOURCE
+            && entry.plug_source != sundial_account::NO_DEFINITION_HASH.get()
             && !sources.contains(&entry.plug_source)
         {
             sources.push(entry.plug_source);
@@ -186,16 +185,16 @@ fn parse_attunements(
                 perks.first()
             }?
             .clone();
-            let matching_super = super_entry_indices(list_index).iter().find_map(|&index| {
-                let entry = entries.get(index)?;
-                (entry.plug_source == source).then(|| entry.choice.clone())
-            });
-            // The top and bottom paths select the base super lane at entry 10.
-            // Most Forsaken middle paths carry a distinct super at entry 20,
-            // but Arcstrider and Sentinel route their guard super through the
-            // path selected by the melee entry and keep the base super lane.
-            let super_ability = if path_index == 2 && !middle_path_uses_base_super(list_index) {
-                matching_super
+            // The middle-tree display is entry 20 even when the native bucket
+            // selection must remain at entry 10 (Sentinel and Arcstrider).
+            let super_ability = if path_index == 2 {
+                entries
+                    .get(20)
+                    .filter(|entry| entry.plug_source == source)
+                    .map(|entry| AbilityChoice {
+                        entry: middle_super,
+                        name: entry.choice.name.clone(),
+                    })
             } else {
                 entries.get(10).map(|entry| entry.choice.clone())
             };
@@ -218,58 +217,62 @@ fn parse_attunements(
         .collect()
 }
 
-const fn middle_path_uses_base_super(list_index: u16) -> bool {
-    matches!(list_index, 1 | 6)
-}
-
-const fn super_entry_indices(list_index: u16) -> &'static [usize] {
-    match list_index {
-        // Arcstrider
-        1 => &[10, 14, 20],
-        // Gunslinger: Golden Gun, Deadshot/Six-Shooter and precision-tree
-        // modifiers, plus Blade Barrage.
-        2 => &[10, 13, 14, 17, 18, 20],
-        // Nightstalker
-        3 => &[10, 13, 18, 20],
-        // Striker, Sentinel, and Voidwalker
-        5 | 6 | 10 => &[10, 14, 18, 20],
-        // Sunbreaker
-        7 => &[10, 13, 14, 18, 20],
-        // Dawnblade
-        9 => &[10, 16, 17, 18, 20],
-        // Stormcaller
-        11 => &[10, 12, 14, 16, 20],
-        _ => &[10, 20],
-    }
-}
-
 pub(in crate::catalog) fn scan_ability_displays(
     manager: &PackageManager,
+    globals: &[u8],
     localized_tags: &[TagHash],
     localized_cache: &mut LocalizedStringCache,
-) -> HashMap<u16, AbilityDisplayData> {
-    // Shadowkeep's nine subclass socket lists are sparse. The display tables
-    // are stored in descending socket-list order; list IDs 4 and 8 are not
-    // subclass definitions.
-    const SUBCLASS_LIST_IDS: [u16; 9] = [11, 10, 9, 7, 6, 5, 3, 2, 1];
+) -> Result<HashMap<u16, AbilityDisplayData>, String> {
+    // This parallel display catalogue is an investment-globals child. Its row
+    // index is the socket-list index, so discovering records by class/hash order
+    // loses the package-authored relationship.
+    const SUBCLASS_LIST_IDS: [u16; 9] = [1, 2, 3, 5, 6, 7, 9, 10, 11];
+    const ABILITY_DISPLAY_TABLE_COUNT: usize = 14;
+    const ABILITY_DISPLAY_TABLE_CLASS: u32 = 0x8080_5C3C;
+    const ABILITY_DISPLAY_RECORD_CLASS: u32 = 0x8080_5C42;
 
-    let mut tables: Vec<TagHash> = manager
-        .get_all_by_reference(0x8080_5C42)
-        .into_iter()
-        .map(|(tag, _)| tag)
-        .filter(|tag| manager.read_tag(*tag).is_ok_and(|data| data.len() > 700))
-        .collect();
-    tables.sort_by_key(|tag| tag.0);
-    if tables.len() > 9 {
-        tables = tables.split_off(tables.len() - 9);
+    let table_tag = TagHash(u32_at(globals, 16 + 61 * 16)?);
+    let table_entry = manager
+        .get_entry(table_tag)
+        .ok_or_else(|| format!("Subclass ability display table {table_tag:?} is not live"))?;
+    if table_entry.reference != ABILITY_DISPLAY_TABLE_CLASS {
+        return Err(format!(
+            "Subclass ability display table {table_tag:?} has class 0x{:08X}, expected 0x{ABILITY_DISPLAY_TABLE_CLASS:08X}",
+            table_entry.reference
+        ));
     }
+    let table_index = manager
+        .read_tag(table_tag)
+        .map_err(|error| format!("Could not read subclass ability display table: {error}"))?;
+    let (table_count, table_rows, _) = array_at(&table_index, 8)?;
+    if table_count != ABILITY_DISPLAY_TABLE_COUNT {
+        return Err(format!(
+            "Subclass ability display table has {table_count} rows; expected {ABILITY_DISPLAY_TABLE_COUNT}"
+        ));
+    }
+
     let mut result = HashMap::new();
-    for (list_id, tag) in SUBCLASS_LIST_IDS.into_iter().zip(tables) {
+    for list_id in SUBCLASS_LIST_IDS {
+        // Slot 61 is a standard 24-byte index table: the display-record tag
+        // is at row +0x10, while row +0x00 is the definition/string hash.
+        let tag = TagHash(u32_at(
+            &table_index,
+            table_rows + usize::from(list_id) * 24 + 16,
+        )?);
+        let entry = manager.get_entry(tag).ok_or_else(|| {
+            format!("Subclass socket list {list_id} display record {tag:?} is not live")
+        })?;
+        if entry.reference != ABILITY_DISPLAY_RECORD_CLASS {
+            return Err(format!(
+                "Subclass socket list {list_id} display record {tag:?} has class 0x{:08X}, expected 0x{ABILITY_DISPLAY_RECORD_CLASS:08X}",
+                entry.reference
+            ));
+        }
         let mut names = HashMap::new();
         let mut localized_indices = Vec::new();
-        let Ok(table) = manager.read_tag(tag) else {
-            continue;
-        };
+        let table = manager.read_tag(tag).map_err(|error| {
+            format!("Could not read subclass socket list {list_id} display record: {error}")
+        })?;
         for offset in (16..table.len()).step_by(4) {
             let Ok(raw_tag) = u32_at(&table, offset) else {
                 continue;
@@ -323,12 +326,93 @@ pub(in crate::catalog) fn scan_ability_displays(
             },
         );
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+    fn native_subclass_super_lanes() {
+        let install = std::path::PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+        let manager = crate::package_runtime::open_shadowkeep_packages(&install).unwrap();
+        let globals =
+            crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)
+                .unwrap();
+        let globals = manager.read_tag(globals).unwrap();
+        let root = manager
+            .read_tag(TagHash(u32_at(&globals, 16).unwrap()))
+            .unwrap();
+        let table = manager
+            .read_tag(TagHash(u32_at(&root, 8 + 97 * 16).unwrap()))
+            .unwrap();
+        let (_, rows, _) = array_at(&table, 8).unwrap();
+        for index in [1, 2, 3, 5, 6, 7, 9, 10, 11] {
+            let list = manager
+                .read_tag(TagHash(u32_at(&table, rows + index * 24 + 16).unwrap()))
+                .unwrap();
+            let (_, rows, _) = array_at(&list, 16).unwrap();
+            let middle_super = if matches!(index, 1 | 6) { 10 } else { 20 };
+            let choices = parse_abilities(&list, &AbilityDisplayData::default(), middle_super);
+            assert_eq!(choices.attunements.len(), 3);
+            let pairs = choices
+                .attunements
+                .iter()
+                .map(|path| (path.super_abilities[0].entry, path.melee.entry))
+                .collect::<Vec<_>>();
+            assert_eq!(pairs, [(10, 11), (10, 15), (middle_super, 21)]);
+            for entry in [10, 20] {
+                let base = rows + entry * 64;
+                // Match official Sunrise 0.3.2 ability_pool_reader.cpp's active
+                // variant selection. A hash-only record cannot assign a bucket.
+                use crate::package_payload::{i32_at, i64_at, relative_offset};
+                let pool = manager
+                    .read_tag(TagHash(u32_at(&list, base + 56).unwrap()))
+                    .unwrap();
+                let group = relative_offset(16, 0, i64_at(&pool, 16).unwrap()).unwrap() + 16;
+                let variants = i32_at(&pool, group).unwrap();
+                let selector_rel = i64_at(&list, base + 32).unwrap();
+                let selector = if selector_rel != 0 {
+                    list[relative_offset(base + 32, 0, selector_rel).unwrap()]
+                } else {
+                    255
+                };
+                let variant = if i64_at(&pool, 8).unwrap() == 1 && selector != 255 {
+                    18 % variants
+                } else {
+                    variants - 1
+                };
+                let variant_field =
+                    relative_offset(group + 8, 0, i64_at(&pool, group + 8).unwrap()).unwrap()
+                        + 24
+                        + variant as usize * 88;
+                let records =
+                    relative_offset(variant_field, 0, i64_at(&pool, variant_field).unwrap())
+                        .unwrap()
+                        + 16;
+                assert!(i32_at(&pool, variant_field - 8).unwrap() > 0);
+                if entry == 20 && middle_super == 10 {
+                    assert_eq!(
+                        pool[records + 11],
+                        255,
+                        "guard entry must be hash-only: list {index}"
+                    );
+                } else {
+                    assert_ne!(
+                        pool[records + 11],
+                        255,
+                        "selected entry must declare a kind: list {index}"
+                    );
+                    assert!(
+                        pool[records + 12] == 1 || pool[records + 8] == 10,
+                        "super must reach bucket 1: list {index}"
+                    );
+                }
+            }
+        }
+    }
 
     fn entries() -> Vec<ParsedAbilityEntry> {
         let mut entries = (0..24)
@@ -337,7 +421,7 @@ mod tests {
                     entry,
                     name: format!("Entry {entry}"),
                 },
-                plug_source: NO_PLUG_SOURCE,
+                plug_source: sundial_account::NO_DEFINITION_HASH.get(),
                 group: u8::MAX,
             })
             .collect::<Vec<_>>();
@@ -351,17 +435,11 @@ mod tests {
     }
 
     #[test]
-    fn super_choices_include_gunslinger_and_dawnblade_alternates() {
-        assert!(super_entry_indices(2).contains(&13)); // Deadshot
-        assert!(super_entry_indices(9).contains(&20)); // Well of Radiance
-    }
-
-    #[test]
     fn attunements_keep_super_and_melee_in_the_same_native_path() {
         let paths = parse_attunements(
             &entries(),
             &["Sky".into(), "Flame".into(), "Grace".into()],
-            9,
+            20,
         );
         assert_eq!(paths.len(), 3);
         assert_eq!(paths[0].melee.entry, 11);
@@ -380,33 +458,28 @@ mod tests {
     }
 
     #[test]
-    fn all_shadowkeep_attunements_use_the_native_super_and_melee_entries() {
-        let entries = entries();
-        for (list_index, middle_super) in [
-            (1, 10),
-            (2, 20),
-            (3, 20),
-            (5, 20),
-            (6, 10),
-            (7, 20),
-            (9, 20),
-            (10, 20),
-            (11, 20),
-        ] {
-            let paths = parse_attunements(
-                &entries,
-                &["Top".into(), "Bottom".into(), "Middle".into()],
-                list_index,
-            );
-            let pairs = paths
-                .iter()
-                .map(|path| (path.super_abilities[0].entry, path.melee.entry))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                pairs,
-                vec![(10, 11), (10, 15), (middle_super, 21)],
-                "socket list {list_index}"
-            );
-        }
+    fn distinct_middle_super_attunements_use_the_native_entries() {
+        let paths = parse_attunements(
+            &entries(),
+            &["Top".into(), "Bottom".into(), "Middle".into()],
+            20,
+        );
+        let pairs = paths
+            .iter()
+            .map(|path| (path.super_abilities[0].entry, path.melee.entry))
+            .collect::<Vec<_>>();
+
+        assert_eq!(pairs, vec![(10, 11), (10, 15), (20, 21)]);
+    }
+
+    #[test]
+    fn guard_attunements_keep_the_base_super_with_the_middle_tree_display() {
+        let paths = parse_attunements(&entries(), &[], 10);
+        let pairs = paths
+            .iter()
+            .map(|path| (path.super_abilities[0].entry, path.melee.entry))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![(10, 11), (10, 15), (10, 21)]);
+        assert_eq!(paths[2].super_abilities[0].name, "Entry 20");
     }
 }

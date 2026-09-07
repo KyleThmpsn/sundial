@@ -25,7 +25,7 @@ pub(super) fn draw_unlock_definition_metadata(
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
-            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition hash", definition.hash);
+            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", definition.hash);
             metadata_field(
                 ui,
                 "Description",
@@ -34,12 +34,12 @@ pub(super) fn draw_unlock_definition_metadata(
             );
             metadata_field(
                 ui,
-                "Condition references",
+                "Condition References",
                 definition.tested_by.len().to_string(),
                 true,
             );
         });
-    egui::CollapsingHeader::new("Technical package fields")
+    egui::CollapsingHeader::new("Technical Package Fields")
         .id_salt(("progression_definition_technical", index))
         .show(ui, |ui| {
             egui::Grid::new(("progression_definition_technical_fields", index))
@@ -116,7 +116,7 @@ fn draw_context_metadata(
             progression_context_kind_label(context.kind),
             false,
         );
-        catalog_hash_hex_and_decimal_field(ui, catalog, "Definition hash", context.hash);
+        catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", context.hash);
         metadata_field(ui, "Name", metadata_text(&context.name), false);
         metadata_field(ui, "Type", metadata_text(&context.type_name), false);
         metadata_field(
@@ -127,7 +127,7 @@ fn draw_context_metadata(
         );
         metadata_field(
             ui,
-            "Condition programs",
+            "Condition Programs",
             context.condition_programs.len().to_string(),
             true,
         );

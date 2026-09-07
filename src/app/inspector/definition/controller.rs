@@ -16,6 +16,10 @@ pub(in crate::app) fn draw_catalog_hash_window(
     let Some(hash) = hash_inspection.current else {
         return false;
     };
+    hash_inspection
+        .runtime
+        .prepare(catalog.install_path(), hash, catalog.inspection_access());
+    hash_inspection.runtime.poll(ctx);
     let match_index = hash_inspection.match_index(catalog, hash);
     let matches = CatalogHashMatches::from_index(catalog, hash, &match_index);
     let match_groups = matches.match_groups();
@@ -39,12 +43,20 @@ pub(in crate::app) fn draw_catalog_hash_window(
         })
     };
     let title = resolved_name.as_deref().map_or_else(
-        || format!("Definition inspector: 0x{hash:08X}"),
-        |name| format!("Definition inspector: {name}"),
+        || format!("Definition Inspector: 0x{hash:08X}"),
+        |name| format!("Definition Inspector: {name}"),
     );
     let default_size = hash_inspector_default_size(&matches);
-    let history = hash_inspection.history.clone();
-    let forward = hash_inspection.forward.clone();
+    let history = hash_inspection
+        .history
+        .iter()
+        .map(|entry| entry.hash)
+        .collect::<Vec<_>>();
+    let forward = hash_inspection
+        .forward
+        .iter()
+        .map(|entry| entry.hash)
+        .collect::<Vec<_>>();
     let mut lookup = hash_inspection.lookup.clone();
     let mut lookup_error = hash_inspection.lookup_error;
     let viewport_id = egui::ViewportId::from_hash_of(("catalog_hash_inspector", viewport_salt));
@@ -97,6 +109,7 @@ pub(in crate::app) fn draw_catalog_hash_window(
                                 &mut action,
                                 &mut lookup,
                                 &mut lookup_error,
+                                &mut hash_inspection.runtime,
                             );
                         });
                 } else {
@@ -107,6 +120,7 @@ pub(in crate::app) fn draw_catalog_hash_window(
                             &mut action,
                             &mut lookup,
                             &mut lookup_error,
+                            &mut hash_inspection.runtime,
                         );
                     });
                 }
@@ -176,7 +190,7 @@ fn apply_inspector_progression_edit(
             let definition = catalog
                 .unlock_flag_definition(definition_index)
                 .ok_or_else(|| {
-                    format!("Unlock flag definition #{definition_index} is unavailable")
+                    format!("Unlock Flag Definition #{definition_index} is unavailable")
                 })?;
             set_collection_flag(document, definition_index, definition, set)
                 .then(|| {
@@ -199,7 +213,7 @@ fn apply_inspector_progression_edit(
             let definition = catalog
                 .unlock_value_definition(definition_index)
                 .ok_or_else(|| {
-                    format!("Unlock value definition #{definition_index} is unavailable")
+                    format!("Unlock Value Definition #{definition_index} is unavailable")
                 })?;
             set_collection_value(document, definition_index, definition, value)
                 .then(|| {
@@ -239,7 +253,6 @@ fn apply_inspector_progression_edit(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HashInspectorSection {
-    SandboxPerk,
     Item,
     Progression,
     Collections,
@@ -265,7 +278,6 @@ struct HashInspectorContent<'a> {
 impl HashInspectorSection {
     const fn label(self) -> &'static str {
         match self {
-            Self::SandboxPerk => "Sandbox perk",
             Self::Item => "Item",
             Self::Progression => "Progression",
             Self::Collections => "Collections",
@@ -280,6 +292,7 @@ fn draw_hash_inspector_contents(
     action: &mut HashInspectorAction,
     lookup: &mut String,
     lookup_error: &mut bool,
+    runtime: &mut super::runtime::RuntimeInspectionState,
 ) {
     let HashInspectorContent {
         catalog,
@@ -345,7 +358,7 @@ fn draw_hash_inspector_contents(
             action.navigate_forward = true;
         }
         ui.separator();
-        ui.label(egui::RichText::new("Inspect hash").strong());
+        ui.label(egui::RichText::new("Inspect Hash").strong());
         let response = ui.add(
             egui::TextEdit::singleline(lookup)
                 .hint_text("0x00000000")
@@ -365,11 +378,11 @@ fn draw_hash_inspector_contents(
             }
         }
         ui.menu_button("More", |ui| {
-            if ui.button("Copy hash").clicked() {
+            if ui.button("Copy Hash").clicked() {
                 ui.ctx().copy_text(format_hash_hex(*hash));
                 ui.close_menu();
             }
-            if ui.button("Copy technical report").clicked() {
+            if ui.button("Copy Technical Report").clicked() {
                 ui.ctx().copy_text(hash_inspector_report(content));
                 ui.close_menu();
             }
@@ -403,8 +416,23 @@ fn draw_hash_inspector_contents(
     }
     ui.separator();
 
+    let is_item = matches.item.is_some() || matches.item_package_metadata.is_some();
+    let page_id = ui.id().with(("item_inspector_page", *hash));
+    let mut page = ui.data_mut(|data| {
+        data.get_temp::<super::item::ItemPage>(page_id)
+            .unwrap_or_default()
+    });
+    if is_item {
+        ui.horizontal_wrapped(|ui| {
+            for candidate in super::item::ItemPage::ALL {
+                ui.selectable_value(&mut page, candidate, candidate.label());
+            }
+        });
+        ui.data_mut(|data| data.insert_temp(page_id, page));
+        ui.separator();
+    }
     egui::ScrollArea::vertical()
-        .id_salt(("catalog_hash_metadata_scroll", *hash))
+        .id_salt(("catalog_hash_metadata_scroll", *hash, page))
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if matches.item_package_metadata.is_none() && matches.item.is_none() {
@@ -413,14 +441,14 @@ fn draw_hash_inspector_contents(
             }
 
             if sections.contains(&HashInspectorSection::Item) {
-                draw_hash_item_matches(ui, catalog, *hash, resolved_name, matches, *source_context);
+                draw_hash_item_matches(
+                    ui,
+                    super::item::ItemInspection { catalog, hash: *hash, resolved_name, matches, source_context: *source_context },
+                    runtime,
+                    page,
+                );
             }
             let mut draw_related_sections = |ui: &mut egui::Ui| {
-                if sections.contains(&HashInspectorSection::SandboxPerk)
-                    && let Some(definition) = matches.sandbox_perk_definition
-                {
-                    draw_hash_sandbox_perk_definition(ui, definition);
-                }
                 if sections.contains(&HashInspectorSection::Progression) {
                     draw_hash_progression_matches(ui, catalog, *document, *hash, matches);
                 }
@@ -446,8 +474,13 @@ fn draw_hash_inspector_contents(
                     );
                 }
             };
-            draw_related_sections(ui);
-            draw_related_catalog_records(ui, content);
+            if !is_item || page == super::item::ItemPage::Related {
+                draw_related_sections(ui);
+                draw_related_catalog_records(ui, content);
+                if is_item && sections.len() == 1 && related_catalog_records(content).is_empty() {
+                    ui.weak("No related progression, collection, or unlock records are indexed for this item.");
+                }
+            }
             if *match_count == 0 {
                 ui.add_space(8.0);
                 ui.label(
@@ -464,11 +497,9 @@ fn draw_hash_answer_layer(ui: &mut egui::Ui, content: &HashInspectorContent<'_>)
         content
             .catalog
             .package_item_type_name(content.hash)
-            .unwrap_or("Inventory item")
-    } else if content.matches.sandbox_perk_definition.is_some() {
-        "Sandbox perk"
+            .unwrap_or("Inventory Item")
     } else if !content.matches.progression_definitions.is_empty() {
-        "Progression definition"
+        "Progression Definition"
     } else if !content.matches.objectives.is_empty() {
         "Objective"
     } else if !content.matches.collectible_matches.is_empty() {
@@ -478,7 +509,7 @@ fn draw_hash_answer_layer(ui: &mut egui::Ui, content: &HashInspectorContent<'_>)
     } else if !content.matches.value_definitions.is_empty() {
         "Unlock value"
     } else {
-        "Catalog hash"
+        "Catalog Hash"
     };
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
@@ -532,7 +563,7 @@ fn draw_hash_answer_layer(ui: &mut egui::Ui, content: &HashInspectorContent<'_>)
 
 fn draw_catalog_match_groups(ui: &mut egui::Ui, content: &HashInspectorContent<'_>) {
     ui.add_space(5.0);
-    egui::CollapsingHeader::new(format!("Catalog locations ({})", content.match_count))
+    egui::CollapsingHeader::new(format!("Catalog Locations ({})", content.match_count))
         .id_salt(("catalog_match_groups", content.hash))
         .default_open(true)
         .show(ui, |ui| {
@@ -706,29 +737,29 @@ fn add_collection_related_records(
         records.add(
             collectible.hash,
             "Collectible",
-            "Collectible record".into(),
+            "Collectible Record".into(),
             state,
         );
-        records.add(collectible.item_hash, "Item", "Inventory item".into(), None);
+        records.add(collectible.item_hash, "Item", "Inventory Item".into(), None);
         records.add(
             collectible.material_requirement_set_hash,
-            "Material set",
-            "Material requirement set".into(),
+            "Material Requirement Set",
+            "Material Requirement Set".into(),
             None,
         );
     }
     for set in &content.matches.material_requirement_set_matches {
         records.add(
             set.hash,
-            "Material set",
-            "Material requirement set".into(),
+            "Material Requirement Set",
+            "Material Requirement Set".into(),
             None,
         );
         for requirement in &set.requirements {
             records.add(
                 requirement.item_hash,
-                "Required item",
-                "Required inventory item".into(),
+                "Required Item",
+                "Required Inventory Item".into(),
                 None,
             );
         }
@@ -740,20 +771,17 @@ fn add_item_related_records(
     content: &HashInspectorContent<'_>,
 ) {
     for item in &content.matches.bucket_items {
-        records.add(item.hash, "Bucket item", format_hash_hex(item.hash), None);
+        records.add(
+            item.hash,
+            "Inventory Bucket Item",
+            format_hash_hex(item.hash),
+            None,
+        );
     }
     for (item_hash, _) in &content.matches.investment_stat_references {
         records.add(
             *item_hash,
-            "Item using stat",
-            format_hash_hex(*item_hash),
-            None,
-        );
-    }
-    for item_hash in content.matches.intrinsic_perk_item_references {
-        records.add(
-            *item_hash,
-            "Item using perk",
+            "Item Using This Stat",
             format_hash_hex(*item_hash),
             None,
         );
@@ -777,7 +805,7 @@ fn draw_related_catalog_records(ui: &mut egui::Ui, content: &HashInspectorConten
     if records.is_empty() {
         return;
     }
-    let title = format!("Related records ({})", records.len());
+    let title = format!("Related Records ({})", records.len());
     let show_state = records.iter().any(|record| record.state.is_some());
     hash_metadata_section(ui, &title, false, |ui| {
         egui::Grid::new(("related_catalog_records", content.hash))
@@ -831,7 +859,7 @@ fn append_report_overview(report: &mut String, content: &HashInspectorContent<'_
     );
     report_table_row(
         report,
-        "Catalog locations",
+        "Catalog Locations",
         &content.match_count.to_string(),
     );
     report_table_row(
@@ -876,6 +904,11 @@ fn append_report_source(report: &mut String, content: &HashInspectorContent<'_>)
     if let Some(plug_count) = context.plug_count {
         report_table_row(report, "Authored plugs", &plug_count.to_string());
     }
+    append_report_json(
+        report,
+        "Opening-time source snapshot (not live state)",
+        &serde_json::json!(context),
+    );
 }
 
 fn append_report_related_records(report: &mut String, content: &HashInspectorContent<'_>) {
@@ -910,9 +943,7 @@ fn append_report_item_data(report: &mut String, content: &HashInspectorContent<'
         || matches.item_package_metadata.is_some()
         || matches.inventory_metadata.is_some()
         || matches.item_stat_definition.is_some()
-        || matches.sandbox_perk_definition.is_some()
         || !matches.investment_stat_references.is_empty()
-        || !matches.intrinsic_perk_item_references.is_empty()
         || !matches.bucket_items.is_empty();
     if !has_item_data {
         return;
@@ -939,9 +970,12 @@ fn append_report_item_data(report: &mut String, content: &HashInspectorContent<'
         "inventory_metadata": matches.inventory_metadata,
         "material_requirement_set_indices": matches.item_material_requirement_set_indices,
         "item_stat_definition": matches.item_stat_definition,
-        "sandbox_perk_definition": matches.sandbox_perk_definition,
+        "resolved_stat_group": content.catalog.item_stat_group(content.hash),
+        "resolved_socket_pools": matches.item.map(|item| super::item_details::resolved_socket_pools(content.catalog, item)),
+        "resolved_item_traits": matches.item_package_metadata.map(|metadata| metadata.trait_indices.iter().map(|index| serde_json::json!({
+            "index": index, "definition": content.catalog.trait_definitions().get(usize::from(*index)),
+        })).collect::<Vec<_>>()),
         "investment_stat_references": investment_references,
-        "intrinsic_perk_item_references": matches.intrinsic_perk_item_references,
         "inventory_bucket_items": bucket_items,
     });
     append_report_json(report, "Item package data", &data);
@@ -1127,15 +1161,11 @@ fn hash_history_label(catalog: &Catalog, hash: u64) -> String {
 }
 
 fn hash_inspector_sections(matches: &CatalogHashMatches<'_>) -> Vec<HashInspectorSection> {
-    let mut sections = Vec::with_capacity(5);
-    if matches.sandbox_perk_definition.is_some() {
-        sections.push(HashInspectorSection::SandboxPerk);
-    }
+    let mut sections = Vec::with_capacity(4);
     if matches.item.is_some()
         || matches.item_package_metadata.is_some()
         || matches.item_stat_definition.is_some()
         || !matches.investment_stat_references.is_empty()
-        || !matches.intrinsic_perk_item_references.is_empty()
         || matches.inventory_metadata.is_some()
         || !matches.bucket_items.is_empty()
     {
@@ -1163,10 +1193,7 @@ fn hash_inspector_sections(matches: &CatalogHashMatches<'_>) -> Vec<HashInspecto
 }
 
 fn hash_inspector_default_size(matches: &CatalogHashMatches<'_>) -> egui::Vec2 {
-    if matches.item.is_some()
-        || matches.item_package_metadata.is_some()
-        || matches.sandbox_perk_definition.is_some()
-    {
+    if matches.item.is_some() || matches.item_package_metadata.is_some() {
         return egui::vec2(1_000.0, 720.0);
     }
     if matches.progression_definitions.len() == 1 && matches.count() == 1 {

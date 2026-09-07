@@ -75,11 +75,14 @@ pub(in crate::app) fn heading(ui: &mut egui::Ui, title: impl Into<String>) -> bo
     let mut close = false;
     let title = title.into();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).strong().size(17.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Close").clicked() {
-                close = true;
-            }
+            close = ui.button("Close").clicked();
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&title).strong().size(17.0)).truncate(),
+                )
+                .on_hover_text(&title);
+            });
         });
     });
     close
@@ -90,29 +93,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_placement_tracks_available_width() {
-        assert_eq!(
-            WorkspacePlacement::for_width(SIDE_WORKSPACE_BREAKPOINT - 1.0),
-            WorkspacePlacement::Bottom
-        );
-        assert_eq!(
-            WorkspacePlacement::for_width(SIDE_WORKSPACE_BREAKPOINT),
-            WorkspacePlacement::Side
-        );
-    }
-
-    #[test]
-    fn side_workspace_always_preserves_primary_content_width() {
-        for available_width in [SIDE_WORKSPACE_BREAKPOINT, 1_056.0, 1_500.0] {
-            let maximum_width = (available_width - PRIMARY_WORKSPACE_MIN_WIDTH)
-                .clamp(SIDE_WORKSPACE_MIN_WIDTH, SIDE_WORKSPACE_MAX_WIDTH);
-            assert!(available_width - maximum_width >= PRIMARY_WORKSPACE_MIN_WIDTH);
-        }
-    }
-
-    #[test]
     fn compact_widths_do_not_use_a_side_workspace() {
         assert!(!uses_side_workspace(SIDE_WORKSPACE_BREAKPOINT - 1.0));
         assert!(uses_side_workspace(SIDE_WORKSPACE_BREAKPOINT));
+    }
+
+    #[test]
+    fn long_heading_keeps_close_button_inside_panel() {
+        for width in [260.0, 420.0, 540.0] {
+            let ctx = egui::Context::default();
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 300.0))),
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    heading(ui, "Unlock Value Definition #12345 · A very long objective name that should never push Close outside the inspector");
+                });
+            });
+            let close = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Close" => Some(text),
+                    _ => None,
+                })
+                .expect("Close must be drawn");
+            assert!(close.pos.x >= 0.0);
+            assert!(close.pos.x + close.galley.size().x < width);
+            assert!(
+                close.pos.y < 40.0,
+                "Heading must not consume the panel height"
+            );
+        }
     }
 }

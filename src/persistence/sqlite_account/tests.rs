@@ -300,6 +300,61 @@ fn same_version_layout_changes_and_count_mismatches_are_rejected() {
 }
 
 #[test]
+fn positive_primary_soid_is_rejected_for_a_nonempty_account() {
+    let directory = TestDirectory::new("sqlite-positive-primary-soid");
+    let path = directory.0.join("state.sqlite3");
+    create_fixture(&path, 1);
+    update(
+        &path,
+        "UPDATE account_state SET primary_soid = 123 WHERE singleton = 1;",
+    );
+
+    let error = load(&path).unwrap_err().to_string();
+    assert!(error.contains("account_state.primary_soid"), "{error}");
+    assert!(error.contains("bit 63"), "{error}");
+}
+
+#[test]
+fn sqlite_field_of_view_accepts_105_and_rejects_106() {
+    let directory = TestDirectory::new("sqlite-field-of-view-range");
+    let path = directory.0.join("state.sqlite3");
+    let backup = directory.0.join("state-before.sqlite3");
+    create_fixture(&path, 1);
+    let key = AccountSettingKey::known_preference("field_of_view").unwrap();
+    let mut document = loaded_document(&path);
+
+    document
+        .settings_mut()
+        .apply_all(
+            SqliteAccountDocument::settings_capabilities(),
+            [sundial_account::AccountSettingsCommand::Set {
+                key: key.clone(),
+                value: AccountSettingValue::Unsigned(105),
+            }],
+        )
+        .unwrap();
+    writer::save_for_test(&mut document, backup).unwrap();
+
+    let mut reloaded = loaded_document(&path);
+    assert_eq!(
+        reloaded.settings().values().get(&key),
+        Some(&AccountSettingValue::Unsigned(105))
+    );
+    let before = reloaded.settings().clone();
+    assert_eq!(
+        reloaded.settings_mut().apply_all(
+            SqliteAccountDocument::settings_capabilities(),
+            [sundial_account::AccountSettingsCommand::Set {
+                key,
+                value: AccountSettingValue::Unsigned(106),
+            }],
+        ),
+        Err(sundial_account::AccountError::InvalidAccountSettingValue)
+    );
+    assert_eq!(reloaded.settings(), &before);
+}
+
+#[test]
 fn malformed_plug_prefix_is_rejected_instead_of_repaired() {
     let directory = TestDirectory::new("sqlite-plugs");
     let path = directory.0.join("state.sqlite3");
@@ -474,6 +529,7 @@ fn transactional_save_reloads_and_keeps_a_verified_pre_save_backup() {
     let receipt = writer::save_for_test(&mut edited, backup.clone()).unwrap();
 
     assert_eq!(receipt.backup, backup);
+    assert!(receipt.checkpoint_warning.is_none());
     let reloaded = loaded_document(&path);
     assert_eq!(reloaded, edited);
     assert_eq!(reloaded.profile().profile_items()[0].quantity, 26);

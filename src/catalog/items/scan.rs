@@ -7,17 +7,44 @@ use tiger_pkg::{PackageManager, TagHash};
 use crate::{
     class_items,
     hash::{format_hash_hex, parse_hash_hex},
+    investment_localization::{LocalizedStringCache, resolve_string},
+    investment_schema::{
+        ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET as EQUIPMENT_BLOCK_OFFSET,
+        ITEM_EQUIPMENT_SLOT_OFFSET as EQUIPMENT_SLOT_OFFSET, ITEM_LINKED_PLUG_BLOCK_CLASS,
+        ITEM_LINKED_PLUG_INDEX_OFFSET, ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET,
+        ITEM_ORDINARY_SOCKET_POINTER_OFFSET, ITEM_ORDINARY_SOCKET_ROW_SIZE,
+        ITEM_PLUG_BLOCK_CATEGORY_OFFSET, ITEM_PLUG_BLOCK_CLASS, ITEM_PLUG_BLOCK_ROLL_SET_OFFSET,
+        ITEM_PLUG_BLOCK_SEARCH_END, ITEM_PLUG_BLOCK_SEARCH_START,
+        ITEM_PLUG_CATEGORY_FALLBACK_OFFSET, ITEM_RARITY_OFFSET,
+        ITEM_SOCKET_ENTRY_LIST_BLOCK_POINTER_OFFSET as SOCKET_ENTRY_LIST_BLOCK_OFFSET,
+        ITEM_SOCKET_ENTRY_LIST_BLOCK_SIZE as SOCKET_ENTRY_LIST_BLOCK_SIZE,
+        ITEM_STRING_DESCRIPTION_REFERENCE_OFFSET as ITEM_DESCRIPTION_OFFSET, ITEM_TRAIT_ROW_CLASS,
+        ITEM_TRAIT_ROW_SIZE, ITEM_TRAITS_DESCRIPTOR_OFFSET,
+        ITEM_TRANSLATION_ART_ROW_CLASS as ART_ROW_CLASS,
+        ITEM_TRANSLATION_ART_ROW_SIZE as ART_ROW_STRIDE,
+        ITEM_TRANSLATION_ART_VARIANT_OFFSET as ART_ROW_VALUE_OFFSET,
+        ITEM_TRANSLATION_BLOCK_POINTER_OFFSET as ART_BLOCK_OFFSET,
+        ITEM_TRANSLATION_DYE_DESCRIPTOR_OFFSETS,
+        ITEM_TRANSLATION_DYE_ROW_CLASS as MATERIAL_OVERRIDE_CLASS,
+        ITEM_TRANSLATION_DYE_ROW_SIZE as MATERIAL_ROW_STRIDE,
+        ITEM_TRANSLATION_DYE_VARIANT_OFFSET as MATERIAL_ROW_VALUE_OFFSET,
+        ITEM_TRANSLATION_WEAPON_PATTERN_INDEX_OFFSET as WEAPON_PATTERN_INDEX_OFFSET,
+    },
+    package_payload::{array_at, i64_at, relative_offset, u16_at, u32_at},
 };
 
 use super::{
-    AbilityOptions, ItemDef, ItemPackageMetadata, ItemRarity, ItemRenderOverride,
-    ItemStatDefinition, SocketDef,
+    AbilityOptions, ItemArtArrangement, ItemDef, ItemPackageMetadata, ItemRarity,
+    ItemRenderOverride, ItemStatDefinition, ItemWeaponInventorySlot, SocketDef,
     abilities::{AbilityDisplayData, build_subclass_choices},
     inventory::{InventoryBucketDescriptor, item_inventory_metadata},
-    investment::{item_investment_stats, masterwork_label, stat_allocation_labels},
-    item_damage_type,
-    perks::item_intrinsic_perk_hashes,
-    quality::item_power_cap,
+    investment::{
+        item_investment_stats, item_stat_group_index, masterwork_label, stat_allocation_labels,
+    },
+    item_damage_profile, item_weapon_ammo_type,
+    perks::item_sandbox_perks,
+    quality::item_power_cap_groups,
+    resolve_default_plug_damage_profile,
     sockets::{ORDINARY_SOCKET_CLASS, build_socket_choices, socket_package_sources},
 };
 use crate::catalog::{
@@ -25,8 +52,6 @@ use crate::catalog::{
     ObjectiveOwnerDef, ObjectiveOwnerKind, UnlockDefinition,
     collections::item_material_requirement_set_indices_from_data,
     icons::item_icon_container,
-    localization::{LocalizedStringCache, resolve_string},
-    package::{array_at, i32_at, i64_at, relative_offset, u16_at, u32_at},
     progression::{
         ItemProgressionContext, PendingProgressionContext, add_objective_owner,
         attach_item_condition_contexts, item_objective_indices,
@@ -34,29 +59,13 @@ use crate::catalog::{
 };
 
 const MAX_ITEM_SCAN_PROGRESS_UPDATES: usize = 200;
-const ITEM_DESCRIPTION_OFFSET: usize = 0x98;
-const EQUIPMENT_BLOCK_OFFSET: usize = 16;
-const EQUIPMENT_SLOT_OFFSET: usize = 24;
-const EQUIPMENT_SLOT_COUNT: i32 = 20;
-const SOCKET_ENTRY_LIST_BLOCK_OFFSET: usize = 128;
-const SOCKET_ENTRY_LIST_BLOCK_SIZE: usize = 12;
-const PLUG_CATEGORY_OFFSET: usize = 392;
-const PLUG_BLOCK_CLASS: u32 = 0x8080_77E3;
-const PLUG_BLOCK_SEARCH_START: usize = 0x100;
-const PLUG_BLOCK_SEARCH_END: usize = 0x300;
-const PLUG_BLOCK_CATEGORY_OFFSET: usize = 4;
-const PLUG_BLOCK_ROLL_SET_OFFSET: usize = 0x26;
-const LINKED_PLUG_CLASS: u32 = 0x8080_3036;
-const LINKED_PLUG_INDEX_OFFSET: usize = 12;
-const ART_BLOCK_OFFSET: usize = 136;
-const GEAR_ART_INDEX_OFFSET: usize = 88;
-const ART_ROW_CLASS: u32 = 0x8080_77B5;
-const ART_ROW_STRIDE: usize = 4;
-const ART_ROW_VALUE_OFFSET: usize = 2;
-const MATERIAL_OVERRIDE_CLASS: u32 = 0x8080_77B3;
-const MATERIAL_STAGE_OFFSETS: [(u8, usize); 3] = [(0, 40), (1, 56), (2, 72)];
-const MATERIAL_ROW_STRIDE: usize = 4;
-const MATERIAL_ROW_VALUE_OFFSET: usize = 2;
+const EQUIPMENT_SLOT_COUNT: u16 = 20;
+const EQUIPMENT_SLOT_SENTINEL: u16 = u16::MAX;
+const MATERIAL_STAGE_OFFSETS: [(u8, usize); 3] = [
+    (0, ITEM_TRANSLATION_DYE_DESCRIPTOR_OFFSETS[0]),
+    (1, ITEM_TRANSLATION_DYE_DESCRIPTOR_OFFSETS[1]),
+    (2, ITEM_TRANSLATION_DYE_DESCRIPTOR_OFFSETS[2]),
+];
 const RENDER_OVERRIDE_CAPACITY: usize = 32;
 
 pub(in crate::catalog) struct ItemScanContext<'a> {
@@ -72,7 +81,8 @@ pub(in crate::catalog) struct ItemScanContext<'a> {
     pub inventory_buckets: &'a HashMap<u8, InventoryBucketDescriptor>,
     pub item_stat_definitions: &'a [ItemStatDefinition],
     pub stat_names: &'a [String],
-    pub sandbox_perk_hashes: &'a [u64],
+    pub sandbox_perk_catalog: Option<&'a [bool]>,
+    pub trait_definition_count: usize,
     pub ability_displays: &'a HashMap<u16, AbilityDisplayData>,
     pub collectible_item_paths: &'a HashMap<usize, Vec<Vec<String>>>,
     pub collectible_condition_contexts: &'a HashMap<usize, Vec<PendingProgressionContext>>,
@@ -83,8 +93,6 @@ pub(in crate::catalog) struct ItemScanContext<'a> {
     pub unlock_value_definitions: &'a mut [UnlockDefinition],
 }
 
-// This opt-in package probe intentionally lives beside the scanner data it diagnoses.
-#[allow(clippy::items_after_test_module)]
 pub(in crate::catalog) struct ItemScan {
     pub items: Vec<ItemDef>,
     pub names: HashMap<u64, String>,
@@ -103,13 +111,15 @@ pub(in crate::catalog) struct ItemScanDiagnostics {
     unreadable_item_definitions: usize,
     short_item_definitions: usize,
     unreadable_item_strings: usize,
+    malformed_investment_stats: usize,
 }
 
 struct ItemMetadataSources<'a> {
     hashes: &'a [u64],
     inventory_buckets: &'a HashMap<u8, InventoryBucketDescriptor>,
     item_stat_definitions: &'a [ItemStatDefinition],
-    sandbox_perk_hashes: &'a [u64],
+    sandbox_perk_catalog: Option<&'a [bool]>,
+    trait_definition_count: usize,
 }
 
 struct ItemMetadataOutputs<'a> {
@@ -118,6 +128,7 @@ struct ItemMetadataOutputs<'a> {
     material_sets: &'a mut HashMap<u64, ItemMaterialRequirementSetIndices>,
     plug_categories: &'a mut HashMap<u64, u32>,
     plug_category_items: &'a mut HashMap<u32, Vec<u64>>,
+    malformed_investment_stats: &'a mut usize,
 }
 
 fn record_item_metadata(
@@ -130,12 +141,22 @@ fn record_item_metadata(
     if let Some(metadata) = outputs.package.get_mut(&hash) {
         metadata.definition_size = u32::try_from(item.len()).ok();
         populate_native_item_metadata(item, sources.hashes, metadata);
-        metadata.rarity = ItemRarity::from_package_value(item[186]);
-        metadata.power_cap = item_power_cap(item);
-        metadata.damage_type =
-            bucket_hash.and_then(|bucket_hash| item_damage_type(item, bucket_hash));
-        metadata.investment_stats = item_investment_stats(item, sources.item_stat_definitions);
-        metadata.intrinsic_perks = item_intrinsic_perk_hashes(item, sources.sandbox_perk_hashes);
+        metadata.rarity = ItemRarity::from_package_value(item[ITEM_RARITY_OFFSET]);
+        metadata.power_cap_groups = item_power_cap_groups(item);
+        metadata.damage_profile = item_damage_profile(item, bucket_hash.unwrap_or_default());
+        metadata.damage_type = metadata.damage_profile.damage_type();
+        if let Some(bucket_hash) = bucket_hash {
+            metadata.weapon_inventory_slot = ItemWeaponInventorySlot::from_bucket_hash(bucket_hash);
+        }
+        match item_investment_stats(item, sources.item_stat_definitions) {
+            Ok(stats) => metadata.investment_stats = stats,
+            Err(()) => {
+                metadata.investment_stats.clear();
+                *outputs.malformed_investment_stats += 1;
+            }
+        }
+        metadata.sandbox_perks = item_sandbox_perks(item, sources.sandbox_perk_catalog);
+        metadata.trait_indices = item_trait_indices(item, sources.trait_definition_count);
     }
     if let Some(category) = outputs
         .package
@@ -160,6 +181,31 @@ fn record_item_metadata(
     metadata
 }
 
+fn item_trait_indices(item: &[u8], trait_definition_count: usize) -> Vec<u16> {
+    if item
+        .get(ITEM_TRAITS_DESCRIPTOR_OFFSET..ITEM_TRAITS_DESCRIPTOR_OFFSET + 16)
+        .is_some_and(|descriptor| descriptor == [0; 16])
+    {
+        return Vec::new();
+    }
+    let Ok((count, rows, class)) = array_at(item, ITEM_TRAITS_DESCRIPTOR_OFFSET) else {
+        return Vec::new();
+    };
+    if class != ITEM_TRAIT_ROW_CLASS || count > trait_definition_count {
+        return Vec::new();
+    }
+    (0..count)
+        .map(|index| u16_at(item, rows + index * ITEM_TRAIT_ROW_SIZE))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .filter(|indices| {
+            indices
+                .iter()
+                .all(|index| usize::from(*index) < trait_definition_count)
+        })
+        .unwrap_or_default()
+}
+
 fn report_item_scan_progress(
     index: usize,
     count: usize,
@@ -175,6 +221,21 @@ fn report_item_scan_progress(
     }
 }
 
+fn item_string_tag(
+    string_map: &[u8],
+    string_rows: usize,
+    index: usize,
+    hash: u64,
+    string_tags: &HashMap<u64, TagHash>,
+) -> Result<Option<TagHash>, String> {
+    let row = string_rows + index * 24;
+    if u32_at(string_map, row).ok().map(u64::from) == Some(hash) {
+        return u32_at(string_map, row + 16).map(TagHash).map(Some);
+    }
+
+    Ok(string_tags.get(&hash).copied())
+}
+
 impl ItemScanDiagnostics {
     pub(in crate::catalog) fn append_to(self, errors: &mut Vec<String>) {
         for (label, count) in [
@@ -186,6 +247,10 @@ impl ItemScanDiagnostics {
             (
                 "Unreadable item string definitions",
                 self.unreadable_item_strings,
+            ),
+            (
+                "Malformed item investment-stat definitions",
+                self.malformed_investment_stats,
             ),
         ] {
             if count > 0 {
@@ -212,7 +277,8 @@ pub(in crate::catalog) fn scan_items(
         inventory_buckets,
         item_stat_definitions,
         stat_names,
-        sandbox_perk_hashes,
+        sandbox_perk_catalog,
+        trait_definition_count,
         ability_displays,
         collectible_item_paths,
         collectible_condition_contexts,
@@ -239,6 +305,7 @@ pub(in crate::catalog) fn scan_items(
                             definition_tag,
                             definition_size: None,
                             string_definition_tag: None,
+                            stat_group_index: None,
                             icon_container_tag: None,
                             plug_category_hash: None,
                             equipment_slot: None,
@@ -246,14 +313,22 @@ pub(in crate::catalog) fn scan_items(
                             roll_set_index: None,
                             linked_plug_index: None,
                             linked_plug_hash: None,
-                            gear_art_index: None,
+                            weapon_pattern_index: None,
+                            weapon_translation_group: None,
                             art_arrangement_indices: [None; 4],
+                            art_arrangements: Vec::new(),
                             render_overrides: Vec::new(),
+                            translation_dye_rows: Default::default(),
                             rarity: ItemRarity::Unknown,
                             power_cap: None,
+                            power_cap_groups: Vec::new(),
                             damage_type: None,
+                            damage_profile: Default::default(),
+                            weapon_inventory_slot: None,
+                            weapon_ammo_type: None,
                             investment_stats: Vec::new(),
-                            intrinsic_perks: Vec::new(),
+                            sandbox_perks: Vec::new(),
+                            trait_indices: Vec::new(),
                         },
                     )
                 })
@@ -283,11 +358,13 @@ pub(in crate::catalog) fn scan_items(
     let mut unreadable_item_definitions = 0_usize;
     let mut short_item_definitions = 0_usize;
     let mut unreadable_item_strings = 0_usize;
+    let mut malformed_investment_stats = 0_usize;
     let item_metadata_sources = ItemMetadataSources {
         hashes,
         inventory_buckets,
         item_stat_definitions,
-        sandbox_perk_hashes,
+        sandbox_perk_catalog,
+        trait_definition_count,
     };
     report(CatalogProgress {
         message: "Reading item definitions…",
@@ -307,7 +384,7 @@ pub(in crate::catalog) fn scan_items(
             short_item_definitions += 1;
             continue;
         }
-        let bucket_hash = super::inventory::bucket_hash(item[184]);
+        let bucket_hash = super::inventory::item_bucket_hash(hash, item[184]);
         let metadata = record_item_metadata(
             &item,
             hash,
@@ -319,6 +396,7 @@ pub(in crate::catalog) fn scan_items(
                 material_sets: &mut item_material_requirement_set_indices,
                 plug_categories: &mut plug_category_by_hash,
                 plug_category_items: &mut plug_category_items,
+                malformed_investment_stats: &mut malformed_investment_stats,
             },
         );
         let objective_indices = item_objective_indices(&item, objectives.len());
@@ -339,23 +417,18 @@ pub(in crate::catalog) fn scan_items(
             unlock_flag_definitions,
             unlock_value_definitions,
         );
-        let string_row = string_rows + index * 24;
-        let string_tag = if u32_at(string_map, string_row).ok().map(u64::from) == Some(hash) {
-            TagHash(u32_at(string_map, string_row + 16)?)
-        } else {
-            let Some(&tag) = string_tags.get(&hash) else {
-                attach_item_objective_owners(
-                    objectives,
-                    &objective_indices,
-                    hash,
-                    "",
-                    "",
-                    metadata,
-                    objective_paths,
-                );
-                continue;
-            };
-            tag
+        let Some(string_tag) = item_string_tag(string_map, string_rows, index, hash, &string_tags)?
+        else {
+            attach_item_objective_owners(
+                objectives,
+                &objective_indices,
+                hash,
+                "",
+                "",
+                metadata,
+                objective_paths,
+            );
+            continue;
         };
         if let Some(metadata) = item_package_metadata.get_mut(&hash) {
             metadata.string_definition_tag = Some(string_tag.0);
@@ -373,6 +446,10 @@ pub(in crate::catalog) fn scan_items(
             );
             continue;
         };
+        if let Some(metadata) = item_package_metadata.get_mut(&hash) {
+            metadata.stat_group_index = item_stat_group_index(&string_thing);
+            metadata.weapon_ammo_type = item_weapon_ammo_type(&string_thing);
+        }
         let mut name = resolve_string(
             manager,
             localized_tags,
@@ -524,6 +601,7 @@ pub(in crate::catalog) fn scan_items(
         item_socket_lists,
         &mut items,
     )?;
+    refine_weapon_damage_profiles(&items, &mut item_package_metadata);
     Ok(ItemScan {
         items,
         names,
@@ -539,8 +617,97 @@ pub(in crate::catalog) fn scan_items(
             unreadable_item_definitions,
             short_item_definitions,
             unreadable_item_strings,
+            malformed_investment_stats,
         },
     })
+}
+
+fn refine_weapon_damage_profiles(
+    items: &[ItemDef],
+    metadata: &mut HashMap<u64, ItemPackageMetadata>,
+) {
+    for item in items
+        .iter()
+        .filter(|item| super::is_authorable_weapon_item(item))
+    {
+        let Some(base) = metadata
+            .get(&item.hash)
+            .map(|metadata| metadata.damage_profile)
+        else {
+            continue;
+        };
+        let plug_profiles = item
+            .default_plugs
+            .iter()
+            .flatten()
+            .filter_map(|hash| parse_hash_hex(hash))
+            .filter_map(|hash| metadata.get(&hash))
+            .map(|metadata| metadata.damage_profile)
+            .collect::<Vec<_>>();
+        let mut profile = resolve_default_plug_damage_profile(base, plug_profiles);
+        // Slot placement does not imply elemental damage. Keep unresolved native
+        // elemental sockets ambiguous; do not invent a carrier from the bucket.
+        if profile == (super::ItemDamageProfile::PlugOrEmptyAmbiguous { damage_type: None })
+            && !item.sockets.iter().any(|socket| socket.socket_type == 68)
+        {
+            profile = super::ItemDamageProfile::KineticEmpty;
+        }
+        if let Some(metadata) = metadata.get_mut(&item.hash) {
+            metadata.damage_profile = profile;
+            metadata.damage_type = profile.damage_type();
+        }
+    }
+}
+
+#[cfg(test)]
+mod independent_damage_tests {
+    use super::*;
+    use crate::catalog::items::{ItemDamageProfile, SocketDef};
+
+    #[test]
+    fn empty_weapon_damage_requires_checking_the_carrier_not_the_bucket() {
+        for bucket in [1_498_876_634, 2_465_295_065, 953_998_645] {
+            for elemental_socket in [false, true] {
+                let item = ItemDef {
+                    hash: 1,
+                    name: "Trial".to_owned(),
+                    type_name: "Auto Rifle".to_owned(),
+                    bucket_hash: bucket,
+                    class_type: 3,
+                    default_plugs: Vec::new(),
+                    sockets: if elemental_socket {
+                        vec![SocketDef {
+                            socket_type: 68,
+                            label: String::new(),
+                            pool: 0,
+                            allowed: Vec::new(),
+                            sources: Vec::new(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    abilities: Default::default(),
+                };
+                let ambiguous = ItemDamageProfile::PlugOrEmptyAmbiguous { damage_type: None };
+                let mut metadata = HashMap::from([(
+                    1,
+                    ItemPackageMetadata {
+                        damage_profile: ambiguous,
+                        ..Default::default()
+                    },
+                )]);
+                refine_weapon_damage_profiles(&[item], &mut metadata);
+                assert_eq!(
+                    metadata[&1].damage_profile,
+                    if elemental_socket {
+                        ambiguous
+                    } else {
+                        ItemDamageProfile::KineticEmpty
+                    }
+                );
+            }
+        }
+    }
 }
 
 struct DecodedItemSockets {
@@ -557,13 +724,13 @@ fn decode_item_sockets(
         default_plugs: Vec::new(),
         sockets: Vec::new(),
     };
-    let Ok(relative) = i64_at(item, 104) else {
+    let Ok(relative) = i64_at(item, ITEM_ORDINARY_SOCKET_POINTER_OFFSET) else {
         return Ok(Some(decoded));
     };
     if relative == 0 {
         return Ok(Some(decoded));
     }
-    let Ok(block) = relative_offset(104, 0, relative) else {
+    let Ok(block) = relative_offset(ITEM_ORDINARY_SOCKET_POINTER_OFFSET, 0, relative) else {
         return Ok(None);
     };
     let Ok((socket_count, socket_rows, class)) = array_at(item, block) else {
@@ -574,9 +741,9 @@ fn decode_item_sockets(
     }
 
     for lane in 0..socket_count {
-        let base = socket_rows + lane * 80;
+        let base = socket_rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
         let socket_type = u16_at(item, base)?;
-        let plug_index = u16_at(item, base + 2)?;
+        let plug_index = u16_at(item, base + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET)?;
         let plug = (plug_index != u16::MAX)
             .then(|| hashes.get(plug_index as usize).copied())
             .flatten();
@@ -654,21 +821,21 @@ fn populate_native_item_metadata(
 
     let plug_block = find_record(
         item,
-        PLUG_BLOCK_CLASS,
-        PLUG_BLOCK_SEARCH_START,
-        PLUG_BLOCK_SEARCH_END,
+        ITEM_PLUG_BLOCK_CLASS,
+        ITEM_PLUG_BLOCK_SEARCH_START,
+        ITEM_PLUG_BLOCK_SEARCH_END,
     );
     let category = plug_block
-        .and_then(|block| u32_at(item, block + PLUG_BLOCK_CATEGORY_OFFSET).ok())
-        .or_else(|| u32_at(item, PLUG_CATEGORY_OFFSET).ok());
+        .and_then(|block| u32_at(item, block + ITEM_PLUG_BLOCK_CATEGORY_OFFSET).ok())
+        .or_else(|| u32_at(item, ITEM_PLUG_CATEGORY_FALLBACK_OFFSET).ok());
     metadata.plug_category_hash = category
         .filter(|category| !matches!(*category, 0 | u32::MAX))
         .map(u64::from);
     metadata.roll_set_index =
-        plug_block.and_then(|block| u16_at(item, block + PLUG_BLOCK_ROLL_SET_OFFSET).ok());
+        plug_block.and_then(|block| u16_at(item, block + ITEM_PLUG_BLOCK_ROLL_SET_OFFSET).ok());
 
-    metadata.linked_plug_index = find_record(item, LINKED_PLUG_CLASS, 0, item.len())
-        .and_then(|block| u16_at(item, block + LINKED_PLUG_INDEX_OFFSET).ok())
+    metadata.linked_plug_index = find_record(item, ITEM_LINKED_PLUG_BLOCK_CLASS, 0, item.len())
+        .and_then(|block| u16_at(item, block + ITEM_LINKED_PLUG_INDEX_OFFSET).ok())
         .filter(|index| *index != u16::MAX);
     metadata.linked_plug_hash = metadata
         .linked_plug_index
@@ -679,8 +846,12 @@ fn populate_native_item_metadata(
 
 fn item_equipment_slot(item: &[u8]) -> Option<u8> {
     let block = resolve_item_block(item, EQUIPMENT_BLOCK_OFFSET)?;
-    let slot = i32_at(item, block.checked_add(EQUIPMENT_SLOT_OFFSET)?).ok()?;
-    if !(0..EQUIPMENT_SLOT_COUNT).contains(&slot) {
+    let slot_offset = block.checked_add(EQUIPMENT_SLOT_OFFSET)?;
+    // Shadowkeep stores the equipment slot in the low u16 and an adjacent 0xFFFF sentinel in the
+    // high u16. Interpreting the pair as i32 turns every valid slot into a negative number.
+    let slot = u16_at(item, slot_offset).ok()?;
+    let sentinel = u16_at(item, slot_offset.checked_add(2)?).ok()?;
+    if slot >= EQUIPMENT_SLOT_COUNT || sentinel != EQUIPMENT_SLOT_SENTINEL {
         return None;
     }
     u8::try_from(slot).ok()
@@ -696,15 +867,19 @@ fn item_socket_entry_list_index(item: &[u8]) -> Option<u16> {
 }
 
 fn populate_item_appearance_metadata(item: &[u8], metadata: &mut ItemPackageMetadata) {
-    metadata.gear_art_index = None;
+    metadata.weapon_pattern_index = None;
     metadata.art_arrangement_indices = [None; 4];
+    metadata.art_arrangements.clear();
     metadata.render_overrides.clear();
+    for rows in &mut metadata.translation_dye_rows {
+        rows.clear();
+    }
 
     let Some(art) = resolve_item_block(item, ART_BLOCK_OFFSET) else {
         return;
     };
-    metadata.gear_art_index = art
-        .checked_add(GEAR_ART_INDEX_OFFSET)
+    metadata.weapon_pattern_index = art
+        .checked_add(WEAPON_PATTERN_INDEX_OFFSET)
         .and_then(|offset| u16_at(item, offset).ok())
         .filter(|index| *index != u16::MAX);
 
@@ -715,6 +890,10 @@ fn populate_item_appearance_metadata(item: &[u8], metadata: &mut ItemPackageMeta
             let Ok(arrangement) = u16_at(item, row + ART_ROW_VALUE_OFFSET) else {
                 break;
             };
+            metadata.art_arrangements.push(ItemArtArrangement {
+                character_class,
+                arrangement,
+            });
             let slot = if character_class == -1 {
                 Some(0)
             } else {
@@ -749,12 +928,17 @@ fn populate_item_appearance_metadata(item: &[u8], metadata: &mut ItemPackageMeta
             }
             let row = rows + index * MATERIAL_ROW_STRIDE;
             let key = item[row] as i8;
-            if key == -1 {
-                continue;
-            }
             let Ok(value) = u16_at(item, row + MATERIAL_ROW_VALUE_OFFSET) else {
                 break;
             };
+            metadata.translation_dye_rows[usize::from(stage)].push(ItemRenderOverride {
+                stage,
+                key,
+                value,
+            });
+            if key == -1 {
+                continue;
+            }
             metadata
                 .render_overrides
                 .push(ItemRenderOverride { stage, key, value });
@@ -834,19 +1018,20 @@ mod native_metadata_tests {
     fn reads_native_equipment_socket_and_plug_context() {
         let mut item = vec![0_u8; 700];
         write_i64(&mut item, EQUIPMENT_BLOCK_OFFSET, 384);
-        write_i32(&mut item, 424, 2);
+        write_u16(&mut item, 424, 8);
+        write_u16(&mut item, 426, EQUIPMENT_SLOT_SENTINEL);
         write_i64(&mut item, SOCKET_ENTRY_LIST_BLOCK_OFFSET, 384);
         write_u16(&mut item, 512, 37);
-        write_u32(&mut item, 300, PLUG_BLOCK_CLASS);
+        write_u32(&mut item, 300, ITEM_PLUG_BLOCK_CLASS);
         write_u32(&mut item, 304, 0x1234_5678);
         write_u16(&mut item, 338, 5);
-        write_u32(&mut item, 560, LINKED_PLUG_CLASS);
+        write_u32(&mut item, 560, ITEM_LINKED_PLUG_BLOCK_CLASS);
         write_u16(&mut item, 572, 3);
 
         let mut metadata = ItemPackageMetadata::default();
         populate_native_item_metadata(&item, &[10, 20, 30, 40], &mut metadata);
 
-        assert_eq!(metadata.equipment_slot, Some(2));
+        assert_eq!(metadata.equipment_slot, Some(8));
         assert_eq!(metadata.socket_entry_list_index, Some(37));
         assert_eq!(metadata.plug_category_hash, Some(0x1234_5678));
         assert_eq!(metadata.roll_set_index, Some(5));
@@ -874,7 +1059,7 @@ mod native_metadata_tests {
         let mut metadata = ItemPackageMetadata::default();
         populate_item_appearance_metadata(&item, &mut metadata);
 
-        assert_eq!(metadata.gear_art_index, Some(9));
+        assert_eq!(metadata.weapon_pattern_index, Some(9));
         assert_eq!(
             metadata.art_arrangement_indices,
             [Some(11), Some(22), None, None]
@@ -893,11 +1078,19 @@ mod native_metadata_tests {
     fn rejects_out_of_range_relative_blocks_and_equipment_slots() {
         let mut item = vec![0_u8; 188];
         write_i64(&mut item, EQUIPMENT_BLOCK_OFFSET, 100);
-        write_i32(&mut item, 140, EQUIPMENT_SLOT_COUNT);
+        write_u16(&mut item, 140, EQUIPMENT_SLOT_COUNT);
+        write_u16(&mut item, 142, EQUIPMENT_SLOT_SENTINEL);
         write_i64(&mut item, SOCKET_ENTRY_LIST_BLOCK_OFFSET, i64::MAX);
 
         assert_eq!(item_equipment_slot(&item), None);
         assert_eq!(item_socket_entry_list_index(&item), None);
+
+        write_u16(&mut item, 140, 8);
+        write_u16(&mut item, 142, 0);
+        assert_eq!(item_equipment_slot(&item), None);
+
+        write_u16(&mut item, 142, EQUIPMENT_SLOT_SENTINEL);
+        assert_eq!(item_equipment_slot(&item), Some(8));
     }
 
     fn write_u16(data: &mut [u8], offset: usize, value: u16) {
@@ -905,10 +1098,6 @@ mod native_metadata_tests {
     }
 
     fn write_u32(data: &mut [u8], offset: usize, value: u32) {
-        data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn write_i32(data: &mut [u8], offset: usize, value: i32) {
         data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 

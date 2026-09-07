@@ -5,6 +5,8 @@
 //! Sundial's package-scanned catalog, stable inventory identities, adapter capability gates,
 //! and atomic equipment/inventory actions remain authoritative.
 
+use crate::app::account_workspace as account;
+
 mod editors;
 mod icons;
 mod layout;
@@ -14,7 +16,7 @@ use eframe::egui;
 
 use super::EquippedItemSnapshot;
 use crate::app::{
-    ConfirmationDialog, PlugSelectionMode, SLOTS, SundialApp, ViewMode,
+    ConfirmationDialog, PlugSelectionMode, SundialApp, ViewMode,
     inventory::InventoryItemSnapshot,
     inventory_page::{
         CharacterInventoryEditorContext, InventoryItemUiId, inventory_item_ui_identities,
@@ -75,33 +77,25 @@ impl SundialApp {
         let mut group_sockets = ui
             .data_mut(|data| data.get_temp::<bool>(group_sockets_id))
             .unwrap_or(true);
-        let equipment_editable = self.account_workspace.can_mutate_equipment(&self.document);
-        let inventory_editable = self
-            .account_workspace
-            .can_mutate_character_inventory(&self.document);
-        let class_type = self
-            .account_workspace
-            .character_metadata(&self.document, character_index)
+        let equipment_editable = account::can_mutate_equipment(&self.document);
+        let inventory_editable = account::can_mutate_character_inventory(&self.document);
+        let class_type = account::character_metadata(&self.document, character_index)
             .ok()
             .map(|metadata| u64::from(metadata.class_type))
             .unwrap_or(99);
-        let (inventory_items, inventory_error) = match self
-            .account_workspace
-            .character_inventory(&self.document, character_index)
-        {
-            Ok(items) => (items.unwrap_or_default(), None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
+        let (inventory_items, inventory_error) =
+            match account::character_inventory(&self.document, character_index) {
+                Ok(items) => (items.unwrap_or_default(), None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
         let inventory_ui_identities = inventory_item_ui_identities(&inventory_items);
         let inventory_context =
             self.character_inventory_editor_context(inventory_editable, class_type);
-        let (equipped_items, equipment_error) = match self
-            .account_workspace
-            .equipped_item_snapshots(&self.document, character_index)
-        {
-            Ok(items) => (items, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
+        let (equipped_items, equipment_error) =
+            match account::equipped_item_snapshots(&self.document, character_index) {
+                Ok(items) => (items, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
 
         ui.add_space(10.0);
         ui.heading("Loadout");
@@ -138,11 +132,15 @@ impl SundialApp {
         let unmatched_count = inventory_items
             .iter()
             .filter(|item| {
-                !SLOTS.iter().any(|(_, _, bucket_hash)| {
-                    self.manifest
-                        .item_handle_for_bucket(u64::from(item.definition_hash), *bucket_hash)
-                        .is_some()
-                })
+                !self
+                    .document
+                    .equipment_slots()
+                    .iter()
+                    .any(|(_, _, bucket_hash)| {
+                        self.manifest
+                            .item_handle_for_bucket(u64::from(item.definition_hash), *bucket_hash)
+                            .is_some()
+                    })
             })
             .count();
         if unmatched_count > 0 {
@@ -155,7 +153,12 @@ impl SundialApp {
         }
         ui.add_space(8.0);
 
-        for &(slot, label, bucket_hash) in SLOTS.iter().filter(|(slot, _, _)| *slot != "subclass") {
+        for &(slot, label, bucket_hash) in self
+            .document
+            .equipment_slots()
+            .iter()
+            .filter(|(slot, _, _)| *slot != "subclass")
+        {
             let equipped_snapshot = equipped_items.iter().find(|snapshot| snapshot.slot == slot);
             let equipped_hash = equipped_snapshot.and_then(|snapshot| snapshot.definition_hash);
             let stored_items = inventory_items
@@ -253,7 +256,7 @@ impl SundialApp {
 
         if requested_mode != self.plug_selection_mode {
             if requested_mode == PlugSelectionMode::AnyPlug
-                && !self.really_unsafe_warning_acknowledged
+                && !self.preferences.really_unsafe_warning_acknowledged
             {
                 self.remember_plug_selection_mode_after_confirmation = false;
                 self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
@@ -261,7 +264,7 @@ impl SundialApp {
                 self.plug_selection_mode = requested_mode;
             }
         }
-        if self.show_safety_warnings {
+        if self.preferences.show_safety_warnings {
             super::super::draw_plug_selection_warning(ui, self.plug_selection_mode);
         }
         randomize_request

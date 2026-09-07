@@ -17,7 +17,7 @@ fn equipment_picker_choice_assembly_keeps_more_than_five_hundred_items() {
         })
         .collect::<Vec<_>>();
 
-    let choices = equipment_definition_choices(items.iter());
+    let choices = equipment_definition_choices(items.iter(), false);
     assert_eq!(choices.len(), 620);
     assert_eq!(choices.first().unwrap().hash, 10_000);
     assert_eq!(choices.last().unwrap().hash, 10_619);
@@ -324,6 +324,55 @@ fn assert_default_subclass_abilities(
 }
 
 #[test]
+fn cross_class_override_is_scoped_to_subclass_definitions() {
+    let mut item = ItemDef {
+        hash: 42,
+        name: "Foreign subclass".to_owned(),
+        type_name: "Subclass".to_owned(),
+        bucket_hash: 3_284_755_031,
+        class_type: 1,
+        default_plugs: Vec::new(),
+        sockets: Vec::new(),
+        abilities: catalog::AbilityOptions::default(),
+    };
+
+    assert!(!item_class_is_compatible(&item, 2, false));
+    assert!(item_class_is_compatible(&item, 2, true));
+
+    item.bucket_hash = 3_448_274_439;
+    item.type_name = "Helmet".to_owned();
+    assert!(!item_class_is_compatible(&item, 2, true));
+
+    item.class_type = 3;
+    assert!(item_class_is_compatible(&item, 2, false));
+}
+
+#[test]
+fn subclass_labels_include_the_native_class_only_with_the_override() {
+    let mut item = ItemDef {
+        hash: 42,
+        name: "Arcstrider".to_owned(),
+        type_name: "Subclass".to_owned(),
+        bucket_hash: 3_284_755_031,
+        class_type: 1,
+        default_plugs: Vec::new(),
+        sockets: Vec::new(),
+        abilities: catalog::AbilityOptions::default(),
+    };
+
+    assert_eq!(subclass_display_name(&item, false), "Arcstrider");
+    assert_eq!(subclass_display_name(&item, true), "Arcstrider (Hunter)");
+
+    item.class_type = 2;
+    item.name = "Dawnblade".to_owned();
+    assert_eq!(subclass_display_name(&item, true), "Dawnblade (Warlock)");
+
+    item.bucket_hash = 3_448_274_439;
+    item.name = "Helmet".to_owned();
+    assert_eq!(subclass_display_name(&item, true), "Helmet");
+}
+
+#[test]
 fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
     let mut document = super::super::account_workspace::WorkspaceDocument::json_only(json!({
         "version": 6,
@@ -369,13 +418,7 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
         },
     };
 
-    equip_subclass_with_default_abilities(
-        super::super::account_workspace::AccountWorkspace::json(),
-        &mut document,
-        0,
-        &item,
-    )
-    .unwrap();
+    equip_subclass_with_default_abilities(&mut document, 0, &item, false).unwrap();
     assert_eq!(
         document.pointer("/state/characters/0/equipment/subclass/definition_hash"),
         Some(&json!("0x0000002A"))
@@ -417,7 +460,6 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
 
     assert!(
         equip_inventory_item(
-            super::super::account_workspace::AccountWorkspace::json(),
             &mut document,
             super::super::inventory::InventoryItemLocation {
                 character_index: 0,
@@ -425,6 +467,7 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
             },
             "subclass",
             &item,
+            false,
         )
         .unwrap()
     );
@@ -441,28 +484,7 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
     let unchanged = document.clone();
     let mut wrong_bucket = item.clone();
     wrong_bucket.bucket_hash = 0;
-    assert!(
-        equip_subclass_with_default_abilities(
-            super::super::account_workspace::AccountWorkspace::json(),
-            &mut document,
-            0,
-            &wrong_bucket,
-        )
-        .is_err()
-    );
-    assert_eq!(document, unchanged);
-
-    let mut wrong_class = item.clone();
-    wrong_class.class_type = 1;
-    assert!(
-        equip_subclass_with_default_abilities(
-            super::super::account_workspace::AccountWorkspace::json(),
-            &mut document,
-            0,
-            &wrong_class,
-        )
-        .is_err()
-    );
+    assert!(equip_subclass_with_default_abilities(&mut document, 0, &wrong_bucket, true,).is_err());
     assert_eq!(document, unchanged);
 
     let mut malformed = super::super::account_workspace::WorkspaceDocument::json_only(json!({
@@ -470,16 +492,94 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
         "state": {"characters": [{"class": 0, "equipment": []}]}
     }));
     let original = malformed.clone();
+    assert!(equip_subclass_with_default_abilities(&mut malformed, 0, &item, false,).is_err());
+    assert_eq!(malformed, original);
+}
+
+#[test]
+fn cross_class_override_controls_definition_and_stored_subclass_equips() {
+    let mut document = super::super::account_workspace::WorkspaceDocument::json_only(json!({
+        "version": 6,
+        "state": {
+            "characters": [{
+                "class": 0,
+                "movement_ability": 99,
+                "grenade_ability": 99,
+                "super_ability": 99,
+                "melee_ability": 99,
+                "class_ability": 99,
+                "equipment": {
+                    "subclass": {
+                        "instance_soid": "0x0000000000000001",
+                        "definition_hash": "0x00000001",
+                        "level": 0,
+                        "quantity": 1,
+                        "plugs": null
+                    }
+                },
+                "inventory": [{
+                    "instance_soid": "0x0000000000000002",
+                    "definition_hash": "0x0000002B",
+                    "level": 0,
+                    "quantity": 1,
+                    "plugs": null
+                }]
+            }]
+        }
+    }));
+    let item = ItemDef {
+        hash: 42,
+        name: "Foreign subclass".to_owned(),
+        type_name: "Subclass".to_owned(),
+        bucket_hash: 3_284_755_031,
+        class_type: 1,
+        default_plugs: Vec::new(),
+        sockets: Vec::new(),
+        abilities: catalog::AbilityOptions::default(),
+    };
+
+    let unchanged = document.clone();
+    assert!(equip_subclass_with_default_abilities(&mut document, 0, &item, false,).is_err());
+    assert_eq!(document, unchanged);
+    equip_subclass_with_default_abilities(&mut document, 0, &item, true).unwrap();
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/subclass/definition_hash"),
+        Some(&json!("0x0000002A"))
+    );
+    assert_default_subclass_abilities(&document);
+
+    let stored_subclass = super::super::inventory::InventoryItemLocation {
+        character_index: 0,
+        item_index: 0,
+    };
+    let mut stored_item = item;
+    stored_item.hash = 43;
+    let unchanged = document.clone();
     assert!(
-        equip_subclass_with_default_abilities(
-            super::super::account_workspace::AccountWorkspace::json(),
-            &mut malformed,
-            0,
-            &item,
+        equip_inventory_item(
+            &mut document,
+            stored_subclass,
+            "subclass",
+            &stored_item,
+            false,
         )
         .is_err()
     );
-    assert_eq!(malformed, original);
+    assert_eq!(document, unchanged);
+    assert!(
+        equip_inventory_item(
+            &mut document,
+            stored_subclass,
+            "subclass",
+            &stored_item,
+            true,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        document.pointer("/state/characters/0/equipment/subclass/definition_hash"),
+        Some(&json!("0x0000002B"))
+    );
 }
 
 #[test]
@@ -532,13 +632,7 @@ fn arcstrider_and_sentinel_subclass_edits_keep_the_base_super_lane() {
             },
         };
 
-        equip_subclass_with_default_abilities(
-            super::super::account_workspace::AccountWorkspace::json(),
-            &mut document,
-            0,
-            &item,
-        )
-        .unwrap();
+        equip_subclass_with_default_abilities(&mut document, 0, &item, false).unwrap();
         assert_eq!(
             document.pointer("/state/characters/0/super_ability"),
             Some(&json!(10)),
@@ -599,6 +693,10 @@ fn class_armor_restore_copies_opaque_fields_and_preserves_destination_identity()
     assert_eq!(
         document.pointer("/state/characters/1/equipment/helmet/definition_hash"),
         Some(&json!("0x0000002A"))
+    );
+    assert_eq!(
+        document.pointer("/state/characters/1/equipment/helmet/level"),
+        Some(&json!(106))
     );
     assert_eq!(
         document.pointer("/state/characters/1/equipment/helmet/future_source/copy"),

@@ -50,6 +50,13 @@ pub(super) fn apply_character_updates(
     if updates.is_empty() {
         return Ok(false);
     }
+    let abilities_changed = updates.iter().any(|update| {
+        matches!(
+            update,
+            domain::CharacterMetadataUpdate::SetAbilities(_)
+                | domain::CharacterMetadataUpdate::SetSuperAndMelee { .. }
+        )
+    });
     let character_id = character(document, character_index)?.id;
     let commands = updates
         .into_iter()
@@ -65,7 +72,30 @@ pub(super) fn apply_character_updates(
             domain::CharacterCommand::Batch(commands),
         )
         .map_err(|error| error.to_string())?;
+    if abilities_changed {
+        let persisted_selection = {
+            let character = character(document, character_index)?;
+            character.metadata.and_then(|metadata| {
+                character
+                    .equipment
+                    .get(&domain::EquipmentSlot::new("subclass"))
+                    .and_then(Option::as_ref)
+                    .map(|item| (item.id, metadata.abilities))
+            })
+        };
+        if let Some((item_id, abilities)) = persisted_selection {
+            document.set_persisted_item_abilities(item_id, abilities);
+        }
+    }
     Ok(true)
+}
+
+pub(super) fn inventory_item_abilities(
+    document: &SqliteAccountDocument,
+    location: InventoryItemLocation,
+) -> Option<domain::CharacterAbilities> {
+    let item = inventory_item(document, location).ok()?;
+    document.persisted_item_abilities(item.id)
 }
 
 pub(super) fn apply_account_settings(

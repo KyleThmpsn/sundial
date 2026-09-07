@@ -60,7 +60,7 @@ pub(super) fn draw_objective_metadata(
             }
         )
     } else if let Some(index) = objective.related_unlock_value_definition_index {
-        format!("Unlock value definition #{index}")
+        format!("Unlock Value Definition #{index}")
     } else {
         "Objective definition".to_owned()
     };
@@ -75,7 +75,7 @@ pub(super) fn draw_objective_metadata(
                 false,
             );
             metadata_field(ui, "Ownership source", ownership_source, false);
-            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition hash", objective.hash);
+            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", objective.hash);
             catalog_hash_hex_and_decimal_field(
                 ui,
                 catalog,
@@ -145,7 +145,7 @@ pub(super) fn draw_objective_metadata(
             );
             metadata_field(
                 ui,
-                "Condition programs",
+                "Condition Programs",
                 objective.condition_programs.len().to_string(),
                 true,
             );
@@ -315,7 +315,7 @@ fn draw_objective_owner_metadata(ui: &mut egui::Ui, owner: &ObjectiveOwnerDef, c
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
             metadata_field(ui, "Kind", objective_owner_kind_label(owner.kind), false);
-            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition hash", owner.hash);
+            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", owner.hash);
             metadata_field(ui, "Name", metadata_text(&owner.name), false);
             metadata_field(ui, "Type", metadata_text(&owner.type_name), false);
             metadata_field(ui, "Description", metadata_text(&owner.description), false);
@@ -344,7 +344,7 @@ fn draw_objective_owner_metadata(ui: &mut egui::Ui, owner: &ObjectiveOwnerDef, c
                 catalog_hash_hex_and_decimal_field(
                     ui,
                     catalog,
-                    "Definition hash",
+                    "Definition Hash",
                     trait_definition.hash,
                 );
                 metadata_field(ui, "Name", metadata_text(&trait_definition.name), false);

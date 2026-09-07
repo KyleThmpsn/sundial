@@ -6,33 +6,18 @@ pub(super) const SCHEMA_VERSION: i64 = 1;
 pub(super) const ACCOUNT_FORMAT_VERSION: i64 = 1;
 pub(super) const SETTINGS_PAYLOAD_VERSION: u32 = 1;
 pub(super) const SETTINGS_PAYLOAD_CAPACITY: usize = 1024;
-pub(super) const CHARACTER_CAPACITY: usize = 3;
-pub(super) const PROFILE_ITEM_CAPACITY: usize = 701;
-pub(super) const DISMANTLE_REWARD_CAPACITY: usize = 32;
-pub(super) const CHARACTER_ITEM_CAPACITY: usize = 135;
-pub(super) const PLUG_CAPACITY: usize = 12;
+pub(super) const CHARACTER_CAPACITY: usize = crate::account_contract::CHARACTER_CAPACITY;
+pub(super) const PROFILE_ITEM_CAPACITY: usize = crate::account_contract::PROFILE_ITEM_CAPACITY;
+pub(super) const DISMANTLE_REWARD_CAPACITY: usize =
+    crate::account_contract::FILTERED_DISMANTLE_REWARD_CAPACITY;
+pub(super) const CHARACTER_ITEM_CAPACITY: usize =
+    crate::account_contract::CHARACTER_INVENTORY_CAPACITY;
+pub(super) const PLUG_CAPACITY: usize = crate::account_contract::MAX_ITEM_PLUGS;
 
 pub(super) const EQUIPMENT_LOCATION: i64 = 0;
 pub(super) const INVENTORY_LOCATION: i64 = 1;
 
-pub(super) const EQUIPMENT_SLOTS: [&str; 16] = [
-    "kinetic",
-    "energy",
-    "heavy",
-    "helmet",
-    "gauntlets",
-    "chest",
-    "legs",
-    "class_item",
-    "ghost",
-    "vehicle",
-    "ship",
-    "subclass",
-    "clan_banner",
-    "emblem",
-    "emote",
-    "finisher",
-];
+pub(super) const EQUIPMENT_SLOTS: [&str; 16] = crate::account_contract::EQUIPMENT_SLOT_KEYS;
 
 pub(super) const KEY_BINDING_ACTIONS: [&str; 60] = [
     "fire",

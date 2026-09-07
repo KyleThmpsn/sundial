@@ -1,6 +1,6 @@
 param(
     [string]$Target = "x86_64-pc-windows-msvc",
-    [string]$Output = "THIRD_PARTY_NOTICES.md"
+    [string]$Output = "packaging/THIRD_PARTY_NOTICES.txt"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +10,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed"
 }
 $metadata = $metadataJson | ConvertFrom-Json
-$tree = cargo tree --locked --offline --target $Target -e normal --prefix none --format "{p}"
+$tree = cargo tree --workspace --locked --offline --target $Target -e normal --prefix none --format "{p}"
 if ($LASTEXITCODE -ne 0) {
     throw "cargo tree failed; run cargo fetch --locked --target $Target first"
 }
@@ -22,14 +22,20 @@ foreach ($line in $tree) {
     }
 }
 
+$workspacePackages = @{}
+foreach ($packageId in $metadata.workspace_members) {
+    $workspacePackages[$packageId] = $true
+}
+
 $packages = $metadata.packages |
     Where-Object {
-        $_.name -ne "sundial" -and $wanted.ContainsKey("$($_.name)|$($_.version)")
+        -not $workspacePackages.ContainsKey($_.id) -and
+        $wanted.ContainsKey("$($_.name)|$($_.version)")
     } |
     Sort-Object name, version
 
 $parts = [System.Collections.Generic.List[string]]::new()
-$parts.Add("# Sundial third-party notices")
+$parts.Add("# Third-party notices")
 $parts.Add("")
 $parts.Add("Generated from Cargo.lock for target $Target.")
 $parts.Add("Each package and bundled asset remains licensed by its respective authors under the terms shown below.")

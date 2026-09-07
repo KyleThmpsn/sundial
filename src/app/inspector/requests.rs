@@ -3,13 +3,16 @@ use eframe::egui;
 const HASH_INSPECTION_REQUEST_ID: &str = "catalog_hash_inspection_request";
 const HASH_INSPECTION_CONTEXT_ID: &str = "catalog_hash_inspection_context";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(in crate::app) struct DefinitionInspectionContext {
     pub source: String,
     pub instance_id: Option<String>,
     pub authored_level: Option<i64>,
     pub flags: Option<u8>,
     pub plug_count: Option<usize>,
+    /// Opening-time authored value: null means native defaults, an array is explicit.
+    pub plugs: Option<serde_json::Value>,
+    pub quantity: Option<i64>,
 }
 
 pub(in crate::app) fn request_definition(ctx: &egui::Context, hash: u64) {
@@ -72,6 +75,7 @@ mod tests {
             authored_level: Some(1_950),
             flags: Some(1),
             plug_count: Some(8),
+            ..Default::default()
         };
         request_definition_with_context(&ui, 0xD980_2C4F, context.clone());
         assert_eq!(take_definition_request(&ui), Some(0xD980_2C4F));

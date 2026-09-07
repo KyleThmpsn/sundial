@@ -5,7 +5,10 @@ use serde_json::{Map, Value};
 
 use super::{
     page::{group, missing_group},
-    schema::{FIELD_OF_VIEW_KEY, VERTICAL_SYNC_INTERVAL_KEY, show_presence_gated_preference},
+    schema::{
+        FIELD_OF_VIEW_KEY, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MINIMUM,
+        VERTICAL_SYNC_INTERVAL_KEY, show_presence_gated_preference,
+    },
     widgets::{
         CommandBatch, boolean, choice, display_refresh_rate_hz, fixed, float_slider,
         integer_slider, offset_slider, vertical_sync_intervals,
@@ -47,8 +50,8 @@ pub(super) const TEAM_VOICE_MODES: &[(u64, &str)] = &[
     (0, "Manually Opt-in (Default)"),
     (1, "Automatic Opt-in When Solo"),
 ];
-pub(super) const PROXIMITY_VOICE_OUTPUTS: &[(u64, &str)] =
-    &[(0, "Speakers (Default)"), (1, "Headset Only")];
+pub(super) const RESERVED_AUDIO_STATES: &[(u64, &str)] =
+    &[(0, "State 0 (Default)"), (1, "State 1")];
 pub(super) const HDR_MODES: &[(u64, &str)] = &[(0, "Off (Default)"), (1, "On")];
 pub(super) const SUBTITLE_MODES: &[(u64, &str)] =
     &[(0, "Language-Based (Default)"), (1, "On"), (2, "Off")];
@@ -233,10 +236,10 @@ pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &Map<String, Value>) -> Co
                 ui,
                 values,
                 "reserved_mode",
-                "Proximity voice output",
-                PROXIMITY_VOICE_OUTPUTS,
+                "Unidentified audio state",
+                RESERVED_AUDIO_STATES,
             );
-            fixed(ui, values, "migration_version", "Audio migration version");
+            fixed(ui, values, "migration_version", "Game volume state");
             changed |= integer_slider(ui, values, "chat_volume", "Voice chat volume", 0, 8);
             changed |= boolean(ui, values, "mute_when_unfocused", "Mute when unfocused");
             changed |= integer_slider(
@@ -254,7 +257,11 @@ pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &Map<String, Value>) -> Co
         .inner
 }
 
-pub(super) fn draw_display(ui: &mut egui::Ui, settings: &Map<String, Value>) -> CommandBatch {
+pub(super) fn draw_display(
+    ui: &mut egui::Ui,
+    settings: &Map<String, Value>,
+    extended_fov: bool,
+) -> CommandBatch {
     let Some(values) = group(settings, "display") else {
         missing_group(ui, "display");
         return CommandBatch::default();
@@ -288,7 +295,18 @@ pub(super) fn draw_display(ui: &mut egui::Ui, settings: &Map<String, Value>) -> 
                 );
             }
             if show_presence_gated_preference(values, FIELD_OF_VIEW_KEY) {
-                changed |= integer_slider(ui, values, FIELD_OF_VIEW_KEY, "Field of view", 55, 105);
+                changed |= integer_slider(
+                    ui,
+                    values,
+                    FIELD_OF_VIEW_KEY,
+                    "Field of view",
+                    FIELD_OF_VIEW_MINIMUM,
+                    if extended_fov {
+                        FIELD_OF_VIEW_MAXIMUM
+                    } else {
+                        105
+                    },
+                );
             }
             fixed(ui, values, "calibration_primary", "Renderer calibration");
             fixed(
@@ -392,12 +410,7 @@ pub(super) fn draw_social(ui: &mut egui::Ui, settings: &Map<String, Value>) -> C
         .striped(true)
         .show(ui, |ui| {
             let mut changed = CommandBatch::default();
-            changed |= boolean(
-                ui,
-                values,
-                "prefer_good_connection",
-                "Prefer good connection",
-            );
+            changed |= boolean(ui, values, "prefer_good_connection", "Matchmaking search");
             changed |= choice(
                 ui,
                 values,

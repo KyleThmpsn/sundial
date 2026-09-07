@@ -35,6 +35,7 @@ mod tests {
     };
 
     use super::{apply_commands, legacy};
+    use crate::game_settings::MAX_SUPPORTED_SCHEMA;
 
     fn set(key: AccountSettingKey, value: AccountSettingValue) -> AccountSettingsCommand {
         AccountSettingsCommand::Set { key, value }
@@ -154,24 +155,27 @@ mod tests {
                 AccountSettingValue::text("space"),
             ),
         ] {
-            let key = AccountSettingKey::key_binding("fire", slot);
-            let command = set(key.clone(), value);
-            let mut production = document_for(&key, 9);
-            production
-                .pointer_mut("/state/account/settings/key_bindings/fire")
-                .and_then(Value::as_object_mut)
-                .unwrap()
-                .insert("future".into(), json!({"keep": true}));
-            let mut expected = production.clone();
+            for version in [MAX_SUPPORTED_SCHEMA, MAX_SUPPORTED_SCHEMA + 1] {
+                let key = AccountSettingKey::key_binding("fire", slot);
+                let command = set(key.clone(), value.clone());
+                let mut production = document_for(&key, version);
+                production
+                    .pointer_mut("/state/account/settings/key_bindings/fire")
+                    .and_then(Value::as_object_mut)
+                    .unwrap()
+                    .insert("future".into(), json!({"keep": true}));
+                let mut expected = production.clone();
 
-            legacy::apply_commands(&mut expected, vec![command.clone()]).unwrap();
-            apply_commands(&mut production, vec![command]).unwrap();
+                legacy::apply_commands(&mut expected, vec![command.clone()]).unwrap();
+                apply_commands(&mut production, vec![command]).unwrap();
 
-            assert_eq!(production, expected);
-            assert_eq!(
-                production.pointer("/state/account/settings/key_bindings/fire/future/keep"),
-                Some(&Value::Bool(true))
-            );
+                assert_eq!(production, expected, "schema {version}");
+                assert_eq!(
+                    production.pointer("/state/account/settings/key_bindings/fire/future/keep"),
+                    Some(&Value::Bool(true)),
+                    "schema {version}"
+                );
+            }
         }
     }
 
@@ -203,6 +207,40 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("brightness"));
         assert_eq!(missing, before);
+    }
+
+    #[test]
+    fn json_field_of_view_respects_legacy_and_current_schema_limits() {
+        let key = AccountSettingKey::known_preference("field_of_view").unwrap();
+        for version in [8, 13, MAX_SUPPORTED_SCHEMA] {
+            let maximum = if version >= 16 { 155 } else { 105 };
+            let mut document = document_for(&key, version);
+
+            assert!(
+                apply_commands(
+                    &mut document,
+                    vec![set(key.clone(), AccountSettingValue::Unsigned(maximum))],
+                )
+                .unwrap(),
+                "schema {version}"
+            );
+            assert_eq!(
+                document.pointer("/state/account/settings/display/field_of_view"),
+                Some(&Value::from(maximum)),
+                "schema {version}"
+            );
+
+            let before = document.clone();
+            assert!(
+                apply_commands(
+                    &mut document,
+                    vec![set(key.clone(), AccountSettingValue::Unsigned(maximum + 1))],
+                )
+                .is_err(),
+                "schema {version}"
+            );
+            assert_eq!(document, before, "schema {version}");
+        }
     }
 
     #[test]

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.second-sun",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xEE06B019",
+    "expected_name": "The Mountaintop"
+  },
+  "presentation_donor": {
+    "item_hash": "0x74051969",
+    "expected_name": "Truthteller"
+  },
+  "identity": {
+    "item_hash": "0x757D33F5",
+    "collectible_hash": "0xD347B59A",
+    "unlock_hash": "0xF137B0F4",
+    "name_hash": "0xABF44D11",
+    "flavor_hash": "0xB69D2F9C",
+    "source_hash": "0x820A11AF"
+  },
+  "name": "Second Sun",
+  "flavor": "A second dawn, made by our own hands.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [],
+    "inventory_slot": "energy",
+    "modern_damage_type": "solar",
+    "power_cap_group": 11,
+    "socket_columns": []
+  }
+}

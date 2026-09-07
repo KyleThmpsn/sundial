@@ -133,6 +133,14 @@ pub(super) const ACTIONS: &[(&str, &str)] = &[
     ("screenshot", "Screenshot"),
 ];
 
+fn binding_help(has_source_choice: bool) -> &'static str {
+    if has_source_choice {
+        "Choose a primary and secondary input for each action. With Binding Source set to Account, changes apply after Destiny 2 is fully restarted."
+    } else {
+        "Choose a primary and secondary input for each action. Save and fully restart Destiny 2 to apply changes."
+    }
+}
+
 pub(super) fn draw_key_bindings(
     ui: &mut egui::Ui,
     settings: &Map<String, Value>,
@@ -140,9 +148,12 @@ pub(super) fn draw_key_bindings(
     editable: bool,
 ) -> CommandBatch {
     let mut changed = CommandBatch::default();
-    ui.heading("Key bindings");
+    ui.heading("Key Bindings");
     if editable {
-        ui.label("Choose a primary and secondary input for each action. With Binding source set to Account, changes apply after Destiny 2 is fully restarted.");
+        ui.label(binding_help(show_presence_gated_preference(
+            settings,
+            KEY_BINDING_SOURCE_KEY,
+        )));
     } else {
         ui.label(
             "This settings schema does not use editable named bindings. These values are read-only.",
@@ -159,7 +170,7 @@ pub(super) fn draw_key_bindings(
                     ui,
                     settings,
                     KEY_BINDING_SOURCE_KEY,
-                    "Binding source",
+                    "Binding Source",
                     KEY_BINDING_SOURCES,
                 );
             });
@@ -169,7 +180,7 @@ pub(super) fn draw_key_bindings(
         if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "Bindings edited here will not apply while the source is Computer. Switch Binding source to Account to have Sunrise use them.",
+                "Bindings edited here will not apply while the source is Computer. Switch Binding Source to Account to have Sunrise use them.",
             );
         }
         ui.add_space(8.0);
@@ -640,7 +651,7 @@ pub(super) fn input_code(
             u16::MAX
         )),
         KeyBindingFormat::Named => Err(format!(
-            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise schemas 3 through 8"
+            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise's named-binding format"
         )),
     }
 }

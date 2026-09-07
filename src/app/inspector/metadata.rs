@@ -133,7 +133,7 @@ pub(in crate::app) fn metadata_subsection<R>(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.label(egui::RichText::new(title).strong().small());
+    ui.label(egui::RichText::new(title).strong());
     ui.add_space(2.0);
     add_contents(ui)
 }

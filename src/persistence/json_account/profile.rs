@@ -11,18 +11,17 @@ use sundial_account::{
     EntityId, ProfileCapabilities, ProfileItem, ProfileItemCommand, ProfileState,
 };
 
-use crate::hash::parse_unsigned_value;
+use crate::{
+    account_contract::{
+        DISMANTLE_REWARDS_SCHEMA_VERSION, FILTERED_DISMANTLE_REWARD_CAPACITY,
+        FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
+        profile_item_capacity,
+    },
+    game_settings::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA},
+    hash::parse_unsigned_value,
+};
 
-use super::JsonAccountError;
-
-type JsonProfileError = JsonAccountError;
-
-const MIN_SUPPORTED_JSON_SCHEMA: u64 = 2;
-const MAX_SUPPORTED_JSON_SCHEMA: u64 = 8;
-const LEGACY_PROFILE_ITEM_CAPACITY: usize = 32;
-const PROFILE_ITEM_CAPACITY: usize = 701;
-const LEGACY_DISMANTLE_REWARD_CAPACITY: usize = 8;
-const FILTERED_DISMANTLE_REWARD_CAPACITY: usize = 32;
+use super::{JsonAccountError, JsonProfileError, take_entity_id};
 
 type JsonProfileResult<T> = Result<T, JsonAccountError>;
 
@@ -93,8 +92,8 @@ impl JsonProfileAdapter {
         let mut next_id = 1_u64;
 
         let profile = load_profile_items(account, capabilities, &mut next_id)?;
-        let dismantle_managed =
-            load_dismantle && (5..=MAX_SUPPORTED_JSON_SCHEMA).contains(&schema_version);
+        let dismantle_managed = load_dismantle
+            && (DISMANTLE_REWARDS_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA).contains(&schema_version);
         let dismantle = if dismantle_managed {
             load_dismantle_rewards(account, capabilities, &mut next_id)?
         } else {
@@ -345,30 +344,31 @@ fn schema_version(document: &Value) -> JsonProfileResult<u64> {
 }
 
 fn capabilities_for_schema(schema_version: u64) -> JsonProfileResult<ProfileCapabilities> {
-    if schema_version < MIN_SUPPORTED_JSON_SCHEMA {
+    if schema_version < MIN_SUPPORTED_SCHEMA {
         return Err(JsonProfileError::format(
             "/version",
             format!(
-                "settings schema {schema_version} predates supported schema {MIN_SUPPORTED_JSON_SCHEMA}"
+                "settings schema {schema_version} predates supported schema {MIN_SUPPORTED_SCHEMA}"
             ),
         ));
     }
-    let future = schema_version > MAX_SUPPORTED_JSON_SCHEMA;
+    let future = schema_version > MAX_SUPPORTED_SCHEMA;
     Ok(ProfileCapabilities {
         profile_items_writable: true,
-        profile_item_capacity: Some(if schema_version <= 3 {
-            LEGACY_PROFILE_ITEM_CAPACITY
-        } else {
-            PROFILE_ITEM_CAPACITY
-        }),
+        profile_item_capacity: Some(profile_item_capacity(schema_version)),
         enforce_loaded_profile_item_capacity: !future,
-        dismantle_rewards_writable: (5..=MAX_SUPPORTED_JSON_SCHEMA).contains(&schema_version),
+        dismantle_rewards_writable: (DISMANTLE_REWARDS_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA)
+            .contains(&schema_version),
         dismantle_reward_capacity: match schema_version {
-            5..=7 => Some(LEGACY_DISMANTLE_REWARD_CAPACITY),
-            MAX_SUPPORTED_JSON_SCHEMA => Some(FILTERED_DISMANTLE_REWARD_CAPACITY),
+            DISMANTLE_REWARDS_SCHEMA_VERSION..FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION => {
+                Some(LEGACY_DISMANTLE_REWARD_CAPACITY)
+            }
+            FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA => {
+                Some(FILTERED_DISMANTLE_REWARD_CAPACITY)
+            }
             _ => None,
         },
-        filtered_dismantle_rewards: schema_version >= MAX_SUPPORTED_JSON_SCHEMA,
+        filtered_dismantle_rewards: schema_version >= FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION,
         combined_dismantle_gear_class: false,
     })
 }
@@ -519,14 +519,6 @@ fn load_dismantle_rewards(
         order,
         raw,
     })
-}
-
-fn take_entity_id(next_id: &mut u64) -> JsonProfileResult<EntityId> {
-    let id = NonZeroU64::new(*next_id).ok_or(JsonProfileError::EntityIdentityExhausted)?;
-    *next_id = next_id
-        .checked_add(1)
-        .ok_or(JsonProfileError::EntityIdentityExhausted)?;
-    Ok(EntityId::new(id))
 }
 
 fn parse_definition_hash(
@@ -749,7 +741,7 @@ mod tests {
 
     #[test]
     fn future_schema_dismantle_rows_remain_opaque() {
-        let mut document = document(MAX_SUPPORTED_JSON_SCHEMA + 1);
+        let mut document = document(MAX_SUPPORTED_SCHEMA + 1);
         document
             .pointer_mut("/state/account")
             .and_then(Value::as_object_mut)
@@ -773,6 +765,20 @@ mod tests {
             projected.pointer("/state/account/dismantle_rewards"),
             document.pointer("/state/account/dismantle_rewards")
         );
+    }
+
+    #[test]
+    fn filtered_dismantle_layout_remains_supported_after_schema_eight() {
+        for version in FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA {
+            let capabilities = capabilities_for_schema(version).unwrap();
+            assert!(capabilities.dismantle_rewards_writable, "schema {version}");
+            assert!(capabilities.filtered_dismantle_rewards, "schema {version}");
+            assert_eq!(
+                capabilities.dismantle_reward_capacity,
+                Some(FILTERED_DISMANTLE_REWARD_CAPACITY),
+                "schema {version}"
+            );
+        }
     }
 
     #[test]

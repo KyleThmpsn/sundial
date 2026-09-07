@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct ConditionReferences {
     pub(super) flags: Vec<usize>,
     pub(super) values: Vec<usize>,
-    pub(super) objectives: Vec<usize>,
+    pub(super) pool_rows: Vec<usize>,
     pub(super) programs: Vec<Vec<[u32; 2]>>,
 }
 
@@ -51,17 +51,13 @@ pub(in crate::catalog) fn sort_progression_contexts(definitions: &mut [UnlockDef
             context.paths.sort();
             context.paths.dedup();
         }
-        definition.tested_by.sort_by(|left, right| {
-            progression_context_priority(left.kind)
-                .cmp(&progression_context_priority(right.kind))
-                .then_with(|| {
-                    left.name
-                        .trim()
-                        .is_empty()
-                        .cmp(&right.name.trim().is_empty())
-                })
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-                .then_with(|| left.hash.cmp(&right.hash))
+        definition.tested_by.sort_by_cached_key(|context| {
+            (
+                progression_context_priority(context.kind),
+                context.name.trim().is_empty(),
+                context.name.to_lowercase(),
+                context.hash,
+            )
         });
     }
 }
@@ -201,15 +197,19 @@ pub(super) fn condition_references_from_rows(
     let mut program = Vec::with_capacity(count);
     for index in 0..count {
         let row = rows + index * CONDITION_EXPRESSION_ROW_SIZE;
-        let kind = u32_at(data, row)?;
-        let raw_operand = u32_at(data, row + 4)?;
+        let kind = u32::from(
+            data.get(row)
+                .copied()
+                .ok_or_else(|| format!("Package data ended at {row}"))?,
+        );
+        let raw_operand = u32::from(u16_at(data, row + 4)?);
         program.push([kind, raw_operand]);
         let operand = usize::try_from(raw_operand)
             .map_err(|_| "Condition-expression definition index is too large")?;
         match kind {
             CONDITION_FLAG_KIND => references.flags.push(operand),
             CONDITION_VALUE_KIND => references.values.push(operand),
-            CONDITION_OBJECTIVE_KIND => references.objectives.push(operand),
+            CONDITION_POOL_KIND => references.pool_rows.push(operand),
             _ => {}
         }
     }
@@ -217,8 +217,8 @@ pub(super) fn condition_references_from_rows(
     references.flags.dedup();
     references.values.sort_unstable();
     references.values.dedup();
-    references.objectives.sort_unstable();
-    references.objectives.dedup();
+    references.pool_rows.sort_unstable();
+    references.pool_rows.dedup();
     if !program.is_empty() {
         references.programs.push(program);
     }
@@ -231,7 +231,7 @@ pub(super) fn merge_condition_references(
 ) {
     target.flags.extend(source.flags);
     target.values.extend(source.values);
-    target.objectives.extend(source.objectives);
+    target.pool_rows.extend(source.pool_rows);
     for program in source.programs {
         if !program.is_empty() && !target.programs.contains(&program) {
             target.programs.push(program);
@@ -241,8 +241,8 @@ pub(super) fn merge_condition_references(
     target.flags.dedup();
     target.values.sort_unstable();
     target.values.dedup();
-    target.objectives.sort_unstable();
-    target.objectives.dedup();
+    target.pool_rows.sort_unstable();
+    target.pool_rows.dedup();
 }
 
 pub(super) fn scan_condition_expressions(data: &[u8]) -> ConditionReferences {

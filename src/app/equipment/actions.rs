@@ -1,8 +1,10 @@
+use crate::app::account_workspace as account;
+
 use super::*;
 
 impl SundialApp {
     pub(super) fn equipment_mutation_allowed(&mut self) -> bool {
-        if self.account_workspace.can_mutate_equipment(&self.document) {
+        if account::can_mutate_equipment(&self.document) {
             true
         } else {
             let reason = self
@@ -16,10 +18,7 @@ impl SundialApp {
     }
 
     pub(super) fn equipment_flags_mutation_allowed(&mut self) -> bool {
-        if self
-            .account_workspace
-            .can_mutate_equipment_flags(&self.document)
-        {
+        if account::can_mutate_equipment_flags(&self.document) {
             true
         } else {
             let fallback = format!(
@@ -40,7 +39,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match self.account_workspace.equip_definition(
+        match account::equip_definition(
             &mut self.document,
             character,
             slot,
@@ -63,10 +62,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return false;
         }
-        if !self
-            .account_workspace
-            .can_mutate_character_inventory(&self.document)
-        {
+        if !account::can_mutate_character_inventory(&self.document) {
             let reason = self
                 .document
                 .account_editing_blocked()
@@ -76,9 +72,7 @@ impl SundialApp {
             return false;
         }
 
-        let snapshot = match self
-            .account_workspace
-            .character_inventory(&self.document, location.character_index)
+        let snapshot = match account::character_inventory(&self.document, location.character_index)
         {
             Ok(Some(items)) => items.into_iter().find(|item| item.location == location),
             Ok(None) => None,
@@ -91,7 +85,9 @@ impl SundialApp {
             self.set_status("The selected inventory item no longer exists", true);
             return false;
         };
-        let Some((_, _, bucket)) = SLOTS
+        let Some((_, _, bucket)) = self
+            .document
+            .equipment_slots()
             .iter()
             .find(|(known_slot, _, _)| *known_slot == slot)
             .copied()
@@ -114,11 +110,11 @@ impl SundialApp {
         };
         let item_name = item.name.clone();
         match equip_inventory_item(
-            self.account_workspace,
             &mut self.document,
             location,
             slot,
             &item,
+            self.preferences.experimental_cross_class_subclasses,
         ) {
             Ok(replaced_item) => {
                 self.dirty = true;
@@ -159,10 +155,10 @@ impl SundialApp {
             return;
         }
         match equip_subclass_with_default_abilities(
-            self.account_workspace,
             &mut self.document,
             character,
             item,
+            self.preferences.experimental_cross_class_subclasses,
         ) {
             Ok(()) => {
                 self.dirty = true;
@@ -176,10 +172,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match self
-            .account_workspace
-            .set_weapon_slot_empty(&mut self.document, character, slot)
-        {
+        match account::set_weapon_slot_empty(&mut self.document, character, slot) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -205,10 +198,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        if !self
-            .account_workspace
-            .can_mutate_character_inventory(&self.document)
-        {
+        if !account::can_mutate_character_inventory(&self.document) {
             let reason = self
                 .document
                 .account_editing_blocked()
@@ -218,11 +208,7 @@ impl SundialApp {
             return;
         }
 
-        match self.account_workspace.move_equipment_item_to_inventory(
-            &mut self.document,
-            character,
-            slot,
-        ) {
+        match account::move_equipment_item_to_inventory(&mut self.document, character, slot) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -246,7 +232,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match self.account_workspace.set_equipment_item_plug(
+        match account::set_equipment_item_plug(
             &mut self.document,
             character,
             slot,
@@ -266,12 +252,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match self.account_workspace.set_equipment_item_level(
-            &mut self.document,
-            character,
-            slot,
-            level,
-        ) {
+        match account::set_equipment_item_level(&mut self.document, character, slot, level) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -292,12 +273,7 @@ impl SundialApp {
         if !self.equipment_flags_mutation_allowed() {
             return;
         }
-        match self.account_workspace.set_equipment_item_flags(
-            &mut self.document,
-            character,
-            slot,
-            flags,
-        ) {
+        match account::set_equipment_item_flags(&mut self.document, character, slot, flags) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(

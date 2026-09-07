@@ -37,7 +37,7 @@ pub(super) fn draw_hash_collection_matches(
         hash_metadata_section(
             ui,
             &format!(
-                "Material requirement sets ({})",
+                "Material Requirement Sets ({})",
                 material_requirement_set_matches.len()
             ),
             material_requirement_set_matches.len() <= 3,
@@ -128,9 +128,9 @@ fn draw_collectible_state_action(
         desired,
     );
     let label = if desired {
-        "Mark acquired"
+        "Mark Acquired"
     } else {
-        "Mark missing"
+        "Mark Missing"
     };
     if ui
         .add_enabled(available, egui::Button::new(label).small())
@@ -152,7 +152,7 @@ fn draw_hash_collectible_technical_details(
 ) {
     for collectible in collectibles {
         egui::CollapsingHeader::new(format!(
-            "Technical fields · Collectible #{}",
+            "Technical Fields · Collectible #{}",
             collectible.index
         ))
         .id_salt(("hash_collectible_technical", collectible.index))
@@ -168,17 +168,17 @@ fn draw_hash_collectible_technical_details(
                         collectible_match_relationships(inspected_hash, collectible).join(" · "),
                         false,
                     );
-                    hash_detail_field(ui, "Collectible index", collectible.index.to_string(), true);
+                    hash_detail_field(ui, "Collectible Index", collectible.index.to_string(), true);
                     catalog_hash_hex_and_decimal_field(
                         ui,
                         catalog,
-                        "Collectible hash",
+                        "Collectible Hash",
                         collectible.hash,
                     );
                     if collectible.item_definition_index != u16::MAX {
                         hash_detail_field(
                             ui,
-                            "Item definition index",
+                            "Item Definition Index",
                             collectible.item_definition_index.to_string(),
                             true,
                         );
@@ -186,13 +186,13 @@ fn draw_hash_collectible_technical_details(
                     catalog_hash_hex_and_decimal_field(
                         ui,
                         catalog,
-                        "Item definition hash",
+                        "Item Definition Hash",
                         collectible.item_hash,
                     );
                     if let Some(index) = collectible.material_requirement_set_index {
                         hash_detail_field(
                             ui,
-                            "Material requirement set index",
+                            "Material Requirement Set Index",
                             index.to_string(),
                             true,
                         );
@@ -203,13 +203,13 @@ fn draw_hash_collectible_technical_details(
                         catalog_hash_hex_and_decimal_field(
                             ui,
                             catalog,
-                            "Material requirement set hash",
+                            "Material Requirement Set Hash",
                             collectible.material_requirement_set_hash,
                         );
                     }
                     let item_name = collectible_item_name(catalog, collectible);
                     if !collectible.name.trim().is_empty() && collectible.name.trim() != item_name {
-                        hash_detail_field(ui, "Collectible name", collectible.name.trim(), false);
+                        hash_detail_field(ui, "Collectible Name", collectible.name.trim(), false);
                     }
                 });
             let detail_id = egui::Id::new((
@@ -246,20 +246,20 @@ fn collectible_match_relationships(
 ) -> Vec<&'static str> {
     let mut relationships = Vec::new();
     if collectible.hash == inspected_hash {
-        relationships.push("Collectible definition");
+        relationships.push("Collectible Definition");
     }
     if collectible.item_hash == inspected_hash {
-        relationships.push("Item definition");
+        relationships.push("Item Definition");
     }
     if collectible.material_requirement_set_hash == inspected_hash {
-        relationships.push("Material requirement set");
+        relationships.push("Material Requirement Set");
     }
     if collectible
         .material_requirements
         .iter()
         .any(|requirement| requirement.item_hash == inspected_hash)
     {
-        relationships.push("Material requirement item");
+        relationships.push("Material Requirement Item");
     }
     relationships
 }
@@ -268,7 +268,7 @@ pub(super) fn draw_hash_package_paths(ui: &mut egui::Ui, id: egui::Id, paths: &[
     if paths.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!("Package paths ({})", paths.len()))
+    egui::CollapsingHeader::new(format!("Package Paths ({})", paths.len()))
         .id_salt((id, "package_paths"))
         .default_open(false)
         .show(ui, |ui| {
@@ -290,7 +290,7 @@ pub(super) fn draw_hash_condition_programs(
     if programs.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!("Condition programs ({})", programs.len()))
+    egui::CollapsingHeader::new(format!("Condition Programs ({})", programs.len()))
         .id_salt((id, "condition_programs"))
         .default_open(false)
         .show(ui, |ui| {
@@ -315,7 +315,7 @@ fn draw_hash_condition_program_table(
             ui.strong("Operand").on_hover_text(
                 "Raw package operand. Hover a value to see how this operation uses it.",
             );
-            ui.strong("Referenced entry");
+            ui.strong("Referenced Definition");
             ui.end_row();
             for (program_index, program) in programs.iter().enumerate() {
                 for (token_index, token) in program.iter().enumerate() {
@@ -378,7 +378,7 @@ fn draw_hash_condition_tokens(
             ui.strong("Operand").on_hover_text(
                 "Raw package operand. Hover a value to see how this operation uses it.",
             );
-            ui.strong("Referenced entry");
+            ui.strong("Referenced Definition");
             ui.end_row();
             for (token_index, token) in program.iter().enumerate() {
                 ui.monospace((token_index + 1).to_string());

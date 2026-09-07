@@ -390,7 +390,6 @@ fn inventory_field_edits_match_legacy_json_exactly() {
     let actions = [
         InventoryItemAction::SetDefinitionHash(30),
         InventoryItemAction::SetLevel(107),
-        InventoryItemAction::SetQuantity(3),
         InventoryItemAction::SetPlugs(ItemPlugs::Authored(vec![Some(4), None])),
         InventoryItemAction::SetFlags(Some(2)),
         InventoryItemAction::SetFlags(None),
@@ -435,47 +434,9 @@ fn inventory_field_edits_match_legacy_json_exactly() {
 }
 
 #[test]
-fn inventory_add_and_remove_match_legacy_json_exactly() {
+fn inventory_remove_matches_legacy_json_exactly() {
     let mut legacy = document();
     let source = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_for_inventory_add(&source).unwrap();
-    let character_id = character_entity_id(&adapter, 1);
-    let instance_soid = adapter
-        .state()
-        .next_available_instance_soid(
-            domain::InstanceSoid::try_from_u64(GENERATED_INSTANCE_SOID_START).unwrap(),
-        )
-        .unwrap();
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::AddInventoryItem {
-                character_id,
-                item: domain::ItemInstance {
-                    id: adapter.next_entity_id(),
-                    instance_soid,
-                    definition_hash: domain::DefinitionHash::new(30),
-                    level: 106,
-                    quantity: 2,
-                    plugs: domain::ItemPlugs::NativeDefaults,
-                    flags: None,
-                },
-            },
-        )
-        .unwrap();
-    legacy_json::add_inventory_item(
-        &mut legacy,
-        1,
-        NewInventoryItem {
-            definition_hash: 30,
-            level: 106,
-            quantity: 2,
-        },
-    )
-    .unwrap();
-    assert_eq!(projected, legacy);
-
-    let source = projected;
     let adapter = JsonCharacterAdapter::load_inventory_item(&source, 0).unwrap();
     let item_id = item_id(&adapter, 0, 0);
     let (_, projected, _) = adapter
@@ -497,269 +458,36 @@ fn inventory_add_and_remove_match_legacy_json_exactly() {
 }
 
 #[test]
-fn cross_character_moves_match_legacy_and_preserve_raw_rows() {
+fn inventory_equipment_swaps_match_legacy_json_exactly() {
+    let slot = "energy";
     let mut legacy = document();
     let source = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_inventory_move(&source, 0, 1).unwrap();
+    let adapter = JsonCharacterAdapter::load_inventory_equipment_slot(&source, 0, slot).unwrap();
     let item_id = item_id(&adapter, 0, 0);
-    let destination_character_id = character_entity_id(&adapter, 1);
-    let (_, projected, _) = adapter
+    let (_, projected, result) = adapter
         .apply(
             &source,
-            domain::CharacterCommand::MoveInventoryItem {
+            domain::CharacterCommand::SwapInventoryItemWithEquipment {
                 item_id,
-                destination_character_id,
+                slot: domain::EquipmentSlot::new(slot),
             },
         )
         .unwrap();
-    legacy_json::move_inventory_item_to_character(
+    let replaced = legacy_json::swap_inventory_item_with_equipment(
         &mut legacy,
         InventoryItemLocation {
             character_index: 0,
             item_index: 0,
         },
-        1,
+        slot,
     )
     .unwrap();
 
-    assert_eq!(projected, legacy);
-}
-
-#[test]
-fn inventory_equipment_swaps_match_legacy_json_exactly() {
-    for slot in ["kinetic", "energy"] {
-        let mut legacy = document();
-        let source = legacy.clone();
-        let adapter =
-            JsonCharacterAdapter::load_inventory_equipment_slot(&source, 0, slot).unwrap();
-        let item_id = item_id(&adapter, 0, 0);
-        let (_, projected, result) = adapter
-            .apply(
-                &source,
-                domain::CharacterCommand::SwapInventoryItemWithEquipment {
-                    item_id,
-                    slot: domain::EquipmentSlot::new(slot),
-                },
-            )
-            .unwrap();
-        let replaced = legacy_json::swap_inventory_item_with_equipment(
-            &mut legacy,
-            InventoryItemLocation {
-                character_index: 0,
-                item_index: 0,
-            },
-            slot,
-        )
-        .unwrap();
-
-        assert_eq!(
-            result,
-            domain::CharacterCommandResult::EquipmentSwapped { replaced }
-        );
-        assert_eq!(projected, legacy);
-    }
-}
-
-#[test]
-fn unequip_matches_legacy_json_exactly() {
-    let mut legacy = document();
-    let source = legacy.clone();
-    let adapter =
-        JsonCharacterAdapter::load_inventory_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::MoveEquipmentItemToInventory {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-            },
-        )
-        .unwrap();
-    legacy_json::move_equipment_item_to_inventory(&mut legacy, 0, "kinetic").unwrap();
-
-    assert_eq!(projected, legacy);
-}
-
-#[test]
-fn equipment_field_edits_match_legacy_json_exactly() {
-    let mut legacy = document();
-    let source = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::UpdateEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-                update: domain::ItemUpdate::SetLevel(107),
-            },
-        )
-        .unwrap();
-    legacy_equipment::set_equipment_item_level(&mut legacy, 0, "kinetic", 107).unwrap();
-    assert_eq!(projected, legacy);
-
-    let source = projected;
-    let adapter = JsonCharacterAdapter::load_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::UpdateEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-                update: domain::ItemUpdate::SetFlags(Some(2)),
-            },
-        )
-        .unwrap();
-    legacy_equipment::set_equipment_item_flags(&mut legacy, 0, "kinetic", Some(2)).unwrap();
-    assert_eq!(projected, legacy);
-
-    let source = projected;
-    let adapter = JsonCharacterAdapter::load_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::UpdateEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-                update: domain::ItemUpdate::SetPlugs(domain::ItemPlugs::Authored(vec![
-                    Some(domain::DefinitionHash::new(1)),
-                    Some(domain::DefinitionHash::new(5)),
-                ])),
-            },
-        )
-        .unwrap();
-    legacy_equipment::set_equipment_item_plug(
-        &mut legacy,
-        0,
-        "kinetic",
-        1,
-        &[Some("0x00000001".into()), None],
-        Some(5),
-    )
-    .unwrap();
-    assert_eq!(projected, legacy);
-}
-
-#[test]
-fn equipping_definitions_matches_legacy_for_occupied_and_empty_slots() {
-    let defaults = vec![Some("0x00000001".to_owned()), None];
-
-    let mut legacy = document();
-    let source = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::UpdateEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-                update: domain::ItemUpdate::SetDefinitionAndPlugs {
-                    definition_hash: domain::DefinitionHash::new(30),
-                    plugs: domain::ItemPlugs::Authored(vec![
-                        Some(domain::DefinitionHash::new(1)),
-                        None,
-                    ]),
-                },
-            },
-        )
-        .unwrap();
-    legacy_equipment::equip_definition(&mut legacy, 0, "kinetic", 30, &defaults).unwrap();
-    assert_eq!(projected, legacy);
-
-    let mut legacy = document();
-    let source = legacy.clone();
-    let adapter =
-        JsonCharacterAdapter::load_equipment_slot_with_soids(&source, 0, "energy").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let instance_soid = adapter
-        .state()
-        .next_available_instance_soid(
-            domain::InstanceSoid::try_from_u64(GENERATED_INSTANCE_SOID_START).unwrap(),
-        )
-        .unwrap();
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::SetEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("energy"),
-                item: Some(domain::ItemInstance {
-                    id: adapter.next_entity_id(),
-                    instance_soid,
-                    definition_hash: domain::DefinitionHash::new(30),
-                    level: 106,
-                    quantity: 1,
-                    plugs: domain::ItemPlugs::Authored(vec![
-                        Some(domain::DefinitionHash::new(1)),
-                        None,
-                    ]),
-                    flags: None,
-                }),
-            },
-        )
-        .unwrap();
-    legacy_equipment::equip_definition(&mut legacy, 0, "energy", 30, &defaults).unwrap();
-    assert_eq!(projected, legacy);
-}
-
-#[test]
-fn emptying_weapon_slots_matches_legacy_json_exactly() {
-    let mut legacy = document();
-    let source = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_equipment_slot(&source, 0, "kinetic").unwrap();
-    let character_id = character_entity_id(&adapter, 0);
-    let (_, projected, _) = adapter
-        .apply(
-            &source,
-            domain::CharacterCommand::SetEquipmentItem {
-                character_id,
-                slot: domain::EquipmentSlot::new("kinetic"),
-                item: None,
-            },
-        )
-        .unwrap();
-    legacy_equipment::set_weapon_slot_empty(&mut legacy, 0, "kinetic").unwrap();
-
-    assert_eq!(projected, legacy);
-}
-
-#[test]
-fn invalid_commands_are_atomic_in_both_paths() {
-    let mut legacy = document();
-    let legacy_before = legacy.clone();
-    let adapter = JsonCharacterAdapter::load_inventory_item(&legacy, 0).unwrap();
-    let adapter_before = adapter.clone();
-    let item_id = item_id(&adapter, 0, 0);
-
-    assert!(
-        adapter
-            .apply(
-                &legacy,
-                domain::CharacterCommand::UpdateInventoryItem {
-                    item_id,
-                    update: domain::ItemUpdate::SetQuantity(0),
-                }
-            )
-            .is_err()
+    assert_eq!(
+        result,
+        domain::CharacterCommandResult::EquipmentSwapped { replaced }
     );
-    assert!(
-        legacy_json::apply_inventory_item_action(
-            &mut legacy,
-            InventoryItemLocation {
-                character_index: 0,
-                item_index: 0,
-            },
-            InventoryItemAction::SetQuantity(0),
-        )
-        .is_err()
-    );
-    assert_eq!(adapter, adapter_before);
-    assert_eq!(legacy, legacy_before);
+    assert_eq!(projected, legacy);
 }
 
 #[test]

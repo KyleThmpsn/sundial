@@ -7,7 +7,7 @@ mod metrics;
 
 pub(in crate::catalog) use activities::scan_activity_condition_contexts;
 pub(in crate::catalog) use locations::{LocationContext, scan_location_condition_contexts};
-pub(in crate::catalog) use metrics::scan_metric_objective_owners;
+pub(in crate::catalog) use metrics::{scan_metric_objective_owners, scan_trait_definitions};
 
 pub(super) use activities::ActivityContext;
 pub(super) use location_releases::{

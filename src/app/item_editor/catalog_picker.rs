@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn catalog_button<'a>(
+pub(crate) fn catalog_button<'a>(
     ui: &egui::Ui,
     catalog: &Catalog,
     hash: u64,
@@ -10,7 +10,11 @@ pub(super) fn catalog_button<'a>(
     catalog.icon_texture(ui.ctx(), hash).map_or_else(
         || egui::Button::new(label),
         |texture| {
-            egui::Button::image_and_text((texture.id(), egui::vec2(icon_size, icon_size)), label)
+            egui::Button::image_and_text(
+                egui::Image::new((texture.id(), egui::vec2(icon_size, icon_size)))
+                    .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
+                label,
+            )
         },
     )
 }
@@ -34,6 +38,20 @@ pub(crate) fn draw_catalog_picker_row(
         egui::vec2(ui.available_width(), row.row_height),
         egui::Sense::click(),
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            row.selected,
+            row.secondary.map_or_else(
+                || row.primary.to_owned(),
+                |secondary| format!("{} · {secondary}", row.primary),
+            ),
+        )
+    });
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -56,6 +74,8 @@ pub(crate) fn draw_catalog_picker_row(
         egui::vec2(icon_size, icon_size),
     );
     if let Some(texture) = catalog.icon_texture(ui.ctx(), row.hash) {
+        ui.painter()
+            .rect_filled(icon_rect, 0.0, crate::app::ui::package_icon_backdrop(ui));
         ui.painter().image(
             texture.id(),
             icon_rect,
@@ -186,7 +206,7 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
     let icon = catalog.icon_texture(ui.ctx(), hash);
     ui.horizontal_top(|ui| {
         if let Some(icon) = icon {
-            ui.add(egui::Image::new(&icon));
+            ui.add(egui::Image::new(&icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
         }
         ui.vertical(|ui| {
             ui.vertical(|ui| {

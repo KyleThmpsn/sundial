@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::validation::{
+    is_no_definition_hash, validate_authored_definition_hash, validate_positive_quantity,
+};
 use crate::{AccountError, AccountResult, DefinitionHash, EntityId, EntityKind, InstanceSoid};
-
-const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
 
 /// Adapter-derived rules for character and item mutations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -574,14 +575,14 @@ fn apply_item_update(
 ) -> AccountResult<()> {
     match update {
         ItemUpdate::SetDefinitionHash(definition_hash) => {
-            validate_definition_hash(definition_hash)?;
+            validate_authored_definition_hash(definition_hash)?;
             item.definition_hash = definition_hash;
         }
         ItemUpdate::SetDefinitionAndPlugs {
             definition_hash,
             plugs,
         } => {
-            validate_definition_hash(definition_hash)?;
+            validate_authored_definition_hash(definition_hash)?;
             validate_plugs(&plugs, capabilities.max_item_plugs)?;
             item.definition_hash = definition_hash;
             item.plugs = plugs;
@@ -591,7 +592,7 @@ fn apply_item_update(
             item.level = level;
         }
         ItemUpdate::SetQuantity(quantity) => {
-            validate_quantity(quantity)?;
+            validate_positive_quantity(quantity)?;
             item.quantity = quantity;
         }
         ItemUpdate::SetPlugs(plugs) => {
@@ -609,7 +610,7 @@ fn apply_item_update(
                 });
             }
             if let Some(plug) = plug {
-                validate_definition_hash(plug)?;
+                validate_authored_definition_hash(plug)?;
             }
             let mut plugs = match &item.plugs {
                 ItemPlugs::NativeDefaults => {
@@ -652,9 +653,9 @@ fn validate_item(
         item.instance_soid,
         capabilities.enforce_unique_instance_soids,
     )?;
-    validate_definition_hash(item.definition_hash)?;
+    validate_authored_definition_hash(item.definition_hash)?;
     validate_level(item.level)?;
-    validate_quantity(item.quantity)?;
+    validate_positive_quantity(item.quantity)?;
     validate_plugs(&item.plugs, capabilities.max_item_plugs)?;
     validate_flags(item.flags, capabilities.item_flag_mask)
 }
@@ -688,27 +689,11 @@ fn ensure_unique_soid(
     }
 }
 
-fn validate_definition_hash(hash: DefinitionHash) -> AccountResult<()> {
-    if hash.get() == NO_DEFINITION_HASH {
-        Err(AccountError::InvalidDefinitionHash)
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_level(level: i32) -> AccountResult<()> {
     if level >= 0 {
         Ok(())
     } else {
         Err(AccountError::InvalidLevel)
-    }
-}
-
-fn validate_quantity(quantity: i32) -> AccountResult<()> {
-    if quantity > 0 {
-        Ok(())
-    } else {
-        Err(AccountError::InvalidQuantity)
     }
 }
 
@@ -722,7 +707,7 @@ fn validate_plugs(plugs: &ItemPlugs, maximum: usize) -> AccountResult<()> {
     if plugs
         .iter()
         .flatten()
-        .any(|hash| hash.get() == NO_DEFINITION_HASH)
+        .any(|hash| is_no_definition_hash(*hash))
     {
         return Err(AccountError::InvalidDefinitionHash);
     }

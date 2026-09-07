@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.last-watch",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x63344D56",
+    "expected_name": "Threat Level"
+  },
+  "presentation_donor": {
+    "item_hash": "0xCA44FDCB",
+    "expected_name": "Perfect Paradox"
+  },
+  "identity": {
+    "item_hash": "0x8FFCED58",
+    "collectible_hash": "0xD1F19A35",
+    "unlock_hash": "0x063FB3BD",
+    "pattern_global_id_hash": "0x208BE8AD",
+    "name_hash": "0x79727E64",
+    "type_hash": "0x781C3EAD",
+    "flavor_hash": "0xE360A0A1",
+    "source_hash": "0xE62E8DEE",
+    "collection_name_hash": "0x8A90DF21",
+    "collection_description_hash": "0x7157F01E",
+    "inventory_hint_hash": "0xB263B73D",
+    "collection_requirement_hash": "0x334966BD"
+  },
+  "name": "Last Watch",
+  "flavor": "The City slept. At its walls, a Light remained.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 22,
+        "value": 70
+      },
+      {
+        "definition_index": 27,
+        "value": 25
+      },
+      {
+        "definition_index": 26,
+        "value": 65
+      }
+    ],
+    "inventory_slot": "kinetic",
+    "ammo_type": "special",
+    "modern_damage_type": "kinetic",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "socket_columns": [
+      {
+        "choices": [
+          "0x976D834D"
+        ],
+        "socket_type": 176
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0x8CB6409D",
+          "0x61414688",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x9FB218C5",
+          "0xF351D2CC",
+          "0x5C2FD04F"
+        ],
+        "socket_type": 92
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

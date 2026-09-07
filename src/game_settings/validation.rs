@@ -4,18 +4,17 @@ use serde_json::{Map, Value};
 
 use super::{
     key_bindings::{ACTIONS, input_code},
-    page::valid_orbit_slice_set,
     preferences::GAME_LANGUAGES,
     schema::{
-        FIELD_OF_VIEW_KEY, KEY_BINDING_SOURCE_KEY, ORBIT_SLICE_SET_PATH, SettingsSchema,
-        VERTICAL_SYNC_INTERVAL_KEY,
+        FIELD_OF_VIEW_KEY, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MINIMUM, KEY_BINDING_SOURCE_KEY,
+        SettingsSchema, VERTICAL_SYNC_INTERVAL_KEY,
     },
 };
 
 pub(crate) fn validate(document: &Value) -> Result<(), String> {
     let schema = SettingsSchema::from_document(document)?;
+    super::runtime::validate(document, true)?;
     validate_game_language(document)?;
-    validate_orbit_slice_set(document)?;
     let settings = document
         .pointer("/state/account/settings")
         .and_then(Value::as_object)
@@ -60,7 +59,16 @@ pub(crate) fn validate(document: &Value) -> Result<(), String> {
     bool_fields(display, "display", &["show_fps"])?;
     range(display, "hdr_mode", 0, 1)?;
     optional_range(display, VERTICAL_SYNC_INTERVAL_KEY, 0, 4)?;
-    optional_range(display, FIELD_OF_VIEW_KEY, 55, 105)?;
+    optional_range(
+        display,
+        FIELD_OF_VIEW_KEY,
+        FIELD_OF_VIEW_MINIMUM,
+        if schema.0 >= 16 {
+            FIELD_OF_VIEW_MAXIMUM
+        } else {
+            105
+        },
+    )?;
     exact_float(display, "calibration_primary", 10_000.0)?;
     exact_float(display, "calibration_alpha", 0.0)?;
 
@@ -105,8 +113,9 @@ pub(crate) fn validate(document: &Value) -> Result<(), String> {
 
 pub(crate) fn validate_non_account(document: &Value) -> Result<(), String> {
     SettingsSchema::from_document(document)?;
+    super::runtime::validate(document, false)?;
     validate_game_language(document)?;
-    validate_orbit_slice_set(document)
+    Ok(())
 }
 
 pub(super) fn validate_game_language(document: &Value) -> Result<(), String> {
@@ -121,20 +130,6 @@ pub(super) fn validate_game_language(document: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err("steam.language must be one of Sunrise's supported language tokens".to_owned())
-    }
-}
-
-pub(super) fn validate_orbit_slice_set(document: &Value) -> Result<(), String> {
-    let Some(value) = document.pointer(ORBIT_SLICE_SET_PATH) else {
-        return Ok(());
-    };
-    if value.as_str().is_some_and(valid_orbit_slice_set) {
-        Ok(())
-    } else {
-        Err(
-            "client.orbit_slice_set must contain at most 48 ASCII letters, numbers, or underscores"
-                .to_owned(),
-        )
     }
 }
 
@@ -299,7 +294,8 @@ pub(super) fn bool_fields(
     Ok(())
 }
 
-// These are the decoded input names accepted by Sunrise schemas 3 through 8. Sunrise's raw table
+// These are the decoded input names accepted by supported Sunrise schemas using named bindings.
+// Sunrise's raw table
 // contains both its backslash name
 // and its JSON-escaped spelling; serde represents the usable value as one
 // decoded backslash, leaving 120 logical choices here. Matching is ASCII

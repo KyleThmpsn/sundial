@@ -1,8 +1,4 @@
 //! Shared inspector infrastructure and cross-page definition inspection.
-//!
-//! This facade stays intentionally small. Focused modules own layout,
-//! definition requests, and semantic name resolution; domain inspectors live
-//! beside the data they present.
 
 mod definition;
 mod hash_names;
@@ -22,6 +18,8 @@ pub(super) use metadata::{
     metadata_path_text, metadata_section, metadata_subsection, metadata_text,
     objective_owner_kind_label, progression_context_kind_label, progression_scope_label, yes_no,
 };
+#[cfg(test)]
+pub(super) use progression::objective_goal_text;
 pub(super) use progression::{
     MetadataSelection, OverrideFilter, ProgressionInspectorState, condition_opcode_label,
     condition_token_resolution, definition_has_undecoded_opcodes, definition_hash_hex_text,
@@ -31,10 +29,6 @@ pub(super) use progression::{
     objective_owner_display_label, objective_owner_type, objective_table_text,
     objective_target_text, objective_traits_text, override_filter_matches, override_meaning,
     override_meaning_contexts, progression_type_label, resolved_objective_table_text,
-};
-#[cfg(test)]
-pub(super) use progression::{
-    objective_goal_text, objective_target_tooltip, objective_traits_tooltip,
 };
 pub(super) use requests::{
     DefinitionInspectionContext, request_definition, request_definition_with_context,

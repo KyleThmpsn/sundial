@@ -69,20 +69,13 @@ pub(in crate::catalog) fn scan_unlock_flag_definitions(
     manager: &PackageManager,
     root: &[u8],
 ) -> Result<Vec<UnlockDefinition>, String> {
-    let definitions = scan_unlock_definitions(
+    scan_unlock_definitions(
         manager,
         root,
         UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
         UNLOCK_FLAG_DEFINITION_ROW_CLASS,
         "flag",
-    )?;
-    if definitions.len() != UNLOCK_FLAG_DEFINITION_COUNT {
-        return Err(format!(
-            "The installed unlock flag definition table has {} rows; expected {UNLOCK_FLAG_DEFINITION_COUNT}",
-            definitions.len()
-        ));
-    }
-    Ok(definitions)
+    )
 }
 
 pub(in crate::catalog) fn scan_unlock_value_definitions(
@@ -126,7 +119,7 @@ pub(super) fn scan_unlock_definitions(
             let row = rows
                 .checked_add(
                     index
-                        .checked_mul(UNLOCK_DEFINITION_ROW_SIZE)
+                        .checked_mul(UNLOCK_FLAG_DEFINITION_ROW_SIZE)
                         .ok_or_else(|| format!("Unlock {kind} row offset overflowed"))?,
                 )
                 .ok_or_else(|| format!("Unlock {kind} row offset overflowed"))?;
@@ -186,6 +179,7 @@ pub(super) fn unlock_flag_display_blocks(
     definitions: &[UnlockDefinition],
 ) -> Result<Vec<usize>, String> {
     let (count, rows, row_class) = array_at(table, 8)?;
+    let (content_count, content_rows, content_row_class) = array_at(table, 0x18)?;
     if row_class != UNLOCK_FLAG_DISPLAY_ROW_CLASS {
         return Err(format!(
             "The installed unlock flag display table has unexpected row class 0x{row_class:08X}"
@@ -196,6 +190,35 @@ pub(super) fn unlock_flag_display_blocks(
             "The installed unlock flag definition and display tables do not match ({} definitions, {count} displays)",
             definitions.len()
         ));
+    }
+    let rows_end = rows
+        .checked_add(
+            count
+                .checked_mul(UNLOCK_FLAG_DISPLAY_ROW_SIZE)
+                .ok_or("Unlock flag display row extent overflowed")?,
+        )
+        .ok_or("Unlock flag display row extent overflowed")?;
+    let content_header = content_rows
+        .checked_sub(16)
+        .ok_or("Unlock flag display content header underflowed")?;
+    let trailer_start = content_header
+        .checked_sub(NESTED_ARRAY_TRAILER.len())
+        .ok_or("Unlock flag display trailer underflowed")?;
+    let content_end = content_rows
+        .checked_add(
+            content_count
+                .checked_mul(UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE)
+                .ok_or("Unlock flag display content extent overflowed")?,
+        )
+        .ok_or("Unlock flag display content extent overflowed")?;
+    if content_count == 0
+        || content_row_class != UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS
+        || rows_end > trailer_start
+        || table[rows_end..trailer_start].iter().any(|byte| *byte != 0)
+        || table.get(trailer_start..content_header) != Some(&NESTED_ARRAY_TRAILER)
+        || content_end != table.len()
+    {
+        return Err("The installed unlock flag display content has an unexpected layout".into());
     }
 
     let mut blocks = Vec::with_capacity(count);
@@ -220,9 +243,12 @@ pub(super) fn unlock_flag_display_blocks(
             .ok_or("Unlock flag display pointer offset overflowed")?;
         let display = relative_offset(pointer, 0, i64_at(table, pointer)?)?;
         let end = display
-            .checked_add(UNLOCK_FLAG_DISPLAY_BLOCK_SIZE)
+            .checked_add(UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE)
             .ok_or("Unlock flag display block offset overflowed")?;
-        if end > table.len() {
+        if display < content_rows
+            || end > content_end
+            || (display - content_rows) % UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE != 0
+        {
             return Err(format!(
                 "Unlock flag display row {index} points outside the table"
             ));

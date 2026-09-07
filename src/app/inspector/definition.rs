@@ -32,11 +32,13 @@ use super::{
 
 mod collections;
 mod controller;
+mod instance;
 mod item;
+mod item_details;
 mod matches;
 mod materials;
 mod progression;
-mod sandbox_perk;
+mod runtime;
 mod state;
 mod unlocks;
 
@@ -50,13 +52,16 @@ use item::draw_hash_item_matches;
 use matches::{CatalogHashMatches, CatalogMatchGroup};
 use materials::{draw_hash_material_requirement_set, draw_hash_material_requirements};
 use progression::draw_hash_progression_matches;
-use sandbox_perk::{draw_hash_sandbox_perk_definition, hash_inspector_uses_wide_summary};
 pub(in crate::app) use state::HashInspectionState;
 use unlocks::draw_hash_unlock_matches;
 
 const HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT: usize = 8;
-const SANDBOX_PERK_NAME_UNRESOLVED_HELP: &str = "No validated package bridge connects this historical sandbox-perk hash to a localized display name. Same-value item hashes are not treated as proof of identity.";
+const HASH_INSPECTOR_WIDE_SUMMARY_WIDTH: f32 = 720.0;
 const TABLE_ROW_GAP: f32 = 2.0;
+
+fn hash_inspector_uses_wide_summary(available_width: f32) -> bool {
+    available_width >= HASH_INSPECTOR_WIDE_SUMMARY_WIDTH
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InspectorProgressionEdit {
@@ -75,7 +80,7 @@ enum InspectorProgressionEdit {
 }
 
 fn hash_state_field(ui: &mut egui::Ui, value: impl Into<String>, tooltip: impl Into<String>) {
-    ui.label(metadata_label_text(ui, "Current state"));
+    ui.label(metadata_label_text(ui, "Current State"));
     ui.add(egui::Label::new(value.into()).wrap())
         .on_hover_text(tooltip.into());
     ui.end_row();

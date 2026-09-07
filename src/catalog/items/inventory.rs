@@ -5,11 +5,17 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
-use super::{
-    super::{
-        Catalog, CatalogSearchQuery,
-        package::{i32_at, u32_at},
+use crate::{
+    investment_schema::{
+        ITEM_INSTANCED_OFFSET as INVENTORY_INSTANCED_OFFSET,
+        ITEM_INVENTORY_SLOT_OFFSET as INVENTORY_BUCKET_ID_OFFSET,
+        ITEM_MAX_STACK_SIZE_OFFSET as INVENTORY_MAX_STACK_SIZE_OFFSET,
     },
+    package_payload::{i32_at, u32_at},
+};
+
+use super::{
+    super::{Catalog, CatalogSearchQuery},
     ItemDef,
 };
 
@@ -20,9 +26,7 @@ const INVENTORY_BUCKET_DESCRIPTOR_SIZE: usize = 36;
 const INVENTORY_BUCKET_FIRST_SLOT_OFFSET: usize = 4;
 const INVENTORY_BUCKET_SLOT_COUNT_OFFSET: usize = 8;
 const INVENTORY_BUCKET_SCOPE_OFFSET: usize = 24;
-const INVENTORY_MAX_STACK_SIZE_OFFSET: usize = 180;
-const INVENTORY_BUCKET_ID_OFFSET: usize = 184;
-const INVENTORY_INSTANCED_OFFSET: usize = 187;
+const SUBCLASS_BUCKET_ID: u8 = 16;
 
 /// Native inventory array selected by an installed bucket descriptor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +45,7 @@ impl InventoryScope {
             Self::Unknown => "Unknown",
             Self::Character => "Character",
             Self::Profile => "Profile",
-            Self::SmallProfile => "Small profile",
+            Self::SmallProfile => "Small Profile",
         }
     }
 
@@ -255,6 +259,7 @@ impl Catalog {
         text: &str,
         class_type: u64,
         show_dummy_items: bool,
+        allow_cross_class_subclasses: bool,
     ) -> impl Iterator<Item = InventoryDefinition<'_>> + '_ {
         let query = CatalogSearchQuery::new(text);
         self.inventory_hashes
@@ -262,7 +267,11 @@ impl Catalog {
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
                 definition.item.is_some_and(|item| {
-                    (item.class_type == 3 || item.class_type == class_type)
+                    (item.class_type == 3
+                        || item.class_type == class_type
+                        || (allow_cross_class_subclasses
+                            && definition.metadata.native_bucket_id == SUBCLASS_BUCKET_ID
+                            && bucket_hash(SUBCLASS_BUCKET_ID) == Some(item.bucket_hash)))
                         && (show_dummy_items || !crate::dummy_items::contains(item.hash))
                 }) && definition.metadata.is_character_inventory_candidate()
                     && query.matches(
@@ -374,6 +383,18 @@ pub(in crate::catalog) fn item_inventory_metadata(
     })
 }
 
+/// The emote collection has no native equipment slot; Sunrise gives this one definition
+/// an explicit emote-slot fallback. Its original native inventory metadata is not rewritten.
+pub(in crate::catalog) const fn item_bucket_hash(hash: u64, bucket: u8) -> Option<u64> {
+    if hash == crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH
+        && bucket == crate::account_contract::EMOTE_COLLECTION_NATIVE_BUCKET
+    {
+        Some(crate::account_contract::EMOTE_BUCKET_HASH)
+    } else {
+        bucket_hash(bucket)
+    }
+}
+
 pub(in crate::catalog) const fn bucket_hash(bucket: u8) -> Option<u64> {
     Some(match bucket {
         0 => 1_498_876_634,
@@ -387,7 +408,7 @@ pub(in crate::catalog) const fn bucket_hash(bucket: u8) -> Option<u64> {
         8 => 4_023_194_814,
         9 => 2_025_709_351,
         10 => 284_967_655,
-        16 => 3_284_755_031,
+        SUBCLASS_BUCKET_ID => 3_284_755_031,
         17 => 4_292_445_962,
         27 => 4_274_335_291,
         41 => 2_401_704_334,
@@ -472,6 +493,21 @@ mod tests {
         let metadata = item_inventory_metadata(&item, &descriptors).unwrap();
         assert_eq!(metadata.stackability, ItemStackability::Instanced);
         assert!(!metadata.is_profile_items_candidate());
+    }
+
+    #[test]
+    fn emote_collection_fallback_is_exact_and_keeps_other_buckets_unchanged() {
+        use crate::account_contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
+        assert_eq!(
+            item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 12),
+            Some(EMOTE_BUCKET_HASH)
+        );
+        assert_eq!(item_bucket_hash(42, 12), None);
+        assert_eq!(item_bucket_hash(42, 49), Some(0x59CA_1EA2));
+        assert_eq!(
+            item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 0),
+            bucket_hash(0)
+        );
     }
 
     #[test]

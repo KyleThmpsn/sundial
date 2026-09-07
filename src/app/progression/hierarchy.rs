@@ -478,10 +478,11 @@ pub(super) fn sort_objective_hierarchy(hierarchy: &mut ObjectiveHierarchy<'_>, s
     }
 
     sort_objective_leaves(&mut hierarchy.leaves, sort);
-    hierarchy.branches.sort_by(|left, right| {
-        canonical_root_position(&left.label)
-            .cmp(&canonical_root_position(&right.label))
-            .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+    hierarchy.branches.sort_by_cached_key(|branch| {
+        (
+            canonical_root_position(&branch.label),
+            branch.label.to_lowercase(),
+        )
     });
     for branch in &mut hierarchy.branches {
         sort_branch(branch, sort);

@@ -4,6 +4,9 @@ const ITEM_HEADER_TITLE_SIZE_DELTA: f32 = 2.0;
 const ITEM_HEADER_ICON_SIZE: f32 = 48.0;
 const ITEM_HEADER_ROW_HEIGHT: f32 = 48.0;
 const ITEM_HEADER_WITH_METADATA_ROW_HEIGHT: f32 = 54.0;
+const ITEM_HEADER_TRAILING_MIN_WIDTH: f32 = 120.0;
+const ITEM_HEADER_TRAILING_MAX_WIDTH: f32 = 160.0;
+const ITEM_HEADER_TRAILING_WIDTH_FRACTION: f32 = 0.36;
 
 pub(crate) fn muted_item_header_fill(ui: &egui::Ui) -> egui::Color32 {
     let [red, green, blue, _] = ui.visuals().panel_fill.to_srgba_unmultiplied();
@@ -19,6 +22,15 @@ pub(crate) fn draw_item_header_with_trailing(
     header: ItemHeader<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
+    draw_item_header_with_trailing_at_icon_size(ui, header, ITEM_HEADER_ICON_SIZE, trailing)
+}
+
+pub(crate) fn draw_item_header_with_trailing_at_icon_size(
+    ui: &mut egui::Ui,
+    header: ItemHeader<'_>,
+    icon_size: f32,
+    trailing: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
     let fill = header.fill;
     egui::Frame::NONE
         .fill(fill)
@@ -30,7 +42,7 @@ pub(crate) fn draw_item_header_with_trailing(
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            draw_item_header_contents(ui, header, true, trailing)
+            draw_item_header_contents(ui, header, icon_size, true, trailing)
         })
         .inner
 }
@@ -50,7 +62,13 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
     header.icon = hash
         .filter(|_| ui.is_rect_visible(header_rect))
         .and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
-    let response = draw_item_header_with_trailing(ui, header, trailing);
+    let badge = item_header_badge(hash);
+    let response = draw_item_header_with_trailing(ui, header, |ui| {
+        if let Some(badge) = badge {
+            draw_item_badge(ui, badge).on_hover_text("Display-only dummy definition");
+        }
+        trailing(ui);
+    });
     let Some(hash) = hash else {
         return response;
     };
@@ -95,9 +113,28 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
     response | card_response | tooltip_response
 }
 
+fn item_header_badge(hash: Option<u64>) -> Option<&'static str> {
+    hash.filter(|hash| crate::dummy_items::contains(*hash))
+        .map(|_| "DUMMY")
+}
+
+pub(crate) fn draw_item_badge(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let color = ui.visuals().warn_fg_color;
+    egui::Frame::NONE
+        .fill(color.gamma_multiply(0.12))
+        .stroke(egui::Stroke::new(0.5, color.gamma_multiply(0.75)))
+        .corner_radius(2)
+        .inner_margin(egui::Margin::symmetric(3, 0))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).size(8.0).strong().color(color))
+        })
+        .response
+}
+
 fn draw_item_header_contents(
     ui: &mut egui::Ui,
     header: ItemHeader<'_>,
+    icon_size: f32,
     has_trailing: bool,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
@@ -261,7 +298,16 @@ fn draw_item_header_contents(
     }
     let row_height = item_header_row_height(ui, header.soid.is_some() || has_trailing);
     let trailing_width = if has_trailing {
-        layout_job_width(ui, &title_hash_job).max(64.0)
+        let main_leading_width = if header.icon.is_some() {
+            icon_size + item_spacing
+        } else {
+            0.0
+        };
+        item_header_trailing_width(
+            ui.available_width(),
+            layout_job_width(ui, &title_hash_job),
+            main_leading_width,
+        )
     } else {
         0.0
     };
@@ -301,11 +347,14 @@ fn draw_item_header_contents(
                         header_response = Some(draw_item_header_main(
                             ui,
                             row_height,
+                            icon_size,
                             header.icon.as_ref(),
-                            title_job,
-                            egui::text::LayoutJob::default(),
-                            subtitle_job,
-                            metadata_job,
+                            ItemHeaderText {
+                                title: title_job,
+                                title_hash: egui::text::LayoutJob::default(),
+                                subtitle: subtitle_job,
+                                metadata: metadata_job,
+                            },
                         ));
                     },
                 );
@@ -313,27 +362,34 @@ fn draw_item_header_contents(
                 header_response = Some(draw_item_header_main(
                     ui,
                     row_height,
+                    icon_size,
                     header.icon.as_ref(),
-                    title_job,
-                    title_hash_job,
-                    subtitle_job,
-                    metadata_job,
+                    ItemHeaderText {
+                        title: title_job,
+                        title_hash: title_hash_job,
+                        subtitle: subtitle_job,
+                        metadata: metadata_job,
+                    },
                 ));
             }
         },
     );
-    (header_response.expect("an item header always draws its main content") | header_area.response)
-        .interact(egui::Sense::click())
+    header_response.expect("an item header always draws its main content") | header_area.response
+}
+
+struct ItemHeaderText {
+    title: egui::text::LayoutJob,
+    title_hash: egui::text::LayoutJob,
+    subtitle: egui::text::LayoutJob,
+    metadata: egui::text::LayoutJob,
 }
 
 fn draw_item_header_main(
     ui: &mut egui::Ui,
     row_height: f32,
+    icon_size: f32,
     icon: Option<&egui::TextureHandle>,
-    title: egui::text::LayoutJob,
-    title_hash: egui::text::LayoutJob,
-    subtitle: egui::text::LayoutJob,
-    metadata: egui::text::LayoutJob,
+    text: ItemHeaderText,
 ) -> egui::Response {
     ui.spacing_mut().item_spacing.x = 4.0;
     let mut response = None;
@@ -342,7 +398,7 @@ fn draw_item_header_main(
             &mut response,
             ui.add(
                 egui::Image::new(icon)
-                    .fit_to_exact_size(egui::vec2(ITEM_HEADER_ICON_SIZE, ITEM_HEADER_ICON_SIZE))
+                    .fit_to_exact_size(egui::vec2(icon_size, icon_size))
                     .maintain_aspect_ratio(true),
             ),
         );
@@ -352,7 +408,15 @@ fn draw_item_header_main(
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), row_height),
             egui::Layout::top_down(egui::Align::Min),
-            |ui| draw_item_header_text(ui, title, title_hash, subtitle, metadata),
+            |ui| {
+                draw_item_header_text(
+                    ui,
+                    text.title,
+                    text.title_hash,
+                    text.subtitle,
+                    text.metadata,
+                )
+            },
         )
         .inner,
     );
@@ -431,6 +495,22 @@ fn layout_job_width(ui: &egui::Ui, job: &egui::text::LayoutJob) -> f32 {
     ui.fonts(|fonts| fonts.layout_job(job.clone()).size().x)
 }
 
+fn item_header_trailing_width(
+    available_width: f32,
+    measured_content_width: f32,
+    main_leading_width: f32,
+) -> f32 {
+    let available_width = available_width.max(0.0);
+    let responsive_width = (available_width * ITEM_HEADER_TRAILING_WIDTH_FRACTION)
+        .clamp(
+            ITEM_HEADER_TRAILING_MIN_WIDTH,
+            ITEM_HEADER_TRAILING_MAX_WIDTH,
+        )
+        .max(measured_content_width);
+    let available_after_leading = (available_width - main_leading_width).max(0.0);
+    responsive_width.min(available_after_leading)
+}
+
 fn item_header_row_height(ui: &egui::Ui, has_metadata: bool) -> f32 {
     let minimum = if has_metadata {
         ITEM_HEADER_WITH_METADATA_ROW_HEIGHT
@@ -452,4 +532,34 @@ fn append_header_text(
     }
     full_text.push_str(text);
     job.append(text, leading_space, format);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_width(actual: f32, expected: f32) {
+        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn dummy_badges_follow_the_canonical_dummy_hash_set() {
+        assert_eq!(item_header_badge(Some(0xC13D_CD47)), Some("DUMMY"));
+        assert_eq!(item_header_badge(Some(0x2E43_BDEE)), None);
+        assert_eq!(item_header_badge(None), None);
+    }
+
+    #[test]
+    fn trailing_width_reserves_room_for_stacked_donor_actions() {
+        assert_width(item_header_trailing_width(320.0, 104.0, 56.0), 120.0);
+        assert_width(item_header_trailing_width(400.0, 104.0, 56.0), 144.0);
+        assert_width(item_header_trailing_width(600.0, 104.0, 56.0), 160.0);
+    }
+
+    #[test]
+    fn trailing_width_honors_long_content_and_narrow_headers() {
+        assert_width(item_header_trailing_width(400.0, 152.0, 56.0), 152.0);
+        assert_width(item_header_trailing_width(150.0, 152.0, 56.0), 94.0);
+        assert_width(item_header_trailing_width(40.0, 80.0, 56.0), 0.0);
+    }
 }

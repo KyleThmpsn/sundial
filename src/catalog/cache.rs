@@ -4,15 +4,14 @@ use std::{collections::HashMap, fs, io::Read, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::orbit_map;
-
 use super::{
-    CollectibleDef, InventoryMetadata, ItemDef, ItemMaterialRequirementSetIndices,
-    ItemPackageMetadata, ItemStatDefinition, MaterialRequirementSetDef, ObjectiveDef,
-    ProgressionDefinition, SandboxPerkDefinition, UnlockDefinition,
+    CollectibleDef, CollectionConditionTokenDef, InventoryMetadata, ItemDef,
+    ItemMaterialRequirementSetIndices, ItemPackageMetadata, ItemStatDefinition, ItemStatGroup,
+    MaterialRequirementSetDef, ObjectiveDef, ObjectiveOwnerTraitDef, ProgressionDefinition,
+    UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 84;
+pub(super) const CACHE_SCHEMA: u32 = 105;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -24,10 +23,9 @@ pub(super) struct CatalogCache {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(test, derive(Default))]
 pub(super) struct CatalogContents {
     pub(super) items: Vec<ItemDef>,
-    pub(super) orbit_backdrops: Vec<String>,
-    pub(super) orbit_map_entries: Vec<orbit_map::Entry>,
     pub(super) names: HashMap<u64, String>,
     pub(super) type_names: HashMap<u64, String>,
     #[serde(default)]
@@ -42,7 +40,14 @@ pub(super) struct CatalogContents {
     pub(super) item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     #[serde(default)]
     pub(super) item_stat_definitions: Vec<ItemStatDefinition>,
-    pub(super) sandbox_perk_definitions: Vec<SandboxPerkDefinition>,
+    pub(super) power_cap_definitions: Vec<super::PowerCapDefinition>,
+    pub(super) item_stat_groups: Vec<ItemStatGroup>,
+    #[serde(default)]
+    pub(super) trait_definitions: Vec<ObjectiveOwnerTraitDef>,
+    #[serde(default)]
+    pub(super) reusable_plug_set_count: usize,
+    #[serde(default)]
+    pub(super) socket_entry_list_count: usize,
     #[serde(default)]
     pub(super) package_names: HashMap<u16, String>,
     #[serde(default)]
@@ -51,6 +56,7 @@ pub(super) struct CatalogContents {
     pub(super) unlock_flag_definitions: Vec<UnlockDefinition>,
     pub(super) unlock_value_definitions: Vec<UnlockDefinition>,
     pub(super) collectibles: Vec<CollectibleDef>,
+    pub(super) shared_expression_pool: Vec<Vec<CollectionConditionTokenDef>>,
     pub(super) material_requirement_sets: Vec<MaterialRequirementSetDef>,
     pub(super) item_material_requirement_set_indices:
         HashMap<u64, ItemMaterialRequirementSetIndices>,

@@ -8,6 +8,16 @@ pub(super) const TABLE_CELL_HEIGHT: f32 = 24.0;
 pub(super) const TABLE_COLUMN_GAP: f32 = 12.0;
 pub(super) const HIERARCHY_INDENT: f32 = 14.0;
 
+// Destiny's transparent perk glyphs are authored in white. Keep their native
+// colors, but provide a dark plate when the surrounding application is light.
+pub(super) fn package_icon_backdrop(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::TRANSPARENT
+    } else {
+        egui::Color32::from_gray(55)
+    }
+}
+
 pub(super) fn destiny_text_font_family() -> egui::FontFamily {
     egui::FontFamily::Name(DESTINY_TEXT_FONT_FAMILY.into())
 }
@@ -22,7 +32,7 @@ pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui:
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
         .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(8, 6))
+        .inner_margin(egui::Margin::symmetric(8, 3))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(add_contents).inner

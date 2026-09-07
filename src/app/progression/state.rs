@@ -35,15 +35,15 @@ impl UnlockTable {
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::AccountFlagRuns => "Account acquired flags",
-            Self::ProfileFlagRuns => "Profile unlock flags",
-            Self::CharacterFlags => "Character flags",
-            Self::ObjectiveValues => "Account objective values",
-            Self::CharacterObjectFlagRuns => "Character object acquired flags",
-            Self::CharacterObjectObjectiveValues => "Character object objective values",
-            Self::AccountProgressions => "Account progressions",
-            Self::CharacterProgressions => "Character progressions",
-            Self::UnreplicatedProgressions => "Unreplicated progressions",
+            Self::AccountFlagRuns => "Account Acquired Flags",
+            Self::ProfileFlagRuns => "Profile Unlock Flags",
+            Self::CharacterFlags => "Character Flags",
+            Self::ObjectiveValues => "Account Objective Values",
+            Self::CharacterObjectFlagRuns => "Character Object Acquired Flags",
+            Self::CharacterObjectObjectiveValues => "Character Object Objective Values",
+            Self::AccountProgressions => "Account Progressions",
+            Self::CharacterProgressions => "Character Progressions",
+            Self::UnreplicatedProgressions => "Unreplicated Progressions",
         }
     }
 
@@ -81,8 +81,8 @@ impl InvestmentTable {
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::FlagOverrides => "Unlock flag overrides",
-            Self::ValueOverrides => "Unlock value overrides",
+            Self::FlagOverrides => "Unlock Flag Overrides",
+            Self::ValueOverrides => "Unlock Value Overrides",
         }
     }
 

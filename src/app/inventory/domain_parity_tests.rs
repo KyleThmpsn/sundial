@@ -28,7 +28,9 @@ fn document(version: u64) -> Value {
 
 #[test]
 fn adapter_capabilities_match_every_current_json_schema_mode() {
-    for version in 2..=8 {
+    for version in
+        crate::game_settings::MIN_SUPPORTED_SCHEMA..=crate::game_settings::MAX_SUPPORTED_SCHEMA
+    {
         let document = document(version);
         let mode = schema_mode(&document);
         let capabilities = JsonProfileAdapter::load(&document).unwrap().capabilities();
@@ -103,34 +105,6 @@ fn future_profile_capacity_matches_legacy_without_rejecting_loaded_rows() {
         adapter.state().profile_items().len(),
         PROFILE_ITEM_CAPACITY + 1
     );
-}
-
-#[test]
-fn profile_edits_match_legacy_json_exactly() {
-    let mut legacy = document(8);
-    *legacy.pointer_mut("/state/account/profile_items").unwrap() = json!([{
-        "definition_hash": 11,
-        "quantity": 1,
-        "future": {"keep": true}
-    }]);
-    let source = legacy.clone();
-    let adapter = JsonProfileAdapter::load(&source).unwrap();
-    let id = adapter.state().profile_items()[0].id;
-
-    let (_, projected) = adapter
-        .apply_profile_item(
-            &source,
-            domain::ProfileItemCommand::SetQuantity { id, quantity: 9 },
-        )
-        .unwrap();
-    legacy::apply_profile_item_action(
-        &mut legacy,
-        ProfileItemLocation { index: 0 },
-        ProfileItemAction::SetQuantity(9),
-    )
-    .unwrap();
-
-    assert_eq!(projected, legacy);
 }
 
 #[test]

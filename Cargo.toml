@@ -1,8 +1,12 @@
 [package]
 name = "sundial"
-version = "0.3.4"
+version.workspace = true
 edition = "2024"
 rust-version = "1.88"
+autobins = false
+# Diagnostic examples are local, ignored files rather than build targets.
+autoexamples = false
+build = false
 license = "GPL-3.0-only"
 description = "A local Project Sunrise character and loadout settings editor"
 repository = "https://github.com/kylethmpsn/sundial"
@@ -10,9 +14,21 @@ readme = "README.md"
 publish = false
 
 [workspace]
-members = ["crates/sundial-account"]
-default-members = [".", "crates/sundial-account"]
+members = [
+    "crates/sundial-account",
+    "crates/sundial-suite",
+    "crates/parhelion",
+]
+default-members = [
+    ".",
+    "crates/sundial-account",
+    "crates/sundial-suite",
+    "crates/parhelion",
+]
 resolver = "2"
+
+[workspace.package]
+version = "0.4.0"
 
 [workspace.lints.clippy]
 cognitive_complexity = "deny"
@@ -28,32 +44,34 @@ unsafe_op_in_unsafe_fn = "deny"
 workspace = true
 
 [features]
-default = ["sqlite-account"]
+default = []
+# Retired Sunrise PR 88 prototype, retained for development and regression tests.
+# Do not enable in distributed builds; the eventual upstream contract must be re-audited.
 sqlite-account = ["dep:rusqlite"]
 
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui-phosphor = "0.9.0"
 directories = "6.0.0"
+fs2 = "0.4.3"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10.9"
 sundial-account = { path = "crates/sundial-account" }
 rfd = "0.15.4"
 rusqlite = { version = "0.37.0", features = ["backup", "bundled"], optional = true }
-tiger-pkg = "0.21.0"
+tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
+# Keep timestamp formatting compatible with our Rust 1.88 minimum.
+time = { version = "=0.3.44", features = ["formatting"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-sha2 = "0.10.9"
 winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
 windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-
-[build-dependencies]
-winresource = "0.1.31"
 
 [profile.release]
 strip = true

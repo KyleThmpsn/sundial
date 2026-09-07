@@ -153,15 +153,23 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
 }
 
 fn unlock_flag_display_table(hash: u32) -> Vec<u8> {
-    const HEADER: usize = 32;
-    const ROW: usize = HEADER + 16;
-    const DISPLAY: usize = 80;
+    const HEADER: usize = 0x30;
+    const ROW: usize = 0x40;
+    const CONTENT_HEADER: usize = 0x60;
+    const DISPLAY: usize = 0x70;
 
-    let mut table = vec![0_u8; DISPLAY + UNLOCK_FLAG_DISPLAY_BLOCK_SIZE];
+    let mut table = vec![0_u8; DISPLAY + UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE];
     table[8..16].copy_from_slice(&1_u64.to_le_bytes());
     table[16..24].copy_from_slice(&((HEADER - 16) as i64).to_le_bytes());
+    table[0x18..0x20].copy_from_slice(&1_u64.to_le_bytes());
+    table[0x20..0x28].copy_from_slice(&((CONTENT_HEADER - 0x20) as i64).to_le_bytes());
     table[HEADER..HEADER + 8].copy_from_slice(&1_u64.to_le_bytes());
     table[HEADER + 8..HEADER + 12].copy_from_slice(&UNLOCK_FLAG_DISPLAY_ROW_CLASS.to_le_bytes());
+    table[CONTENT_HEADER - NESTED_ARRAY_TRAILER.len()..CONTENT_HEADER]
+        .copy_from_slice(&NESTED_ARRAY_TRAILER);
+    table[CONTENT_HEADER..CONTENT_HEADER + 8].copy_from_slice(&1_u64.to_le_bytes());
+    table[CONTENT_HEADER + 8..CONTENT_HEADER + 12]
+        .copy_from_slice(&UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS.to_le_bytes());
     table[ROW..ROW + 4].copy_from_slice(&hash.to_le_bytes());
     table[ROW + 4..ROW + 8].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
     table[ROW + UNLOCK_FLAG_DISPLAY_POINTER_OFFSET..ROW + UNLOCK_FLAG_DISPLAY_POINTER_OFFSET + 8]
@@ -196,19 +204,19 @@ fn unlock_flag_displays_validate_aligned_hashes_and_relative_blocks() {
 
     assert_eq!(
         unlock_flag_display_blocks(&table, std::slice::from_ref(&definition)),
-        Ok(vec![80])
+        Ok(vec![112])
     );
 
     let mut wrong_hash = table.clone();
-    wrong_hash[48..52].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
+    wrong_hash[64..68].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
     assert!(unlock_flag_display_blocks(&wrong_hash, &[definition.clone()]).is_err());
 
     let mut wrong_class = table.clone();
-    wrong_class[40..44].copy_from_slice(&0_u32.to_le_bytes());
+    wrong_class[56..60].copy_from_slice(&0_u32.to_le_bytes());
     assert!(unlock_flag_display_blocks(&wrong_class, &[definition.clone()]).is_err());
 
     let mut outside = table;
-    outside[56..64].copy_from_slice(&i64::MAX.to_le_bytes());
+    outside[72..80].copy_from_slice(&i64::MAX.to_le_bytes());
     assert!(unlock_flag_display_blocks(&outside, &[definition.clone()]).is_err());
     assert!(
         unlock_flag_display_blocks(&unlock_flag_display_table(definition.hash as u32), &[])
@@ -334,17 +342,19 @@ fn repeated_objective_owners_merge_richer_package_metadata() {
 #[test]
 fn condition_references_retain_the_complete_package_program() {
     let mut rows = vec![0_u8; 24];
-    for (index, (kind, operand)) in [(1_u32, 3_u32), (12, 77), (10, 9)].into_iter().enumerate() {
+    for (index, (kind, operand)) in [(1_u8, 3_u16), (12, 77), (10, 9)].into_iter().enumerate() {
         let row = index * CONDITION_EXPRESSION_ROW_SIZE;
-        rows[row..row + 4].copy_from_slice(&kind.to_le_bytes());
-        rows[row + 4..row + 8].copy_from_slice(&operand.to_le_bytes());
+        rows[row] = kind;
+        rows[row + 1..row + 4].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
+        rows[row + 4..row + 6].copy_from_slice(&operand.to_le_bytes());
+        rows[row + 6..row + 8].copy_from_slice(&[0xDD, 0xEE]);
     }
 
     let references = condition_references_from_rows(&rows, 0, 3).unwrap();
 
     assert_eq!(references.flags, vec![3]);
     assert_eq!(references.values, vec![9]);
-    assert_eq!(references.objectives, vec![77]);
+    assert_eq!(references.pool_rows, vec![77]);
     assert_eq!(
         references.programs[0]
             .iter()
@@ -389,7 +399,7 @@ fn objective_conditions_use_row_plus_08_and_ignore_plus_10_decoy() {
         ConditionReferences {
             flags: vec![3],
             values: Vec::new(),
-            objectives: Vec::new(),
+            pool_rows: Vec::new(),
             programs: vec![vec![[CONDITION_FLAG_KIND, 3]]],
         }
     );

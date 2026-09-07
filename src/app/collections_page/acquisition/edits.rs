@@ -12,8 +12,9 @@ use super::{
         UiState,
     },
     ACQUISITION_CONDITION_FIELD, AcquisitionState, FLAG_INSTRUCTION, LITERAL_INSTRUCTION,
-    OBJECTIVE_INSTRUCTION, VALUE_INSTRUCTION, acquisition_status,
+    VALUE_INSTRUCTION, acquisition_status,
     expression::evaluate_expression_with,
+    for_each_expression_token,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,14 +28,10 @@ fn collection_state_references(
     catalog: &Catalog,
 ) -> Vec<(bool, usize)> {
     let mut references = Vec::new();
-    for token in tokens {
+    for_each_expression_token(tokens, catalog, |token| {
         let reference = match token.kind {
             FLAG_INSTRUCTION => Some((true, token.operand as usize)),
             VALUE_INSTRUCTION => Some((false, token.operand as usize)),
-            OBJECTIVE_INSTRUCTION => catalog
-                .objective_definition(token.operand as usize)
-                .and_then(|objective| objective.related_unlock_value_definition_index)
-                .map(|index| (false, usize::from(index))),
             _ => None,
         };
         if let Some(reference) = reference
@@ -42,7 +39,7 @@ fn collection_state_references(
         {
             references.push(reference);
         }
-    }
+    });
     references
 }
 
@@ -51,7 +48,7 @@ fn collection_value_candidates(
     catalog: &Catalog,
 ) -> Vec<i32> {
     let mut candidates = vec![0, 1];
-    for token in tokens {
+    for_each_expression_token(tokens, catalog, |token| {
         if token.kind == LITERAL_INSTRUCTION {
             let literal = token.operand as i32;
             candidates.extend([
@@ -60,16 +57,7 @@ fn collection_value_candidates(
                 literal.saturating_add(1),
             ]);
         }
-        if token.kind == OBJECTIVE_INSTRUCTION
-            && let Some(objective) = catalog.objective_definition(token.operand as usize)
-        {
-            candidates.extend([
-                objective.completion_value,
-                objective.completion_value.saturating_sub(1),
-                objective.completion_value.saturating_add(1),
-            ]);
-        }
-    }
+    });
     candidates.sort_unstable();
     candidates.dedup();
     candidates
@@ -134,7 +122,7 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
     let desired = match current {
         AcquisitionState::Acquired => false,
         AcquisitionState::Missing => true,
-        AcquisitionState::NoRule | AcquisitionState::Unknown => return false,
+        AcquisitionState::Unknown => return false,
     };
     let edit_available =
         collectible_acquisition_edit_available(definition, snapshot, catalog, desired);
@@ -146,9 +134,9 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
     let response = ui
         .add_enabled(edit_available, egui::Button::new(label))
         .on_hover_text(if edit_available {
-            "Update the referenced Sunrise state and verify the acquisition condition"
+            "Update the referenced Sunrise state and verify the local condition. Shared state can affect other content, and native progression may reassert some flags."
         } else {
-            "No reversible Sunrise state edit can produce this acquisition state"
+            "No supported edit was found within Sundial's bounded acquisition search"
         });
     let mut changed = false;
     if response.clicked() {
@@ -158,7 +146,7 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
             Ok(()) => {
                 let result = if desired { "Acquired" } else { "Missing" };
                 state.mutation_feedback =
-                    Some((false, format!("Acquisition state set to {result}")));
+                    Some((false, format!("Authored acquisition state set to {result}")));
                 changed = true;
             }
             Err(error) => state.mutation_feedback = Some((true, error)),
@@ -190,8 +178,10 @@ pub(in crate::app) fn set_collectible_acquisition_state(
     catalog: &Catalog,
     desired: bool,
 ) -> Result<(), String> {
-    let edits = collection_state_edits(definition, snapshot, catalog, desired)
-        .ok_or_else(|| "No reversible Sunrise state edit is available".to_owned())?;
+    let edits =
+        collection_state_edits(definition, snapshot, catalog, desired).ok_or_else(|| {
+            "No supported edit was found within Sundial's bounded acquisition search".to_owned()
+        })?;
     apply_collection_state_edits(document, definition, catalog, desired, &edits)
 }
 
@@ -235,6 +225,7 @@ fn collection_state_edits(
     enumerate_collection_edits(&options, 0, &mut Vec::new(), &mut |candidate| {
         let result = evaluate_expression_with(
             &condition.tokens,
+            catalog.shared_expression_pool(),
             |index| {
                 candidate
                     .iter()
@@ -265,7 +256,6 @@ fn collection_state_edits(
                         snapshot.value(index, definition)
                     })
             },
-            |index| objective_completion_with_edits(index, candidate, snapshot, catalog),
         );
         if result != Some(desired) {
             return;
@@ -303,32 +293,6 @@ fn enumerate_collection_edits(
         enumerate_collection_edits(options, index + 1, current, visit);
         current.pop();
     }
-}
-
-fn objective_completion_with_edits(
-    index: usize,
-    edits: &[CollectionStateEdit],
-    snapshot: &CollectionStateSnapshot,
-    catalog: &Catalog,
-) -> Option<bool> {
-    let objective = catalog.objective_definition(index)?;
-    let definition_index = usize::from(objective.related_unlock_value_definition_index?);
-    let definition = catalog.unlock_value_definition(definition_index)?;
-    let current = edits
-        .iter()
-        .find_map(|edit| match edit {
-            CollectionStateEdit::Value {
-                definition_index: edit_index,
-                value,
-            } if *edit_index == definition_index => Some(*value),
-            _ => None,
-        })
-        .or_else(|| snapshot.value(definition_index, definition))?;
-    Some(if objective.is_counting_downward {
-        current <= objective.completion_value
-    } else {
-        current >= objective.completion_value
-    })
 }
 
 fn collection_edit_changes_state(

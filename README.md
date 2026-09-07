@@ -1,218 +1,162 @@
-# [Sundial](https://github.com/kylethmpsn/sundial)
+# Sundial
 
 <img src="assets/sundial-alt.png" alt="Sundial logo" width="160">
 
-Sundial is a quick, simple GUI for editing
-[Project Sunrise](https://github.com/stanuwu/Sunrise)'s characters, loadouts,
-inventory, and game settings.
+Sundial is a character, inventory, and settings editor for
+[Project Sunrise](https://github.com/stanuwu/Sunrise).
+It edits `settings.json` and reads item names, icons, and stats from your installed
+Destiny 2 packages. No game assets are bundled.
 
-Edit any of the three default characters' weapons, subclass abilities, armor,
-Ghost shells, Sparrows, ships, emblems, character properties, and more. You can
-also adjust the plugs and perks installed on supported items, equip exotics in
-every slot, or use the unsafe selection modes to experiment with unsupported
-combinations. (Never forget the Craftening!)
-
-Edit the player name and game defaults from the Game settings page. Project
-Sunrise applies these settings when loading into Destiny 2, and Sundial limits
-guided values to the accepted ranges.
-
-Sundial reads item and ability data from your installed Shadowkeep packages to
-provide searchable and browsable choices for each equipment slot, subclass
-ability, and item socket. A small embedded table supplies names for armor plugs
-that the game files leave generic. No full manifest database or Destiny assets
-are bundled.
+- Edit characters, equipment, subclasses, and inventories.
+- Search weapons, armor, cosmetics, and perks.
+- Randomize loadouts and adjust armor stats.
+- Change game settings, progression, and Collections.
+- Use the JSON editor for settings not covered by the guided interface.
+- Create custom weapons with Parhelion.
 
 ## Compatibility
 
-Sundial is designed for:
+- Destiny 2 Shadowkeep build `86657.20.08.23`
+- Project Sunrise (up to settings schema v16)
+- Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
-- Project Sunrise 0.1 through 0.3.2 (schema v6), with settings support through
-  schema v8, using Destiny 2 Shadowkeep build `86657.20.08.23`
-- Windows 10 or later (x86-64) and Linux x86-64
+Newer settings schemas may be opened with a warning, but future compatibility is not guaranteed.
 
-Sundial handles the known differences between Sunrise settings schemas.
-Newer schemas display a warning and may be opened with caution. Sundial keeps
-recognized fields editable and preserves unrecognized JSON, but future
-compatibility is not guaranteed.
+## Getting started
 
-This development branch also recognizes the exact SQLite account contract from
-Sunrise PR 88 commit `5a5583ab0cc4244bca11974a928bdc1a0b49f4b7`. Missing, empty, or
-uninitialized databases retain the existing JSON behavior for older Sunrise
-builds. A compatible database becomes authoritative for account data; an
-incompatible or corrupt database blocks account editing rather than falling
-back to possibly stale JSON account data.
+1. Download the build for your platform from [Releases](https://github.com/kylethmpsn/sundial/releases).
+2. Run `sundial.exe` on Windows or `sundial` on Linux.
+3. Choose the Destiny 2 installation you use with Project Sunrise.
 
-## Features
+The first launch scans the game packages. Later launches use a cached catalog.
+Sundial rebuilds it when the package set changes. You can also rebuild it under
+**Preferences > Sunrise**
 
-- Guided character properties, subclasses, attunements, and attunement-aware
-  ability choices
-- Search and browse for equipment, plugs, and perks, with options to show dummy
-  items or equip plugs not normally allowed on an item
-- Random Item and loadout generation
-- Armor-stat targeting for individual items and full loadouts
-- Character and profile (shared) inventory editing, including moving exact item
-  instances between character inventory and equipment slots
-- Remove equipped weapons completely (great for screenshots!)
-- Automatic subclass, ability, and armor defaults when changing class
-- Player name editing, named key-binding editing, and guided
-  controls for supported game settings
-- A straightforward JSON editor for anything not covered by the guided interface
-- Preservation of unrecognized data, with warnings and extra safety copies for
-  unexpected settings
-- Automatic backups with optional per-source retention, version-matched Sunrise
-  default restoration, and a locally cached catalog for faster startup
-- Source-aware account persistence with no automatic mirroring between
-  `settings.json` and `state.sqlite3`
-- Guided restoration of verified SQLite account backups, with an integrity-checked snapshot of the
-  database being replaced
+On Linux, the first package scan downloads a hash-verified decompression helper
+(`liblinoodle3.so`). The Linux archive also includes an
+optional `install.sh` for adding Sundial to your application launcher.
 
-Sundial automatically rebuilds its catalog after an app update or if the
-installed package files change. You can also rebuild it manually from
-**Preferences > Paths**.
+Close Destiny 2 before saving account changes, restoring backups, or installing
+custom packages. Relaunch the game afterward to load your changes.
 
-## Usage
+## Parhelion
 
-On Windows, download the ZIP or `sundial.exe` from
-[Releases](https://github.com/kylethmpsn/sundial/releases), extract if needed,
-and run it.
+Parhelion is an experimental custom investment global package builder bundled
+with Sundial (basically, a weapons workbench). It builds custom weapons by combining
+existing items, perks, stats, and appearance sources. Enable it under
+**Preferences > Editing > Experimental**, then choose **Open Parhelion**.
+Recipes can be saved and shared with others as JSON files.
 
-On Linux, download the Linux tarball, extract it, and run `sundial`. The bundled
-`install.sh` optionally adds Sundial to your application launcher. Linux
-releases require glibc 2.35 or newer.
+Each install replaces the previous Parhelion package set, so include every recipe
+you want to keep. Some combinations may not work and can freeze or crash the game.
+Stock packages are not modified. Use **Uninstall Custom Packages…** to remove
+Parhelion's installed package set. You can also remove its items and progression
+from the selected account. Don't manually delete or mix individual package files.
 
-On first launch, select the root of the Destiny 2 installation you use for
-Project Sunrise. Sundial reads the installed packages to build its catalog and
-selects the account source for that installation. **Preferences > Paths and
-catalog** shows the detected `state.sqlite3` path, active account source, and
-format contract.
+See the [Parhelion README](crates/parhelion/README.md) for more about the authoring
+workflow.
 
-### Data locations
+## Backups and local files
+
+Sundial backs up settings before saving, checks for outside changes, and preserves
+unknown JSON fields. Backups are kept separately for each installation. Open the
+backup folder or reset settings under **Preferences > Saving & recovery**.
 
 | Data | Windows | Linux |
 | --- | --- | --- |
 | Preferences | `%LOCALAPPDATA%\Sundial\preferences.json` | `${XDG_CONFIG_HOME:-~/.config}/sundial/preferences.json` |
 | Backups | `%LOCALAPPDATA%\Sundial\backups` | `${XDG_DATA_HOME:-~/.local/share}/sundial/backups` |
-| Catalog | `%LOCALAPPDATA%\Sundial\catalog\d2sk-86657.json` | `${XDG_CACHE_HOME:-~/.cache}/sundial/catalog/d2sk-86657.json` |
-| Linux helper | Not used | `${XDG_CACHE_HOME:-~/.cache}/sundial/runtime/linoodle3-0167cfd2/liblinoodle3.so` |
-
-Before each save, Sundial confirms each changed source has not changed outside
-the app and creates timestamped backups. When Sundial regains focus with no
-unsaved edits and Destiny 2 is closed, it refreshes changed Sunrise data before
-the next edit begins. SQLite account saves are transactional, require Destiny 2
-to be closed, and use a verified SQLite-native backup.
-Unexpected JSON files also receive a same-folder `settings.json.bak` safety
-copy. Unrelated JSON fields are preserved. The optional save-review gate and
-automatic-backup retention are disabled by default. Retention never deletes
-recovery snapshots or manual safety copies. Preferences places reset and restore
-actions beside their corresponding Sunrise paths and provides **Browse backups…**;
-Sundial never synchronizes account data between sources.
-
-## Building from source
-
-Build the standalone executable with Rust 1.88 or newer and Cargo:
-
-```text
-cargo build --release
-```
-
-The result is `target\release\sundial.exe` on Windows or
-`target/release/sundial` on Linux. Linux builds support both X11 and Wayland.
+| Catalog cache | `%LOCALAPPDATA%\Sundial\catalog` | `${XDG_CACHE_HOME:-~/.cache}/sundial/catalog` |
+| Parhelion | `%LOCALAPPDATA%\Sundial\parhelion` | `${XDG_DATA_HOME:-~/.local/share}/sundial/parhelion` |
+| Activity logs | `%LOCALAPPDATA%\Sundial\logs` | `${XDG_DATA_HOME:-~/.local/share}/sundial/logs` |
 
 ## Frequently asked questions
 
 ### Can I use Sundial with the current live version of Destiny 2?
 
-No. Sundial supports only the Project Sunrise Shadowkeep versions listed under
+No. Sundial supports the Project Sunrise Shadowkeep version listed under
 **Compatibility**, not the current live game.
 
 ### Does Sundial change my loadout while Destiny 2 is running?
 
 No. After saving changes, fully exit Destiny 2 to the desktop and relaunch it
-for Project Sunrise to load them. For live in-game equipment editing, check out
-[Sunrise Gear Editor](https://github.com/WalterGerig/SunriseGearEditor), a
-separate project.
+for Project Sunrise to load them. Close the game before saving to avoid conflicts
+with its own settings writes. For live in-game equipment editing, check out
+[Sunrise Gear Editor](https://github.com/WalterGerig/SunriseGearEditor), a separate
+project.
 
 ### What do the plug-safety levels do?
 
-**Compatible** shows plugs known to work with the item (i.e. would normally
-appear on that item in game). **Socket type** includes all discovered plugs
-matching that socket type. **Gear type** broadens the
-selection to plugs found on the same general kind of gear, and **All** allows
-every discovered plug regardless of compatibility. Risk increases at each
-level; incompatible choices may cause loading failures or crashes. Sundial
-warns before enabling **All**. Every save is backed up, and
-Preferences can restore the relevant JSON defaults or a verified SQLite account
-backup beside its corresponding Sunrise path.
+These control how broadly Sundial searches for plugs, not whether an experimental
+combination is guaranteed to work:
 
-### Why does Destiny 2 send me to character creation?
+| Mode | Choices shown |
+| --- | --- |
+| Compatible | Plugs listed as supported by the item. |
+| Socket + gear type (default) | Plugs matching both the socket and the kind of gear. |
+| Socket type | Plugs matching the socket, even if not supported by this item. |
+| Gear type | Plugs found on the same broad kind of gear, regardless of socket. |
+| All | Every discovered plug, regardless of compatibility. |
 
-Sunrise may do this when a character contains an invalid or incompatible
-configuration, especially a mismatched subclass, attunement, super, or melee
-combination. Fully exit Destiny 2, open the file in Sundial, and save it again;
-Sundial repairs the known ability pairings during save. If the problem remains,
-reselect that character's class, subclass, and attunement before saving.
-
-If all else fails, open Preferences. JSON-account installations can reset the
-Sunrise settings beside the settings path; SQLite-account installations can
-restore a verified account database backup beside the database path. Earlier
-saves remain available through **Browse backups…**.
+Broader choices can cause loading failures or crashes. Sundial warns before
+enabling **All**. Backups are still created when saving experimental selections.
 
 ### Can I undo a change after saving?
 
-Sundial creates a timestamped backup before every save. Backups are stored in
-the platform-native data location above. Unexpected files also receive a
-`settings.json.bak` beside the original. Verified `state.sqlite3` backups can be restored from
-Preferences beside the database path; the database being replaced is preserved again before
-restoration.
+Sundial saves a timestamped backup before writing changes. Use
+**Preferences > Saving & recovery > Browse backups…** to find earlier copies for
+your installation. Close Destiny before restoring one. Resetting to Sunrise
+defaults also backs up your current settings first.
 
-### Why does the first launch take longer, and does Sundial download Destiny data?
+Settings backups and Parhelion package backups are separate. Restoring settings
+does not undo an installed custom package set. See
+[Parhelion recovery](crates/parhelion/README.md#backups-and-recovery).
 
-Sundial scans your existing Shadowkeep packages to build a local catalog; it
-does not download or include Destiny game data. On Linux, the first scan also
-downloads a verified `liblinoodle3.so` helper. Later launches use the cached
-catalog unless the package files change or you rebuild it. Sundial includes a
-small definition list for armor plugs whose manifest names are missing or
-generic, including derived stat allocations.
+### Why is the first launch slower?
 
-### What should I do if I find a weird edge case?
+Sundial builds its catalog from your existing game packages, then caches it.
+It does not download a Destiny manifest or game assets. On Linux, the first scan
+also downloads the verified decompression helper described above.
 
-Please send me a copy of the affected `settings.json` if you are comfortable
-sharing it. There are many possible character and loadout combinations that
-cannot all be anticipated, and a real example may help reproduce the problem
-and fix it for future releases. You can reach me on Discord or Twitter/X at
-`kylethmpsn`.
+### What should I include when reporting a problem?
 
-## Credits and licensing
+Describe the steps, Sundial/Sunrise versions, and any error message or screenshot.
+A copy of your `settings.json` may help reproduce issues, but remove private
+account details and server credentials before sharing it publicly.
+For a custom weapon, include its recipe and explain what happens in-game.
 
-[tiger-pkg](https://github.com/v4nguard/tiger-pkg) does most of the work required
-to parse the packages from the locally installed game files. Package-layout
-behavior was also informed by the Sunrise and Charm projects.
+Report bugs through [GitHub Issues](https://github.com/kylethmpsn/sundial/issues).
+You can also reach me on Discord or Twitter/X as `kylethmpsn`.
 
-Thanks to [Kjam0678](https://github.com/Kjam0678/panoptes/) for their work on
-the Panoptes fork, which inspired Sundial's Panoptes-style socket grid layout
-and Randomize Loadout features.
+## Building
 
-Thanks to xSkullHD for the original Random Item design and contributions to
-Sundial's armor stat targeting.
+Requires Rust 1.88 or later.
 
-Thanks to Nox for his help in researching
-[unnamed armor plugs](https://docs.google.com/spreadsheets/d/1U2DNRla6--q8PbU41QcqT2ku50hq5ew8uxy7r1tKe4c/edit).
-Stat values were verified against Shadowkeep manifest
-`86657.20.08.23.1800-9`; locally resolved game data takes priority.
+```sh
+cargo build --release --locked -p sundial-suite
+```
 
-Sundial was built with assistance from AI and reviewed by a real person. If you
-are not comfortable with the use of AI in programming, you may want to avoid
-this project.
+The executable is `target/release/sundial.exe` on Windows or
+`target/release/sundial` on Linux.
 
-Sundial is licensed under GPL-3.0-only. `tiger-pkg` and its Linoodle helper are
-MIT-licensed. See `THIRD_PARTY_NOTICES.md` in the release bundle for dependency
-notices. No Bungie code, databases, or game assets are distributed with
-Sundial.
+## Credits and license
 
-This project is not affiliated with or endorsed by Bungie Inc. or Sony
-Interactive Entertainment. Destiny and related intellectual property are owned
-by Bungie Inc. and their respective rights holders.
+[tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2
+package reader. This project would not be possible without it. Package-layout
+research was also informed by Sunrise and Charm.
 
-If you would like to support
-[Project Sunrise](https://github.com/stanuwu/Sunrise), please direct that
-support to stanuwu for their work on the project.
+[Kjam's Panoptes fork](https://github.com/Kjam0678/panoptes/) inspired the
+socket-grid layout and Randomize Loadout features. xSkullHD contributed the
+original Random Item design and work on armor-stat targeting. Nox helped research
+unnamed armor plugs and their stat allocations.
+
+Solus created the Project Sunrise logo used in Parhelion's badge and inspired
+its watermark.
+
+Licensed under GPL-3.0-only. Third-party notices are included in release builds.
+This project is not affiliated with Bungie Inc. or Sony Interactive Entertainment.
+Destiny 2 and its related IP are property of Bungie Inc.
+Built with AI assistance and human review.
+
+Project Sunrise is a separate project. Please direct support for its development
+to [stanuwu](https://github.com/stanuwu/Sunrise).

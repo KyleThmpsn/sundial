@@ -95,17 +95,20 @@ fn power_input_uses_the_item_cap_or_build_fallback() {
 #[test]
 fn experimental_power_input_can_exceed_the_item_cap() {
     assert_eq!(effective_power_input_max(Some(1_310), false), 1_310);
-    assert!(effective_power_input_max(Some(1_310), true) > i64::from(i32::MAX));
+    assert_eq!(effective_power_input_max(Some(1_310), true), 2_147_483_640);
     assert_eq!(
         authored_item_level(effective_power_input_max(Some(1_310), true)),
-        Some(i64::from(i32::MAX))
+        Some(214_748_364)
     );
 }
 
 #[test]
-fn new_inventory_items_use_their_power_cap() {
-    assert_eq!(new_inventory_item_level(0, Some(1_310)), 131);
-    assert_eq!(new_inventory_item_level(7, Some(1_360)), 136);
+fn new_inventory_items_start_at_default_power_within_their_cap() {
+    assert_eq!(new_inventory_item_level(0, Some(1_310)), 106);
+    assert_eq!(new_inventory_item_level(7, Some(1_360)), 106);
+    assert_eq!(new_inventory_item_level(0, Some(999_990)), 106);
+    assert_eq!(new_inventory_item_level(0, Some(1_010)), 101);
+    assert_eq!(item_power_input_max(Some(999_990)), 999_990);
     assert_eq!(new_inventory_item_level(0, None), 106);
     assert_eq!(new_inventory_item_level(8, Some(1_360)), 0);
 }

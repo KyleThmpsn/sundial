@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use crate::{app::SLOTS, hash::parse_unsigned_value};
+use crate::hash::parse_unsigned_value;
 
 use super::{
     fields::format_instance_soid,
@@ -134,7 +134,9 @@ pub(in crate::app::inventory) fn visit_equipment_soids(
             continue;
         }
         let item_path = format!("{path}/{slot}");
-        let known_slot = SLOTS.iter().any(|(known_slot, _, _)| *known_slot == slot);
+        let known_slot = crate::account_contract::ALL_EQUIPMENT_SLOTS
+            .iter()
+            .any(|(known_slot, _, _)| *known_slot == slot);
         if future_schema && !known_slot {
             if let Some(soid) = value
                 .as_object()

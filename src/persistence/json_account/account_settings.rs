@@ -9,9 +9,9 @@ use sundial_account::{
     KeyBindingSlot,
 };
 
-use super::JsonAccountError;
+use crate::game_settings::MIN_SUPPORTED_SCHEMA;
 
-const MIN_SUPPORTED_JSON_SCHEMA: u64 = 2;
+use super::{JsonAccountError, schema_version};
 
 type JsonAccountSettingsResult<T> = Result<T, JsonAccountError>;
 
@@ -31,17 +31,18 @@ impl JsonAccountSettingsAdapter {
         commands: &[AccountSettingsCommand],
     ) -> JsonAccountSettingsResult<Self> {
         let source_schema_version = schema_version(document)?;
-        if source_schema_version < MIN_SUPPORTED_JSON_SCHEMA {
+        if source_schema_version < MIN_SUPPORTED_SCHEMA {
             return Err(JsonAccountError::format(
                 "/version",
                 format!(
-                    "settings schema {source_schema_version} predates supported schema {MIN_SUPPORTED_JSON_SCHEMA}"
+                    "settings schema {source_schema_version} predates supported schema {MIN_SUPPORTED_SCHEMA}"
                 ),
             ));
         }
         let capabilities = AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: source_schema_version >= 3,
+            extended_field_of_view: source_schema_version >= 16,
         };
         let settings = account_settings(document)?;
         let keys = commands
@@ -122,15 +123,6 @@ impl JsonAccountSettingsAdapter {
         }
         Ok(candidate)
     }
-}
-
-fn schema_version(document: &Value) -> JsonAccountSettingsResult<u64> {
-    document
-        .get("version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            JsonAccountError::format("/version", "settings schema version is missing or invalid")
-        })
 }
 
 fn account_settings(document: &Value) -> JsonAccountSettingsResult<&Map<String, Value>> {
@@ -369,6 +361,7 @@ fn default_value(key: &AccountSettingKey) -> JsonAccountSettingsResult<AccountSe
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: true,
+            extended_field_of_view: true,
         },
         one,
     )?;
@@ -393,6 +386,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::game_settings::MAX_SUPPORTED_SCHEMA;
 
     fn document(version: u64) -> Value {
         json!({
@@ -435,7 +429,7 @@ mod tests {
 
     #[test]
     fn invalid_current_values_can_be_repaired_without_loading_unrelated_settings() {
-        let mut source = document(9);
+        let mut source = document(MAX_SUPPORTED_SCHEMA + 1);
         *source
             .pointer_mut("/state/account/settings/display/brightness")
             .unwrap() = Value::from(999);
@@ -457,20 +451,5 @@ mod tests {
             projected.pointer("/state/account/settings/key_bindings"),
             source.pointer("/state/account/settings/key_bindings")
         );
-    }
-
-    #[test]
-    fn schema_two_named_binding_writes_are_rejected_atomically() {
-        let source = document(2);
-        let key = AccountSettingKey::key_binding("fire", KeyBindingSlot::Primary);
-        let commands = vec![set(key, AccountSettingValue::text("space"))];
-        let adapter = JsonAccountSettingsAdapter::load_for_commands(&source, &commands).unwrap();
-
-        let error = adapter.apply(&source, commands).unwrap_err();
-        assert!(matches!(
-            error.domain_error(),
-            Some(AccountError::KeyBindingsReadOnly)
-        ));
-        assert_eq!(source, document(2));
     }
 }

@@ -415,7 +415,19 @@ pub(super) fn draw_objective_values(
                                     );
                                     let row = leaf.row;
                                     let mut value = row.value;
-                                    if table_drag_value(ui, value_width, &mut value).changed()
+                                    let reserved = id == "character_object_objective_values"
+                                        && RESERVED_CHARACTER_OBJECTIVE_VALUES
+                                            .iter()
+                                            .any(|(index, _)| *index == row.index);
+                                    if reserved {
+                                        table_cell(
+                                            ui,
+                                            value_width,
+                                            egui::RichText::new(value.to_string()).monospace(),
+                                        )
+                                        .on_hover_text("Reserved runtime value");
+                                    } else if table_drag_value(ui, value_width, &mut value)
+                                        .changed()
                                         && set_unlock_value(document, id, row.index, value)
                                     {
                                         changed = true;
@@ -425,7 +437,9 @@ pub(super) fn draw_objective_values(
                                         state_width,
                                         egui::RichText::new(row.index.to_string()).monospace(),
                                     );
-                                    if draw_remove_cell(
+                                    if reserved {
+                                        table_cell(ui, TABLE_ACTION_WIDTH, "");
+                                    } else if draw_remove_cell(
                                         ui,
                                         TABLE_ACTION_WIDTH,
                                         "Remove objective value",

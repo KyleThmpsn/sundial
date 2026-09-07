@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     account_workspace::WorkspaceDocument,
-    settings::{SaveJsonResult, save_json},
+    settings::{SaveJsonError, SaveJsonResult, save_json},
 };
 #[cfg(feature = "sqlite-account")]
 use crate::persistence::sqlite_account::SqliteSaveReceipt;
@@ -34,7 +34,7 @@ fn coordinate_source_saves<C, J, S>(
     json_changed: bool,
     account_changed: bool,
     save_sqlite: impl FnOnce(&mut C) -> Result<S, String>,
-    save_json: impl FnOnce(&mut C) -> Result<J, String>,
+    save_json: impl FnOnce(&mut C) -> Result<J, SaveJsonError>,
     restore_sqlite: impl FnOnce(&mut C, &S) -> Result<(), String>,
 ) -> Result<CoordinatedSaveReceipt<J, S>, WorkspaceSaveError> {
     let sqlite = if account_changed {
@@ -49,10 +49,15 @@ fn coordinate_source_saves<C, J, S>(
     let json = if json_changed {
         match save_json(context) {
             Ok(receipt) => Some(receipt),
-            Err(message) => {
+            Err(error) => {
                 let sqlite_rollback = sqlite
                     .as_ref()
+                    .filter(|_| !error.may_have_committed)
                     .map(|receipt| restore_sqlite(context, receipt));
+                let mut message = error.message;
+                if error.may_have_committed && sqlite.is_some() {
+                    message.push_str(" SQLite was already saved and was not rolled back because the JSON outcome is uncertain. Reload and review both sources before continuing.");
+                }
                 return Err(WorkspaceSaveError {
                     message,
                     sqlite_rollback,
@@ -68,7 +73,6 @@ fn coordinate_source_saves<C, J, S>(
 
 struct SaveContext<'a> {
     document: &'a mut WorkspaceDocument,
-    #[cfg(feature = "sqlite-account")]
     persisted_document: &'a WorkspaceDocument,
     settings_path: &'a Path,
 }
@@ -80,11 +84,8 @@ pub(super) fn save_changed_sources(
     json_changed: bool,
     account_changed: bool,
 ) -> Result<WorkspaceSaveReceipt, WorkspaceSaveError> {
-    #[cfg(not(feature = "sqlite-account"))]
-    let _ = persisted_document;
     let mut context = SaveContext {
         document,
-        #[cfg(feature = "sqlite-account")]
         persisted_document,
         settings_path,
     };
@@ -95,7 +96,7 @@ pub(super) fn save_changed_sources(
         json_changed,
         account_changed,
         |context| context.document.save_sqlite(),
-        |context| save_json(context.settings_path, context.document.json()),
+        |context| save_context_json(context),
         |context, receipt| {
             context.document.restore_sqlite_backup(&receipt.backup)?;
             context
@@ -115,7 +116,7 @@ pub(super) fn save_changed_sources(
             |_context| -> Result<(), String> {
                 unreachable!("SQLite saves are disabled in this build")
             },
-            |context| save_json(context.settings_path, context.document.json()),
+            |context| save_context_json(context),
             |_context, _receipt| unreachable!("there is no SQLite write to roll back"),
         )?;
         let _ = receipt.sqlite;
@@ -129,6 +130,15 @@ pub(super) fn save_changed_sources(
     })
 }
 
+fn save_context_json(context: &SaveContext<'_>) -> Result<SaveJsonResult, SaveJsonError> {
+    save_json(
+        context.settings_path,
+        context.document.json(),
+        context.persisted_document.json(),
+        context.persisted_document.uses_json_account(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::coordinate_source_saves;
@@ -139,6 +149,55 @@ mod tests {
         sqlite_fails: bool,
         json_fails: bool,
         rollback_fails: bool,
+    }
+
+    #[test]
+    fn uncertain_json_outcome_does_not_blindly_roll_back_sqlite() {
+        let mut context = TestContext::default();
+        let error = coordinate_source_saves(
+            &mut context,
+            true,
+            true,
+            |context| {
+                context.events.push("save sqlite");
+                Ok(())
+            },
+            |context| {
+                context.events.push("save json");
+                Err::<(), _>(super::SaveJsonError {
+                    message: "verification unavailable".into(),
+                    may_have_committed: true,
+                })
+            },
+            |_, _| panic!("must not undo SQLite when JSON may have committed"),
+        )
+        .err()
+        .unwrap();
+        assert!(error.sqlite_rollback.is_none());
+        assert!(error.message.contains("review both sources"));
+        assert_eq!(context.events, ["save sqlite", "save json"]);
+    }
+
+    #[test]
+    fn verified_json_commit_with_warning_keeps_the_sqlite_commit() {
+        let mut context = TestContext::default();
+        let receipt = coordinate_source_saves(
+            &mut context,
+            true,
+            true,
+            |context| {
+                context.events.push("save sqlite");
+                Ok(())
+            },
+            |context| {
+                context.events.push("save json");
+                Ok("verified with durability warning")
+            },
+            |_, _| panic!("a verified JSON commit must not trigger rollback"),
+        )
+        .unwrap();
+        assert_eq!(receipt.json, Some("verified with durability warning"));
+        assert!(receipt.sqlite.is_some());
     }
 
     #[test]
@@ -191,7 +250,7 @@ mod tests {
             },
             |context| {
                 context.events.push("save json");
-                Err::<(), _>("json failed".to_owned())
+                Err::<(), _>("json failed".into())
             },
             |context, receipt| {
                 assert_eq!(*receipt, "sqlite receipt");
@@ -229,7 +288,7 @@ mod tests {
             },
             |context| {
                 context.events.push("save json");
-                Err::<(), _>("json failed".to_owned())
+                Err::<(), _>("json failed".into())
             },
             |context, _receipt| {
                 context.events.push("restore sqlite");

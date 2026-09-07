@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.every-end",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xA25B8F8F",
+    "expected_name": "Arc Logic"
+  },
+  "identity": {
+    "item_hash": "0x53554E44",
+    "collectible_hash": "0x4449414C",
+    "unlock_hash": "0x53554E55",
+    "name_hash": "0x45564E44",
+    "flavor_hash": "0x454E4446",
+    "source_hash": "0xFFFA8871"
+  },
+  "name": "Every End",
+  "flavor": "Do not go gentle into that good night…",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      { "definition_index": 15, "value": 100 },
+      { "definition_index": 16, "value": 100 },
+      { "definition_index": 22, "value": 100 },
+      { "definition_index": 24, "value": 100 },
+      { "definition_index": 25, "value": 100 },
+      { "definition_index": 26, "value": 100 },
+      { "definition_index": 27, "value": 100 },
+      { "definition_index": 30, "value": 100 },
+      { "definition_index": 31, "value": 20 }
+    ],
+    "inventory_slot": null,
+    "modern_damage_type": "solar",
+    "power_cap_group": 11,
+    "socket_columns": [
+      { "choices": ["0x56E77AA2"] },
+      { "choices": ["0x3203BACE"] },
+      { "choices": ["0x7060EDB4"] },
+      { "choices": ["0x522356C5", "0xA5A4B58A", "0x0EC3FDC8"] },
+      { "choices": ["0xA9CA6B03", "0xD2013CA1", "0xF351D2CC"] },
+      { "choices": ["0xFD368D30"] },
+      { "choices": ["0x8A8536B5"] },
+      { "choices": ["0x28CE6A3F"] },
+      null,
+      { "choices": ["0x8838B9DA"] }
+    ]
+  }
+}

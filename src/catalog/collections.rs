@@ -3,33 +3,32 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
+use crate::investment_schema::{
+    COLLECTIBLE_CONDITION_OFFSETS, COLLECTIBLE_DEFINITION_ROW_CLASS,
+    COLLECTIBLE_DEFINITION_ROW_SIZE, COLLECTIBLE_HASH_OFFSET,
+    COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET, COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET,
+    COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET, CONDITION_EXPRESSION_ROW_CLASS,
+    CONDITION_EXPRESSION_ROW_SIZE, MATERIAL_REQUIREMENT_ROW_CLASS, MATERIAL_REQUIREMENT_ROW_SIZE,
+    MATERIAL_REQUIREMENT_SET_ROW_CLASS, MATERIAL_REQUIREMENT_SET_ROW_SIZE,
+    PRESENTATION_NODE_INDEX_ROW_CLASS, ROOT_COLLECTIBLE_DEFINITION_TABLE_SLOT,
+    ROOT_MATERIAL_REQUIREMENT_TABLE_SLOT, ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT,
+    SHARED_EXPRESSION_POOL_COUNT, SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS,
+    SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE, SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET,
+    SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS, SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE,
+    investment_root_table_tag,
+};
+use crate::package_payload::{array_at, bool_at, i64_at, relative_offset, u16_at, u32_at, u64_at};
+
 use super::{
     Catalog,
-    package::{array_at, bool_at, i64_at, relative_offset, u16_at, u32_at, u64_at},
-    progression::{
-        PRESENTATION_NODE_INDEX_ROW_CLASS, PresentationNodeDef, definition_index_list,
-        presentation_paths,
-    },
+    progression::{PresentationNodeDef, definition_index_list, presentation_paths},
 };
 
 const INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x1E8;
 const ENABLED_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x200;
 
-const COLLECTIBLE_DEFINITION_TABLE_SLOT: usize = 19;
-const COLLECTIBLE_DEFINITION_ROW_CLASS: u32 = 0x8080_3475;
-const COLLECTIBLE_DEFINITION_ROW_SIZE: usize = 0xB8;
-const COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET: usize = 0x18;
-const COLLECTIBLE_HASH_OFFSET: usize = 0x28;
-const COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET: usize = 0x2C;
-const COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x9A;
-const COLLECTIBLE_CONDITION_OFFSETS: [usize; 4] = [0x30, 0x40, 0x60, 0x70];
-const CONDITION_EXPRESSION_ROW_CLASS: u32 = 0x8080_7D31;
-const CONDITION_EXPRESSION_ROW_SIZE: usize = 8;
-const MATERIAL_REQUIREMENT_TABLE_SLOT: usize = 96;
-const MATERIAL_REQUIREMENT_SET_ROW_CLASS: u32 = 0x8080_7AD4;
-const MATERIAL_REQUIREMENT_ROW_CLASS: u32 = 0x8080_7AD7;
-const MATERIAL_REQUIREMENT_SET_ROW_SIZE: usize = 0x10;
-const MATERIAL_REQUIREMENT_ROW_SIZE: usize = 0x0C;
+pub(crate) const COLLECTIBLE_ACQUIRED_CONDITION_FIELD: u8 = 4;
+const SHARED_EXPRESSION_POOL_TABLE_TAG: u32 = 0x8131_9324;
 const MATERIAL_REQUIREMENT_CAPACITY: usize = 6;
 const MATERIAL_REQUIREMENT_SET_CAPACITY: usize = 512;
 const COLLECTIBLE_DEFINITION_CAPACITY: usize = 1 << 15;
@@ -193,6 +192,14 @@ impl Catalog {
         &self.collectibles
     }
 
+    pub(crate) fn shared_expression_pool(&self) -> &[Vec<CollectionConditionTokenDef>] {
+        &self.shared_expression_pool
+    }
+
+    pub(crate) fn shared_expression(&self, index: usize) -> Option<&[CollectionConditionTokenDef]> {
+        self.shared_expression_pool.get(index).map(Vec::as_slice)
+    }
+
     pub(crate) fn material_requirement_sets(&self) -> &[MaterialRequirementSetDef] {
         &self.material_requirement_sets
     }
@@ -218,15 +225,23 @@ pub(super) fn scan_collectibles(
     manager: &PackageManager,
     root: &[u8],
     presentation_nodes: &[PresentationNodeDef],
-    material_requirement_sets: &[PendingMaterialRequirementSet],
+    material_requirement_sets: Option<&[PendingMaterialRequirementSet]>,
 ) -> Result<Vec<PendingCollectibleDef>, String> {
     let definitions = manager
-        .read_tag(TagHash(u32_at(
+        .read_tag(TagHash(investment_root_table_tag(
             root,
-            8 + COLLECTIBLE_DEFINITION_TABLE_SLOT * 16,
+            ROOT_COLLECTIBLE_DEFINITION_TABLE_SLOT,
         )?))
         .map_err(|error| format!("Could not read collectible definitions: {error}"))?;
-    let (count, rows, row_class) = array_at(&definitions, 8)?;
+    pending_collectibles_from_data(&definitions, presentation_nodes, material_requirement_sets)
+}
+
+fn pending_collectibles_from_data(
+    definitions: &[u8],
+    presentation_nodes: &[PresentationNodeDef],
+    material_requirement_sets: Option<&[PendingMaterialRequirementSet]>,
+) -> Result<Vec<PendingCollectibleDef>, String> {
+    let (count, rows, row_class) = array_at(definitions, 8)?;
     if row_class != COLLECTIBLE_DEFINITION_ROW_CLASS {
         return Err(format!(
             "Unexpected collectible row class 0x{row_class:08X}"
@@ -248,26 +263,30 @@ pub(super) fn scan_collectibles(
             )
             .ok_or("Collectible definition row offset overflowed")?;
         let item_definition_index =
-            u16_at(&definitions, row + COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET)?;
+            u16_at(definitions, row + COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET)?;
         let raw_material_requirement_set_index = u16_at(
-            &definitions,
+            definitions,
             row + COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET,
         )?;
         let material_requirement_set_index = (raw_material_requirement_set_index != u16::MAX)
             .then_some(raw_material_requirement_set_index);
-        let material_requirement_set = material_requirement_set_index
-            .map(|set_index| {
+        let material_requirement_set = match (
+            material_requirement_set_index,
+            material_requirement_sets,
+        ) {
+            (Some(set_index), Some(material_requirement_sets)) => Some(
                 material_requirement_sets
                     .get(usize::from(set_index))
                     .ok_or_else(|| {
                         format!(
                             "Collectible #{index} references material requirement set #{raw_material_requirement_set_index}, which is outside the package table"
                         )
-                    })
-            })
-            .transpose()?;
+                    })?,
+            ),
+            (None, _) | (Some(_), None) => None,
+        };
         let parents = definition_index_list(
-            &definitions,
+            definitions,
             row + COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET,
             PRESENTATION_NODE_INDEX_ROW_CLASS,
             presentation_nodes.len(),
@@ -275,17 +294,17 @@ pub(super) fn scan_collectibles(
         )?;
         let mut conditions = Vec::new();
         for (field, offset) in COLLECTIBLE_CONDITION_OFFSETS.into_iter().enumerate() {
-            let tokens = condition_tokens_at(&definitions, row + offset)?;
+            let tokens = condition_tokens_at(definitions, row + offset)?;
             if !tokens.is_empty() {
                 conditions.push(CollectionConditionDef {
-                    field: u8::try_from(field).expect("four collectible condition fields fit u8"),
+                    field: u8::try_from(field).expect("five collectible condition fields fit u8"),
                     tokens,
                 });
             }
         }
         output.push(PendingCollectibleDef {
             index: u16::try_from(index).map_err(|_| "Collectible index is too large")?,
-            hash: u64::from(u32_at(&definitions, row + COLLECTIBLE_HASH_OFFSET)?),
+            hash: u64::from(u32_at(definitions, row + COLLECTIBLE_HASH_OFFSET)?),
             item_definition_index,
             material_requirement_set_index,
             material_requirement_set_hash: material_requirement_set.map_or(0, |set| set.hash),
@@ -298,14 +317,70 @@ pub(super) fn scan_collectibles(
     Ok(output)
 }
 
+pub(super) fn scan_shared_expression_pool(
+    manager: &PackageManager,
+    root: &[u8],
+) -> Result<Vec<Vec<CollectionConditionTokenDef>>, String> {
+    let table_tag = investment_root_table_tag(root, ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT)?;
+    if table_tag != SHARED_EXPRESSION_POOL_TABLE_TAG {
+        return Err(format!(
+            "Unexpected shared expression-pool tag 0x{table_tag:08X}"
+        ));
+    }
+    let table = manager
+        .read_tag(TagHash(table_tag))
+        .map_err(|error| format!("Could not read shared expression pool: {error}"))?;
+    shared_expression_pool_from_data(&table)
+}
+
+fn shared_expression_pool_from_data(
+    table: &[u8],
+) -> Result<Vec<Vec<CollectionConditionTokenDef>>, String> {
+    let (count, rows, row_class) = array_at(table, 8)?;
+    let (row_size, expression_offset) = match row_class {
+        SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS => (
+            SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE,
+            SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET,
+        ),
+        SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS => (SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE, 0),
+        _ => {
+            return Err(format!(
+                "Unexpected shared expression-pool row class 0x{row_class:08X}"
+            ));
+        }
+    };
+    if count != SHARED_EXPRESSION_POOL_COUNT {
+        return Err(format!(
+            "Shared expression-pool row count is {count}; expected {SHARED_EXPRESSION_POOL_COUNT}"
+        ));
+    }
+    let byte_count = count
+        .checked_mul(row_size)
+        .ok_or("Shared expression-pool size overflowed")?;
+    if rows
+        .checked_add(byte_count)
+        .is_none_or(|end| end > table.len())
+    {
+        return Err("Shared expression-pool rows extend beyond their package data".into());
+    }
+
+    (0..count)
+        .map(|index| {
+            let descriptor = rows + index * row_size + expression_offset;
+            condition_tokens_at(table, descriptor)
+                .map_err(|error| format!("Shared expression-pool row #{index}: {error}"))
+        })
+        .collect()
+}
+
 pub(super) fn scan_material_requirement_sets(
     manager: &PackageManager,
     root: &[u8],
 ) -> Result<Vec<PendingMaterialRequirementSet>, String> {
     let table = manager
-        .read_tag(TagHash(u32_at(
+        .read_tag(TagHash(investment_root_table_tag(
             root,
-            8 + MATERIAL_REQUIREMENT_TABLE_SLOT * 16,
+            ROOT_MATERIAL_REQUIREMENT_TABLE_SLOT,
         )?))
         .map_err(|error| format!("Could not read material requirement sets: {error}"))?;
     material_requirement_sets_from_data(&table)
@@ -459,9 +534,13 @@ fn condition_tokens_at(
     (0..count)
         .map(|index| {
             let row = rows + index * CONDITION_EXPRESSION_ROW_SIZE;
+            let kind = data
+                .get(row)
+                .copied()
+                .ok_or_else(|| format!("Package data ended at {row}"))?;
             Ok(CollectionConditionTokenDef {
-                kind: u32_at(data, row)?,
-                operand: u32_at(data, row + 4)?,
+                kind: u32::from(kind),
+                operand: u32::from(u16_at(data, row + 4)?),
             })
         })
         .collect()
@@ -472,16 +551,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn collectible_scan_keeps_all_five_native_condition_fields() {
+        assert_eq!(
+            COLLECTIBLE_CONDITION_OFFSETS,
+            [0x30, 0x40, 0x50, 0x60, 0x70]
+        );
+    }
+
+    #[test]
     fn collectible_condition_tokens_preserve_package_order_and_operands() {
         let mut data = vec![0_u8; 96];
         data[0..8].copy_from_slice(&2_u64.to_le_bytes());
         data[8..16].copy_from_slice(&24_i64.to_le_bytes());
         data[32..40].copy_from_slice(&2_u64.to_le_bytes());
         data[40..44].copy_from_slice(&CONDITION_EXPRESSION_ROW_CLASS.to_le_bytes());
-        data[48..52].copy_from_slice(&1_u32.to_le_bytes());
-        data[52..56].copy_from_slice(&2003_u32.to_le_bytes());
-        data[56..60].copy_from_slice(&11_u32.to_le_bytes());
-        data[60..64].copy_from_slice(&42_u32.to_le_bytes());
+        data[48] = 1;
+        data[49..52].copy_from_slice(&[0xA1, 0xB2, 0xC3]);
+        data[52..54].copy_from_slice(&2003_u16.to_le_bytes());
+        data[54..56].copy_from_slice(&[0xD4, 0xE5]);
+        data[56] = 11;
+        data[57..60].copy_from_slice(&[0xF6, 0x17, 0x28]);
+        data[60..62].copy_from_slice(&42_u16.to_le_bytes());
+        data[62..64].copy_from_slice(&[0x39, 0x4A]);
 
         assert_eq!(
             condition_tokens_at(&data, 0).unwrap(),
@@ -496,6 +587,89 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn collectible_scan_survives_unavailable_material_requirement_enrichment() {
+        let rows = 48;
+        let mut data = vec![0_u8; rows + COLLECTIBLE_DEFINITION_ROW_SIZE];
+        data[8..16].copy_from_slice(&1_u64.to_le_bytes());
+        data[16..24].copy_from_slice(&16_i64.to_le_bytes());
+        data[32..40].copy_from_slice(&1_u64.to_le_bytes());
+        data[40..44].copy_from_slice(&COLLECTIBLE_DEFINITION_ROW_CLASS.to_le_bytes());
+        data[rows + COLLECTIBLE_HASH_OFFSET..rows + COLLECTIBLE_HASH_OFFSET + 4]
+            .copy_from_slice(&0x1234_5678_u32.to_le_bytes());
+        data[rows + COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET
+            ..rows + COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET + 2]
+            .copy_from_slice(&42_u16.to_le_bytes());
+        data[rows + COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET
+            ..rows + COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET + 2]
+            .copy_from_slice(&7_u16.to_le_bytes());
+
+        let collectibles = pending_collectibles_from_data(&data, &[], None).unwrap();
+        assert_eq!(collectibles.len(), 1);
+        assert_eq!(collectibles[0].hash, 0x1234_5678);
+        assert_eq!(collectibles[0].item_definition_index, 42);
+        assert_eq!(collectibles[0].material_requirement_set_index, Some(7));
+        assert_eq!(collectibles[0].material_requirement_set_hash, 0);
+        assert!(collectibles[0].material_requirements.is_empty());
+
+        let error = match pending_collectibles_from_data(&data, &[], Some(&[])) {
+            Ok(_) => panic!("missing material enrichment unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.contains("material requirement set #7"));
+    }
+
+    #[test]
+    fn shared_expression_pool_reads_nested_expression_descriptors() {
+        for (row_class, row_size, expression_offset) in [
+            (
+                SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS,
+                SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE,
+                SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET,
+            ),
+            (
+                SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS,
+                SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE,
+                0,
+            ),
+        ] {
+            let rows = 48;
+            let instruction_header = rows + SHARED_EXPRESSION_POOL_COUNT * row_size + 16;
+            let instruction_rows = instruction_header + 16;
+            let mut data = vec![0_u8; instruction_rows + CONDITION_EXPRESSION_ROW_SIZE];
+            let pool_count = u64::try_from(SHARED_EXPRESSION_POOL_COUNT).unwrap();
+
+            data[8..16].copy_from_slice(&pool_count.to_le_bytes());
+            data[16..24].copy_from_slice(&16_i64.to_le_bytes());
+            data[32..40].copy_from_slice(&pool_count.to_le_bytes());
+            data[40..44].copy_from_slice(&row_class.to_le_bytes());
+
+            // Pool row 0 points to one literal instruction after the outer rows.
+            let descriptor = rows + expression_offset;
+            data[descriptor..descriptor + 8].copy_from_slice(&1_u64.to_le_bytes());
+            let pointer = descriptor + 8;
+            let relative = i64::try_from(instruction_header - pointer).unwrap();
+            data[pointer..pointer + 8].copy_from_slice(&relative.to_le_bytes());
+            data[instruction_header..instruction_header + 8].copy_from_slice(&1_u64.to_le_bytes());
+            data[instruction_header + 8..instruction_header + 12]
+                .copy_from_slice(&CONDITION_EXPRESSION_ROW_CLASS.to_le_bytes());
+            data[instruction_rows] = 11;
+            data[instruction_rows + 4..instruction_rows + 6].copy_from_slice(&7_u16.to_le_bytes());
+
+            // Pool row 1 is an empty expression descriptor.
+            let pool = shared_expression_pool_from_data(&data).unwrap();
+            assert_eq!(pool.len(), SHARED_EXPRESSION_POOL_COUNT);
+            assert_eq!(
+                pool[0],
+                [CollectionConditionTokenDef {
+                    kind: 11,
+                    operand: 7,
+                }]
+            );
+            assert!(pool[1].is_empty());
+        }
     }
 
     #[test]

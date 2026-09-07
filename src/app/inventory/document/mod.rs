@@ -20,11 +20,13 @@ pub(crate) use parsing::{
     character_inventory, dismantle_rewards, profile_item_target_exists, profile_items,
 };
 pub(crate) use schema::{
-    CHARACTER_INVENTORY_CAPACITY, DISMANTLE_REWARDS_SCHEMA_VERSION, EQUIPMENT_FLAGS_SCHEMA_VERSION,
-    FILTERED_DISMANTLE_REWARD_CAPACITY, GENERATED_INSTANCE_SOID_START, INVENTORY_FLAG_LOCKED,
-    INVENTORY_FLAG_MASK, INVENTORY_FLAG_TRACKED, INVENTORY_SCHEMA_VERSION,
-    LEGACY_PROFILE_ITEM_CAPACITY, MAX_ITEM_PLUGS, PROFILE_ITEM_CAPACITY, SchemaMode,
-    profile_item_capacity, schema_mode, set_inventory_locked_flag,
+    CHARACTER_INVENTORY_CAPACITY, EQUIPMENT_FLAGS_SCHEMA_VERSION, GENERATED_INSTANCE_SOID_START,
+    INVENTORY_FLAG_LOCKED, MAX_ITEM_PLUGS, SchemaMode, schema_mode, set_inventory_locked_flag,
+};
+#[cfg(test)]
+pub(crate) use schema::{
+    FILTERED_DISMANTLE_REWARD_CAPACITY, INVENTORY_FLAG_TRACKED, LEGACY_PROFILE_ITEM_CAPACITY,
+    PROFILE_ITEM_CAPACITY, profile_item_capacity,
 };
 pub(crate) use validation::validate_document_items;
 

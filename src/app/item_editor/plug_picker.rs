@@ -10,20 +10,8 @@ pub(crate) fn plug_choices_for_socket(
         mode,
         PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
     );
-    let Some(socket) = item.sockets.get(socket_index) else {
-        return (Vec::new(), show_types);
-    };
-    let allowed = match mode {
-        PlugSelectionMode::Supported => catalog.socket_options(socket).to_vec(),
-        PlugSelectionMode::SocketAndGearType => catalog
-            .socket_and_gear_type_options(item, socket_index)
-            .to_vec(),
-        PlugSelectionMode::MatchingSocketType => {
-            catalog.socket_type_options(socket.socket_type).to_vec()
-        }
-        PlugSelectionMode::GearType => catalog.gear_type_options(item, socket_index),
-        PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
-    };
+    let allowed =
+        crate::investment::plug_selection::candidates_for_socket(catalog, item, socket_index, mode);
     let choices = allowed
         .into_iter()
         .map(|hash| PlugChoice {
@@ -71,6 +59,63 @@ pub(crate) fn plug_picker_snapshot(
     }
 }
 
+pub(crate) const SOCKET_PICKER_RESET_WIDTH: f32 = 48.0;
+
+pub(crate) fn socket_picker_reset_width(ui: &egui::Ui) -> f32 {
+    measured_button_width(ui, "Reset", SOCKET_PICKER_RESET_WIDTH)
+}
+
+pub(crate) fn measured_button_width(ui: &egui::Ui, label: &str, minimum: f32) -> f32 {
+    let text = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::TextStyle::Button.resolve(ui.style()),
+        ui.visuals().text_color(),
+    );
+    (text.size().x + ui.spacing().button_padding.x * 2.0)
+        .ceil()
+        .max(minimum)
+}
+
+pub(crate) fn socket_picker_label_width(available_width: f32) -> f32 {
+    (available_width * 0.28).clamp(76.0, 136.0)
+}
+
+pub(crate) fn draw_socket_picker_label(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+) -> egui::Response {
+    let row_height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, row_height),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            let mut socket_font = egui::TextStyle::Body.resolve(ui.style());
+            socket_font.size = (socket_font.size - 1.0).max(1.0);
+            ui.add(egui::Label::new(egui::RichText::new(label).font(socket_font)).truncate())
+        },
+    )
+    .inner
+    .on_hover_text(label)
+}
+
+pub(crate) fn draw_socket_picker_reset(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    tooltip: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let row_height = ui.spacing().interact_size.y;
+    let reset = ui.add_enabled(
+        enabled,
+        egui::Button::new("Reset").min_size(egui::vec2(socket_picker_reset_width(ui), row_height)),
+    );
+    if enabled {
+        reset.on_hover_text(tooltip)
+    } else {
+        reset.on_disabled_hover_text(tooltip)
+    }
+}
+
 pub(crate) fn draw_plug_picker(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -89,32 +134,18 @@ pub(crate) fn draw_plug_picker(
             let row_height = ui.spacing().interact_size.y;
             let spacing = ui.spacing().item_spacing.x;
             let available_width = ui.available_width();
-            let socket_label_width = (available_width * 0.28).clamp(76.0, 104.0);
-            let reset_button_width = 48.0;
-            let plug_width =
-                (available_width - socket_label_width - reset_button_width - spacing * 2.0)
-                    .max(110.0);
+            let socket_label_width = socket_picker_label_width(available_width);
+            let plug_width = (available_width
+                - socket_label_width
+                - socket_picker_reset_width(ui)
+                - spacing * 2.0)
+                .max(110.0);
             let screen = ui.ctx().screen_rect();
             let popup_width = (plug_width + 140.0)
                 .clamp(440.0, 680.0)
                 .min((screen.width() - 24.0).max(320.0));
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(socket_label_width, row_height),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    let mut socket_font = egui::TextStyle::Body.resolve(ui.style());
-                    socket_font.size = (socket_font.size - 1.0).max(1.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&snapshot.socket_label).font(socket_font),
-                        )
-                        .truncate(),
-                    )
-                },
-            )
-            .inner
-            .on_hover_text(&snapshot.socket_label);
+            draw_socket_picker_label(ui, &snapshot.socket_label, socket_label_width);
             let popup_id = ui.make_persistent_id("plug-browser");
             let button = ui
                 .allocate_ui_with_layout(
@@ -151,6 +182,7 @@ pub(crate) fn draw_plug_picker(
                 ui.memory_mut(|memory| memory.toggle_popup(popup_id));
             }
             let popup_direction = popup_direction(screen, button.rect);
+            let picker_style = ui.style().clone();
             egui::popup::popup_above_or_below_widget(
                 ui,
                 popup_id,
@@ -158,6 +190,7 @@ pub(crate) fn draw_plug_picker(
                 popup_direction,
                 egui::PopupCloseBehavior::CloseOnClickOutside,
                 |ui| {
+                    ui.set_style(picker_style);
                     draw_plug_browser_contents(
                         ui,
                         catalog,
@@ -179,10 +212,6 @@ pub(crate) fn draw_plug_picker(
             let reset_enabled = snapshot
                 .native_default
                 .is_some_and(|default| snapshot.current_hash != default.value());
-            let reset = ui.add_enabled(
-                reset_enabled,
-                egui::Button::new("Reset").min_size(egui::vec2(reset_button_width, row_height)),
-            );
             let reset_tooltip = match snapshot.native_default {
                 Some(NativePlugDefault::Plug(hash)) => format!(
                     "Restore this socket's native default: {}",
@@ -196,11 +225,7 @@ pub(crate) fn draw_plug_picker(
                 }
                 None => "No native default is available for this socket".to_owned(),
             };
-            let reset = if reset_enabled {
-                reset.on_hover_text(reset_tooltip)
-            } else {
-                reset.on_disabled_hover_text(reset_tooltip)
-            };
+            let reset = draw_socket_picker_reset(ui, reset_enabled, reset_tooltip);
             if reset.clicked() {
                 selection = snapshot.native_default.map(NativePlugDefault::value);
                 ui.memory_mut(egui::Memory::close_popup);
@@ -238,6 +263,7 @@ pub(crate) fn draw_plug_icon_picker(
     let popup_width = 520.0_f32.min((screen.width() - 24.0).max(320.0));
     let row_height = ui.spacing().interact_size.y;
     let mut selection = None::<Option<u64>>;
+    let picker_style = ui.style().clone();
     egui::popup::popup_above_or_below_widget(
         ui,
         popup_id,
@@ -245,6 +271,7 @@ pub(crate) fn draw_plug_icon_picker(
         popup_direction(screen, anchor.rect),
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
+            ui.set_style(picker_style);
             draw_plug_browser_contents(
                 ui,
                 catalog,
@@ -283,11 +310,13 @@ fn draw_plug_browser_contents(
 ) {
     ui.set_min_width(popup_width);
     if searchable {
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(query)
                 .hint_text("Search name, type, source, description, or hash…")
                 .desired_width(popup_width - 20.0),
         );
+        ui.ctx()
+            .accesskit_node_builder(search.id, |node| node.set_label("Search perks"));
         ui.separator();
     }
     if ui

@@ -9,7 +9,7 @@ pub(super) fn draw_hash_material_requirements(
     if requirements.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!("Material requirements ({})", requirements.len()))
+    egui::CollapsingHeader::new(format!("Material Requirements ({})", requirements.len()))
         .id_salt((id, "material_requirements"))
         .default_open(false)
         .show(ui, |ui| {
@@ -22,8 +22,8 @@ pub(super) fn draw_hash_material_requirements(
                     ui.strong("Name");
                     ui.strong("Hash");
                     ui.strong("Quantity");
-                    ui.strong("Delete").on_hover_text("Delete on action");
-                    ui.strong("Omit").on_hover_text("Omit from requirements");
+                    ui.strong("Consume on Action").on_hover_text("Whether the package marks this material for deletion when the action succeeds.");
+                    ui.strong("Omit Requirement").on_hover_text("Whether the package omits this row from the requirements check.");
                     ui.strong("Condition");
                     ui.end_row();
                     for requirement in requirements {
@@ -53,7 +53,7 @@ pub(super) fn draw_hash_material_requirement_set(
 ) {
     metadata_subsection(
         ui,
-        &format!("Material requirement set #{}", set.index),
+        &format!("Material Requirement Set #{}", set.index),
         |ui| {
             egui::Grid::new(("hash_material_requirement_set", set.index))
                 .num_columns(2)
@@ -61,24 +61,24 @@ pub(super) fn draw_hash_material_requirement_set(
                 .show(ui, |ui| {
                     hash_detail_field(
                         ui,
-                        "Matched as",
+                        "Matched As",
                         if set.hash == inspected_hash {
-                            "Material requirement set hash"
+                            "Material Requirement Set Hash"
                         } else {
-                            "Item definition hash"
+                            "Item Definition Hash"
                         },
                         false,
                     );
                     hash_detail_field(
                         ui,
-                        "Material requirement set index",
+                        "Material Requirement Set Index",
                         set.index.to_string(),
                         true,
                     );
                     catalog_hash_hex_and_decimal_field(
                         ui,
                         catalog,
-                        "Material requirement set hash",
+                        "Material Requirement Set Hash",
                         set.hash,
                     );
                 });

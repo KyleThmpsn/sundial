@@ -3,118 +3,211 @@ use crate::app::inspector::DefinitionInspectionContext;
 use crate::app::item_editor::displayed_item_power;
 use tiger_pkg::TagHash;
 
-pub(super) fn draw_hash_item_matches(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    hash: u64,
-    resolved_name: &Option<String>,
-    matches: &CatalogHashMatches<'_>,
-    source_context: Option<&DefinitionInspectionContext>,
-) {
-    let item = matches.item;
-    let item_package_metadata = matches.item_package_metadata;
-    let inventory_metadata = matches.inventory_metadata;
-    let bucket_items = &matches.bucket_items;
-    let item_material_requirement_set_indices = matches.item_material_requirement_set_indices;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum ItemPage {
+    #[default]
+    Overview,
+    Sockets,
+    Runtime,
+    Technical,
+    Related,
+}
 
-    if item_package_metadata.is_some() || item.is_some() {
-        ui.add_space(8.0);
-        draw_hash_item_identity_summary(
-            ui,
-            catalog,
-            hash,
-            resolved_name,
-            item,
-            item_package_metadata,
-            inventory_metadata,
-        );
-        if let Some(description) = catalog
-            .description(hash)
-            .filter(|description| !description.trim().is_empty())
-        {
-            ui.add_space(6.0);
-            ui.label(crate::app::ui::destiny_text(ui, description));
-        }
-        if let Some(context) = source_context {
-            draw_hash_item_source_comparison(ui, catalog, hash, item, context);
-        }
-        draw_hash_item_stats_and_sockets(ui, catalog, hash, item_package_metadata, item);
-        if let Some(metadata) = item_package_metadata {
-            draw_hash_item_intrinsic_perks(ui, catalog, hash, metadata);
-        }
-        if let Some(item) = item {
-            draw_hash_item_abilities(ui, catalog, item);
-        }
-        if let Some(metadata) = item_package_metadata {
-            egui::CollapsingHeader::new("Technical details")
-                .id_salt(("hash_item_technical_details", hash))
-                .default_open(false)
-                .show(ui, |ui| {
-                    draw_hash_item_package_metadata(
-                        ui,
-                        catalog,
-                        hash,
-                        metadata,
-                        item_material_requirement_set_indices,
-                    );
-                });
-        }
-    } else if let Some(context) = source_context {
-        draw_hash_item_source_comparison(ui, catalog, hash, item, context);
-    }
+impl ItemPage {
+    pub(super) const ALL: [Self; 5] = [
+        Self::Overview,
+        Self::Sockets,
+        Self::Runtime,
+        Self::Technical,
+        Self::Related,
+    ];
 
-    draw_hash_item_stat_matches(ui, catalog, matches);
-    draw_hash_intrinsic_perk_matches(ui, catalog, hash, matches);
-
-    if item_package_metadata.is_none()
-        && item.is_none()
-        && let Some(metadata) = inventory_metadata
-    {
-        ui.add_space(8.0);
-        hash_metadata_section(ui, "Inventory metadata", false, |ui| {
-            draw_hash_inventory_placement_summary(ui, metadata);
-            ui.add_space(8.0);
-            draw_hash_inventory_capacity_summary(ui, metadata);
-        });
-    }
-
-    if !bucket_items.is_empty() {
-        draw_hash_inventory_bucket(ui, catalog, hash, bucket_items);
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Sockets => "Sockets",
+            Self::Runtime => "Runtime",
+            Self::Technical => "Technical",
+            Self::Related => "Related Records",
+        }
     }
 }
 
-fn draw_hash_item_stats_and_sockets(
+pub(super) struct ItemInspection<'a> {
+    pub(super) catalog: &'a Catalog,
+    pub(super) hash: u64,
+    pub(super) resolved_name: &'a Option<String>,
+    pub(super) matches: &'a CatalogHashMatches<'a>,
+    pub(super) source_context: Option<&'a DefinitionInspectionContext>,
+}
+
+pub(super) fn draw_hash_item_matches(
     ui: &mut egui::Ui,
-    catalog: &Catalog,
-    item_hash: u64,
-    metadata: Option<&ItemPackageMetadata>,
-    item: Option<&crate::catalog::ItemDef>,
+    content: ItemInspection<'_>,
+    runtime: &mut super::runtime::RuntimeInspectionState,
+    page: ItemPage,
 ) {
-    let has_stats = metadata.is_some_and(|metadata| !metadata.investment_stats.is_empty());
-    let has_sockets = item.is_some_and(|item| {
-        !item.sockets.is_empty() || item.default_plugs.iter().any(Option::is_some)
-    });
-    if has_stats && has_sockets && ui.available_width() >= 900.0 {
+    let matches = content.matches;
+    if matches.item_package_metadata.is_some() || matches.item.is_some() {
+        ui.add_space(8.0);
+        draw_hash_item_identity_summary(
+            ui,
+            content.catalog,
+            content.hash,
+            content.resolved_name,
+            matches.item,
+            matches.item_package_metadata,
+            matches.inventory_metadata,
+        );
+        match page {
+            ItemPage::Overview => draw_overview(ui, &content),
+            ItemPage::Sockets => draw_sockets_page(ui, &content),
+            ItemPage::Runtime => draw_runtime_page(ui, &content, runtime),
+            ItemPage::Technical => draw_technical_page(ui, &content, runtime),
+            ItemPage::Related => {}
+        }
+    } else {
+        if let Some(context) = content.source_context {
+            draw_hash_item_source_comparison(
+                ui,
+                content.catalog,
+                content.hash,
+                matches.item,
+                context,
+            );
+        }
+        draw_hash_item_stat_matches(ui, content.catalog, matches);
+        if let Some(metadata) = matches.inventory_metadata {
+            hash_metadata_section(ui, "Inventory Metadata", false, |ui| {
+                draw_hash_inventory_placement_summary(ui, metadata);
+                draw_hash_inventory_capacity_summary(ui, metadata);
+            });
+        }
+        if !matches.bucket_items.is_empty() {
+            draw_hash_inventory_bucket(ui, content.catalog, content.hash, &matches.bucket_items);
+        }
+    }
+}
+
+fn draw_overview(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    if let Some(description) = content
+        .catalog
+        .description(content.hash)
+        .filter(|text| !text.trim().is_empty())
+    {
+        ui.label(crate::app::ui::destiny_text(ui, description));
+    }
+    if content.source_context.is_some() && ui.available_width() >= 840.0 {
         ui.columns(2, |columns| {
-            draw_hash_item_investment_stats(
-                &mut columns[0],
-                catalog,
-                item_hash,
-                metadata.expect("stats were present"),
-            );
-            draw_hash_item_sockets(
-                &mut columns[1],
-                catalog,
-                item.expect("sockets were present"),
-            );
+            draw_overview_source(&mut columns[0], content);
+            columns[1].add_space(6.0);
+            draw_overview_stats(&mut columns[1], content);
         });
+    } else {
+        draw_overview_source(ui, content);
+        draw_overview_stats(ui, content);
+    }
+    if let Some(metadata) = content.matches.item_package_metadata {
+        super::item_details::draw_item_traits(ui, content.catalog, content.hash, metadata);
+    }
+    if let Some(item) = content.matches.item {
+        draw_hash_item_abilities(ui, content.catalog, item);
+    }
+}
+
+fn draw_overview_source(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    if let Some(context) = content.source_context {
+        draw_hash_item_source_comparison(
+            ui,
+            content.catalog,
+            content.hash,
+            content.matches.item,
+            context,
+        );
+    }
+}
+
+fn draw_overview_stats(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    if let Some(metadata) = content.matches.item_package_metadata {
+        draw_hash_item_investment_stats(ui, content.catalog, content.hash, metadata);
+    }
+}
+
+fn draw_sockets_page(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    let Some(item) = content.matches.item else {
+        ui.weak("No socket definition is available for this item.");
         return;
+    };
+    if let Some(context) = content.source_context {
+        ui.label(&context.source);
+        if let Some(plugs) = &context.plugs {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(super::instance::plug_source(plugs));
+                crate::ui_help::info(ui, "Opening-time account snapshot, not live equipped state. Empty and missing entries are not assumed to use the catalog default.");
+            });
+        } else {
+            ui.weak("Saved plug values were not available at this entry point.");
+        }
+    } else {
+        ui.weak(
+            "Catalog defaults and options only. Open an owned item to compare its saved plugs.",
+        );
     }
-    if let Some(metadata) = metadata {
-        draw_hash_item_investment_stats(ui, catalog, item_hash, metadata);
+    draw_hash_item_sockets(
+        ui,
+        content.catalog,
+        item,
+        content
+            .source_context
+            .and_then(|context| context.plugs.as_ref()),
+    );
+    if item.sockets.is_empty() && item.default_plugs.is_empty() {
+        ui.weak("No sockets or default plugs are decoded for this item.");
     }
-    if let Some(item) = item {
-        draw_hash_item_sockets(ui, catalog, item);
+}
+
+fn draw_runtime_page(
+    ui: &mut egui::Ui,
+    content: &ItemInspection<'_>,
+    runtime: &mut super::runtime::RuntimeInspectionState,
+) {
+    let Some(metadata) = content.matches.item_package_metadata else {
+        ui.weak("Package metadata is unavailable; runtime references cannot be resolved.");
+        return;
+    };
+    super::runtime::draw_item_runtime(ui, content.catalog, content.hash, metadata, runtime);
+    if metadata
+        .weapon_pattern_index
+        .is_none_or(|index| index == u16::MAX)
+        && metadata.sandbox_perks.is_empty()
+    {
+        ui.weak("No weapon pattern or sandbox-perk references are decoded for this item.");
+    }
+}
+
+fn draw_technical_page(
+    ui: &mut egui::Ui,
+    content: &ItemInspection<'_>,
+    runtime: &mut super::runtime::RuntimeInspectionState,
+) {
+    let Some(metadata) = content.matches.item_package_metadata else {
+        ui.weak("Package metadata is unavailable for this item.");
+        return;
+    };
+    super::item_details::draw_classification_details(ui, content.hash, metadata);
+    draw_hash_item_package_metadata(
+        ui,
+        content.catalog,
+        content.hash,
+        metadata,
+        content.matches.item_material_requirement_set_indices,
+    );
+    super::item_details::draw_structural_details(ui, content.catalog, content.hash, metadata);
+    super::runtime::draw_dye_colors(ui, metadata, runtime);
+    super::item_details::draw_stat_group(ui, content.catalog, content.hash);
+    if let Some(inventory) = content.matches.inventory_metadata {
+        draw_hash_inventory_placement_summary(ui, inventory);
+        draw_hash_inventory_capacity_summary(ui, inventory);
     }
 }
 
@@ -126,43 +219,71 @@ fn draw_hash_item_source_comparison(
     context: &DefinitionInspectionContext,
 ) {
     ui.add_space(8.0);
-    hash_metadata_section(ui, "Selected instance", true, |ui| {
-        ui.label(egui::RichText::new(&context.source).strong());
-        ui.add_space(6.0);
-        egui::Grid::new(("hash_item_instance", hash))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                if let Some(level) = context.authored_level {
-                    let cap = catalog.item_power_cap(hash).map_or_else(
-                        || "No catalog cap".into(),
-                        |value| format!("Catalog cap {value}"),
-                    );
-                    hash_detail_field(
-                        ui,
-                        "Power",
-                        format!(
-                            "{} · authored level {level} · {cap}",
-                            displayed_item_power(level)
-                        ),
-                        true,
-                    );
-                }
-                if let Some(instance_id) = &context.instance_id {
-                    hash_detail_field(ui, "Instance", instance_id, true);
-                }
-                if let Some(plug_count) = context.plug_count {
-                    let sockets = item.map_or_else(
-                        || "Catalog sockets unavailable".into(),
-                        |item| format!("{} catalog sockets", item.sockets.len()),
-                    );
-                    hash_detail_field(ui, "Plugs", format!("{plug_count} · {sockets}"), true);
-                }
-                if let Some(flags) = context.flags {
-                    hash_detail_field(ui, "Flags", format!("0x{flags:02X}"), true);
-                }
-            });
-    });
+    hash_metadata_section(
+        ui,
+        if context.instance_id.is_some() {
+            "Selected Instance"
+        } else {
+            "Source Snapshot"
+        },
+        true,
+        |ui| {
+            ui.label(egui::RichText::new(&context.source).strong());
+            ui.weak(
+                "Snapshot captured when opened; reopen the item after editing its account data.",
+            );
+            ui.add_space(6.0);
+            egui::Grid::new(("hash_item_instance", hash))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    if let Some(level) = context.authored_level {
+                        let cap = catalog.item_power_cap(hash).map_or_else(
+                            || "No catalog cap".into(),
+                            |value| format!("Catalog cap {value}"),
+                        );
+                        hash_detail_field(
+                            ui,
+                            "Power",
+                            format!(
+                                "{} · authored level {level} · {cap}",
+                                displayed_item_power(level)
+                            ),
+                            true,
+                        );
+                    }
+                    if let Some(instance_id) = &context.instance_id {
+                        hash_detail_field(ui, "Instance ID", instance_id, true);
+                    }
+                    if let Some(quantity) = context.quantity {
+                        hash_detail_field(ui, "Quantity", quantity.to_string(), true);
+                    }
+                    if let Some(plugs) = &context.plugs {
+                        hash_detail_field(
+                            ui,
+                            "Plug Source",
+                            super::instance::plug_source(plugs),
+                            false,
+                        );
+                    }
+                    if let Some(plug_count) = context.plug_count {
+                        let sockets = item.map_or_else(
+                            || "Catalog sockets unavailable".into(),
+                            |item| format!("{} catalog sockets", item.sockets.len()),
+                        );
+                        hash_detail_field(
+                            ui,
+                            "Saved Plugs",
+                            format!("{plug_count} · {sockets}"),
+                            true,
+                        );
+                    }
+                    if let Some(flags) = context.flags {
+                        hash_detail_field(ui, "Instance Flags", format!("0x{flags:02X}"), true);
+                    }
+                });
+        },
+    );
 }
 
 fn draw_hash_item_identity_summary(
@@ -208,6 +329,12 @@ fn draw_hash_item_identity_summary(
                 let mut drew = false;
                 draw_inline_item_hash(ui, &mut drew, catalog, hash);
                 if let Some(metadata) = package_metadata {
+                    if let Some(ammo) = metadata.weapon_ammo_type {
+                        draw_inline_item_fact_with_tooltip(
+                            ui, &mut drew, "Ammo", ammo.label(), false,
+                            "Primary/Special/Heavy client classification. This does not establish which ammo pool the runtime weapon consumes.",
+                        );
+                    }
                     if metadata.rarity != ItemRarity::Unknown {
                         draw_inline_item_fact_with_tooltip(
                             ui,
@@ -222,37 +349,23 @@ fn draw_hash_item_identity_summary(
                         );
                     }
                     if let Some(damage_type) = metadata.damage_type {
-                        if let Some(definition) = damage_type
-                            .sandbox_perk_definition_index()
-                            .and_then(|index| catalog.sandbox_perk_definition(index))
-                        {
-                            draw_inline_item_definition_fact(
-                                ui,
-                                &mut drew,
-                                catalog,
-                                "Damage",
-                                damage_type.label(),
-                                definition.hash,
-                            );
-                        } else {
-                            draw_inline_item_fact_with_tooltip(
-                                ui,
-                                &mut drew,
-                                "Damage",
-                                damage_type.label(),
-                                false,
-                                "Kinetic is inferred from the inventory bucket; it has no elemental sandbox-perk definition hash.",
-                            );
-                        }
+                        draw_inline_item_fact_with_tooltip(
+                            ui,
+                            &mut drew,
+                            "Damage",
+                            damage_type.label(),
+                            false,
+                            "Package-derived damage classification, not a live measurement. The Technical tab distinguishes modern, legacy, and default-plug inference.",
+                        );
                     }
                     if let Some(power_cap) = metadata.power_cap {
                         draw_inline_item_fact_with_tooltip(
                             ui,
                             &mut drew,
-                            "Power cap",
+                            "Power Cap",
                             power_cap.to_string(),
                             true,
-                            "Derived from the item's authored version groups. The package does not expose a standalone power-cap definition hash.",
+                            "Read from the installed power-cap definition table using this item's ordered version indices. See Technical for the individual rows and definition hashes.",
                         );
                     }
                 }
@@ -317,7 +430,7 @@ fn draw_hash_item_identity_summary(
                         draw_inline_item_fact(
                             ui,
                             &mut drew,
-                            "Max stack",
+                            "Max Stack",
                             maximum.to_string(),
                             true,
                         );
@@ -326,7 +439,7 @@ fn draw_hash_item_identity_summary(
                         draw_inline_item_fact(
                             ui,
                             &mut drew,
-                            "Bucket rows",
+                            "Bucket Capacity",
                             capacity.to_string(),
                             true,
                         );
@@ -411,7 +524,7 @@ fn draw_hash_item_package_metadata(
     metadata: &ItemPackageMetadata,
     material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
 ) {
-    metadata_subsection(ui, "Package definition", |ui| {
+    metadata_subsection(ui, "Package Definition", |ui| {
         let definition_tag = TagHash(metadata.definition_tag);
         if ui.available_width() >= 840.0 {
             ui.columns(2, |columns| {
@@ -463,7 +576,6 @@ fn draw_hash_item_package_metadata(
                 });
         }
     });
-    draw_hash_item_render_overrides(ui, item_hash, metadata);
 }
 
 fn draw_hash_item_package_primary_fields(
@@ -475,19 +587,19 @@ fn draw_hash_item_package_primary_fields(
 ) {
     hash_detail_field(
         ui,
-        "Definition index",
+        "Definition Index",
         metadata.definition_index.to_string(),
         true,
     );
     hash_detail_field(
         ui,
-        "Definition tag",
+        "Definition Tag",
         format_hash_hex(u64::from(metadata.definition_tag)),
         true,
     );
     hash_detail_field(
         ui,
-        "Definition package ID",
+        "Package ID",
         format!(
             "{} · 0x{:04X}",
             definition_tag.pkg_id(),
@@ -497,12 +609,12 @@ fn draw_hash_item_package_primary_fields(
     );
     hash_detail_field(
         ui,
-        "Definition entry index",
+        "Package Entry Index",
         definition_tag.entry_index().to_string(),
         true,
     );
     if let Some(size) = metadata.definition_size {
-        hash_detail_field(ui, "Definition record size", format!("{size} bytes"), true);
+        hash_detail_field(ui, "Definition Record Size", format!("{size} bytes"), true);
     }
     hash_detail_field(
         ui,
@@ -523,7 +635,7 @@ fn draw_hash_item_package_reference_fields(
     if let Some(tag) = metadata.string_definition_tag {
         hash_detail_field(
             ui,
-            "String definition tag",
+            "String Definition Tag",
             format_hash_hex(u64::from(tag)),
             true,
         );
@@ -531,19 +643,19 @@ fn draw_hash_item_package_reference_fields(
     if let Some(tag) = metadata.icon_container_tag {
         hash_detail_field(
             ui,
-            "Icon container tag",
+            "Icon Container Tag",
             format_hash_hex(u64::from(tag)),
             true,
         );
     }
     if let Some(category_hash) = metadata.plug_category_hash {
-        catalog_hash_hex_and_decimal_field(ui, catalog, "Plug category hash", category_hash);
+        catalog_hash_hex_and_decimal_field(ui, catalog, "Plug Category Hash", category_hash);
     }
     if let Some(slot) = metadata.equipment_slot {
-        hash_detail_field(ui, "Native equipment slot", slot.to_string(), true);
+        hash_detail_field(ui, "Native Equipment Slot ID", slot.to_string(), true);
     }
     if let Some(index) = metadata.socket_entry_list_index {
-        hash_detail_field(ui, "Socket-entry list index", index.to_string(), true);
+        hash_detail_field(ui, "Socket Entry List Index", index.to_string(), true);
     }
     if let Some(index) = metadata.roll_set_index {
         let meaning = match index {
@@ -551,13 +663,18 @@ fn draw_hash_item_package_reference_fields(
             u16::MAX => "service-granted outside a roll set",
             _ => "server roll-set ordinal",
         };
-        hash_detail_field(ui, "Plug roll set", format!("{index} · {meaning}"), true);
+        hash_detail_field(
+            ui,
+            "Plug Roll Set Index",
+            format!("{index} · {meaning}"),
+            true,
+        );
     }
     if let Some(index) = metadata.linked_plug_index {
-        hash_detail_field(ui, "Linked plug definition index", index.to_string(), true);
+        hash_detail_field(ui, "Linked Plug Definition Index", index.to_string(), true);
     }
     if let Some(hash) = metadata.linked_plug_hash {
-        ui.label(metadata_label_text(ui, "Linked plug definition"));
+        ui.label(metadata_label_text(ui, "Linked Plug Definition"));
         ui.horizontal_wrapped(|ui| {
             draw_named_catalog_hash_link(
                 ui,
@@ -569,8 +686,8 @@ fn draw_hash_item_package_reference_fields(
         });
         ui.end_row();
     }
-    if let Some(index) = metadata.gear_art_index {
-        hash_detail_field(ui, "Gear-art definition index", index.to_string(), true);
+    if let Some(index) = metadata.weapon_pattern_index {
+        hash_detail_field(ui, "Weapon Pattern Index", index.to_string(), true);
     }
     let arrangements = ["Generic", "Titan", "Hunter", "Warlock"]
         .into_iter()
@@ -578,12 +695,17 @@ fn draw_hash_item_package_reference_fields(
         .filter_map(|(label, index)| index.map(|index| format!("{label} {index}")))
         .collect::<Vec<_>>();
     if !arrangements.is_empty() {
-        hash_detail_field(ui, "Art arrangements", arrangements.join(" · "), true);
+        hash_detail_field(
+            ui,
+            "Art Arrangement Indices",
+            arrangements.join(" · "),
+            true,
+        );
     }
     if !metadata.render_overrides.is_empty() {
         hash_detail_field(
             ui,
-            "Material render overrides",
+            "Active Material Override Count",
             metadata.render_overrides.len().to_string(),
             true,
         );
@@ -592,51 +714,16 @@ fn draw_hash_item_package_reference_fields(
         draw_item_material_requirement_set_link(
             ui,
             catalog,
-            "Insertion material requirement set",
+            "Insertion Material Requirement Set",
             indices.insertion,
         );
         draw_item_material_requirement_set_link(
             ui,
             catalog,
-            "Enabled material requirement set",
+            "Enabled Material Requirement Set",
             indices.enabled,
         );
     }
-}
-
-fn draw_hash_item_render_overrides(
-    ui: &mut egui::Ui,
-    item_hash: u64,
-    metadata: &ItemPackageMetadata,
-) {
-    if metadata.render_overrides.is_empty() {
-        return;
-    }
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!(
-        "Material render overrides ({})",
-        metadata.render_overrides.len()
-    ))
-    .id_salt(("hash_item_render_overrides", item_hash))
-    .default_open(false)
-    .show(ui, |ui| {
-        egui::Grid::new(("hash_item_render_override_rows", item_hash))
-            .num_columns(3)
-            .spacing([16.0, 3.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("Stage");
-                ui.strong("Key");
-                ui.strong("Value");
-                ui.end_row();
-                for override_row in &metadata.render_overrides {
-                    ui.monospace(override_row.stage.to_string());
-                    ui.monospace(override_row.key.to_string());
-                    ui.monospace(override_row.value.to_string());
-                    ui.end_row();
-                }
-            });
-    });
 }
 
 fn draw_hash_inventory_placement_summary(ui: &mut egui::Ui, metadata: &InventoryMetadata) {
@@ -645,10 +732,10 @@ fn draw_hash_inventory_placement_summary(ui: &mut egui::Ui, metadata: &Inventory
             .num_columns(2)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
-                hash_detail_field(ui, "Scope", metadata.scope.label(), false);
+                hash_detail_field(ui, "Storage Scope", metadata.scope.label(), false);
                 hash_detail_field(
                     ui,
-                    "Native bucket",
+                    "Native Bucket ID",
                     metadata.native_bucket_id.to_string(),
                     true,
                 );
@@ -665,7 +752,7 @@ fn draw_hash_inventory_capacity_summary(ui: &mut egui::Ui, metadata: &InventoryM
                 hash_detail_field(ui, "Stackability", metadata.stackability.label(), false);
                 hash_detail_field(
                     ui,
-                    "Maximum stack",
+                    "Maximum Stack Size",
                     metadata
                         .max_stack_size
                         .map_or_else(|| "<none>".into(), |value| value.to_string()),
@@ -673,7 +760,7 @@ fn draw_hash_inventory_capacity_summary(ui: &mut egui::Ui, metadata: &InventoryM
                 );
                 hash_detail_field(
                     ui,
-                    "Bucket capacity",
+                    "Inventory Bucket Capacity",
                     metadata
                         .bucket_capacity
                         .map_or_else(|| "<none>".into(), |value| value.to_string()),
@@ -697,68 +784,53 @@ fn draw_hash_item_investment_stats(
         .id_salt(("hash_item_investment_stats", item_hash))
         .default_open(true)
         .show(ui, |ui| {
+            let technical_id = ui.id().with("stat_technical_ids");
+            let mut technical = ui.data_mut(|data| data.get_temp::<bool>(technical_id).unwrap_or(false));
+            ui.checkbox(&mut technical, "Show Technical IDs");
+            ui.data_mut(|data| data.insert_temp(technical_id, technical));
+            egui::ScrollArea::horizontal().id_salt(("stat_columns", item_hash)).show(ui, |ui| {
             egui::Grid::new(("hash_item_investment_stat_rows", item_hash))
-                .num_columns(5)
+                .num_columns(if technical { 6 } else { 3 })
                 .spacing([16.0, 3.0])
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.strong("Index");
                     ui.strong("Stat");
-                    ui.strong("Hex");
-                    ui.strong("Decimal");
-                    ui.strong("Value");
+                    ui.strong("Investment Value")
+                        .on_hover_text("Raw value stored in the investment block");
+                    ui.strong("Display Value").on_hover_text(
+                        "Value calculated from this item's decoded stat-group display curve, not a live gameplay measurement",
+                    );
+                    if technical {
+                        ui.strong("Index");
+                        ui.strong("Hex");
+                        ui.strong("Decimal");
+                    }
                     ui.end_row();
                     for stat in &metadata.investment_stats {
                         let definition = catalog.item_stat_definition(stat.definition_index);
-                        ui.monospace(stat.definition_index.to_string());
                         let stat_name = definition
                             .map(|definition| definition.name.as_str())
                             .filter(|name| !name.trim().is_empty());
-                        ui.label(stat_name.unwrap_or("-"));
                         if let Some(definition) = definition {
-                            draw_hash_hex_and_decimal_cells(ui, definition.hash);
+                            draw_named_catalog_hash_link(ui, catalog, definition.hash, stat_name.unwrap_or("Unnamed Stat"));
                         } else {
-                            ui.label(egui::RichText::new("-").weak());
                             ui.label(egui::RichText::new("-").weak());
                         }
                         ui.monospace(stat.value.to_string());
+                        ui.monospace(catalog.item_in_game_stat_display(item_hash, stat));
+                        if technical {
+                            ui.monospace(stat.definition_index.to_string());
+                            if let Some(definition) = definition {
+                                draw_hash_hex_and_decimal_cells(ui, definition.hash);
+                            } else {
+                                ui.label("-");
+                                ui.label("-");
+                            }
+                        }
                         ui.end_row();
                     }
                 });
-        });
-}
-
-fn draw_hash_item_intrinsic_perks(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    item_hash: u64,
-    metadata: &ItemPackageMetadata,
-) {
-    if metadata.intrinsic_perks.is_empty() {
-        return;
-    }
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!("Perks ({})", metadata.intrinsic_perks.len()))
-        .id_salt(("hash_item_intrinsic_perks", item_hash))
-        .default_open(true)
-        .show(ui, |ui| {
-            egui::Grid::new(("hash_item_intrinsic_perk_rows", item_hash))
-                .num_columns(3)
-                .spacing([16.0, 3.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Index");
-                    ui.strong("Perk");
-                    ui.strong("Hex");
-                    ui.end_row();
-                    for perk in &metadata.intrinsic_perks {
-                        ui.monospace(perk.definition_index.to_string());
-                        ui.label(egui::RichText::new("Name not resolved").weak())
-                            .on_hover_text(SANDBOX_PERK_NAME_UNRESOLVED_HELP);
-                        draw_catalog_hash_link(ui, catalog, perk.hash, format_hash_hex(perk.hash));
-                        ui.end_row();
-                    }
-                });
+            });
         });
 }
 
@@ -771,7 +843,7 @@ fn draw_hash_item_stat_matches(
         return;
     };
     ui.add_space(8.0);
-    hash_metadata_section(ui, "Investment stat definition", true, |ui| {
+    hash_metadata_section(ui, "Investment Stat Definition", true, |ui| {
         egui::Grid::new(("hash_item_stat_definition", definition.hash))
             .num_columns(2)
             .spacing([16.0, 4.0])
@@ -788,7 +860,7 @@ fn draw_hash_item_stat_matches(
                 );
                 hash_detail_field(
                     ui,
-                    "Definition index",
+                    "Definition Index",
                     definition.definition_index.to_string(),
                     true,
                 );
@@ -799,19 +871,23 @@ fn draw_hash_item_stat_matches(
             return;
         }
         ui.add_space(8.0);
-        egui::CollapsingHeader::new(format!("Item references ({})", references.len()))
+        egui::CollapsingHeader::new(format!("Items Using This Stat ({})", references.len()))
             .id_salt(("hash_item_stat_references", definition.hash))
             .default_open(references.len() <= 12)
             .show(ui, |ui| {
                 egui::Grid::new(("hash_item_stat_reference_rows", definition.hash))
-                    .num_columns(4)
+                    .num_columns(5)
                     .spacing([16.0, 3.0])
                     .striped(true)
                     .show(ui, |ui| {
                         ui.strong("Item");
                         ui.strong("Hex");
                         ui.strong("Decimal");
-                        ui.strong("Value");
+                        ui.strong("Investment Value")
+                            .on_hover_text("Raw value stored in the investment block");
+                        ui.strong("Display Value").on_hover_text(
+                            "Value produced by each item's decoded stat-group display curve",
+                        );
                         ui.end_row();
                         for (item_hash, stat) in references {
                             ui.label(
@@ -821,50 +897,12 @@ fn draw_hash_item_stat_matches(
                             );
                             draw_hash_hex_and_decimal_cells(ui, *item_hash);
                             ui.monospace(stat.value.to_string());
+                            ui.monospace(catalog.item_in_game_stat_display(*item_hash, stat));
                             ui.end_row();
                         }
                     });
             });
     });
-}
-
-fn draw_hash_intrinsic_perk_matches(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    hash: u64,
-    matches: &CatalogHashMatches<'_>,
-) {
-    let references = matches.intrinsic_perk_item_references;
-    if references.is_empty() {
-        return;
-    }
-    ui.add_space(8.0);
-    hash_metadata_section(
-        ui,
-        &format!("Intrinsic perk references ({})", references.len()),
-        references.len() <= 12,
-        |ui| {
-            egui::Grid::new(("hash_intrinsic_perk_reference_rows", hash))
-                .num_columns(3)
-                .spacing([16.0, 3.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Item");
-                    ui.strong("Hex");
-                    ui.strong("Decimal");
-                    ui.end_row();
-                    for item_hash in references {
-                        ui.label(
-                            catalog
-                                .package_item_name(*item_hash)
-                                .unwrap_or("<not present>"),
-                        );
-                        draw_hash_hex_and_decimal_cells(ui, *item_hash);
-                        ui.end_row();
-                    }
-                });
-        },
-    );
 }
 
 fn draw_item_material_requirement_set_link(
@@ -876,16 +914,25 @@ fn draw_item_material_requirement_set_link(
     let Some(index) = index else {
         return;
     };
-    hash_detail_field(ui, &format!("{label} index"), index.to_string(), true);
+    hash_detail_field(ui, &format!("{label} Index"), index.to_string(), true);
     if let Some(set) = catalog.material_requirement_set(usize::from(index)) {
-        ui.label(metadata_label_text(ui, format!("{label} hash")));
+        ui.label(metadata_label_text(ui, format!("{label} Hash")));
         draw_catalog_hash_link(ui, catalog, set.hash, format_hash_hex_and_decimal(set.hash));
         ui.end_row();
     }
 }
 
-fn draw_hash_item_sockets(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::catalog::ItemDef) {
-    let socket_count = item.sockets.len().max(item.default_plugs.len());
+fn draw_hash_item_sockets(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    item: &crate::catalog::ItemDef,
+    plugs: Option<&serde_json::Value>,
+) {
+    let socket_count = item.sockets.len().max(item.default_plugs.len()).max(
+        plugs
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len),
+    );
     if socket_count == 0 {
         return;
     }
@@ -895,52 +942,85 @@ fn draw_hash_item_sockets(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::ca
         .id_salt(("hash_item_sockets", item.hash))
         .default_open(true)
         .show(ui, |ui| {
-            egui::Grid::new(("hash_item_socket_rows", item.hash))
-                .num_columns(4)
-                .spacing([12.0, 3.0])
-                .striped(true)
+            let selection_id = egui::Id::new(("hash_item_socket_source_selection", item.hash));
+            let mut clicked_socket = None;
+            let current_socket = ui.data_mut(|data| data.get_temp::<usize>(selection_id));
+            egui::ScrollArea::horizontal()
+                .id_salt("socket-table-columns")
                 .show(ui, |ui| {
-                    ui.strong("Socket");
-                    ui.strong("Default plug");
-                    ui.strong("Options");
-                    ui.strong("Sources");
-                    ui.end_row();
-                    for socket_index in 0..socket_count {
-                        let socket = item.sockets.get(socket_index);
-                        let default_hash = item
-                            .default_plugs
-                            .get(socket_index)
-                            .and_then(Option::as_deref)
-                            .and_then(parse_hash_hex);
-                        let socket_label = socket.map_or_else(
-                            || format!("{}. Socket", socket_index + 1),
-                            |socket| socket.display_label(socket_index),
-                        );
-                        let response = ui.label(socket_label);
-                        if let Some(socket) = socket {
-                            response.on_hover_text(format!(
-                                "Socket type {} · pool {}",
-                                socket.socket_type, socket.pool
-                            ));
-                        }
-                        if let Some(default_hash) = default_hash {
-                            let name = catalog
-                                .package_item_name(default_hash)
-                                .or_else(|| catalog.display_name(default_hash))
-                                .unwrap_or("Name not resolved");
-                            draw_named_catalog_hash_link(ui, catalog, default_hash, name);
-                        } else {
-                            ui.label(egui::RichText::new("-").weak());
-                        }
-                        ui.monospace(
-                            socket
-                                .map_or(0, |socket| catalog.socket_options(socket).len())
-                                .to_string(),
-                        );
-                        let source_count = socket.map_or(0, |socket| socket.sources.len());
-                        ui.monospace(source_count.to_string());
-                        ui.end_row();
-                    }
+                    egui::Grid::new(("hash_item_socket_rows", item.hash))
+                        .num_columns(if plugs.is_some() { 6 } else { 4 })
+                        .spacing([12.0, 3.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Socket");
+                            ui.strong("Default Plug");
+                            if plugs.is_some() {
+                                ui.strong("Saved Plug");
+                                ui.strong("Comparison");
+                            }
+                            ui.strong("Plug Choices");
+                            ui.strong("Option Sets");
+                            ui.end_row();
+                            for socket_index in 0..socket_count {
+                                let socket = item.sockets.get(socket_index);
+                                let default_hash = item
+                                    .default_plugs
+                                    .get(socket_index)
+                                    .and_then(Option::as_deref)
+                                    .and_then(parse_hash_hex);
+                                let socket_label = socket.map_or_else(
+                                    || format!("{} · No Decoded Socket", socket_index + 1),
+                                    |socket| socket.display_label(socket_index),
+                                );
+                                let response = ui.add_enabled(
+                                    socket.is_some_and(|socket| {
+                                        !catalog.socket_options(socket).is_empty()
+                                            || !socket.sources.is_empty()
+                                            || default_hash.is_some()
+                                    }),
+                                    egui::SelectableLabel::new(
+                                        current_socket == Some(socket_index),
+                                        socket_label,
+                                    ),
+                                );
+                                if response.clicked() {
+                                    clicked_socket = Some(socket_index);
+                                }
+                                if let Some(socket) = socket {
+                                    response.on_hover_text(format!(
+                                        "Socket type {} · pool {}",
+                                        socket.socket_type, socket.pool
+                                    ));
+                                }
+                                if let Some(default_hash) = default_hash {
+                                    let name = catalog
+                                        .package_item_name(default_hash)
+                                        .or_else(|| catalog.display_name(default_hash))
+                                        .unwrap_or("Name not resolved");
+                                    draw_named_catalog_hash_link(ui, catalog, default_hash, name);
+                                } else {
+                                    ui.label(egui::RichText::new("-").weak());
+                                }
+                                if let Some(plugs) = plugs {
+                                    super::instance::draw_saved_plug(
+                                        ui,
+                                        catalog,
+                                        plugs,
+                                        socket_index,
+                                        default_hash,
+                                    );
+                                }
+                                ui.monospace(
+                                    socket
+                                        .map_or(0, |socket| catalog.socket_options(socket).len())
+                                        .to_string(),
+                                );
+                                let source_count = socket.map_or(0, |socket| socket.sources.len());
+                                ui.monospace(source_count.to_string());
+                                ui.end_row();
+                            }
+                        });
                 });
 
             let detail_socket_indices = item
@@ -963,15 +1043,14 @@ fn draw_hash_item_sockets(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::ca
             let Some(first_socket_index) = detail_socket_indices.first().copied() else {
                 return;
             };
-            let selection_id = egui::Id::new(("hash_item_socket_source_selection", item.hash));
-            let mut selected_socket_index = ui
-                .data_mut(|data| data.get_temp::<usize>(selection_id))
+            let mut selected_socket_index = clicked_socket
+                .or(current_socket)
                 .filter(|selected| detail_socket_indices.contains(selected))
                 .unwrap_or(first_socket_index);
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.strong("Socket details");
+                ui.strong("Socket Details");
                 egui::ComboBox::from_id_salt(("hash_item_socket_source_picker", item.hash))
                     .selected_text(
                         item.sockets[selected_socket_index].display_label(selected_socket_index),
@@ -984,7 +1063,7 @@ fn draw_hash_item_sockets(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::ca
                                 &mut selected_socket_index,
                                 *socket_index,
                                 format!(
-                                    "{} · {} origin{}",
+                                    "{} · {} Option Set{}",
                                     socket.display_label(*socket_index),
                                     socket.sources.len(),
                                     if socket.sources.len() == 1 { "" } else { "s" }
@@ -1019,7 +1098,7 @@ fn draw_hash_item_socket_sources(
             continue;
         }
         egui::CollapsingHeader::new(format!(
-            "{} members ({})",
+            "{} Members ({})",
             source.label(),
             source_options.len()
         ))
@@ -1032,17 +1111,24 @@ fn draw_hash_item_socket_sources(
         .default_open(false)
         .show(ui, |ui| {
             let source_slot = socket_index.saturating_mul(64).saturating_add(source_index);
+            let ordered = &source.ordered_members;
+            let order_id = ui.id().with("authored_order");
+            let mut authored_order = ui.data_mut(|data| data.get_temp::<bool>(order_id).unwrap_or(!ordered.is_empty()));
+            ui.add_enabled(!ordered.is_empty(), egui::Checkbox::new(&mut authored_order, "Stored Package Order"))
+                .on_hover_text("Preserves the native member order and duplicates. When off, shows the normalized picker pool.");
+            ui.data_mut(|data| data.insert_temp(order_id, authored_order));
+            if ordered.is_empty() { ui.weak("No ordered member list was retained; showing the normalized pool."); }
             draw_hash_item_rows(
                 ui,
                 catalog,
                 ("socket_source_members", item.hash, source_slot),
-                source_options.iter().copied(),
+                if authored_order && !ordered.is_empty() { ordered.as_slice() } else { source_options }.iter().copied(),
             );
         });
     }
 
     if !options.is_empty() {
-        egui::CollapsingHeader::new(format!("Available plugs ({})", options.len()))
+        egui::CollapsingHeader::new(format!("Combined Plug Options ({})", options.len()))
             .id_salt(("hash_item_socket_combined", item.hash, socket_index))
             .default_open(false)
             .show(ui, |ui| {
@@ -1068,10 +1154,10 @@ fn draw_hash_item_socket_source_summary(
         .spacing([16.0, 3.0])
         .striped(true)
         .show(ui, |ui| {
-            ui.strong("Source");
-            ui.strong("Members");
-            ui.strong("Origin");
-            ui.strong("Pool").on_hover_text(
+            ui.strong("Option Set");
+            ui.strong("Plug Count");
+            ui.strong("Data Source");
+            ui.strong("Catalog Pool ID").on_hover_text(
                 "Interned catalog pool ID. The source label contains the package record index or hash.",
             );
             ui.end_row();
@@ -1137,9 +1223,9 @@ fn draw_hash_item_abilities(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::
                     for (label, choices) in [
                         ("Movement", abilities.movement.as_slice()),
                         ("Grenade", abilities.grenade.as_slice()),
-                        ("Super ability", abilities.super_ability.as_slice()),
+                        ("Super Ability", abilities.super_ability.as_slice()),
                         ("Melee", abilities.melee.as_slice()),
-                        ("Class ability", abilities.class_ability.as_slice()),
+                        ("Class Ability", abilities.class_ability.as_slice()),
                     ] {
                         for choice in choices {
                             draw_hash_ability_row(ui, catalog, label, choice);
@@ -1150,7 +1236,7 @@ fn draw_hash_item_abilities(ui: &mut egui::Ui, catalog: &Catalog, item: &crate::
                             draw_hash_ability_row(
                                 ui,
                                 catalog,
-                                &format!("{} · Super ability", attunement.name),
+                                &format!("{} · Super Ability", attunement.name),
                                 choice,
                             );
                         }
@@ -1202,21 +1288,21 @@ fn draw_hash_inventory_bucket(
     native_buckets.dedup();
 
     ui.add_space(8.0);
-    hash_metadata_section(ui, "Inventory bucket", false, |ui| {
+    hash_metadata_section(ui, "Inventory Bucket", false, |ui| {
         egui::Grid::new(("hash_inventory_bucket", hash))
             .num_columns(2)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
                 hash_detail_field(
                     ui,
-                    "Definition hash",
+                    "Definition Hash",
                     format_hash_hex_and_decimal(hash),
                     true,
                 );
                 hash_detail_field(ui, "Items", items.len().to_string(), true);
                 hash_detail_field(
                     ui,
-                    "Native buckets",
+                    "Native Bucket IDs",
                     if native_buckets.is_empty() {
                         "<not resolved>".into()
                     } else {
@@ -1246,9 +1332,46 @@ fn draw_hash_item_rows(
     hashes: impl IntoIterator<Item = u64>,
 ) {
     let hashes = hashes.into_iter().collect::<Vec<_>>();
+    let filter_id = ui.id().with(("item_rows_filter", id));
+    let mut query = ui.data_mut(|data| data.get_temp::<String>(filter_id).unwrap_or_default());
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .hint_text("Filter by Name, Type, or Hash")
+                .desired_width(260.0),
+        );
+        if !query.is_empty() && ui.small_button("Clear").clicked() {
+            query.clear();
+        }
+    });
+    ui.data_mut(|data| data.insert_temp(filter_id, query.clone()));
+    let query = query.trim().to_lowercase();
+    let matching = hashes
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, hash)| {
+            query.is_empty()
+                || format_hash_hex(*hash).to_lowercase().contains(&query)
+                || catalog
+                    .package_item_name(*hash)
+                    .is_some_and(|name| name.to_lowercase().contains(&query))
+                || catalog
+                    .package_item_type_name(*hash)
+                    .is_some_and(|name| name.to_lowercase().contains(&query))
+        })
+        .collect::<Vec<_>>();
+    ui.weak(format!("{} of {} members", matching.len(), hashes.len()));
+    if matching.is_empty() {
+        ui.weak("No members match this filter.");
+        return;
+    }
     const MAX_VISIBLE_ROWS: usize = 18;
-    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 3.0;
-    let visible_rows = hashes.len().clamp(1, MAX_VISIBLE_ROWS) + 1;
+    let row_height = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y)
+        + 3.0;
+    let visible_rows = matching.len().clamp(1, MAX_VISIBLE_ROWS) + 1;
     let table_height = row_height * visible_rows as f32;
     egui::ScrollArea::vertical()
         .id_salt(("hash_item_rows", id))
@@ -1257,15 +1380,17 @@ fn draw_hash_item_rows(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             egui::Grid::new(("hash_item_row_grid", id))
-                .num_columns(3)
+                .num_columns(4)
                 .striped(true)
                 .spacing([16.0, 3.0])
                 .show(ui, |ui| {
+                    ui.strong("Row");
                     ui.strong("Hash");
                     ui.strong("Name");
                     ui.strong("Type");
                     ui.end_row();
-                    for hash in hashes {
+                    for (index, hash) in matching {
+                        ui.monospace((index + 1).to_string());
                         draw_catalog_hash_link(ui, catalog, hash, format_hash_hex(hash));
                         let name = catalog
                             .package_item_name(hash)

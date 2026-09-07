@@ -14,7 +14,7 @@ use super::{
         optional_object_member, optional_root_object_member, parse_nonzero_soid, profile_items,
         validate_dismantle_rewards, validate_existing_character_inventories,
     },
-    schema::{INVENTORY_FLAG_MASK, KNOWN_ITEM_MEMBERS, SchemaMode, schema_mode},
+    schema::{KNOWN_ITEM_MEMBERS, SchemaMode, schema_mode},
     soids::validate_unique_soids,
 };
 
@@ -207,6 +207,7 @@ pub(in crate::app::inventory) fn inventory_object_mut(
 pub(in crate::app::inventory) fn validate_inventory_action(
     location: InventoryItemLocation,
     action: &InventoryItemAction,
+    flag_mask: u8,
 ) -> InventoryResult<()> {
     let path = inventory_item_path(location);
     match action {
@@ -222,10 +223,10 @@ pub(in crate::app::inventory) fn validate_inventory_action(
         InventoryItemAction::SetPlugs(plugs) => {
             validate_plug_snapshot(plugs, &format!("{path}/plugs"))
         }
-        InventoryItemAction::SetFlags(Some(flags)) if *flags > INVENTORY_FLAG_MASK => {
+        InventoryItemAction::SetFlags(Some(flags)) if *flags > flag_mask => {
             Err(InventoryError::new(
                 format!("{path}/flags"),
-                format!("flags must be between 0 and {INVENTORY_FLAG_MASK}"),
+                format!("flags must be between 0 and {flag_mask}"),
             ))
         }
         InventoryItemAction::SetFlags(_) | InventoryItemAction::Remove => Ok(()),

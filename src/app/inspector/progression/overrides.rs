@@ -61,7 +61,7 @@ pub(super) fn draw_override_metadata(
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
-            metadata_field(ui, "Definition index", format!("#{index}"), true);
+            metadata_field(ui, "Definition Index", format!("#{index}"), true);
             match selection {
                 MetadataSelection::FlagOverride(_, value) => {
                     metadata_field(

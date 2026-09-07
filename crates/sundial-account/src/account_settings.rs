@@ -4,11 +4,17 @@ use std::collections::BTreeMap;
 
 use crate::{AccountError, AccountResult};
 
+/// Lowest field-of-view value accepted by current Project Sunrise account settings.
+pub const FIELD_OF_VIEW_MINIMUM: u64 = 55;
+/// Highest field-of-view value accepted by current Project Sunrise account settings.
+pub const FIELD_OF_VIEW_MAXIMUM: u64 = 155;
+
 /// Adapter-derived write capabilities for account settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AccountSettingsCapabilities {
     pub writable: bool,
     pub named_key_bindings_writable: bool,
+    pub extended_field_of_view: bool,
 }
 
 /// A logical Project Sunrise account-settings group.
@@ -217,6 +223,11 @@ impl AccountSettingsState {
                 {
                     return Err(AccountError::KeyBindingsReadOnly);
                 }
+                if !capabilities.extended_field_of_view
+                    && matches!((&key, &value), (AccountSettingKey::Preference { group: AccountSettingGroup::Display, name }, AccountSettingValue::Unsigned(value)) if name.as_ref() == "field_of_view" && *value > 105)
+                {
+                    return Err(AccountError::InvalidAccountSettingValue);
+                }
                 validate_setting(&key, &value)?;
                 self.values.insert(key, value);
             }
@@ -314,7 +325,7 @@ fn validate_preference(
         (Display, "hdr_mode", AccountSettingValue::Unsigned(value)) => *value <= 1,
         (Display, "vertical_sync_interval", AccountSettingValue::Unsigned(value)) => *value <= 4,
         (Display, "field_of_view", AccountSettingValue::Unsigned(value)) => {
-            (55..=105).contains(value)
+            (FIELD_OF_VIEW_MINIMUM..=FIELD_OF_VIEW_MAXIMUM).contains(value)
         }
 
         (
@@ -601,6 +612,7 @@ mod tests {
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: true,
+            extended_field_of_view: true,
         }
     }
 
@@ -709,6 +721,30 @@ mod tests {
                 }],
             ),
             Err(AccountError::KeyBindingsReadOnly)
+        );
+    }
+
+    #[test]
+    fn field_of_view_accepts_the_active_sunrise_upper_boundary() {
+        let key = preference(AccountSettingGroup::Display, "field_of_view");
+        let mut state = AccountSettingsState::try_new(
+            capabilities(),
+            BTreeMap::from([(
+                key.clone(),
+                AccountSettingValue::Unsigned(FIELD_OF_VIEW_MAXIMUM),
+            )]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.apply_all(
+                capabilities(),
+                [AccountSettingsCommand::Set {
+                    key,
+                    value: AccountSettingValue::Unsigned(FIELD_OF_VIEW_MAXIMUM + 1),
+                }],
+            ),
+            Err(AccountError::InvalidAccountSettingValue)
         );
     }
 
