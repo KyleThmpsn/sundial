@@ -29,6 +29,16 @@ fn click_label(output: &egui::FullOutput, label: &str) -> Vec<egui::Event> {
     ]
 }
 
+fn editor_menu(
+    ctx: &egui::Context,
+    text: &mut String,
+    state: &mut JsonEditorState,
+) -> egui::FullOutput {
+    let output = frame(ctx, text, state, vec![]);
+    frame(ctx, text, state, click_label(&output, "Editor"));
+    frame(ctx, text, state, vec![])
+}
+
 #[test]
 fn collapse_all_keeps_top_level_keys_and_source_visible() {
     let ctx = egui::Context::default();
@@ -36,7 +46,7 @@ fn collapse_all_keeps_top_level_keys_and_source_visible() {
     let mut text = original.to_owned();
     let mut state = JsonEditorState::default();
     state.folded.insert(fold_regions(&text)[0].id.clone());
-    let output = frame(&ctx, &mut text, &mut state, vec![]);
+    let output = editor_menu(&ctx, &mut text, &mut state);
     frame(
         &ctx,
         &mut text,
@@ -71,7 +81,7 @@ fn replace_all_includes_folded_unicode_content_and_undoes_once() {
         &ctx,
         &mut text,
         &mut state,
-        click_label(&output, "Replace all"),
+        click_label(&output, "Replace All"),
     );
     assert_eq!(text, original.replace('é', "🔥"));
     select(&ctx, &state, 0, 0);
@@ -184,7 +194,7 @@ fn go_to_error_focuses_the_editor_without_changing_source() {
     let original = "{\n  \"a\": [1,]\n}";
     let mut text = original.to_owned();
     let mut state = JsonEditorState::default();
-    let output = frame(&ctx, &mut text, &mut state, vec![]);
+    let output = editor_menu(&ctx, &mut text, &mut state);
     frame(
         &ctx,
         &mut text,
@@ -201,6 +211,16 @@ fn frame(
     state: &mut JsonEditorState,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
+    frame_mode(ctx, text, state, events, false)
+}
+
+fn frame_mode(
+    ctx: &egui::Context,
+    text: &mut String,
+    state: &mut JsonEditorState,
+    events: Vec<egui::Event>,
+    detached: bool,
+) -> egui::FullOutput {
     ctx.run(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -212,7 +232,7 @@ fn frame(
         },
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                draw(ui, text, state, false, true);
+                draw(ui, text, state, detached, true);
             });
         },
     )
@@ -426,19 +446,21 @@ fn rejected_edits_are_retried_only_when_the_user_changes_them() {
 }
 
 #[test]
-fn rendered_editor_reports_unsaved_changes_and_the_error_reason() {
-    let ctx = egui::Context::default();
-    let mut text = r#"{"x":1,"x":2}"#.to_owned();
-    let mut state = JsonEditorState::default();
-    let output = frame(&ctx, &mut text, &mut state, vec![]);
-    let labels = output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::epaint::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(labels.contains(&"Unsaved changes"));
-    assert!(labels.iter().any(|text| text.contains("duplicate")));
+fn rendered_editor_reports_errors_and_keeps_a_detached_save_indicator() {
+    for detached in [false, true] {
+        let ctx = egui::Context::default();
+        let mut text = r#"{"x":1,"x":2}"#.to_owned();
+        let mut state = JsonEditorState::default();
+        let output = frame_mode(&ctx, &mut text, &mut state, vec![], detached);
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels.contains(&"Unsaved changes"), detached);
+        assert!(labels.iter().any(|text| text.contains("duplicate")));
+    }
 }

@@ -49,10 +49,15 @@ pub(crate) fn inherited_key(
 ) -> AuthoringResult<u32> {
     let content = content(manager, entity)?;
     let key = selected_key(&content.owner, &content.properties, content_group)?;
+    icon_layer(manager, key)?;
+    Ok(key)
+}
+
+pub(super) fn icon_layer(manager: &PackageManager, key: u32) -> AuthoringResult<Option<TagHash>> {
     // Some stock appearances (including Perfect Paradox) explicitly have no
     // silhouette override. Preserve that native value when inheriting appearance.
     if key == 0x811C9DC5 {
-        return Ok(key);
+        return Ok(None);
     }
     let table = manager
         .read_tag(super::assets::TABLE)
@@ -61,15 +66,15 @@ pub(crate) fn inherited_key(
     if class != 0x80804A59 || count > 4096 || rows.checked_add(count * 112) != Some(table.len()) {
         return Err(invalid("Unsupported ammunition HUD icon table layout"));
     }
-    if !table[rows..]
+    let row = table[rows..]
         .chunks_exact(112)
-        .any(|row| row[..4] == key.to_le_bytes())
-    {
-        return Err(invalid(format!(
-            "Appearance donor HUD key {key:08X} is missing from the native HUD table"
-        )));
-    }
-    Ok(key)
+        .find(|row| row[..4] == key.to_le_bytes())
+        .ok_or_else(|| {
+            invalid(format!(
+                "Appearance donor HUD key {key:08X} is missing from the native HUD table"
+            ))
+        })?;
+    u32_at(row, 4).map(TagHash).map(Some)
 }
 
 fn selected_key(owner: &[u8], properties: &[usize], content_group: u32) -> AuthoringResult<u32> {

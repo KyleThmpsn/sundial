@@ -698,11 +698,11 @@ pub(super) fn raw_patch_range(
 }
 
 /// Validates compiler-facing investment overrides against the selected install's decoded donor
-/// catalog. This is the only package-backed compatibility boundary for `WeaponCloneSpec` values.
+/// catalog. Native payload topology is checked separately during dependency resolution and build.
 ///
 /// Structural recipe/spec validation remains with the public compiler wrappers. Loading Sundial's
-/// catalog is intentionally skipped when every spec inherits stats, socket columns, weapon
-/// pattern, and the stat-display group.
+/// catalog is skipped when no spec selects a presentation donor or changes a catalog-validated
+/// stat, perk, trait, socket, translation selector, plug metadata field or raw payload range.
 pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
     install_directory: &Path,
     specs: impl IntoIterator<Item = &'a WeaponCloneSpec>,

@@ -1,13 +1,12 @@
 //! Current Sunrise configuration. Omitted fields and unknown members remain untouched.
 
-mod character_page;
-mod entitlements;
-mod preferences;
-pub(crate) use preferences::draw as draw_preferences;
 mod activity;
 mod activity_page;
+mod character_page;
+mod entitlements;
 mod fields;
 mod page;
+mod services;
 #[cfg(test)]
 mod tests;
 
@@ -30,14 +29,14 @@ pub(crate) fn validate(document: &Value, json_account: bool) -> Result<(), Strin
     }
     for field in FIELDS
         .iter()
-        .chain(preferences::FIELDS)
+        .chain(services::FIELDS)
         .filter(|field| json_account || !field.account_owned())
     {
         if let Some(value) = optional_value(document, field.path)? {
             field.validate(value)?;
         }
     }
-    preferences::validate(document, json_account)?;
+    services::validate(document, json_account)?;
     validate_activity(document)?;
     Ok(())
 }
@@ -53,7 +52,7 @@ fn set_field(
     }
     let field = FIELDS
         .iter()
-        .chain(preferences::FIELDS)
+        .chain(services::FIELDS)
         .find(|field| field.path == path)
         .ok_or("Unknown runtime setting")?;
     if field.account_owned() && !json_account {

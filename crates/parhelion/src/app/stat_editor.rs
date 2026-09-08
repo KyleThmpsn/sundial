@@ -1,6 +1,17 @@
 //! Focused stat editor controls; recipe mutation occurs on user actions.
 use super::*;
 
+fn left_cell(ui: &mut egui::Ui, width: f32, widget: impl egui::Widget) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center)
+            .with_main_align(egui::Align::Min)
+            .with_main_justify(true),
+        |ui| ui.add(widget),
+    )
+    .inner
+}
+
 pub(super) fn draw_investment_stat_action(
     ui: &mut egui::Ui,
     action_width: f32,
@@ -125,25 +136,25 @@ pub(super) fn draw_investment_stats(
         .spacing([8.0, 5.0])
         .show(ui, |ui| {
             if show_internal_stats {
-            ui.add_sized(
-                [id_width, ui.spacing().interact_size.y],
+            left_cell(ui,
+                id_width,
                 egui::Label::new(egui::RichText::new("ID").strong()).halign(egui::Align::LEFT),
             )
             .on_hover_text("Investment stat definition index");
             }
-            ui.add_sized(
-                [stat_width, ui.spacing().interact_size.y],
+            left_cell(ui,
+                stat_width,
                 egui::Label::new(egui::RichText::new("Stat").strong())
                     .halign(egui::Align::LEFT),
             );
-            ui.add_sized(
-                [value_width, ui.spacing().interact_size.y],
+            left_cell(ui,
+                value_width,
                 egui::Label::new(egui::RichText::new("Raw Value").strong())
                     .halign(egui::Align::LEFT),
             )
             .on_hover_text("Raw value stored in the weapon's investment block");
-            ui.add_sized(
-                [display_width, ui.spacing().interact_size.y],
+            left_cell(ui,
+                display_width,
                 egui::Label::new(egui::RichText::new("Preview").strong())
                     .halign(egui::Align::LEFT),
             )
@@ -161,8 +172,8 @@ pub(super) fn draw_investment_stats(
                     id_details.push_str(&format!("\nDefinition hash 0x{hash:08X}"));
                 }
                 if show_internal_stats {
-                ui.add_sized(
-                    [id_width, ui.spacing().interact_size.y],
+                left_cell(ui,
+                    id_width,
                     egui::Label::new(
                         egui::RichText::new(stat.definition_index.to_string()).monospace(),
                     )
@@ -170,8 +181,8 @@ pub(super) fn draw_investment_stats(
                 )
                 .on_hover_text(id_details);
                 }
-                let name_response = ui.add_sized(
-                    [stat_width, ui.spacing().interact_size.y],
+                let name_response = left_cell(ui,
+                    stat_width,
                     egui::Label::new(if *is_removed {
                         format!("{}  ·  Removed", stat.name)
                     } else if *is_added {
@@ -206,21 +217,19 @@ pub(super) fn draw_investment_stats(
                                 Some((minimum, maximum)) => input.range(minimum..=maximum),
                                 None => input,
                             };
-                            ui.add_enabled_ui(!*is_removed, |ui| ui.add_sized(
-                                [value_width, ui.spacing().interact_size.y],
+                            ui.add_enabled_ui(!*is_removed, |ui| left_cell(ui,
+                                value_width,
                                 input,
                             )).inner
                         },
                     )
                     .inner
-                    .on_hover_text(value_range.map_or_else(
-                        || "Direct package value; drag or type to edit".to_owned(),
-                        |(minimum, maximum)| {
-                            format!(
-                "Direct package value; active stat-display range {minimum}–{maximum}"
-                            )
-                        },
-                    ));
+                    .on_hover_text(match (stat.minimum_value, stat.maximum_value) {
+                        (Some(minimum), Some(maximum)) => format!("Direct package value. Native range {minimum}–{maximum}."),
+                        (None, Some(maximum)) => format!("Direct package value. Native maximum {maximum}. No minimum is defined."),
+                        (Some(minimum), None) => format!("Direct package value. Native minimum {minimum}. No maximum is defined."),
+                        (None, None) => "Direct package value. Drag or type to edit.".to_owned(),
+                    });
                 if response.changed() {
                     edited = true;
                     update_investment_stat_value(
@@ -232,7 +241,7 @@ pub(super) fn draw_investment_stats(
                     );
                 }
                 let display_label = if *is_removed {
-                    "—".to_owned()
+                    "N/A".to_owned()
                 } else {
                     stat.in_game_display_label(effective_value)
                 };
@@ -245,8 +254,8 @@ pub(super) fn draw_investment_stats(
                 } else {
                     "Previewed from the active decoded display curve; the game may render this as a bar"
                 };
-                ui.add_sized(
-                    [display_width, ui.spacing().interact_size.y],
+                left_cell(ui,
+                    display_width,
                     egui::Label::new(egui::RichText::new(display_label).monospace())
                         .halign(egui::Align::LEFT),
                 )

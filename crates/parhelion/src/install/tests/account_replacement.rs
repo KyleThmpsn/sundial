@@ -1,5 +1,72 @@
 use super::*;
 
+fn socket_fixture(
+    fixture: &Fixture,
+    previous: usize,
+    incoming: usize,
+) -> (PathBuf, Vec<u8>, ReplacementReview) {
+    let path = fixture.target.parent().unwrap().join("settings.json");
+    let original = serde_json::to_vec(&json!({"version": 16, "unknown": {"keep": true}, "state": {
+        "account": {"primary_soid": "0x0000000000000001"},
+        "characters": [{"soid": "0x0000000000000002", "class": 0, "equipment": {
+            "kinetic": {"instance_soid": "0x0000000000000010", "definition_hash": 100, "level": 100, "quantity": 1, "plugs": vec![301; previous]},
+            "energy": {"instance_soid": "0x0000000000000011", "definition_hash": 100, "level": 100, "quantity": 1, "plugs": null}
+        }}]
+    }})).unwrap();
+    fs::write(&path, &original).unwrap();
+    let review = crate::install::replacement::test_review_with_sockets(
+        &fixture.target,
+        BTreeSet::new(),
+        vec![sundial::investment::AuthoredSocketChange {
+            definition_hash: 100,
+            previous_socket_count: previous,
+            default_plugs: vec![Some(400); incoming],
+        }],
+    );
+    (path, original, review)
+}
+
+#[test]
+fn retained_socket_lists_resize_with_packages_and_failed_installs_restore_them() {
+    for (previous, incoming) in [(8, 9), (8, 12), (12, 8)] {
+        for fail in [false, true] {
+            let fixture = Fixture::new();
+            let (path, original, review) = socket_fixture(&fixture, previous, incoming);
+            let proposal = review.account_cleanup().unwrap();
+            assert_eq!(proposal.resized_items, BTreeMap::from([(100, 1)]));
+            let expected = proposal.cleaned_bytes.clone();
+            let mut request = fixture.request();
+            request.confirmed_replacement = Some(review);
+            let result = install_staged_packages_inner(
+                &request,
+                fail.then_some(1),
+                DEFAULT_CACHE_INVALIDATION_OPS,
+            );
+            if fail {
+                let error = result.unwrap_err();
+                assert!(error.rollback.as_ref().unwrap().succeeded(), "{error}");
+                assert_eq!(fs::read(path).unwrap(), original);
+            } else {
+                let report = result.unwrap();
+                assert_eq!(fs::read(&path).unwrap(), expected);
+                assert_eq!(
+                    fs::read(report.backup_directory.join("account-settings.json")).unwrap(),
+                    original
+                );
+                let saved: serde_json::Value = serde_json::from_slice(&expected).unwrap();
+                assert_eq!(
+                    saved["state"]["characters"][0]["equipment"]["kinetic"]["plugs"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    incoming
+                );
+                assert!(saved["state"]["characters"][0]["equipment"]["energy"]["plugs"].is_null());
+            }
+        }
+    }
+}
+
 fn account_fixture(fixture: &Fixture) -> (PathBuf, Vec<u8>, ReplacementReview) {
     let path = fixture.target.parent().unwrap().join("settings.json");
     let original = serde_json::to_vec(&json!({"version": 8, "unknown": {"keep": true}, "state": {

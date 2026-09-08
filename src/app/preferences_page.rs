@@ -215,7 +215,7 @@ impl SundialApp {
                 match selected_tab {
                     PreferencesTab::Interface => self.draw_interface_preferences(ui, ctx),
                     PreferencesTab::Editing => self.draw_editing_preferences(ui, ctx),
-                    PreferencesTab::Sunrise => self.draw_sunrise_preferences(ui, ctx),
+                    PreferencesTab::Installation => self.draw_installation_preferences(ui, ctx),
                     PreferencesTab::SavingRecovery => self.draw_saving_recovery_preferences(ui),
                 }
             })
@@ -388,6 +388,11 @@ impl SundialApp {
 
         ui.add_space(12.0);
         ui.strong("Experimental");
+        preferences_changed |= ui.checkbox(
+            &mut self.preferences.experimental_activity_state,
+            "Show Activity State",
+        ).on_hover_text("Shows the raw current activity index on v13+ accounts. Its effect in game is not verified. Saved values are preserved when hidden.").changed();
+        ui.add_space(6.0);
         preferences_changed |= ui
             .checkbox(
                 &mut self.preferences.experimental_extended_fov,
@@ -461,7 +466,7 @@ impl SundialApp {
         preferences_changed
     }
 
-    pub(super) fn draw_sunrise_preferences(
+    pub(super) fn draw_installation_preferences(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
@@ -504,7 +509,7 @@ impl SundialApp {
                 ui.monospace(&self.sunrise_version)
                     .on_hover_text("Shown for reference; this does not control compatibility.");
                 ui.end_row();
-                ui.label("Account Contract");
+                ui.label("Account Format");
                 ui.monospace(account_source.contract);
                 ui.end_row();
             });
@@ -524,10 +529,6 @@ impl SundialApp {
             )
             .weak(),
         );
-        ui.add_space(12.0);
-        let json_account = self.document.uses_json_account();
-        self.dirty |=
-            game_settings::runtime::draw_preferences(ui, self.document.json_mut(), json_account);
         ui.add_space(12.0);
         ui.strong("Catalog");
         ui.label(format!(

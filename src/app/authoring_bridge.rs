@@ -1,7 +1,7 @@
 //! Adapts Sundial's picker widgets, preferences, and account persistence for Parhelion.
 
 mod account_cleanup;
-pub(crate) use account_cleanup::preview_account_cleanup;
+pub(crate) use account_cleanup::{preview_account_cleanup, preview_account_replacement};
 
 use std::{
     cmp::Reverse,
@@ -46,14 +46,16 @@ pub(crate) fn draw_plug_safety_selector(
     mode: &mut PlugSelectionMode,
 ) -> bool {
     let before = *mode;
-    ui.label("Plug safety");
-    egui::ComboBox::from_id_salt(scope)
-        .selected_text(mode.label())
-        .show_ui(ui, |ui| {
+    ui.label("Plug Safety");
+    ui.push_id(scope, |ui| {
+        ui.menu_button(mode.label(), |ui| {
             for candidate in PlugSelectionMode::ALL {
-                ui.selectable_value(mode, candidate, candidate.label());
+                if ui.radio_value(mode, candidate, candidate.label()).clicked() {
+                    ui.close_menu();
+                }
             }
         });
+    });
     *mode != before
 }
 
@@ -144,15 +146,26 @@ pub(crate) fn draw_weapon_donor_header_picker(
     };
     let mut action_button = None;
     let mut secondary_button = None;
-    let trigger =
-        draw_item_header_with_trailing_at_icon_size(ui, header, DONOR_HEADER_ICON_SIZE, |ui| {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
-                action_button = Some(ui.button(options.action_label));
-                if let Some(label) = options.secondary_action_label {
-                    secondary_button = Some(ui.small_button(label));
-                }
-            });
+    let action_width = authoring_button_width(ui, options.action_label)
+        + options.secondary_action_label.map_or(0.0, |label| {
+            authoring_button_width(ui, label) + ui.spacing().item_spacing.x
         });
+    let trigger = draw_item_header_with_trailing_at_icon_size(
+        ui,
+        header,
+        DONOR_HEADER_ICON_SIZE,
+        action_width,
+        |ui| {
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    action_button = Some(ui.button(options.action_label));
+                    if let Some(label) = options.secondary_action_label {
+                        secondary_button = Some(ui.button(label));
+                    }
+                });
+            });
+        },
+    );
     if let Some(hash) = options.selected_hash {
         drop(catalog_item_tooltip(trigger, catalog, u64::from(hash)));
     }
@@ -251,7 +264,7 @@ fn weapon_donor_choices(
                 type_name: donor.type_name.clone(),
                 group: Some(
                     if donor.collection_backed {
-                        "Collection-backed weapons"
+                        "Weapons in Collections"
                     } else {
                         "Weapons without a Collections row"
                     }
@@ -533,7 +546,7 @@ fn plug_picker_snapshot_for_mode(
             .socket_and_gear_type_options_for_type(item, socket_type)
             .to_vec(),
         PlugSelectionMode::MatchingSocketType => catalog.socket_type_options(socket_type).to_vec(),
-        PlugSelectionMode::GearType => catalog.gear_type_options(item, socket_index),
+        PlugSelectionMode::GearType => catalog.gear_type_options_for_type(item, socket_type),
         PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
     };
     let choices = allowed

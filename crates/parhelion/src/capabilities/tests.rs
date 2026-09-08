@@ -309,6 +309,37 @@ fn cross_slot_profiles_require_a_compatible_target_slot_presentation_donor() {
 }
 
 #[test]
+fn kinetic_energy_appearance_requires_matching_known_animations() {
+    for (source, target) in [
+        (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic),
+        (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy),
+    ] {
+        let base = summary(Some(target), WeaponDamageProfile::KineticEmpty);
+        let mut appearance = summary(Some(source), WeaponDamageProfile::KineticEmpty);
+        assert_eq!(
+            appearance_compatibility(&appearance, &base, target),
+            AppearanceCompatibility::Compatible
+        );
+        appearance.weapon_translation_group = Some(2);
+        assert_eq!(
+            appearance_compatibility(&appearance, &base, target),
+            AppearanceCompatibility::Blocked("Incompatible weapon animations")
+        );
+        appearance.weapon_translation_group = None;
+        assert_eq!(
+            appearance_compatibility(&appearance, &base, target),
+            AppearanceCompatibility::Unchecked
+        );
+        appearance.weapon_translation_group = base.weapon_translation_group;
+        appearance.inventory_slot = Some(WeaponInventorySlot::Power);
+        assert_eq!(
+            appearance_compatibility(&appearance, &base, target),
+            AppearanceCompatibility::Blocked("Different inventory slot")
+        );
+    }
+}
+
+#[test]
 fn profile_reconciliation_clears_incompatible_or_malformed_presentation_donors() {
     let gameplay = summary(
         Some(WeaponInventorySlot::Kinetic),
@@ -342,6 +373,10 @@ fn profile_reconciliation_clears_incompatible_or_malformed_presentation_donors()
         &gameplay,
         CombatProfileAction::Preserve,
     );
+    reconcile_presentation_donor(&mut recipe, &gameplay, std::slice::from_ref(&energy));
+    assert!(recipe.presentation_donor.is_some());
+
+    energy.weapon_translation_group = Some(2);
     reconcile_presentation_donor(&mut recipe, &gameplay, std::slice::from_ref(&energy));
     assert!(recipe.presentation_donor.is_none());
 
@@ -751,6 +786,71 @@ fn explicit_socket_type_can_activate_a_disabled_donor_row() {
     );
 
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn added_socket_requires_its_own_type_and_choices() {
+    let donor = donor();
+    let columns = [None, None, None, Some(vec![0x1111_1111, 0x2222_2222])];
+    let supported = [SupportedPlugSet {
+        socket_index: 3,
+        plug_hashes: vec![0x1111_1111, 0x2222_2222],
+    }];
+    let types = [None, None, None, Some(700)];
+    assert!(
+        validate_socket_column_overrides_with_socket_types(&donor, &columns, &types, &supported)
+            .is_empty()
+    );
+    let missing_type =
+        validate_socket_column_overrides_with_socket_types(&donor, &columns, &[], &supported);
+    assert!(
+        missing_type
+            .iter()
+            .any(|diagnostic| diagnostic.code == AuthoringDiagnosticCode::MissingAddedSocketType)
+    );
+    let missing_choices = validate_socket_column_overrides_with_socket_types(
+        &donor,
+        &[None, None, None, None],
+        &types,
+        &supported,
+    );
+    assert!(
+        missing_choices
+            .iter()
+            .any(|diagnostic| diagnostic.code == AuthoringDiagnosticCode::EmptySocketColumn)
+    );
+}
+
+#[test]
+fn expanded_definition_cannot_exceed_native_socket_count() {
+    let donor = donor();
+    let mut columns = vec![None; donor.sockets.len()];
+    let mut types = vec![None; donor.sockets.len()];
+    let mut supported = Vec::new();
+    for index in donor.sockets.len()..=MAX_WEAPON_SOCKETS {
+        columns.push(Some(vec![0x1111_1111]));
+        types.push(Some(700));
+        supported.push(SupportedPlugSet {
+            socket_index: index,
+            plug_hashes: vec![0x1111_1111],
+        });
+        let diagnostics = validate_socket_column_overrides_with_socket_types(
+            &donor, &columns, &types, &supported,
+        );
+        assert_eq!(
+            diagnostics.is_empty(),
+            columns.len() <= MAX_WEAPON_SOCKETS,
+            "{diagnostics:#?}"
+        );
+        if columns.len() > MAX_WEAPON_SOCKETS {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code
+                        == AuthoringDiagnosticCode::SocketCountMismatch)
+            );
+        }
+    }
 }
 
 #[test]

@@ -87,6 +87,9 @@ fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
             range_percent: 0,
         },
     ];
+    edit.hue_shift_degrees = 120;
+    edit.green_balance = 25;
+    edit.invert = true;
     let preview =
         load_icon_preview(&manager, container, crate::AuthoredWeaponRarity::Legendary).unwrap();
     let source = preview.source_primary(&edit);
@@ -102,6 +105,11 @@ fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
         rgba: plan.new_tags[0].payload.clone(),
     };
     assert_eq!(&authored.rgba[..4], &[255, 0, 0, 128]);
+    let second_replacement = (72 * preview.primary.size[0] + 72) * 4;
+    assert_eq!(
+        &authored.rgba[second_replacement..second_replacement + 4],
+        &[255, 128, 0, 128]
+    );
     assert_ne!(authored.rgba, source.rgba);
     assert_eq!(
         preview.render(&edit).unwrap(),

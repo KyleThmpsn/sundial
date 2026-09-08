@@ -72,7 +72,12 @@
         ],
         "socket_type": 92
       },
-      null,
+      {
+        "choices": [
+          "0x9DA139BF"
+        ],
+        "socket_type": 180
+      },
       null,
       null,
       null,

@@ -28,6 +28,9 @@ use crate::weapon::{
 };
 use crate::{NewWeaponProjectBundle, SUNDIAL_BUILD_SIGNATURE, WeaponProjectSpec};
 
+mod package_views;
+pub(crate) mod staging_retention;
+
 /// A batch selected from Parhelion's recipe library.
 ///
 /// The complete, explicitly enabled recipe set compiled into one package generation.
@@ -157,7 +160,7 @@ pub(crate) fn default_staging_root() -> PathBuf {
 }
 
 pub(crate) fn default_backup_root() -> PathBuf {
-    default_data_root().join("package-backups")
+    default_data_root().join("backups").join("packages")
 }
 
 #[cfg(test)]
@@ -196,20 +199,25 @@ fn plan_snapshot(
         &snapshot.request.package_directory,
         &source_inspection.ignored_authored_files,
     )?;
-    let source_artifacts = source_artifact_reports(source.path())?;
-    progress(BuildProgress::phase(BuildPhase::InspectingSource, 3, 3));
-    progress(BuildProgress::phase(BuildPhase::CompilingProject, 0, 1));
-    let compilation = build_weapon_project_after_catalog_validation(source.path(), &project)
-        .map_err(|error| format!("Weapon project compilation failed: {error}"));
-    let source_artifacts_after = source_artifact_reports(source.path())?;
-    validate_source_artifacts_unchanged(&source_artifacts, &source_artifacts_after)?;
-    let bundle = compilation?;
-    progress(BuildProgress::phase(BuildPhase::CompilingProject, 1, 1));
-    Ok(PlannedSnapshot {
-        source_inspection,
-        source_artifacts,
-        bundle,
-    })
+    let result = (|| {
+        let source_artifacts = source_artifact_reports(source.path())?;
+        progress(BuildProgress::phase(BuildPhase::InspectingSource, 3, 3));
+        progress(BuildProgress::phase(BuildPhase::CompilingProject, 0, 1));
+        let compilation = build_weapon_project_after_catalog_validation(source.path(), &project)
+            .map_err(|error| format!("Weapon project compilation failed: {error}"));
+        let source_artifacts_after = source_artifact_reports(source.path())?;
+        validate_source_artifacts_unchanged(&source_artifacts, &source_artifacts_after)?;
+        let bundle = compilation?;
+        progress(BuildProgress::phase(BuildPhase::CompilingProject, 1, 1));
+        Ok(PlannedSnapshot {
+            source_inspection,
+            source_artifacts,
+            bundle,
+        })
+    })();
+    // Compilation has released its managers and returned owned package bytes. Report cleanup
+    // failures through the normal build/UI error path before any staged output is committed.
+    source.finish(result)
 }
 
 fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, String> {
@@ -307,88 +315,93 @@ pub fn build_and_stage_snapshot_with_progress(
     } else {
         "parhelion-project".to_owned()
     };
-    let run_directory = create_unique_run_directory(&snapshot.request.staging_root, &slug)?;
-    progress(BuildProgress::phase(BuildPhase::WritingPackages, 0, 1));
-    let paths = bundle
-        .write_new(&run_directory)
-        .map_err(|error| format!("Could not write staged packages: {error}"))?;
-    progress(BuildProgress::phase(BuildPhase::WritingPackages, 1, 1));
-    let artifacts = artifact_reports_with_progress(&paths, &mut progress)?;
-    validate_outputs(&artifacts)?;
-    let staged_recipe_paths =
-        stage_recipe_snapshot_with_progress(&run_directory, snapshot, &mut progress)?;
-    let staged_recipe_files = staged_recipe_paths
-        .iter()
-        .map(|path| {
-            path.strip_prefix(&run_directory)
-                .unwrap_or(path)
-                .display()
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-
-    let source_package_directory =
-        fs::canonicalize(&snapshot.request.package_directory).map_err(|error| {
-            format!(
-                "Could not canonicalize source package directory {}: {error}",
-                snapshot.request.package_directory.display()
-            )
-        })?;
-    let manifest_path = run_directory.join(MANIFEST_FILE_NAME);
-    progress(BuildProgress::artifact(
-        BuildPhase::WritingManifest,
-        MANIFEST_FILE_NAME,
-        0,
-        1,
-    ));
-    let manifest = ManifestDocument {
-        schema: MANIFEST_SCHEMA,
-        source_package_directory: source_package_directory.display().to_string(),
-        source_artifacts: source_artifacts.clone(),
-        ignored_authored_files: source_inspection.ignored_authored_files.clone(),
-        selection_fingerprint: snapshot.fingerprint.clone(),
-        selected_recipe_files: staged_recipe_files,
-        project: ManifestProject::from_build(
-            &snapshot.request.recipes,
-            &bundle.plan.weapons,
-            &bundle.plan.sunrise,
-        )?,
-        artifacts: artifacts.clone(),
-    };
-    write_manifest(&manifest_path, &manifest)?;
-    progress(BuildProgress::artifact(
-        BuildPhase::WritingManifest,
-        MANIFEST_FILE_NAME,
-        1,
-        1,
-    ));
-
-    let report = BuildReport {
-        weapons: snapshot
-            .request
-            .recipes
+    let staged_run = staging_retention::StagedRun::begin(&snapshot.request.staging_root, &slug)?;
+    let run_directory = staged_run.directory().to_owned();
+    let result = (|| {
+        progress(BuildProgress::phase(BuildPhase::WritingPackages, 0, 1));
+        let paths = bundle
+            .write_new(&run_directory)
+            .map_err(|error| format!("Could not write staged packages: {error}"))?;
+        progress(BuildProgress::phase(BuildPhase::WritingPackages, 1, 1));
+        let artifacts = artifact_reports_with_progress(&paths, &mut progress)?;
+        validate_outputs(&artifacts)?;
+        let staged_recipe_paths =
+            stage_recipe_snapshot_with_progress(&run_directory, snapshot, &mut progress)?;
+        let staged_recipe_files = staged_recipe_paths
             .iter()
-            .zip(&bundle.plan.weapons)
-            .map(|(recipe, plan)| WeaponBuildReport {
-                name: recipe.name.clone(),
-                namespace: recipe.namespace.clone(),
-                item_hash: plan.item_hash,
-                icon_definition_hash: u32::from(plan.icon_definition_tag),
-                item_index: plan.item_index,
-                collectible_hash: plan.collectible_hash,
-                collectible_index: plan.collectible_index,
-                unlock_hash: plan.unlock_hash,
-                unlock_definition_index: plan.unlock_definition_index,
-                unlock_bank: plan.unlock_bank,
-                unlock_slot: plan.unlock_slot,
+            .map(|path| {
+                path.strip_prefix(&run_directory)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
             })
-            .collect(),
-        run_directory,
-        manifest_path,
-        artifacts,
-        selection_fingerprint: snapshot.fingerprint.clone(),
-        staged_recipe_paths,
-    };
+            .collect::<Vec<_>>();
+
+        let source_package_directory = fs::canonicalize(&snapshot.request.package_directory)
+            .map_err(|error| {
+                format!(
+                    "Could not canonicalize source package directory {}: {error}",
+                    snapshot.request.package_directory.display()
+                )
+            })?;
+        let manifest_path = run_directory.join(MANIFEST_FILE_NAME);
+        progress(BuildProgress::artifact(
+            BuildPhase::WritingManifest,
+            MANIFEST_FILE_NAME,
+            0,
+            1,
+        ));
+        let manifest = ManifestDocument {
+            schema: MANIFEST_SCHEMA,
+            source_package_directory: source_package_directory.display().to_string(),
+            source_artifacts: source_artifacts.clone(),
+            ignored_authored_files: source_inspection.ignored_authored_files.clone(),
+            selection_fingerprint: snapshot.fingerprint.clone(),
+            selected_recipe_files: staged_recipe_files,
+            project: ManifestProject::from_build(
+                &snapshot.request.recipes,
+                &bundle.plan.weapons,
+                &bundle.plan.sunrise,
+            )?,
+            artifacts: artifacts.clone(),
+        };
+        write_manifest(&manifest_path, &manifest)?;
+        progress(BuildProgress::artifact(
+            BuildPhase::WritingManifest,
+            MANIFEST_FILE_NAME,
+            1,
+            1,
+        ));
+
+        let report = BuildReport {
+            weapons: snapshot
+                .request
+                .recipes
+                .iter()
+                .zip(&bundle.plan.weapons)
+                .map(|(recipe, plan)| WeaponBuildReport {
+                    name: recipe.name.clone(),
+                    namespace: recipe.namespace.clone(),
+                    item_hash: plan.item_hash,
+                    icon_definition_hash: u32::from(plan.icon_definition_tag),
+                    item_index: plan.item_index,
+                    collectible_hash: plan.collectible_hash,
+                    collectible_index: plan.collectible_index,
+                    unlock_hash: plan.unlock_hash,
+                    unlock_definition_index: plan.unlock_definition_index,
+                    unlock_bank: plan.unlock_bank,
+                    unlock_slot: plan.unlock_slot,
+                })
+                .collect(),
+            run_directory,
+            manifest_path,
+            artifacts,
+            selection_fingerprint: snapshot.fingerprint.clone(),
+            staged_recipe_paths,
+        };
+        Ok(report)
+    })();
+    let report = staged_run.finish(result)?;
     progress(BuildProgress::phase(BuildPhase::Complete, 1, 1));
     Ok(report)
 }
@@ -452,7 +465,7 @@ fn stage_recipe_snapshot_with_progress(
                 format!("Could not allocate staged filename for {:?}", recipe.name)
             })?;
         };
-        recipe.save_json(&path).map_err(|error| {
+        write_staged_recipe(recipe, &path).map_err(|error| {
             format!(
                 "Could not stage normalized recipe {}: {error}",
                 path.display()
@@ -467,6 +480,21 @@ fn stage_recipe_snapshot_with_progress(
         ));
     }
     Ok(paths)
+}
+
+fn write_staged_recipe(recipe: &WeaponRecipe, path: &Path) -> Result<(), String> {
+    let mut encoded = recipe.to_json_pretty().map_err(|error| error.to_string())?;
+    encoded.push('\n');
+    // A staging run is new and exclusively leased until its completion marker is written.
+    // Writing the final owned filename avoids abandoned replacement-temp files after a crash.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(encoded.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| error.to_string())
 }
 
 fn validate_paths(package_directory: &Path, staging_root: &Path) -> Result<(), String> {
@@ -563,25 +591,14 @@ fn create_unique_run_directory(root: &Path, slug: &str) -> Result<PathBuf, Strin
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("System clock is before Unix epoch: {error}"))?
         .as_secs();
-    for suffix in 0..1_000u16 {
-        let name = if suffix == 0 {
-            format!("{slug}-{seconds}")
-        } else {
-            format!("{slug}-{seconds}-{suffix}")
-        };
-        let directory = root.join(name);
-        match fs::create_dir(&directory) {
-            Ok(()) => return Ok(directory),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(format!(
-                    "Could not create staging run {}: {error}",
-                    directory.display()
-                ));
-            }
-        }
-    }
-    Err("Could not allocate a unique staging run directory".to_owned())
+    // Retention removes old directories, so a first-free numeric suffix could reuse an old
+    // report's path. A fresh random identity keeps stale requests from targeting a later run.
+    tempfile::Builder::new()
+        .prefix(&format!("{slug}-{seconds}-"))
+        .rand_bytes(12)
+        .tempdir_in(root)
+        .map(tempfile::TempDir::keep)
+        .map_err(|error| format!("Could not allocate a unique staging run directory: {error}"))
 }
 
 enum PackageSource {
@@ -606,10 +623,19 @@ impl PackageSource {
             Self::Filtered(view) => &view.package_directory,
         }
     }
+
+    fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
+        let cleanup = match self {
+            Self::Direct(_) => Ok(()),
+            Self::Filtered(view) => view.close(),
+        };
+        package_views::finish_with_cleanup(result, cleanup)
+    }
 }
 
 pub(crate) struct FilteredPackageView {
-    _temporary: tempfile::TempDir,
+    temporary: Option<tempfile::TempDir>,
+    lease: Option<package_views::ViewLease>,
     package_directory: PathBuf,
 }
 
@@ -643,9 +669,18 @@ impl FilteredPackageView {
             .parent()
             .ok_or_else(|| format!("Package directory has no parent: {}", source.display()))?;
         let view_root = package_view_root(source, install_root)?;
+        package_views::prune_stale_views(&view_root)?;
+        Self::create_in_root(source, ignored, &view_root)
+    }
+
+    fn create_in_root(source: &Path, ignored: &[String], view_root: &Path) -> Result<Self, String> {
+        package_views::initialize_source_decoder(source)?;
+        let install_root = source
+            .parent()
+            .ok_or_else(|| format!("Package directory has no parent: {}", source.display()))?;
         let temporary = tempfile::Builder::new()
             .prefix(".parhelion-package-view-")
-            .tempdir_in(&view_root)
+            .tempdir_in(view_root)
             .map_err(|error| {
                 format!(
                     "Could not create a temporary stock package view in {}: {error}",
@@ -653,7 +688,24 @@ impl FilteredPackageView {
                 )
             })?;
         let package_directory = temporary.path().join("packages");
-        fs::create_dir(&package_directory).map_err(|error| {
+        let lease = package_views::ViewLease::create(temporary.path())?;
+        let view = Self {
+            temporary: Some(temporary),
+            lease: Some(lease),
+            package_directory,
+        };
+        view.populate(source, ignored, install_root)?;
+        Ok(view)
+    }
+
+    fn populate(
+        &self,
+        source: &Path,
+        ignored: &[String],
+        install_root: &Path,
+    ) -> Result<(), String> {
+        let package_directory = &self.package_directory;
+        fs::create_dir(package_directory).map_err(|error| {
             format!(
                 "Could not create temporary package view {}: {error}",
                 package_directory.display()
@@ -686,11 +738,38 @@ impl FilteredPackageView {
                 )
             })?;
         }
-        copy_oodle_runtime(install_root, temporary.path())?;
-        Ok(Self {
-            _temporary: temporary,
-            package_directory,
-        })
+        copy_oodle_runtime(install_root, package_directory.parent().unwrap())?;
+        Ok(())
+    }
+
+    pub(crate) fn close(mut self) -> Result<(), String> {
+        self.cleanup()
+    }
+
+    pub(crate) fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
+        package_views::finish_with_cleanup(result, self.close())
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        let Some(temporary) = self.temporary.take() else {
+            return Ok(());
+        };
+        let path = temporary.keep();
+        let lease = self
+            .lease
+            .take()
+            .expect("an owned package view has a lease");
+        package_views::remove_owned_view(&path, lease)
+    }
+}
+
+impl Drop for FilteredPackageView {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            // Normal builds use explicit close and report this through the UI. Unwinding and
+            // test-only consumers still retain a marked view for a later safe cleanup attempt.
+            eprintln!("{error}");
+        }
     }
 }
 

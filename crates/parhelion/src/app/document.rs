@@ -113,6 +113,44 @@ impl PackageAuthoringApp {
         BatchBuildSnapshot::new(self.batch_request()?)
     }
 
+    pub(super) fn save_edits_for_build(&mut self) -> Result<(), String> {
+        if let Some((_, error)) = &self.invalid_weapon_name {
+            return Err(error.clone());
+        }
+        if !self.recipe_requires_initial_save && self.recipe == self.recipe_baseline {
+            return Ok(());
+        }
+        let library = self
+            .recipe_library
+            .as_ref()
+            .ok_or("The recipe library is unavailable. Current edits could not be saved")?;
+        let path = match self
+            .recipe_path
+            .as_ref()
+            .filter(|path| path.starts_with(library.root()))
+        {
+            Some(path) => {
+                library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe)?;
+                path.clone()
+            }
+            None => library.save_new(&self.recipe)?,
+        };
+        self.recipe_path = Some(path.clone());
+        self.recipe_requires_initial_save = false;
+        self.recipe_dirty = false;
+        self.recipe_baseline.clone_from(&self.recipe);
+        self.observed_recipe.clone_from(&self.recipe);
+        self.log.push(LogEntry::info(format!(
+            "Saved current edits before building: {}",
+            path.display()
+        )));
+        // Saving the open draft must not change which recipes the user selected for this build.
+        let selected = self.enabled_recipe_paths.clone();
+        self.refresh_recipe_library();
+        self.enabled_recipe_paths = selected;
+        Ok(())
+    }
+
     pub(super) fn invalidate_results(&mut self) {
         self.build_progress = None;
         self.latest_build = None;

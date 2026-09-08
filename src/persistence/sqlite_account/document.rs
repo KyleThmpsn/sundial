@@ -69,6 +69,7 @@ pub(crate) struct SqliteAccountDocument {
     profile_persistence: BTreeMap<EntityId, ProfilePersistence>,
     character_persistence: BTreeMap<EntityId, CharacterPersistence>,
     item_persistence: BTreeMap<EntityId, ItemPersistence>,
+    pending_item_abilities: BTreeMap<EntityId, CharacterAbilities>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,15 +127,16 @@ impl SqliteAccountDocument {
 
     /// Returns the PR-88 ability selection persisted with one exact item instance.
     pub(crate) fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
-        self.item_persistence
-            .get(&id)
-            .map(|persistence| persistence.abilities)
+        self.pending_item_abilities.get(&id).copied().or_else(|| {
+            self.item_persistence
+                .get(&id)
+                .map(|persistence| persistence.abilities)
+        })
     }
 
     /// Keeps the PR-88 item sidecar aligned with edits made through character metadata.
     ///
-    /// Newly-created items do not have a sidecar until [`Self::prepare_persistence`]. In that case
-    /// the equipped subclass selection is picked up from character metadata during preparation.
+    /// New items retain their selections before their persistence serial is assigned at Save.
     pub(crate) fn set_persisted_item_abilities(
         &mut self,
         id: EntityId,
@@ -142,6 +144,8 @@ impl SqliteAccountDocument {
     ) {
         if let Some(persistence) = self.item_persistence.get_mut(&id) {
             persistence.abilities = abilities;
+        } else {
+            self.pending_item_abilities.insert(id, abilities);
         }
     }
 
@@ -202,6 +206,12 @@ impl SqliteAccountDocument {
                             .map(|item| item.id.get()),
                     )
             }))
+            // Removed rows retain their opaque persistence state until the workspace reloads.
+            // A new entity must never inherit that state by reusing its ID.
+            .chain(self.profile_persistence.keys().map(|id| id.get()))
+            .chain(self.character_persistence.keys().map(|id| id.get()))
+            .chain(self.item_persistence.keys().map(|id| id.get()))
+            .chain(self.pending_item_abilities.keys().map(|id| id.get()))
             .max()
             .unwrap_or(0)
             .checked_add(1)
@@ -261,6 +271,11 @@ impl SqliteAccountDocument {
             }
         }
         for (character_id, item_id, abilities) in missing {
+            let abilities = self
+                .pending_item_abilities
+                .get(&item_id)
+                .copied()
+                .unwrap_or(abilities);
             let persistence = self
                 .character_persistence
                 .get_mut(&character_id)
@@ -293,6 +308,7 @@ impl SqliteAccountDocument {
                     abilities,
                 },
             );
+            self.pending_item_abilities.remove(&item_id);
         }
         Ok(())
     }
@@ -400,6 +416,7 @@ fn load_in_transaction(
             profile_persistence,
             character_persistence,
             item_persistence,
+            pending_item_abilities: BTreeMap::new(),
         },
     )))
 }

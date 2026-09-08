@@ -6,7 +6,8 @@ pub(crate) const EQUIPMENT_FLAGS_SCHEMA_VERSION: u64 = 4;
 pub(crate) const EXPANDED_PROFILE_ITEMS_SCHEMA_VERSION: u64 = 4;
 pub(crate) const DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 5;
 pub(crate) const FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 8;
-/// Features added by current Sunrise while retaining schema 13.
+/// Account layout additions introduced in schema 13 and retained by later schemas.
+/// Current runtime configuration controls use their separate schema 16 gate.
 pub(crate) const RUNTIME_FEATURES_SCHEMA_VERSION: u64 = 13;
 pub(crate) const EMOTE_COLLECTION_DEFINITION_HASH: u64 = 3_183_180_185;
 pub(crate) const EMOTE_COLLECTION_NATIVE_BUCKET: u8 = 12;

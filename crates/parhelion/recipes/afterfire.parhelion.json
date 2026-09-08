@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.afterfire",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x23F4BF01",
+    "expected_name": "Hammerhead"
+  },
+  "identity": {
+    "item_hash": "0xF451DE50",
+    "collectible_hash": "0xDA974BAD",
+    "unlock_hash": "0xC1D2B735",
+    "name_hash": "0xCDC755BC",
+    "type_hash": "0x6EDCCF35",
+    "flavor_hash": "0xD63D7739",
+    "source_hash": "0x53F99C56",
+    "collection_name_hash": "0xDF6EA8ED",
+    "collection_description_hash": "0x42A4BEC6",
+    "inventory_hint_hash": "0x4D117D21",
+    "collection_requirement_hash": "0x480BD6A5",
+    "pattern_global_id_hash": "0x9BFC68F5"
+  },
+  "name": "Afterfire",
+  "flavor": "There was still work to do.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 14,
+        "value": 60
+      },
+      {
+        "definition_index": 15,
+        "value": 40
+      },
+      {
+        "definition_index": 16,
+        "value": 45
+      },
+      {
+        "definition_index": 22,
+        "value": 65
+      },
+      {
+        "definition_index": 24,
+        "value": 35
+      },
+      {
+        "definition_index": 25,
+        "value": 20
+      },
+      {
+        "definition_index": 26,
+        "value": 45
+      },
+      {
+        "definition_index": 27,
+        "value": 40
+      },
+      {
+        "definition_index": 30,
+        "value": 65
+      },
+      {
+        "definition_index": 31,
+        "value": 85
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "special",
+    "modern_damage_type": "solar",
+    "rarity": "legendary",
+    "power_cap_group": 11,
+    "socket_columns": [
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0xB517FC25",
+          "0xA9CA6B03",
+          "0xDD070E81"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0xA5D8EDC8",
+          "0xD2013CA1",
+          "0x5C2FD04F"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x8EC817EA"
+        ],
+        "socket_type": 180
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

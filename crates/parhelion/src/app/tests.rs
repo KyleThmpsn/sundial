@@ -111,6 +111,16 @@ fn standard_workbench_controls_are_not_reported_as_technical_overrides() {
     })];
 
     assert!(technical_recipe_features(&recipe).is_empty());
+    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
+    column.socket_type = Some(92);
+    assert!(technical_recipe_features(&recipe).is_empty());
+    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
+    column.choice_weight_bits = vec![0.5_f32.to_bits()];
+    column.reusable_plug_set_index = Some(18);
+    let details = technical_recipe_features(&recipe);
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains("Socket 1: choice weights, reusable plug set"));
+    assert!(details[0].contains("Socket Options → Show Native Rows"));
 }
 
 #[test]
@@ -182,10 +192,7 @@ fn hidden_technical_recipe_data_is_detected_without_being_mutated() {
     })];
     let before = app.recipe.clone();
 
-    assert_eq!(
-        technical_recipe_features(&app.recipe),
-        vec!["native socket fields"]
-    );
+    assert!(technical_recipe_features(&app.recipe).is_empty());
     app.set_show_experimental_options(true);
     app.set_show_experimental_options(false);
 
@@ -285,6 +292,8 @@ fn build_worker_events_update_progress_then_finish_with_an_error() {
     let mut app = PackageAuthoringApp::default();
     let (sender, receiver) = mpsc::channel();
     app.build_receiver = Some(receiver);
+    let started = Instant::now();
+    app.build_started = Some(started);
     sender
         .send(BuildWorkerEvent::Progress(TimedBuildProgress {
             phase: BuildPhase::ValidatingPackages,
@@ -302,6 +311,10 @@ fn build_worker_events_update_progress_then_finish_with_an_error() {
     assert_eq!(progress.current_artifact.as_deref(), Some("test.pkg"));
     assert_eq!((progress.completed, progress.total), (2, 6));
     assert!((progress.fraction() - (1.0 / 3.0)).abs() < f32::EPSILON);
+    assert_eq!(
+        app.build_elapsed(started + Duration::from_secs(9)),
+        Duration::from_secs(9)
+    );
 
     sender
         .send(BuildWorkerEvent::Finished {
@@ -315,6 +328,10 @@ fn build_worker_events_update_progress_then_finish_with_an_error() {
     assert!(matches!(app.latest_build, Some(Err(ref error)) if error == "synthetic failure"));
     assert_eq!(
         app.build_progress.as_ref().unwrap().elapsed,
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        app.build_elapsed(started + Duration::from_secs(20)),
         Duration::from_secs(2)
     );
 }

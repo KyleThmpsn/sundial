@@ -373,6 +373,10 @@ impl SundialApp {
         if !filters_active {
             add_candidate_buckets(&mut groups, candidate_buckets, InventoryScope::Character);
         }
+        super::buckets::prepare_character_buckets(
+            &mut groups,
+            self.document.supports_v13_account(),
+        );
         if self.character_inventory_sort != CharacterInventorySort::InventoryOrder {
             for group in &mut groups {
                 match self.character_inventory_sort {
@@ -462,8 +466,13 @@ impl SundialApp {
                 let definition_changed = actions
                     .iter()
                     .any(|action| matches!(action, InventoryItemAction::SetDefinitionHash(_)));
-                match apply_inventory_actions_atomic(&mut self.document, snapshot.location, actions)
-                {
+                match crate::app::account_validation::apply_with_bucket_limits(
+                    &mut self.document,
+                    &self.manifest,
+                    |candidate| {
+                        apply_inventory_actions_atomic(candidate, snapshot.location, actions)
+                    },
+                ) {
                     Ok(()) => {
                         self.mark_inventory_changed(if structural {
                             "Removed an item from character inventory"
@@ -483,10 +492,17 @@ impl SundialApp {
                 }
             }
             CharacterInventoryItemRequest::MoveTo(destination_character_index) => {
-                match account::move_inventory_item_to_character(
+                match crate::app::account_validation::apply_with_bucket_limits(
                     &mut self.document,
-                    snapshot.location,
-                    destination_character_index,
+                    &self.manifest,
+                    |candidate| {
+                        account::move_inventory_item_to_character(
+                            candidate,
+                            snapshot.location,
+                            destination_character_index,
+                        )
+                        .map_err(|error| error.to_string())
+                    },
                 ) {
                     Ok(_) => {
                         let class_type = account::character_metadata(

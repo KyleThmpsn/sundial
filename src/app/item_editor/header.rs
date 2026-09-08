@@ -22,13 +22,14 @@ pub(crate) fn draw_item_header_with_trailing(
     header: ItemHeader<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    draw_item_header_with_trailing_at_icon_size(ui, header, ITEM_HEADER_ICON_SIZE, trailing)
+    draw_item_header_with_trailing_at_icon_size(ui, header, ITEM_HEADER_ICON_SIZE, 0.0, trailing)
 }
 
 pub(crate) fn draw_item_header_with_trailing_at_icon_size(
     ui: &mut egui::Ui,
     header: ItemHeader<'_>,
     icon_size: f32,
+    minimum_trailing_width: f32,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let fill = header.fill;
@@ -42,7 +43,14 @@ pub(crate) fn draw_item_header_with_trailing_at_icon_size(
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            draw_item_header_contents(ui, header, icon_size, true, trailing)
+            draw_item_header_contents(
+                ui,
+                header,
+                icon_size,
+                true,
+                minimum_trailing_width,
+                trailing,
+            )
         })
         .inner
 }
@@ -115,18 +123,18 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
 
 fn item_header_badge(hash: Option<u64>) -> Option<&'static str> {
     hash.filter(|hash| crate::dummy_items::contains(*hash))
-        .map(|_| "DUMMY")
+        .map(|_| "Dummy")
 }
 
 pub(crate) fn draw_item_badge(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    let color = ui.visuals().warn_fg_color;
+    let color = ui.visuals().text_color();
     egui::Frame::NONE
-        .fill(color.gamma_multiply(0.12))
-        .stroke(egui::Stroke::new(0.5, color.gamma_multiply(0.75)))
-        .corner_radius(2)
-        .inner_margin(egui::Margin::symmetric(3, 0))
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(3)
+        .inner_margin(egui::Margin::symmetric(5, 1))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(8.0).strong().color(color))
+            ui.label(egui::RichText::new(text).size(11.0).color(color))
         })
         .response
 }
@@ -136,6 +144,7 @@ fn draw_item_header_contents(
     header: ItemHeader<'_>,
     icon_size: f32,
     has_trailing: bool,
+    minimum_trailing_width: f32,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let body_font = egui::TextStyle::Body.resolve(ui.style());
@@ -305,7 +314,7 @@ fn draw_item_header_contents(
         };
         item_header_trailing_width(
             ui.available_width(),
-            layout_job_width(ui, &title_hash_job),
+            layout_job_width(ui, &title_hash_job).max(minimum_trailing_width),
             main_leading_width,
         )
     } else {
@@ -544,7 +553,7 @@ mod tests {
 
     #[test]
     fn dummy_badges_follow_the_canonical_dummy_hash_set() {
-        assert_eq!(item_header_badge(Some(0xC13D_CD47)), Some("DUMMY"));
+        assert_eq!(item_header_badge(Some(0xC13D_CD47)), Some("Dummy"));
         assert_eq!(item_header_badge(Some(0x2E43_BDEE)), None);
         assert_eq!(item_header_badge(None), None);
     }

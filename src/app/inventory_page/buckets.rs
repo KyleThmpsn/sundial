@@ -134,6 +134,28 @@ pub(super) fn add_candidate_buckets<T>(
     });
 }
 
+pub(super) fn prepare_character_buckets<T>(groups: &mut Vec<ItemBucket<T>>, v13_account: bool) {
+    if !v13_account {
+        return;
+    }
+    // The collection owns the emote equipment slot on current Sunrise. Keep native keys
+    // and capacities so display grouping cannot change placement or hide an overflow.
+    groups.retain(|group| {
+        group.key.scope != InventoryScope::Character
+            || group.key.native_id != 41
+            || !group.items.is_empty()
+    });
+    for group in groups {
+        if group.key.scope == InventoryScope::Character {
+            match group.key.native_id {
+                12 => group.label = "Emotes".into(),
+                41 => group.label = "Individual Emotes".into(),
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(super) fn bucket_header_label<T>(
     group: &ItemBucket<T>,
     usage: &BucketUsage,
@@ -230,9 +252,10 @@ pub(super) const fn character_bucket_rank(bucket: u8) -> u16 {
         16 => 11, // Subclasses
         17 => 12, // Clan banners
         27 => 13, // Emblems
-        41 => 14, // Emotes
-        47 => 15, // Finishers
-        49 => 16, // Seasonal artifacts
+        12 => 14, // Emote collection
+        41 => 15, // Individual emotes
+        47 => 16, // Finishers
+        49 => 17, // Seasonal artifacts
         _ => 100 + bucket as u16,
     }
 }
@@ -272,9 +295,12 @@ pub(super) const fn scope_id(scope: InventoryScope) -> u8 {
 pub(super) fn draw_bucket_details<T>(
     ui: &mut egui::Ui,
     group: &ItemBucket<T>,
-    _usage: &BucketUsage,
+    usage: &BucketUsage,
     expected_scope: InventoryScope,
 ) {
+    if let Some(message) = bucket_overflow_message(group, usage, expected_scope) {
+        ui.colored_label(ui.visuals().error_fg_color, message);
+    }
     if group.key.scope == InventoryScope::Unknown {
         ui.label(
             egui::RichText::new(
@@ -294,6 +320,26 @@ pub(super) fn draw_bucket_details<T>(
             ),
         );
     }
+}
+
+pub(super) fn bucket_overflow_message<T>(
+    group: &ItemBucket<T>,
+    usage: &BucketUsage,
+    expected_scope: InventoryScope,
+) -> Option<String> {
+    if group.key.scope != expected_scope {
+        return None;
+    }
+    let capacity = usize::from(group.capacity?);
+    let occupied = usage
+        .counts
+        .get(&group.key.native_id)
+        .copied()
+        .unwrap_or_default();
+    (occupied > capacity).then(|| format!(
+        "{occupied} items exceed the installed limit of {capacity}. Equipped and stored items share this limit. Remove {} extra items.",
+        occupied - capacity,
+    ))
 }
 
 pub(super) fn bucket_has_room(

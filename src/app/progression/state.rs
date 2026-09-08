@@ -89,9 +89,11 @@ impl InvestmentTable {
     pub(super) const fn explanation(self) -> &'static str {
         match self {
             Self::FlagOverrides => {
-                "Supplies the selected logical unlock-flag value when Family 5 data is rebuilt."
+                "Overrides the unlock flag used by the linked activities and objectives."
             }
-            Self::ValueOverrides => "Supplies the selected value when Family 5 data is rebuilt.",
+            Self::ValueOverrides => {
+                "Overrides the value used by the linked activities and objectives."
+            }
         }
     }
 

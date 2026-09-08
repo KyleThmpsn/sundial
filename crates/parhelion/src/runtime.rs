@@ -1,5 +1,7 @@
 use std::path::Path;
 
+pub(crate) mod compatibility;
+
 use sundial::package_authoring::{
     open_shadowkeep_package_manager,
     weapon_entity::graft_weapon_component_bindings,
@@ -9,7 +11,7 @@ use sundial::package_authoring::{
     },
 };
 
-/// Everything that changes the effective runtime graph shown by the editor.
+/// Everything that changes the donor-grafted baseline graph shown by the editor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeGraphKey {
     pub pattern_index: Option<u16>,
@@ -34,8 +36,8 @@ impl RuntimeGraphKey {
     }
 }
 
-/// Resolves the graph exactly as the compiler will see it: start from the selected runtime row,
-/// then atomically promote the complete owner partitions reached by selected component bindings.
+/// Resolves the compiler's baseline before value and binary edits: start from the selected runtime
+/// row, then atomically promote the complete owner partitions reached by selected component bindings.
 pub(crate) fn load_effective_runtime_graph(
     packages: &Path,
     key: &RuntimeGraphKey,

@@ -14,7 +14,7 @@ pub(super) fn draw(
     if !experimental && !saved {
         return;
     }
-    ui.strong("Outlaw Reload Bonus — Trigger (Experimental)").on_hover_text(
+    ui.strong("Outlaw Reload Bonus · Trigger (Experimental)").on_hover_text(
         "Changes the mapped Outlaw kill filter in this custom perk only. The original reload effect and duration remain. This does not control Stat Bonuses While Equipped or Additional Effects. In-game trigger behavior still needs testing.",
     );
     ui.label("Only controls Outlaw's reload bonus. Stat bonuses and additional effects keep their own behavior.");

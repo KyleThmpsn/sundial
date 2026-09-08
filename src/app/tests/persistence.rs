@@ -89,14 +89,14 @@ fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
     let second_result = save_json_with_backup_root(&settings, &second_document, &backups).unwrap();
 
     assert_ne!(first_result.backup, second_result.backup);
-    let source_directory = crate::backups::source_directory(&backups, &settings).unwrap();
+    let backup_directory = crate::paths::resolve_path_for_comparison(&backups).unwrap();
     assert_eq!(
         first_result.backup.parent(),
-        Some(source_directory.as_path())
+        Some(backup_directory.as_path())
     );
     assert_eq!(
         second_result.backup.parent(),
-        Some(source_directory.as_path())
+        Some(backup_directory.as_path())
     );
     assert!(
         first_result
@@ -217,8 +217,8 @@ fn timestamped_backup_names_describe_the_source_schema() {
                 )
             });
         assert!(
-            !timestamp.is_empty() && timestamp.bytes().all(|byte| byte.is_ascii_digit()),
-            "{} did not contain a numeric timestamp",
+            timestamp.len() == 20 && timestamp.ends_with('Z') && timestamp.as_bytes()[10] == b'_',
+            "{} did not contain a readable UTC date and time",
             result.backup.display()
         );
         assert_eq!(load_json(&result.backup).unwrap(), source);

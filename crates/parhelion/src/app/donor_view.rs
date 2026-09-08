@@ -632,7 +632,7 @@ impl PackageAuthoringApp {
                 inherited_hash
                     .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
                     .map_or_else(
-                        || "Follow geometry donor".to_owned(),
+                        || "Use weapon appearance".to_owned(),
                         |donor| format!("Follow {} · 0x{:08X}", donor.name, donor.hash),
                     )
             },
@@ -668,12 +668,12 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: displayed_hash,
                     selected_label: &selected_text,
-                    header_label: current_reference.is_none().then_some("Follows geometry donor"),
+                    header_label: current_reference.is_none().then_some("Uses weapon appearance"),
                     action_label: "Change Colors",
                     selected_icon_override: None,
                     secondary_action_label: None,
                     clear: Some(WeaponDonorPickerClearChoice {
-                        label: "Follow geometry donor",
+                        label: "Use weapon appearance",
                         tooltip: "Use the geometry donor's render dyes, or the gameplay donor when geometry is inherited.",
                         selected: current_reference.is_none(),
                     }),
@@ -734,7 +734,7 @@ impl PackageAuthoringApp {
                 inherited_hash
                     .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
                     .map_or_else(
-                        || "Follow geometry donor".to_owned(),
+                        || "Use weapon appearance".to_owned(),
                         |donor| format!("Follow {} · 0x{:08X}", donor.name, donor.hash),
                     )
             },
@@ -791,12 +791,12 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: displayed_hash,
                     selected_label: &selected_text,
-                    header_label: current_reference.is_none().then_some("Follows geometry donor"),
+                    header_label: current_reference.is_none().then_some("Uses weapon appearance"),
                     action_label: "Change Icon",
                     selected_icon_override: authored_icon_override.as_ref(),
                     secondary_action_label: icon_editor_target.as_ref().map(|_| "Edit Icon…"),
                     clear: Some(WeaponDonorPickerClearChoice {
-                        label: "Follow geometry donor",
+                        label: "Use weapon appearance",
                         tooltip: "Use the geometry donor's icon, or the gameplay donor when geometry is inherited.",
                         selected: current_reference.is_none(),
                     }),

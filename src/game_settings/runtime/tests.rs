@@ -19,7 +19,7 @@ fn current_upstream_defaults_validate_without_normalization() {
 
 #[test]
 fn all_runtime_controls_enforce_the_schema_boundary_and_preserve_unrelated_data() {
-    for field in FIELDS.iter().chain(preferences::FIELDS) {
+    for field in FIELDS.iter().chain(services::FIELDS) {
         let value = match field.kind {
             fields::Kind::Bool(default) => Value::Bool(!default),
             fields::Kind::Choice(values) => Value::from(values[1]),
@@ -293,7 +293,7 @@ fn experimental_fov_validates_current_bounds_and_preserves_legacy_limit() {
 }
 
 #[test]
-fn opening_preferences_and_display_preserves_omissions_and_extended_fov() {
+fn opening_sunrise_and_display_preserves_omissions_and_extended_fov() {
     let ctx = eframe::egui::Context::default();
     let mut doc = fixture();
     doc["state"]["account"]["settings"]["display"]["field_of_view"] = 155.into();
@@ -301,7 +301,7 @@ fn opening_preferences_and_display_preserves_omissions_and_extended_fov() {
     let original = doc.clone();
     let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
         eframe::egui::CentralPanel::default().show(ctx, |ui| {
-            assert!(!preferences::draw(ui, &mut doc, true));
+            assert!(!page::draw(ui, &mut doc, true));
             let settings = doc
                 .pointer("/state/account/settings")
                 .unwrap()
@@ -318,7 +318,7 @@ fn opening_preferences_and_display_preserves_omissions_and_extended_fov() {
 fn text_edits_are_visible_before_focus_changes_and_can_be_repaired() {
     use eframe::egui;
     let context = egui::Context::default();
-    let field = *preferences::FIELDS
+    let field = *services::FIELDS
         .iter()
         .find(|field| field.path == "/client/external_server/host")
         .unwrap();

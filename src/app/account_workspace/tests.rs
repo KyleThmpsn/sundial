@@ -1,5 +1,8 @@
 //! Account workspace routing and source-selection tests.
 
+#[cfg(feature = "sqlite-account")]
+mod sqlite_inventory;
+
 use crate::app::account_workspace as account;
 
 #[cfg(feature = "sqlite-account")]

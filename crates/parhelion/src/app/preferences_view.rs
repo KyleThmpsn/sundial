@@ -83,8 +83,10 @@ impl PackageAuthoringApp {
         {
             self.set_show_experimental_options(show);
         }
-        ui.label("Exposes runtime component mixing and values, base-item perk and trait rows, native inventory and socket fields, art and dye data, and raw package bytes. You do not need these controls to combine socket perks or create custom perks.");
-        ui.label("Hiding controls keeps saved overrides active. Build validation checks data structure; new gameplay combinations still need an in-game test.");
+        ui.label("Shows detailed behavior, inventory, socket, material, and raw package fields. Existing overrides stay active when these controls are hidden.");
+        ui.label(
+            "Build validation checks the package data. Test new gameplay combinations in game.",
+        );
         ui.separator();
         let editable = self.package_preferences_editable();
         ui.heading("Recipe Library");

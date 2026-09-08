@@ -297,6 +297,17 @@ impl SundialApp {
                         header,
                         |_| {},
                     );
+                    if !is_empty && self.document.supports_v13_account() {
+                        header_response.context_menu(|ui| {
+                            ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
+                                if let Some(flags) =
+                                    item_editor::draw_masterwork_flag(ui, current_flags, true)
+                                {
+                                    self.select_equipment_flags(character_index, slot, flags);
+                                }
+                            });
+                        });
+                    }
 
                     if let Some(snapshot) = snapshot {
                         if !snapshot.issues.is_empty() {
@@ -426,11 +437,6 @@ impl SundialApp {
 
                     ui.add_space(8.0);
                     ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
-                        if let Some(flags) = item_editor::draw_masterwork_flag(
-                            ui, current_flags, self.document.supports_v13_account(),
-                        ) {
-                            self.select_equipment_flags(character_index, slot, flags);
-                        }
                         let locked = current_flags.unwrap_or_default()
                             & super::inventory::INVENTORY_FLAG_LOCKED
                             != 0;
@@ -644,7 +650,7 @@ impl SundialApp {
             return;
         }
         let title = if native_defaults {
-            format!("Plugs ({}, native defaults)", current_plugs.len())
+            format!("Plugs ({}, default plugs)", current_plugs.len())
         } else {
             format!("Plugs ({})", current_plugs.len())
         };

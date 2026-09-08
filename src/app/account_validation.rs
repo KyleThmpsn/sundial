@@ -1,6 +1,9 @@
 use crate::app::account_workspace as account;
 
-use std::collections::BTreeSet;
+mod capacity;
+pub(super) use capacity::{apply_with_bucket_limits, validate_new_bucket_overflows};
+
+use std::collections::HashMap;
 
 use crate::catalog::{Catalog, InventoryMetadata, ItemDef};
 
@@ -40,17 +43,27 @@ pub(super) fn validate_new_account_catalog_issues(
     catalog: &Catalog,
     allow_cross_class_subclasses: bool,
 ) -> Result<(), String> {
+    validate_new_bucket_overflows(candidate, persisted, catalog)?;
     validate_new_issues(
         collect_catalog_issues(candidate, catalog, allow_cross_class_subclasses),
         collect_catalog_issues(persisted, catalog, allow_cross_class_subclasses),
     )
 }
 
-fn validate_new_issues(
-    candidate: BTreeSet<String>,
-    persisted: BTreeSet<String>,
-) -> Result<(), String> {
-    let new_issues = candidate.difference(&persisted).collect::<Vec<_>>();
+fn validate_new_issues(candidate: Vec<String>, persisted: Vec<String>) -> Result<(), String> {
+    let mut baseline_counts = HashMap::<String, usize>::new();
+    for issue in persisted {
+        *baseline_counts.entry(issue).or_default() += 1;
+    }
+    let mut new_issues = Vec::new();
+    for issue in candidate {
+        if let Some(count) = baseline_counts.get_mut(&issue).filter(|count| **count > 0) {
+            *count -= 1;
+        } else {
+            new_issues.push(issue);
+        }
+    }
+    new_issues.sort();
     let Some(first) = new_issues.first() else {
         return Ok(());
     };
@@ -69,8 +82,8 @@ fn collect_catalog_issues<C: AccountCatalog>(
     document: &WorkspaceDocument,
     catalog: &C,
     allow_cross_class_subclasses: bool,
-) -> BTreeSet<String> {
-    let mut issues = BTreeSet::new();
+) -> Vec<String> {
+    let mut issues = Vec::new();
 
     match account::profile_items(document) {
         Ok(Some(items)) => {
@@ -87,7 +100,7 @@ fn collect_catalog_issues<C: AccountCatalog>(
         }
         Ok(None) => {}
         Err(error) => {
-            issues.insert(format!("profile items could not be read: {error}"));
+            issues.push(format!("profile items could not be read: {error}"));
         }
     }
 
@@ -96,7 +109,7 @@ fn collect_catalog_issues<C: AccountCatalog>(
         let class_type = match account::character_metadata(document, character_index) {
             Ok(metadata) => Some(metadata.class_type),
             Err(error) => {
-                issues.insert(format!(
+                issues.push(format!(
                     "character {character_number} metadata could not be read: {error}"
                 ));
                 None
@@ -122,12 +135,18 @@ fn collect_catalog_issues<C: AccountCatalog>(
                         allow_cross_class_subclasses,
                         &mut issues,
                     );
-                    validate_inventory_plugs(catalog, &context, &item.plugs, &mut issues);
+                    validate_inventory_plugs(
+                        catalog,
+                        &context,
+                        u64::from(item.definition_hash),
+                        &item.plugs,
+                        &mut issues,
+                    );
                 }
             }
             Ok(None) => {}
             Err(error) => {
-                issues.insert(format!(
+                issues.push(format!(
                     "character {character_number} inventory could not be read: {error}"
                 ));
             }
@@ -141,18 +160,18 @@ fn collect_catalog_issues<C: AccountCatalog>(
                         item.slot_label.to_lowercase()
                     );
                     if !item.issues.is_empty() {
-                        issues.insert(format!(
+                        issues.push(format!(
                             "{context} is malformed: {}",
                             item.issues.join(", ")
                         ));
                         continue;
                     }
                     let Some(hash) = item.definition_hash else {
-                        issues.insert(format!("{context} has no definition hash"));
+                        issues.push(format!("{context} has no definition hash"));
                         continue;
                     };
                     let Some(quantity) = item.quantity else {
-                        issues.insert(format!("{context} has no quantity"));
+                        issues.push(format!("{context} has no quantity"));
                         continue;
                     };
                     validate_character_item(
@@ -167,11 +186,11 @@ fn collect_catalog_issues<C: AccountCatalog>(
                         allow_cross_class_subclasses,
                         &mut issues,
                     );
-                    validate_equipped_plugs(catalog, &context, &item.plugs, &mut issues);
+                    validate_equipped_plugs(catalog, &context, hash, &item.plugs, &mut issues);
                 }
             }
             Err(error) => {
-                issues.insert(format!(
+                issues.push(format!(
                     "character {character_number} equipment could not be read: {error}"
                 ));
             }
@@ -186,16 +205,16 @@ fn validate_profile_item<C: AccountCatalog>(
     context: &str,
     hash: u64,
     quantity: i64,
-    issues: &mut BTreeSet<String>,
+    issues: &mut Vec<String>,
 ) {
     let Some(metadata) = catalog.inventory_metadata(hash) else {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} is not present in the installed inventory catalog"
         ));
         return;
     };
     if !metadata.is_profile_items_candidate() {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} is not valid for the profile-items inventory"
         ));
         return;
@@ -216,7 +235,7 @@ fn validate_character_item<C: AccountCatalog>(
     catalog: &C,
     reference: CharacterItemReference<'_>,
     allow_cross_class_subclasses: bool,
-    issues: &mut BTreeSet<String>,
+    issues: &mut Vec<String>,
 ) {
     let CharacterItemReference {
         context,
@@ -226,19 +245,19 @@ fn validate_character_item<C: AccountCatalog>(
         expected_bucket,
     } = reference;
     let Some(item) = catalog.item(hash) else {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} is not present in the installed item catalog"
         ));
         return;
     };
     let Some(metadata) = catalog.inventory_metadata(hash) else {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} has no decoded installed inventory definition"
         ));
         return;
     };
     if !metadata.is_character_inventory_candidate() {
-        issues.insert(format!("{context} is not valid for character inventory"));
+        issues.push(format!("{context} is not valid for character inventory"));
         return;
     }
 
@@ -250,7 +269,7 @@ fn validate_character_item<C: AccountCatalog>(
             allow_cross_class_subclasses,
         )
     {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} is class {} but the character is class {class_type}",
             item.class_type
         ));
@@ -258,29 +277,24 @@ fn validate_character_item<C: AccountCatalog>(
     if let Some(expected_bucket) = expected_bucket
         && item.bucket_hash != expected_bucket
     {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} belongs to bucket 0x{:08X}, not the equipped slot bucket 0x{expected_bucket:08X}",
             item.bucket_hash
         ));
     }
 }
 
-fn validate_quantity(
-    context: &str,
-    quantity: i64,
-    maximum: Option<u32>,
-    issues: &mut BTreeSet<String>,
-) {
+fn validate_quantity(context: &str, quantity: i64, maximum: Option<u32>, issues: &mut Vec<String>) {
     let Ok(quantity) = u32::try_from(quantity) else {
-        issues.insert(format!("{context} has an invalid quantity of {quantity}"));
+        issues.push(format!("{context} has an invalid quantity of {quantity}"));
         return;
     };
     if quantity == 0 {
-        issues.insert(format!("{context} has an invalid quantity of 0"));
+        issues.push(format!("{context} has an invalid quantity of 0"));
     } else if let Some(maximum) = maximum
         && quantity > maximum
     {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} quantity {quantity} exceeds the installed maximum of {maximum}"
         ));
     }
@@ -289,10 +303,12 @@ fn validate_quantity(
 fn validate_inventory_plugs<C: AccountCatalog>(
     catalog: &C,
     context: &str,
+    item_hash: u64,
     plugs: &ItemPlugs,
-    issues: &mut BTreeSet<String>,
+    issues: &mut Vec<String>,
 ) {
     if let ItemPlugs::Authored(plugs) = plugs {
+        validate_socket_count(catalog, context, item_hash, plugs.len(), issues);
         for (index, hash) in plugs.iter().enumerate() {
             if let Some(hash) = hash {
                 validate_plug(catalog, context, index, u64::from(*hash), issues);
@@ -304,12 +320,14 @@ fn validate_inventory_plugs<C: AccountCatalog>(
 fn validate_equipped_plugs<C: AccountCatalog>(
     catalog: &C,
     context: &str,
+    item_hash: u64,
     plugs: &EquippedItemPlugs,
-    issues: &mut BTreeSet<String>,
+    issues: &mut Vec<String>,
 ) {
     match plugs {
         EquippedItemPlugs::NativeDefaults => {}
         EquippedItemPlugs::Authored(plugs) => {
+            validate_socket_count(catalog, context, item_hash, plugs.len(), issues);
             for (index, value) in plugs.iter().enumerate() {
                 match value {
                     EquippedPlugValue::Empty => {}
@@ -317,7 +335,7 @@ fn validate_equipped_plugs<C: AccountCatalog>(
                         validate_plug(catalog, context, index, *hash, issues);
                     }
                     EquippedPlugValue::Malformed(value) => {
-                        issues.insert(format!(
+                        issues.push(format!(
                             "{context} plug {} is malformed: {value}",
                             index + 1
                         ));
@@ -326,10 +344,27 @@ fn validate_equipped_plugs<C: AccountCatalog>(
             }
         }
         EquippedItemPlugs::Missing => {
-            issues.insert(format!("{context} has no plug selection"));
+            issues.push(format!("{context} has no plug selection"));
         }
         EquippedItemPlugs::Malformed(value) => {
-            issues.insert(format!("{context} plug selection is malformed: {value}"));
+            issues.push(format!("{context} plug selection is malformed: {value}"));
+        }
+    }
+}
+
+fn validate_socket_count<C: AccountCatalog>(
+    catalog: &C,
+    context: &str,
+    item_hash: u64,
+    authored_count: usize,
+    issues: &mut Vec<String>,
+) {
+    if let Some(item) = catalog.item(item_hash) {
+        let expected = item.default_plugs.len();
+        if authored_count != expected {
+            issues.push(format!(
+                "{context} has {authored_count} authored socket entries but the installed item requires {expected}. Restore default plugs or use exactly {expected} entries",
+            ));
         }
     }
 }
@@ -339,10 +374,10 @@ fn validate_plug<C: AccountCatalog>(
     context: &str,
     index: usize,
     hash: u64,
-    issues: &mut BTreeSet<String>,
+    issues: &mut Vec<String>,
 ) {
     if !catalog.contains_plug(hash) {
-        issues.insert(format!(
+        issues.push(format!(
             "{context} plug {} (0x{hash:08X}) is not present in the installed plug catalog",
             index + 1
         ));
@@ -351,6 +386,8 @@ fn validate_plug<C: AccountCatalog>(
 
 #[cfg(test)]
 mod tests {
+    mod baseline;
+
     use std::collections::{HashMap, HashSet};
 
     use super::*;
@@ -420,7 +457,7 @@ mod tests {
             .insert(hash, definition(hash, expected_bucket, 0));
         catalog.inventory.insert(hash, character_metadata(1));
 
-        let mut issues = BTreeSet::new();
+        let mut issues = Vec::new();
         validate_character_item(
             &catalog,
             CharacterItemReference {
@@ -458,15 +495,15 @@ mod tests {
 
     #[test]
     fn baseline_catalog_issues_do_not_block_unrelated_edits() {
-        let persisted = BTreeSet::from(["existing unsupported definition".to_owned()]);
+        let persisted = Vec::from(["existing unsupported definition".to_owned()]);
         let candidate = persisted.clone();
         assert!(validate_new_issues(candidate, persisted).is_ok());
 
-        let candidate = BTreeSet::from([
+        let candidate = Vec::from([
             "existing unsupported definition".to_owned(),
             "new bad definition".to_owned(),
         ]);
-        let persisted = BTreeSet::from(["existing unsupported definition".to_owned()]);
+        let persisted = Vec::from(["existing unsupported definition".to_owned()]);
         let error = validate_new_issues(candidate, persisted).unwrap_err();
         assert!(error.contains("new bad definition"));
     }
@@ -476,7 +513,7 @@ mod tests {
         let hash = 5;
         let mut catalog = FakeCatalog::default();
         catalog.inventory.insert(hash, profile_metadata(999));
-        let mut issues = BTreeSet::new();
+        let mut issues = Vec::new();
 
         validate_profile_item(&catalog, "profile-only item", hash, 1, &mut issues);
 
@@ -490,7 +527,7 @@ mod tests {
         let mut catalog = FakeCatalog::default();
         catalog.plugs.insert(plug_hash);
         catalog.items.insert(item_hash, definition(item_hash, 0, 3));
-        let mut issues = BTreeSet::new();
+        let mut issues = Vec::new();
 
         validate_plug(&catalog, "valid plug", 0, plug_hash, &mut issues);
         assert!(issues.is_empty());
@@ -506,7 +543,7 @@ mod tests {
     #[test]
     fn character_and_plug_hashes_must_exist() {
         let catalog = FakeCatalog::default();
-        let mut issues = BTreeSet::new();
+        let mut issues = Vec::new();
         validate_profile_item(&catalog, "missing profile item", 5, 1, &mut issues);
         validate_character_item(
             &catalog,
@@ -529,5 +566,67 @@ mod tests {
         );
         assert!(issues.iter().any(|issue| issue.contains("missing item")));
         assert!(issues.iter().any(|issue| issue.contains("plug 1")));
+    }
+
+    #[test]
+    fn authored_socket_count_must_match_installed_shape_for_equipped_and_stored_items() {
+        let mut catalog = FakeCatalog::default();
+        let mut item = definition(10, 0, 3);
+        item.default_plugs = vec![None; 4];
+        catalog.items.insert(10, item);
+        for count in [0, 3, 4, 5] {
+            let mut stored_issues = Vec::new();
+            validate_inventory_plugs(
+                &catalog,
+                "stored item",
+                10,
+                &ItemPlugs::Authored(vec![None; count]),
+                &mut stored_issues,
+            );
+            let mut equipped_issues = Vec::new();
+            validate_equipped_plugs(
+                &catalog,
+                "equipped item",
+                10,
+                &EquippedItemPlugs::Authored(vec![EquippedPlugValue::Empty; count]),
+                &mut equipped_issues,
+            );
+            assert_eq!(stored_issues.is_empty(), count == 4);
+            assert_eq!(equipped_issues.is_empty(), count == 4);
+        }
+        let mut issues = Vec::new();
+        validate_inventory_plugs(
+            &catalog,
+            "stored item",
+            10,
+            &ItemPlugs::NativeDefaults,
+            &mut issues,
+        );
+        validate_equipped_plugs(
+            &catalog,
+            "equipped item",
+            10,
+            &EquippedItemPlugs::NativeDefaults,
+            &mut issues,
+        );
+        assert!(issues.is_empty());
+
+        catalog.items.get_mut(&10).unwrap().default_plugs.clear();
+        validate_inventory_plugs(
+            &catalog,
+            "socketless item",
+            10,
+            &ItemPlugs::Authored(vec![]),
+            &mut issues,
+        );
+        assert!(issues.is_empty());
+        validate_inventory_plugs(
+            &catalog,
+            "socketless item",
+            10,
+            &ItemPlugs::Authored(vec![None]),
+            &mut issues,
+        );
+        assert!(issues.iter().any(|issue| issue.contains("requires 0")));
     }
 }

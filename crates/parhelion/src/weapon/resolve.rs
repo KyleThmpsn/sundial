@@ -355,7 +355,13 @@ pub(super) fn resolve_project_weapons(
         if let Some(presentation) = &presentation_donor {
             // Family is checked against the catalog, and the native translation group above
             // must match. Collections placement follows authored rarity independently.
-            if presentation.inventory_slot != authored_inventory_slot {
+            if presentation.inventory_slot != authored_inventory_slot
+                && !matches!(
+                    (presentation.inventory_slot, authored_inventory_slot),
+                    (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy)
+                        | (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic)
+                )
+            {
                 return Err(invalid(format!(
                     "Geometry donor uses {:?}, but the authored weapon targets {authored_inventory_slot:?}",
                     presentation.inventory_slot

@@ -1,6 +1,9 @@
 //! Focused runtime fields controls; recipe mutation occurs on user actions.
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn draw_runtime_value_override_field(
     ui: &mut egui::Ui,
     field: &WeaponRuntimeField,
@@ -97,7 +100,7 @@ pub(super) fn draw_runtime_value_override_field(
     if !compatible {
         ui.colored_label(
             ui.visuals().error_fg_color,
-            "The saved value has the wrong type for this field; edit it or reset to the donor value.",
+            "The saved value is invalid for this field's type, size, or range. Edit it or reset to the donor value.",
         );
     }
     if reset {
@@ -140,12 +143,58 @@ pub(super) fn draw_runtime_value_editor(
     current: &WeaponRuntimeValue,
     text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
 ) -> Option<WeaponRuntimeValue> {
+    let value_id = ui.id().with(("runtime-editor-current-value", locator));
+    let previous = ui.data(|data| data.get_temp::<WeaponRuntimeValue>(value_id));
+    if previous.as_ref().is_some_and(|value| value != current) {
+        // An external edit must replace old display text. An unfinished draft is
+        // preserved while its underlying value remains unchanged.
+        text_state.retain(|(candidate, _), _| candidate != locator);
+    }
+    let next = draw_runtime_value_editor_contents(ui, locator, kind, current, text_state);
+    ui.data_mut(|data| {
+        data.insert_temp(value_id, next.as_ref().unwrap_or(current).clone());
+    });
+    next
+}
+
+fn draw_runtime_value_editor_contents(
+    ui: &mut egui::Ui,
+    locator: &WeaponRuntimeFieldLocator,
+    kind: &WeaponRuntimeValueKind,
+    current: &WeaponRuntimeValue,
+    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+) -> Option<WeaponRuntimeValue> {
     match (kind, current) {
         (WeaponRuntimeValueKind::Boolean, WeaponRuntimeValue::Boolean(current)) => {
             let mut value = *current;
             ui.checkbox(&mut value, "")
                 .changed()
                 .then_some(WeaponRuntimeValue::Boolean(value))
+        }
+        (
+            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
+            WeaponRuntimeValue::Signed(current),
+        ) => {
+            let text = text_state
+                .entry((locator.clone(), 0))
+                .or_insert_with(|| current.to_string());
+            let response = ui.add(
+                egui::TextEdit::singleline(text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(184.0),
+            );
+            let parsed = text.trim().parse::<i64>().ok();
+            if parsed.is_none() {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Invalid signed 64-bit integer. Not applied.",
+                );
+            }
+            response
+                .changed()
+                .then_some(parsed)
+                .flatten()
+                .map(WeaponRuntimeValue::Signed)
         }
         (WeaponRuntimeValueKind::SignedInteger { .. }, WeaponRuntimeValue::Signed(current)) => {
             let mut value = *current;
@@ -157,6 +206,34 @@ pub(super) fn draw_runtime_value_editor(
             )
             .changed()
             .then_some(WeaponRuntimeValue::Signed(value))
+        }
+        (
+            WeaponRuntimeValueKind::UnsignedInteger { bits: 64 }
+            | WeaponRuntimeValueKind::Enum { bits: 64 }
+            | WeaponRuntimeValueKind::BitFlags { bits: 64 },
+            WeaponRuntimeValue::Unsigned(current),
+        ) => {
+            let text = text_state
+                .entry((locator.clone(), 0))
+                .or_insert_with(|| current.to_string());
+            let response = ui.add(
+                egui::TextEdit::singleline(text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(184.0),
+            );
+            let parsed = text.trim().parse::<u64>().ok();
+            ui.monospace(format!("0x{:X}", parsed.unwrap_or(*current)));
+            if parsed.is_none() {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Invalid unsigned 64-bit integer. Not applied.",
+                );
+            }
+            response
+                .changed()
+                .then_some(parsed)
+                .flatten()
+                .map(WeaponRuntimeValue::Unsigned)
         }
         (
             WeaponRuntimeValueKind::UnsignedInteger { .. }
@@ -197,17 +274,12 @@ pub(super) fn draw_runtime_value_editor(
                 .map(WeaponRuntimeValue::Unsigned)
         }
         (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(current)) => {
-            let mut value = f32::from_bits(*current);
-            let value_changed = ui
-                .add(egui::DragValue::new(&mut value).speed(0.01))
-                .changed();
+            let edited_bits = draw_runtime_float_decimal(ui, *current);
             let text = text_state
                 .entry((locator.clone(), 0))
                 .or_insert_with(|| format!("0x{current:08X}"));
-            if value_changed {
-                let bits = value.to_bits();
+            if let Some(bits) = edited_bits {
                 *text = format!("0x{bits:08X}");
-                return Some(WeaponRuntimeValue::Float32Bits(bits));
             }
             let response = ui.add(
                 egui::TextEdit::singleline(text)
@@ -224,10 +296,9 @@ pub(super) fn draw_runtime_value_editor(
                     "Invalid 32-bit value; not applied",
                 );
             }
-            response
-                .changed()
-                .then_some(parsed)
-                .flatten()
+            let raw_bits = response.changed().then_some(parsed).flatten();
+            raw_bits
+                .or(edited_bits)
                 .map(WeaponRuntimeValue::Float32Bits)
         }
         (
@@ -243,15 +314,12 @@ pub(super) fn draw_runtime_value_editor(
                 .show(ui, |ui| {
                     for (index, current_bits) in bits.iter_mut().enumerate() {
                         ui.monospace(["X", "Y", "Z", "W"][index]);
-                        let mut value = f32::from_bits(*current_bits);
-                        let value_changed = ui
-                            .add(egui::DragValue::new(&mut value).speed(0.01))
-                            .changed();
+                        let edited_bits = draw_runtime_float_decimal(ui, *current_bits);
                         let text = text_state
                             .entry((locator.clone(), u8::try_from(index).unwrap_or(0)))
                             .or_insert_with(|| format!("0x{:08X}", *current_bits));
-                        if value_changed {
-                            *current_bits = value.to_bits();
+                        if let Some(edited_bits) = edited_bits {
+                            *current_bits = edited_bits;
                             *text = format!("0x{:08X}", *current_bits);
                             changed = true;
                         }
@@ -311,4 +379,22 @@ pub(super) fn draw_runtime_value_editor(
             None
         }
     }
+}
+
+fn draw_runtime_float_decimal(ui: &mut egui::Ui, bits: u32) -> Option<u32> {
+    let mut value = f32::from_bits(bits);
+    if !value.is_finite() {
+        // DragValue compares and clamps through f64. A NaN can become infinity
+        // merely by drawing it, or lose its payload during conversion.
+        ui.monospace(value.to_string())
+            .on_hover_text("Non-finite value. Edit the exact IEEE-754 bits to change it.");
+        return None;
+    }
+    let response = ui.add(
+        egui::DragValue::new(&mut value)
+            .speed(0.01)
+            .clamp_existing_to_range(false)
+            .custom_formatter(|value, _| format!("{:?}", value as f32)),
+    );
+    (response.changed() && value.to_bits() != bits).then_some(value.to_bits())
 }

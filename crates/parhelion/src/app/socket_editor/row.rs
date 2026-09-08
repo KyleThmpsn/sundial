@@ -16,6 +16,8 @@ pub(super) struct SocketRowContext<'a> {
     pub plug_selection_mode: PlugSelectionMode,
     pub donor: &'a WeaponDonor,
     pub socket_index: usize,
+    pub is_added: bool,
+    pub can_remove_added: bool,
     pub show_experimental_options: bool,
     pub show_technical_row: &'a mut bool,
     pub private_perk_socket: &'a mut Option<usize>,
@@ -94,6 +96,7 @@ impl RowChoices {
 enum RowCommand {
     ChangeRole(Option<u16>),
     Reset,
+    RemoveAdded,
     Activate,
     EditChoice { index: usize, hash: Option<u32> },
 }
@@ -129,6 +132,7 @@ pub(super) fn draw_socket_picker_row(ui: &mut egui::Ui, mut context: SocketRowCo
                 recipe: context.recipe,
                 donor: context.donor,
                 socket_index: context.socket_index,
+                is_added: context.is_added,
                 inherited: &choices.inherited,
                 page: context.page,
                 queries: context.queries,

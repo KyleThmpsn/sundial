@@ -148,6 +148,8 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) experimental_progression: bool,
     #[serde(default)]
+    pub(super) experimental_activity_state: bool,
+    #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
     #[serde(default)]
     pub(super) experimental_extended_fov: bool,
@@ -237,6 +239,7 @@ impl Default for Preferences {
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,
+            experimental_activity_state: false,
             experimental_power_above_cap: false,
             experimental_extended_fov: false,
             experimental_cross_class_subclasses: false,

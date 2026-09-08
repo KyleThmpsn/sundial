@@ -704,6 +704,10 @@ fn loaded_document(path: &Path) -> SqliteAccountDocument {
     *document
 }
 
+pub(crate) fn save_fixture_document(document: &mut SqliteAccountDocument, backup: &Path) {
+    writer::save_for_test(document, backup.to_path_buf()).unwrap();
+}
+
 fn assert_account_semantics(left: &SqliteAccountDocument, right: &SqliteAccountDocument) {
     assert_eq!(left.primary_soid(), right.primary_soid());
     assert_eq!(left.profile(), right.profile());

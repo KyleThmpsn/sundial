@@ -189,14 +189,20 @@ fn save_json_with_writer(
     }
     let prepared = prepare_settings(document)?;
 
-    let backup_root = crate::backups::create_source_directory(backup_root, path)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("Could not create backup timestamp: {e}"))?
-        .as_nanos();
     let schema = backup_schema_label(path);
-    let backup = backup_root.join(format!("settings-{schema}-{timestamp}.json"));
-    create_backup(path, &backup)?;
+    let backup = crate::backups::create(
+        backup_root,
+        path,
+        &format!("settings-{schema}"),
+        "json",
+        true,
+        |_, file| {
+            let mut source = fs::File::open(path).map_err(|error| error.to_string())?;
+            io::copy(&mut source, file)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    )?;
     if fs::read(&backup).map_err(|error| error.to_string())? != original {
         return Err(format!(
             "settings.json changed while it was being backed up; no replacement was attempted. Backup: {}",

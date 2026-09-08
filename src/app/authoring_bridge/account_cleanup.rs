@@ -1,11 +1,13 @@
-//! Exact-identity cleanup for an uninstall proposal; never saves or scans backup accounts.
+//! Exact-identity cleanup proposals for package replacement and uninstall.
+//! Does not save settings or scan backup accounts.
 use crate::app::{equipment, inventory, progression};
-use crate::investment::{AuthoredAccountCleanup, AuthoredCollectionUnlock};
+use crate::investment::{AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredSocketChange};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
+mod sockets;
 #[cfg(test)]
 mod tests;
 
@@ -13,6 +15,15 @@ pub(crate) fn preview_account_cleanup(
     install: &Path,
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
+) -> Result<AuthoredAccountCleanup, String> {
+    preview_account_replacement(install, hashes, unlocks, &[])
+}
+
+pub(crate) fn preview_account_replacement(
+    install: &Path,
+    hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    socket_changes: &[AuthoredSocketChange],
 ) -> Result<AuthoredAccountCleanup, String> {
     let preferences = crate::app::settings::load_preferences().preferences;
     let settings_path = super::authored_unlock_settings_path(install, &preferences)?;
@@ -22,8 +33,9 @@ pub(crate) fn preview_account_cleanup(
     let original_bytes = std::fs::read(&settings_path).map_err(|e| e.to_string())?;
     let original: Value = crate::package_authoring::read_json(original_bytes.as_slice())
         .map_err(|e| e.to_string())?;
-    let (cleaned, removed_items, cleared_plugs, cleared_unlocks, removed_reward_rules) =
+    let (mut cleaned, removed_items, cleared_plugs, cleared_unlocks, removed_reward_rules) =
         clean(&original, hashes, unlocks)?;
+    let resized_items = sockets::resize(&mut cleaned, hashes, socket_changes)?;
     let cleaned_bytes = if cleaned == original {
         original_bytes.clone()
     } else {
@@ -37,6 +49,7 @@ pub(crate) fn preview_account_cleanup(
         cleared_plugs,
         removed_reward_rules,
         cleared_unlocks,
+        resized_items,
     })
 }
 

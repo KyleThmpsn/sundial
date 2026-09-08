@@ -76,7 +76,12 @@
         ],
         "socket_type": 92
       },
-      null,
+      {
+        "choices": [
+          "0x4682DFF1"
+        ],
+        "socket_type": 180
+      },
       null,
       null,
       null,

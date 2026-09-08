@@ -4,6 +4,131 @@ use super::*;
 mod row;
 use row::{SocketRowContext, draw_socket_picker_row};
 
+#[cfg(test)]
+mod tests;
+
+pub(super) fn socket_editor_donor<'a>(
+    donor: &'a WeaponDonor,
+    recipe: &WeaponRecipe,
+) -> std::borrow::Cow<'a, WeaponDonor> {
+    if recipe.overrides.socket_columns.len() <= donor.sockets.len() {
+        return std::borrow::Cow::Borrowed(donor);
+    }
+    let mut expanded = donor.clone();
+    for index in donor.sockets.len()..recipe.overrides.socket_columns.len() {
+        let socket_type = recipe.overrides.socket_columns[index]
+            .as_ref()
+            .and_then(|column| column.socket_type)
+            .unwrap_or(u16::MAX);
+        expanded.sockets.push(sundial::investment::WeaponSocket {
+            index,
+            socket_type,
+            label: format!("{}. Added Socket", index + 1),
+            native_default: None,
+            ordered_embedded_choices: Vec::new(),
+            max_authored_choices: authored_socket_choice_limit(socket_type),
+            compatible_plug_count: 0,
+            reusable_plug_set_index: None,
+            randomized_plug_set_index: None,
+        });
+    }
+    std::borrow::Cow::Owned(expanded)
+}
+
+fn append_socket(recipe: &mut WeaponRecipe, native_socket_count: usize, socket_type: u16) -> bool {
+    let socket_count = recipe
+        .overrides
+        .socket_columns
+        .len()
+        .max(native_socket_count);
+    if socket_count >= sundial::investment::MAX_WEAPON_SOCKETS
+        || authored_socket_choice_limit(socket_type) == 0
+    {
+        return false;
+    }
+    recipe
+        .overrides
+        .socket_columns
+        .resize_with(socket_count, || None);
+    recipe
+        .overrides
+        .socket_columns
+        .push(Some(WeaponSocketColumnRecipe {
+            socket_type: Some(socket_type),
+            ..WeaponSocketColumnRecipe::default()
+        }));
+    true
+}
+
+fn remove_last_added_socket(recipe: &mut WeaponRecipe, socket_index: usize) -> bool {
+    if socket_index + 1 != recipe.overrides.socket_columns.len() {
+        return false;
+    }
+    recipe.overrides.socket_columns.pop();
+    recipe
+        .overrides
+        .socket_plug_variants
+        .retain(|variant| usize::from(variant.socket_index) != socket_index);
+    if recipe.overrides.socket_columns.iter().all(Option::is_none) {
+        recipe.overrides.socket_columns.clear();
+    }
+    true
+}
+
+fn draw_add_socket(
+    ui: &mut egui::Ui,
+    catalog: &InvestmentCatalog,
+    recipe: &mut WeaponRecipe,
+    donor: &WeaponDonor,
+) {
+    let socket_count = donor
+        .sockets
+        .len()
+        .max(recipe.overrides.socket_columns.len());
+    let can_add = socket_count < sundial::investment::MAX_WEAPON_SOCKETS;
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(can_add, |ui| {
+            ui.menu_button("+ Add Socket", |ui| {
+                ui.weak("Choose a role, then select the socket's first plug.");
+                match catalog.weapon_socket_type_choices(donor.summary.hash) {
+                    Ok(mut choices) => {
+                        choices.sort_by_key(|choice| match choice.socket_type {
+                            176 => 0,
+                            92 => 1,
+                            _ => 2,
+                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .show(ui, |ui| {
+                                for choice in choices.into_iter().filter(|choice| {
+                                    authored_socket_choice_limit(choice.socket_type) > 0
+                                }) {
+                                    if ui.button(&choice.label).clicked() {
+                                        append_socket(
+                                            recipe,
+                                            donor.sockets.len(),
+                                            choice.socket_type,
+                                        );
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                    }
+                    Err(error) => {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Append a new socket to this weapon's native socket list");
+        });
+        ui.weak(format!(
+            "{socket_count} / {} sockets",
+            sundial::investment::MAX_WEAPON_SOCKETS
+        ));
+    });
+}
+
 pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContext<'_>) {
     let SocketPickerContext {
         catalog,
@@ -19,22 +144,25 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         log,
     } = context;
     ui.add_space(3.0);
-    queries.resize_with(donor.sockets.len(), BTreeMap::new);
-    pages.resize(donor.sockets.len(), 0);
     draw_socket_override_diagnostics(ui, catalog, recipe, donor, show_plug_safety_warnings);
     if !recipe.overrides.socket_columns.is_empty()
-        && recipe.overrides.socket_columns.len() != donor.sockets.len()
+        && recipe.overrides.socket_columns.len() < donor.sockets.len()
     {
         ui.colored_label(
             ui.visuals().warn_fg_color,
             format!(
-                    "This recipe has {} socket rows but {} has {}. The next selection will normalize the recipe to the gameplay donor.",
+                    "This recipe has {} socket rows but {} has {}. The next selection will restore missing donor rows.",
                 recipe.overrides.socket_columns.len(),
                 donor.summary.name,
                 donor.sockets.len()
             ),
         );
     }
+    let native_socket_count = donor.sockets.len();
+    let expanded_donor = socket_editor_donor(donor, recipe);
+    let effective_donor = expanded_donor.as_ref();
+    queries.resize_with(effective_donor.sockets.len(), BTreeMap::new);
+    pages.resize(effective_donor.sockets.len(), 0);
     let is_inherited = |index| {
         recipe
             .overrides
@@ -64,8 +192,11 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
                 queries: &mut queries[socket_index],
                 page: &mut pages[socket_index],
                 plug_selection_mode: *plug_selection_mode,
-                donor,
+                donor: effective_donor,
                 socket_index,
+                is_added: socket_index >= native_socket_count,
+                can_remove_added: socket_index >= native_socket_count
+                    && socket_index + 1 == effective_donor.sockets.len(),
                 show_experimental_options,
                 show_technical_row: &mut *show_technical_rows,
                 private_perk_socket,
@@ -73,7 +204,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
             },
         );
     };
-    for socket in donor
+    for socket in effective_donor
         .sockets
         .iter()
         .filter(|socket| !unused.contains(&socket.index))
@@ -81,15 +212,19 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         draw_row(ui, socket.index);
     }
     if !unused.is_empty() {
-        egui::CollapsingHeader::new(format!("Add a socket · {} unused slots", unused.len()))
-            .id_salt("unused-weapon-sockets")
-            .show(ui, |ui| {
-                ui.label("Choose an unused slot's role to add another perk combination.");
-                for &socket_index in &unused {
-                    draw_row(ui, socket_index);
-                }
-            });
+        egui::CollapsingHeader::new(format!(
+            "Unused Donor Sockets · Available: {}",
+            unused.len()
+        ))
+        .id_salt("unused-weapon-sockets")
+        .show(ui, |ui| {
+            ui.label("Choose an unused slot's role to add another perk combination.");
+            for &socket_index in &unused {
+                draw_row(ui, socket_index);
+            }
+        });
     }
+    draw_add_socket(ui, catalog, recipe, donor);
 }
 
 pub(super) fn draw_socket_override_diagnostics(
@@ -163,6 +298,7 @@ pub(super) fn draw_socket_override_diagnostics(
                         plug_hashes: set.plug_hashes,
                     })
                     .collect::<Vec<_>>();
+                let mut compatibility_warnings = Vec::new();
                 for diagnostic in validate_socket_column_overrides_with_socket_types(
                     donor,
                     &parsed,
@@ -181,12 +317,27 @@ pub(super) fn draw_socket_override_diagnostics(
                     if !diagnostic.is_build_blocking() && !show_plug_safety_warnings {
                         continue;
                     }
-                    let color = if diagnostic.is_build_blocking() {
-                        ui.visuals().error_fg_color
+                    if diagnostic.is_build_blocking() {
+                        ui.colored_label(ui.visuals().error_fg_color, diagnostic.message);
                     } else {
-                        ui.visuals().warn_fg_color
-                    };
-                    ui.colored_label(color, diagnostic.message);
+                        compatibility_warnings.push(diagnostic.message);
+                    }
+                }
+                if !compatibility_warnings.is_empty() {
+                    let count = compatibility_warnings.len();
+                    let noun = if count == 1 { "warning" } else { "warnings" };
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!(
+                            "{count} plug compatibility {noun}. Test these choices in game."
+                        ))
+                        .color(ui.visuals().warn_fg_color),
+                    )
+                    .id_salt("socket-compatibility-warnings")
+                    .show(ui, |ui| {
+                        for warning in compatibility_warnings {
+                            ui.colored_label(ui.visuals().warn_fg_color, warning);
+                        }
+                    });
                 }
                 for (socket_index, socket_type) in socket_types.iter().copied().enumerate() {
                     if socket_type == Some(u16::MAX) && pending_socket_rows.contains(&socket_index)
@@ -281,6 +432,7 @@ pub(super) fn draw_socket_role_label(
     catalog: &InvestmentCatalog,
     donor: &WeaponDonor,
     socket_index: usize,
+    is_added: bool,
     role: &mut Option<u16>,
     width: f32,
 ) {
@@ -288,13 +440,20 @@ pub(super) fn draw_socket_role_label(
     let display_label = label
         .split_once(". ")
         .map_or(label.as_str(), |(_, role)| role);
+    let display_label = if is_added {
+        format!("{display_label} · Added")
+    } else {
+        display_label.to_owned()
+    };
     ui.allocate_ui_with_layout(egui::vec2(width, ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::Center), |ui| {
         egui::ComboBox::from_id_salt(("socket-role", socket_index))
             .selected_text(display_label).width(width).truncate().show_ui(ui, |ui| {
                 let choices = catalog.weapon_socket_type_choices(donor.summary.hash).unwrap_or_default();
                 ui.weak("Socket role");
-                ui.selectable_value(role, None, "Keep base weapon role");
+                if !is_added {
+                    ui.selectable_value(role, None, "Keep Base Weapon Role");
+                }
                 for (value, label) in [(176, "Intrinsic"), (92, "Trait")] {
                     if choices.iter().any(|choice| choice.socket_type == value) {
                         ui.selectable_value(role, Some(value), label);
@@ -359,7 +518,7 @@ pub(super) fn draw_numeric_program_editor(
     if let Some(index) = remove {
         program.remove(index);
     }
-    if ui.small_button("+ Add instruction").clicked() {
+    if ui.small_button("+ Add Instruction").clicked() {
         program.push(WeaponNumericInstructionRecipe {
             opcode: 11,
             operand: 1,
@@ -373,6 +532,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
         recipe,
         donor,
         socket_index,
+        is_added,
         inherited,
         page,
         queries,
@@ -416,7 +576,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                     if socket.socket_type == u16::MAX {
                         ui.weak("Activate this socket from its main row to edit native fields.");
                     } else if ui
-                        .button("Edit native fields")
+                        .button("Edit Native Fields")
                         .on_hover_text("Expose every native field for this socket row")
                         .clicked()
                     {
@@ -432,8 +592,8 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                 return;
             }
 
-            let restore = ui
-                .button("Restore donor-derived row")
+            let restore = !is_added && ui
+                .button("Restore Donor Row")
                 .on_hover_text(
                     "Remove native row overrides; randomized donor rows still use Parhelion's stable collection roll",
                 )
@@ -500,7 +660,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                 }
                 if column.choices.len() < max_embedded_choices
                     && raw_page_end == raw_choice_count
-                    && ui.small_button("+ Add embedded choice").clicked()
+                    && ui.small_button("+ Add Embedded Choice").clicked()
                 {
                     column.choices.push(HexHash::new(0));
                     if !column.choice_weight_bits.is_empty() {
@@ -520,7 +680,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
 
             ui.horizontal(|ui| {
                 let mut override_type = column.socket_type.is_some();
-                if ui.checkbox(&mut override_type, "Socket type").changed() {
+                if ui.add_enabled(!is_added, egui::Checkbox::new(&mut override_type, "Socket Type")).changed() {
                     column.socket_type = override_type.then_some(socket.socket_type);
                 }
                 if let Some(value) = &mut column.socket_type {
@@ -569,7 +729,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
 
             let mut custom_weights = !column.choice_weight_bits.is_empty();
             if ui
-                .checkbox(&mut custom_weights, "Embedded choice weights")
+                .checkbox(&mut custom_weights, "Embedded Choice Weights")
                 .on_hover_text("Exact native float32 weights stored at plug-member +0x18")
                 .changed()
             {
@@ -608,7 +768,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
 
             let mut custom_conditions = !column.choice_conditions.is_empty();
             if ui
-                .checkbox(&mut custom_conditions, "Per-choice conditions")
+                .checkbox(&mut custom_conditions, "Per-Choice Conditions")
                 .on_hover_text("Native RPN availability conditions aligned with embedded choices")
                 .changed()
             {
@@ -651,7 +811,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
 
             ui.horizontal(|ui| {
                 let mut enabled = column.reusable_plug_set_index.is_some();
-                if ui.checkbox(&mut enabled, "Reusable plug set").changed() {
+                if ui.checkbox(&mut enabled, "Reusable Plug Set").changed() {
                     column.reusable_plug_set_index =
                         enabled.then_some(socket.reusable_plug_set_index.unwrap_or(0));
                 }
@@ -663,7 +823,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
 
             ui.horizontal(|ui| {
                 let mut enabled = column.randomized_plug_set_index.is_some();
-                if ui.checkbox(&mut enabled, "Randomized plug set").changed() {
+                if ui.checkbox(&mut enabled, "Randomized Plug Set").changed() {
                     if enabled {
                         column.randomized_plug_set_index =
                             Some(socket.randomized_plug_set_index.unwrap_or(0));
@@ -735,6 +895,9 @@ pub(super) fn materialize_socket_column(
     inherited: &[u32],
     activate_disabled: bool,
 ) {
+    let socket_count = socket_count
+        .max(recipe.overrides.socket_columns.len())
+        .max(socket_index + 1);
     recipe
         .overrides
         .socket_columns
@@ -769,6 +932,9 @@ pub(super) fn set_recipe_socket_column(
     choices: Vec<u32>,
     removed_choice: Option<usize>,
 ) {
+    let socket_count = socket_count
+        .max(recipe.overrides.socket_columns.len())
+        .max(socket_index + 1);
     recipe
         .overrides
         .socket_columns

@@ -220,7 +220,7 @@ pub(super) fn draw_item_workspace(
         match result {
             Ok(message) => {
                 app.dirty = true;
-                app.set_status(format!("{message}; click Save to write it"), false);
+                app.set_status(format!("{message}. Click Save to write it"), false);
                 state.feedback = Some(Feedback {
                     text: unchanged.map_or_else(
                         || message.clone(),

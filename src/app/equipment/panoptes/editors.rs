@@ -167,11 +167,6 @@ impl SundialApp {
                 |ui| {
                     if !is_empty {
                         ui.add_enabled_ui(guided_editable, |ui| {
-                            flags_change = item_editor::draw_masterwork_flag(
-                                ui,
-                                snapshot.and_then(|item| item.flags),
-                                self.document.supports_v13_account(),
-                            );
                             if let Some(level) = current_level {
                                 ui.horizontal(|ui| {
                                     for action in item_editor::draw_level_and_quantity(
@@ -202,6 +197,15 @@ impl SundialApp {
                             }
                         });
                     }
+                },
+                |ui| {
+                    ui.add_enabled_ui(guided_editable && !is_empty, |ui| {
+                        flags_change = item_editor::draw_masterwork_flag(
+                            ui,
+                            snapshot.and_then(|item| item.flags),
+                            self.document.supports_v13_account(),
+                        );
+                    });
                 },
             );
 
@@ -352,6 +356,7 @@ impl SundialApp {
         let editable = context.editable();
         let mut requested = Vec::new();
         let mut equip_requested = false;
+        let mut flags_change = None;
 
         ui.push_id(("panoptes-stored-editor", ui_identity), |ui| {
             let header_response = widgets::draw_compact_item_header(
@@ -390,13 +395,6 @@ impl SundialApp {
                 |ui| {
                     ui.add_enabled_ui(editable, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if let Some(flags) = item_editor::draw_masterwork_flag(
-                                ui,
-                                snapshot.flags,
-                                self.document.supports_v13_account(),
-                            ) {
-                                requested.push(InventoryItemAction::SetFlags(flags));
-                            }
                             for action in item_editor::draw_level_and_quantity(
                                 ui,
                                 ("panoptes-inventory-numeric", ui_identity),
@@ -429,7 +427,19 @@ impl SundialApp {
                         });
                     equip_requested = equip.clicked();
                 },
+                |ui| {
+                    ui.add_enabled_ui(editable, |ui| {
+                        flags_change = item_editor::draw_masterwork_flag(
+                            ui,
+                            snapshot.flags,
+                            self.document.supports_v13_account(),
+                        );
+                    });
+                },
             );
+            if let Some(flags) = flags_change {
+                requested.push(InventoryItemAction::SetFlags(flags));
+            }
 
             let picker_key = inventory_item_state_key(ui_identity);
             let picker_action = {

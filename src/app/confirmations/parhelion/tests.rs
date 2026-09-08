@@ -34,7 +34,7 @@ fn text_center(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Pos2> {
 #[test]
 fn introduction_buttons_stay_visible_and_dispatch_their_decisions() {
     for size in [egui::vec2(1100.0, 800.0), egui::vec2(640.0, 480.0)] {
-        for (label, accepted) in [("I understand", true), ("Nevermind", false)] {
+        for (label, accepted) in [("I understand", true), ("Cancel", false)] {
             let ctx = egui::Context::default();
             for _ in 0..3 {
                 assert_eq!(frame(&ctx, size, vec![]).0, None);

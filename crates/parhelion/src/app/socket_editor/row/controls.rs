@@ -15,23 +15,27 @@ pub(super) fn draw_disabled(
     let socket_index = context.socket_index;
     let mut selected_type = choices.socket_type_override;
     let mut activate = false;
+    let mut options_command = None;
     ui.horizontal(|ui| {
         let row_height = ui.spacing().interact_size.y;
         let spacing = ui.spacing().item_spacing.x;
         let available_width = ui.available_width();
         let label_width = authoring_socket_label_width(available_width);
         let value_width = (available_width - label_width - spacing).max(110.0);
-        draw_socket_role_label(ui, catalog, donor, socket_index, &mut selected_type, label_width);
+        draw_socket_role_label(ui, catalog, donor, socket_index, context.is_added, &mut selected_type, label_width);
         ui.allocate_ui_with_layout(
             egui::vec2(value_width, row_height),
             egui::Layout::left_to_right(egui::Align::Center)
                 .with_main_align(egui::Align::Min),
             |ui| {
-                ui.weak("Disabled in gameplay donor").on_hover_text(
+                ui.weak(if context.is_added { "Choose a socket role" } else { "Disabled in gameplay donor" }).on_hover_text(
                     "The gameplay donor uses the native 0xFFFF disabled sentinel with no default, embedded members, or compatible plug set.",
                 );
-                if context.show_experimental_options {
-                    activate = ui.small_button("Activate socket…").clicked();
+                if context.show_experimental_options && !context.is_added {
+                    activate = ui.small_button("Activate Socket…").clicked();
+                }
+                if context.is_added {
+                    options_command = draw_options(ui, socket_index, choices.is_overridden, true, context.can_remove_added, context.private_perk_socket);
                 }
             },
         );
@@ -41,7 +45,7 @@ pub(super) fn draw_disabled(
     } else if activate {
         Some(RowCommand::Activate)
     } else {
-        None
+        options_command
     }
 }
 
@@ -67,15 +71,15 @@ pub(super) fn draw_active(
     let current_page = &choices.current_page;
     let mut selected_type = socket_type_override;
     let mut selection = None;
-    let mut reset_requested = false;
+    let mut options_command = None;
     ui.horizontal_top(|ui| {
         let spacing = ui.spacing().item_spacing.x;
         let available_width = ui.available_width();
         let label_width = 168.0;
         let button_count = page_end - page_start;
-        let options_width = sundial::investment::authoring_button_width(ui, "Options");
+        let options_width = sundial::investment::authoring_button_width(ui, "…");
         let add_label = if current_len == 0 {
-            "+ Set plug"
+            "+ Set Plug"
         } else {
             "+ Add Choice"
         };
@@ -93,6 +97,7 @@ pub(super) fn draw_active(
             catalog,
             donor,
             socket_index,
+            context.is_added,
             &mut selected_type,
             label_width,
         );
@@ -144,13 +149,19 @@ pub(super) fn draw_active(
         } else {
             ui.allocate_space(egui::vec2(add_width, ui.spacing().interact_size.y));
         }
-        reset_requested =
-            draw_options(ui, socket.index, is_overridden, context.private_perk_socket);
+        options_command = draw_options(
+            ui,
+            socket.index,
+            is_overridden,
+            context.is_added,
+            context.can_remove_added,
+            context.private_perk_socket,
+        );
     });
     if selected_type != socket_type_override {
         Some(RowCommand::ChangeRole(selected_type))
-    } else if reset_requested {
-        Some(RowCommand::Reset)
+    } else if options_command.is_some() {
+        options_command
     } else {
         selection
     }
@@ -295,25 +306,39 @@ fn draw_options(
     ui: &mut egui::Ui,
     socket_index: usize,
     is_overridden: bool,
+    is_added: bool,
+    can_remove_added: bool,
     private_perk_socket: &mut Option<usize>,
-) -> bool {
-    let mut reset_requested = false;
+) -> Option<RowCommand> {
+    let mut command = None;
     ui.push_id(("socket-options", socket_index), |ui| {
-    ui.menu_button("Options", |ui| {
+    let response = ui.menu_button("…", |ui| {
         if ui.button("Custom Perks…")
-            .on_hover_text("Authoring is coming soon. Reuse an existing custom perk in this socket.")
+            .on_hover_text("Custom perk editing is planned for a future release. Reuse a saved custom perk in this socket.")
             .clicked() {
             *private_perk_socket = Some(socket_index);
             ui.close_menu();
         }
         ui.separator();
-        if ui.add_enabled(is_overridden, egui::Button::new("Reset choices & role"))
+        if is_added {
+            if ui.add_enabled(can_remove_added, egui::Button::new("Remove Added Socket"))
+                .on_hover_text(if can_remove_added { "Remove this socket and its custom perk assignments" } else { "Remove later added sockets first to preserve socket order" })
+                .clicked() {
+                command = Some(RowCommand::RemoveAdded);
+                ui.close_menu();
+            }
+        } else if ui.add_enabled(is_overridden, egui::Button::new("Reset Choices & Role"))
             .on_hover_text("Restore the base weapon's choices and role. Custom overrides on retained choices remain.")
             .clicked() {
-            reset_requested = true;
+            command = Some(RowCommand::Reset);
             ui.close_menu();
         }
-    }).response.on_hover_text("Reuse custom perks or reset this socket");
+    }).response.on_hover_text(if is_added {
+        "Socket options: reuse custom perks or remove this added socket"
+    } else {
+        "Socket options: reuse custom perks or reset this socket"
+    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Socket Options"));
 });
-    reset_requested
+    command
 }

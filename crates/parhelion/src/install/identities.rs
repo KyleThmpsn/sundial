@@ -5,6 +5,8 @@ use sundial::package_authoring::{
     investment_schema::*, open_shadowkeep_package_manager, resolve_live_named_tag,
 };
 use tiger_pkg::TagHash;
+mod sockets;
+pub(super) use sockets::generation_socket_defaults;
 
 pub(super) fn installed_identities(
     target: &Path,
@@ -18,6 +20,14 @@ pub(super) fn generation_identities(
     target: &Path,
     authored_directory: &Path,
 ) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
+    with_generation(target, authored_directory, read_identities)
+}
+
+fn with_generation<T>(
+    target: &Path,
+    authored_directory: &Path,
+    read: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
     if !paths_equal(target, authored_directory) {
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its
@@ -27,19 +37,28 @@ pub(super) fn generation_identities(
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
-        for profile in AUTHORED_PACKAGES {
-            let path = authored_directory.join(profile.file_name);
-            if path.is_file() {
-                view.add_overlay(&path)?;
+        let result = (|| {
+            for profile in AUTHORED_PACKAGES {
+                let path = authored_directory.join(profile.file_name);
+                if path.is_file() {
+                    view.add_overlay(&path)?;
+                }
             }
-        }
-        return installed_identities(view.path());
+            read(view.path())
+        })();
+        return view.finish(result);
     }
+    read(target)
+}
+
+fn read_identities(
+    target: &Path,
+) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
     let manager = open_shadowkeep_package_manager(target)?;
     let globals = resolve_live_named_tag(&manager, "investment_globals", None)?;
     // Follow each generation's own root. Do not assume authored root/table tags are unchanged.
     let tables = |authored| -> Result<(Vec<u8>, Vec<u8>), String> {
-        let directory = if authored { authored_directory } else { target };
+        let directory = target;
         let globals = payload(directory, globals, authored)?;
         let root = payload(
             directory,

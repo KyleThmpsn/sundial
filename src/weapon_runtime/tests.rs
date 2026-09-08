@@ -238,3 +238,115 @@ fn technical_ranges_are_chunked_without_losing_bytes() {
         600
     );
 }
+
+#[test]
+fn shared_owner_ranges_reconstruct_identical_saved_locators() {
+    let payload = (0_u8..64).collect::<Vec<_>>();
+    let root = WeaponRuntimeRoot {
+        kind: WeaponRuntimeRootKind::Definition,
+        schema: 0x8080_5678,
+        owner_offset: 8,
+        byte_size: 32,
+        generated_schema: false,
+        fields: Vec::new(),
+    };
+    let mut displayed = vec![root.clone()];
+    prepare_shared_owner_roots(
+        &payload,
+        &mut displayed,
+        WEAPON_TRIGGER_COMPONENT_KEY,
+        1,
+        &[(24, 28)],
+    )
+    .unwrap();
+    assert_eq!(displayed[0].fields.len(), 2);
+    let mut resolved = vec![root.clone()];
+    prepare_shared_owner_roots(
+        &payload,
+        &mut resolved,
+        WEAPON_TRIGGER_COMPONENT_KEY,
+        1,
+        &[(24, 28)],
+    )
+    .unwrap();
+    assert_eq!(displayed, resolved);
+    for field in &resolved[0].fields {
+        let start = field.owner_offset as usize;
+        let bytes = encode_weapon_runtime_value(&field.kind, &field.value).unwrap();
+        assert_eq!(bytes, payload[start..start + bytes.len()]);
+        assert!(start + bytes.len() <= 24 || start >= 28);
+        assert!(field.locator.is_buildable());
+    }
+
+    // A component boundary change must invalidate a formerly exact technical range.
+    let saved = &displayed[0].fields[0].locator;
+    let mut changed = vec![root];
+    prepare_shared_owner_roots(
+        &payload,
+        &mut changed,
+        WEAPON_TRIGGER_COMPONENT_KEY,
+        1,
+        &[(20, 28)],
+    )
+    .unwrap();
+    assert!(
+        changed[0]
+            .fields
+            .iter()
+            .all(|field| field.locator != *saved)
+    );
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
+    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
+        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let manager = open_shadowkeep_packages(Path::new(&packages).parent().unwrap()).unwrap();
+    // These two verified stock rows exercise different weapon families. Neither is required
+    // to contain unreflected shared-owner ranges. The synthetic boundary tests above cover
+    // reconstruction of that optional field category explicitly.
+    for pattern_index in [370, 285] {
+        let source =
+            load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern_index)
+                .unwrap();
+        let graph = load_weapon_runtime_graph_for_entity(
+            &manager,
+            source.item_hash,
+            source.pattern_global_id_hash,
+            source.entity_tag,
+            &source.payload,
+        )
+        .unwrap();
+        let mut checked_count = 0;
+        for field in graph.fields() {
+            if !field.locator.is_buildable() {
+                continue;
+            }
+            let displayed_bytes = encode_weapon_runtime_value(&field.kind, &field.value).unwrap();
+            let resolved = resolve_weapon_runtime_field(&manager, &source.payload, &field.locator)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Pattern {pattern_index} displayed field {} failed to resolve: {error}",
+                        field.path_label
+                    )
+                });
+            assert_eq!(resolved.field.kind, field.kind, "{}", field.path_label);
+            let compiled_bytes =
+                encode_weapon_runtime_value(&resolved.field.kind, &field.value).unwrap();
+            assert_eq!(displayed_bytes, compiled_bytes, "{}", field.path_label);
+            let payload = read_component_owner(&manager, resolved.owner_tag).unwrap();
+            assert_eq!(
+                compiled_bytes,
+                payload[resolved.owner_offset..resolved.owner_offset + compiled_bytes.len()],
+                "{}",
+                field.path_label
+            );
+            checked_count += 1;
+        }
+        assert!(
+            checked_count > 0,
+            "Pattern {pattern_index} must expose runtime fields"
+        );
+    }
+}

@@ -172,7 +172,7 @@ pub(in crate::app) fn draw_window(
 }
 
 fn draw_header(ui: &mut egui::Ui, state: &State) {
-    const INTRO: &str = "Set overall goals for equipped armor. The closest safe configuration is previewed before it is applied.";
+    const INTRO: &str = "Choose target stats for equipped armor, then review the proposed changes before applying them.";
     ui.horizontal(|ui| {
         let available = ui.available_width();
         if available < 700.0 {

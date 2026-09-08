@@ -62,6 +62,7 @@ pub(super) fn draw_compact_item_header(
     catalog: &Catalog,
     header: CompactItemHeader<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
+    context_menu: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let mut icon_response = None;
     let mut hash_rect = None;
@@ -94,26 +95,26 @@ pub(super) fn draw_compact_item_header(
                             ui.label(egui::RichText::new(hash_text).monospace().weak());
                         hash_rect = Some(hash_response.rect);
                     }
-                    if header.default_plugs_equipped {
-                        ui.label(egui::RichText::new("Default Plugs Equipped").weak());
-                    }
                 });
             });
-            if header.hash.is_some_and(crate::dummy_items::contains) {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    item_editor::draw_item_badge(ui, "DUMMY")
-                        .on_hover_text("Display-only dummy definition");
-                });
+            if header.default_plugs_equipped {
+                ui.label(egui::RichText::new("Default Plugs Equipped").weak());
             }
-            ui.label(
-                egui::RichText::new(header.title)
-                    .size(15.0)
-                    .color(if header.valid {
-                        ui.visuals().strong_text_color()
-                    } else {
-                        ui.visuals().error_fg_color
-                    }),
-            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(header.title)
+                        .size(15.0)
+                        .color(if header.valid {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().error_fg_color
+                        }),
+                );
+                if header.hash.is_some_and(crate::dummy_items::contains) {
+                    item_editor::draw_item_badge(ui, "Dummy")
+                        .on_hover_text("Display-only dummy definition");
+                }
+            });
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut drew_metadata = false;
@@ -168,6 +169,8 @@ pub(super) fn draw_compact_item_header(
                 request_definition_with_context(ui.ctx(), hash, header.inspection_context.clone());
                 ui.close_menu();
             }
+            context_menu(ui);
+            ui.separator();
             if ui.button("Copy Hash (Hex)").clicked() {
                 ui.ctx().copy_text(format_hash_hex(hash));
                 ui.close_menu();

@@ -22,7 +22,7 @@ use loadout::*;
 use loadout_dialog::draw_loadout_confirmation;
 use rng::Rng;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use eframe::egui;
 use serde_json::Value;

@@ -157,8 +157,15 @@ pub(super) fn create_backup_directory(backup_root: &Path) -> io::Result<PathBuf>
     fs::create_dir_all(backup_root)?;
     let canonical_root = fs::canonicalize(backup_root)?;
     for attempt in 0..128u64 {
-        let candidate =
-            canonical_root.join(format!("parhelion-backup-{}-{attempt}", unique_token()));
+        let token = unique_token()
+            .split('-')
+            .map(|part| {
+                let value = part.trim_start_matches('0');
+                if value.is_empty() { "0" } else { value }
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        let candidate = canonical_root.join(format!("parhelion-backup-v2-{token}-{attempt}"));
         match fs::create_dir(&candidate) {
             Ok(()) => return fs::canonicalize(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -315,18 +322,46 @@ pub(super) fn is_automatic_backup_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix(AUTOMATIC_BACKUP_PREFIX) else {
         return false;
     };
-    let mut parts = suffix.split('-');
+    let compact = suffix.strip_prefix("v2-");
+    let mut parts = compact.unwrap_or(suffix).split('-');
     let nanos = parts.next().unwrap_or_default();
     let process = parts.next().unwrap_or_default();
     let counter = parts.next().unwrap_or_default();
     let attempt = parts.next().unwrap_or_default();
     parts.next().is_none()
-        && nanos.len() == 32
-        && process.len() == 8
-        && counter.len() == 16
+        && if compact.is_some() {
+            (1..=32).contains(&nanos.len())
+                && (1..=8).contains(&process.len())
+                && (1..=16).contains(&counter.len())
+        } else {
+            nanos.len() == 32 && process.len() == 8 && counter.len() == 16
+        }
         && [nanos, process, counter]
             .into_iter()
             .all(|part| part.bytes().all(|byte| byte.is_ascii_hexdigit()))
         && !attempt.is_empty()
         && attempt.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[test]
+fn compact_backup_names_remain_unique_and_preserve_legacy_recognition() {
+    let root = tempfile::tempdir().unwrap();
+    let first = create_backup_directory(root.path()).unwrap();
+    let second = create_backup_directory(root.path()).unwrap();
+    assert_ne!(first, second);
+    let name = first.file_name().unwrap().to_str().unwrap();
+    assert!(name.len() < 54);
+    assert!(is_automatic_backup_name(name));
+    assert!(is_automatic_backup_name(
+        "parhelion-backup-000000000000000018D32BD1B4C12E54-000072DC-0000000000000000-0"
+    ));
+    for name in [
+        "parhelion-backup-manual",
+        "parhelion-backup-1-2-3-0",
+        "parhelion-backup-v2--1-0-0",
+        "parhelion-backup-v2-XX-1-0-0",
+        "parhelion-backup-v2-1-2-3-0-extra",
+    ] {
+        assert!(!is_automatic_backup_name(name));
+    }
 }

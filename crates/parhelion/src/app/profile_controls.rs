@@ -1,6 +1,18 @@
 //! Weapon profile controls; recipe mutation occurs on user actions.
 use super::*;
 
+pub(super) fn effective_power_cap_rows(
+    overrides: &WeaponRecipeOverrides,
+    inherited: &[u16],
+) -> Vec<u16> {
+    overrides.power_cap_groups.clone().unwrap_or_else(|| {
+        inherited
+            .iter()
+            .map(|group| overrides.power_cap_group.unwrap_or(*group))
+            .collect()
+    })
+}
+
 /// Changes one field without implicitly changing the other or the ammo override.
 pub(super) fn draw_combat_profile_control(
     ui: &mut egui::Ui,
@@ -20,9 +32,9 @@ pub(super) fn draw_combat_profile_control(
     let label = ui.horizontal(|ui| {
         let label = ui.label(field_label);
         draw_authoring_info_icon(ui, if select_slot {
-            "Controls inventory and equipment placement, independently of damage and ammo. Slot changes can retain the base appearance and animations; unusual combinations need gameplay testing."
+            "Chooses the Kinetic, Energy, or Power slot. Damage type and ammo type are separate choices. Test unusual combinations in game."
         } else {
-            "Changes the native elemental carrier without changing slot or ammo. Converting an elemental socket to the stock Kinetic socket/plug is not yet verified. Unusual slot/damage pairings need gameplay testing."
+            "Changes the weapon's damage type. Slot and ammo type are separate choices. Kinetic conversion is unavailable for some elemental weapons. Test unusual combinations in game."
         });
         label
     }).inner;
@@ -112,7 +124,7 @@ pub(super) fn draw_combat_profile_control(
                         capabilities.supports(candidate_action),
                         egui::SelectableLabel::new(profile == Some(candidate), text),
                     )
-                    .on_disabled_hover_text("This base weapon's damage encoding cannot support that change. Converting an elemental socket to the stock Kinetic socket/plug is not yet verified.")
+                    .on_disabled_hover_text("This damage conversion has not been verified for the base weapon and cannot be selected.")
                     .clicked()
                 {
                     if select_slot {
@@ -184,7 +196,7 @@ pub(super) fn draw_combat_profile_diagnostics(
         if kinetic_damage != (profile.inventory_slot == WeaponInventorySlot::Kinetic) {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "Experimental slot/damage pairing — verify equipping, damage and ammo in game.",
+                "Experimental slot and damage combination. Check equipping, damage, and ammo in game.",
             );
         }
     }
@@ -221,7 +233,7 @@ pub(super) fn draw_ammo_type_control(
         let label = ui.label("Ammo Type");
         draw_authoring_info_icon(
             ui,
-            "Sets the displayed classification and the native ammo override in the weapon's default and perk-selected behavior variants. Magazine size, reserve capacity, and inventory slot remain separate.",
+            "Sets the ammo type for the weapon and its perk variants. Magazine size, reserve capacity, and equipment slot are separate settings.",
         );
         label
     }).inner;
@@ -281,7 +293,7 @@ pub(super) fn draw_rarity_control(
         let label = ui.label("Rarity");
         draw_authoring_info_icon(
             ui,
-            "Exotic weapons appear under Exotics in Collections; other rarities use their weapon-family page. Both stay on the Sunrise badge. Rarity does not add a perk: choose those below. Families without a normal Collections page in this game version (such as trace rifles) require Exotic rarity.",
+            "Exotic weapons appear under Exotics in Collections. Other rarities use their weapon-type page. Both appear on the Sunrise badge. Choose perks separately below. Trace rifles require Exotic rarity because this game version has no other Collections page for them.",
         );
         label
     }).inner;
@@ -296,11 +308,18 @@ pub(super) fn draw_rarity_control(
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             workbench_style(ui);
-            ui.selectable_value(
-                &mut overrides.rarity,
-                None,
-                format!("{} (base weapon)", inherited.label()),
-            );
+            if ui
+                .add_enabled(
+                    rarity_is_supported(gameplay_donor, None),
+                    egui::SelectableLabel::new(
+                        overrides.rarity.is_none(),
+                        format!("{} (base weapon)", inherited.label()),
+                    ),
+                )
+                .clicked()
+            {
+                overrides.rarity = None;
+            }
             for rarity in [
                 RecipeRarity::Common,
                 RecipeRarity::Uncommon,
@@ -308,15 +327,44 @@ pub(super) fn draw_rarity_control(
                 RecipeRarity::Legendary,
                 RecipeRarity::Exotic,
             ] {
-                ui.selectable_value(
-                    &mut overrides.rarity,
-                    Some(rarity),
-                    recipe_rarity_label(rarity),
-                );
+                if ui
+                    .add_enabled(
+                        rarity_is_supported(gameplay_donor, Some(rarity)),
+                        egui::SelectableLabel::new(
+                            overrides.rarity == Some(rarity),
+                            recipe_rarity_label(rarity),
+                        ),
+                    )
+                    .on_disabled_hover_text(
+                        "Trace rifles require Exotic rarity in this game version.",
+                    )
+                    .clicked()
+                {
+                    overrides.rarity = Some(rarity);
+                }
             }
         })
         .response
         .labelled_by(label.id);
+    if gameplay_donor.is_some() && !rarity_is_supported(gameplay_donor, overrides.rarity) {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Choose Exotic rarity. This weapon family has no non-Exotic Collections page.",
+        );
+    }
+}
+
+pub(super) fn rarity_is_supported(
+    donor: Option<&WeaponDonor>,
+    rarity: Option<RecipeRarity>,
+) -> bool {
+    let Some(donor) = donor else {
+        return false;
+    };
+    !donor.summary.type_name.eq_ignore_ascii_case("Trace Rifle")
+        || rarity.map_or(donor.summary.rarity == WeaponRarity::Exotic, |value| {
+            value == RecipeRarity::Exotic
+        })
 }
 
 pub(super) const fn recipe_rarity_label(rarity: RecipeRarity) -> &'static str {
@@ -340,7 +388,7 @@ pub(super) fn draw_power_cap_control(
             let label = ui.label("Power Cap");
             draw_authoring_info_icon(
                 ui,
-                "Selects a limit from the installed game's power-cap table. This changes the infusion limit; it does not set the weapon's current Power.",
+                "Sets the weapon's infusion limit. Current Power is edited separately in Sundial.",
             );
             label
         })

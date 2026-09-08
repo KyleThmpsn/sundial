@@ -140,6 +140,17 @@ impl SundialApp {
                         },
                         |_| {},
                     );
+                    if self.document.supports_v13_account() {
+                        header_response.context_menu(|ui| {
+                            ui.add_enabled_ui(editable, |ui| {
+                                if let Some(flags) =
+                                    item_editor::draw_masterwork_flag(ui, snapshot.flags, true)
+                                {
+                                    requests.actions.push(InventoryItemAction::SetFlags(flags));
+                                }
+                            });
+                        });
+                    }
                     self.draw_inventory_item_actions(
                         ui,
                         InventoryItemActionContext {
@@ -258,13 +269,6 @@ impl SundialApp {
                     }
                 }
                 ui.add_space(8.0);
-                if let Some(flags) = item_editor::draw_masterwork_flag(
-                    ui,
-                    snapshot.flags,
-                    self.document.supports_v13_account(),
-                ) {
-                    requests.actions.push(InventoryItemAction::SetFlags(flags));
-                }
                 let flags = snapshot.flags.unwrap_or_default();
                 let locked = flags & INVENTORY_FLAG_LOCKED != 0;
                 let lock_response = if locked {
@@ -443,7 +447,7 @@ impl SundialApp {
             .max(current_plugs.len())
             .min(inventory::MAX_ITEM_PLUGS);
         let title = if native_defaults {
-            format!("Plugs ({socket_count}, native defaults)")
+            format!("Plugs ({socket_count}, default plugs)")
         } else {
             format!("Plugs ({socket_count})")
         };

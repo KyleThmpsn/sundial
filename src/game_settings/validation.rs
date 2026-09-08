@@ -295,8 +295,6 @@ pub(super) fn bool_fields(
 }
 
 // These are the decoded input names accepted by supported Sunrise schemas using named bindings.
-// Sunrise's raw table
-// contains both its backslash name
-// and its JSON-escaped spelling; serde represents the usable value as one
-// decoded backslash, leaving 120 logical choices here. Matching is ASCII
-// case-insensitive, just like Sunrise.
+// Sunrise's raw table contains both its backslash name and its JSON-escaped spelling.
+// Serde represents the usable value as one decoded backslash, leaving 120 logical choices here.
+// Matching is ASCII case-insensitive, just like Sunrise.

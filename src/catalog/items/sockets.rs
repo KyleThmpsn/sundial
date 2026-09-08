@@ -137,6 +137,24 @@ pub(in crate::catalog) fn build_socket_type_options(
     for options in socket_type_options.values_mut() {
         sort_plug_options(options, names);
     }
+    // Shader plugs are cosmetic and shared across weapon families. Exotic-only
+    // families may have no stock shader socket, but an authored replacement can
+    // use the installed shader category without admitting other families' traits.
+    if let Some(shaders) = socket_type_options
+        .get(&180)
+        .filter(|pool| !pool.is_empty())
+    {
+        for item in items
+            .iter()
+            .filter(|item| is_weapon_bucket(item.bucket_hash))
+        {
+            socket_and_gear_type_options
+                .entry(item_gear_type(item).into_owned())
+                .or_default()
+                .entry(180)
+                .or_insert_with(|| shaders.clone());
+        }
+    }
     for options_by_socket in socket_and_gear_type_options.values_mut() {
         for options in options_by_socket.values_mut() {
             sort_plug_options(options, names);
@@ -333,6 +351,25 @@ impl Catalog {
             .unwrap_or_default();
         if self.cosmetic_socket_pools.contains(&socket.pool) {
             options.extend(self.socket_type_options(socket.socket_type));
+            sort_plug_options(&mut options, &self.names);
+        }
+        options
+    }
+
+    pub(crate) fn gear_type_options_for_type(&self, item: &ItemDef, socket_type: u16) -> Vec<u64> {
+        let mut options = self
+            .gear_type_options
+            .get(&gear_kind(item.bucket_hash))
+            .cloned()
+            .unwrap_or_default();
+        let cosmetic = self.items.iter().any(|definition| {
+            definition.sockets.iter().any(|socket| {
+                socket.socket_type == socket_type
+                    && self.cosmetic_socket_pools.contains(&socket.pool)
+            })
+        });
+        if cosmetic {
+            options.extend(self.socket_type_options(socket_type));
             sort_plug_options(&mut options, &self.names);
         }
         options
@@ -984,6 +1021,38 @@ mod tests {
                 .unwrap(),
             &vec![4]
         );
+    }
+
+    #[test]
+    fn installed_shaders_are_available_to_exotic_only_weapon_families() {
+        let pools = vec![vec![11], vec![22]];
+        let names = HashMap::from([(11, "Shader".into()), (22, "Trait".into())]);
+        let items = vec![
+            typed_item(
+                1_498_876_634,
+                "Auto Rifle",
+                vec![
+                    SocketDef {
+                        socket_type: 180,
+                        pool: 0,
+                        ..Default::default()
+                    },
+                    SocketDef {
+                        socket_type: 92,
+                        pool: 1,
+                        ..Default::default()
+                    },
+                ],
+            ),
+            typed_item(2_465_295_065, "Trace Rifle", vec![]),
+            typed_item(3_448_274_439, "Helmet", vec![]),
+        ];
+        let (_, families) = build_socket_type_options(&items, &pools, &names);
+        assert_eq!(families["Trace Rifle"][&180], vec![11]);
+        assert!(!families["Trace Rifle"].contains_key(&92));
+        assert!(!families.contains_key("Helmet"));
+        let (_, without_shader) = build_socket_type_options(&items[1..], &pools, &names);
+        assert!(!without_shader.contains_key("Trace Rifle"));
     }
 
     #[test]

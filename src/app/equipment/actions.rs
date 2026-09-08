@@ -1,3 +1,4 @@
+use crate::app::account_validation::apply_with_bucket_limits;
 use crate::app::account_workspace as account;
 
 use super::*;
@@ -39,13 +40,9 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match account::equip_definition(
-            &mut self.document,
-            character,
-            slot,
-            item.hash,
-            &item.default_plugs,
-        ) {
+        match apply_with_bucket_limits(&mut self.document, &self.manifest, |candidate| {
+            account::equip_definition(candidate, character, slot, item.hash, &item.default_plugs)
+        }) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(format!("Equipped {}", item.name), false);
@@ -154,12 +151,14 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match equip_subclass_with_default_abilities(
-            &mut self.document,
-            character,
-            item,
-            self.preferences.experimental_cross_class_subclasses,
-        ) {
+        match apply_with_bucket_limits(&mut self.document, &self.manifest, |candidate| {
+            equip_subclass_with_default_abilities(
+                candidate,
+                character,
+                item,
+                self.preferences.experimental_cross_class_subclasses,
+            )
+        }) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(format!("Equipped {}", item.name), false);

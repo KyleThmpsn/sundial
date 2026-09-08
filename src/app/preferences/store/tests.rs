@@ -13,6 +13,7 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
     ] {
         let preferences = Preferences {
             experimental_progression: true,
+            experimental_activity_state: true,
             experimental_power_above_cap: true,
             experimental_extended_fov: true,
             experimental_cross_class_subclasses: true,
@@ -28,6 +29,7 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
         };
         let expected = serde_json::json!({
             "experimental_progression": true,
+            "experimental_activity_state": true,
             "experimental_power_above_cap": true,
             "experimental_extended_fov": true,
             "experimental_cross_class_subclasses": true,
@@ -59,6 +61,7 @@ fn missing_preferences_use_defaults_without_a_warning() {
     let loaded = load_from_paths(Some(&directory.0.join("preferences.json")), None);
     assert!(loaded.warning.is_none());
     assert!(loaded.preferences.install.is_none());
+    assert!(!loaded.preferences.experimental_activity_state);
 }
 
 #[test]

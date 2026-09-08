@@ -6,10 +6,6 @@
     "item_hash": "0x50384F33",
     "expected_name": "Coldheart"
   },
-  "presentation_donor": {
-    "item_hash": "0x5141601F",
-    "expected_name": "Ruinous Effigy"
-  },
   "identity": {
     "item_hash": "0xDC5090CF",
     "collectible_hash": "0xB9010D70",
@@ -28,6 +24,9 @@
   "flavor": "Let's break the silence.",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true
+    },
     "investment_stats": [
       {
         "definition_index": 16,
@@ -46,11 +45,12 @@
         "value": 30
       }
     ],
-    "inventory_slot": "energy",
+    "inventory_slot": "kinetic",
     "ammo_type": "special",
-    "modern_damage_type": "arc",
+    "modern_damage_type": "solar",
     "power_cap_group": 11,
     "rarity": "exotic",
+    "stat_group_index": null,
     "socket_columns": [
       null,
       null,
@@ -61,7 +61,12 @@
           "0xA5A4B58A",
           "0xC4BE7564"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -69,11 +74,46 @@
           "0xD2013CA1",
           "0xF351D2CC"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
-      null,
-      null,
-      null
+      {
+        "choices": [
+          "0x4682DFF1"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x62C9F17F"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x2F98742C"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
     ],
     "socket_plug_variants": [
       {
@@ -84,10 +124,12 @@
         "sandbox_perks": [
           {
             "source_perk_index": 1363,
-            "runtime_values": []
+            "runtime_values": [],
+            "action_float_values": []
           }
         ]
       }
-    ]
+    ],
+    "raw_payload_patches": []
   }
 }

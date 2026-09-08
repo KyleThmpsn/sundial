@@ -14,17 +14,16 @@ pub(crate) fn draw_masterwork_flag(
     }
     let mut masterworked = flags.unwrap_or_default() & INVENTORY_FLAG_MASTERWORK != 0;
     let mut changed = false;
-    ui.menu_button("State", |ui| {
-        ui.horizontal(|ui| {
-            changed = ui.checkbox(&mut masterworked, "Masterworked").changed();
-            crate::ui_help::info(ui, "Marks the item as masterworked. Socket plugs and catalyst objectives are separate.");
-        });
-        if changed {
-            ui.close_menu();
-        }
-    })
-    .response
-    .on_hover_text("Edit item-state flags");
+    ui.horizontal(|ui| {
+        changed = ui.checkbox(&mut masterworked, "Masterworked").changed();
+        crate::ui_help::info(
+            ui,
+            "Marks the item as masterworked. Socket plugs and catalyst objectives are separate.",
+        );
+    });
+    if changed {
+        ui.close_menu();
+    }
     changed.then(|| {
         let flags = if masterworked {
             flags.unwrap_or_default() | INVENTORY_FLAG_MASTERWORK

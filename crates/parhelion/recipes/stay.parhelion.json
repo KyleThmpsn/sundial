@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.stay",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x249F67B4",
+    "expected_name": "Falling Guillotine"
+  },
+  "presentation_donor": {
+    "item_hash": "0x6F22FCEC",
+    "expected_name": "Worldline Zero"
+  },
+  "identity": {
+    "item_hash": "0xB969E867",
+    "collectible_hash": "0xC0A78648",
+    "unlock_hash": "0xE4232D16",
+    "name_hash": "0xD7502D27",
+    "type_hash": "0x88F6F22A",
+    "flavor_hash": "0x7E1701DE",
+    "source_hash": "0x84FA9C5D",
+    "collection_name_hash": "0x8432DB68",
+    "collection_description_hash": "0xE50FC7FD",
+    "inventory_hint_hash": "0x46118A8A",
+    "collection_requirement_hash": "0x373AD7AA",
+    "pattern_global_id_hash": "0x3DAFFD7E"
+  },
+  "name": "Stay",
+  "flavor": "Not yet.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 15,
+        "value": 60
+      },
+      {
+        "definition_index": 19,
+        "value": 35
+      },
+      {
+        "definition_index": 24,
+        "value": 50
+      },
+      {
+        "definition_index": 40,
+        "value": 55
+      },
+      {
+        "definition_index": 37,
+        "value": 40
+      }
+    ],
+    "inventory_slot": "power",
+    "ammo_type": "heavy",
+    "modern_damage_type": "void",
+    "rarity": "legendary",
+    "power_cap_group": 11,
+    "socket_columns": [
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0x151FBDCC",
+          "0x6842D015",
+          "0x9A6B194D"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0xE944CC82",
+          "0xDD070E81",
+          "0x5C2FD04F"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x4682DFF1"
+        ],
+        "socket_type": 180
+      },
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

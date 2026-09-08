@@ -250,7 +250,8 @@ fn draw_library_row(
                         }
                     } else if current {
                         ui.add(egui::Label::new("Open").selectable(false));
-                    } else if entry.bundled {
+                    }
+                    if entry.bundled {
                         ui.add(
                             egui::Label::new(egui::RichText::new("Built-in").weak())
                                 .selectable(false),
@@ -344,6 +345,65 @@ impl PackageAuthoringApp {
         self.library_open = false;
     }
 
+    fn draw_library_controls(&mut self, ui: &mut egui::Ui, busy: bool) -> bool {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Refresh").small())
+                .clicked()
+            {
+                self.refresh_recipe_library();
+            }
+            if ui
+                .add_enabled(
+                    !busy && !self.recipe_dirty && self.recipe_library.is_some(),
+                    egui::Button::new("Restore Default Recipes…").small(),
+                )
+                .on_hover_text(
+                    "Restore bundled recipes from this version. Save or discard open edits first.",
+                )
+                .clicked()
+            {
+                match self
+                    .recipe_library
+                    .as_ref()
+                    .unwrap()
+                    .prepare_restore_defaults()
+                {
+                    Ok(preview) => self.restore_defaults_preview = Some(preview),
+                    Err(error) => self.log.push(LogEntry::error(error)),
+                }
+            }
+        });
+        if self.restore_defaults_preview.is_none() {
+            return false;
+        }
+        ui.group(|ui| {
+            ui.label("Restore Default Recipes?");
+            ui.label("This replaces saved edits to all bundled recipes and restores missing defaults. Changed files are backed up first. Custom recipes, build selection and installed game files stay unchanged.");
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy && !self.recipe_dirty, egui::Button::new("Restore Defaults")).clicked() {
+                    let preview = self.restore_defaults_preview.take().unwrap();
+                    let library = self.recipe_library.as_ref().unwrap();
+                    match library.restore_defaults(&preview) {
+                        Ok(backup) => {
+                            self.log.push(LogEntry::info(match backup {
+                                Some(path) => format!("Default recipes restored. Backup: {}", path.display()),
+                                None => "Default recipes are already up to date.".into(),
+                            }));
+                            let reload = self.recipe_path.clone().filter(|path|
+                                self.recipe_entries.iter().any(|entry| entry.bundled && &entry.path == path));
+                            self.refresh_recipe_library();
+                            if let Some(path) = reload { self.open_recipe_path(&path); }
+                        }
+                        Err(error) => self.log.push(LogEntry::error(error)),
+                    }
+                }
+                if ui.button("Cancel").clicked() { self.restore_defaults_preview = None; }
+            });
+        });
+        true
+    }
+
     pub(super) fn draw_library_windows(&mut self, ctx: &egui::Context) {
         // Escape abandons an uncommitted selection before closing library navigation.
         if (self.build_selection_draft.is_some() || self.library_open)
@@ -353,6 +413,7 @@ impl PackageAuthoringApp {
                 self.build_selection_draft = None;
             } else {
                 self.library_open = false;
+                self.restore_defaults_preview = None;
             }
         }
         let busy = self.has_background_work();
@@ -376,6 +437,9 @@ impl PackageAuthoringApp {
             .resizable(true)
             .show(ctx, |ui| {
                 workbench_style(ui);
+                if self.draw_library_controls(ui, busy) {
+                    return;
+                }
                 let search = named_control(
                     ui.add(
                         egui::TextEdit::singleline(&mut self.library_query)
@@ -433,6 +497,9 @@ impl PackageAuthoringApp {
                 ));
             });
         self.library_open = open;
+        if !open {
+            self.restore_defaults_preview = None;
+        }
         if let Some(path) = selected {
             self.library_open = false;
             self.request_recipe_action(PendingRecipeAction::Open(path));

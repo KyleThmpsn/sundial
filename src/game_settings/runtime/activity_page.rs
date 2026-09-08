@@ -8,49 +8,49 @@ use serde_json::{Value, json};
 const DESTINATION_FIELDS: &[Field] = &[
     Field {
         key: "package_name",
-        label: "Package name",
+        label: "Package Name",
         input: Input::Text,
         optional: false,
     },
     Field {
         key: "reason",
-        label: "Selection reason",
+        label: "Selection Reason",
         input: Input::Integer(-1, 14),
         optional: false,
     },
     Field {
         key: "source_activity_index",
-        label: "Source activity index",
+        label: "Source Activity Index",
         input: Input::Integer(-1, 4094),
         optional: false,
     },
     Field {
         key: "activity_index",
-        label: "Destination activity index",
+        label: "Destination Activity Index",
         input: Input::Integer(0, 4094),
         optional: false,
     },
     Field {
         key: "bubble_count",
-        label: "Bubble count",
+        label: "Bubble Count",
         input: Input::Integer(1, 64),
         optional: false,
     },
     Field {
         key: "stateful_bubble_mask",
-        label: "Stateful bubble mask",
+        label: "Stateful Bubble Mask",
         input: Input::Unsigned(u64::MAX),
         optional: false,
     },
     Field {
         key: "initial_slice_set",
-        label: "Initial slice set",
+        label: "Initial Slice Set",
         input: Input::Integer(0, 511),
         optional: false,
     },
     Field {
         key: "spawn_set_hash",
-        label: "Spawn-set hash",
+        label: "Spawn Set Hash",
         input: Input::Unsigned(u32::MAX as u64),
         optional: false,
     },
@@ -58,38 +58,38 @@ const DESTINATION_FIELDS: &[Field] = &[
 const ARRIVAL_FIELDS: &[Field] = &[
     Field {
         key: "package_name",
-        label: "Package name",
+        label: "Package Name",
         input: Input::Text,
         optional: false,
     },
     Field {
         key: "bubble",
-        label: "Bubble override",
+        label: "Bubble Override",
         input: Input::Integer(0, 63),
         optional: true,
     },
     Field {
         key: "slice_set",
-        label: "Slice-set override",
+        label: "Slice Set Override",
         input: Input::Integer(0, 511),
         optional: true,
     },
     Field {
         key: "spawn_set_hash",
-        label: "Spawn-set override",
+        label: "Spawn Set Override",
         input: Input::Unsigned(u32::MAX as u64),
         optional: true,
     },
     Field {
         key: "current_activity_from_launch",
-        label: "Set current activity on launch",
+        label: "Set Current Activity on Launch",
         input: Input::Bool,
         optional: true,
     },
 ];
 
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
-    ui.label("Use indices and package names from the installed build. Edits are staged until Apply; unrelated fields are preserved.");
+    ui.label("Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them.");
     let mut changed = false;
     egui::CollapsingHeader::new("Default destination").show(ui, |ui| {
         match optional_value(document, activity::DESTINATION) {

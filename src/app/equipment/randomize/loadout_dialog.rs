@@ -70,7 +70,7 @@ pub(super) fn draw_loadout_confirmation(
                 });
             ui.checkbox(
                 &mut options.replace_held_inventory,
-                "Replace held inventory in selected sections",
+                "Replace existing inventory items",
             )
             .on_hover_text(
                 "Off by default. When enabled, held items in the selected sections are removed and regenerated.",
@@ -82,7 +82,11 @@ pub(super) fn draw_loadout_confirmation(
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(6.0);
-            app.draw_plug_safety_controls(ui);
+            ui.group(|ui| {
+                ui.strong("Perk Safety");
+                app.draw_plug_safety_controls(ui);
+                ui.label("Applies to equipped and inventory weapon and armor rolls. Compatible uses each item's native perk pool.");
+            });
             ui.label(
                 egui::RichText::new(
                     "Checked sections regenerate equipped items immediately. Held inventory is preserved unless its replacement option is enabled. One equipped exotic is kept per weapon and armor set.",
@@ -118,7 +122,13 @@ pub(super) fn draw_loadout_confirmation(
             Ok(message) => {
                 open = false;
                 app.dirty = true;
-                app.set_status(format!("{message}; click Save to write it"), false);
+                app.set_status(
+                    format!(
+                        "{message}. Perk safety: {}. Click Save to write it",
+                        app.plug_selection_mode.label()
+                    ),
+                    false,
+                );
             }
             Err(error) => {
                 app.set_status(format!("Loadout not randomized: {error}"), true);

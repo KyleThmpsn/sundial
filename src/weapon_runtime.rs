@@ -18,6 +18,9 @@ use values::*;
 mod decode;
 use decode::*;
 
+mod compatibility;
+pub use compatibility::{WeaponRuntimeResourceShape, load_weapon_runtime_resource_shape};
+
 use crate::package_payload::{i64_at as read_i64, u32_at as read_u32, u64_at as read_u64};
 
 use std::{
@@ -293,6 +296,8 @@ pub struct WeaponRuntimeGraph {
 pub struct WeaponRuntimeEntitySource {
     pub item_hash: u32,
     pub pattern_global_id_hash: u32,
+    /// Selects this item's variant inside a shared weapon-content component.
+    pub weapon_content_group_hash: u32,
     pub entity_tag: u32,
     pub payload: Vec<u8>,
 }
@@ -480,6 +485,7 @@ fn load_weapon_runtime_entity_from_pattern(
     Ok(WeaponRuntimeEntitySource {
         item_hash: pattern.item_hash,
         pattern_global_id_hash: pattern.pattern_global_id_hash,
+        weapon_content_group_hash: pattern.weapon_content_group_hash,
         entity_tag: entity_tag.0,
         payload: entity,
     })
@@ -557,56 +563,13 @@ pub fn load_weapon_runtime_graph_for_entity(
             registry,
         )?;
         enrich_component_field_labels(&mut resources, owner_tag, &roots);
-        if let Some(ranges) = resource_ranges.get(&owner_tag) {
-            for root in &mut roots {
-                root.fields.retain(|field| {
-                    let start = field.owner_offset as usize;
-                    let end = start.saturating_add(field.locator.byte_size as usize);
-                    !ranges.iter().any(|&(resource_start, resource_end)| {
-                        start < resource_end && resource_start < end
-                    })
-                });
-                let target = usize::try_from(root.owner_offset)
-                    .map_err(|_| "Runtime owner-root offset does not fit this platform")?;
-                let limit = target
-                    .checked_add(root.byte_size as usize)
-                    .ok_or("Runtime owner-root range overflowed")?;
-                append_uncovered_runtime_ranges(
-                    payload,
-                    OwnerRootDescriptor {
-                        kind: root.kind,
-                        target,
-                        schema: root.schema,
-                        limit,
-                    },
-                    &mut root.fields,
-                    anchor_binding_hash,
-                    anchor_resource_index,
-                    ranges,
-                )?;
-            }
-        } else {
-            for root in &mut roots {
-                let target = usize::try_from(root.owner_offset)
-                    .map_err(|_| "Runtime owner-root offset does not fit this platform")?;
-                let limit = target
-                    .checked_add(root.byte_size as usize)
-                    .ok_or("Runtime owner-root range overflowed")?;
-                append_uncovered_runtime_ranges(
-                    payload,
-                    OwnerRootDescriptor {
-                        kind: root.kind,
-                        target,
-                        schema: root.schema,
-                        limit,
-                    },
-                    &mut root.fields,
-                    anchor_binding_hash,
-                    anchor_resource_index,
-                    &[],
-                )?;
-            }
-        }
+        prepare_shared_owner_roots(
+            payload,
+            &mut roots,
+            anchor_binding_hash,
+            anchor_resource_index,
+            resource_ranges.get(&owner_tag).map_or(&[], Vec::as_slice),
+        )?;
         owners.push(WeaponRuntimeOwner {
             owner_tag,
             anchor_binding_hash,
@@ -757,7 +720,7 @@ pub fn resolve_weapon_runtime_field(
             .into_iter()
             .find(|field| field.locator == *locator)
     } else {
-        let roots = decode_owner_roots(
+        let mut roots = decode_owner_roots(
             manager,
             &payload,
             binding.owner_tag,
@@ -765,6 +728,36 @@ pub fn resolve_weapon_runtime_field(
             locator.resource_index,
             registry,
         )?;
+        if locator.path.first().is_some_and(|element| {
+            element.name_hash == TECHNICAL_BYTES_PATH_HASH
+        }) {
+            // Technical shared-owner ranges are constructed after concrete resources are
+            // excluded. Reconstruct that same boundary-aware view before matching a saved
+            // locator, rather than accepting an arbitrary offset into the owner payload.
+            let owner_bindings = collect_runtime_bindings(entity, registry)?
+                .into_iter()
+                .filter(|candidate| candidate.owner_tag == binding.owner_tag)
+                .collect::<Vec<_>>();
+            let mut ranges = Vec::new();
+            for (candidate, _) in canonical_runtime_resources(&owner_bindings) {
+                let resource = decode_component_resource(manager, &payload, &candidate, registry)?;
+                for root in std::iter::once(&resource.instance).chain(resource.definition.iter()) {
+                    let start = usize::try_from(root.owner_offset)
+                        .map_err(|_| "Runtime resource offset does not fit this platform")?;
+                    let end = start
+                        .checked_add(root.byte_size as usize)
+                        .ok_or("Runtime resource range overflowed")?;
+                    ranges.push((start, end));
+                }
+            }
+            prepare_shared_owner_roots(
+                &payload,
+                &mut roots,
+                locator.binding_hash,
+                locator.resource_index,
+                &ranges,
+            )?;
+        }
         let root = roots
             .into_iter()
             .find(|root| root.kind == locator.root)

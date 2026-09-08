@@ -60,7 +60,15 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
     )
     .expect("reversed two-weapon project should build");
     assert_eq!(forward.plan.weapons.len(), 2);
-    assert_eq!(forward.artifacts.len(), 7);
+    let expected_packages = crate::package_profile::authored_packages_for_file_names(
+        forward
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.plan.output_file_name.as_str()),
+    )
+    .expect("project should emit a complete recipe-selected package set");
+    assert_eq!(forward.artifacts.len(), expected_packages.len());
+    assert_eq!(reverse.artifacts.len(), forward.artifacts.len());
     let mut forward_artifacts = forward.artifacts.iter().collect::<Vec<_>>();
     let mut reverse_artifacts = reverse.artifacts.iter().collect::<Vec<_>>();
     forward_artifacts.sort_by_key(|artifact| artifact.plan.chain.identity.package_id);
@@ -74,16 +82,21 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
         .iter()
         .find(|artifact| artifact.plan.chain.identity.package_id == HOST_PACKAGE_ID)
         .unwrap();
-    assert_eq!(host.plan.appended_tags.len(), 21);
-    assert_eq!(host.plan.final_entry_count, HOST_EXPECTED_ENTRY_COUNT + 21);
+    assert_eq!(host.plan.original_entry_count, HOST_EXPECTED_ENTRY_COUNT);
+    assert_eq!(
+        host.plan.final_entry_count,
+        HOST_EXPECTED_ENTRY_COUNT + host.plan.appended_tags.len()
+    );
     let assets = forward
         .artifacts
         .iter()
         .find(|artifact| artifact.plan.chain.identity.package_id == PARHELION_ASSET_PACKAGE_ID)
         .unwrap();
     assert_eq!(assets.plan.original_entry_count, 0);
-    assert_eq!(assets.plan.appended_tags.len(), 7);
-    assert_eq!(assets.plan.final_entry_count, 7);
+    assert_eq!(
+        assets.plan.final_entry_count,
+        assets.plan.appended_tags.len()
+    );
     assert_eq!(forward.plan.sunrise.watermarked_icon_containers.len(), 2);
 
     let source_root = packages
@@ -110,8 +123,11 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
         fs::create_dir_all(&target_bin).unwrap();
         fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll")).unwrap();
     }
-    assert_eq!(forward.write_new(&view_packages).unwrap().len(), 6);
-    let manager = open_manager(&view_packages).expect("all six authored packages should reopen");
+    assert_eq!(
+        forward.write_new(&view_packages).unwrap().len(),
+        forward.artifacts.len()
+    );
+    let manager = open_manager(&view_packages).expect("all authored packages should reopen");
     for (ordinal, plan) in forward.plan.weapons.iter().enumerate() {
         let definition = read_tag(&manager, plan.definition_tag, "project definition").unwrap();
         let strings = read_tag(&manager, plan.string_tag, "project strings").unwrap();

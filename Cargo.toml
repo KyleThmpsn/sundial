@@ -63,7 +63,7 @@ rfd = "0.15.4"
 rusqlite = { version = "0.37.0", features = ["backup", "bundled"], optional = true }
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
 # Keep timestamp formatting compatible with our Rust 1.88 minimum.
-time = { version = "=0.3.44", features = ["formatting"] }
+time = { version = "=0.3.47", features = ["formatting"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

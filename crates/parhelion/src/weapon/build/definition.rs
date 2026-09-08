@@ -100,11 +100,13 @@ pub(super) fn apply_presentation(
             strings,
             donor_inventory_slot,
             &presentation.strings,
+            presentation.inventory_slot,
             authored_inventory_slot,
         )?;
     } else if authored_inventory_slot != donor_inventory_slot {
         // Retaining the original geometry also retains its type keys and animations.
-        // Slot selection changes only the independently encoded inventory bucket.
+        // The native definition's bucket and equipment slot were updated earlier.
+        // Here, update the matching client classification without changing geometry.
         set_item_string_inventory_slot(strings, donor_inventory_slot, authored_inventory_slot)?;
     }
     if let Some(render_gear) = &donor.render_gear_donor {

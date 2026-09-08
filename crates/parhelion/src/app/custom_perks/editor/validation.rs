@@ -1,5 +1,28 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
+fn valid_runtime_text(kind: &WeaponRuntimeValueKind, text: &str) -> bool {
+    match *kind {
+        WeaponRuntimeValueKind::FixedBytes { size } => {
+            parse_runtime_hex_bytes(text, size as usize).is_some()
+        }
+        WeaponRuntimeValueKind::Float32 | WeaponRuntimeValueKind::Vector4Float32 => {
+            parse_runtime_hex_u64(text)
+                .and_then(|bits| u32::try_from(bits).ok())
+                .is_some_and(|bits| f32::from_bits(bits).is_finite())
+        }
+        WeaponRuntimeValueKind::HexIdentifier { .. } => parse_runtime_hex_u64(text)
+            .is_some_and(|value| value <= kind.unsigned_maximum().unwrap_or(u64::MAX)),
+        WeaponRuntimeValueKind::SignedInteger { bits: 64 } => text.trim().parse::<i64>().is_ok(),
+        WeaponRuntimeValueKind::UnsignedInteger { bits: 64 }
+        | WeaponRuntimeValueKind::Enum { bits: 64 }
+        | WeaponRuntimeValueKind::BitFlags { bits: 64 } => text.trim().parse::<u64>().is_ok(),
+        _ => true,
+    }
+}
+
 pub(super) fn fields_for<'a>(
     loaded: &'a PrivatePerkRuntimeGraph,
     locator: &WeaponRuntimeFieldLocator,
@@ -58,22 +81,7 @@ impl PerkEditor {
             if fields.len() != 1 {
                 continue;
             }
-            let valid = match fields[0].kind {
-                WeaponRuntimeValueKind::FixedBytes { size } => {
-                    parse_runtime_hex_bytes(text, size as usize).is_some()
-                }
-                WeaponRuntimeValueKind::Float32 | WeaponRuntimeValueKind::Vector4Float32 => {
-                    parse_runtime_hex_u64(text)
-                        .and_then(|bits| u32::try_from(bits).ok())
-                        .is_some_and(|bits| f32::from_bits(bits).is_finite())
-                }
-                WeaponRuntimeValueKind::HexIdentifier { .. } => parse_runtime_hex_u64(text)
-                    .is_some_and(|value| {
-                        value <= fields[0].kind.unsigned_maximum().unwrap_or(u64::MAX)
-                    }),
-                _ => true,
-            };
-            if !valid {
+            if !valid_runtime_text(&fields[0].kind, text) {
                 errors.push("An unfinished field entry is invalid. Correct it or reset the field before applying.".into());
             }
         }

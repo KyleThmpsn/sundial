@@ -3,7 +3,7 @@ name: Quality
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, upstream]
 
 permissions:
   contents: read
@@ -33,7 +33,12 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxkbcommon-dev \
-            libxrandr-dev
+            libxrandr-dev \
+            desktop-file-utils \
+            python3-gi
+
+      - name: Test Linux desktop installation
+        run: sh packaging/linux/tests/install.sh
 
       - name: Install dependency auditor
         run: cargo install cargo-audit --version 0.22.2 --locked

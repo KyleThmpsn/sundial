@@ -263,9 +263,12 @@ pub struct WeaponInvestmentStat {
 impl WeaponInvestmentStat {
     #[must_use]
     pub fn value_range(&self) -> Option<(i32, i32)> {
-        self.minimum_value
-            .zip(self.maximum_value)
-            .filter(|(minimum, maximum)| minimum <= maximum)
+        if self.minimum_value.is_none() && self.maximum_value.is_none() {
+            return None;
+        }
+        let minimum = self.minimum_value.unwrap_or(i32::MIN);
+        let maximum = self.maximum_value.unwrap_or(i32::MAX);
+        (minimum <= maximum).then_some((minimum, maximum))
     }
 
     /// Returns exactly what the historical client display conversion produces. Stats without a
@@ -313,7 +316,7 @@ pub struct WeaponDonor {
     pub summary: WeaponDonorSummary,
     /// Complete ordered version-group values from the native quality block.
     pub power_cap_groups: Vec<u16>,
-    /// Equipment-slot presentation decoded independently from the inventory bucket.
+    /// Native equipment slot decoded independently from the inventory bucket.
     pub equipment_slot: Option<WeaponInventorySlot>,
     pub sockets: Vec<WeaponSocket>,
     pub investment_stats: Vec<WeaponInvestmentStat>,
@@ -414,6 +417,33 @@ impl WeaponSocketTypeChoice {
 #[cfg(test)]
 mod stat_display_tests {
     use super::*;
+
+    #[test]
+    fn stat_ranges_preserve_independently_known_bounds() {
+        let mut stat = WeaponInvestmentStat {
+            definition_index: 30,
+            definition_hash: None,
+            name: "Aim Assistance".to_owned(),
+            value: 50,
+            minimum_value: None,
+            maximum_value: None,
+            display_as_numeric: false,
+            is_linear: false,
+            display_interpolation: Vec::new(),
+        };
+        for (minimum, maximum, expected) in [
+            (None, None, None),
+            (None, Some(100), Some((i32::MIN, 100))),
+            (Some(0), None, Some((0, i32::MAX))),
+            (Some(0), Some(100), Some((0, 100))),
+            (Some(10), Some(10), Some((10, 10))),
+            (Some(100), Some(0), None),
+        ] {
+            stat.minimum_value = minimum;
+            stat.maximum_value = maximum;
+            assert_eq!(stat.value_range(), expected);
+        }
+    }
 
     #[test]
     fn historical_rpm_curve_translates_arc_logic_value() {

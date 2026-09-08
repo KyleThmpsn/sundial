@@ -300,6 +300,7 @@ pub(super) fn resolve_added_damage_carrier_source(
         return Ok(None);
     }
 
+    let gameplay_damage_lanes = weapon_damage_socket_lanes(gameplay_definition)?;
     let gameplay_rarity = weapon_rarity(gameplay_definition).ok();
     let gameplay_socket_count =
         relative_target(gameplay_definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)
@@ -352,6 +353,13 @@ pub(super) fn resolve_added_damage_carrier_source(
                 let Some(family) = carrier.family() else {
                     continue;
                 };
+                // A shared runtime entity can back both fixed-perk and socket-driven weapons.
+                // Rank only carriers that fit the gameplay definition's existing topology.
+                if family == WeaponDamageCarrierFamily::PlugDriven
+                    && gameplay_damage_lanes.len() != 1
+                {
+                    continue;
+                }
                 let peer_socket_count =
                     relative_target(&definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)
                         .ok()
@@ -406,6 +414,11 @@ pub(super) fn resolve_added_damage_carrier_source(
     let family = carrier.family().ok_or_else(|| {
         invalid("The target-slot presentation donor has no fixed elemental damage carrier")
     })?;
+    if family == WeaponDamageCarrierFamily::PlugDriven && gameplay_damage_lanes.len() != 1 {
+        return Err(invalid(
+            "The presentation donor requires a type-68 damage socket absent from the gameplay definition",
+        ));
+    }
     Ok(Some(ResolvedDamageCarrierSource {
         family,
         topology_definition: (family == WeaponDamageCarrierFamily::PlugDriven)

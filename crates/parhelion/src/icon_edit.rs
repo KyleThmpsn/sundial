@@ -19,7 +19,9 @@ pub(crate) use editor::{WeaponIconEditor, WeaponIconEditorAction};
 pub use imported::ImportedIcon;
 pub(crate) use imported::decode as decode_image;
 pub(crate) use imported::fit as fit_rgba_image;
-pub(crate) use preview::{render_weapon_icon_preview, render_weapon_icon_preview_from_manager};
+pub(crate) use preview::{
+    render_texture_preview, render_weapon_icon_preview, render_weapon_icon_preview_from_manager,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,13 +29,14 @@ const ICON_PREVIEW_SIZE: usize = 96;
 
 /// Reproducible adjustments for a weapon's private primary icon image.
 ///
-/// Imported artwork replaces the primary image first, followed by selected color replacements,
-/// hue, saturation, brightness, contrast, channel balance, inversion, opacity, then orientation.
+/// Imported artwork replaces the primary image first, followed by hue, saturation, brightness,
+/// contrast, channel balance, inversion, selected color replacements, opacity, then orientation.
+/// Replacements match and preserve shading from the original artwork, before global adjustments.
 /// The context uses the authored rarity background, Sunrise watermark, and donor foreground.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WeaponIconEdit {
-    /// Independent source-color replacements, applied before global color and orientation edits.
+    /// Independent source-color replacements, blended after global color edits, before orientation.
     #[serde(
         skip_serializing_if = "color_selection::is_identity",
         serialize_with = "color_selection::serialize_changes"

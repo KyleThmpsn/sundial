@@ -313,12 +313,14 @@ pub(super) fn apply_inventory_item_action(
     location: InventoryItemLocation,
     action: InventoryItemAction,
 ) -> Result<(), InventoryError> {
-    let item_id = inventory_item(document, location)?.id;
+    let item = inventory_item(document, location)?;
+    let item_id = item.id;
+    let current_flags = item.flags;
     let command = match action {
         InventoryItemAction::Remove => domain::CharacterCommand::RemoveInventoryItem { item_id },
         action => domain::CharacterCommand::UpdateInventoryItem {
             item_id,
-            update: domain_item_update(action),
+            update: domain_item_update(action, current_flags),
         },
     };
     document
@@ -530,11 +532,16 @@ pub(super) fn set_equipment_item_flags(
     slot: &str,
     flags: Option<u8>,
 ) -> Result<(), String> {
+    let current_flags = character(document, character_index)?
+        .equipment
+        .get(&domain::EquipmentSlot::new(slot))
+        .and_then(Option::as_ref)
+        .and_then(|item| item.flags);
     update_equipment(
         document,
         character_index,
         slot,
-        domain::ItemUpdate::SetFlags(flags.map(u32::from)),
+        domain::ItemUpdate::SetFlags(merge_editor_flags(current_flags, flags)),
     )
 }
 
@@ -719,7 +726,7 @@ fn inventory_snapshot(
         level: item.level,
         quantity: item.quantity,
         plugs: app_item_plugs(&item.plugs),
-        flags: item.flags.and_then(|flags| u8::try_from(flags).ok()),
+        flags: editor_flags(item.flags),
     }
 }
 
@@ -742,11 +749,7 @@ fn equipment_snapshot(
                 .collect(),
         ),
     };
-    let flags = item.flags.and_then(|flags| u8::try_from(flags).ok());
-    let mut issues = Vec::new();
-    if item.flags.is_some() && flags.is_none() {
-        issues.push("flags exceed Sundial's current equipment editor range".to_owned());
-    }
+    let flags = editor_flags(item.flags);
     let raw_item_text = json!({
         "instance_soid": format!("0x{:016X}", item.instance_soid.get()),
         "definition_hash": format!("0x{:08X}", item.definition_hash.get()),
@@ -768,7 +771,7 @@ fn equipment_snapshot(
         quantity: Some(i64::from(item.quantity)),
         flags,
         plugs,
-        issues,
+        issues: Vec::new(),
     }
 }
 
@@ -784,7 +787,22 @@ fn app_item_plugs(plugs: &domain::ItemPlugs) -> ItemPlugs {
     }
 }
 
-fn domain_item_update(action: InventoryItemAction) -> domain::ItemUpdate {
+fn editor_flags(flags: Option<u32>) -> Option<u8> {
+    flags.map(|flags| (flags & u32::from(u8::MAX)) as u8)
+}
+
+fn merge_editor_flags(current: Option<u32>, edited: Option<u8>) -> Option<u32> {
+    let opaque = current.unwrap_or_default() & !u32::from(u8::MAX);
+    match edited {
+        Some(flags) => Some(opaque | u32::from(flags)),
+        None => (opaque != 0).then_some(opaque),
+    }
+}
+
+fn domain_item_update(
+    action: InventoryItemAction,
+    current_flags: Option<u32>,
+) -> domain::ItemUpdate {
     match action {
         InventoryItemAction::SetDefinitionHash(hash) => {
             domain::ItemUpdate::SetDefinitionHash(domain::DefinitionHash::new(hash))
@@ -800,7 +818,9 @@ fn domain_item_update(action: InventoryItemAction) -> domain::ItemUpdate {
                     .collect(),
             ),
         }),
-        InventoryItemAction::SetFlags(flags) => domain::ItemUpdate::SetFlags(flags.map(u32::from)),
+        InventoryItemAction::SetFlags(flags) => {
+            domain::ItemUpdate::SetFlags(merge_editor_flags(current_flags, flags))
+        }
         InventoryItemAction::Remove => unreachable!("remove actions are handled separately"),
     }
 }

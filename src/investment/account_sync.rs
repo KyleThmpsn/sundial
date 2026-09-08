@@ -13,7 +13,7 @@ pub struct AuthoredCollectionUnlock {
 }
 
 /// Read-only, lossless proposal. The caller must back up and check the original bytes before
-/// committing this together with package removal. No account writes happen during review.
+/// committing this together with package replacement or removal. Review does not write accounts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredAccountCleanup {
     pub settings_path: PathBuf,
@@ -23,6 +23,16 @@ pub struct AuthoredAccountCleanup {
     pub cleared_plugs: usize,
     pub removed_reward_rules: usize,
     pub cleared_unlocks: usize,
+    pub resized_items: std::collections::BTreeMap<u32, usize>,
+}
+
+/// Verified native socket layouts for a retained definition in a replacement generation.
+/// Account proposals preserve existing selections and use new defaults only for added sockets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoredSocketChange {
+    pub definition_hash: u32,
+    pub previous_socket_count: usize,
+    pub default_plugs: Vec<Option<u32>>,
 }
 
 pub fn preview_authored_account_cleanup(
@@ -33,11 +43,23 @@ pub fn preview_authored_account_cleanup(
     authoring_bridge::preview_account_cleanup(install, item_hashes, unlocks)
 }
 
+/// Proposes removed references and retained-item socket resizing in one account transaction.
+/// The caller must review the proposal, verify its source bytes, and journal the account together
+/// with package replacement. Removing sockets truncates only the removed suffix of authored lists.
+pub fn preview_authored_account_replacement(
+    install: &Path,
+    item_hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    socket_changes: &[AuthoredSocketChange],
+) -> Result<AuthoredAccountCleanup, String> {
+    authoring_bridge::preview_account_replacement(install, item_hashes, unlocks, socket_changes)
+}
+
 /// Checks the account backend before a JSON cleanup/recovery transaction.
 pub fn validate_authored_cleanup_backend(settings_path: &Path) -> Result<(), String> {
     #[cfg(feature = "sqlite-account")]
     if settings_path.with_file_name("state.sqlite3").exists() {
-        return Err("Automatic uninstall cleanup is not available for SQLite accounts. Remove custom items in Sundial first, then use package-only uninstall.".into());
+        return Err("Automatic account updates during package replacement or uninstall are not available for SQLite accounts. Package-only uninstall remains available.".into());
     }
     let _ = settings_path;
     Ok(())

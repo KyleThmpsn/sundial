@@ -306,6 +306,44 @@ pub(super) fn append_uncovered_runtime_ranges(
     Ok(())
 }
 
+/// Completes the editor and resolver's shared-owner view without exposing component bytes twice.
+pub(super) fn prepare_shared_owner_roots(
+    owner_payload: &[u8],
+    roots: &mut [WeaponRuntimeRoot],
+    binding_hash: u32,
+    resource_index: u16,
+    resource_ranges: &[(usize, usize)],
+) -> Result<(), String> {
+    for root in roots {
+        root.fields.retain(|field| {
+            let start = field.owner_offset as usize;
+            let end = start.saturating_add(field.locator.byte_size as usize);
+            !resource_ranges
+                .iter()
+                .any(|&(resource_start, resource_end)| start < resource_end && resource_start < end)
+        });
+        let target = usize::try_from(root.owner_offset)
+            .map_err(|_| "Runtime owner-root offset does not fit this platform")?;
+        let limit = target
+            .checked_add(root.byte_size as usize)
+            .ok_or("Runtime owner-root range overflowed")?;
+        append_uncovered_runtime_ranges(
+            owner_payload,
+            OwnerRootDescriptor {
+                kind: root.kind,
+                target,
+                schema: root.schema,
+                limit,
+            },
+            &mut root.fields,
+            binding_hash,
+            resource_index,
+            resource_ranges,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn component_definition_reference(
     owner_payload: &[u8],
     binding: &WeaponRuntimeBinding,

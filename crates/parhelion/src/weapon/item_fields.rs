@@ -163,10 +163,13 @@ pub(super) fn transplant_item_string_client_classification(
     target: &mut [u8],
     target_donor_slot: WeaponInventorySlot,
     source: &[u8],
+    source_slot: WeaponInventorySlot,
     authored_slot: WeaponInventorySlot,
 ) -> AuthoringResult<()> {
     let target_tuple = item_string_client_classification(target, target_donor_slot)?;
-    let source_tuple = item_string_client_classification(source, authored_slot)?;
+    let mut source_tuple = item_string_client_classification(source, source_slot)?;
+    // Preserve the appearance's type keys, but not its inventory placement.
+    source_tuple[..4].copy_from_slice(&authored_slot.bucket_hash().to_le_bytes());
     let before = target.to_vec();
     write_bytes(
         target,

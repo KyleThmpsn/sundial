@@ -1,5 +1,135 @@
 use super::*;
 use crate::test_support::TestDirectory;
+use std::io::Write;
+
+fn flat_backup(root: &Path, source: &Path, automatic: bool) -> PathBuf {
+    create(
+        root,
+        source,
+        "settings-v16",
+        "json",
+        automatic,
+        |_, file| {
+            file.write_all(b"{\"version\":16}")
+                .map_err(|error| error.to_string())
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn readable_backups_are_flat_unique_and_source_is_only_in_the_index() {
+    let directory = TestDirectory::new("flat-backups");
+    let root = directory.0.join("backups");
+    let first = directory.0.join("first/settings.json");
+    let second = directory.0.join("second/settings.json");
+    let one = flat_backup(&root, &first, true);
+    let two = flat_backup(&root, &first, true);
+    let three = flat_backup(&root, &second, true);
+    let resolved = paths::resolve_path_for_comparison(&root).unwrap();
+    assert_eq!(one.parent(), Some(resolved.as_path()));
+    assert_eq!(two.parent(), one.parent());
+    assert_eq!(three.parent(), one.parent());
+    assert_ne!(one, two);
+    assert_ne!(two, three);
+    assert!(!root.join("sources").exists());
+    assert_eq!(
+        index::timestamp(time::OffsetDateTime::from_unix_timestamp(1_788_804_000).unwrap()),
+        "2026-09-07_18-00-00Z"
+    );
+    assert!(
+        one.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("settings-v16-20")
+    );
+    let store = index::Store::open(&root).unwrap();
+    assert_eq!(store.records().len(), 3);
+    assert_eq!(
+        store.records()[one.file_name().unwrap().to_str().unwrap()].source,
+        index::source_identity(&first).unwrap()
+    );
+}
+
+#[test]
+fn flat_retention_preserves_other_sources_manual_files_modified_backups_and_recovery() {
+    let directory = TestDirectory::new("flat-retention");
+    let root = directory.0.join("backups");
+    let source = directory.0.join("a/settings.json");
+    let other = directory.0.join("b/settings.json");
+    let first = flat_backup(&root, &source, true);
+    let second = flat_backup(&root, &source, true);
+    let changed = flat_backup(&root, &source, true);
+    let recovery = flat_backup(&root, &source, false);
+    let unrelated = flat_backup(&root, &other, true);
+    let manual = root.join("settings-v16-123.json");
+    fs::write(&manual, b"manual").unwrap();
+    fs::write(&changed, b"user edited backup").unwrap();
+    assert_eq!(prune_automatic_backups(&root, &source, 0).unwrap(), 2);
+    assert!(!first.exists());
+    assert!(!second.exists());
+    for path in [changed, recovery, unrelated, manual] {
+        assert!(path.exists());
+    }
+}
+
+#[test]
+fn legacy_and_flat_backups_share_one_retention_limit() {
+    let directory = TestDirectory::new("mixed-backup-retention");
+    let root = directory.0.join("backups");
+    let source = directory.0.join("settings.json");
+    let legacy = create_source_directory(&root, &source).unwrap();
+    fs::write(legacy.join("settings-v8-1.json"), b"legacy").unwrap();
+    flat_backup(&root, &source, true);
+    assert_eq!(prune_automatic_backups(&root, &source, 1).unwrap(), 1);
+    assert_eq!(prune_automatic_backups(&root, &source, 1).unwrap(), 0);
+}
+
+#[test]
+fn failed_backup_writer_does_not_register_an_automatic_backup() {
+    let directory = TestDirectory::new("failed-flat-backup");
+    let root = directory.0.join("backups");
+    let source = directory.0.join("settings.json");
+    let result = create(&root, &source, "settings-v16", "json", true, |_, file| {
+        file.write_all(b"partial").unwrap();
+        Err("injected copy failure".into())
+    });
+    assert!(result.unwrap_err().contains("injected copy failure"));
+    assert!(index::Store::open(&root).unwrap().records().is_empty());
+    assert_eq!(
+        fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("settings-"))
+            .count(),
+        0
+    );
+}
+
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn sqlite_backup_can_write_and_restore_a_reserved_flat_file() {
+    let directory = TestDirectory::new("flat-sqlite-backup");
+    let root = directory.0.join("backups");
+    let source = directory.0.join("state.sqlite3");
+    let db = rusqlite::Connection::open(&source).unwrap();
+    db.execute_batch("CREATE TABLE fixture (value INTEGER); INSERT INTO fixture VALUES (42);")
+        .unwrap();
+    let backup = create(&root, &source, "state-v1", "sqlite3", true, |path, _| {
+        db.backup(rusqlite::MAIN_DB, path, None)
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    let saved = rusqlite::Connection::open(&backup).unwrap();
+    assert_eq!(
+        saved
+            .query_row("SELECT value FROM fixture", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        42
+    );
+    drop(saved);
+    assert_eq!(prune_automatic_backups(&root, &source, 0).unwrap(), 1);
+}
 
 #[test]
 fn automatic_backup_retention_is_per_source_and_preserves_recovery_files() {

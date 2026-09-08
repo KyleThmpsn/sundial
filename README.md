@@ -4,7 +4,7 @@
 
 Sundial is a character, inventory, and settings editor for
 [Project Sunrise](https://github.com/stanuwu/Sunrise).
-It edits `settings.json` and reads item names, icons, and stats from your installed
+It edits `settings.json` and reads items from your installed
 Destiny 2 packages. No game assets are bundled.
 
 - Edit characters, equipment, subclasses, and inventories.
@@ -146,7 +146,7 @@ package reader. This project would not be possible without it. Package-layout
 research was also informed by Sunrise and Charm.
 
 [Kjam's Panoptes fork](https://github.com/Kjam0678/panoptes/) inspired the
-socket-grid layout and Randomize Loadout features. xSkullHD contributed the
+socket-grid layout option and Randomize Loadout features. xSkullHD contributed the
 original Random Item design and work on armor-stat targeting. Nox helped research
 unnamed armor plugs and their stat allocations.
 

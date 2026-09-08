@@ -140,10 +140,8 @@ impl WeaponIconEdit {
         }
         for pixel in pixels.chunks_exact_mut(4) {
             let alpha = pixel[3];
-            let mut rgb = [pixel[0], pixel[1], pixel[2]];
-            if alpha != 0 {
-                rgb = color_selection::apply(&self.color_replacements, rgb);
-            }
+            let source_rgb = [pixel[0], pixel[1], pixel[2]];
+            let mut rgb = source_rgb;
             if self.hue_shift_degrees != 0 {
                 rgb = rotate_hue(rgb, self.hue_shift_degrees);
             }
@@ -166,6 +164,11 @@ impl WeaponIconEdit {
                 for channel in &mut rgb {
                     *channel = 255 - *channel;
                 }
+            }
+            if alpha != 0 {
+                // Match the original artwork but blend last so global adjustments cannot
+                // change an explicitly chosen replacement color (for example, red to green).
+                rgb = color_selection::apply(&self.color_replacements, source_rgb, rgb);
             }
             pixel[..3].copy_from_slice(&rgb);
             pixel[3] =

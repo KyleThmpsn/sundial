@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn package_backups_default_to_the_packages_backup_subdirectory() {
+    assert_eq!(
+        default_backup_root(),
+        default_data_root().join("backups").join("packages")
+    );
+}
+
+#[test]
 fn package_probe_uses_only_package_files() {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("directory.pkg")).unwrap();
@@ -511,13 +519,28 @@ fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
         .expect("PARHELION_TEST_STAGED_RUN must point to a staged run");
+    let manifest_text = fs::read_to_string(staged_run.join(MANIFEST_FILE_NAME))
+        .expect("staged manifest should read");
+    let document: crate::manifest::ManifestDocument =
+        serde_json::from_str(&manifest_text).expect("staged manifest should decode");
+    document
+        .validate()
+        .expect("staged manifest should validate");
+    let artifacts = authored_packages_for_file_names(
+        document
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.file_name.as_str()),
+    )
+    .expect("staged manifest should select a complete recognized package set");
     let ignored = CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
     let source = PackageSource::prepare(&packages, &ignored)
         .expect("temporary stock package view should be created");
-    for name in CANONICAL_ARTIFACT_FILE_NAMES {
+    for artifact in artifacts {
+        let name = artifact.file_name;
         let staged = staged_run.join(name);
         assert!(staged.is_file(), "{} is missing", staged.display());
         fs::hard_link(&staged, source.path().join(name))
@@ -530,25 +553,13 @@ fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
         None,
     )
     .expect("isolated authored package view should open");
-    let manifest: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(staged_run.join(MANIFEST_FILE_NAME))
-            .expect("staged manifest should read"),
-    )
-    .expect("staged manifest should decode");
-    let sunrise = &manifest["project"]["sunrise"];
-    let parse_tag = |value: &serde_json::Value| {
-        let encoded = value.as_str().expect("manifest tag should be a string");
-        let raw = u32::from_str_radix(encoded.trim_start_matches("0x"), 16)
-            .expect("manifest tag should be hexadecimal");
-        TagHash(raw)
-    };
-    let mut definitions = sunrise["watermarked_icon_containers"]
-        .as_array()
-        .expect("manifest should list watermarked icon definitions")
+    let sunrise = &document.project.sunrise;
+    let mut definitions = sunrise
+        .watermarked_icon_containers
         .iter()
-        .map(&parse_tag)
+        .map(|tag| TagHash(tag.get()))
         .collect::<BTreeSet<_>>();
-    definitions.insert(parse_tag(&sunrise["badge_icon_tag"]));
+    definitions.insert(TagHash(sunrise.badge_icon_tag.get()));
     assert!(
         definitions.len() >= 2,
         "manifest contains no authored icon graph"

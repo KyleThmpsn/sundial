@@ -77,7 +77,7 @@ impl PerkEditor {
                 visible += 1;
                 ui.push_id(&field.locator, |ui| {
                     if unknown {
-                        ui.label("Experimental — Unknown Byte Range");
+                        ui.label("Experimental · Unknown Byte Range");
                     }
                     draw_runtime_value_override_field(
                         ui,

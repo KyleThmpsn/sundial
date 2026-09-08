@@ -123,6 +123,18 @@ pub(crate) fn render_weapon_icon_preview_from_manager(
     load_icon_preview(manager, container_tag, rarity)?.render(edit)
 }
 
+/// Decodes a texture without inventory backgrounds or watermarks.
+pub(crate) fn render_texture_preview(
+    manager: &PackageManager,
+    header: TagHash,
+) -> Result<egui::ColorImage, String> {
+    let image = load_preview_texture_pair(manager, header)?;
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        image.size,
+        &image.rgba,
+    ))
+}
+
 pub(super) fn load_primary_preview_layer(
     manager: &PackageManager,
     container: &[u8],

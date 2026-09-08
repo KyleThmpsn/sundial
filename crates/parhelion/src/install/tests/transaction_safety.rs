@@ -13,6 +13,37 @@ fn complete_generation(fixture: &Fixture) -> PathBuf {
 }
 
 #[test]
+fn legacy_package_backup_paths_remain_recoverable_only_when_explicitly_selected() {
+    let mut fixture = Fixture::new();
+    fixture.backups = fixture._temporary.path().join("package-backups");
+    let (transaction, originals) =
+        fixture.write_synthetic_transaction(InstallTransactionState::Pending);
+    let first = &transaction.artifacts[0].file_name;
+    fs::write(fixture.target.join(first), &fixture.staged_bytes[first]).unwrap();
+    let journal = fixture.target.join(INSTALL_TRANSACTION_FILE_NAME);
+    let journal_before = fs::read(&journal).unwrap();
+    let mut relocated_request = fixture.recovery_request();
+    relocated_request.backup_root = fixture._temporary.path().join("backups").join("packages");
+
+    let error = recover_interrupted_install(&relocated_request).unwrap_err();
+    assert!(error.message.contains("outside the selected backup root"));
+    assert_eq!(fs::read(&journal).unwrap(), journal_before);
+    assert_eq!(
+        fs::read(fixture.target.join(first)).unwrap(),
+        fixture.staged_bytes[first]
+    );
+
+    let outcome = recover_interrupted_install(&fixture.recovery_request()).unwrap();
+    assert!(matches!(outcome, RecoveryOutcome::Recovered { .. }));
+    assert_eq!(
+        fs::read(fixture.target.join(first)).unwrap(),
+        originals[first]
+    );
+    assert!(transaction.backup_directory.exists());
+    assert!(!journal.exists());
+}
+
+#[test]
 fn retention_preserves_pending_and_legacy_backups_across_installations() {
     let a = Fixture::new();
     let (mut record, _) = a.write_synthetic_transaction(InstallTransactionState::Pending);

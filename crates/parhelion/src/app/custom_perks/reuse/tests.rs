@@ -68,4 +68,39 @@ fn native_saved_custom_perk_reuse_is_independent_and_keeps_recipe_data() {
     let unchanged = target.clone();
     assert!(apply_saved_perk(&mut target, &donor, usize::MAX, &source).is_err());
     assert_eq!(target, unchanged);
+
+    let added_index = donor.sockets.len();
+    assert!(added_index < sundial::investment::MAX_WEAPON_SOCKETS);
+    target
+        .overrides
+        .socket_columns
+        .resize_with(added_index, || None);
+    target
+        .overrides
+        .socket_columns
+        .push(Some(crate::WeaponSocketColumnRecipe {
+            socket_type: Some(socket.socket_type),
+            ..Default::default()
+        }));
+    apply_saved_perk(&mut target, &donor, added_index, &source).unwrap();
+    assert_eq!(
+        target.overrides.socket_columns[added_index]
+            .as_ref()
+            .unwrap()
+            .socket_type,
+        Some(socket.socket_type)
+    );
+    assert_eq!(
+        recipe_socket_choices(&target, added_index, &[]).unwrap(),
+        vec![inherited[0]]
+    );
+    assert_eq!(
+        target.overrides.socket_plug_variants[1].socket_index as usize,
+        added_index
+    );
+    assert_eq!(
+        target.overrides.socket_plug_variants[1].sandbox_perks,
+        source.sandbox_perks
+    );
+    assert_eq!(source, before);
 }

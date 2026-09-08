@@ -29,13 +29,12 @@ pub(crate) struct SqliteRestoreReceipt {
 pub(crate) fn save(
     document: &mut SqliteAccountDocument,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    let backup = backup_path(document.path())?;
-    save_with_backup(document, backup)
+    save_with_backup(document, None)
 }
 
 fn save_with_backup(
     document: &mut SqliteAccountDocument,
-    backup: PathBuf,
+    backup: Option<PathBuf>,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
     let mut candidate = document.clone();
     candidate.prepare_persistence()?;
@@ -56,7 +55,14 @@ fn save_with_backup(
     if document::database_revision(&transaction)? != document.revision() {
         return Err(SqliteAccountError::SourceChanged);
     }
-    create_verified_backup(document.path(), &backup, document.revision())?;
+    let backup = if let Some(backup) = backup {
+        create_verified_backup(document.path(), &backup, document.revision())?;
+        backup
+    } else {
+        indexed_backup(document.path(), "state-v1", true, |backup| {
+            create_verified_backup(document.path(), backup, document.revision())
+        })?
+    };
     write_document(&transaction, &candidate, &settings_payload)?;
     transaction
         .commit()
@@ -78,7 +84,7 @@ pub(super) fn save_for_test(
     document: &mut SqliteAccountDocument,
     backup: PathBuf,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    save_with_backup(document, backup)
+    save_with_backup(document, Some(backup))
 }
 
 pub(crate) fn restore_backup(destination: &Path, backup: &Path) -> Result<(), SqliteAccountError> {
@@ -106,17 +112,23 @@ pub(crate) fn restore_backup_safely(
     destination: &Path,
     backup: &Path,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    let safety_backup = recovery_backup_path(destination)?;
-    restore_backup_safely_with_path(destination, backup, safety_backup)
+    restore_backup_safely_with_path(destination, backup, None)
 }
 
 fn restore_backup_safely_with_path(
     destination: &Path,
     backup: &Path,
-    safety_backup: PathBuf,
+    safety_backup: Option<PathBuf>,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
     compatible_backup_revision(backup)?;
-    create_integrity_checked_snapshot(destination, &safety_backup)?;
+    let safety_backup = if let Some(safety_backup) = safety_backup {
+        create_integrity_checked_snapshot(destination, &safety_backup)?;
+        safety_backup
+    } else {
+        indexed_backup(destination, "state-recovery", false, |backup| {
+            create_integrity_checked_snapshot(destination, backup)
+        })?
+    };
     if let Err(restore_error) = restore_backup(destination, backup) {
         return match restore_integrity_checked_snapshot(destination, &safety_backup) {
             Ok(()) => Err(SqliteAccountError::Backup(format!(
@@ -140,7 +152,7 @@ pub(super) fn restore_backup_safely_for_test(
     backup: &Path,
     safety_backup: PathBuf,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    restore_backup_safely_with_path(destination, backup, safety_backup)
+    restore_backup_safely_with_path(destination, backup, Some(safety_backup))
 }
 
 fn compatible_backup_revision(backup: &Path) -> Result<SourceRevision, SqliteAccountError> {
@@ -284,40 +296,21 @@ fn finish_backup_attempt(
     }
 }
 
-fn backup_path(source: &Path) -> Result<PathBuf, SqliteAccountError> {
-    unique_backup_path(source, "state-sqlite-v1")
-}
-
-fn recovery_backup_path(source: &Path) -> Result<PathBuf, SqliteAccountError> {
-    unique_backup_path(source, "state-sqlite-recovery")
-}
-
-fn unique_backup_path(source: &Path, prefix: &str) -> Result<PathBuf, SqliteAccountError> {
+fn indexed_backup(
+    source: &Path,
+    prefix: &str,
+    automatic: bool,
+    write: impl FnOnce(&Path) -> Result<(), SqliteAccountError>,
+) -> Result<PathBuf, SqliteAccountError> {
     let root = crate::backups::root().ok_or_else(|| {
         SqliteAccountError::Backup(
             "could not locate Sundial's local backup folder for state.sqlite3".to_owned(),
         )
     })?;
-    let root = crate::backups::create_source_directory(&root, source)
-        .map_err(SqliteAccountError::Backup)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    for suffix in 0..1000_u16 {
-        let suffix = if suffix == 0 {
-            String::new()
-        } else {
-            format!("-{suffix}")
-        };
-        let path = root.join(format!("{prefix}-{timestamp}{suffix}.sqlite3"));
-        if !path.try_exists().map_err(SqliteAccountError::FileSystem)? {
-            return Ok(path);
-        }
-    }
-    Err(SqliteAccountError::Backup(
-        "could not choose a unique SQLite backup name".to_owned(),
-    ))
+    crate::backups::create(&root, source, prefix, "sqlite3", automatic, |path, _| {
+        write(path).map_err(|error| error.to_string())
+    })
+    .map_err(SqliteAccountError::Backup)
 }
 
 fn write_document(

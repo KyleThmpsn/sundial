@@ -1,7 +1,8 @@
 //! Recipe changes happen after controls have selected one command.
 use super::super::{
     LogEntry, materialize_socket_column, recipe_socket_choices, reconcile_socket_plug_variants,
-    set_recipe_socket_column, set_socket_role, shift_socket_choice_queries_after_removal,
+    remove_last_added_socket, set_recipe_socket_column, set_socket_role,
+    shift_socket_choice_queries_after_removal,
 };
 use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
 
@@ -12,12 +13,28 @@ pub(super) fn apply(
 ) -> RowContinuation {
     match command {
         Some(RowCommand::ChangeRole(role)) => {
+            if context.is_added && role.is_none() {
+                return RowContinuation::Finished;
+            }
             set_socket_role(context.recipe, context.donor, context.socket_index, role);
             context.queries.clear();
             *context.page = 0;
             RowContinuation::Finished
         }
         Some(RowCommand::Reset) => reset(context, choices),
+        Some(RowCommand::RemoveAdded) => {
+            if context.can_remove_added
+                && context.is_added
+                && remove_last_added_socket(context.recipe, context.socket_index)
+            {
+                if *context.private_perk_socket == Some(context.socket_index) {
+                    *context.private_perk_socket = None;
+                }
+                context.queries.clear();
+                *context.page = 0;
+            }
+            RowContinuation::Finished
+        }
         Some(RowCommand::EditChoice { index, hash }) => edit_choice(context, choices, index, hash),
         Some(RowCommand::Activate) => {
             *context.show_technical_row = true;
@@ -41,12 +58,15 @@ pub(super) fn apply(
 }
 
 fn reset(context: &mut SocketRowContext<'_>, choices: &RowChoices) -> RowContinuation {
+    if context.is_added {
+        return RowContinuation::Finished;
+    }
     let recipe = &mut *context.recipe;
     let donor = context.donor;
     let socket = &donor.sockets[context.socket_index];
     let queries = &mut *context.queries;
     let inherited = &choices.inherited;
-    if recipe.overrides.socket_columns.len() != donor.sockets.len() {
+    if recipe.overrides.socket_columns.len() < donor.sockets.len() {
         recipe
             .overrides
             .socket_columns

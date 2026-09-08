@@ -149,7 +149,7 @@ impl PerkEditor {
             .max_height((available.y - 48.0).max(240.0))
             .resizable(true).show(ctx, |ui| {
                 workbench_style(ui);
-                ui.label("Parameter draft — changes are not applied until you choose Apply & Back.");
+                ui.label("Parameter draft · changes are not applied until you choose Apply & Back.");
                 ui.strong(&self.plug_label);
                 ui.label("Scope: This recipe's custom perk. Stock perks and other weapons are unchanged.");
                 guided_support_notice(ui);
@@ -167,7 +167,7 @@ impl PerkEditor {
                             ui.colored_label(ui.visuals().warn_fg_color, warning);
                         }
                         self.draw_verified_parameters(ui, &loaded);
-                        egui::CollapsingHeader::new("Advanced — Unverified Package Fields")
+                        egui::CollapsingHeader::new("Advanced · Unverified Package Fields")
                             .default_open(!self.draft.is_empty() || !self.action_draft.is_empty())
                             .show(ui, |ui| {
                                 self.draw_action_values(ui, &loaded, experimental);

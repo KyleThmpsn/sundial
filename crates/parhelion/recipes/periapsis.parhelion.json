@@ -76,7 +76,12 @@
         ],
         "socket_type": 92
       },
-      null,
+      {
+        "choices": [
+          "0x8EC817EA"
+        ],
+        "socket_type": 180
+      },
       null,
       null,
       null,

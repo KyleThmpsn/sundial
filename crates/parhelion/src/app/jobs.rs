@@ -316,7 +316,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn start_build(&mut self) {
-        let snapshot = match self.snapshot() {
+        let snapshot = match self.save_edits_for_build().and_then(|()| self.snapshot()) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.latest_build = Some(Err(error.clone()));
@@ -327,8 +327,9 @@ impl PackageAuthoringApp {
             }
         };
         let (sender, receiver) = mpsc::channel();
+        let started = Instant::now();
+        self.build_started = Some(started);
         thread::spawn(move || {
-            let started = Instant::now();
             let result = build_and_stage_snapshot_with_progress(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
                     TimedBuildProgress::from_progress(progress, started.elapsed()),
@@ -370,6 +371,11 @@ impl PackageAuthoringApp {
                     self.latest_build = Some(Err(
                         "The package build worker stopped without a result".to_owned(),
                     ));
+                    let elapsed = self.build_elapsed(Instant::now());
+                    if let Some(progress) = &mut self.build_progress {
+                        progress.elapsed = elapsed;
+                    }
+                    self.build_started = None;
                     self.build_receiver = None;
                     return;
                 }
@@ -394,6 +400,7 @@ impl PackageAuthoringApp {
                         report.run_directory.display()
                     )));
                     self.latest_build = Some(Ok(report));
+                    self.build_started = None;
                     self.build_receiver = None;
                     return;
                 }
@@ -407,11 +414,23 @@ impl PackageAuthoringApp {
                     self.log
                         .push(LogEntry::error(format!("Build failed: {error}")));
                     self.latest_build = Some(Err(error));
+                    self.build_started = None;
                     self.build_receiver = None;
                     return;
                 }
             }
         }
+    }
+
+    pub(super) fn build_elapsed(&self, now: Instant) -> Duration {
+        self.build_started.map_or_else(
+            || {
+                self.build_progress
+                    .as_ref()
+                    .map_or(Duration::ZERO, |progress| progress.elapsed)
+            },
+            |started| now.saturating_duration_since(started),
+        )
     }
 
     pub(super) fn start_install(&mut self) {
@@ -433,7 +452,7 @@ impl PackageAuthoringApp {
             ));
             return;
         }
-        if self.runtime_graph_job.is_some() {
+        if self.runtime_graph_job.is_some() || self.runtime_donors.busy() {
             self.log.push(LogEntry::error(
                 "Installation is waiting for the runtime-data scan to finish",
             ));
@@ -486,7 +505,7 @@ impl PackageAuthoringApp {
         match receiver.try_recv() {
             Ok(Ok(report)) => {
                 if let Some(path) = &report.cleaned_account {
-                    self.log.push(LogEntry::info(format!("Removed the confirmed obsolete items and references from {}; original account and packages are backed up in {} (excluded from automatic pruning)", path.display(), report.backup_directory.display())));
+                    self.log.push(LogEntry::info(format!("Applied the reviewed account changes to {}. Original account and packages are backed up in {} (excluded from automatic pruning)", path.display(), report.backup_directory.display())));
                 }
                 match &report.profile_sync {
                     Some(Ok(sync)) => {

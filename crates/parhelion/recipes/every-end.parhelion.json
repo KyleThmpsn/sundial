@@ -33,16 +33,59 @@
     "modern_damage_type": "solar",
     "power_cap_group": 11,
     "socket_columns": [
-      { "choices": ["0x56E77AA2"] },
-      { "choices": ["0x3203BACE"] },
-      { "choices": ["0x7060EDB4"] },
-      { "choices": ["0x522356C5", "0xA5A4B58A", "0x0EC3FDC8"] },
-      { "choices": ["0xA9CA6B03", "0xD2013CA1", "0xF351D2CC"] },
-      { "choices": ["0xFD368D30"] },
-      { "choices": ["0x8A8536B5"] },
-      { "choices": ["0x28CE6A3F"] },
+      {
+        "choices": [
+          "0x56E77AA2"
+        ]
+      },
+      {
+        "choices": [
+          "0x3203BACE"
+        ]
+      },
+      {
+        "choices": [
+          "0x7060EDB4"
+        ]
+      },
+      {
+        "choices": [
+          "0x522356C5",
+          "0xA5A4B58A",
+          "0x0EC3FDC8",
+          "0x74812567"
+        ]
+      },
+      {
+        "choices": [
+          "0xB517FC25",
+          "0xD2013CA1",
+          "0xF351D2CC",
+          "0xA9CA6B03"
+        ]
+      },
+      {
+        "choices": [
+          "0x9DA139BF"
+        ],
+        "socket_type": 180
+      },
+      {
+        "choices": [
+          "0x8A8536B5"
+        ]
+      },
+      {
+        "choices": [
+          "0x28CE6A3F"
+        ]
+      },
       null,
-      { "choices": ["0x8838B9DA"] }
+      {
+        "choices": [
+          "0x8838B9DA"
+        ]
+      }
     ]
   }
 }

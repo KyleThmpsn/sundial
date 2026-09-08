@@ -276,7 +276,7 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
     append_optional_known_path(
         report,
         "parhelion_package_backups_directory",
-        parhelion_data_directory().map(|path| path.join("package-backups")),
+        parhelion_data_directory().map(|path| path.join("backups").join("packages")),
     );
     append_optional_known_path(report, "troubleshooting_log", log_path());
     append_path(report, "catalog_cache", context.catalog.cache_path);
@@ -815,17 +815,16 @@ mod tests {
         });
 
         assert!(report.contains("runtime.toml"));
+        if let Some(data_directory) = crate::package_authoring::parhelion_data_directory() {
+            assert!(report.contains(&format!(
+                "parhelion_package_backups_directory = {}",
+                data_directory.join("backups").join("packages").display()
+            )));
+        }
         assert!(
             report.contains("cache\\build_data.bin") || report.contains("cache/build_data.bin")
         );
-        #[cfg(feature = "sqlite-account")]
-        assert!(report.contains("state_sqlite3_exists = true"));
-        #[cfg(not(feature = "sqlite-account"))]
-        {
-            assert!(!report.contains("state_sqlite3_exists"));
-            assert!(!report.contains("active_account_database"));
-            assert!(!report.contains("sqlite_account_support"));
-        }
+        assert_account_feature_details(&report);
         assert!(report.contains("state_db_exists = false"));
         assert!(report.contains("alternate_runtime_persistence_detected = true"));
         assert!(report.contains("detection_evidence = runtime_state_header"));
@@ -835,6 +834,17 @@ mod tests {
         assert!(!report.contains("not-in-report"));
         assert!(!report.contains("private account bytes"));
         assert!(!report.contains("private cache bytes"));
+    }
+
+    fn assert_account_feature_details(report: &str) {
+        #[cfg(feature = "sqlite-account")]
+        assert!(report.contains("state_sqlite3_exists = true"));
+        #[cfg(not(feature = "sqlite-account"))]
+        {
+            assert!(!report.contains("state_sqlite3_exists"));
+            assert!(!report.contains("active_account_database"));
+            assert!(!report.contains("sqlite_account_support"));
+        }
     }
 
     #[test]

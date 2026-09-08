@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
 use sundial::investment::{
-    WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponInventorySlot,
-    authored_socket_choice_limit,
+    MAX_WEAPON_SOCKETS, WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary,
+    WeaponInventorySlot, authored_socket_choice_limit,
 };
 
 use crate::recipe::{RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides};
@@ -38,6 +38,7 @@ pub enum AuthoringDiagnosticCode {
     StatValueBelowMinimum,
     StatValueAboveMaximum,
     SocketCountMismatch,
+    MissingAddedSocketType,
     DuplicateSupportedPlugSet,
     SupportedPlugSetSocketIndexOutOfRange,
     MissingSupportedPlugSet,
@@ -93,7 +94,7 @@ impl CombatProfile {
 pub enum CombatProfileAction {
     /// Leave the donor's slot and damage descriptor byte-for-byte unchanged.
     Preserve,
-    /// Apply both fields as one supported-build mutation.
+    /// Request a paired slot and damage override, subject to native build validation.
     Set(CombatProfile),
 }
 
@@ -200,9 +201,22 @@ pub(crate) fn appearance_compatibility(
     if candidate.type_name != base.type_name {
         return AppearanceCompatibility::Blocked("Different weapon family");
     }
-    if candidate.inventory_slot != Some(target) {
+    if candidate.inventory_slot != Some(target)
+        && !matches!(
+            (candidate.inventory_slot, target),
+            (
+                Some(WeaponInventorySlot::Kinetic),
+                WeaponInventorySlot::Energy
+            ) | (
+                Some(WeaponInventorySlot::Energy),
+                WeaponInventorySlot::Kinetic
+            )
+        )
+    {
         return AppearanceCompatibility::Blocked("Different inventory slot");
     }
+    // Kinetic/Energy placement is an independent bucket field. Cross-slot
+    // appearance still requires a known, identical native animation group.
     match animation_compatibility(
         base.weapon_translation_group,
         candidate.weapon_translation_group,
@@ -324,7 +338,8 @@ impl WeaponAuthoringCapabilities {
     }
 }
 
-/// Computes the supported-build authoring choices for a full donor record.
+/// Computes metadata-based authoring choices and checks the donor's equipment-slot coherence.
+/// Compilation additionally validates native carrier topology and compatible donor availability.
 #[must_use]
 pub fn weapon_authoring_capabilities(donor: &WeaponDonor) -> WeaponAuthoringCapabilities {
     let mut capabilities = weapon_summary_authoring_capabilities(&donor.summary);
@@ -360,7 +375,7 @@ pub fn weapon_authoring_capabilities(donor: &WeaponDonor) -> WeaponAuthoringCapa
     capabilities
 }
 
-/// Computes the supported-build authoring choices from donor summary metadata.
+/// Computes authoring choices from summary metadata without inspecting native payload topology.
 #[must_use]
 pub fn weapon_summary_authoring_capabilities(
     donor: &WeaponDonorSummary,
@@ -605,14 +620,14 @@ pub fn validate_socket_column_overrides_with_socket_types(
     if overrides.is_empty() {
         return diagnostics;
     }
-    if overrides.len() != donor.sockets.len() {
+    if overrides.len() < donor.sockets.len() || overrides.len() > MAX_WEAPON_SOCKETS {
         diagnostics.push(AuthoringDiagnostic {
             field: AuthoringField::SocketColumn {
                 socket_index: overrides.len().min(donor.sockets.len()),
             },
             code: AuthoringDiagnosticCode::SocketCountMismatch,
             message: format!(
-                "Socket-column override has {} rows but {} has {} sockets",
+                "Socket-column override has {} rows. {} requires at least {} and supports at most {MAX_WEAPON_SOCKETS} sockets",
                 overrides.len(),
                 donor.summary.name,
                 donor.sockets.len()
@@ -620,9 +635,17 @@ pub fn validate_socket_column_overrides_with_socket_types(
         });
     }
 
-    let (plug_sets, invalid_plug_set_indices) =
-        validate_supported_plug_sets(donor, supported_plug_sets, &mut diagnostics);
-    for (socket_index, value) in overrides.iter().enumerate().take(donor.sockets.len()) {
+    let (plug_sets, invalid_plug_set_indices) = validate_supported_plug_sets(
+        donor,
+        donor
+            .sockets
+            .len()
+            .max(overrides.len())
+            .min(MAX_WEAPON_SOCKETS),
+        supported_plug_sets,
+        &mut diagnostics,
+    );
+    for (socket_index, value) in overrides.iter().enumerate().take(MAX_WEAPON_SOCKETS) {
         if invalid_plug_set_indices.contains(&socket_index) {
             continue;
         }
@@ -640,6 +663,7 @@ pub fn validate_socket_column_overrides_with_socket_types(
 
 fn validate_supported_plug_sets<'a>(
     donor: &WeaponDonor,
+    socket_count: usize,
     supported_plug_sets: &'a [SupportedPlugSet],
     diagnostics: &mut Vec<AuthoringDiagnostic>,
 ) -> (BTreeMap<usize, &'a SupportedPlugSet>, BTreeSet<usize>) {
@@ -654,14 +678,13 @@ fn validate_supported_plug_sets<'a>(
     let mut invalid_plug_set_indices = BTreeSet::new();
     for (socket_index, sets) in plug_sets_by_index {
         let field = AuthoringField::SocketColumn { socket_index };
-        if socket_index >= donor.sockets.len() {
+        if socket_index >= socket_count {
             diagnostics.push(AuthoringDiagnostic {
                 field,
                 code: AuthoringDiagnosticCode::SupportedPlugSetSocketIndexOutOfRange,
                 message: format!(
                     "Compatible-plug set socket index {socket_index} is outside {}'s {} sockets",
-                    donor.summary.name,
-                    donor.sockets.len()
+                    donor.summary.name, socket_count
                 ),
             });
             invalid_plug_set_indices.insert(socket_index);
@@ -692,13 +715,29 @@ fn validate_socket_column(
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
 ) {
+    let field = AuthoringField::SocketColumn { socket_index };
+    let socket = donor.sockets.get(socket_index);
+    if socket.is_none() && socket_type_override.is_none() {
+        diagnostics.push(AuthoringDiagnostic {
+            field,
+            code: AuthoringDiagnosticCode::MissingAddedSocketType,
+            message: format!("Added socket {socket_index} requires an explicit socket type"),
+        });
+    }
     let Some(choices) = choices else {
+        if socket.is_none() {
+            diagnostics.push(AuthoringDiagnostic {
+                field,
+                code: AuthoringDiagnosticCode::EmptySocketColumn,
+                message: format!("Added socket {socket_index} must contain at least one plug"),
+            });
+        }
         return;
     };
-    let field = AuthoringField::SocketColumn { socket_index };
-    let socket = &donor.sockets[socket_index];
-    let maximum =
-        socket_type_override.map_or(socket.max_authored_choices, authored_socket_choice_limit);
+    let maximum = socket_type_override.map_or_else(
+        || socket.map_or(0, |socket| socket.max_authored_choices),
+        authored_socket_choice_limit,
+    );
     if maximum == 0 {
         diagnostics.push(AuthoringDiagnostic {
             field,
@@ -780,7 +819,7 @@ fn validate_socket_choice_values(
             field,
             code: AuthoringDiagnosticCode::UnsupportedPlug,
             message: format!(
-                "Plug 0x{hash:08X} is outside the stock compatible set for socket {socket_index}. Parhelion will author your choice; test its behavior in-game."
+                "Plug 0x{hash:08X} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game."
             ),
         });
     }

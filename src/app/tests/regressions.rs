@@ -1,6 +1,9 @@
 //! Headless workflow regressions. Never load or write the user's installation/preferences.
+mod character_fields;
+mod loadout_safety;
 mod parhelion_confirmation;
 mod save_validation;
+mod shortcuts;
 
 use crate::app::*;
 use crate::test_support::TestDirectory;

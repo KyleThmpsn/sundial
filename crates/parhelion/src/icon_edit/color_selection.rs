@@ -20,7 +20,7 @@ pub(super) fn serialize_changes<S: serde::Serializer>(
         .serialize(serializer)
 }
 
-/// A source-color replacement applied before global color and orientation edits.
+/// A source-color replacement blended after global color edits, matching the original artwork.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IconColorReplacement {
@@ -72,9 +72,9 @@ impl IconColorReplacement {
         weight * weight * (765 - 2 * weight) / (255 * 255)
     }
 
-    fn apply(&self, rgb: [u8; 3], weight: i32) -> [u8; 3] {
+    fn apply(&self, source_rgb: [u8; 3], adjusted_rgb: [u8; 3], weight: i32) -> [u8; 3] {
         let source_value = i32::from(*self.source.iter().max().unwrap());
-        let value = i32::from(*rgb.iter().max().unwrap());
+        let value = i32::from(*source_rgb.iter().max().unwrap());
         std::array::from_fn(|i| {
             let target = i32::from(self.replacement[i]);
             let shaded = if source_value == 0 {
@@ -83,24 +83,31 @@ impl IconColorReplacement {
                 (target * value + source_value / 2) / source_value
             }
             .clamp(0, 255);
-            ((i32::from(rgb[i]) * (255 - weight) + shaded * weight + 127) / 255) as u8
+            ((i32::from(adjusted_rgb[i]) * (255 - weight) + shaded * weight + 127) / 255) as u8
         })
     }
 }
 
 /// Evaluate every rule against the original pixel. Strongest match wins; earlier rules break ties.
 /// Replacing blue with red therefore cannot accidentally trigger a separate red-to-orange rule.
-pub(super) fn apply(replacements: &[IconColorReplacement], rgb: [u8; 3]) -> [u8; 3] {
+/// Blend the source-shaded target over the adjusted pixel so its chosen color is not transformed.
+pub(super) fn apply(
+    replacements: &[IconColorReplacement],
+    source_rgb: [u8; 3],
+    adjusted_rgb: [u8; 3],
+) -> [u8; 3] {
     let mut best = None;
     let mut best_weight = 0;
     for replacement in replacements {
-        let weight = replacement.weight(rgb);
+        let weight = replacement.weight(source_rgb);
         if weight > best_weight {
             best = Some(replacement);
             best_weight = weight;
         }
     }
-    best.map_or(rgb, |replacement| replacement.apply(rgb, best_weight))
+    best.map_or(adjusted_rgb, |replacement| {
+        replacement.apply(source_rgb, adjusted_rgb, best_weight)
+    })
 }
 
 pub(super) fn draw_controls(
@@ -127,7 +134,7 @@ pub(super) fn draw_controls(
             changed = true;
         }
     });
-    ui.weak("Pick source colors from the preview or swatches. Shading is preserved.");
+    ui.weak("Pick source colors. Replacements keep their chosen color and source shading.");
     let pages = replacements.len().div_ceil(per_page).max(1);
     *page = (*page).min(pages - 1);
     let mut remove = None;
@@ -146,7 +153,7 @@ pub(super) fn draw_controls(
                     if ui.small_button("Remove").clicked() { remove = Some(index); }
                 });
                 changed |= ui.add(egui::Slider::new(&mut replacement.range_percent, 0..=100).text("Color range").suffix("%"))
-                    .on_hover_text("0% matches the exact source color. Increase to include nearby shades with a soft transition. The strongest match wins; replacements never chain.")
+                    .on_hover_text("0% matches the exact source color before adjustments. Increase to include nearby shades with a soft transition. Replacement colors are applied last. The strongest match wins. Replacements never chain.")
                     .changed();
             });
         });
@@ -245,16 +252,97 @@ mod tests {
             range_percent: 100,
             ..rule([0, 0, 255], [255, 0, 0])
         };
-        let shaded = replacement.apply([0, 0, 100], 255);
+        let shaded = replacement.apply([0, 0, 100], [0, 0, 100], 255);
         assert_eq!(shaded, [100, 0, 0]);
         assert!(replacement.weight([0, 0, 200]) > replacement.weight([0, 0, 100]));
         assert_eq!(replacement.weight([255, 255, 0]), 0);
         let overlap = [replacement, rule([0, 0, 100], [255, 128, 0])];
-        assert_eq!(apply(&overlap, [0, 0, 100]), [255, 128, 0]);
+        assert_eq!(apply(&overlap, [0, 0, 100], [0, 0, 100]), [255, 128, 0]);
         assert_eq!(
-            rule([0; 3], [255, 128, 0]).apply([0; 3], 255),
+            rule([0; 3], [255, 128, 0]).apply([0; 3], [0; 3], 255),
             [255, 128, 0]
         );
+    }
+
+    #[test]
+    fn chosen_replacement_color_is_not_transformed_by_global_adjustments() {
+        for mut edit in [
+            WeaponIconEdit {
+                hue_shift_degrees: 120,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                saturation: -100,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                brightness: 50,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                contrast: -100,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                red_balance: -100,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                green_balance: 100,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                blue_balance: 100,
+                ..Default::default()
+            },
+            WeaponIconEdit {
+                invert: true,
+                ..Default::default()
+            },
+        ] {
+            let original = [46, 40, 40, 128, 10, 100, 200, 255, 46, 40, 40, 0];
+            let mut adjusted = original;
+            edit.apply_to_rgba8(&mut adjusted).unwrap();
+            edit.color_replacements = vec![rule([46, 40, 40], [150, 43, 43])];
+            let mut replaced = original;
+            edit.apply_to_rgba8(&mut replaced).unwrap();
+            assert_eq!(&replaced[..4], &[150, 43, 43, 128], "{edit:?}");
+            assert_eq!(&replaced[4..], &adjusted[4..], "{edit:?}");
+        }
+    }
+
+    #[test]
+    fn replacement_edges_blend_adjusted_pixels_with_original_shading() {
+        let mut pixels = [0, 0, 150, 200];
+        let edit = WeaponIconEdit {
+            color_replacements: vec![IconColorReplacement {
+                range_percent: 100,
+                ..rule([0, 0, 200], [150, 43, 43])
+            }],
+            hue_shift_degrees: 120,
+            opacity_percent: 50,
+            ..Default::default()
+        };
+        edit.apply_to_rgba8(&mut pixels).unwrap();
+        // The original shade produces [113, 32, 32], blended at 229/255 over
+        // the hue-adjusted base [150, 0, 0]. Opacity still applies afterward.
+        assert_eq!(pixels, [117, 29, 29, 100]);
+    }
+
+    #[test]
+    fn adjusted_pixels_and_replacement_targets_cannot_trigger_other_rules() {
+        let mut pixels = [0, 0, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255];
+        WeaponIconEdit {
+            color_replacements: vec![
+                rule([0, 0, 255], [255, 0, 0]),
+                rule([255, 0, 0], [0, 255, 0]),
+            ],
+            hue_shift_degrees: 120,
+            ..Default::default()
+        }
+        .apply_to_rgba8(&mut pixels)
+        .unwrap();
+        assert_eq!(pixels, [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
     }
 
     #[test]

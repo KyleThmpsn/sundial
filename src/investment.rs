@@ -13,8 +13,8 @@ mod controls;
 mod definitions;
 pub use account_sync::{
     AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredProfileSyncReport,
-    preview_authored_account_cleanup, synchronize_authored_collection_unlocks,
-    validate_authored_cleanup_backend,
+    AuthoredSocketChange, preview_authored_account_cleanup, preview_authored_account_replacement,
+    synchronize_authored_collection_unlocks, validate_authored_cleanup_backend,
 };
 pub use controls::{
     AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton, PlugSelection,
@@ -22,7 +22,7 @@ pub use controls::{
     authoring_button_width, authoring_socket_label_width, authoring_socket_reset_width,
     configure_authoring_fonts, default_plug_selection_mode, draw_authoring_info_icon,
     draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
-    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning,
+    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning, progress_bar,
     show_plug_safety_warnings,
 };
 pub use definitions::{
@@ -72,13 +72,23 @@ impl InvestmentCatalog {
     pub fn load(
         install_directory: &Path,
         force_rebuild: bool,
-        mut report: impl FnMut(CatalogLoadProgress),
+        report: impl FnMut(CatalogLoadProgress),
     ) -> Result<Self, String> {
         let cache_path = paths::shadowkeep_catalog_path()
             .ok_or_else(|| "Could not locate Sundial's local catalog folder".to_owned())?;
+        Self::load_with_cache_path(install_directory, &cache_path, force_rebuild, report)
+    }
+
+    /// Scans an isolated package view without replacing the active installation's shared cache.
+    pub fn load_with_cache_path(
+        install_directory: &Path,
+        cache_path: &Path,
+        force_rebuild: bool,
+        mut report: impl FnMut(CatalogLoadProgress),
+    ) -> Result<Self, String> {
         let catalog = Catalog::load_or_scan_with_progress(
             install_directory,
-            cache_path,
+            cache_path.to_path_buf(),
             force_rebuild,
             |progress| {
                 report(CatalogLoadProgress {
@@ -518,7 +528,7 @@ impl InvestmentCatalog {
         self.weapon_supported_plug_sets_with_socket_types(donor_hash, &[])
     }
 
-    /// Returns compatible plug hashes using explicit socket-type replacements where supplied.
+    /// Returns compatible plug hashes for replaced and appended socket types.
     pub fn weapon_supported_plug_sets_with_socket_types(
         &self,
         donor_hash: u32,
@@ -533,15 +543,21 @@ impl InvestmentCatalog {
                 "Item 0x{donor_hash:08X} is not an authorable weapon"
             ));
         }
-        item.sockets
-            .iter()
-            .enumerate()
-            .map(|(socket_index, socket)| {
+        let socket_count = item.sockets.len().max(socket_types.len());
+        if socket_count > MAX_WEAPON_SOCKETS {
+            return Err(format!(
+                "Weapons support at most {MAX_WEAPON_SOCKETS} ordinary sockets"
+            ));
+        }
+        (0..socket_count)
+            .map(|socket_index| {
+                let socket = item.sockets.get(socket_index);
                 let socket_type = socket_types
                     .get(socket_index)
                     .copied()
                     .flatten()
-                    .unwrap_or(socket.socket_type);
+                    .or_else(|| socket.map(|socket| socket.socket_type))
+                    .ok_or_else(|| format!("Added socket {} requires a socket type", socket_index + 1))?;
                 let native_default = item
                     .default_plugs
                     .get(socket_index)
@@ -554,7 +570,8 @@ impl InvestmentCatalog {
                             "Donor weapon 0x{donor_hash:08X} socket {socket_index} has a default plug hash larger than 32 bits"
                         )
                     })?;
-                let mut plug_hashes = if socket_type == socket.socket_type {
+                let unchanged_type = socket.is_some_and(|socket| socket_type == socket.socket_type);
+                let mut plug_hashes = if unchanged_type {
                     self.catalog
                         .socket_and_gear_type_options(item, socket_index)
                 } else {
@@ -570,7 +587,7 @@ impl InvestmentCatalog {
                             "Donor weapon 0x{donor_hash:08X} socket {socket_index} has a compatible plug hash larger than 32 bits"
                         )
                     })?;
-                if socket_type == socket.socket_type
+                if unchanged_type
                     && let Some(native_default) = native_default
                 {
                     plug_hashes.push(native_default);
@@ -639,6 +656,9 @@ impl InvestmentCatalog {
 /// affect this limit.
 pub const MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES: usize = u16::MAX as usize;
 
+/// Fixed number of ordinary socket lanes carried by a native item instance.
+pub const MAX_WEAPON_SOCKETS: usize = 12;
+
 /// Maximum number of embedded plug choices the package compiler accepts for a socket column.
 #[must_use]
 pub const fn authored_socket_choice_limit(socket_type: u16) -> usize {
@@ -657,6 +677,57 @@ const fn available_authored_socket_choices(socket_type: u16) -> usize {
 mod tests {
     use super::*;
     use crate::catalog::ItemRarity;
+
+    #[test]
+    fn appended_socket_pools_follow_explicit_type_and_native_limit() {
+        use crate::catalog::{ItemDef, SocketDef};
+        let catalog = InvestmentCatalog {
+            catalog: Catalog::for_test(
+                vec![ItemDef {
+                    hash: 1,
+                    name: "Test weapon".into(),
+                    type_name: "Auto Rifle".into(),
+                    bucket_hash: 1_498_876_634,
+                    class_type: 3,
+                    default_plugs: vec![Some("0x65".into())],
+                    sockets: vec![SocketDef {
+                        socket_type: 700,
+                        allowed: vec![101, 102],
+                        ..Default::default()
+                    }],
+                    abilities: Default::default(),
+                }],
+                Default::default(),
+            ),
+            authorable_weapon_stat_indices: Vec::new(),
+        };
+        let pools = catalog
+            .weapon_supported_plug_sets_with_socket_types(1, &[None, Some(700)])
+            .unwrap();
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[1].socket_index, 1);
+        assert_eq!(pools[1].plug_hashes, pools[0].plug_hashes);
+        assert_eq!(pools[1].plug_hashes, vec![101, 102]);
+        assert!(!pools[1].allows_disabled);
+        assert!(
+            catalog
+                .weapon_supported_plug_sets_with_socket_types(1, &[None, None])
+                .is_err()
+        );
+        assert!(
+            catalog
+                .weapon_supported_plug_sets_with_socket_types(1, &[Some(700); MAX_WEAPON_SOCKETS])
+                .is_ok()
+        );
+        assert!(
+            catalog
+                .weapon_supported_plug_sets_with_socket_types(
+                    1,
+                    &[Some(700); MAX_WEAPON_SOCKETS + 1]
+                )
+                .is_err()
+        );
+    }
 
     #[test]
     fn sandbox_effect_labels_prefer_named_plugs_over_weapon_names() {

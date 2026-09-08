@@ -57,9 +57,6 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(tab, Tab::Player, "Player");
-        if runtime_available {
-            ui.selectable_value(tab, Tab::Sunrise, "Sunrise");
-        }
         ui.selectable_value(tab, Tab::Controls, "Controls");
         ui.selectable_value(tab, Tab::Audio, "Audio");
         ui.selectable_value(tab, Tab::Display, "Display");
@@ -71,6 +68,9 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
             } else {
                 "Key bindings are shown read-only for the active account source or settings schema."
             });
+        if runtime_available {
+            ui.selectable_value(tab, Tab::Sunrise, "Sunrise");
+        }
     });
     ui.separator();
 

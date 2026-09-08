@@ -42,27 +42,19 @@ pub(super) fn randomize_full_loadout(
     );
     let mut generated_items = 0usize;
     let mut generated_slots = 0usize;
-    let held_inventory = account::character_inventory(&updated, character_index)
-        .map_err(|error| error.to_string())?
-        .unwrap_or_default();
-    let (mut held_items, mut held_items_by_bucket) = held_item_counts(&held_inventory, catalog);
-
     for &(slot, _, bucket_hash) in document.equipment_slots() {
         let scope = loadout_scope_for_slot(slot);
         if !options.includes(scope) {
             continue;
         }
-        let candidates = catalog
-            .browse(bucket_hash, class_type, show_dummy_items, false)
-            .into_iter()
-            .filter(|item| {
-                item_can_be_authored(item)
-                    && crate::account_contract::definition_available(
-                        item.hash,
-                        document.supports_v13_account(),
-                    )
-            })
-            .collect::<Vec<_>>();
+        let (candidates, slot_plug_mode) = loadout_candidates(
+            catalog,
+            bucket_hash,
+            class_type,
+            show_dummy_items,
+            document.supports_v13_account(),
+            plug_mode,
+        )?;
         if candidates.is_empty() {
             continue;
         }
@@ -103,7 +95,7 @@ pub(super) fn randomize_full_loadout(
                     character_index,
                     slot,
                     equipped,
-                    plug_mode,
+                    slot_plug_mode,
                     &mut rng,
                 )?;
             }
@@ -123,14 +115,7 @@ pub(super) fn randomize_full_loadout(
         {
             0
         } else {
-            HELD_ITEMS_PER_SLOT
-                .saturating_sub(
-                    held_items_by_bucket
-                        .get(&bucket_hash)
-                        .copied()
-                        .unwrap_or_default(),
-                )
-                .min(inventory::CHARACTER_INVENTORY_CAPACITY.saturating_sub(held_items))
+            held_items_to_generate(&updated, catalog, character_index, candidates[0])?
         };
         for _ in 0..held_target {
             let held = pick_avoiding(&mut rng, &candidates, &used_hashes)
@@ -140,12 +125,10 @@ pub(super) fn randomize_full_loadout(
                 catalog,
                 character_index,
                 held,
-                plug_mode,
+                slot_plug_mode,
                 &mut rng,
             )?;
             used_hashes.push(held.hash);
-            held_items += 1;
-            *held_items_by_bucket.entry(bucket_hash).or_default() += 1;
             generated_items += 1;
             slot_changed = true;
         }
@@ -159,10 +142,73 @@ pub(super) fn randomize_full_loadout(
     }
     settings::validate_workspace_document(&updated)
         .map_err(|error| format!("The generated loadout did not pass validation: {error}"))?;
+    crate::app::account_validation::validate_new_bucket_overflows(&updated, document, catalog)?;
     *document = updated;
     Ok(format!(
         "Randomized {generated_items} items across {generated_slots} slots"
     ))
+}
+
+fn held_items_to_generate(
+    document: &account::WorkspaceDocument,
+    catalog: &Catalog,
+    character_index: usize,
+    item: &ItemDef,
+) -> Result<usize, String> {
+    let metadata = catalog
+        .inventory_metadata(item.hash)
+        .filter(|metadata| metadata.is_character_inventory_candidate())
+        .ok_or_else(|| format!("{} has no usable inventory placement metadata", item.name))?;
+    let inventory = account::character_inventory(document, character_index)
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let available =
+        character_bucket_available_rows(document, catalog, character_index, &inventory, metadata)?;
+    let held_in_bucket = inventory
+        .iter()
+        .filter(|item| {
+            catalog
+                .inventory_metadata(u64::from(item.definition_hash))
+                .is_some_and(|other| {
+                    other.scope == metadata.scope
+                        && other.native_bucket_id == metadata.native_bucket_id
+                })
+        })
+        .count();
+    Ok(HELD_ITEMS_PER_SLOT
+        .saturating_sub(held_in_bucket)
+        .min(available)
+        .min(account::character_inventory_capacity(document).saturating_sub(inventory.len())))
+}
+
+fn loadout_candidates(
+    catalog: &Catalog,
+    bucket_hash: u64,
+    class_type: u64,
+    show_dummy_items: bool,
+    v13_account: bool,
+    plug_mode: PlugSelectionMode,
+) -> Result<(Vec<&ItemDef>, PlugSelectionMode), String> {
+    if v13_account && bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH {
+        let collection = catalog
+            .item(crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH)
+            .filter(|item| item.bucket_hash == bucket_hash && item_can_be_authored(item))
+            .ok_or("The Emote Collection (0xBDBB7999) is unavailable in the item catalog")?;
+        // Collection rolls contain emotes even when the general picker is unrestricted.
+        Ok((vec![collection], PlugSelectionMode::Supported))
+    } else {
+        Ok((
+            catalog
+                .browse(bucket_hash, class_type, show_dummy_items, false)
+                .into_iter()
+                .filter(|item| {
+                    item_can_be_authored(item)
+                        && crate::account_contract::definition_available(item.hash, v13_account)
+                })
+                .collect(),
+            plug_mode,
+        ))
+    }
 }
 
 pub(super) fn clear_selected_inventory(
@@ -457,10 +503,7 @@ pub(super) fn character_class(
 }
 
 pub(super) fn item_can_be_authored(item: &ItemDef) -> bool {
-    // This singleton container has four selections, not the ordinary held-emote semantics
-    // used by bulk randomization. It remains available in the guided equipment picker.
-    item.hash != crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH
-        && valid_definition_hash(item.hash)
+    valid_definition_hash(item.hash)
         && item.default_plugs.len() <= inventory::MAX_ITEM_PLUGS
         && item.default_plugs.iter().all(|plug| {
             plug.as_deref()

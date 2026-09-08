@@ -457,7 +457,10 @@ fn action_graph_candidates_reject_bad_action_size() {
 fn clean_stock_perk_actions_prove_raw_aligned_tag_scans_are_unsafe() {
     let packages = env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
         .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
-    let manager = crate::package_runtime::open_shadowkeep_packages(Path::new(&packages))
+    let install = Path::new(&packages)
+        .parent()
+        .expect("clean packages need an install root");
+    let manager = crate::package_runtime::open_shadowkeep_packages(install)
         .expect("open clean stock packages");
     let globals_tag =
         crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)

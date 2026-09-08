@@ -373,10 +373,23 @@ impl Catalog {
         items: Vec<ItemDef>,
         metadata: HashMap<u64, ItemPackageMetadata>,
     ) -> Self {
+        Self::for_test_with_inventory(items, metadata, HashMap::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_inventory(
+        mut items: Vec<ItemDef>,
+        metadata: HashMap<u64, ItemPackageMetadata>,
+        inventory_metadata: HashMap<u64, InventoryMetadata>,
+    ) -> Self {
+        let plug_pools = intern_socket_pools(&mut items, &HashMap::new())
+            .expect("test socket pools must be valid");
         Self::finish(
             CatalogContents {
                 items,
                 item_package_metadata: metadata,
+                inventory_metadata,
+                plug_pools,
                 ..Default::default()
             },
             PathBuf::new(),

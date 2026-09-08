@@ -91,7 +91,7 @@ pub struct BadgeIconPlan {
 }
 
 /// Builds a seven-tag texture chain using the configured Shadowkeep package manager for donor
-/// reads and the canonical non-AI placeholder asset for pixels.
+/// reads and Solus's bundled Sunrise artwork for the badge mark.
 ///
 /// `current_entry_count` is the destination package's entry count before any append operation.
 /// `appended_ordinal_base` is the number of tags the caller will place before this plan in the

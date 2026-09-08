@@ -180,6 +180,7 @@ mod tests {
             original_bytes: b"original".to_vec(),
             cleaned_bytes: b"cleaned".to_vec(),
             removed_items: BTreeMap::new(),
+            resized_items: BTreeMap::new(),
             cleared_plugs: 0,
             cleared_unlocks: 0,
             removed_reward_rules: 0,

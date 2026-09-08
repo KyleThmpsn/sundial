@@ -22,15 +22,6 @@ pub(crate) fn workbench_style(ui: &mut egui::Ui) {
     style.spacing.interact_size.y = 24.0;
     style.spacing.button_padding = egui::vec2(7.0, 3.0);
     style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
     if style.visuals.dark_mode {
         style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
         style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);

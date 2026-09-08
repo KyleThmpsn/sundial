@@ -152,11 +152,15 @@ fn verification_conflict_preserves_the_newer_save_and_original_backup() {
             .contains("current contents were preserved")
     );
     assert_eq!(fs::read(&path).unwrap(), external);
-    let backup_directory = crate::backups::source_directory(&backups, &path).unwrap();
-    let backup = fs::read_dir(backup_directory)
+    let backup = fs::read_dir(&backups)
         .unwrap()
-        .next()
-        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("settings-v")
+        })
         .unwrap()
         .path();
     assert_eq!(load_workspace_json(&backup).unwrap(), before);

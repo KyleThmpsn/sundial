@@ -299,7 +299,7 @@ impl PackageAuthoringApp {
                 ui.monospace(if inherited_power_cap_groups.is_empty() {
                     "no quality rows".to_owned()
                 } else {
-                    inherited_power_cap_groups
+                    effective_power_cap_rows(&self.recipe.overrides, inherited_power_cap_groups)
                         .iter()
                         .map(u16::to_string)
                         .collect::<Vec<_>>()
@@ -313,9 +313,9 @@ impl PackageAuthoringApp {
                     .on_disabled_hover_text("This donor has no native quality/version rows.")
                     .clicked()
                 {
+                    let groups = effective_power_cap_rows(&self.recipe.overrides, inherited_power_cap_groups);
                     self.recipe.overrides.power_cap_group = None;
-                    self.recipe.overrides.power_cap_groups =
-                        Some(inherited_power_cap_groups.to_vec());
+                    self.recipe.overrides.power_cap_groups = Some(groups);
                 }
             }
             draw_authoring_info_icon(
@@ -635,12 +635,28 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         graph: Option<&WeaponRuntimeGraph>,
     ) {
+        self.draw_runtime_component_donor_pickers(ui, graph);
+        if self.show_experimental_options {
+            ui.add_space(8.0);
+            self.draw_runtime_resource_patches(ui);
+        }
+    }
+
+    fn draw_runtime_component_donor_pickers(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: Option<&WeaponRuntimeGraph>,
+    ) {
         draw_donor_section_label(
             ui,
             "Runtime Component Donors",
             Some(
                 "A selection replaces the complete shared owner partition for that resource, including every alias and any other component binding owned by the same partition. Unselected owners remain byte-identical to the baseline. Cross-family components can depend on different runtime data, so test new combinations in-game even when the native graph validates.",
             ),
+        );
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Mixing component donors is highly experimental and has a high risk of crashes. Use with caution.",
         );
         if self.runtime_graph_job.is_some() {
             ui.horizontal(|ui| {
@@ -659,15 +675,27 @@ impl PackageAuthoringApp {
                 self.runtime_graph_error = None;
             }
         }
-        let Some(graph) = graph else {
-            return;
-        };
-
         let mut active = BTreeMap::<u32, String>::new();
-        for binding in &graph.bindings {
-            active
-                .entry(binding.binding_hash)
-                .or_insert_with(|| binding.binding_label.clone());
+        if let Some(graph) = graph {
+            for binding in &graph.bindings {
+                active
+                    .entry(binding.binding_hash)
+                    .or_insert_with(|| binding.binding_label.clone());
+            }
+        } else {
+            // An experimental choice can prevent full field decoding. Keep repair and
+            // compatibility-review controls available instead of trapping that saved choice.
+            ui.weak("Runtime data is unavailable. Saved donors can still be reviewed or reset.");
+            for control in PRIMARY_RUNTIME_COMPONENTS {
+                active.insert(control.binding_hash, control.label.to_owned());
+            }
+            for component in &self.recipe.runtime_component_donors {
+                if let Ok(hash) = component.binding_hash.parse_u32() {
+                    active
+                        .entry(hash)
+                        .or_insert_with(|| format!("Binding 0x{hash:08X}"));
+                }
+            }
         }
         for control in PRIMARY_RUNTIME_COMPONENTS {
             if active.contains_key(&control.binding_hash) {
@@ -738,14 +766,19 @@ impl PackageAuthoringApp {
             .show(ctx, |ui| {
             workbench_style(ui);
             ui.label(format!("{} · Component sources", self.recipe.name));
-            let Some(graph) = graph.as_deref() else {
-                ui.weak("Runtime bindings appear after the selected runtime has been decoded.");
-                return;
+            let additional = if let Some(graph) = graph.as_deref() {
+                graph.bindings.iter()
+                    .filter(|binding| !PRIMARY_RUNTIME_COMPONENTS.iter().any(|known| known.binding_hash == binding.binding_hash))
+                    .map(|binding| (binding.binding_hash, binding.binding_label.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            } else {
+                ui.weak("Runtime data is unavailable. Saved additional donors remain available for repair.");
+                self.recipe.runtime_component_donors.iter()
+                    .filter_map(|component| component.binding_hash.parse_u32().ok())
+                    .filter(|hash| !PRIMARY_RUNTIME_COMPONENTS.iter().any(|known| known.binding_hash == *hash))
+                    .map(|hash| (hash, format!("Binding 0x{hash:08X}")))
+                    .collect::<BTreeMap<_, _>>()
             };
-            let additional = graph.bindings.iter()
-                .filter(|binding| !PRIMARY_RUNTIME_COMPONENTS.iter().any(|known| known.binding_hash == binding.binding_hash))
-                .map(|binding| (binding.binding_hash, binding.binding_label.clone()))
-                .collect::<BTreeMap<_, _>>();
             ui.horizontal_wrapped(|ui| {
                 ui.label("Filter");
                 named_control(ui.add(
@@ -810,14 +843,10 @@ impl PackageAuthoringApp {
                 ui,
                 "Runtime Values",
                 Some(
-                    "These values come from the selected pattern's reflected component-owner schemas. Each saved locator is resolved again against the final donor-grafted graph during compilation; Parhelion never trusts a stale byte offset.",
+                    "Raw fields decoded from the selected runtime and component donors. Saved field edits are shown here, but binary patches, automatic ammo and HUD edits, and raw entity patches are applied only during compilation. Field names and types do not establish final in-game behavior or units.",
                 ),
             );
             ui.weak("Runtime values appear after the selected runtime row has been decoded.");
-        }
-        if self.show_experimental_options {
-            ui.add_space(5.0);
-            self.draw_runtime_resource_patches(ui);
         }
     }
 
@@ -840,9 +869,11 @@ impl PackageAuthoringApp {
             ui,
             "Runtime Values",
             Some(
-                "These values come from the selected pattern's reflected component-owner schemas. Each saved locator is resolved again against the final donor-grafted graph during compilation; Parhelion never trusts a stale byte offset.",
+                "Raw fields decoded from the selected runtime and component donors. Saved field edits are shown here, but binary patches, automatic ammo and HUD edits, and raw entity patches are applied only during compilation. Field names and types do not establish final in-game behavior or units.",
             ),
         );
+        ui.weak("Source: Selected runtime and component donors, with saved field edits.");
+        ui.weak("Binary, ammo, HUD and raw entity patches are applied at build time, not shown here. These are raw package fields, not final in-game stats.");
         ui.horizontal(|ui| {
             ui.label("Filter");
             named_control(
@@ -1143,7 +1174,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_runtime_resource_patches(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Binary runtime patches")
+        egui::CollapsingHeader::new("Binary Runtime Patches")
             .id_salt(("runtime-value-bytes", self.recipe_panel_scope()))
             .default_open(false)
             .show(ui, |ui| {
@@ -1207,8 +1238,9 @@ impl PackageAuthoringApp {
                         {
                             patch.binding_hash.set_text(binding_text);
                         }
-                        ui.label("Resource");
-                        ui.add(egui::DragValue::new(&mut patch.resource_index));
+                        ui.label("Resource Index");
+                        ui.add(egui::DragValue::new(&mut patch.resource_index))
+                            .on_hover_text("Zero-based resource index within the selected binding.");
                         ui.label("Offset");
                         ui.add(egui::DragValue::new(&mut patch.offset).speed(1));
                         ui.monospace(format!("0x{:X}", patch.offset));
@@ -1259,13 +1291,54 @@ impl PackageAuthoringApp {
                         .runtime_resource_patches
                         .remove(index);
                 }
-                if ui.button("+ Add binary patch").clicked() {
+                if ui.button("+ Add Binary Patch").clicked() {
                     self.recipe
                         .overrides
                         .runtime_resource_patches
                         .push(WeaponRuntimeResourcePatchRecipe::default());
                 }
             });
+    }
+
+    pub(super) fn runtime_component_baseline_hash(&self) -> Option<u32> {
+        let current_key = self.runtime_graph_key();
+        if let Some(hash) = self
+            .runtime_graph
+            .as_ref()
+            .filter(|(key, _)| Some(key) == current_key.as_ref())
+            .map(|(_, graph)| graph.item_hash)
+            .filter(|hash| *hash != 0)
+        {
+            return Some(hash);
+        }
+        let Some(index) = self.recipe.overrides.weapon_pattern_index else {
+            return self
+                .recipe
+                .donor
+                .item_hash
+                .parse_u32()
+                .ok()
+                .filter(|hash| *hash != 0);
+        };
+        // An explicit runtime row can be unrelated to the gameplay donor. Without a
+        // current graph, only a representative verified against that row is a baseline.
+        self.recipe
+            .overrides
+            .weapon_pattern_donor_hash
+            .as_ref()
+            .and_then(|hash| hash.parse_u32().ok())
+            .filter(|hash| {
+                self.donor_summaries
+                    .iter()
+                    .any(|donor| donor.hash == *hash && donor.weapon_pattern_index == Some(index))
+            })
+            .or_else(|| {
+                self.donor_summaries
+                    .iter()
+                    .find(|donor| donor.weapon_pattern_index == Some(index))
+                    .map(|donor| donor.hash)
+            })
+            .filter(|hash| *hash != 0)
     }
 
     pub(super) fn draw_runtime_component_donor_picker(
@@ -1280,35 +1353,11 @@ impl PackageAuthoringApp {
             label,
             Some(&format!("{tooltip} Native binding: 0x{binding_hash:08X}.")),
         );
-        let pattern_hash = self
-            .recipe
-            .overrides
-            .weapon_pattern_index
-            .and_then(|index| {
-                self.recipe
-                    .overrides
-                    .weapon_pattern_donor_hash
-                    .as_ref()
-                    .and_then(|hash| hash.parse_u32().ok())
-                    .filter(|hash| {
-                        self.donor_summaries.iter().any(|donor| {
-                            donor.hash == *hash && donor.weapon_pattern_index == Some(index)
-                        })
-                    })
-                    .or_else(|| {
-                        self.donor_summaries
-                            .iter()
-                            .find(|donor| donor.weapon_pattern_index == Some(index))
-                            .map(|donor| donor.hash)
-                    })
-            })
-            .or_else(|| self.recipe.donor.item_hash.parse_u32().ok())
-            .filter(|hash| *hash != 0);
+        let pattern_hash = self.runtime_component_baseline_hash();
         let current_reference = self.recipe.runtime_component_donor(binding_hash).cloned();
         let current_hash = current_reference
             .as_ref()
             .and_then(|donor| donor.item_hash.parse_u32().ok());
-        let displayed_hash = current_hash.or(pattern_hash);
         let selected_text = current_reference.as_ref().map_or_else(
             || {
                 pattern_hash
@@ -1341,61 +1390,12 @@ impl PackageAuthoringApp {
                     )
             },
         );
-        let selection = self.catalog.as_ref().and_then(|catalog| {
-            catalog.draw_weapon_donor_header_picker(
-                ui,
-                ("weapon-runtime-component-donor", binding_hash),
-                self.runtime_component_queries
-                    .entry(binding_hash)
-                    .or_default(),
-                self.donor_summaries
-                    .iter()
-                    .filter(|donor| donor.weapon_pattern_index.is_some()),
-                WeaponDonorPickerOptions {
-                    selected_hash: displayed_hash,
-                    selected_label: &selected_text,
-                    header_label: Some(if current_reference.is_some() {
-                        "Custom component source"
-                    } else {
-                        "Follows runtime baseline"
-                    }),
-                    action_label: "Swap Donor",
-                    selected_icon_override: None,
-                    secondary_action_label: None,
-                    clear: Some(WeaponDonorPickerClearChoice {
-                        label: "Follow runtime baseline",
-                        tooltip:
-                            "Keep this binding from the selected runtime baseline's weapon entity.",
-                        selected: current_reference.is_none(),
-                    }),
-                },
-            )
-        });
-        if self.catalog.is_none() {
-            ui.add_enabled(false, egui::Button::new(selected_text));
-        }
-        match selection {
-            Some(WeaponDonorPickerAction::Clear) => {
-                self.recipe.set_runtime_component_donor(binding_hash, None)
-            }
-            Some(WeaponDonorPickerAction::Select(item_hash)) => {
-                if pattern_hash == Some(item_hash) {
-                    self.recipe.set_runtime_component_donor(binding_hash, None);
-                } else if let Some(donor) = self
-                    .donor_summaries
-                    .iter()
-                    .find(|donor| donor.hash == item_hash)
-                {
-                    self.recipe.set_runtime_component_donor(
-                        binding_hash,
-                        Some(WeaponDonorReference {
-                            item_hash: item_hash.into(),
-                            expected_name: Some(donor.name.clone()),
-                        }),
-                    );
-                }
-            }
-            Some(WeaponDonorPickerAction::Secondary) | None => {}
-        }
+        self.draw_checked_runtime_donor_header(
+            ui,
+            binding_hash,
+            &selected_text,
+            current_hash,
+            pattern_hash,
+        );
     }
 }

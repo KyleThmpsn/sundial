@@ -483,7 +483,8 @@ pub struct WeaponSocketPlugVariantRecipe {
     pub source_plug_hash: HexHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Copies only native plug category and localized item type from a stock plug.
+    /// Copies native plug category, tier, inspection template, and localized item type
+    /// from a stock plug without replacing the selected runtime effects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification_donor_hash: Option<HexHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -834,8 +835,8 @@ pub struct WeaponRecipeOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_plug_index: Option<u16>,
     pub inventory_slot: Option<RecipeInventorySlot>,
-    /// Primary/Special/Heavy client-facing classification. This does not by itself change the
-    /// runtime ammo pool or consumption behavior.
+    /// Primary/Special/Heavy classification and native ammo override, applied to the
+    /// default and perk-selected runtime variants. Does not rebalance magazine or reserve stats.
     pub ammo_type: Option<RecipeAmmoType>,
     pub modern_damage_type: Option<RecipeDamageType>,
     pub power_cap_group: Option<u16>,
@@ -878,8 +879,9 @@ pub struct WeaponRecipeOverrides {
     )]
     pub render_dye_rows: Option<[Vec<WeaponDyeReferenceRecipe>; 3]>,
     /// Complete positional socket columns. An empty vector inherits every donor socket unchanged.
-    /// A non-empty vector must contain one entry per donor socket. `None` inherits that exact donor
-    /// row, while `Some` replaces the row with its ordered authored choices.
+    /// A non-empty vector contains every donor socket and may append explicitly typed columns up
+    /// to the native socket limit. `None` preserves donor socket content. Added columns must be
+    /// `Some` and contain a socket type and ordered authored choices.
     pub socket_columns: Vec<Option<WeaponSocketColumnRecipe>>,
     /// Private plug clones for individual socket choices, including typed runtime edits to their
     /// selected finished sandbox perks.

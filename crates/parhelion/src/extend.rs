@@ -31,6 +31,9 @@ const SHARED_TAG_OWNER_FILE_TYPE: u8 = 0x10;
 const SHARED_TAG_COMPANION_FILE_TYPE: u8 = 0x08;
 const SHARED_TAG_FILE_SUBTYPE: u8 = 0;
 
+#[cfg(all(test, windows, target_pointer_width = "64"))]
+mod compression_tests;
+
 #[derive(Clone, Debug)]
 pub struct ReplacementSpec {
     pub tag: TagHash,

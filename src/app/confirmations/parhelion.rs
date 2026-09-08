@@ -47,28 +47,26 @@ fn introduction(ctx: &egui::Context) -> Option<bool> {
         egui::ScrollArea::vertical()
             .max_height((ctx.screen_rect().height() - 180.0).max(120.0))
             .show(ui, |ui| {
-                ui.label("Parhelion is an experimental package creation tool. This release allows many different weapon combinations to be built. We try to block combinations that definitely will not work, but bugs are expected.");
+                ui.label("Parhelion combines weapon stats, perks, behavior, and appearance into custom weapons. It is experimental. A successful build still needs an in-game test.");
                 ui.add_space(10.0);
-                ui.label("Parhelion adds packages; it does not edit your existing ones.");
-                ui.strong("If something goes wrong, you can uninstall from Parhelion Preferences > Uninstall Custom Packages and revert your game packages back to stock.");
+                ui.label("Custom weapons use additional packages. Stock packages are preserved.");
+                ui.strong("To remove custom packages, open Parhelion Preferences > Builds & Backups > Uninstall Custom Packages.");
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Many bugs are known and being worked out. Please report the ones you find through");
+                    ui.label("Report bugs through");
                     ui.hyperlink_to("GitHub Issues", format!("{}/issues", super::super::PROJECT_URL));
                 });
                 ui.add_space(10.0);
-                ui.label("Some features, such as custom perk creation, are very early in exploration. They will change substantially in future releases as their behavior is mapped out.");
+                ui.label("Custom perk editing is planned for a future release. Existing custom perks can be reused from saved recipes.");
                 ui.add_space(10.0);
-                ui.label("Extremely early features are locked behind ‘Show advanced technical controls (experimental)’ in Parhelion Preferences. These are not recommended for use; many can outright freeze the game.");
-                ui.add_space(10.0);
-                ui.label("More substantial features will be added in future releases.");
+                ui.label("Advanced technical controls expose experimental game data. Invalid combinations can freeze or crash the game.");
             });
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             if ui.button("I understand").clicked() {
                 decision = Some(true);
             }
-            if ui.button("Nevermind").clicked() {
+            if ui.button("Cancel").clicked() {
                 decision = Some(false);
             }
         });

@@ -82,7 +82,7 @@ impl SundialApp {
                             true,
                         );
                     } else {
-                        self.set_status("Advanced JSON applied; click Save to write it", false);
+                        self.set_status("Advanced JSON applied. Click Save to write it", false);
                     }
                 }
                 self.json_editor.mark_synced();
@@ -151,7 +151,7 @@ impl SundialApp {
                 self.json_editor_window_generation,
             )),
             egui::ViewportBuilder::default()
-                .with_title("Sundial: All settings (JSON)")
+                .with_title("Sundial: All Settings (JSON)")
                 .with_inner_size([960.0, 720.0])
                 .with_min_inner_size([640.0, 420.0]),
             |child_ctx, class| {

@@ -29,9 +29,11 @@ impl SundialApp {
                 }
                 let undo_label = self.undo_history.last().map(|entry| entry.label.clone());
                 let redo_label = self.redo_history.last().map(|entry| entry.label.clone());
+                let draft_pending = self.json_editor.has_unapplied_changes();
+                let draft_notice = "Finish or reset the JSON draft before undoing account changes. Use Ctrl+Z in the editor to undo text edits.";
                 let undo = ui
-                    .add_enabled(undo_label.is_some(), egui::Button::new("Undo"))
-                    .on_disabled_hover_text("Nothing to undo");
+                    .add_enabled(!draft_pending && undo_label.is_some(), egui::Button::new("Undo"))
+                    .on_disabled_hover_text(if draft_pending { draft_notice } else { "Nothing to undo" });
                 let undo = if let Some(label) = undo_label.as_deref() {
                     undo.on_hover_text(format!("Undo: {label}"))
                 } else {
@@ -41,8 +43,8 @@ impl SundialApp {
                     self.undo();
                 }
                 let redo = ui
-                    .add_enabled(redo_label.is_some(), egui::Button::new("Redo"))
-                    .on_disabled_hover_text("Nothing to redo");
+                    .add_enabled(!draft_pending && redo_label.is_some(), egui::Button::new("Redo"))
+                    .on_disabled_hover_text(if draft_pending { draft_notice } else { "Nothing to redo" });
                 let redo = if let Some(label) = redo_label.as_deref() {
                     redo.on_hover_text(format!("Redo: {label}"))
                 } else {
@@ -265,7 +267,7 @@ impl SundialApp {
                 ui.strong(progress.message);
             });
             ui.add_space(10.0);
-            let mut bar = egui::ProgressBar::new(progress.fraction()).desired_width(480.0);
+            let mut bar = crate::investment::progress_bar(progress.fraction()).desired_width(480.0);
             if progress.total > 0 {
                 bar = bar.show_percentage();
             } else {

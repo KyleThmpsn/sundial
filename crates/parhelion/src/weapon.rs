@@ -270,7 +270,7 @@ const PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE: usize = 0x122;
 const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
 const LOCALIZATION_STOCK_TABLE_COUNT: usize = 3108;
 // Bank 2927 is an already-rooted native two-string bank. Its existing hashes and strings are
-// preserved while the authored recipe's three strings are appended in a patch overlay. A new independent
+// preserved while authored weapon and private-plug text is appended in a patch overlay. A new independent
 // bank is addressable after package registration but is never queued by the stock root graph.
 const LOCALIZATION_HEADER_HASH_CLASS: u32 = 0x8080_0070;
 const LOCALIZATION_PART_CLASS: u32 = 0x8080_9A90;
@@ -449,7 +449,7 @@ pub struct WeaponLocaleTextOverride {
     pub collection_requirement: Option<String>,
 }
 
-/// A recognized newer-style fixed damage override. Kinetic removes the elemental marker.
+/// An explicit fixed damage override, resolved against the donor's native carrier family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModernDamageType {
     Kinetic,
@@ -619,7 +619,7 @@ impl WeaponInventorySlot {
 /// Optional changes applied after cloning the donor definition.
 ///
 /// Empty/`None` fields inherit the donor bytes. Socket columns are sparse, ordered overrides:
-/// `None` preserves a fixed donor socket row byte-for-byte, while the first choice in an authored
+/// `None` preserves donor socket content, while the first choice in an authored
 /// column is both the definition's collection/default-roll plug and its first embedded member.
 /// Existing inventory instances retain their saved selections. Because authored collection items
 /// are curated, an inherited randomized donor lane is automatically fixed to its native default
@@ -663,6 +663,9 @@ pub struct WeaponCloneOverrides {
     pub art_arrangements: Option<Vec<WeaponArtArrangementOverride>>,
     /// Complete ordered custom, default, and locked dye-reference rows.
     pub render_dye_rows: Option<[Vec<WeaponDyeReferenceOverride>; 3]>,
+    /// Positional donor overrides followed by any added sockets, up to the native lane limit.
+    /// Inherited rows preserve their content, with relative pointers rebased if the array grows.
+    /// Each added socket requires an explicit type and at least one plug choice.
     pub socket_columns: Vec<Option<WeaponSocketColumnOverride>>,
     /// Private socket-plug variants whose finished perk runtime graphs carry typed edits.
     pub socket_plug_variants: Vec<WeaponSocketPlugVariantOverride>,
@@ -851,7 +854,8 @@ pub struct WeaponSocketPlugVariantOverride {
     pub source_plug_hash: u32,
     /// Optional authored display name for the private plug. `None` preserves the stock name.
     pub name: Option<String>,
-    /// Stock plug supplying native category and item-type text, without its perks or runtime.
+    /// Stock plug supplying category, tier, inspection template and item-type text.
+    /// Its perks and runtime are not transferred.
     pub classification_donor_hash: Option<u32>,
     pub description: Option<String>,
     pub additional_sandbox_perks: Vec<u16>,
@@ -900,8 +904,10 @@ pub struct WeaponRuntimeComponentDonorReference {
 
 /// A donor-first weapon authoring recipe.
 ///
-/// With default overrides, all definition fields except the new identity and localized text are
-/// inherited exactly from `donor_item_hash`.
+/// The gameplay donor supplies inherited definition fields. Compilation also assigns private
+/// identities, localized text, presentation assets and Collections placement, and fixes inherited
+/// randomized socket lanes to their native defaults. Explicit donors and overrides replace their
+/// corresponding fields.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponCloneSpec {
     pub namespace: String,

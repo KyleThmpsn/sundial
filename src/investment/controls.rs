@@ -4,6 +4,11 @@ use crate::app::authoring_bridge;
 use eframe::egui;
 use std::{hash::Hash, path::Path};
 
+/// Consistent loading and build progress appearance across both applications.
+pub fn progress_bar(fraction: f32) -> egui::ProgressBar {
+    egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).corner_radius(egui::CornerRadius::same(3))
+}
+
 /// Content rendered by Sundial's shared full-window catalog loading surface.
 #[derive(Clone, Copy, Debug)]
 pub struct CatalogLoadingView<'a> {
@@ -43,9 +48,7 @@ pub fn draw_catalog_loading_view(
                         } else {
                             view.completed as f32 / view.total as f32
                         };
-                        let mut bar = egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
-                            .desired_width(400.0)
-                            .corner_radius(egui::CornerRadius::same(3));
+                        let mut bar = progress_bar(fraction).desired_width(400.0);
                         if view.total > 0 {
                             bar = bar.show_percentage();
                         } else {
@@ -223,7 +226,10 @@ impl InvestmentCatalog {
             .catalog
             .item(u64::from(donor_hash))
             .ok_or_else(|| format!("Unknown donor weapon 0x{donor_hash:08X}"))?;
-        if item.sockets.get(socket_index).is_none() {
+        if socket_index >= super::MAX_WEAPON_SOCKETS
+            || (item.sockets.get(socket_index).is_none()
+                && socket_type_override.is_none_or(|socket_type| socket_type == u16::MAX))
+        {
             return Err(format!(
                 "Donor weapon 0x{donor_hash:08X} has no socket {socket_index}"
             ));

@@ -6,10 +6,6 @@
     "item_hash": "0x22A0C523",
     "expected_name": "Loaded Question"
   },
-  "presentation_donor": {
-    "item_hash": "0x83A19696",
-    "expected_name": "Telesto"
-  },
   "identity": {
     "item_hash": "0x54B303AF",
     "collectible_hash": "0xDA5C0DD0",
@@ -28,10 +24,18 @@
   "flavor": "There would be no relief at dawn. We took our places anyway.",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true,
+      "hue_shift_degrees": -170
+    },
     "investment_stats": [
       {
         "definition_index": 18,
         "value": 70
+      },
+      {
+        "definition_index": 22,
+        "value": 65
       },
       {
         "definition_index": 24,
@@ -40,23 +44,25 @@
       {
         "definition_index": 26,
         "value": 40
-      },
-      {
-        "definition_index": 22,
-        "value": 65
       }
     ],
-    "inventory_slot": "energy",
+    "inventory_slot": "kinetic",
     "ammo_type": "special",
     "modern_damage_type": "void",
-    "power_cap_group": 11,
+    "power_cap_group": 14,
     "rarity": "legendary",
+    "stat_group_index": null,
     "socket_columns": [
       {
         "choices": [
           "0xEEB69A10"
         ],
-        "socket_type": 176
+        "socket_type": 176,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
@@ -66,7 +72,12 @@
           "0xC4BE7564",
           "0xAB0A2647"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -74,13 +85,29 @@
           "0x5C2FD04F",
           "0xF351D2CC"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x4682DFF1"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
       null,
-      null,
       null
-    ]
+    ],
+    "raw_payload_patches": []
   }
 }

@@ -16,7 +16,7 @@ use eframe::egui;
 
 use super::EquippedItemSnapshot;
 use crate::app::{
-    ConfirmationDialog, PlugSelectionMode, SundialApp, ViewMode,
+    SundialApp, ViewMode,
     inventory::InventoryItemSnapshot,
     inventory_page::{
         CharacterInventoryEditorContext, InventoryItemUiId, inventory_item_ui_identities,
@@ -201,46 +201,10 @@ impl SundialApp {
         inventory_editable: bool,
         group_sockets: &mut bool,
     ) -> Option<super::randomize::Request> {
-        let mut requested_mode = self.plug_selection_mode;
         let mut randomize_request = None;
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(equipment_editable, |ui| {
-                ui.label("Show plugs:");
-                for (mode, label, tooltip) in [
-                    (
-                        PlugSelectionMode::Supported,
-                        PlugSelectionMode::Supported.label(),
-                        "Only plugs explicitly supported by this socket",
-                    ),
-                    (
-                        PlugSelectionMode::SocketAndGearType,
-                        PlugSelectionMode::SocketAndGearType.label(),
-                        "All plugs discovered for this socket type on the same item type, such as Hand Cannon or Helmet. Safer, but not guaranteed compatible.",
-                    ),
-                    (
-                        PlugSelectionMode::MatchingSocketType,
-                        PlugSelectionMode::MatchingSocketType.label(),
-                        "All plugs discovered for this socket type. Unsafe.",
-                    ),
-                    (
-                        PlugSelectionMode::GearType,
-                        PlugSelectionMode::GearType.label(),
-                        "All plugs discovered for this weapon, armor, or gear type. High risk.",
-                    ),
-                    (
-                        PlugSelectionMode::AnyPlug,
-                        PlugSelectionMode::AnyPlug.label(),
-                        "Every discovered plug, regardless of compatibility. Really unsafe.",
-                    ),
-                ] {
-                    ui.selectable_value(&mut requested_mode, mode, label)
-                        .on_hover_text(tooltip);
-                }
-                ui.separator();
-                ui.checkbox(&mut self.show_dummy_items, "Dummy items")
-                    .on_hover_text(
-                        "Include display-only definitions that cannot normally be obtained",
-                    );
+                self.draw_plug_safety_choice(ui, true);
                 ui.separator();
                 randomize_request =
                     super::randomize::draw_menu(ui, equipment_editable, inventory_editable);
@@ -250,20 +214,10 @@ impl SundialApp {
                 }
             });
             ui.separator();
-            ui.checkbox(group_sockets, "Group sockets")
+            ui.checkbox(group_sockets, "Group Sockets")
                 .on_hover_text("Arrange sockets by their role, matching Panoptes loadout rows");
         });
 
-        if requested_mode != self.plug_selection_mode {
-            if requested_mode == PlugSelectionMode::AnyPlug
-                && !self.preferences.really_unsafe_warning_acknowledged
-            {
-                self.remember_plug_selection_mode_after_confirmation = false;
-                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
-            } else {
-                self.plug_selection_mode = requested_mode;
-            }
-        }
         if self.preferences.show_safety_warnings {
             super::super::draw_plug_selection_warning(ui, self.plug_selection_mode);
         }

@@ -93,7 +93,7 @@ impl PerkEditor {
         if choices.is_empty() {
             return;
         }
-        ui.strong("Action Scalars — Experimental");
+        ui.strong("Action Scalars · Experimental");
         ui.label("These values live in the perk action, not its projectile graph. Their gameplay meaning and safe range are not verified.");
         for (index, source) in choices.into_iter().enumerate() {
             ui.push_id(("action-scalar", index), |ui| {

@@ -44,7 +44,7 @@ pub(super) fn draw_item_traits(
                         ui.monospace(format_hash_hex(definition.hash));
                     } else {
                         ui.weak("Not resolved in this catalog");
-                        ui.weak("—");
+                        ui.weak("N/A");
                     }
                     ui.end_row();
                 }

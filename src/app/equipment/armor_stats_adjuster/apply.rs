@@ -118,7 +118,7 @@ pub(super) fn apply_preview(app: &mut SundialApp, state: &mut State, character_i
             app.dirty = true;
             app.set_status(
                 format!(
-                    "Adjusted {piece_count} armor piece(s): {swap_count} swap(s), {masterwork_count} masterwork(s), and {plug_count} stat plug(s); click Save to write it"
+                    "Armor adjusted. Pieces: {piece_count}, swaps: {swap_count}, masterworks: {masterwork_count}, stat plugs: {plug_count}. Click Save to write it"
                 ),
                 false,
             );

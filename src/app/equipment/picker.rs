@@ -72,7 +72,7 @@ pub(in crate::app) fn combo_u64(
     id: &str,
     value: &mut u64,
     choices: &[(u64, &str)],
-) {
+) -> bool {
     let selected = choices
         .iter()
         .find(|(candidate, _)| candidate == value)
@@ -81,10 +81,14 @@ pub(in crate::app) fn combo_u64(
         .selected_text(selected)
         .width(160.0)
         .show_ui(ui, |ui| {
+            let mut requested = false;
             for &(candidate, name) in choices {
-                ui.selectable_value(value, candidate, name);
+                requested |= ui.selectable_value(value, candidate, name).clicked();
             }
-        });
+            requested
+        })
+        .inner
+        .unwrap_or(false)
 }
 
 pub(in crate::app) fn ability_combo(
@@ -93,7 +97,7 @@ pub(in crate::app) fn ability_combo(
     value: &mut u64,
     choices: &[AbilityChoice],
     width: f32,
-) {
+) -> bool {
     let selected = choices
         .iter()
         .find(|choice| choice.entry == *value)
@@ -105,13 +109,19 @@ pub(in crate::app) fn ability_combo(
         .selected_text(selected)
         .width(width)
         .show_ui(ui, |ui| {
+            let mut requested = false;
             for choice in choices {
-                ui.selectable_value(value, choice.entry, &choice.name);
+                requested |= ui
+                    .selectable_value(value, choice.entry, &choice.name)
+                    .clicked();
             }
             if choices.is_empty() {
                 ui.label("No named choices found for this subclass");
             }
-        });
+            requested
+        })
+        .inner
+        .unwrap_or(false)
 }
 
 pub(super) fn character_field_group_layout(available_width: f32) -> (usize, [f32; 3]) {

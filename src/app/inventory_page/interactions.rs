@@ -48,7 +48,7 @@ impl SundialApp {
 
     pub(super) fn mark_inventory_changed(&mut self, status: &str) {
         self.dirty = true;
-        self.set_status(format!("{status}; click Save to write it"), false);
+        self.set_status(format!("{status}. Click Save to write it"), false);
     }
 }
 pub(super) fn bucket_picker_open_request_key(picker_key: &str) -> String {

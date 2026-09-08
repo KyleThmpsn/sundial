@@ -1,6 +1,14 @@
 //! Native socket columns operations with independent validation.
 use super::*;
 
+// The middle descriptor is an auxiliary native array (for example class 0x80803149
+// on Flash and Thunder's masterwork row). Its payload remains opaque during relocation.
+const SOCKET_ROW_ARRAY_DESCRIPTOR_OFFSETS: [usize; 3] = [
+    ITEM_ORDINARY_SOCKET_RANDOMIZED_SELECTION_PROGRAM_OFFSET,
+    0x28,
+    ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET,
+];
+
 pub(super) fn resolve_socket_column_indices(
     item_rows_by_hash: &BTreeMap<u32, Vec<usize>>,
     donor_definition: &[u8],
@@ -13,15 +21,26 @@ pub(super) fn resolve_socket_column_indices(
             "The donor has an unrecognized ordinary-socket row class",
         ));
     }
-    if !columns.is_empty() && columns.len() != socket_count {
+    if socket_count > sundial::investment::MAX_WEAPON_SOCKETS
+        || (!columns.is_empty() && columns.len() < socket_count)
+        || columns.len() > sundial::investment::MAX_WEAPON_SOCKETS
+    {
         return Err(invalid(format!(
-            "The recipe has {} socket columns but its donor has {socket_count}",
-            columns.len()
+            "The recipe has {} socket columns but its donor has {socket_count}, with at most {} ordinary sockets supported",
+            columns.len(),
+            sundial::investment::MAX_WEAPON_SOCKETS,
         )));
     }
 
-    let mut resolved_choices = vec![None; socket_count];
+    let mut resolved_choices = vec![None; socket_count.max(columns.len())];
     for (lane, column) in columns.iter().enumerate() {
+        if lane >= socket_count {
+            validate_added_socket_column(
+                lane,
+                column.as_ref().and_then(|column| column.socket_type),
+                column.as_ref().map_or(0, |column| column.choices.len()),
+            )?;
+        }
         let Some(column) = column else {
             continue;
         };
@@ -172,13 +191,16 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
 ) -> AuthoringResult<()> {
     let resource = relative_target(donor_definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
     let (count, _, rows, class) = array_at(donor_definition, resource)?;
-    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count != columns.len() {
+    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS
+        || count > columns.len()
+        || columns.len() > sundial::investment::MAX_WEAPON_SOCKETS
+    {
         return Err(invalid(
             "The donor ordinary-socket rows cannot be normalized for curated authoring",
         ));
     }
 
-    for (lane, column) in columns.iter_mut().enumerate() {
+    for (lane, column) in columns.iter_mut().take(count).enumerate() {
         let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
         let randomized_set = read_u16(
             donor_definition,
@@ -258,7 +280,7 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
 pub(super) fn weapon_default_plug_indices(data: &[u8]) -> AuthoringResult<Vec<u16>> {
     let resource = relative_target(data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
     let (count, _, rows, class) = array_at(data, resource)?;
-    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count > 12 {
+    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count > sundial::investment::MAX_WEAPON_SOCKETS {
         return Err(invalid("Weapon ordinary-socket rows are incompatible"));
     }
     (0..count)
@@ -410,37 +432,130 @@ pub(super) fn read_numeric_program(
         .collect())
 }
 
+fn validate_added_socket_column(
+    lane: usize,
+    socket_type: Option<u16>,
+    choice_count: usize,
+) -> AuthoringResult<()> {
+    if socket_type.is_none_or(|socket_type| authored_socket_choice_limit(socket_type) == 0)
+        || choice_count == 0
+    {
+        return Err(invalid(format!(
+            "Added socket lane {lane} requires an explicit active socket type and at least one plug choice"
+        )));
+    }
+    Ok(())
+}
+
+/// Appends a larger row array while keeping every nested payload at its original address.
+/// Relative pointers belong to their row's location, so copied descriptors are rebased.
+fn grow_socket_rows(
+    data: &mut Vec<u8>,
+    descriptor: usize,
+    rows: usize,
+    count: usize,
+    new_count: usize,
+) -> AuthoringResult<usize> {
+    if count == new_count {
+        return Ok(rows);
+    }
+    let source_end = rows
+        .checked_add(count * ITEM_ORDINARY_SOCKET_ROW_SIZE)
+        .ok_or_else(|| invalid("The donor socket row extent overflowed"))?;
+    let original_rows = data
+        .get(rows..source_end)
+        .ok_or_else(|| invalid("The donor socket rows are truncated"))?
+        .to_vec();
+    let mut nested_targets = Vec::new();
+    for lane in 0..count {
+        for offset in SOCKET_ROW_ARRAY_DESCRIPTOR_OFFSETS {
+            let source_descriptor = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE + offset;
+            let nested_count = read_u64(data, source_descriptor)?;
+            let relative = read_i64(data, source_descriptor + 8)?;
+            if nested_count == 0 && relative == 0 {
+                continue;
+            }
+            if relative == 0 {
+                return Err(invalid(format!(
+                    "Socket lane {lane} has an inconsistent nested array descriptor"
+                )));
+            }
+            let (_, target, _, _) = array_at(data, source_descriptor)?;
+            nested_targets.push((lane, offset + 8, target));
+        }
+    }
+
+    while data.len() % 16 != 0 {
+        data.push(0);
+    }
+    data.extend_from_slice(&[0; 8]);
+    data.extend_from_slice(&NESTED_ARRAY_TRAILER);
+    let header = data.len();
+    let new_rows = header + 16;
+    let mut segment = vec![0_u8; 16];
+    write_u64(&mut segment, 0, new_count as u64)?;
+    write_u32(&mut segment, 8, ITEM_ORDINARY_SOCKET_ROW_CLASS)?;
+    segment.extend_from_slice(&original_rows);
+    for _ in count..new_count {
+        let mut row = [0_u8; ITEM_ORDINARY_SOCKET_ROW_SIZE];
+        for offset in [
+            0,
+            ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET,
+            ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET,
+            ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET,
+        ] {
+            write_u16(&mut row, offset, u16::MAX)?;
+        }
+        // The two additional 16-bit scalar indices use the same disabled sentinel
+        // in stock empty and ordinary trait rows. Zero would select native row zero.
+        write_u32(&mut row, 4, u32::MAX)?;
+        segment.extend_from_slice(&row);
+    }
+    while (segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+        segment.push(0);
+    }
+    segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
+    data.extend_from_slice(&segment);
+    for (lane, offset, target) in nested_targets {
+        write_relative_pointer(
+            data,
+            new_rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE + offset,
+            target,
+        )?;
+    }
+    write_u64(data, descriptor, new_count as u64)?;
+    write_relative_pointer(data, descriptor + 8, header)?;
+    Ok(new_rows)
+}
+
 pub(super) fn set_weapon_socket_columns(
     data: &mut Vec<u8>,
     columns: &[Option<ResolvedSocketColumn>],
 ) -> AuthoringResult<()> {
     let resource = relative_target(data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
     let (count, _, rows, class) = array_at(data, resource)?;
-    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count != columns.len() {
+    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS
+        || count > columns.len()
+        || columns.len() > sundial::investment::MAX_WEAPON_SOCKETS
+    {
         return Err(invalid(format!(
-            "The donor has {count} ordinary sockets instead of {}",
-            columns.len()
+            "The donor has {count} ordinary sockets and cannot be authored with {} sockets, with at most {} supported",
+            columns.len(),
+            sundial::investment::MAX_WEAPON_SOCKETS,
         )));
+    }
+    for (lane, column) in columns.iter().enumerate().skip(count) {
+        validate_added_socket_column(
+            lane,
+            column.as_ref().and_then(|column| column.socket_type),
+            column.as_ref().map_or(0, |column| column.choices.len()),
+        )?;
     }
     if columns.iter().all(Option::is_none) {
         return Ok(());
     }
     let native_socket_types = (0..count)
         .map(|lane| read_u16(data, rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE))
-        .collect::<AuthoringResult<Vec<_>>>()?;
-    let preserved_rows = columns
-        .iter()
-        .enumerate()
-        .filter_map(|(lane, column)| column.is_none().then_some(lane))
-        .map(|lane| {
-            let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
-            Ok((
-                lane,
-                data.get(row..row + ITEM_ORDINARY_SOCKET_ROW_SIZE)
-                    .ok_or_else(|| invalid("The donor socket row is truncated"))?
-                    .to_vec(),
-            ))
-        })
         .collect::<AuthoringResult<Vec<_>>>()?;
     let authored_socket_types = columns
         .iter()
@@ -449,9 +564,10 @@ pub(super) fn set_weapon_socket_columns(
             column
                 .as_ref()
                 .and_then(|column| column.socket_type)
-                .unwrap_or(native_socket_types[lane])
+                .or_else(|| native_socket_types.get(lane).copied())
+                .ok_or_else(|| invalid(format!("Added socket lane {lane} has no socket type")))
         })
-        .collect::<Vec<_>>();
+        .collect::<AuthoringResult<Vec<_>>>()?;
 
     for (lane, column) in columns.iter().enumerate() {
         let Some(column) = column else {
@@ -477,6 +593,9 @@ pub(super) fn set_weapon_socket_columns(
                 "Socket lane {lane} contains disabled or duplicate plug choices"
             )));
         }
+        if lane >= count {
+            continue;
+        }
         let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
         let randomized_set = read_u16(data, row + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET)?;
         let randomized_selection = row + ITEM_ORDINARY_SOCKET_RANDOMIZED_SELECTION_PROGRAM_OFFSET;
@@ -488,6 +607,22 @@ pub(super) fn set_weapon_socket_columns(
             )));
         }
     }
+
+    let rows = grow_socket_rows(data, resource, rows, count, columns.len())?;
+    let preserved_rows = columns
+        .iter()
+        .enumerate()
+        .filter_map(|(lane, column)| column.is_none().then_some(lane))
+        .map(|lane| {
+            let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
+            Ok((
+                lane,
+                data.get(row..row + ITEM_ORDINARY_SOCKET_ROW_SIZE)
+                    .ok_or_else(|| invalid("The donor socket row is truncated"))?
+                    .to_vec(),
+            ))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
 
     for (lane, column) in columns.iter().enumerate() {
         let Some(column) = column else {
@@ -590,6 +725,7 @@ pub(super) fn validate_weapon_socket_columns(
     if class != ITEM_ORDINARY_SOCKET_ROW_CLASS
         || count != columns.len()
         || count != expected_socket_types.len()
+        || count > sundial::investment::MAX_WEAPON_SOCKETS
     {
         return Err(validation(
             "Authored weapon has an invalid ordinary-socket array",

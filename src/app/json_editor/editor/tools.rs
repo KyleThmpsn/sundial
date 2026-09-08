@@ -40,35 +40,33 @@ impl JsonEditorState {
         }
     }
 
-    pub(super) fn draw_tools(
+    pub(super) fn draw_tool_menu(
         &mut self,
         ui: &mut egui::Ui,
         text: &mut String,
         response: &mut JsonEditorResponse,
     ) {
-        let (replace, navigate, format) = ui.input_mut(|input| {
-            (
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::H),
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::G),
-                input.consume_key(
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                    egui::Key::F,
-                ),
-            )
-        });
-        ui.horizontal_wrapped(|ui| {
+        ui.vertical(|ui| {
             if ui
                 .add_enabled(self.parsed.is_some(), egui::Button::new("Format JSON"))
                 .on_hover_text("Ctrl+Shift+F")
                 .clicked()
-                || format
             {
                 self.format_document(text);
+                ui.close_menu();
             }
-            ui.toggle_value(&mut self.replace_open, "Replace")
-                .on_hover_text("Ctrl+H");
-            ui.toggle_value(&mut self.navigation_open, "Go to Path")
-                .on_hover_text("Ctrl+G");
+            if ui.button("Copy All").clicked() {
+                ui.ctx().copy_text(text.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui
+                .toggle_value(&mut self.navigation_open, "Go to Path")
+                .on_hover_text("Ctrl+G")
+                .clicked()
+            {
+                ui.close_menu();
+            }
             if ui
                 .toggle_value(&mut self.completion_open, "Add Setting")
                 .clicked()
@@ -76,6 +74,7 @@ impl JsonEditorState {
             {
                 response.load_defaults = true;
                 self.navigation_open = true;
+                ui.close_menu();
             }
             if ui
                 .add_enabled(
@@ -87,11 +86,25 @@ impl JsonEditorState {
                 let start = self.error_position.unwrap();
                 let end = start + text[start..].chars().next().map_or(0, char::len_utf8);
                 self.pending_jump = Some((start, end));
-            }
-            if ui.button("Copy All").clicked() {
-                ui.ctx().copy_text(text.clone());
+                ui.close_menu();
             }
         });
+    }
+
+    pub(super) fn draw_tools(&mut self, ui: &mut egui::Ui, text: &mut String) {
+        let (replace, navigate, format) = ui.input_mut(|input| {
+            (
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::H),
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::G),
+                input.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::F,
+                ),
+            )
+        });
+        if format {
+            self.format_document(text);
+        }
         if replace {
             self.replace_open = true;
             self.focus_replacement = true;
@@ -101,7 +114,7 @@ impl JsonEditorState {
         }
         if self.navigation_open {
             ui.horizontal(|ui| {
-                let label = ui.label("JSON pointer");
+                let label = ui.label("JSON Pointer");
                 let field = ui
                     .add(
                         egui::TextEdit::singleline(&mut self.pointer)
@@ -163,7 +176,7 @@ impl JsonEditorState {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         ui.horizontal(|ui| {
-            let label = ui.label("Missing setting");
+            let label = ui.label("Missing Setting");
             ui.text_edit_singleline(&mut self.completion_filter)
                 .labelled_by(label.id);
         });
@@ -210,12 +223,12 @@ impl JsonEditorState {
             return;
         }
         ui.horizontal_wrapped(|ui| {
-            let label = ui.label("Replace with");
+            let label = ui.label("Replace With");
             let field = ui.add(egui::TextEdit::singleline(&mut self.replacement).desired_width(220.0)).labelled_by(label.id);
             if std::mem::take(&mut self.focus_replacement) { field.request_focus(); }
             let selected = self.current_match.and_then(|index| matches.get(index)).copied();
-            let one = ui.add_enabled(selected.is_some(), egui::Button::new("Replace selected")).clicked();
-            let all = ui.add_enabled(!matches.is_empty(), egui::Button::new("Replace all"))
+            let one = ui.add_enabled(selected.is_some(), egui::Button::new("Replace Selected")).clicked();
+            let all = ui.add_enabled(!matches.is_empty(), egui::Button::new("Replace All"))
                 .on_hover_text("Literal replacement throughout the full JSON, including collapsed content. Search ignores ASCII case.").clicked();
             if one || all {
                 let ranges = if all { matches } else { std::slice::from_ref(selected.as_ref().unwrap()) };

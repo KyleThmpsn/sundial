@@ -16,6 +16,39 @@ fn load(app: &mut SundialApp, json: Value) {
 }
 
 #[test]
+fn invalid_runtime_setting_is_rejected_before_save_review() {
+    let directory = TestDirectory::new("save-review-invalid-runtime");
+    let mut app = app(directory.0.clone());
+    load(&mut app, defaults());
+    std::fs::write(&app.settings_path, &app.raw_json).unwrap();
+    let before = std::fs::read(&app.settings_path).unwrap();
+    app.preferences.review_changes_before_saving = true;
+    app.document.json_mut()["server"]["gameplay"]["bind_address"] = json!("not-an-ip");
+    app.dirty = true;
+    app.request_save(&egui::Context::default(), SaveAction::Save);
+    assert!(app.confirmation.is_none());
+    assert!(app.pending_save_action.is_none());
+    assert!(app.status_is_error);
+    assert!(app.status.contains("bind_address"), "{}", app.status);
+    assert_eq!(std::fs::read(&app.settings_path).unwrap(), before);
+    assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 1);
+}
+
+#[test]
+fn save_and_exit_closes_after_all_edits_were_reverted() {
+    let directory = TestDirectory::new("save-exit-reverted-edits");
+    let mut app = app(directory.0.clone());
+    load(&mut app, defaults());
+    app.dirty = true;
+    app.preferences.review_changes_before_saving = true;
+    app.request_save(&egui::Context::default(), SaveAction::SaveAndExit);
+    assert!(app.exit_confirmed, "{}", app.status);
+    assert!(!app.has_unsaved_changes());
+    assert!(app.confirmation.is_none());
+    assert!(!app.settings_path.exists());
+}
+
+#[test]
 fn unchanged_error_cannot_hide_a_new_invalid_setting() {
     let directory = TestDirectory::new("save-hidden-validation-error");
     let mut app = app(directory.0.clone());

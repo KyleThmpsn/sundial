@@ -25,6 +25,7 @@ mod json_workspace;
 mod preferences_page;
 mod recovery;
 mod saving;
+mod shortcuts;
 mod workspace_loading;
 
 mod startup;
@@ -135,7 +136,7 @@ enum PreferencesTab {
     #[default]
     Interface,
     Editing,
-    Sunrise,
+    Installation,
     SavingRecovery,
 }
 
@@ -143,7 +144,7 @@ impl PreferencesTab {
     const ALL: [Self; 4] = [
         Self::Interface,
         Self::Editing,
-        Self::Sunrise,
+        Self::Installation,
         Self::SavingRecovery,
     ];
 
@@ -151,7 +152,7 @@ impl PreferencesTab {
         match self {
             Self::Interface => "Interface",
             Self::Editing => "Editing",
-            Self::Sunrise => "Sunrise",
+            Self::Installation => "Installation",
             Self::SavingRecovery => "Saving & Recovery",
         }
     }
@@ -880,7 +881,7 @@ impl SundialApp {
                         };
                     if edits.json_changed || account_changed {
                         self.dirty = true;
-                        self.set_status("Game setting updated; click Save to write it", false);
+                        self.set_status("Game setting updated. Click Save to write it", false);
                     }
                 }
                 ViewMode::Progression => {
@@ -936,7 +937,7 @@ impl SundialApp {
                             ) {
                                 self.dirty = true;
                                 self.set_status(
-                                    "Progression updated; click Save to write it",
+                                    "Progression updated. Click Save to write it",
                                     false,
                                 );
                             }
@@ -950,7 +951,7 @@ impl SundialApp {
                             ) {
                                 self.dirty = true;
                                 self.set_status(
-                                    "Progression state updated; click Save to write it",
+                                    "Progression state updated. Click Save to write it",
                                     false,
                                 );
                             }
@@ -961,7 +962,7 @@ impl SundialApp {
                     if self.json_editor_window_open {
                         ui.heading("All Settings");
                         ui.label("The JSON editor is open in a separate window.");
-                        if ui.button("Dock in main window").clicked() {
+                        if ui.button("Dock in Main Window").clicked() {
                             self.set_json_editor_window_open(false);
                             self.json_editor.restore_location_next_draw();
                         }
@@ -987,20 +988,6 @@ impl SundialApp {
     }
 
     fn prepare_frame(&mut self, ctx: &egui::Context) -> Option<String> {
-        let undo_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
-        let redo_shortcut = egui::KeyboardShortcut::new(
-            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-            egui::Key::Z,
-        );
-        let redo_windows_shortcut =
-            egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Y);
-        if ctx.input_mut(|input| input.consume_shortcut(&undo_shortcut)) {
-            self.undo();
-        } else if ctx.input_mut(|input| {
-            input.consume_shortcut(&redo_shortcut) || input.consume_shortcut(&redo_windows_shortcut)
-        }) {
-            self.redo();
-        }
         #[cfg(target_os = "linux")]
         {
             let title_bar_icon = self
@@ -1056,7 +1043,7 @@ impl SundialApp {
         if inspector_changed {
             self.dirty = true;
             self.progression_ui.invalidate_document();
-            self.set_status("Progression state updated; click Save to write it", false);
+            self.set_status("Progression state updated. Click Save to write it", false);
         }
 
         self.draw_json_editor_window(ctx);
@@ -1091,6 +1078,7 @@ impl eframe::App for SundialApp {
         self.draw_reload_confirmation(ctx);
         self.draw_exit_confirmation(ctx);
 
+        self.handle_workspace_shortcuts(ctx);
         self.record_document_change(document_before_frame);
     }
 }

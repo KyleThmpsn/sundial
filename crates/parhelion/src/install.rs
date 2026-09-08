@@ -25,9 +25,9 @@ use validation::*;
 mod account;
 mod identities;
 mod replacement;
-#[cfg(test)]
-pub(crate) use replacement::test_review;
 pub use replacement::{ReplacementReview, preview_replacement};
+#[cfg(test)]
+pub(crate) use replacement::{test_review, test_review_with_sockets};
 mod uninstall;
 pub use uninstall::{
     UninstallPlan, UninstallReport, preview_uninstall, preview_uninstall_with_account_cleanup,
@@ -208,7 +208,7 @@ pub struct InstallReport {
     pub invalidated_package_header_caches: Vec<InvalidatedPackageHeaderCache>,
     /// Account-state synchronization attempted after the package transaction committed.
     pub profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
-    /// Account cleaned as part of this backed-up replacement transaction.
+    /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
 
@@ -465,6 +465,9 @@ fn install_with_replacer(
     cache_ops: CacheInvalidationOps,
     replace: PackageReplace,
 ) -> Result<InstallReport, InstallError> {
+    let _staged_run_lease =
+        crate::workflow::staging_retention::lease_for_read(&request.staged_run_directory)
+            .map_err(InstallError::validation)?;
     let validated = validate_request(request)?;
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))

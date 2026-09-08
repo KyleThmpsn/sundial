@@ -16,7 +16,7 @@ impl SundialApp {
             "Settings change".to_owned()
         } else {
             self.status
-                .split("; click Save")
+                .split(". Click Save")
                 .next()
                 .unwrap_or(&self.status)
                 .trim()
@@ -57,12 +57,18 @@ impl SundialApp {
     }
 
     pub(super) fn undo(&mut self) {
+        if self.json_editor.has_unapplied_changes() {
+            return;
+        }
         if let Some(entry) = self.undo_history.pop() {
             self.restore_history_document(entry, true);
         }
     }
 
     pub(super) fn redo(&mut self) {
+        if self.json_editor.has_unapplied_changes() {
+            return;
+        }
         if let Some(entry) = self.redo_history.pop() {
             self.restore_history_document(entry, false);
         }

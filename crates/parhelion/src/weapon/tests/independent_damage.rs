@@ -40,6 +40,157 @@ fn moving_slots_does_not_replace_a_legacy_damage_family_with_modern() {
 }
 
 #[test]
+fn adding_a_fixed_carrier_uses_the_proven_source_family() {
+    for family in [
+        WeaponDamageCarrierFamily::LegacyFixed,
+        WeaponDamageCarrierFamily::ModernFixed,
+    ] {
+        for damage_type in [
+            ModernDamageType::Arc,
+            ModernDamageType::Solar,
+            ModernDamageType::Void,
+        ] {
+            let mut definition = synthetic_weapon_definition(
+                WeaponInventorySlot::Kinetic,
+                WeaponDamageDescriptor::Empty,
+            );
+            let mut strings = synthetic_item_strings(WeaponDamageDescriptor::Empty);
+            apply_weapon_slot_and_damage_overrides(
+                &mut definition,
+                &mut strings,
+                &WeaponCloneOverrides {
+                    modern_damage_type: Some(damage_type),
+                    ..Default::default()
+                },
+                Some(&ResolvedDamageCarrierSource {
+                    family,
+                    topology_definition: None,
+                }),
+                &synthetic_sandbox_perk_definition_template(),
+                &synthetic_sandbox_perk_string_template(),
+            )
+            .unwrap();
+            assert_eq!(
+                weapon_sandbox_perks(&definition).unwrap(),
+                [family
+                    .base_sandbox_perk_index(damage_type.shared())
+                    .unwrap()]
+            );
+            assert_eq!(
+                weapon_damage_carrier(&definition).unwrap(),
+                WeaponDamageCarrier::Fixed {
+                    family,
+                    damage_type
+                }
+            );
+            assert_eq!(
+                weapon_inventory_slot(&definition).unwrap(),
+                WeaponInventorySlot::Kinetic
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_damage_conversion_keeps_legacy_modern_and_plug_carriers_distinct() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let catalog =
+        sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
+            .unwrap();
+    let cases = [
+        (
+            0x7CDE_3A31,
+            WeaponInventorySlot::Energy,
+            ModernDamageType::Solar,
+            WeaponDamageCarrierFamily::ModernFixed,
+        ),
+        (
+            0x5E73_BEF2,
+            WeaponInventorySlot::Kinetic,
+            ModernDamageType::Arc,
+            WeaponDamageCarrierFamily::LegacyFixed,
+        ),
+        (
+            0xA25B_8F8F,
+            WeaponInventorySlot::Power,
+            ModernDamageType::Void,
+            WeaponDamageCarrierFamily::ModernFixed,
+        ),
+        (
+            0xE042_B104,
+            WeaponInventorySlot::Kinetic,
+            ModernDamageType::Solar,
+            WeaponDamageCarrierFamily::PlugDriven,
+        ),
+    ];
+    let project = WeaponProjectSpec {
+        weapons: cases
+            .iter()
+            .enumerate()
+            .map(|(index, &(hash, slot, damage, _))| {
+                let donor = catalog.weapon_donor(hash).unwrap();
+                let mut spec = crate::WeaponRecipe::new_named_weapon_for_donor(
+                    format!("Carrier regression {index}"),
+                    hash,
+                    &donor.summary.name,
+                )
+                .unwrap()
+                .to_spec()
+                .unwrap();
+                spec.overrides.inventory_slot = Some(slot);
+                spec.overrides.modern_damage_type = Some(damage);
+                spec
+            })
+            .collect(),
+    };
+    let bundle = build_weapon_project_after_catalog_validation(&packages, &project).unwrap();
+    let view = stage_trial_bundle(&packages, &bundle);
+    let source = open_manager(&packages).unwrap();
+    let authored = open_manager(&view.path().join("packages")).unwrap();
+    for (plan, &(_, slot, damage, family)) in bundle.plan.weapons.iter().zip(&cases) {
+        let before = source.read_tag(plan.template_definition_tag).unwrap();
+        let after = authored.read_tag(plan.definition_tag).unwrap();
+        let old_carrier = weapon_damage_carrier(&before).unwrap();
+        let carrier = weapon_damage_carrier(&after).unwrap();
+        assert_eq!(carrier.family(), Some(family));
+        assert_eq!(
+            carrier.descriptor(),
+            WeaponDamageDescriptor::Elemental(damage)
+        );
+        if old_carrier.family().is_some() {
+            assert_eq!(carrier.family(), old_carrier.family());
+        }
+        assert_eq!(weapon_inventory_slot(&after).unwrap(), slot);
+        assert_eq!(weapon_equipment_slot(&after).unwrap(), slot);
+        let non_damage_perks = |data: &[u8]| {
+            weapon_sandbox_perks(data)
+                .unwrap()
+                .into_iter()
+                .filter(|perk| fixed_damage_perk(*perk).is_none())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(non_damage_perks(&after), non_damage_perks(&before));
+        let mut expected_plugs = weapon_default_plug_indices(&before).unwrap();
+        if let WeaponDamageCarrier::PlugDriven { lane, .. } = old_carrier {
+            expected_plugs[lane] = family.default_plug_item_index(damage.shared()).unwrap();
+        }
+        assert_eq!(weapon_default_plug_indices(&after).unwrap(), expected_plugs);
+        for (old_lane, new_lane) in weapon_damage_socket_lanes(&before)
+            .unwrap()
+            .iter()
+            .zip(weapon_damage_socket_lanes(&after).unwrap())
+        {
+            assert_eq!(old_lane.0, new_lane.0);
+        }
+        assert_eq!(
+            weapon_damage_socket_lanes(&before).unwrap().len(),
+            weapon_damage_socket_lanes(&after).unwrap().len()
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES; optionally exports trial recipes to PARHELION_DAMAGE_TRIAL_RECIPES"]
 fn real_independent_damage_preserves_placement_appearance_and_ammo() {
     use crate::recipe::RecipeDamageType;

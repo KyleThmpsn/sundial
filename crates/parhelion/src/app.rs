@@ -350,6 +350,7 @@ struct PackageAuthoringApp {
     recipe_requires_initial_save: bool,
     library_open: bool,
     library_query: String,
+    restore_defaults_preview: Option<crate::recipe_library::RestoreDefaults>,
     invalid_weapon_name: Option<(String, String)>,
     recipe_search_focus_pending: bool,
     build_selection_error: Option<String>,
@@ -364,6 +365,7 @@ struct PackageAuthoringApp {
     ignore_installed: bool,
     build_receiver: Option<Receiver<BuildWorkerEvent>>,
     build_progress: Option<TimedBuildProgress>,
+    build_started: Option<Instant>,
     latest_build: Option<Result<BuildReport, String>>,
     build_status_open: bool,
     backup_root: String,
@@ -396,6 +398,7 @@ struct PackageAuthoringApp {
     runtime_component_queries: BTreeMap<u32, String>,
     runtime_binding_filter: String,
     runtime_bindings_open: bool,
+    runtime_donors: runtime_donors::Browser,
     runtime_graph: Option<(RuntimeGraphKey, Arc<WeaponRuntimeGraph>)>,
     runtime_graph_error: Option<(RuntimeGraphKey, String)>,
     runtime_graph_job: Option<jobs::RuntimeGraphJob>,
@@ -452,6 +455,7 @@ impl Default for PackageAuthoringApp {
             recipe_requires_initial_save: false,
             library_open: false,
             library_query: String::new(),
+            restore_defaults_preview: None,
             invalid_weapon_name: None,
             recipe_search_focus_pending: false,
             build_selection_error: None,
@@ -466,6 +470,7 @@ impl Default for PackageAuthoringApp {
             ignore_installed: true,
             build_receiver: None,
             build_progress: None,
+            build_started: None,
             latest_build: None,
             build_status_open: false,
             backup_root: default_backup_root().display().to_string(),
@@ -498,6 +503,7 @@ impl Default for PackageAuthoringApp {
             runtime_component_queries: BTreeMap::new(),
             runtime_binding_filter: String::new(),
             runtime_bindings_open: false,
+            runtime_donors: runtime_donors::Browser::default(),
             runtime_graph: None,
             runtime_graph_error: None,
             runtime_graph_job: None,
@@ -539,6 +545,7 @@ impl PackageAuthoringApp {
         self.poll_build();
         self.poll_install();
         self.poll_uninstall();
+        self.poll_runtime_donors();
         if self.uninstall.open {
             egui::CentralPanel::default().show(ctx, |_| {});
             self.draw_uninstall_window(ctx);
@@ -608,6 +615,7 @@ impl PackageAuthoringApp {
             self.draw_custom_perks_window(ctx);
         }
         self.draw_runtime_bindings_window(ctx);
+        self.draw_runtime_donor_browser(ctx);
         self.draw_icon_editor(ctx);
         self.draw_preferences_window(ctx);
         self.draw_activity_log_window(ctx);
@@ -618,6 +626,7 @@ impl PackageAuthoringApp {
             || self.install_receiver.is_some()
             || self.catalog_receiver.is_some()
             || self.runtime_graph_job.is_some()
+            || self.runtime_donors.busy()
             || self
                 .perk_editor
                 .as_ref()
@@ -663,6 +672,7 @@ impl PackageAuthoringApp {
             || self.install_receiver.is_some()
             || self.catalog_is_loading()
             || self.runtime_graph_job.is_some()
+            || self.runtime_donors.busy()
             || self
                 .perk_editor
                 .as_ref()
@@ -678,6 +688,7 @@ impl PackageAuthoringApp {
     }
 
     fn drop_loaded_catalog(&mut self) {
+        self.runtime_donors.invalidate();
         self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
@@ -697,6 +708,7 @@ impl PackageAuthoringApp {
     }
 
     fn clear_dependent_picker_queries(&mut self) {
+        self.runtime_donors.invalidate();
         self.invalid_weapon_name = None;
         self.clear_presentation_picker_queries();
         self.private_perk_socket = None;
@@ -793,6 +805,7 @@ impl PackageAuthoringApp {
     fn set_show_experimental_options(&mut self, show: bool) {
         if !show {
             self.runtime_bindings_open = false;
+            self.runtime_donors.close();
         }
         if self.show_experimental_options != show {
             self.show_experimental_options = show;
@@ -836,19 +849,20 @@ impl PackageAuthoringApp {
         if !self.show_experimental_options {
             let hidden_features = technical_recipe_features(&self.recipe);
             if !hidden_features.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!(
-                            "This recipe also uses technical overrides: {}. They remain active when hidden.",
-                            hidden_features.join(", ")
-                        ),
-                    );
-                    if ui.small_button("Show technical controls").clicked() {
+                egui::CollapsingHeader::new(format!(
+                    "Additional Overrides ({})",
+                    hidden_features.len()
+                ))
+                .id_salt("hidden_recipe_overrides")
+                .show(ui, |ui| {
+                    ui.label("These saved settings are included in the build.");
+                    for feature in hidden_features {
+                        ui.label(feature);
+                    }
+                    if ui.button("Show Technical Controls").clicked() {
                         self.set_show_experimental_options(true);
                     }
                 });
-                ui.add_space(6.0);
             }
         }
         match self.workbench_page {
@@ -1060,8 +1074,15 @@ impl PackageAuthoringApp {
             if ui
                 .add_enabled(
                     !running,
-                    egui::Button::new(format!("{included_count} weapons selected for build…"))
-                        .min_size([0.0, 30.0].into()),
+                    egui::Button::new(format!(
+                        "{included_count} {} selected for build…",
+                        if included_count == 1 {
+                            "weapon"
+                        } else {
+                            "weapons"
+                        }
+                    ))
+                    .min_size([0.0, ui.spacing().interact_size.y].into()),
                 )
                 .clicked()
             {
@@ -1072,7 +1093,7 @@ impl PackageAuthoringApp {
                     !running && project_ready && self.build_selection_draft.is_none(),
                     egui::Button::new(egui::RichText::new("Build & Stage").strong())
                         .fill(primary_fill)
-                        .min_size([160.0, 30.0].into()),
+                        .min_size([160.0, ui.spacing().interact_size.y].into()),
                 )
                 .clicked()
             {
@@ -1093,9 +1114,7 @@ impl PackageAuthoringApp {
                 });
             });
         } else if self.recipe_dirty {
-            ui.label(
-                "The build includes this recipe's unsaved changes; its saved file stays unchanged.",
-            );
+            ui.label("Build & Stage saves your current edits before compiling.");
         }
         if included_count == 0 {
             ui.colored_label(
@@ -1136,7 +1155,7 @@ impl PackageAuthoringApp {
             .id(egui::Id::new("parhelion_build_status"))
             .collapsible(false)
             .resizable(true)
-            .default_width(760.0)
+            .default_width(960.0)
             .default_height(460.0)
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1154,6 +1173,7 @@ impl PackageAuthoringApp {
                     BuildDialogStep::Build => {}
                 }
                 if building {
+                    ctx.request_repaint_after(Duration::from_millis(100));
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.heading(
@@ -1171,8 +1191,7 @@ impl PackageAuthoringApp {
                             progress.total
                         );
                         ui.add(
-                            egui::ProgressBar::new(progress.fraction())
-                                .show_percentage()
+                            sundial::investment::progress_bar(progress.fraction())
                                 .text(progress_text),
                         );
                         ui.horizontal(|ui| {
@@ -1183,14 +1202,14 @@ impl PackageAuthoringApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.label(format_elapsed(progress.elapsed));
+                                    ui.label(format!("Elapsed {}", format_elapsed(self.build_elapsed(Instant::now()))));
                                 },
                             );
                         });
                     }
                     ui.add_space(6.0);
                     ui.label(format!(
-                        "Building the core package set plus any runtime packages selected by {} included weapon(s). Installed packages remain untouched until Install is chosen.",
+                        "Weapons selected: {}. Packages will be staged for review before installation.",
                         self.enabled_recipe_paths.len()
                     ));
                 } else {
@@ -1205,7 +1224,7 @@ impl PackageAuthoringApp {
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("parhelion-build-status-report")
-                        .max_height(360.0)
+                        .max_height((ui.available_height() - 70.0).max(120.0))
                         .auto_shrink([false, false])
                         .show(ui, |ui| match self.latest_build.as_ref() {
                             Some(Ok(report)) => draw_build_report(ui, report),
@@ -1226,17 +1245,16 @@ impl PackageAuthoringApp {
                 ui.separator();
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    if building {
-                        ui.label("You can close this window; the build will continue.");
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
+                        if ui.button("Close")
+                            .on_hover_text("Closing this window does not stop the build.")
+                            .clicked() {
                             close_requested = true;
                         }
                         let mut install_button = egui::Button::new(
                             egui::RichText::new("Review Installation").strong(),
                         )
-                        .min_size([180.0, 30.0].into());
+                        .min_size([180.0, ui.spacing().interact_size.y].into());
                         if can_install {
                             install_button = install_button.fill(ui.visuals().selection.bg_fill);
                         }
@@ -1278,90 +1296,56 @@ impl PackageAuthoringApp {
             self.build_dialog_step = BuildDialogStep::Build;
             return;
         };
-        let staged_run_directory = build.run_directory.clone();
-        let target_packages_directory = self.packages.display().to_string();
-        let mut install_requested = false;
         ui.heading("Review Installation");
-        egui::ScrollArea::vertical().id_salt("install-review-contents")
-            .max_height(360.0).show(ui, |ui| {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    egui::RichText::new("Destiny 2 must be closed before installation.").strong(),
-                );
-                ui.label(
-                    "Parhelion will verify this staged build, back up affected authored packages, then transactionally install the recipe-selected package set.",
-                );
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "This replaces the installed custom weapon set. Include every weapon you want to keep. Review any account removals below before confirming. Other accounts sharing these packages are not changed.",
-                );
-                if self.replacement_receiver.is_some() {
-                    ui.horizontal(|ui| { ui.spinner(); ui.label("Checking saved weapons and custom perks…"); });
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
-                }
-                match &self.replacement_review {
-                    Some(Ok(review)) if review.changes_account() => {
-                        if let Some(cleanup) = review.account_cleanup() {
-                            ui.strong("Remove Items No Longer In This Build?");
-                            ui.label(format!("This will remove {} saved weapon/item instances, clear {} custom plug references, {} Collections unlocks, and {} reward rules from {}.",
-                                cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs,
-                                cleanup.cleared_unlocks, cleanup.removed_reward_rules, cleanup.settings_path.display()));
-                            for (hash, count) in &cleanup.removed_items {
-                                let name = self.catalog.as_ref().map(|catalog| catalog.plug_label(*hash, false));
-                                ui.label(format!("{} × {count}", name.unwrap_or_else(|| format!("Item 0x{hash:08X}"))));
-                            }
-                            ui.label("Includes equipped items and every character in this account; removed equipment leaves empty slots. Remaining weapons and unrelated progress are kept. The account and packages are backed up together; this backup is kept out of automatic pruning.");
-                        }
-                    }
-                    Some(Ok(_)) => { ui.label("No saved items or custom perk references need removal."); }
-                    Some(Err(error)) => { ui.colored_label(ui.visuals().error_fg_color, error); }
-                    None => {}
-                }
+        egui::ScrollArea::vertical()
+            .id_salt("install-review-contents")
+            .max_height((ui.available_height() - 56.0).max(120.0))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.strong(format!("Install {} weapons from {} verified packages", build.weapons.len(), build.artifacts.len()));
+                ui.label("This replaces your installed custom weapon set. Include every weapon you want to keep.");
+                ui.colored_label(ui.visuals().warn_fg_color, "Close Destiny 2 before installing.");
                 ui.add_space(8.0);
-
-                egui::Grid::new("install_confirmation_paths")
-                    .num_columns(2)
-                    .spacing([14.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.strong("Staged run");
-                        ui.monospace(staged_run_directory.display().to_string());
-                        ui.end_row();
-                        ui.strong("Target packages");
-                        ui.monospace(&target_packages_directory);
-                        ui.end_row();
-                        ui.strong("Backup root");
-                        ui.monospace(self.backup_root.trim());
-                        ui.end_row();
-                        ui.strong("Backup retention");
-                        ui.label(if self.limit_package_backups {
-                            format!("Keep newest {}", self.package_backup_retention)
-                        } else {
-                            "Unlimited".to_owned()
-                        });
-                        ui.end_row();
-                        ui.strong("Recipe snapshots");
-                        ui.label(if self.backup_recipe_snapshots {
-                            "Included"
-                        } else {
-                            "Not included"
-                        });
-                        ui.end_row();
+                self.draw_account_changes(ui);
+                ui.add_space(8.0);
+                egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
+                    reports::path_row(ui, "Staged Run", &build.run_directory);
+                    reports::path_row(ui, "Target Packages", &self.packages);
+                    reports::path_row(ui, "Backup Folder", Path::new(self.backup_root.trim()));
+                    ui.label(if self.limit_package_backups {
+                        format!("Automatic package backups: keep newest {}", self.package_backup_retention)
+                    } else {
+                        "Automatic package backups: unlimited".to_owned()
                     });
-
-                ui.add_space(8.0);
-                ui.strong(format!("Files to install ({})", build.artifacts.len()));
-                for artifact in &build.artifacts {
-                    ui.monospace(&artifact.file_name);
-                }
-
+                    ui.label(if self.backup_recipe_snapshots { "Recipe snapshots included." } else { "Recipe snapshots not included." });
+                    ui.label("Other accounts sharing these packages are not changed.");
+                    ui.add_space(5.0);
+                    ui.strong(format!("Files to Install ({})", build.artifacts.len()));
+                    for artifact in &build.artifacts { ui.monospace(&artifact.file_name); }
+                });
             });
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                self.build_dialog_step = BuildDialogStep::Build;
-            }
-            if ui
+        let mut install_requested = false;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = if self
+                .replacement_review
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .is_some_and(|r| r.removes_account_data())
+            {
+                "Back Up, Remove & Install"
+            } else if self
+                .replacement_review
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .is_some_and(|r| r.changes_account())
+            {
+                "Back Up, Update & Install"
+            } else {
+                "Back Up & Install"
+            };
+            install_requested = ui
                 .add_enabled(
                     self.install_receiver.is_none()
                         && matches!(self.replacement_review, Some(Ok(_)))
@@ -1369,58 +1353,140 @@ impl PackageAuthoringApp {
                         && self.catalog_receiver.is_none()
                         && self.catalog_worker.is_none()
                         && !self.catalog_reload_pending,
-                    egui::Button::new(
-                        if self
-                            .replacement_review
-                            .as_ref()
-                            .and_then(|r| r.as_ref().ok())
-                            .is_some_and(|r| r.changes_account())
-                        {
-                            "Back Up, Remove & Install".to_owned()
-                        } else {
-                            format!("Install {} packages", build.artifacts.len())
-                        },
-                    )
-                    .min_size([160.0, 30.0].into()),
+                    egui::Button::new(label).fill(ui.visuals().selection.bg_fill),
                 )
-                .clicked()
-            {
-                install_requested = true;
+                .clicked();
+            if ui.button("Cancel").clicked() {
+                self.build_dialog_step = BuildDialogStep::Build;
             }
         });
-
         if install_requested {
             self.start_install();
         }
+    }
+
+    fn draw_account_changes(&self, ui: &mut egui::Ui) {
+        if self.replacement_receiver.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Checking saved weapons and custom perks…");
+            });
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+            return;
+        }
+        let review = match &self.replacement_review {
+            Some(Ok(review)) => review,
+            Some(Err(error)) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                return;
+            }
+            None => return,
+        };
+        if !review.changes_account() {
+            ui.label("No saved items, socket selections, or unlocks need changes. A package backup will be saved before installation.");
+            return;
+        }
+        let Some(cleanup) = review.account_cleanup() else {
+            return;
+        };
+        ui.strong("Account Changes");
+        let count = cleanup.removed_items.values().sum::<usize>();
+        if count > 0 {
+            ui.label(format!(
+                "Remove {count} saved {}:",
+                if count == 1 { "item" } else { "items" }
+            ));
+            for (hash, count) in &cleanup.removed_items {
+                let name = self
+                    .catalog
+                    .as_ref()
+                    .map(|catalog| catalog.plug_label(*hash, false));
+                ui.label(format!(
+                    "{} × {count}",
+                    name.unwrap_or_else(|| format!("Item 0x{hash:08X}"))
+                ));
+            }
+            ui.label("Applies to every character, including equipped items. Removed equipment leaves empty slots.");
+        }
+        for (count, label) in [
+            (cleanup.cleared_plugs, "custom plug references"),
+            (cleanup.cleared_unlocks, "Collections unlocks"),
+            (cleanup.removed_reward_rules, "reward rules"),
+        ] {
+            if count > 0 {
+                ui.label(format!("Clear {count} {label}."));
+            }
+        }
+        for change in review.socket_changes() {
+            let Some(count) = cleanup.resized_items.get(&change.definition_hash) else {
+                continue;
+            };
+            let name = self
+                .catalog
+                .as_ref()
+                .map(|catalog| catalog.plug_label(change.definition_hash, false))
+                .unwrap_or_else(|| format!("Item 0x{:08X}", change.definition_hash));
+            ui.label(format!(
+                "Update {count} saved {name} socket lists from {} to {} sockets.",
+                change.previous_socket_count,
+                change.default_plugs.len(),
+            ));
+            ui.label(if change.default_plugs.len() > change.previous_socket_count {
+                "Existing socket selections are kept. Added sockets use the new definition's defaults."
+            } else {
+                "Selections in the remaining sockets are kept. Selections in removed sockets are deleted."
+            });
+        }
+        reports::path_row(ui, "Account", &cleanup.settings_path);
+        ui.label("Remaining weapons and unrelated progress are kept. The account and package backup is protected from automatic cleanup.");
     }
 
     fn draw_install_status(&mut self, ui: &mut egui::Ui) {
         if self.install_receiver.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.heading("Installing packages");
+                ui.heading("Installing Packages");
             });
             ui.label("Verifying staged files, creating a backup, and installing the selected package set. Keep Destiny 2 closed.");
-            ui.label("You can close this window; installation will continue.");
+            ui.label("You can close this window. Installation will continue.");
             return;
         }
+        let mut open_backup = None;
         egui::ScrollArea::vertical()
             .id_salt("install-result-contents")
-            .max_height(360.0)
+            .max_height((ui.available_height() - 40.0).max(120.0))
+            .auto_shrink([false, false])
             .show(ui, |ui| match &self.latest_install {
-                Some(Ok(report)) => draw_install_report(ui, report),
+                Some(Ok(report)) => {
+                    if draw_install_report(ui, report) {
+                        open_backup = Some(report.backup_directory.clone());
+                    }
+                }
                 Some(Err(error)) => {
-                    ui.heading("Installation blocked");
+                    ui.heading("Installation Blocked");
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 None => {
                     ui.label("No installation result is available.");
                 }
             });
-        ui.separator();
-        if ui.button("Back to Build").clicked() {
-            self.build_dialog_step = BuildDialogStep::Build;
+        if let Some(path) = open_backup
+            && let Err(error) = open_directory(&path)
+        {
+            self.log.push(LogEntry::error(error));
         }
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Close").clicked() {
+                self.build_status_open = false;
+            }
+            if matches!(self.latest_install, Some(Err(_)))
+                && ui.button("Review Installation").clicked()
+            {
+                self.start_replacement_review();
+                self.build_dialog_step = BuildDialogStep::ReviewInstall;
+            }
+        });
     }
 
     fn draw_action_error(&mut self, ui: &mut egui::Ui) {
@@ -1574,47 +1640,97 @@ const fn is_internal_weapon_stat(definition_index: u16) -> bool {
     matches!(definition_index, 0 | 1 | 13)
 }
 
-fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<&'static str> {
+fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
     let overrides = &recipe.overrides;
-    let has_native_inventory_fields = overrides.max_stack_size.is_some()
-        || overrides.socket_entry_list_index.is_some()
-        || overrides.plug_category_hash.is_some()
-        || overrides.roll_set_index.is_some()
-        || overrides.linked_plug_index.is_some()
-        || overrides.power_cap_groups.is_some();
-    let has_native_socket_fields = overrides.socket_columns.iter().flatten().any(|column| {
-        column.socket_type.is_some()
-            || !column.choice_weight_bits.is_empty()
-            || !column.choice_conditions.is_empty()
-            || column.reusable_plug_set_index.is_some()
-            || column.randomized_plug_set_index.is_some()
-            || !column.randomized_selection_program.is_empty()
-    });
-
     let mut features = Vec::new();
-    if !recipe.runtime_component_donors.is_empty() {
-        features.push("runtime component sources");
+    for (active, label) in [
+        (
+            !recipe.runtime_component_donors.is_empty(),
+            "Advanced: runtime component donors",
+        ),
+        (
+            !overrides.runtime_values.is_empty(),
+            "Advanced: edited runtime values",
+        ),
+        (
+            overrides.base_sandbox_perks.is_some(),
+            "Advanced: base weapon perks",
+        ),
+        (overrides.trait_indices.is_some(), "Advanced: trait indices"),
+        (
+            !overrides.runtime_resource_patches.is_empty(),
+            "Advanced: runtime resource patches",
+        ),
+        (
+            !overrides.raw_payload_patches.is_empty(),
+            "Advanced: raw payload patches",
+        ),
+        (
+            overrides.max_stack_size.is_some(),
+            "Advanced: maximum stack size",
+        ),
+        (
+            overrides.socket_entry_list_index.is_some(),
+            "Advanced: socket entry list",
+        ),
+        (
+            overrides.plug_category_hash.is_some(),
+            "Advanced: plug category",
+        ),
+        (overrides.roll_set_index.is_some(), "Advanced: roll set"),
+        (
+            overrides.linked_plug_index.is_some(),
+            "Advanced: linked plug",
+        ),
+        (
+            overrides.power_cap_groups.is_some(),
+            "Advanced: Power cap groups",
+        ),
+        (
+            overrides.art_arrangements.is_some(),
+            "Appearance: art arrangement rows",
+        ),
+        (
+            overrides.render_dye_rows.is_some(),
+            "Appearance: render dye rows",
+        ),
+    ] {
+        if active {
+            features.push(label.to_owned());
+        }
     }
-    if !overrides.runtime_values.is_empty() {
-        features.push("runtime values");
-    }
-    if overrides.base_sandbox_perks.is_some() || overrides.trait_indices.is_some() {
-        features.push("base-item perks or traits");
-    }
-    if !overrides.runtime_resource_patches.is_empty() {
-        features.push("runtime resource patches");
-    }
-    if !overrides.raw_payload_patches.is_empty() {
-        features.push("raw payload patches");
-    }
-    if has_native_inventory_fields {
-        features.push("native inventory fields");
-    }
-    if overrides.art_arrangements.is_some() || overrides.render_dye_rows.is_some() {
-        features.push("direct art or dye rows");
-    }
-    if has_native_socket_fields {
-        features.push("native socket fields");
+    for (index, column) in overrides
+        .socket_columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| column.as_ref().map(|column| (index, column)))
+    {
+        // Socket role is already editable in the ordinary Weapon tab.
+        let fields = [
+            (!column.choice_weight_bits.is_empty(), "choice weights"),
+            (
+                !column.choice_conditions.is_empty(),
+                "choice availability conditions",
+            ),
+            (
+                column.reusable_plug_set_index.is_some(),
+                "reusable plug set",
+            ),
+            (
+                column.randomized_plug_set_index.is_some(),
+                "randomized plug set",
+            ),
+            (
+                !column.randomized_selection_program.is_empty(),
+                "random choice count program",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(active, label)| active.then_some(label))
+        .collect::<Vec<_>>();
+        if !fields.is_empty() {
+            features.push(format!("Socket {}: {}. Edit under Weapon → Perks & Sockets → Socket Options → Show Native Rows.", index + 1, fields.join(", ")));
+        }
     }
     features
 }
@@ -1710,6 +1826,7 @@ struct SocketTechnicalFields<'a> {
     recipe: &'a mut WeaponRecipe,
     donor: &'a WeaponDonor,
     socket_index: usize,
+    is_added: bool,
     inherited: &'a [u32],
     page: &'a mut usize,
     queries: &'a mut BTreeMap<usize, String>,
@@ -1784,9 +1901,9 @@ fn runtime_field_tooltip(field: &WeaponRuntimeField) -> String {
         .join(" / ");
     let generated_kind = field
         .generated_kind
-        .map_or_else(|| "—".to_owned(), |kind| format!("0x{kind:02X}"));
+        .map_or_else(|| "N/A".to_owned(), |kind| format!("0x{kind:02X}"));
     format!(
-        "{}\nSource: {source}\nValue: {}\nBinding: 0x{:08X}, resource {}\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
+        "{}\nSource: {source}\nValue Type: {}\nBinding: 0x{:08X}, resource index {} (zero-based)\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
         field.name,
         runtime_value_kind_label(&field.kind),
         field.locator.binding_hash,
@@ -1967,6 +2084,7 @@ mod donor_view;
 mod editor_view;
 mod jobs;
 mod preferences_view;
+mod runtime_donors;
 mod runtime_view;
 mod socket_editor;
 use custom_perks::*;

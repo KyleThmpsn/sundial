@@ -145,13 +145,24 @@ impl SundialApp {
             .map_or_else(String::new, settings_save_note);
         let mut backups = Vec::new();
         if let Some(result) = &json_result {
-            backups.push(format!("settings.json backup: {}", result.backup.display()));
+            backups.push(format!(
+                "Backup: {}",
+                result
+                    .backup
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ));
         }
         #[cfg(feature = "sqlite-account")]
         if let Some(receipt) = &sqlite_receipt {
             backups.push(format!(
                 "state.sqlite3 backup: {}",
-                receipt.backup.display()
+                receipt
+                    .backup
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             ));
         }
         let backup_note = if backups.is_empty() {
@@ -258,9 +269,21 @@ impl SundialApp {
         if !has_save_work(document_changed, false) {
             self.dirty = false;
             self.set_status("There are no changes to save", false);
+            if action == SaveAction::SaveAndExit {
+                self.perform_save_action(ctx, action);
+            }
             return;
         }
         if self.preferences.review_changes_before_saving && document_changed {
+            // Validate the same repairable settings that the save path accepts,
+            // without changing the document or writing backups during review.
+            let mut candidate = self.document.clone();
+            let validation = repair_known_ability_pairs(&mut candidate)
+                .and_then(|_| self.validation_warning_for_write(&candidate));
+            if let Err(error) = validation {
+                self.set_status(format!("Not saved: {error}"), true);
+                return;
+            }
             self.pending_save_action = Some(action);
             self.confirmation = Some(ConfirmationDialog::ReviewSave);
         } else {

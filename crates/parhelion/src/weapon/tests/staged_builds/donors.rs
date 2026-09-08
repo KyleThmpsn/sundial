@@ -212,17 +212,24 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
     )
     .expect("stock Solar item-string template should load");
     assert_eq!(
-        item_string_sandbox_perk_segment(&solar_string_exemplar)
+        &item_string_sandbox_perk_segment(&solar_string_exemplar)
             .unwrap()
-            .unwrap(),
-        sandbox_string_template
+            .unwrap()[8..],
+        &sandbox_string_template[8..],
+        "the array marker, header and row must match independently of preceding context"
     );
     assert_eq!(item_string_sandbox_perk_count(&donor_strings).unwrap(), 0);
     assert_eq!(
         item_string_sandbox_perk_count(&authored_strings).unwrap(),
         1
     );
-    assert_eq!(authored_strings.len(), donor_strings.len() + 0x40);
+    let companion_start = donor_strings.len().next_multiple_of(8);
+    assert_eq!(authored_strings.len(), companion_start + 0x40);
+    assert!(
+        authored_strings[donor_strings.len()..companion_start]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
     assert_eq!(
         read_u64(&authored_strings, 0).unwrap() as usize,
         authored_strings.len()
@@ -239,10 +246,10 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
         "Second Sun must not retain Mountaintop's Kinetic client tuple"
     );
     assert_eq!(
-        item_string_sandbox_perk_segment(&authored_strings)
+        &item_string_sandbox_perk_segment(&authored_strings)
             .unwrap()
-            .unwrap(),
-        sandbox_string_template
+            .unwrap()[8..],
+        &sandbox_string_template[8..]
     );
     assert_eq!(
         relative_target(

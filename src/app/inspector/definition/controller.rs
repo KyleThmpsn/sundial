@@ -931,7 +931,7 @@ fn append_report_related_records(report: &mut String, content: &HashInspectorCon
             record
                 .state
                 .as_ref()
-                .map_or("—", |state| state.text.as_str()),
+                .map_or("N/A", |state| state.text.as_str()),
         ));
         report.push_str(" |\n");
     }

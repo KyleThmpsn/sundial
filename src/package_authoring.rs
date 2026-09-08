@@ -171,13 +171,13 @@ pub mod weapon_runtime {
     pub use crate::weapon_runtime::{
         ResolvedWeaponRuntimeField, WeaponRuntimeBinding, WeaponRuntimeEntitySource,
         WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
-        WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement, WeaponRuntimeRoot,
-        WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
-        WeaponRuntimeValueOverride, encode_weapon_runtime_value,
+        WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement,
+        WeaponRuntimeResourceShape, WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue,
+        WeaponRuntimeValueKind, WeaponRuntimeValueOverride, encode_weapon_runtime_value,
         load_weapon_runtime_entity_at_pattern_index_with_manager,
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph,
         load_weapon_runtime_graph_for_entity, load_weapon_runtime_graph_with_manager,
-        resolve_weapon_runtime_field,
+        load_weapon_runtime_resource_shape, resolve_weapon_runtime_field,
     };
 }
 

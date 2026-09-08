@@ -1,5 +1,7 @@
 use super::*;
 
+mod expansion;
+
 #[test]
 fn first_appended_socket_and_condition_have_native_relocation_markers() {
     let mut data = synthetic_socket_definition();

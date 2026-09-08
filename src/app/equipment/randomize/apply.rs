@@ -14,13 +14,11 @@ pub(super) fn apply_candidate(
     if !account::can_mutate_equipment(document) {
         return Err("Randomizing requires a writable equipment schema".to_owned());
     }
-    if candidate.plugs.len() > inventory::MAX_ITEM_PLUGS {
-        return Err("The generated item contains too many authored plugs".to_owned());
-    }
     let item = catalog
         .item(candidate.item_hash)
         .filter(|item| item_can_be_authored(item))
         .ok_or("The generated base item is no longer available")?;
+    validate_candidate_plugs(catalog, item, candidate)?;
     let (slot, slot_label) = slot_for_bucket(item.bucket_hash)
         .ok_or("The generated item does not belong to a weapon or armor slot")?;
     let class_type = character_class(document, character_index);
@@ -83,6 +81,7 @@ pub(super) fn apply_candidate(
     }
     settings::validate_workspace_document(&updated)
         .map_err(|error| format!("The generated item did not pass validation: {error}"))?;
+    crate::app::account_validation::validate_new_bucket_overflows(&updated, document, catalog)?;
     *document = updated;
     let result = if previous_item_preserved {
         format!(
@@ -230,12 +229,27 @@ pub(super) fn character_bucket_add_blocker(
     inventory: &[inventory::InventoryItemSnapshot],
     candidate: &InventoryMetadata,
 ) -> Option<String> {
+    match character_bucket_available_rows(document, catalog, character_index, inventory, candidate)
+    {
+        Ok(0) => Some(format!("{} is full", candidate.bucket_label())),
+        Ok(_) => None,
+        Err(error) => Some(error),
+    }
+}
+
+pub(super) fn character_bucket_available_rows(
+    document: &account::WorkspaceDocument,
+    catalog: &Catalog,
+    character_index: usize,
+    inventory: &[inventory::InventoryItemSnapshot],
+    candidate: &InventoryMetadata,
+) -> Result<usize, String> {
     let Some(capacity) = candidate.authored_row_capacity().map(usize::from) else {
-        return Some("This inventory bucket has no safe capacity".to_owned());
+        return Err("This inventory bucket has no safe capacity".to_owned());
     };
     let equipment = match account::equipped_item_snapshots(document, character_index) {
         Ok(equipment) => equipment,
-        Err(_) => return Some("Character equipment is unavailable".to_owned()),
+        Err(_) => return Err("Character equipment is unavailable".to_owned()),
     };
     let mut occupied = 0usize;
     let mut unresolved = 0usize;
@@ -259,11 +273,11 @@ pub(super) fn character_bucket_add_blocker(
 
     let bucket_label = candidate.bucket_label();
     if occupied >= capacity {
-        Some(format!("{bucket_label} is full"))
+        Ok(0)
     } else if bucket_has_room_for_add(occupied, unresolved, capacity) {
-        None
+        Ok(capacity - occupied - unresolved)
     } else {
-        Some(format!(
+        Err(format!(
             "Cannot verify room in {bucket_label} because existing inventory placement is unresolved"
         ))
     }
@@ -287,13 +301,11 @@ pub(super) fn add_candidate_to_inventory(
     {
         return Err(reason);
     }
-    if candidate.plugs.len() > inventory::MAX_ITEM_PLUGS {
-        return Err("The generated item contains too many authored plugs".to_owned());
-    }
     let item = catalog
         .item(candidate.item_hash)
         .filter(|item| item_can_be_authored(item))
         .ok_or("The generated base item is no longer available")?;
+    validate_candidate_plugs(catalog, item, candidate)?;
     let class_type = character_class(document, character_index);
     if class_type > 2 {
         return Err(format!(
@@ -342,6 +354,32 @@ pub(super) fn add_candidate_to_inventory(
     Ok(format!("Added {} to character inventory", item.name))
 }
 
+fn validate_candidate_plugs(
+    catalog: &Catalog,
+    item: &ItemDef,
+    candidate: &Candidate,
+) -> Result<(), String> {
+    let expected = item.default_plugs.len();
+    let actual = candidate.plugs.len();
+    if actual != expected {
+        return Err(format!(
+            "The generated item has {actual} authored socket entries but {} requires {expected}. Choose its base item again to restore its sockets",
+            item.name,
+        ));
+    }
+    for (index, hash) in candidate.plugs.iter().enumerate() {
+        if let Some(hash) = hash
+            && !catalog.contains_plug(*hash)
+        {
+            return Err(format!(
+                "The generated item's socket {} uses plug 0x{hash:08X}, which is not present in the installed plug catalog. Choose another plug",
+                index + 1,
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_loadout_request(
     document: &account::WorkspaceDocument,
     character_index: usize,
@@ -382,17 +420,4 @@ pub(super) fn has_locked_exotic(
                     .and_then(|hash| catalog.item(hash))
                     .is_some_and(|item| is_exotic(catalog, item))
         })
-}
-
-pub(super) fn held_item_counts(
-    held_inventory: &[inventory::InventoryItemSnapshot],
-    catalog: &Catalog,
-) -> (usize, HashMap<u64, usize>) {
-    let mut by_bucket = HashMap::new();
-    for item in held_inventory {
-        if let Some(definition) = catalog.item(u64::from(item.definition_hash)) {
-            *by_bucket.entry(definition.bucket_hash).or_default() += 1;
-        }
-    }
-    (held_inventory.len(), by_bucket)
 }

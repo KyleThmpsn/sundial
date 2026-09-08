@@ -178,22 +178,22 @@ impl SundialApp {
             let account_source = self.document.source_info().kind;
             let response = egui::Modal::new("really_unsafe_confirmation".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
-                ui.heading("Really unsafe plug selection");
+                ui.heading("Show all plugs?");
                 ui.add_space(6.0);
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    "This mode has a much higher chance of preventing the game from loading or causing Sunrise/Destiny 2 to crash.",
+                    "Incompatible plugs can prevent Destiny 2 from loading or cause crashes.",
                 );
                 ui.add_space(8.0);
-                ui.label("Even basic settings edits can theoretically cause problems, but this mode makes every discovered plug available in every socket. Saving arbitrary or incompatible combinations greatly increases the risk of leaving a character or the entire settings file unusable.");
+                ui.label("All mode makes every discovered plug available in every socket, including combinations the item does not support.");
                 ui.add_space(8.0);
-                ui.label("Every Sundial save creates timestamped backups for each source it changes in Sundial's local data folder.");
+                ui.label("Sundial backs up each account file before saving changes.");
                 ui.label(match account_source {
                     AccountSourceKind::Json => {
-                        "If the game no longer loads, open Preferences > Recovery to restore bundled settings.json defaults. Sundial backs up the current file again first."
+                        "If the game no longer loads, use Preferences > Saving & Recovery to restore the installed Sunrise defaults. This resets the account. The current file is backed up first."
                     }
                     AccountSourceKind::Sqlite => {
-                        "If an account edit prevents loading, open Preferences > Recovery to restore a verified state.sqlite3 backup. The current database is preserved again first."
+                        "If an account edit prevents loading, use Preferences > Saving & Recovery to restore a verified account database backup. The current database is backed up first."
                     }
                     AccountSourceKind::Blocked => {
                         "Account editing is currently blocked, so Sundial will not write the incompatible state.sqlite3."
@@ -201,7 +201,7 @@ impl SundialApp {
                 });
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("I understand and enable").clicked() {
+                    if ui.button("Show all plugs").clicked() {
                         enable = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -221,7 +221,7 @@ impl SundialApp {
                 if let Err(error) = self.save_preferences() {
                     self.set_status(
                         format!(
-                            "Really unsafe mode enabled, but the preference could not be saved: {error}"
+                            "All plugs enabled, but the preference could not be saved: {error}"
                         ),
                         true,
                     );

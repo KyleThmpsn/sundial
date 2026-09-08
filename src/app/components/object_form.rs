@@ -45,7 +45,7 @@ pub(crate) fn draw(
     let Some(object) = draft.value.as_object_mut() else {
         ui.colored_label(
             ui.visuals().error_fg_color,
-            "This row must be an object; use Raw JSON to inspect it.",
+            "This row must be an object. Use All Settings (JSON) to inspect it.",
         );
         return None;
     };
@@ -64,7 +64,9 @@ pub(crate) fn draw(
                 if field.optional {
                     if ui
                         .checkbox(&mut present, field.label)
-                        .on_hover_text("Enable to author an override; disable to omit it.")
+                        .on_hover_text(
+                            "Enable to set this value. Disable to use the Sunrise default.",
+                        )
                         .changed()
                     {
                         if present {
@@ -83,7 +85,7 @@ pub(crate) fn draw(
                     if !field.optional && ui.small_button("Set value").clicked() {
                         object.insert(field.key.into(), default_value(field.input));
                     } else {
-                        ui.label(egui::RichText::new("Not authored").weak());
+                        ui.label(egui::RichText::new("Not set").weak());
                     }
                 } else if let Some(value) = object.get_mut(field.key) {
                     draw_input(ui, field.input, value, input_width);

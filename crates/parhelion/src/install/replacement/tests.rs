@@ -101,15 +101,59 @@ fn unchanged_definitions_need_no_account_and_unreferenced_removals_guard_concurr
 }
 
 #[test]
+fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
+    let old = BTreeMap::from([(100, vec![Some(300); 8]), (200, vec![None; 9])]);
+    let incoming = BTreeMap::from([(100, vec![Some(400); 9]), (200, vec![Some(500); 9])]);
+    let changes = socket_changes(old, incoming).unwrap();
+    assert_eq!(
+        changes,
+        vec![AuthoredSocketChange {
+            definition_hash: 100,
+            previous_socket_count: 8,
+            default_plugs: vec![Some(400); 9],
+        }]
+    );
+    let root = tempfile::tempdir().unwrap();
+    let packages = root.path().join("packages");
+    fs::create_dir(&packages).unwrap();
+    let path = root.path().join("settings.json");
+    let original = serde_json::to_vec(&json!({"version": 16, "state": {
+        "account": {"primary_soid": "0x0000000000000001"},
+        "characters": [{"soid": "0x0000000000000002", "class": 0,
+            "equipment": {"kinetic": item(20, 100, json!(vec![301; 8]))}}]
+    }}))
+    .unwrap();
+    fs::write(&path, &original).unwrap();
+    let review = test_review_with_sockets(&packages, BTreeSet::new(), changes);
+    assert!(review.changes_account());
+    assert!(!review.removes_account_data());
+    assert_eq!(
+        review.account_cleanup().unwrap().resized_items,
+        BTreeMap::from([(100, 1)])
+    );
+    assert!(validate_consent(&review, None).is_err());
+    validate_consent(&review, Some(&review)).unwrap();
+    verify_account(&packages, Some(&review)).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let mut changed = original;
+    changed.push(b' ');
+    fs::write(&path, changed).unwrap();
+    assert!(verify_account(&packages, Some(&review)).is_err());
+}
+
+#[test]
 #[ignore = "read-only native comparison; requires PARHELION_LIFECYCLE_SOURCE_PACKAGES and PARHELION_TEST_STAGED_RUN"]
 fn staged_identity_reader_matches_installed_generation() {
     let target = PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
     let staged = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
     let (hashes, unlocks) = identities::generation_identities(&target, &staged).unwrap();
+    let socket_defaults = identities::generation_socket_defaults(&target, &staged, &hashes)
+        .expect("every retained weapon and private plug must expose valid native socket metadata");
     let manifest: ManifestDocument =
         serde_json::from_slice(&fs::read(staged.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
     for weapon in &manifest.project.weapons {
         assert!(hashes.contains(&weapon.item.hash.get()));
+        assert!(!socket_defaults[&weapon.item.hash.get()].is_empty());
     }
     assert_eq!(
         unlocks,

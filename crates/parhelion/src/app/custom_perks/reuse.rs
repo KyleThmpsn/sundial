@@ -58,6 +58,8 @@ fn apply_saved_perk(
     socket_index: usize,
     saved: &WeaponSocketPlugVariantRecipe,
 ) -> Result<(), String> {
+    let expanded = super::super::socket_editor::socket_editor_donor(donor, recipe);
+    let donor = expanded.as_ref();
     let socket = donor
         .sockets
         .get(socket_index)
@@ -123,7 +125,9 @@ impl PackageAuthoringApp {
         if self.build_receiver.is_some() || self.install_receiver.is_some() {
             return;
         }
-        let donor = self.current_donor();
+        let donor = self.current_donor().map(|donor| {
+            super::super::socket_editor::socket_editor_donor(&donor, &self.recipe).into_owned()
+        });
         let mut open = true;
         let mut close = false;
         let mut browse = false;
@@ -148,7 +152,7 @@ impl PackageAuthoringApp {
                     egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                         for (index, entry) in picker.entries.iter().enumerate() {
                             let name = entry.variant.name.as_deref().unwrap_or("Custom Perk");
-                            let label = format!("{name} — {}", entry.weapon);
+                            let label = format!("{name} · {}", entry.weapon);
                             if !label.to_lowercase().contains(&query) { continue; }
                             if ui.add_enabled(donor.is_some(), egui::Button::new(label)).clicked() { selected = Some(index); }
                         }
@@ -156,8 +160,8 @@ impl PackageAuthoringApp {
                         for error in &picker.errors { ui.colored_label(ui.visuals().error_fg_color, error); }
                     });
                 } else {
-                    ui.label("Custom perks are in early development. Authoring is coming soon.");
-                    ui.label("Existing recipes can still be built, and saved custom perks can be reused.");
+                    ui.label("Custom perk editing is planned for a future release.");
+                    ui.label("You can build existing recipes or reuse a saved custom perk.");
                     browse = ui.button("Use Existing Custom Perk…").clicked();
                 }
                 close = ui.button("Close").clicked();

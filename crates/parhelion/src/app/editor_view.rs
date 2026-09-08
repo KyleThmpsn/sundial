@@ -1,6 +1,9 @@
 //! Everyday weapon editor and identity/appearance views.
 use super::*;
 
+mod text_fields;
+use text_fields::OptionalText;
+
 impl PackageAuthoringApp {
     pub(super) fn draw_core_recipe_editor(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -147,6 +150,7 @@ impl PackageAuthoringApp {
             .show(ui, |ui| {
             ui.label("Source text");
             ui.add(egui::TextEdit::singleline(&mut self.recipe.source).desired_width(f32::INFINITY));
+            ui.weak("Turning off optional text also removes its translations.");
             let mut custom_type = self.recipe.type_name.is_some();
             if ui
                 .checkbox(&mut custom_type, "Custom item-type label")
@@ -155,11 +159,12 @@ impl PackageAuthoringApp {
                 )
                 .changed()
             {
-                self.recipe.type_name = custom_type.then(|| {
+                let value = custom_type.then(|| {
                     donor
                         .map(|donor| donor.summary.type_name.clone())
                         .unwrap_or_default()
                 });
+                text_fields::set(&mut self.recipe, OptionalText::TypeName, value);
             }
             if let Some(type_name) = &mut self.recipe.type_name {
                 ui.add(
@@ -177,7 +182,8 @@ impl PackageAuthoringApp {
                 .checkbox(&mut custom_collection_name, "Separate Collections name")
                 .changed()
             {
-                self.recipe.collection_name = custom_collection_name.then(|| self.recipe.name.clone());
+                let value = custom_collection_name.then(|| self.recipe.name.clone());
+                text_fields::set(&mut self.recipe, OptionalText::CollectionName, value);
             }
             if let Some(value) = &mut self.recipe.collection_name {
                 ui.add(
@@ -194,8 +200,8 @@ impl PackageAuthoringApp {
                 )
                 .changed()
             {
-                self.recipe.collection_description =
-                    custom_collection_description.then(|| self.recipe.flavor.clone());
+                let value = custom_collection_description.then(|| self.recipe.flavor.clone());
+                text_fields::set(&mut self.recipe, OptionalText::CollectionDescription, value);
             }
             if let Some(value) = &mut self.recipe.collection_description {
                 ui.add(
@@ -213,9 +219,10 @@ impl PackageAuthoringApp {
                 )
                 .changed()
             {
-                self.recipe.inventory_hint = inventory_hint.then(|| {
+                let value = inventory_hint.then(|| {
                     "Curated roll: This weapon can be reacquired from Collections.".to_owned()
                 });
+                text_fields::set(&mut self.recipe, OptionalText::InventoryHint, value);
             }
             if let Some(value) = &mut self.recipe.inventory_hint {
                 ui.add(
@@ -232,8 +239,8 @@ impl PackageAuthoringApp {
                 )
                 .changed()
             {
-                self.recipe.collection_requirement =
-                    collection_requirement.then(|| "Collection requirement".to_owned());
+                let value = collection_requirement.then(|| "Collection requirement".to_owned());
+                text_fields::set(&mut self.recipe, OptionalText::CollectionRequirement, value);
             }
             if let Some(value) = &mut self.recipe.collection_requirement {
                 ui.add(
@@ -293,7 +300,7 @@ impl PackageAuthoringApp {
             ui.heading("Gameplay Properties");
             draw_authoring_info_icon(
                 ui,
-                "Investment fields remain rooted in the gameplay donor. The runtime baseline supplies the complete native weapon entity. Ammo classification, inventory slot, geometry, icon definition, and render gear are stored separately, but native runtime components can still be coupled. Test component combinations in-game; package validation cannot establish their runtime compatibility.",
+                "Customize behavior from the selected base weapon and runtime source. Components from different weapons may not work together. Test the complete combination in game.",
             );
         });
         self.draw_runtime_source_summary(ui);
@@ -366,8 +373,27 @@ impl PackageAuthoringApp {
         }
         ui.add_space(12.0);
         ui.separator();
-        self.hud_icon_editor
-            .draw(ui, &mut self.recipe.overrides.hud_icon);
+        let appearance = self
+            .recipe
+            .presentation_donor
+            .as_ref()
+            .unwrap_or(&self.recipe.donor);
+        let item_hash = appearance.item_hash.parse_u32().ok();
+        let summary =
+            item_hash.and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash));
+        let name = summary
+            .map(|donor| donor.name.as_str())
+            .or(appearance.expected_name.as_deref())
+            .unwrap_or("Weapon Appearance");
+        self.hud_icon_editor.draw(
+            ui,
+            &mut self.recipe.overrides.hud_icon,
+            crate::hud_icon::ui::Appearance {
+                packages: &self.packages,
+                pattern_index: summary.and_then(|donor| donor.weapon_pattern_index),
+                name,
+            },
+        );
         if self.show_experimental_options {
             let geometry_donor = self.current_geometry_donor();
             let render_gear_donor = self.current_render_gear_donor();
@@ -388,7 +414,7 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_identity_workspace(&mut self, ui: &mut egui::Ui) {
         ui.heading("Recipe Identity");
-        ui.weak("Stable identifiers for this weapon and its game data. Rename on the Weapon tab; duplicate to create a separate weapon.");
+        ui.weak("Identifiers stay the same when you rename a weapon. Use Duplicate to create a separate weapon.");
         ui.add_space(6.0);
         self.draw_recipe_namespace(ui);
         ui.separator();
@@ -531,7 +557,7 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_locale_text_overrides(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Locale payload overrides");
+            ui.label("Localized text overrides");
             draw_authoring_info_icon(
                 ui,
                 "Sparse replacements for the 13 native localization payloads. Indices deliberately follow package order because this client data does not prove human language names for every slot.",
@@ -580,35 +606,32 @@ impl PackageAuthoringApp {
         ];
         let mut remove = None;
         for (index, locale) in self.recipe.locale_overrides.iter_mut().enumerate() {
-            let response =
-                egui::CollapsingHeader::new(format!("Locale payload {}", locale.locale_index))
-                    .id_salt(("locale-text-override", index))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Payload index");
-                            ui.add(egui::DragValue::new(&mut locale.locale_index).range(0..=12));
-                            if ui.button("Remove locale").clicked() {
-                                remove = Some(index);
-                            }
-                        });
-                        let fields = [
-                            &mut locale.name,
-                            &mut locale.flavor,
-                            &mut locale.source,
-                            &mut locale.type_name,
-                            &mut locale.collection_name,
-                            &mut locale.collection_description,
-                            &mut locale.inventory_hint,
-                            &mut locale.collection_requirement,
-                        ];
-                        for ((label, fallback, multiline), value) in primary.iter().zip(fields) {
-                            if let Some(fallback) = fallback {
-                                draw_optional_locale_text_field(
-                                    ui, label, value, fallback, *multiline,
-                                );
-                            }
+            let response = egui::CollapsingHeader::new(format!("Locale {}", locale.locale_index))
+                .id_salt(("locale-text-override", index))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Payload index");
+                        ui.add(egui::DragValue::new(&mut locale.locale_index).range(0..=12));
+                        if ui.button("Remove locale").clicked() {
+                            remove = Some(index);
                         }
                     });
+                    let fields = [
+                        &mut locale.name,
+                        &mut locale.flavor,
+                        &mut locale.source,
+                        &mut locale.type_name,
+                        &mut locale.collection_name,
+                        &mut locale.collection_description,
+                        &mut locale.inventory_hint,
+                        &mut locale.collection_requirement,
+                    ];
+                    for ((label, fallback, multiline), value) in primary.iter().zip(fields) {
+                        if let Some(fallback) = fallback {
+                            draw_optional_locale_text_field(ui, label, value, fallback, *multiline);
+                        }
+                    }
+                });
             response.header_response.on_hover_text(format!(
                 "Overrides only localization payload {}; all unselected fields use the primary recipe text.",
                 locale.locale_index
@@ -644,7 +667,7 @@ impl PackageAuthoringApp {
                 ui.heading("Weapon Stats");
                 draw_authoring_info_icon(
                     ui,
-                    "Values are saved to the weapon's stat data. The game may scale them for display; RPM is a common example. Add stat lets you use stat definitions from installed weapons, but a stat may not appear in game unless the selected stat group and weapon support it.",
+                    "Raw Value is saved to the weapon. Preview shows the scaled value, such as RPM. Added stats only appear in game when the weapon and its stat group support them.",
                 );
                 if ui
                     .add_enabled(!donor_exact, egui::Button::new("Reset Stats"))
@@ -656,10 +679,10 @@ impl PackageAuthoringApp {
                 }
             });
             ui.add_space(4.0);
-            egui::CollapsingHeader::new("Stat options · scaling and internal values")
+            egui::CollapsingHeader::new("Stat Options · Scaling and Internal Values")
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.checkbox(&mut self.show_internal_stats, "Show internal stats")
+                    ui.checkbox(&mut self.show_internal_stats, "Show Internal Stats")
                         .on_hover_text("Show package-level Attack, Power and unnamed rows. Hidden rows are preserved.");
                     self.draw_stat_group_picker(ui, Some(donor));
                 });
@@ -688,29 +711,12 @@ impl PackageAuthoringApp {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Perks & Sockets");
                 if ui.button("Custom Perks…")
-                    .on_hover_text("Authoring is coming soon. Reuse existing custom perks from saved recipes.")
+                    .on_hover_text("Custom perk editing is planned for a future release. Reuse a saved custom perk.")
                     .clicked() {
                     self.private_perk_socket = Some(self.recipe.overrides.socket_plug_variants.first()
                         .map_or(0, |variant| usize::from(variant.socket_index)));
                 }
-                ui.menu_button("Socket Options", |ui| {
-                    draw_plug_safety_selector(ui, "parhelion-socket-column-plug-safety", &mut self.plug_selection_mode);
-                    if show_experimental_options {
-                        ui.checkbox(&mut self.show_technical_socket_rows, "Show native rows")
-                            .on_hover_text("Show the complete native socket-row fields beneath each plug column.");
-                    }
-                    ui.separator();
-                    if ui.add_enabled(has_authored_columns, egui::Button::new("Restore all base sockets"))
-                        .on_hover_text("Remove every explicit socket and custom perk override, then return to the base weapon's collection roll")
-                        .clicked() {
-                        self.recipe.overrides.socket_columns.clear();
-                        self.recipe.overrides.socket_plug_variants.clear();
-                        self.perk_editor = None;
-                        self.private_perk_socket = None;
-                        self.plug_queries.clear();
-                        ui.close_menu();
-                    }
-                });
+                self.draw_socket_options(ui, has_authored_columns);
             });
             ui.label("First choice starts equipped. Extra choices are alternatives.")
                 .on_hover_text("Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
@@ -751,5 +757,26 @@ impl PackageAuthoringApp {
             ui.heading("Perks & Sockets");
             ui.label("Load the donor catalog to use Sundial's compatible-plug picker.");
         }
+    }
+
+    pub(super) fn draw_socket_options(&mut self, ui: &mut egui::Ui, has_authored_columns: bool) {
+        ui.menu_button("Socket Options", |ui| {
+                    draw_plug_safety_selector(ui, "parhelion-socket-column-plug-safety", &mut self.plug_selection_mode);
+                    if self.show_experimental_options {
+                        ui.checkbox(&mut self.show_technical_socket_rows, "Show Native Rows")
+                            .on_hover_text("Show the complete native socket-row fields beneath each plug column.");
+                    }
+                    ui.separator();
+                    if ui.add_enabled(has_authored_columns, egui::Button::new("Restore All Base Sockets"))
+                        .on_hover_text("Remove every explicit socket and custom perk override, then return to the base weapon's collection roll")
+                        .clicked() {
+                        self.recipe.overrides.socket_columns.clear();
+                        self.recipe.overrides.socket_plug_variants.clear();
+                        self.perk_editor = None;
+                        self.private_perk_socket = None;
+                        self.plug_queries.clear();
+                        ui.close_menu();
+                    }
+                });
     }
 }

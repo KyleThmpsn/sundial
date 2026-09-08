@@ -58,6 +58,7 @@ struct CharacterFieldUiContext<'a> {
 
 struct CharacterFieldUiState {
     values: CharacterEditorValues,
+    selection_requested: bool,
     current_subclass_hash: Option<u64>,
     abilities: crate::catalog::AbilityOptions,
     attunement_index: usize,
@@ -139,7 +140,7 @@ fn draw_character_identity_group(
             .spacing([18.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Class");
-                combo_u64(
+                state.selection_requested |= combo_u64(
                     ui,
                     "class",
                     &mut state.values.class_type,
@@ -171,7 +172,7 @@ fn draw_character_identity_group(
                 ui.end_row();
 
                 ui.label("Race");
-                combo_u64(
+                state.selection_requested |= combo_u64(
                     ui,
                     "race",
                     &mut state.values.race,
@@ -180,7 +181,7 @@ fn draw_character_identity_group(
                 ui.end_row();
 
                 ui.label("Gender");
-                combo_u64(
+                state.selection_requested |= combo_u64(
                     ui,
                     "gender",
                     &mut state.values.gender,
@@ -240,6 +241,7 @@ fn draw_character_subclass_group(
                 }
                 ui.label("Attunement");
                 let previous_attunement = state.attunement_index;
+                let mut attunement_requested = false;
                 let selected_attunement = state
                     .abilities
                     .attunements
@@ -252,13 +254,16 @@ fn draw_character_subclass_group(
                         for (choice_index, attunement) in
                             state.abilities.attunements.iter().enumerate()
                         {
-                            ui.selectable_value(
-                                &mut state.attunement_index,
-                                choice_index,
-                                &attunement.name,
-                            );
+                            attunement_requested |= ui
+                                .selectable_value(
+                                    &mut state.attunement_index,
+                                    choice_index,
+                                    &attunement.name,
+                                )
+                                .clicked();
                         }
                     });
+                state.selection_requested |= attunement_requested;
                 ui.end_row();
 
                 if let Some(attunement) = state.abilities.attunements.get(state.attunement_index)
@@ -280,7 +285,9 @@ fn draw_character_subclass_group(
                             .super_abilities
                             .iter()
                             .any(|choice| choice.entry == state.values.super_ability);
-                    if state.attunement_index != previous_attunement || !current_pair_is_valid {
+                    if state.attunement_index != previous_attunement
+                        || (attunement_requested && !current_pair_is_valid)
+                    {
                         state.values.melee = attunement.melee.entry;
                         state.values.super_ability = attunement
                             .super_abilities
@@ -333,7 +340,8 @@ fn draw_character_ability_group(
                     ),
                 ] {
                     ui.label(label);
-                    ability_combo(ui, id, value, choices, selector_width);
+                    state.selection_requested |=
+                        ability_combo(ui, id, value, choices, selector_width);
                     ui.end_row();
                 }
                 if let Some(attunement) = state.abilities.attunements.get(state.attunement_index) {
@@ -364,14 +372,15 @@ fn draw_character_ability_group(
                         ),
                     ] {
                         ui.label(label);
-                        ability_combo(ui, id, value, choices, selector_width);
+                        state.selection_requested |=
+                            ability_combo(ui, id, value, choices, selector_width);
                         ui.end_row();
                     }
                 }
                 ui.label("Class ability").on_hover_text(
                     "Dodge, Barricade, and Rift remain independent choices. Attunement perks may modify their behavior.",
                 );
-                ability_combo(
+                state.selection_requested |= ability_combo(
                     ui,
                     "class_ability",
                     &mut state.values.class_ability,
@@ -470,7 +479,7 @@ impl SundialApp {
             class_ability,
         };
         let abilities_editable = !self.document.supports_v13_account();
-        let materialize_display_values = self.document.uses_json_account()
+        let display_values_need_materialization = self.document.uses_json_account()
             && [
                 ("race", original_values.race),
                 ("gender", original_values.gender),
@@ -564,6 +573,7 @@ impl SundialApp {
                 melee,
                 class_ability,
             },
+            selection_requested: false,
             current_subclass_hash,
             abilities,
             attunement_index,
@@ -586,8 +596,8 @@ impl SundialApp {
 
         ui.add_enabled_ui(editable, |ui| self.draw_character_runtime(ui, index));
 
-        // A disabled egui scope still executes this function. Do not let its fallback display
-        // values materialize missing fields in a read-only schema.
+        // A disabled egui scope still executes this function. Keep document writes behind
+        // both the edit gate and an explicit selection change.
         if !editable {
             return;
         }
@@ -599,7 +609,7 @@ impl SundialApp {
             edited_values,
             field_state.selected_subclass,
             allow_cross_class_subclasses,
-            materialize_display_values,
+            field_state.selection_requested && display_values_need_materialization,
         );
     }
 
@@ -610,10 +620,10 @@ impl SundialApp {
         edited: CharacterEditorValues,
         selected_subclass: Option<Arc<ItemDef>>,
         allow_cross_class_subclasses: bool,
-        materialize_display_values: bool,
+        materialize_selected_defaults: bool,
     ) {
         let selecting_subclass = selected_subclass.is_some();
-        if edited == original && !selecting_subclass && !materialize_display_values {
+        if edited == original && !selecting_subclass && !materialize_selected_defaults {
             return;
         }
         let armor_template = (edited.class_type != original.class_type)
@@ -664,24 +674,37 @@ impl SundialApp {
     }
 
     fn draw_plug_safety_selector(&mut self, ui: &mut egui::Ui, show_dummy_items: bool) {
+        ui.horizontal_wrapped(|ui| self.draw_plug_safety_choice(ui, show_dummy_items));
+        if self.preferences.show_safety_warnings {
+            super::draw_plug_selection_warning(ui, self.plug_selection_mode);
+        }
+    }
+
+    pub(in crate::app) fn draw_plug_safety_choice(
+        &mut self,
+        ui: &mut egui::Ui,
+        show_dummy_items: bool,
+    ) {
         let mut requested_plug_selection_mode = self.plug_selection_mode;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Plug Safety:");
-            for candidate in PlugSelectionMode::ALL {
-                ui.radio_value(
-                    &mut requested_plug_selection_mode,
-                    candidate,
-                    candidate.label(),
-                );
-            }
-            if show_dummy_items {
-                ui.separator();
-                ui.checkbox(&mut self.show_dummy_items, "Show Dummy Items")
-                    .on_hover_text(
-                        "Includes display-only definitions that cannot normally be obtained in the game.",
+        ui.label("Plugs");
+        egui::ComboBox::from_id_salt("plug-safety-selection")
+            .width(164.0)
+            .selected_text(requested_plug_selection_mode.label())
+            .show_ui(ui, |ui| {
+                for candidate in PlugSelectionMode::ALL {
+                    ui.selectable_value(
+                        &mut requested_plug_selection_mode,
+                        candidate,
+                        candidate.label(),
                     );
-            }
-        });
+                }
+            })
+            .response
+            .on_hover_text("Choose which plugs appear in socket pickers. Broader selections may include incompatible plugs.");
+        if show_dummy_items {
+            ui.checkbox(&mut self.show_dummy_items, "Dummy Items")
+                .on_hover_text("Include display-only definitions that cannot normally be obtained");
+        }
         if requested_plug_selection_mode != self.plug_selection_mode {
             if requested_plug_selection_mode == PlugSelectionMode::AnyPlug
                 && !self.preferences.really_unsafe_warning_acknowledged
@@ -691,9 +714,6 @@ impl SundialApp {
             } else {
                 self.plug_selection_mode = requested_plug_selection_mode;
             }
-        }
-        if self.preferences.show_safety_warnings {
-            super::draw_plug_selection_warning(ui, self.plug_selection_mode);
         }
     }
 }

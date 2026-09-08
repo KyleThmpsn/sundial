@@ -43,6 +43,7 @@ pub(in crate::game_settings) fn draw(
     egui::CollapsingHeader::new("Activity Destinations (Advanced)").show(ui, |ui| {
         changed |= super::activity_page::draw(ui, document);
     });
+    changed |= super::services::draw(ui, document, json_account);
     changed
 }
 

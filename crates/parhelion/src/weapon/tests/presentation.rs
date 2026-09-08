@@ -219,6 +219,7 @@ fn item_string_classification_transplant_changes_only_the_audited_tuple() {
         WeaponInventorySlot::Kinetic,
         &source,
         WeaponInventorySlot::Energy,
+        WeaponInventorySlot::Energy,
     )
     .expect("a package-proven target-slot tuple should transplant");
 
@@ -235,6 +236,36 @@ fn item_string_classification_transplant_changes_only_the_audited_tuple() {
                     + ITEM_STRING_CLIENT_CLASSIFICATION_SIZE],
         );
     assert_eq!(normalized, before);
+}
+
+#[test]
+fn cross_slot_classification_preserves_appearance_type_and_authored_bucket() {
+    for (source_slot, target_slot) in [
+        (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic),
+        (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy),
+    ] {
+        let mut target = item_string_classification_fixture(target_slot, 0x6312_A690);
+        let source = item_string_classification_fixture(source_slot, 0xC0E9_5045);
+        let before = target.clone();
+        let mut expected = item_string_client_classification(&source, source_slot).unwrap();
+        expected[..4].copy_from_slice(&target_slot.bucket_hash().to_le_bytes());
+        transplant_item_string_client_classification(
+            &mut target,
+            target_slot,
+            &source,
+            source_slot,
+            target_slot,
+        )
+        .unwrap();
+        assert_eq!(
+            item_string_client_classification(&target, target_slot).unwrap(),
+            expected
+        );
+        let start = ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET;
+        let end = start + ITEM_STRING_CLIENT_CLASSIFICATION_SIZE;
+        assert_eq!(&target[..start], &before[..start]);
+        assert_eq!(&target[end..], &before[end..]);
+    }
 }
 
 #[test]
@@ -279,6 +310,7 @@ fn item_string_classification_rejects_unknown_zero_and_truncated_tuples_without_
             &mut target,
             WeaponInventorySlot::Kinetic,
             &unknown,
+            WeaponInventorySlot::Energy,
             WeaponInventorySlot::Energy,
         )
         .is_err()

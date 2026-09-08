@@ -120,6 +120,9 @@ pub(super) fn candidate_from_builder_request(
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if plugs.len() > inventory::MAX_ITEM_PLUGS {
+            return Err("This item's authored plugs exceed the supported socket limit".to_owned());
+        }
         let authored_count = item
             .sockets
             .len()
@@ -127,7 +130,6 @@ pub(super) fn candidate_from_builder_request(
             .min(inventory::MAX_ITEM_PLUGS);
         candidate.plugs = plugs;
         candidate.plugs.resize(authored_count, None);
-        candidate.plugs.truncate(inventory::MAX_ITEM_PLUGS);
     }
     Ok((family, slot_index, candidate))
 }

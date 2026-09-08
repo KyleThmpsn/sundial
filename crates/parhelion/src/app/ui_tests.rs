@@ -1,6 +1,11 @@
 //! Headless UI contract/layout checks. These do not open a window or mutate installed content.
 use super::*;
 
+mod added_sockets;
+mod authoring_safety;
+mod runtime_layout;
+mod socket_account_updates;
+
 #[test]
 fn replacement_confirmation_names_removals_without_changing_account_or_recipe() {
     let directory = tempfile::tempdir().unwrap();
@@ -25,13 +30,59 @@ fn replacement_confirmation_names_removals_without_changing_account_or_recipe() 
     let before = app.recipe.clone();
     let (output, _) = render(900.0, |ui| app.draw_install_confirmation(ui));
     let labels = text(&output);
-    assert!(labels.contains("Remove Items No Longer In This Build?"));
-    assert!(labels.contains("1 saved weapon/item instances"));
+    assert!(labels.contains("Account Changes"));
+    assert!(labels.contains("Remove 1 saved item:"));
     assert!(labels.contains("Back Up, Remove & Install"));
     assert!(labels.contains("Cancel"));
     assert_eq!(std::fs::read(path).unwrap(), original);
     assert_eq!(app.recipe, before);
     assert!(app.install_receiver.is_none());
+}
+
+#[test]
+fn successful_install_report_is_compact_and_ends_with_close() {
+    let report = InstallReport {
+        manifest_schema: 1,
+        staged_run_directory: PathBuf::from("staged"),
+        target_packages_directory: PathBuf::from(r"\\?\C:\Destiny2\packages"),
+        backup_directory: PathBuf::from(r"\\?\C:\Backups\parhelion-backup-v2-abc-123-1-0"),
+        artifacts: vec![],
+        removed_obsolete_packages: vec![],
+        recipe_backup_directory: None,
+        pruned_backup_directories: vec![],
+        backup_prune_warning: None,
+        invalidated_sunrise_cache: None,
+        invalidated_package_header_caches: vec![],
+        profile_sync: Some(Err("Account is read-only".into())),
+        cleaned_account: None,
+    };
+    let mut app = PackageAuthoringApp {
+        latest_install: Some(Ok(report)),
+        build_dialog_step: BuildDialogStep::Install,
+        ..Default::default()
+    };
+    for width in [620.0, 960.0] {
+        let (output, overflow) = render(width, |ui| app.draw_install_status(ui));
+        let labels = text(&output);
+        for label in [
+            "Packages Installed",
+            "Open Backup Folder",
+            "Installation Details",
+            "Close",
+            "Account is read-only",
+        ] {
+            assert!(labels.contains(label), "Missing {label}");
+        }
+        assert!(!labels.contains("Review Installation"));
+        assert!(!labels.contains("Back to Build"));
+        assert!(!labels.contains("parhelion-backup-v2"));
+        assert!(!labels.contains(r"\\?\"));
+        assert!(
+            overflow < 1.0,
+            "Install report overflow {overflow} at {width}"
+        );
+        assert!(app.install_receiver.is_none());
+    }
 }
 
 #[test]
@@ -58,9 +109,15 @@ fn build_report_counts_and_lists_optional_packages() {
         "{} packages staged for installation",
         report.artifacts.len()
     )));
+    assert!(labels.contains("Package Details"));
+    assert!(!labels.contains(&report.artifacts[0].file_name));
+    let (output, overflow) = render(620.0, |ui| reports::draw_build_details(ui, &report));
+    let labels = text(&output);
     for artifact in &report.artifacts {
         assert!(labels.contains(&artifact.file_name));
+        assert!(!labels.contains(&artifact.sha256));
     }
+    assert!(overflow < 1.0);
 }
 
 #[test]
@@ -75,7 +132,7 @@ fn custom_perk_release_notice_preserves_recipes_with_experimental_options_on_or_
         app.private_perk_socket = Some(0);
         let (output, _) = render(640.0, |ui| app.draw_custom_perks_window(ui.ctx()));
         let labels = text(&output);
-        assert!(labels.contains("Authoring is coming soon."));
+        assert!(labels.contains("Custom perk editing is planned for a future release."));
         assert!(labels.contains("Use Existing Custom Perk"));
         assert_eq!(app.recipe, before);
     }
@@ -212,7 +269,7 @@ fn preferences_pages_are_readable_and_keep_the_footer_visible() {
                     );
                 }
                 if page == preferences_view::PreferencesPage::EditorLibrary {
-                    assert_body_label_readable(&output, "Exposes runtime component");
+                    assert_body_label_readable(&output, "Shows detailed behavior");
                 }
                 assert_eq!(app.recipe, before);
                 assert!(!app.preferences_changed);
@@ -504,6 +561,10 @@ fn build_pages_replace_each_other_and_selection_precedes_build() {
         text_origin(&output, "0 weapons selected for build…").x
             < text_origin(&output, "Build & Stage").x
     );
+    let action_y = text_origin(&output, "Build & Stage").y;
+    for label in ["0 weapons selected for build…", "Build & Install Status…"] {
+        assert!((text_origin(&output, label).y - action_y).abs() < 1.0);
+    }
     for step in [
         BuildDialogStep::Build,
         BuildDialogStep::ReviewInstall,
@@ -522,7 +583,7 @@ fn build_pages_replace_each_other_and_selection_precedes_build() {
             step != BuildDialogStep::Install
         );
         assert_eq!(
-            labels.contains("This replaces the installed custom weapon set."),
+            labels.contains("This replaces your installed custom weapon set."),
             step == BuildDialogStep::ReviewInstall
         );
         assert_eq!(
@@ -549,11 +610,14 @@ fn library_rows_show_authored_metadata_and_search_it_without_changing_selection(
     entry.ammo_type = Some(RecipeAmmoType::Special);
     entry.damage_type = Some(crate::recipe::RecipeDamageType::Arc);
     entry.rarity = Some(RecipeRarity::Legendary);
+    app.recipe_path = Some(entry.path.clone());
     let before = app.recipe.clone();
     app.library_query = "  test ARC   special micro-missile  ".into();
     let (output, _) = render(900.0, |ui| app.draw_library_windows(ui.ctx()));
     let labels = text(&output);
     assert!(labels.contains("Library test weapon"));
+    assert!(labels.contains("Open"));
+    assert!(labels.contains("Built-in"));
     assert!(labels.contains("Micro-Missile Shotgun"));
     assert!(labels.contains("Arc · Special"));
     assert!(
@@ -565,6 +629,35 @@ fn library_rows_show_authored_metadata_and_search_it_without_changing_selection(
     assert!(labels.contains("1 recipe ·"));
     assert_eq!(app.recipe, before);
     assert!(app.enabled_recipe_paths.is_empty());
+}
+
+#[test]
+fn library_restore_confirmation_is_read_only_and_refresh_preserves_open_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+    let entries = library.scan().unwrap().entries;
+    let path = entries[0].path.clone();
+    let original = std::fs::read(&path).unwrap();
+    let mut app = PackageAuthoringApp {
+        recipe_entries: entries,
+        library_open: true,
+        recipe_library: Some(library.clone()),
+        ..Default::default()
+    };
+    let (output, _) = render(720.0, |ui| app.draw_library_windows(ui.ctx()));
+    assert!(text(&output).contains("Refresh"));
+    assert!(text(&output).contains("Restore Default Recipes…"));
+    app.restore_defaults_preview = Some(library.prepare_restore_defaults().unwrap());
+    let (output, _) = render(720.0, |ui| app.draw_library_windows(ui.ctx()));
+    assert!(text(&output).contains("Restore Default Recipes?"));
+    assert!(text(&output).contains("Cancel"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    app.recipe.name = "Unsaved edit".into();
+    app.recipe_dirty = true;
+    let before = app.recipe.clone();
+    app.refresh_recipe_library();
+    assert_eq!(app.recipe, before);
+    assert!(app.recipe_dirty);
 }
 
 #[test]
@@ -1138,7 +1231,7 @@ fn assert_body_label_readable(output: &egui::FullOutput, prefix: &str) {
             .job
             .sections
             .iter()
-            .all(|section| section.format.font_id.size >= 14.0)
+            .all(|section| section.format.font_id.size >= 12.5)
     );
 }
 
@@ -1217,6 +1310,84 @@ fn text_origins(output: &egui::FullOutput, label: &str) -> Vec<egui::Pos2> {
 }
 
 #[test]
+fn socket_options_plug_safety_selection_survives_menu_close() {
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut PackageAuthoringApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 640.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    workbench_style(ui);
+                    ui.horizontal(|ui| app.draw_socket_options(ui, false));
+                });
+            },
+        )
+    }
+    fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            frame(
+                ctx,
+                app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    }
+    let ctx = egui::Context::default();
+    let mut app = PackageAuthoringApp {
+        plug_selection_mode: PlugSelectionMode::SocketAndGearType,
+        ..Default::default()
+    };
+    let before = app.recipe.clone();
+    for target in [PlugSelectionMode::AnyPlug, PlugSelectionMode::Supported] {
+        frame(&ctx, &mut app, vec![]);
+        let output = frame(&ctx, &mut app, vec![]);
+        click(
+            &ctx,
+            &mut app,
+            text_origin(&output, "Socket Options") + egui::vec2(8.0, 6.0),
+        );
+        frame(&ctx, &mut app, vec![]);
+        let output = frame(&ctx, &mut app, vec![]);
+        let current = app.plug_selection_mode.label();
+        click(
+            &ctx,
+            &mut app,
+            text_origin(&output, current) + egui::vec2(8.0, 6.0),
+        );
+        frame(&ctx, &mut app, vec![]);
+        let output = frame(&ctx, &mut app, vec![]);
+        click(
+            &ctx,
+            &mut app,
+            text_origin(&output, target.label()) + egui::vec2(8.0, 6.0),
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        assert_eq!(app.plug_selection_mode, target);
+        assert_eq!(app.recipe, before);
+    }
+}
+
+#[test]
 fn technical_visibility_does_not_restrict_workbench_plug_combinations() {
     for mode in PlugSelectionMode::ALL {
         let mut app = PackageAuthoringApp {
@@ -1256,8 +1427,16 @@ fn experimental_gameplay_controls_are_hidden_without_dropping_saved_overrides() 
         assert_eq!(app.recipe, before);
     }
     let hidden = technical_recipe_features(&app.recipe);
-    assert!(hidden.contains(&"runtime values"));
-    assert!(hidden.contains(&"base-item perks or traits"));
+    assert!(
+        hidden
+            .iter()
+            .any(|feature| feature == "Advanced: edited runtime values")
+    );
+    assert!(
+        hidden
+            .iter()
+            .any(|feature| feature == "Advanced: base weapon perks")
+    );
     app.runtime_bindings_open = true;
     app.set_show_experimental_options(false);
     assert!(!app.runtime_bindings_open);
@@ -1557,7 +1736,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), false);
                 draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
             });
-            assert!(text(&output).contains("Experimental slot/damage pairing"));
+            assert!(text(&output).contains("Experimental slot and damage combination"));
             assert!(!text(&output).contains("Reset it before building"));
             assert!(overflow <= 1.0, "{name} at {width}: overflow {overflow}");
             assert_eq!(app.recipe, before);
@@ -1676,7 +1855,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 app.recipe.name
             );
         }
-        for label in ["+ Add Choice", "Options"] {
+        for label in ["+ Add Choice", "…"] {
             let positions = text_origins(&output, label);
             assert!(positions.len() >= 5);
             assert!(
@@ -1704,6 +1883,13 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 let labels = text(&output);
                 assert!(labels.contains("Inventory Icon"));
                 assert!(labels.contains("Colors & Materials"));
+                let edit_icon = text_origin(&output, "Edit Icon…");
+                let change_icon = text_origin(&output, "Change Icon");
+                assert!(
+                    (edit_icon.y - change_icon.y).abs() < 1.0,
+                    "icon actions must share a row"
+                );
+                assert!(edit_icon.x < change_icon.x, "icon actions must not overlap");
                 assert_eq!(labels.contains("Technical Appearance Data"), technical);
                 assert_eq!(app.recipe, page_before);
             }
@@ -1713,6 +1899,45 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
     assert_private_window_survives_tab_changes(&mut app);
     app.recipe = WeaponRecipe::new_unbound("Layout test").unwrap();
     app.recipe.set_donor(0x23DB_942F, "Age-Old Bond".to_owned());
+    let donor = app.current_donor().unwrap();
+    let stats_before = app.recipe.clone();
+    for width in [480.0, 900.0, 1320.0] {
+        let (output, overflow) = render(width, |ui| {
+            app.draw_investment_stats_panel(ui, Some(&donor))
+        });
+        assert!(overflow < 1.0);
+        let stat_x = text_origin(&output, "Stat").x;
+        for stat in donor
+            .investment_stats
+            .iter()
+            .filter(|stat| !is_internal_weapon_stat(stat.definition_index))
+        {
+            assert!(
+                (text_origin(&output, &stat.name).x - stat_x).abs() < 1.0,
+                "stat names must be left aligned"
+            );
+        }
+        let first = donor
+            .investment_stats
+            .iter()
+            .find(|stat| !is_internal_weapon_stat(stat.definition_index))
+            .unwrap();
+        let raw_x = text_origin(&output, "Raw Value").x + 7.0;
+        let preview_x = text_origin(&output, "Preview").x;
+        assert!(
+            text_origins(&output, &first.value.to_string())
+                .iter()
+                .any(|pos| (pos.x - raw_x).abs() < 1.0),
+            "raw values must be left aligned"
+        );
+        assert!(
+            text_origins(&output, &first.in_game_display_label(first.value))
+                .iter()
+                .any(|pos| (pos.x - preview_x).abs() < 1.0),
+            "previews must be left aligned"
+        );
+        assert_eq!(app.recipe, stats_before);
+    }
     for width in [900.0, 1320.0] {
         let (_, overflow) = render(width, |ui| app.draw_core_recipe_editor(ui));
         if overflow >= 1.0 {
@@ -1744,7 +1969,7 @@ fn assert_private_window_survives_tab_changes(app: &mut PackageAuthoringApp) {
             text(&output).contains("Custom Perks"),
             "window missing on {page:?}"
         );
-        assert!(text(&output).contains("Authoring is coming soon."));
+        assert!(text(&output).contains("Custom perk editing is planned for a future release."));
         assert!(text(&output).contains("Use Existing Custom Perk"));
         assert_eq!(app.private_perk_socket, Some(0));
         assert_eq!(
@@ -1788,7 +2013,7 @@ fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides(
             (WeaponDamageType::Void, ModernDamageType::Void),
         ] {
             let mut recipe = WeaponRecipe::every_end();
-            recipe.overrides.ammo_type = Some(ammo); // Same recipe field bound by the Core dropdown.
+            recipe.overrides.ammo_type = Some(ammo); // Same recipe field bound by the Weapon tab.
             apply_combat_profile_action(
                 &mut recipe.overrides,
                 &donor,
