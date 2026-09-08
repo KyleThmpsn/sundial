@@ -105,6 +105,20 @@ struct SharedTagTableLayout {
 }
 
 impl PackageLayout {
+    pub(crate) fn has_compressed_blocks(&self, bytes: &[u8]) -> AuthoringResult<bool> {
+        for index in 0..self.block_count {
+            let offset = index
+                .checked_mul(BLOCK_HEADER_SIZE)
+                .and_then(|offset| self.block_table_offset.checked_add(offset))
+                .and_then(|offset| offset.checked_add(10))
+                .ok_or_else(|| invalid("Block flag offset overflows"))?;
+            if read_u16(bytes, offset)? & 1 != 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) const ENTRY_TABLE_TRAILER_SIZE: usize = 32;
 
     pub fn parse(bytes: &[u8]) -> AuthoringResult<Self> {

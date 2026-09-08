@@ -1,8 +1,11 @@
 //! Headless workflow regressions. Never load or write the user's installation/preferences.
+mod account_smoke;
 mod character_fields;
+mod confirmation_layout;
 mod loadout_safety;
 mod parhelion_confirmation;
 mod save_validation;
+mod schema_smoke;
 mod shortcuts;
 
 use crate::app::*;

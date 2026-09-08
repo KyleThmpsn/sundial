@@ -659,9 +659,10 @@ impl SundialApp {
         if candidate != self.document {
             self.document = candidate;
             self.dirty = true;
-            if let Some(subclass) = selected_subclass {
-                self.set_status(format!("Equipped {}", subclass.name), false);
-            }
+            self.set_status(
+                character_edit_status(index, original, edited, selected_subclass.as_deref()),
+                false,
+            );
         }
     }
 
@@ -715,5 +716,42 @@ impl SundialApp {
                 self.plug_selection_mode = requested_plug_selection_mode;
             }
         }
+    }
+}
+
+fn character_edit_status(
+    index: usize,
+    original: CharacterEditorValues,
+    edited: CharacterEditorValues,
+    subclass: Option<&ItemDef>,
+) -> String {
+    let character = index + 1;
+    if edited.class_type != original.class_type {
+        let name = match edited.class_type {
+            0 => "Titan",
+            1 => "Hunter",
+            2 => "Warlock",
+            _ => "Unknown",
+        };
+        format!("Changed Character {character} class to {name}")
+    } else if let Some(subclass) = subclass {
+        format!("Equipped {} on Character {character}", subclass.name)
+    } else if edited.race != original.race {
+        let name = match edited.race {
+            0 => "Human",
+            1 => "Awoken",
+            2 => "Exo",
+            _ => "Unknown",
+        };
+        format!("Changed Character {character} race to {name}")
+    } else if edited.gender != original.gender {
+        let name = match edited.gender {
+            0 => "Male",
+            1 => "Female",
+            _ => "Unknown",
+        };
+        format!("Changed Character {character} gender to {name}")
+    } else {
+        format!("Updated Character {character} selections")
     }
 }

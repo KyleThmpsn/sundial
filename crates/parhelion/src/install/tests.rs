@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 mod account_replacement;
 mod native_lifecycle;
+mod spill;
 mod transaction_safety;
 
 fn test_manifest_sunrise_json() -> serde_json::Value {

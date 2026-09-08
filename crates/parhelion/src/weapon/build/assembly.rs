@@ -139,8 +139,10 @@ pub(super) fn prepare(
         watermarked_icon_containers: assets.watermark.icon_container_tags,
         watermark_reference_overrides: assets.watermark.reference_overrides,
         badge_icon_tag: assets.badge.container_tag,
-        badge_icon_reference_overrides: assets.badge.reference_overrides,
-        asset_new_tags: assets.badge.new_tags,
+        asset_packages: crate::asset_packages::AssetPackages::primary(
+            assets.badge.new_tags,
+            assets.badge.reference_overrides,
+        )?,
         private_perk_runtime_append_start: runtime.private_perk_append_start,
         private_perk_runtime_new_tags: runtime.private_perk_tags,
         entity_assignments: runtime.entity_assignments,

@@ -127,8 +127,15 @@ fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
 #[test]
 fn upstream_accounts_survive_edit_save_reload_and_backup_restore() {
     for fixture in [
-        include_str!("../../../tests/fixtures/sunrise-v6-0.3.2-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v2-052d6a48-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v3-86bd0a16-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v4-b2724889-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v5-161efee2-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v8-d0fe8886-defaults.json"),
         include_str!("../../../tests/fixtures/sunrise-v13-a57dc9a9-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v15-f84356c1-defaults.json"),
+        include_str!("../../../tests/fixtures/sunrise-v16-1120748-defaults.json"),
     ] {
         let directory = TestDirectory::new("upstream-save-recovery");
         let settings = directory.0.join("settings.json");

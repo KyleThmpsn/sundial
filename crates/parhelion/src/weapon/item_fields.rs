@@ -653,14 +653,20 @@ pub(super) fn resolve_weapon_collection_donor(
     slot: WeaponInventorySlot,
 ) -> AuthoringResult<Vec<usize>> {
     let exotic = rarity == AuthoredWeaponRarity::Exotic;
-    if (weapon_rarity(gameplay)? == AuthoredWeaponRarity::Exotic) == exotic
-        && (!exotic || weapon_inventory_slot(gameplay)? == slot)
-    {
-        return Ok(vec![gameplay_collectible]);
-    }
+    let prefer_gameplay = (weapon_rarity(gameplay)? == AuthoredWeaponRarity::Exotic) == exotic
+        && (!exotic || weapon_inventory_slot(gameplay)? == slot);
     let family_hash = read_u32(gameplay_strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
-    let mut candidates = Vec::new();
+    // A native collectible can belong to the right page without contributing to
+    // its acquired-count pools. Keep compatible alternatives for placement validation.
+    let mut candidates = if prefer_gameplay {
+        vec![gameplay_collectible]
+    } else {
+        Vec::new()
+    };
     for index in 0..collectible_count {
+        if prefer_gameplay && index == gameplay_collectible {
+            continue;
+        }
         let item = usize::from(read_u16(
             collectibles,
             collectible_rows + index * COLLECTIBLE_ROW_SIZE + COLLECTIBLE_ITEM_INDEX_OFFSET,

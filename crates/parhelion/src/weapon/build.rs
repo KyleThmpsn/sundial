@@ -165,7 +165,6 @@ pub(super) fn build_weapon_project_canonical(
         sandbox_perk_definition_template: &templates.definition,
         sandbox_perk_string_template: &templates.strings,
         custom_plugs: &custom_plugs,
-        metadata_layout: tables::METADATA_LAYOUT,
         sandbox_pattern_layout: tables::SANDBOX_PATTERN_LAYOUT,
         authored_pattern_global_ids: &runtime.pattern_global_ids,
     };

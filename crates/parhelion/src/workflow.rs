@@ -16,11 +16,12 @@ use crate::manifest::{
     recipe_selection_fingerprint,
 };
 #[cfg(test)]
-use crate::package_profile::{CANONICAL_ARTIFACT_FILE_NAMES, CANONICAL_PACKAGE_IDS};
 use crate::package_profile::{
-    CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE, PARHELION_ASSET_PACKAGE_ID,
-    PackageHeaderPrefix, SHADOWKEEP_HEADER_VERSION, authored_package,
-    authored_packages_for_file_names, canonical_package,
+    CANONICAL_ARTIFACT_FILE_NAMES, CANONICAL_PACKAGE_IDS, PARHELION_ASSET_PACKAGE_ID,
+};
+use crate::package_profile::{
+    CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE, PackageHeaderPrefix, SHADOWKEEP_HEADER_VERSION,
+    authored_package, authored_packages_for_file_names, canonical_package,
 };
 use crate::recipe::WeaponRecipe;
 use crate::weapon::{
@@ -267,9 +268,10 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
                 ));
             }
             authored.push(name);
-        } else if header.package_id == PARHELION_ASSET_PACKAGE_ID {
+        } else if crate::package_profile::is_authored_standalone_package_id(header.package_id) {
             return Err(format!(
-                "Package id {PARHELION_ASSET_PACKAGE_ID:04X} is reserved for Parhelion assets but is occupied by {}",
+                "Package id {:04X} is reserved for Parhelion assets but is occupied by {}",
+                header.package_id,
                 path.display()
             ));
         } else {

@@ -220,7 +220,7 @@ fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
     let fixture = NativeFixture::new();
     let payloads = vec![
         compressible(BLOCK_SIZE * 2 + TAIL_SIZE),
-        noise(BLOCK_SIZE),
+        noise(BLOCK_SIZE * 2),
         vec![0xA7],
     ];
     let new_tags = specs(&payloads);
@@ -243,17 +243,28 @@ fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
     let native_package = reopen_and_check(&native, &fixture.native_packages, &payloads);
     let raw_package = reopen_and_check(&raw, &fixture.raw_packages, &payloads);
     assert_eq!(native.plan.appended_tags, raw.plan.appended_tags);
-    assert_entry_flags(&native, &native_package, 0, &[1, 1, 1]);
-    assert_entry_flags(&native, &native_package, 1, &[0]);
-    assert_entry_flags(&native, &native_package, 2, &[0]);
-    for (index, payload) in payloads.iter().enumerate() {
-        assert_entry_flags(
-            &raw,
-            &raw_package,
-            index,
-            &vec![0; payload.len().div_ceil(BLOCK_SIZE)],
+    for package in [&native_package, &raw_package] {
+        assert!(
+            package
+                .entries()
+                .iter()
+                .any(|entry| entry.starting_block_offset != 0)
         );
     }
+    let flags = |artifact: &ExtendedOverlayArtifact| {
+        let layout = PackageLayout::parse(artifact.bytes()).unwrap();
+        (0..layout.block_count)
+            .map(|index| {
+                let row = layout.block_table_offset + index * BLOCK_HEADER_SIZE;
+                u16::from_le_bytes(artifact.bytes()[row + 10..row + 12].try_into().unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+    let native_flags = flags(&native);
+    assert!(native_flags.iter().all(|flag| matches!(flag, 0 | 1)));
+    assert!(native_flags.contains(&1));
+    assert!(native_flags.contains(&0));
+    assert!(flags(&raw).iter().all(|flag| *flag == 0));
     assert!(native.bytes().len() + BLOCK_SIZE < raw.bytes().len());
     eprintln!(
         "Standalone package bytes: raw={}, compressed={}",

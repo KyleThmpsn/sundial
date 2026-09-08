@@ -103,7 +103,7 @@ impl SundialApp {
                     "Selected-item editor beside the equipped and inventory grid"
                 }
             })
-            .weak(),
+            .color(super::ui::secondary_text_color(ui)),
         );
         ui.add_space(6.0);
         let preview = self.inventory_layout_preview_item(ui.ctx());
@@ -118,7 +118,10 @@ impl SundialApp {
         layout: CharacterInventoryLayout,
     ) {
         let Some(preview) = preview else {
-            ui.label(egui::RichText::new("Preview available after the catalog loads").weak());
+            ui.label(
+                egui::RichText::new("Preview available after the catalog loads")
+                    .color(super::ui::secondary_text_color(ui)),
+            );
             return;
         };
         let snapshot = preview.snapshot();
@@ -527,7 +530,7 @@ impl SundialApp {
             egui::RichText::new(
                 "Sundial saves account edits only to the active source. It never mirrors account data between state.sqlite3 and settings.json.",
             )
-            .weak(),
+            .color(super::ui::secondary_text_color(ui)),
         );
         ui.add_space(12.0);
         ui.strong("Catalog");
@@ -575,7 +578,7 @@ impl SundialApp {
             egui::RichText::new(
                 "Creates a fresh environment snapshot at startup and records later Sundial status messages. The log includes full local paths and file metadata, but not settings contents or account data.",
             )
-            .weak(),
+            .color(super::ui::secondary_text_color(ui)),
         );
         if let Some(path) = diagnostics::log_path() {
             ui.monospace(path.display().to_string());

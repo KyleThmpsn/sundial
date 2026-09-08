@@ -70,7 +70,7 @@ pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError>
     let target = canonical_directory(packages, "target packages")?;
     validate_target_package_chain(&target)?;
     let mut artifacts = Vec::new();
-    for profile in AUTHORED_PACKAGES {
+    for profile in all_authored_packages() {
         let path = target.join(profile.file_name);
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,

@@ -61,13 +61,15 @@ use crate::manifest::{
     recipe_selection_fingerprint,
 };
 #[cfg(test)]
+use crate::package_profile::AUTHORED_PACKAGES;
+#[cfg(test)]
 pub(crate) use crate::package_profile::AUTHORED_PATCH_ID;
 #[cfg(test)]
 pub(crate) use crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES;
 use crate::package_profile::{
-    ACCOUNT_UNLOCK_BANK, AUTHORED_PACKAGES, AuthoredPackage, CANONICAL_PACKAGES,
-    PACKAGE_HEADER_PREFIX_SIZE, PackageHeaderPrefix, authored_package,
-    authored_package_for_file_name, authored_packages_for_file_names, canonical_package,
+    ACCOUNT_UNLOCK_BANK, AuthoredPackage, CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE,
+    PackageHeaderPrefix, all_authored_packages, authored_package, authored_package_for_file_name,
+    authored_packages_for_file_names, canonical_package,
 };
 pub(crate) use crate::package_profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
 use crate::recipe::WeaponRecipe;
@@ -689,7 +691,11 @@ fn prepare_temporary_files_inner(
                 artifact.file_name
             ));
         }
-        if let Err(error) = validate_authored_package_file(&temporary_path, profile) {
+        if let Err(error) = validate_authored_package_file(
+            &temporary_path,
+            profile,
+            &validated.target_packages_directory,
+        ) {
             remove_file_if_present(&temporary_path);
             cleanup_prepared_files(&prepared);
             return Err(format!(

@@ -12,7 +12,6 @@ use tiger_pkg::TagHash;
 use crate::{
     NewWeaponPlan, SunriseProjectMetadata,
     artifact::ArtifactMetadata,
-    package_profile::CANONICAL_ARTIFACT_FILE_NAMES,
     recipe::{WeaponRecipe, validate_parhelion_namespace},
 };
 
@@ -460,12 +459,9 @@ fn validate_artifact_metadata(label: &str, artifacts: &[ArtifactMetadata]) -> Re
 }
 
 fn validate_ignored_authored_files(files: &[String]) -> Result<(), String> {
-    let canonical = CANONICAL_ARTIFACT_FILE_NAMES
-        .into_iter()
-        .collect::<BTreeSet<_>>();
     let mut seen = BTreeSet::new();
     for file in files {
-        if !canonical.contains(file.as_str()) {
+        if crate::package_profile::authored_package_for_file_name(file).is_none() {
             return Err(format!(
                 "The manifest ignored-authored list contains unexpected file {file:?}"
             ));

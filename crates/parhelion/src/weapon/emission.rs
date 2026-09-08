@@ -33,8 +33,7 @@ pub(super) struct PackageEmission {
     pub(super) watermarked_icon_containers: Vec<TagHash>,
     pub(super) watermark_reference_overrides: Vec<crate::NewTagReferenceOverride>,
     pub(super) badge_icon_tag: TagHash,
-    pub(super) badge_icon_reference_overrides: Vec<crate::NewTagReferenceOverride>,
-    pub(super) asset_new_tags: Vec<NewTagSpec>,
+    pub(super) asset_packages: crate::asset_packages::AssetPackages,
     pub(super) private_perk_runtime_append_start: usize,
     pub(super) private_perk_runtime_new_tags: Vec<NewTagSpec>,
     pub(super) entity_assignments: Vec<u8>,
@@ -104,8 +103,7 @@ pub(super) fn emit_packages(
         watermarked_icon_containers,
         watermark_reference_overrides,
         badge_icon_tag,
-        badge_icon_reference_overrides,
-        asset_new_tags,
+        asset_packages,
         private_perk_runtime_append_start,
         private_perk_runtime_new_tags,
         entity_assignments,
@@ -138,9 +136,34 @@ pub(super) fn emit_packages(
         runtime_dependencies,
         host_new_tags,
     } = emission;
+    asset_packages.validate()?;
+    let loading_manager =
+        sundial::package_authoring::open_shadowkeep_package_manager(package_directory)
+            .map_err(invalid)?;
+    let stock_loading;
+    let loading = if let Some(payload) = runtime_dependencies.as_deref() {
+        payload
+    } else {
+        stock_loading = loading_manager
+            .read_tag(RUNTIME_DEPENDENCY_COMPANION)
+            .map_err(|error| invalid(error.to_string()))?;
+        &stock_loading
+    };
+    crate::shared_tag_dependency_index::scoped::validate_asset_loading(
+        &loading_manager,
+        asset_packages
+            .packages
+            .iter()
+            .map(|package| (package.id, package.tags.as_slice())),
+        loading,
+        crate::LoadingOwner {
+            owner: RUNTIME_DEPENDENCY_ROOT,
+            companion: RUNTIME_DEPENDENCY_COMPANION,
+        },
+    )?;
+    drop(loading_manager);
     // Validate the completed map after every authoring pass, not only the stock source.
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
-    let asset_reference_overrides = badge_icon_reference_overrides;
     let host = build_extended_overlay_with_references(
         package_directory,
         HOST_PACKAGE_ID,
@@ -168,20 +191,26 @@ pub(super) fn emit_packages(
             host.plan.final_entry_count
         )));
     }
-    let assets = build_standalone_package_with_references(
-        package_directory,
-        PARHELION_ASSET_PACKAGE_ID,
-        PARHELION_ASSET_FILE_NAME,
-        &asset_new_tags,
-        &asset_reference_overrides,
-    )?;
-    if assets.plan.original_entry_count != 0
-        || assets.plan.final_entry_count != asset_new_tags.len()
-        || assets.plan.appended_tags.len() != asset_new_tags.len()
-    {
-        return Err(validation(
-            "Parhelion asset package did not contain the complete authored asset graph",
-        ));
+    let mut assets = Vec::new();
+    for package in &asset_packages.packages {
+        let profile = crate::package_profile::authored_package(package.id)
+            .ok_or_else(|| invalid("An authored asset package has no registered profile"))?;
+        let artifact = build_standalone_package_with_references(
+            package_directory,
+            package.id,
+            profile.file_name,
+            &package.tags,
+            &package.references,
+        )?;
+        if artifact.plan.original_entry_count != 0
+            || artifact.plan.final_entry_count != package.tags.len()
+            || artifact.plan.appended_tags.len() != package.tags.len()
+        {
+            return Err(validation(
+                "An asset package did not contain its complete authored resource group",
+            ));
+        }
+        assets.push(artifact);
     }
     let private_perk_runtime = if private_perk_runtime_new_tags.is_empty() {
         None
@@ -387,7 +416,7 @@ pub(super) fn emit_packages(
             )
         })
         .transpose()?;
-    let mut artifacts = vec![assets];
+    let mut artifacts = assets;
     artifacts.extend(hud_overlay);
     artifacts.extend(private_perk_runtime);
     artifacts.extend(runtime_dependency_overlay);

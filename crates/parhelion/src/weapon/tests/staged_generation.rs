@@ -641,3 +641,21 @@ fn real_rarity_switch_builds_both_collection_directions() {
     assert_eq!(bundle.plan.weapons.len(), 2);
     assert!(!bundle.artifacts.is_empty());
 }
+
+#[test]
+#[ignore = "requires PARHELION_COLLECTION_STOCK_PACKAGES; builds in memory, never installs"]
+fn real_sparse_metadata_donors_build_with_valid_collection_counts() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_COLLECTION_STOCK_PACKAGES").unwrap());
+    let bundle = build_weapon_project_after_catalog_validation(
+        &packages,
+        &WeaponProjectSpec {
+            weapons: vec![
+                project_weapon("parhelion.sparse.crooked-fang", 0xCBCC_1483),
+                project_weapon("parhelion.sparse.hawthorne", 0x6BB9_DF01),
+            ],
+        },
+    )
+    .expect("Native sparse metadata and alternate collection count exemplars should build");
+    assert_eq!(bundle.plan.weapons.len(), 2);
+    assert!(!bundle.artifacts.is_empty());
+}

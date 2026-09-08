@@ -85,8 +85,57 @@ fn character_with_defaults() -> Value {
 }
 
 #[test]
-fn reselecting_displayed_identity_default_repairs_only_after_selection() {
+fn metadata_edits_replace_stale_status_and_name_the_correct_history_action() {
     for version in [8, 16] {
+        for (current, choice, field, expected) in [
+            ("Male", "Female", "gender", 1),
+            ("Human", "Exo", "race", 2),
+            ("Titan", "Hunter", "class", 1),
+        ] {
+            let directory = TestDirectory::new("character-metadata-history-label");
+            let mut app = app(directory.0.clone());
+            set_document(
+                &mut app,
+                serde_json::json!({
+                    "version": version,
+                    "state": {"characters": [character_with_defaults()]}
+                }),
+            );
+            app.set_status("Not saved: an unrelated earlier error", true);
+            let before = app.document.clone();
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, vec![]);
+            let output = frame(&mut app, &ctx, vec![]);
+            click(&mut app, &ctx, text_position(&output, current));
+            let output = frame(&mut app, &ctx, vec![]);
+            click(&mut app, &ctx, text_position(&output, choice));
+            assert_eq!(
+                app.document
+                    .pointer(&format!("/state/characters/0/{field}")),
+                Some(&serde_json::json!(expected))
+            );
+            assert!(!app.status_is_error);
+            assert!(app.status.contains(field), "{}", app.status);
+            assert!(app.status.contains(choice), "{}", app.status);
+            app.record_document_change(before.clone());
+            app.undo();
+            assert_eq!(app.document, before);
+            assert!(app.status.starts_with("Undid: Changed Character 1"));
+            assert!(app.status.contains(field));
+            app.redo();
+            assert_eq!(
+                app.document
+                    .pointer(&format!("/state/characters/0/{field}")),
+                Some(&serde_json::json!(expected))
+            );
+            assert!(app.status.starts_with("Redid: Changed Character 1"));
+        }
+    }
+}
+
+#[test]
+fn reselecting_displayed_identity_default_repairs_only_after_selection() {
+    for version in [6, 8, 16] {
         for race in [None, Some(serde_json::json!("unrecognized"))] {
             let directory = TestDirectory::new("character-fields-reselect-identity");
             let mut app = app(directory.0.clone());
@@ -189,7 +238,7 @@ fn reselecting_displayed_ability_default_repairs_only_after_selection() {
 
 #[test]
 fn viewing_character_fields_preserves_omitted_and_unrecognized_metadata() {
-    for version in [8, 16] {
+    for version in [6, 8, 16] {
         for character in [
             serde_json::json!({"soid": 1, "future_character": {"keep": true}}),
             serde_json::json!({

@@ -685,6 +685,32 @@ fn source_inspection_ignores_a_recognized_partial_authored_set() {
 }
 
 #[test]
+fn source_inspection_ignores_owned_spill_but_rejects_foreign_occupancy() {
+    let directory = tempfile::tempdir().unwrap();
+    let packages = stock_source(directory.path());
+    let spill = authored_package(PARHELION_ASSET_PACKAGE_ID + 1).unwrap();
+    package(
+        &packages.join(spill.file_name),
+        spill.package_id,
+        0,
+        SUNDIAL_BUILD_SIGNATURE,
+    );
+    let request = snapshot(packages.clone(), directory.path().join("staging"));
+    let report = inspect_request(&request).unwrap();
+    assert_eq!(
+        report.ignored_authored_files,
+        vec![spill.file_name.to_owned()]
+    );
+    package(
+        &packages.join(spill.file_name),
+        spill.package_id,
+        0,
+        0xAABB_CCDD_EEFF_0011,
+    );
+    assert!(inspect_request(&request).is_err());
+}
+
+#[test]
 fn preflight_rejects_staging_inside_packages() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let packages = stock_source(directory.path());

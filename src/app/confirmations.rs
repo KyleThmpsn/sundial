@@ -17,7 +17,7 @@ impl SundialApp {
             let mut cancel = false;
             let response = egui::Modal::new("choose_sunrise_settings".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
-                ui.heading("Choose Sunrise settings");
+                ui.heading("Choose Sunrise Settings");
                 ui.add_space(6.0);
                 ui.label("Multiple settings.json files were found. Choose the one Project Sunrise uses for this installation.");
                 ui.add_space(10.0);
@@ -62,7 +62,7 @@ impl SundialApp {
                 draw_future_schema_warning(ui, &pending);
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Proceed with caution").clicked() {
+                    if ui.button("Proceed with Caution").clicked() {
                         proceed = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -89,7 +89,7 @@ impl SundialApp {
             let account_source = self.document.source_info().kind;
             let response = egui::Modal::new("restore_sunrise_defaults".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
-                ui.heading("Restore Sunrise defaults?");
+                ui.heading("Restore Sunrise Defaults?");
                 ui.add_space(6.0);
                 ui.label(match account_source {
                     AccountSourceKind::Json => {
@@ -104,12 +104,12 @@ impl SundialApp {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(self.settings_path.display().to_string())
-                        .weak()
-                        .small(),
+                        .monospace()
+                        .color(super::ui::secondary_text_color(ui)),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Restore defaults").clicked() {
+                    if ui.button("Restore Defaults").clicked() {
                         reset = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -253,10 +253,12 @@ impl SundialApp {
             let mut confirm = false;
             let mut cancel = false;
             let action = self.pending_save_action.unwrap_or(SaveAction::Save);
+            let review_width = (ctx.screen_rect().width() - 40.0).clamp(280.0, 760.0);
+            let review_height = (ctx.screen_rect().height() - 180.0).clamp(120.0, 430.0);
             let response = egui::Modal::new("review_settings_changes".into()).show(ctx, |ui| {
-                ui.set_width(760.0);
+                ui.set_width(review_width);
                 ui.heading(if action == SaveAction::SaveAndExit {
-                    "Review changes before saving and exiting"
+                    "Review Changes Before Saving and Exiting"
                 } else {
                     "Review Changes Before Saving"
                 });
@@ -282,9 +284,9 @@ impl SundialApp {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt("settings-change-review")
-                    .max_height(430.0)
+                    .max_height(review_height)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        ui.set_min_width(720.0);
                         for change in &changes {
                             ui.add(egui::Label::new(egui::RichText::new(change).monospace().size(13.0)).wrap().selectable(true));
                         }
@@ -292,17 +294,17 @@ impl SundialApp {
                 if truncated {
                     ui.label(
                         egui::RichText::new(
-                            "The review is capped; additional changed fields may not be listed.",
+                            "The review is capped. Additional changed fields may not be listed.",
                         )
-                        .weak(),
+                        .color(super::ui::secondary_text_color(ui)),
                     );
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let save_label = if action == SaveAction::SaveAndExit {
-                        "Save and exit"
+                        "Save and Exit"
                     } else {
-                        "Save changes"
+                        "Save Changes"
                     };
                     if ui.button(save_label).clicked() {
                         confirm = true;
@@ -320,7 +322,7 @@ impl SundialApp {
             } else if cancel {
                 self.confirmation = None;
                 self.pending_save_action = None;
-                self.set_status("Save cancelled; no files were changed", false);
+                self.set_status("Save cancelled. No files were changed", false);
             }
         }
     }
@@ -371,12 +373,12 @@ impl SundialApp {
             let mut discard = false;
             let mut cancel = false;
             let response = egui::Modal::new("reload_confirmation".into()).show(ctx, |ui| {
-                ui.heading("Discard unsaved changes?");
+                ui.heading("Discard Unsaved Changes?");
                 ui.add_space(6.0);
                 ui.label("Reloading will discard changes that have not been saved.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Discard and reload").clicked() {
+                    if ui.button("Discard and Reload").clicked() {
                         discard = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -398,15 +400,15 @@ impl SundialApp {
             let mut discard_and_exit = false;
             let mut cancel = false;
             let response = egui::Modal::new("exit_confirmation".into()).show(ctx, |ui| {
-                ui.heading("Unsaved changes");
+                ui.heading("Unsaved Changes");
                 ui.add_space(6.0);
                 ui.label("Save your changes before closing Sundial?");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save and exit").clicked() {
+                    if ui.button("Save and Exit").clicked() {
                         save_and_exit = true;
                     }
-                    if ui.button("Discard and exit").clicked() {
+                    if ui.button("Discard and Exit").clicked() {
                         discard_and_exit = true;
                     }
                     if ui.button("Cancel").clicked() {

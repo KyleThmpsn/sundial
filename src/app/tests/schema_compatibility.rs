@@ -15,7 +15,7 @@ fn document(version: u64) -> Value {
 fn official_release_v6_account_validates_and_preserves_fields() {
     // Sunrise 0.3.2 / 4aebb148e92176c2b9d64a07b94068d759945853 defaults.
     let mut document: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/sunrise-v6-0.3.2-defaults.json"
+        "../../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"
     ))
     .unwrap();
     assert_eq!(document["version"], 6);

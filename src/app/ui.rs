@@ -4,6 +4,23 @@ use super::glyphs::{self, Glyph};
 
 const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
 
+pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
+    egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
+}
+
+pub(super) fn configure_contrast(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        if style.visuals.dark_mode {
+            style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
+            style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);
+            style.visuals.warn_fg_color = egui::Color32::from_rgb(255, 180, 84);
+        } else {
+            style.visuals.error_fg_color = egui::Color32::from_rgb(175, 0, 0);
+            style.visuals.warn_fg_color = egui::Color32::from_rgb(143, 74, 0);
+        }
+    });
+}
+
 pub(super) const TABLE_CELL_HEIGHT: f32 = 24.0;
 pub(super) const TABLE_COLUMN_GAP: f32 = 12.0;
 pub(super) const HIERARCHY_INDENT: f32 = 14.0;
@@ -220,4 +237,51 @@ pub(super) fn single_line_galley(
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
     ui.fonts(|fonts| fonts.layout_job(job))
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn luminance(color: egui::Color32) -> f32 {
+        let linear = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        linear(color.r()) * 0.2126 + linear(color.g()) * 0.7152 + linear(color.b()) * 0.0722
+    }
+
+    #[test]
+    fn guidance_and_status_colors_remain_readable_after_theme_changes() {
+        let ctx = egui::Context::default();
+        configure_contrast(&ctx);
+        for theme in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
+            ctx.set_theme(theme);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let visuals = ui.visuals();
+                    for foreground in [
+                        secondary_text_color(ui),
+                        visuals.warn_fg_color,
+                        visuals.error_fg_color,
+                    ] {
+                        for background in [
+                            visuals.panel_fill,
+                            visuals.window_fill(),
+                            visuals.extreme_bg_color,
+                        ] {
+                            let a = luminance(foreground);
+                            let b = luminance(background);
+                            let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                            assert!(contrast >= 4.5, "contrast {contrast}, theme {theme:?}");
+                        }
+                    }
+                });
+            });
+        }
+    }
 }

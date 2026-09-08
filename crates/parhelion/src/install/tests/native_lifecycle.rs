@@ -1,6 +1,9 @@
 //! Native release acceptance on copied package inputs, never the live installation.
 use super::*;
 
+const CHILD_SCHEMA: &str = "PARHELION_LIFECYCLE_CHILD_SCHEMA";
+const CHILD_ROOT: &str = "PARHELION_LIFECYCLE_CHILD_ROOT";
+
 struct NativeFixture {
     _temporary: TempDir,
     request: InstallRequest,
@@ -10,14 +13,14 @@ struct NativeFixture {
 }
 
 impl NativeFixture {
-    fn copy_from_environment() -> Self {
+    fn copy_from_environment(version: u64) -> Self {
         let source =
             PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
         let stage = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
         let mut manifest: ManifestDocument =
             serde_json::from_slice(&fs::read(stage.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
         manifest.validate().unwrap();
-        let temporary = TempDir::new().unwrap();
+        let temporary = tempfile::tempdir_in(std::env::var_os(CHILD_ROOT).unwrap()).unwrap();
         let target = temporary.path().join("packages");
         fs::create_dir(&target).unwrap();
         let install = source.parent().unwrap();
@@ -53,7 +56,7 @@ impl NativeFixture {
         slots.sort_unstable();
         slots.dedup();
         let account_before = serde_json::to_vec(&json!({
-            "version": 16, "release_test_sentinel": {"keep": true},
+            "version": version, "release_test_sentinel": {"keep": true},
             "state": {"unlocks": {"account_flag_runs": slots.into_iter().map(|slot| [slot, 1]).collect::<Vec<_>>()}}
         })).unwrap();
         let settings = temporary.path().join("settings.json");
@@ -138,7 +141,39 @@ fn copy_stage_for_target(
 #[test]
 #[ignore = "copies native files into a disposable directory; requires PARHELION_LIFECYCLE_SOURCE_PACKAGES and PARHELION_TEST_STAGED_RUN"]
 fn staged_native_packages_install_repeat_recover_and_uninstall_without_changing_stock() {
-    let fixture = NativeFixture::copy_from_environment();
+    if let Some(version) = std::env::var_os(CHILD_SCHEMA) {
+        let version = version.to_str().unwrap().parse().unwrap();
+        assert!(matches!(version, 6 | 16));
+        verify_native_lifecycle(version);
+        return;
+    }
+    // A parent owns the fixtures until each child's process-global codec has unloaded.
+    // Every schema starts cold, without a preceding catalog scan masking initialization bugs.
+    let root = TempDir::new().unwrap();
+    for version in [6, 16] {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "install::tests::native_lifecycle::staged_native_packages_install_repeat_recover_and_uninstall_without_changing_stock",
+            "--exact", "--ignored", "--nocapture", "--test-threads=1",
+        ]).env(CHILD_SCHEMA, version.to_string()).env(CHILD_ROOT, root.path());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "schema {version} lifecycle failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+}
+
+fn verify_native_lifecycle(version: u64) {
+    let fixture = NativeFixture::copy_from_environment(version);
     let failed =
         install_staged_packages_inner(&fixture.request, Some(1), DEFAULT_CACHE_INVALIDATION_OPS)
             .unwrap_err();
@@ -201,7 +236,7 @@ fn staged_native_packages_install_repeat_recover_and_uninstall_without_changing_
     }
     fixture.assert_stock_and_account_unchanged();
     println!(
-        "Native lifecycle passed: {} authored packages; {} stock files unchanged; account unchanged",
+        "Native lifecycle passed for schema {version}: {} authored packages, {} stock files unchanged, account unchanged",
         fixture.manifest.artifacts.len(),
         fixture.manifest.source_artifacts.len()
     );
@@ -209,6 +244,7 @@ fn staged_native_packages_install_repeat_recover_and_uninstall_without_changing_
 
 fn verify_interrupted_uninstall_recovery(fixture: &NativeFixture) {
     static CHECKS: AtomicU64 = AtomicU64::new(0);
+    CHECKS.store(0, Ordering::SeqCst);
     fn starts_during_rollback() -> Result<bool, String> {
         Ok(CHECKS.fetch_add(1, Ordering::SeqCst) >= 2)
     }

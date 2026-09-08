@@ -54,7 +54,7 @@ impl ImageImport {
             if ui
                 .add_enabled(
                     enabled && !self.is_pending(),
-                    egui::Button::new("Import image…"),
+                    egui::Button::new("Import Image…"),
                 )
                 .clicked()
             {
@@ -62,7 +62,7 @@ impl ImageImport {
             }
             if draft.imported_image.is_some()
                 && ui
-                    .add_enabled(!self.is_pending(), egui::Button::new("Use donor artwork"))
+                    .add_enabled(!self.is_pending(), egui::Button::new("Use Donor Artwork"))
                     .clicked()
             {
                 draft.imported_image = None;
@@ -74,11 +74,11 @@ impl ImageImport {
                 ui.label("Importing…");
             }
         });
-        ui.small(if draft.imported_image.is_some() {
+        ui.label(egui::RichText::new(if draft.imported_image.is_some() {
             "Imported image · saved in this recipe. Proportions and transparency are preserved."
         } else {
             "PNG or JPEG · up to 16 MiB / 4096×4096. Fitted without cropping. Transparent PNG recommended."
-        });
+        }).color(super::secondary_text_color(ui)));
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }

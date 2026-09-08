@@ -181,6 +181,7 @@ pub(crate) const AUTHORED_PACKAGES: [AuthoredPackage; CANONICAL_PACKAGES.len() +
     authored_packages();
 
 /// Sorted output names used by staged-manifest validation.
+#[cfg(test)]
 pub(crate) const CANONICAL_ARTIFACT_FILE_NAMES: [&str; CANONICAL_PACKAGES.len() + 1] =
     canonical_artifact_file_names();
 pub(crate) const CANONICAL_PACKAGE_IDS: [u16; CANONICAL_PACKAGES.len()] = canonical_package_ids();
@@ -198,6 +199,9 @@ pub(crate) fn canonical_package(package_id: u16) -> Option<CanonicalPackage> {
 }
 
 pub(crate) fn authored_package(package_id: u16) -> Option<AuthoredPackage> {
+    if is_authored_standalone_package_id(package_id) {
+        return Some(asset_package(package_id));
+    }
     AUTHORED_PACKAGES
         .iter()
         .copied()
@@ -205,6 +209,17 @@ pub(crate) fn authored_package(package_id: u16) -> Option<AuthoredPackage> {
 }
 
 pub(crate) fn authored_package_for_file_name(file_name: &str) -> Option<AuthoredPackage> {
+    if let Some(encoded) = file_name
+        .strip_prefix("w64_parhelion_assets_")
+        .and_then(|name| name.strip_suffix("_0.pkg"))
+    {
+        let id = u16::from_str_radix(encoded, 16).ok()?;
+        if is_authored_standalone_package_id(id) {
+            let profile = asset_package(id);
+            return (profile.file_name == file_name).then_some(profile);
+        }
+        return None;
+    }
     AUTHORED_PACKAGES
         .iter()
         .copied()
@@ -238,11 +253,35 @@ pub(crate) fn authored_packages_for_file_names<'a>(
             missing.join(", ")
         ));
     }
-    Ok(AUTHORED_PACKAGES
-        .iter()
-        .copied()
+    Ok(all_authored_packages()
         .filter(|profile| selected.contains(profile.file_name))
         .collect())
+}
+
+fn asset_package(package_id: u16) -> AuthoredPackage {
+    static NAMES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        (MIN_AUTHORED_STANDALONE_PACKAGE_ID..=MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+            .map(|id| format!("w64_parhelion_assets_{id:04x}_0.pkg"))
+            .collect()
+    });
+    AuthoredPackage {
+        package_id,
+        patch_id: 0,
+        file_name: &NAMES[usize::from(package_id - MIN_AUTHORED_STANDALONE_PACKAGE_ID)],
+        stock_overlay: false,
+        required_output: package_id == PARHELION_ASSET_PACKAGE_ID,
+    }
+}
+
+/// Includes optional spill packages for ownership checks, retirement, and recovery.
+pub(crate) fn all_authored_packages() -> impl Iterator<Item = AuthoredPackage> {
+    (MIN_AUTHORED_STANDALONE_PACKAGE_ID..=MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+        .map(asset_package)
+        .chain(
+            CANONICAL_PACKAGES
+                .into_iter()
+                .map(CanonicalPackage::authored),
+        )
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -271,6 +310,7 @@ const fn authored_packages() -> [AuthoredPackage; CANONICAL_PACKAGES.len() + 1] 
     packages
 }
 
+#[cfg(test)]
 const fn canonical_artifact_file_names() -> [&'static str; CANONICAL_PACKAGES.len() + 1] {
     let mut names = [""; CANONICAL_PACKAGES.len() + 1];
     let mut index = 0;
@@ -388,6 +428,28 @@ mod tests {
             all.iter()
                 .any(|profile| profile.package_id == PRIVATE_PERK_RUNTIME_PACKAGE_ID)
         );
+    }
+
+    #[test]
+    fn spill_profiles_are_optional_canonical_and_installed_before_roots() {
+        let spill = authored_package(0x0AA1).unwrap();
+        assert_eq!(spill.file_name, "w64_parhelion_assets_0aa1_0.pkg");
+        assert!(!spill.required_output);
+        assert!(!spill.stock_overlay);
+        let mut names = CANONICAL_ARTIFACT_FILE_NAMES.to_vec();
+        names.push(spill.file_name);
+        let selected = authored_packages_for_file_names(names).unwrap();
+        assert_eq!(selected[0], PARHELION_ASSET_PACKAGE);
+        assert_eq!(selected[1], spill);
+        assert!(selected[2..].iter().all(|profile| profile.stock_overlay));
+        for name in [
+            "w64_parhelion_assets_0AA1_0.pkg",
+            "w64_parhelion_assets_0aa1_1.pkg",
+            "w64_parhelion_assets_0d00_0.pkg",
+            "w64_foreign_0aa1_0.pkg",
+        ] {
+            assert!(authored_package_for_file_name(name).is_none());
+        }
     }
 
     #[test]

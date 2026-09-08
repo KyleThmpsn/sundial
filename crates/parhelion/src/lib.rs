@@ -15,6 +15,7 @@
 mod app;
 mod appended_tags;
 mod artifact;
+mod asset_packages;
 mod badge;
 mod badge_icon;
 mod block_codec;
@@ -36,6 +37,8 @@ mod recipe;
 mod recipe_library;
 mod runtime;
 mod shared_tag_dependency_index;
+pub use shared_tag_dependency_index::partition::{LoadingResource, partition_loading_resources};
+pub use shared_tag_dependency_index::scoped::{LoadingOwner, clone_scoped_dependencies};
 mod shared_tag_memory;
 mod tag_payload;
 mod watermark;

@@ -1,5 +1,56 @@
 //! Focused policy and regression tests for the inventory page feature.
 
+#[test]
+fn blocked_transfer_rows_are_readable_but_never_clickable_or_focusable() {
+    use super::{
+        interactions::draw_character_transfer_destination, model::CharacterTransferDestination,
+    };
+    use eframe::egui;
+
+    for enabled in [false, true] {
+        let context = egui::Context::default();
+        let destination = CharacterTransferDestination {
+            character_index: 1,
+            label: "Titan".to_owned(),
+            detail: "Kinetic Weapons is full".to_owned(),
+            tooltip: "Kinetic Weapons is full".to_owned(),
+            enabled,
+        };
+        let mut position = egui::Pos2::ZERO;
+        let mut clicked = false;
+        for phase in 0..3 {
+            let events = if phase == 0 {
+                vec![]
+            } else {
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            let _ = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let response = draw_character_transfer_destination(ui, &destination);
+                        position = response.rect.center();
+                        assert_eq!(response.sense.is_focusable(), enabled);
+                        clicked |= response.clicked();
+                    });
+                },
+            );
+        }
+        assert_eq!(clicked, enabled);
+    }
+}
+
 use std::collections::HashMap;
 
 use crate::{

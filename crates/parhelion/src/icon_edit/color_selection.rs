@@ -118,14 +118,14 @@ pub(super) fn draw_controls(
 ) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
-        ui.weak(format!(
-            "{} / {MAX_REPLACEMENTS} replacements",
-            replacements.len()
-        ));
+        ui.colored_label(
+            super::secondary_text_color(ui),
+            format!("{} / {MAX_REPLACEMENTS} replacements", replacements.len()),
+        );
         if ui
             .add_enabled(
                 replacements.len() < MAX_REPLACEMENTS,
-                egui::Button::new("Add replacement"),
+                egui::Button::new("Add Replacement"),
             )
             .clicked()
         {
@@ -134,7 +134,10 @@ pub(super) fn draw_controls(
             changed = true;
         }
     });
-    ui.weak("Pick source colors. Replacements keep their chosen color and source shading.");
+    ui.colored_label(
+        super::secondary_text_color(ui),
+        "Pick source colors. Replacements keep their chosen color and source shading.",
+    );
     let pages = replacements.len().div_ceil(per_page).max(1);
     *page = (*page).min(pages - 1);
     let mut remove = None;

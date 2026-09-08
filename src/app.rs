@@ -1197,6 +1197,7 @@ pub(crate) fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe
             #[cfg(windows)]
             set_windows_taskbar_icon(cc);
             cc.egui_ctx.set_theme(preferences.color_theme.egui_theme());
+            ui::configure_contrast(&cc.egui_ctx);
             Ok(Box::new(StartupApp::new(
                 install,
                 preferences,

@@ -91,7 +91,7 @@ pub(super) fn draw_loadout_confirmation(
                 egui::RichText::new(
                     "Checked sections regenerate equipped items immediately. Held inventory is preserved unless its replacement option is enabled. One equipped exotic is kept per weapon and armor set.",
                 )
-                .weak(),
+                .color(crate::app::ui::secondary_text_color(ui)),
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {

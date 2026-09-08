@@ -81,17 +81,9 @@ pub(super) fn draw_character_transfer_destinations(
         ui.spacing_mut().item_spacing.y = TRANSFER_DESTINATION_ROW_SPACING;
         ui.label(egui::RichText::new("Move to another character").strong());
         for destination in destinations {
-            let response = ui
-                .add_enabled_ui(destination.enabled, |ui| {
-                    draw_character_transfer_destination(ui, destination)
-                })
-                .inner;
-            let response = if destination.enabled {
-                response.on_hover_text(&destination.tooltip)
-            } else {
-                response.on_disabled_hover_text(&destination.tooltip)
-            };
-            if response.clicked() {
+            let response = draw_character_transfer_destination(ui, destination)
+                .on_hover_text(&destination.tooltip);
+            if destination.enabled && response.clicked() {
                 selected = Some(destination.character_index);
             }
         }
@@ -103,7 +95,12 @@ pub(super) fn draw_character_transfer_destination(
     ui: &mut egui::Ui,
     destination: &CharacterTransferDestination,
 ) -> egui::Response {
-    draw_inventory_item_menu_text(ui, &destination.label, &destination.detail)
+    draw_inventory_item_menu_text_enabled(
+        ui,
+        &destination.label,
+        &destination.detail,
+        destination.enabled,
+    )
 }
 
 pub(super) fn character_bucket_usage_detail(
@@ -122,24 +119,36 @@ pub(super) fn character_bucket_usage_detail(
     ))
 }
 
-pub(super) fn draw_inventory_item_menu_text(
+fn draw_inventory_item_menu_text_enabled(
     ui: &mut egui::Ui,
     primary_text: &str,
     secondary_text: &str,
+    enabled: bool,
 ) -> egui::Response {
     const HORIZONTAL_PADDING: f32 = 4.0;
     const TEXT_GAP: f32 = 8.0;
     const PRIMARY_WIDTH_SHARE: f32 = 0.45;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), TRANSFER_DESTINATION_ROW_HEIGHT),
-        egui::Sense::click(),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            enabled && ui.is_enabled(),
+            format!("{primary_text}: {secondary_text}"),
+        )
+    });
     if !ui.is_rect_visible(rect) {
         return response;
     }
 
     let visuals = ui.style().interact(&response);
-    if response.hovered() || response.has_focus() {
+    if enabled && (response.hovered() || response.has_focus()) {
         ui.painter().rect(
             rect,
             visuals.corner_radius,
@@ -153,8 +162,12 @@ pub(super) fn draw_inventory_item_menu_text(
     let available_text_width = (text_width - TEXT_GAP).max(0.0);
     let primary_font = egui::TextStyle::Button.resolve(ui.style());
     let secondary_font = egui::TextStyle::Body.resolve(ui.style());
-    let primary_color = visuals.text_color();
-    let secondary_color = ui.visuals().weak_text_color();
+    let secondary_color = super::super::ui::secondary_text_color(ui);
+    let primary_color = if enabled {
+        visuals.text_color()
+    } else {
+        secondary_color
+    };
     let natural_primary = transfer_menu_galley(
         ui,
         primary_text,

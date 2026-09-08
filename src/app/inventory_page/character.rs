@@ -660,11 +660,10 @@ impl SundialApp {
                     Some("Item definition is unavailable".to_owned())
                 };
                 let enabled = unavailable_reason.is_none();
-                let detail = bucket_detail.unwrap_or_else(|| {
-                    unavailable_reason
-                        .clone()
-                        .unwrap_or_else(|| "Bucket usage unavailable".to_owned())
-                });
+                let detail = unavailable_reason
+                    .clone()
+                    .or(bucket_detail)
+                    .unwrap_or_else(|| "Bucket usage unavailable".to_owned());
                 CharacterTransferDestination {
                     character_index,
                     label: label.clone(),

@@ -9,12 +9,12 @@ fn native_full_loadouts_fit_every_bucket_for_all_classes_and_supported_schemas()
     let catalog =
         Catalog::load_or_scan_with_progress(&install, cache.0.join("catalog.json"), false, |_| {})
             .unwrap();
-    for version in [8, 16] {
+    for version in [6, 8, 16] {
         for class in 0..3 {
             let mut document = emote_document(version);
             document.json_mut()["state"]["characters"][0]["class"] = class.into();
             let original = document.clone();
-            for _ in 0..2 {
+            for _ in 0..16 {
                 randomize_full_loadout(
                     &mut document,
                     &catalog,

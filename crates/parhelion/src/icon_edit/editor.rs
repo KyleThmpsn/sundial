@@ -118,7 +118,11 @@ impl WeaponIconEditor {
                 ui.horizontal(|ui| {
                     ui.heading("Edit Weapon Icon");
                     ui.add(
-                        egui::Label::new(egui::RichText::new(&self.donor_name).weak()).truncate(),
+                        egui::Label::new(
+                            egui::RichText::new(&self.donor_name)
+                                .color(super::secondary_text_color(ui)),
+                        )
+                        .truncate(),
                     );
                 });
                 ui.separator();
@@ -205,7 +209,7 @@ impl WeaponIconEditor {
             ),
             IconEditorTab::Adjust => self.draw_color_controls(ui),
             IconEditorTab::Image => {
-                ui.strong("Artwork source");
+                ui.strong("Artwork Source");
                 let imported = self
                     .image_import
                     .draw(ui, &mut self.draft, self.preview.is_ok());
@@ -313,10 +317,10 @@ impl WeaponIconEditor {
                     }
                 });
             changed |= ui
-                .checkbox(&mut self.draft.flip_horizontal, "Flip horizontal")
+                .checkbox(&mut self.draft.flip_horizontal, "Flip Horizontal")
                 .changed();
             changed |= ui
-                .checkbox(&mut self.draft.flip_vertical, "Flip vertical")
+                .checkbox(&mut self.draft.flip_vertical, "Flip Vertical")
                 .changed();
         });
         changed
@@ -329,7 +333,7 @@ impl WeaponIconEditor {
             let grayscale = ui
                 .add_enabled(
                     self.draft.saturation != WeaponIconEdit::MIN_COLOR_ADJUSTMENT,
-                    egui::Button::new("Set grayscale"),
+                    egui::Button::new("Set Grayscale"),
                 )
                 .on_hover_text(
                     "One-shot action: sets Saturation to -100%. Adjust or reset Saturation to restore color.",
@@ -341,7 +345,7 @@ impl WeaponIconEditor {
             if ui
                 .add_enabled(
                     !self.draft.color_is_default(),
-                    egui::Button::new("Reset color"),
+                    egui::Button::new("Reset Color"),
                 )
                 .clicked()
             {
@@ -399,7 +403,7 @@ impl WeaponIconEditor {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             changed |= ui
-                .checkbox(&mut self.draft.invert, "Invert colors")
+                .checkbox(&mut self.draft.invert, "Invert Colors")
                 .changed();
             ui.separator();
             ui.label("Opacity");
@@ -432,7 +436,7 @@ impl WeaponIconEditor {
         if compact {
             ui.horizontal_wrapped(|ui| {
                 reset = ui
-                    .add_enabled(reset_enabled, egui::Button::new("Reset all"))
+                    .add_enabled(reset_enabled, egui::Button::new("Reset All"))
                     .clicked();
                 cancel = ui.button("Cancel").clicked();
             });
@@ -440,7 +444,7 @@ impl WeaponIconEditor {
         } else {
             ui.horizontal(|ui| {
                 reset = ui
-                    .add_enabled(reset_enabled, egui::Button::new("Reset all"))
+                    .add_enabled(reset_enabled, egui::Button::new("Reset All"))
                     .clicked();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     apply = draw_primary_apply_button(ui, apply_enabled, false);
@@ -504,7 +508,7 @@ impl WeaponIconEditor {
 fn draw_primary_apply_button(ui: &mut egui::Ui, enabled: bool, fill_width: bool) -> bool {
     let fill = ui.visuals().selection.bg_fill;
     let button = || {
-        egui::Button::new(egui::RichText::new("Apply icon changes").strong())
+        egui::Button::new(egui::RichText::new("Apply Icon Changes").strong())
             .fill(fill)
             .min_size([150.0, 28.0].into())
     };

@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn json_field_of_view_respects_legacy_and_current_schema_limits() {
         let key = AccountSettingKey::known_preference("field_of_view").unwrap();
-        for version in [8, 13, MAX_SUPPORTED_SCHEMA] {
+        for version in [6, 8, 13, MAX_SUPPORTED_SCHEMA] {
             let maximum = if version >= 16 { 155 } else { 105 };
             let mut document = document_for(&key, version);
 
@@ -257,5 +257,88 @@ mod tests {
 
         assert_eq!(error, "key bindings are read-only");
         assert_eq!(document, before);
+    }
+
+    #[test]
+    fn real_release_preferences_match_legacy_preserve_unknown_data_and_roundtrip() {
+        for fixture in [
+            include_str!("../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"),
+            include_str!("../../tests/fixtures/sunrise-v13-a57dc9a9-defaults.json"),
+            include_str!("../../tests/fixtures/sunrise-v16-1120748-defaults.json"),
+        ] {
+            let mut original: Value = serde_json::from_str(fixture).unwrap();
+            original["state"]["account"]["settings"]["future_settings"] =
+                json!({"keep":[null,false,"玩家"]});
+            let mut accepted = 0;
+            for command in preference_cases() {
+                let mut actual = original.clone();
+                let mut expected = original.clone();
+                let result = apply_commands(&mut actual, vec![command.clone()]);
+                let legacy_result = legacy::apply_commands(&mut expected, vec![command.clone()]);
+                assert_eq!(result.is_ok(), legacy_result.is_ok(), "{command:?}");
+                assert_eq!(
+                    actual, expected,
+                    "schema {}: {command:?}",
+                    original["version"]
+                );
+                if let Err(error) = result {
+                    assert!(error.contains("missing"), "{error}: {command:?}");
+                    assert_eq!(actual, original);
+                    continue;
+                }
+                accepted += 1;
+                crate::app::settings::validate_document(&actual).unwrap();
+                let encoded = crate::app::settings::encode_settings(&actual).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), actual);
+                actual["state"]["account"]["settings"] =
+                    original["state"]["account"]["settings"].clone();
+                assert_eq!(actual, original);
+            }
+            assert!(
+                accepted > 30,
+                "schema {} only exercised {accepted} controls",
+                original["version"]
+            );
+        }
+    }
+
+    #[test]
+    fn real_release_key_bindings_and_failed_batches_preserve_the_other_slot() {
+        for fixture in [
+            include_str!("../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"),
+            include_str!("../../tests/fixtures/sunrise-v16-1120748-defaults.json"),
+        ] {
+            let mut original: Value = serde_json::from_str(fixture).unwrap();
+            original["state"]["account"]["settings"]["key_bindings"]["fire"]["future"] =
+                json!({"keep":true});
+            for slot in [KeyBindingSlot::Primary, KeyBindingSlot::Secondary] {
+                for value in [
+                    AccountSettingValue::text("control+f"),
+                    AccountSettingValue::text("space"),
+                    AccountSettingValue::Unassigned,
+                ] {
+                    let mut actual = original.clone();
+                    let key = AccountSettingKey::key_binding("fire", slot);
+                    let command = set(key.clone(), value);
+                    apply_commands(&mut actual, vec![command.clone()]).unwrap();
+                    let mut expected = original.clone();
+                    legacy::apply_commands(&mut expected, vec![command.clone()]).unwrap();
+                    assert_eq!(actual, expected);
+                    crate::app::settings::validate_document(&actual).unwrap();
+                    let before = actual.clone();
+                    assert!(
+                        apply_commands(
+                            &mut actual,
+                            vec![
+                                command,
+                                set(key, AccountSettingValue::text("definitely not a valid key"))
+                            ]
+                        )
+                        .is_err()
+                    );
+                    assert_eq!(actual, before);
+                }
+            }
+        }
     }
 }

@@ -32,13 +32,12 @@ fn with_generation<T>(
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its
         // output directory alone contains those stock blocks.
-        let ignored = AUTHORED_PACKAGES
-            .iter()
+        let ignored = all_authored_packages()
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
         let result = (|| {
-            for profile in AUTHORED_PACKAGES {
+            for profile in all_authored_packages() {
                 let path = authored_directory.join(profile.file_name);
                 if path.is_file() {
                     view.add_overlay(&path)?;

@@ -33,6 +33,7 @@ const SHARED_TAG_FILE_SUBTYPE: u8 = 0;
 
 #[cfg(all(test, windows, target_pointer_width = "64"))]
 mod compression_tests;
+mod packed;
 
 #[derive(Clone, Debug)]
 pub struct ReplacementSpec {
@@ -224,11 +225,8 @@ pub(crate) fn build_standalone_package_with_references(
         resolve_appended_metadata(package_directory, package_id, 0, new_tags, &reference_modes)?;
     let shared_tag_enrollments =
         resolve_shared_tag_enrollments(package_id, 0, new_tags, &metadata)?;
-    let payload_block_counts = new_tags
-        .iter()
-        .map(|tag| tag.payload.len().div_ceil(BLOCK_SIZE))
-        .collect::<Vec<_>>();
-    let block_count = payload_block_counts.iter().sum::<usize>();
+    let packing = packed::plan(new_tags.iter().map(|tag| tag.payload.len()))?;
+    let block_count = packing.block_count;
     if block_count == 0 || block_count > MAX_BLOCK_COUNT {
         return Err(AuthoringError::InvalidInput(format!(
             "Standalone package {package_id:04X} needs {block_count} blocks; the supported range is 1..={MAX_BLOCK_COUNT}"
@@ -250,23 +248,28 @@ pub(crate) fn build_standalone_package_with_references(
 
     let block_encoder = PackageBlockEncoder::open_for_packages(package_directory)?;
     let tag_allocator = AppendedTagAllocator::new(package_id, 0);
-    let mut next_block = 0usize;
+    let written_blocks = packed::visit_blocks(
+        new_tags.iter().map(|tag| tag.payload.as_slice()),
+        |index, chunk| {
+            let encoded = block_encoder.encode(package_id, chunk)?;
+            let payload_offset = append_aligned(&mut artifact, &encoded.stored);
+            let block_row = layout.block_table_offset + index * BLOCK_HEADER_SIZE;
+            write_block_header(&mut artifact, block_row, payload_offset, &encoded, 0)
+        },
+    )?;
+    if written_blocks != block_count {
+        return Err(validation(
+            "Standalone package block allocation did not converge",
+        ));
+    }
     let mut appended_tags = Vec::with_capacity(new_tags.len());
-    for (index, (spec, expected_blocks)) in new_tags
-        .iter()
-        .zip(payload_block_counts.iter().copied())
-        .enumerate()
-    {
-        write_payload(
+    for (index, (spec, location)) in new_tags.iter().zip(&packing.locations).enumerate() {
+        write_entry_location(
             &mut artifact,
-            &layout,
-            layout.block_table_offset,
-            index,
-            &spec.payload,
-            0,
-            &mut next_block,
-            expected_blocks,
-            &block_encoder,
+            layout.entry_table_offset + index * ENTRY_HEADER_SIZE,
+            location.block,
+            location.offset,
+            spec.payload.len(),
         )?;
         appended_tags.push(AppendedTag {
             tag: tag_allocator.assigned_tag(
@@ -277,11 +280,6 @@ pub(crate) fn build_standalone_package_with_references(
             template_tag: spec.template_tag,
             file_size: spec.payload.len(),
         });
-    }
-    if next_block != block_count {
-        return Err(validation(
-            "Standalone package block allocation did not converge",
-        ));
     }
     layout.update_package_tables_hash(&mut artifact)?;
     append_opaque_trailer(&mut artifact, &opaque_trailer)?;

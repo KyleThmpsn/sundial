@@ -17,6 +17,9 @@ const INDEX_CLASS: u64 = 0x8080_000A;
 const GROUP_START: usize = 0x50;
 const GROUP_SIZE: usize = 0x28;
 
+pub(crate) mod partition;
+pub(crate) mod scoped;
+
 #[derive(Clone, Debug, Default)]
 struct Group {
     bitmap: Vec<u32>,
@@ -317,10 +320,10 @@ pub(crate) fn enroll_inherited_dependencies(
 mod tests {
     use super::*;
     use crate::tag_payload::write_u32;
-    const OWNER: TagHash = TagHash(0x80EC3F62);
-    const COMPANION: TagHash = TagHash(0x80EE8CBD);
+    pub(super) const OWNER: TagHash = TagHash(0x80EC3F62);
+    pub(super) const COMPANION: TagHash = TagHash(0x80EE8CBD);
 
-    fn fixture() -> Vec<u8> {
+    pub(super) fn fixture() -> Vec<u8> {
         let mut prefix = vec![0; GROUP_START];
         write_u32(&mut prefix, 8, COMPANION.0).unwrap();
         write_u32(&mut prefix, 12, OWNER.0).unwrap();

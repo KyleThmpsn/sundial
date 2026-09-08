@@ -186,7 +186,7 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
                         },
                     );
                 }
-                for label in ["Cancel", "Apply icon changes"] {
+                for label in ["Cancel", "Apply Icon Changes"] {
                     let rect = output
                         .shapes
                         .iter()
@@ -303,12 +303,12 @@ fn editor_cancel_and_reset_do_not_modify_the_recipe_artwork() {
         .shapes
         .iter()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Reset all" => {
+            egui::Shape::Text(text) if text.galley.job.text == "Reset All" => {
                 Some(text.pos + text.galley.size() * 0.5)
             }
             _ => None,
         })
-        .expect("Reset all should be visible in the compact footer");
+        .expect("Reset All should be visible in the compact footer");
     assert!(viewport.contains(reset));
     frame(vec![
         egui::Event::PointerMoved(reset),

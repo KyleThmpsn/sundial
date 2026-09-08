@@ -27,6 +27,10 @@ use serde::{Deserialize, Serialize};
 
 const ICON_PREVIEW_SIZE: usize = 96;
 
+fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
+    egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
+}
+
 /// Reproducible adjustments for a weapon's private primary icon image.
 ///
 /// Imported artwork replaces the primary image first, followed by hue, saturation, brightness,

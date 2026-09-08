@@ -1,5 +1,7 @@
 use super::*;
 
+mod decoder;
+
 pub(super) fn validate_request(request: &InstallRequest) -> Result<ValidatedRun, InstallError> {
     check_game_before_validation(request)?;
 
@@ -75,7 +77,7 @@ fn find_obsolete_artifacts(
     incoming: &[ArtifactMetadata],
 ) -> Result<Vec<ArtifactMetadata>, InstallError> {
     let mut obsolete = Vec::new();
-    for profile in AUTHORED_PACKAGES {
+    for profile in all_authored_packages() {
         if profile.required_output
             || incoming
                 .iter()
@@ -146,7 +148,7 @@ pub(super) fn validate_manifest_and_staged_files(
     let selected_recipe_files = manifest.selected_recipe_files;
     validate_direct_package_set(staged_run_directory, &artifacts)?;
     verify_staged_artifacts(staged_run_directory, &artifacts)?;
-    validate_staged_packages(staged_run_directory, &artifacts)?;
+    validate_staged_packages(staged_run_directory, &artifacts, target_packages_directory)?;
     Ok(ValidatedManifest {
         source_artifacts,
         artifacts,
@@ -545,6 +547,7 @@ pub(super) fn discover_target_source_artifact_names(
 pub(super) fn validate_staged_packages(
     staged_run_directory: &Path,
     artifacts: &[ArtifactMetadata],
+    target_packages_directory: &Path,
 ) -> Result<(), InstallError> {
     let profiles = authored_packages_for_file_names(
         artifacts.iter().map(|artifact| artifact.file_name.as_str()),
@@ -552,7 +555,7 @@ pub(super) fn validate_staged_packages(
     .map_err(InstallError::validation)?;
     for profile in profiles {
         let path = staged_run_directory.join(profile.file_name);
-        validate_authored_package_file(&path, profile)?;
+        validate_authored_package_file(&path, profile, target_packages_directory)?;
     }
     Ok(())
 }
@@ -560,6 +563,7 @@ pub(super) fn validate_staged_packages(
 pub(super) fn validate_authored_package_file(
     path: &Path,
     profile: AuthoredPackage,
+    target_packages_directory: &Path,
 ) -> Result<(), InstallError> {
     let header = read_package_header(path).map_err(|error| {
         InstallError::validation(format!(
@@ -598,6 +602,9 @@ pub(super) fn validate_authored_package_file(
         )));
     }
 
+    let compressed = layout
+        .has_compressed_blocks(&bytes)
+        .map_err(|error| InstallError::validation(error.to_string()))?;
     let package =
         PackageD2PreBL::from_reader(profile.file_name, Cursor::new(bytes)).map_err(|error| {
             InstallError::validation(format!(
@@ -629,6 +636,10 @@ pub(super) fn validate_authored_package_file(
                 return Err(InstallError::validation(format!(
                     "Authored runtime map {runtime_map_tag} has an unexpected entry type"
                 )));
+            }
+            if compressed {
+                decoder::ensure_initialized(target_packages_directory)
+                    .map_err(InstallError::validation)?;
             }
             let payload = package.read_entry(index).map_err(|error| {
                 InstallError::validation(format!(
@@ -673,7 +684,7 @@ pub(super) fn validate_target_package_chain(
             )));
         }
     }
-    for profile in AUTHORED_PACKAGES {
+    for profile in all_authored_packages() {
         validate_existing_authored_target(
             &target_packages_directory.join(profile.file_name),
             profile.package_id,

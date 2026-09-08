@@ -1,6 +1,7 @@
 use super::*;
 
 mod custom_plugs;
+mod metadata;
 mod preparation;
 pub(super) use preparation::{METADATA_LAYOUT, SANDBOX_PATTERN_LAYOUT};
 
@@ -34,7 +35,6 @@ pub(super) struct WeaponBuildContext<'a> {
     pub sandbox_perk_definition_template: &'a [u8; ITEM_SANDBOX_PERK_ROW_SIZE],
     pub sandbox_perk_string_template: &'a [u8],
     pub custom_plugs: &'a [ResolvedCustomPlug],
-    pub metadata_layout: KeyedAuxiliaryLayout,
     pub sandbox_pattern_layout: KeyedAuxiliaryLayout,
     pub authored_pattern_global_ids: &'a [Option<u32>],
 }
@@ -264,42 +264,12 @@ impl WeaponTables {
             donor.donor_icon_container,
             authored_icon_container,
         )?;
-        (self.item_metadata, self.item_metadata_index) = append_keyed_auxiliary_pair(
-            std::mem::take(&mut self.item_metadata),
-            std::mem::take(&mut self.item_metadata_index),
+        metadata::append(
+            &mut self.item_metadata,
+            &mut self.item_metadata_index,
             donor.weapon.donor_item_hash,
             identity.item_hash,
-            context.metadata_layout,
-        )?;
-        let metadata_row_index = validate_keyed_auxiliary_alignment(
-            &self.item_metadata,
-            &self.item_metadata_index,
-            context.metadata_layout,
-        )?
-        .count
-            - 1;
-        apply_array_row_raw_payload_patches(
-            &mut self.item_metadata,
-            8,
-            metadata_row_index,
-            ITEM_METADATA_ROW_SIZE,
-            ITEM_METADATA_ROW_CLASS,
-            WeaponRawPayloadTarget::ItemMetadataRow,
             &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        apply_array_row_raw_payload_patches(
-            &mut self.item_metadata_index,
-            8,
-            metadata_row_index,
-            ITEM_METADATA_INDEX_ROW_SIZE,
-            ITEM_METADATA_INDEX_ROW_CLASS,
-            WeaponRawPayloadTarget::ItemMetadataIndexRow,
-            &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        validate_keyed_auxiliary_structure(
-            &self.item_metadata,
-            &self.item_metadata_index,
-            context.metadata_layout,
         )?;
         Ok(())
     }
