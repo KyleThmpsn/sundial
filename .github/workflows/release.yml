@@ -217,7 +217,20 @@ jobs:
           sha256sum --check --strict "Sundial-v$version-windows-x86_64.zip.sha256"
           sha256sum --check --strict "Sundial-v$version-linux-x86_64.tar.gz.sha256"
 
+      - name: Prepare standalone Windows executable
+        shell: bash
+        run: |
+          version="${{ needs.validate-version.outputs.version }}"
+          unzip -p "dist/Sundial-v$version-windows-x86_64.zip" \
+            "Sundial-v$version-windows-x86_64/sundial.exe" > dist/sundial.exe
+          test -s dist/sundial.exe
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/sundial.exe \
+            "dist/Sundial-$GITHUB_REF_NAME-windows-x86_64.zip" \
+            "dist/Sundial-$GITHUB_REF_NAME-linux-x86_64.tar.gz" \
+            --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"
