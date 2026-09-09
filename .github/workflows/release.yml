@@ -214,8 +214,8 @@ jobs:
           mapfile -t expected < <(printf '%s\n' "${expected[@]}" | sort)
           diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}")
           cd dist
-          sha256sum --check --strict "Sundial-v$version-windows-x86_64.zip.sha256"
-          sha256sum --check --strict "Sundial-v$version-linux-x86_64.tar.gz.sha256"
+          tr -d '\r' < "Sundial-v$version-windows-x86_64.zip.sha256" | sha256sum --check --strict
+          tr -d '\r' < "Sundial-v$version-linux-x86_64.tar.gz.sha256" | sha256sum --check --strict
 
       - name: Prepare standalone Windows executable
         shell: bash
