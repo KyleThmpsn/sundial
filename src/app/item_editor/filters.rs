@@ -4,36 +4,15 @@ use std::hash::Hash;
 
 use eframe::egui;
 
-use crate::catalog::{Catalog, ItemDamageType, ItemDef, ItemRarity};
-
-const KINETIC_BUCKET: u64 = 1_498_876_634;
-const ENERGY_BUCKET: u64 = 2_465_295_065;
-const POWER_BUCKET: u64 = 953_998_645;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum AmmoType {
-    Primary,
-    Special,
-    Heavy,
-}
-
-impl AmmoType {
-    const ALL: [Self; 3] = [Self::Primary, Self::Special, Self::Heavy];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Primary => "Primary",
-            Self::Special => "Special",
-            Self::Heavy => "Heavy",
-        }
-    }
-}
+use crate::catalog::{
+    Catalog, ItemDamageType, ItemDef, ItemRarity, ItemWeaponAmmoType, is_authorable_weapon_item,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ItemFilter {
     pub(crate) weapon_type: Option<String>,
     pub(crate) damage_type: Option<ItemDamageType>,
-    pub(crate) ammo_type: Option<AmmoType>,
+    pub(crate) ammo_type: Option<ItemWeaponAmmoType>,
     pub(crate) rarity: Option<ItemRarity>,
 }
 
@@ -41,6 +20,19 @@ pub(crate) struct ItemFilter {
 pub(crate) enum ItemFilterScope {
     Weapon,
     Armor,
+}
+
+impl ItemFilterScope {
+    pub(crate) fn from_candidates(candidates: &[&ItemDef]) -> Self {
+        if candidates
+            .iter()
+            .any(|item| is_authorable_weapon_item(item))
+        {
+            Self::Weapon
+        } else {
+            Self::Armor
+        }
+    }
 }
 
 impl ItemFilter {
@@ -63,7 +55,7 @@ impl ItemFilter {
 
         let has_weapon_filter =
             self.weapon_type.is_some() || self.damage_type.is_some() || self.ammo_type.is_some();
-        if has_weapon_filter && !is_weapon(item) {
+        if has_weapon_filter && !is_authorable_weapon_item(item) {
             return false;
         }
         if self
@@ -79,10 +71,12 @@ impl ItemFilter {
         {
             return false;
         }
-        if self
-            .ammo_type
-            .is_some_and(|selected| weapon_ammo_type(item) != Some(selected))
-        {
+        if self.ammo_type.is_some_and(|selected| {
+            catalog
+                .item_package_metadata(item.hash)
+                .and_then(|metadata| metadata.weapon_ammo_type)
+                != Some(selected)
+        }) {
             return false;
         }
         true
@@ -95,11 +89,11 @@ pub(crate) fn draw_item_filter_bar(
     scope: ItemFilterScope,
     candidates: &[&ItemDef],
     filter: &mut ItemFilter,
-) {
+) -> bool {
     let mut weapon_types = candidates
         .iter()
         .copied()
-        .filter(|item| is_weapon(item))
+        .filter(|item| is_authorable_weapon_item(item))
         .map(|item| item.type_name.trim())
         .filter(|name| !name.is_empty())
         .map(str::to_owned)
@@ -107,65 +101,111 @@ pub(crate) fn draw_item_filter_bar(
     weapon_types.sort_by_key(|name| name.to_ascii_lowercase());
     weapon_types.dedup_by(|first, second| first.eq_ignore_ascii_case(second));
 
+    let mut option_clicked = false;
+    let filter_style = ui.style().clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         if scope == ItemFilterScope::Weapon {
             draw_filter_group(ui, "Weapon type", |ui| {
                 egui::ComboBox::from_id_salt((id_salt.clone(), "weapon-type"))
-                    .selected_text(filter.weapon_type.as_deref().unwrap_or("Any"))
-                    .width(122.0)
+                    .selected_text(format!(
+                        "Type: {}",
+                        filter.weapon_type.as_deref().unwrap_or("Any")
+                    ))
+                    .width(154.0)
+                    .truncate()
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filter.weapon_type, None, "Any");
+                        ui.set_style(filter_style.clone());
+                        ui.set_min_width(100.0);
+                        option_clicked |= ui
+                            .selectable_value(&mut filter.weapon_type, None, "Any")
+                            .clicked();
                         for weapon_type in &weapon_types {
-                            ui.selectable_value(
-                                &mut filter.weapon_type,
-                                Some(weapon_type.clone()),
-                                weapon_type,
-                            );
+                            option_clicked |= ui
+                                .selectable_value(
+                                    &mut filter.weapon_type,
+                                    Some(weapon_type.clone()),
+                                    weapon_type,
+                                )
+                                .clicked();
                         }
-                    });
+                    })
+                    .response
             });
             draw_filter_group(ui, "Damage type", |ui| {
                 egui::ComboBox::from_id_salt((id_salt.clone(), "damage-type"))
-                    .selected_text(filter.damage_type.map_or("Any", ItemDamageType::label))
-                    .width(76.0)
+                    .selected_text(format!(
+                        "Damage: {}",
+                        filter.damage_type.map_or("Any", ItemDamageType::label)
+                    ))
+                    .width(126.0)
+                    .truncate()
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filter.damage_type, None, "Any");
+                        ui.set_style(filter_style.clone());
+                        ui.set_min_width(100.0);
+                        option_clicked |= ui
+                            .selectable_value(&mut filter.damage_type, None, "Any")
+                            .clicked();
                         for option in ItemDamageType::ALL {
-                            ui.selectable_value(
-                                &mut filter.damage_type,
-                                Some(option),
-                                option.label(),
-                            );
+                            option_clicked |= ui
+                                .selectable_value(
+                                    &mut filter.damage_type,
+                                    Some(option),
+                                    option.label(),
+                                )
+                                .clicked();
                         }
-                    });
+                    })
+                    .response
             });
             draw_filter_group(ui, "Ammo type", |ui| {
                 egui::ComboBox::from_id_salt((id_salt.clone(), "ammo-type"))
-                    .selected_text(filter.ammo_type.map_or("Any", AmmoType::label))
-                    .width(76.0)
+                    .selected_text(format!(
+                        "Ammo: {}",
+                        filter.ammo_type.map_or("Any", ItemWeaponAmmoType::label)
+                    ))
+                    .width(128.0)
+                    .truncate()
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut filter.ammo_type, None, "Any");
-                        for option in AmmoType::ALL {
-                            ui.selectable_value(
-                                &mut filter.ammo_type,
-                                Some(option),
-                                option.label(),
-                            );
+                        ui.set_style(filter_style.clone());
+                        ui.set_min_width(100.0);
+                        option_clicked |= ui
+                            .selectable_value(&mut filter.ammo_type, None, "Any")
+                            .clicked();
+                        for option in ItemWeaponAmmoType::ALL {
+                            option_clicked |= ui
+                                .selectable_value(
+                                    &mut filter.ammo_type,
+                                    Some(option),
+                                    option.label(),
+                                )
+                                .clicked();
                         }
-                    });
+                    })
+                    .response
             });
         }
         draw_filter_group(ui, "Rarity", |ui| {
             egui::ComboBox::from_id_salt((id_salt.clone(), "rarity"))
-                .selected_text(filter.rarity.map_or("Any", ItemRarity::label))
-                .width(86.0)
+                .selected_text(format!(
+                    "Rarity: {}",
+                    filter.rarity.map_or("Any", ItemRarity::label)
+                ))
+                .width(138.0)
+                .truncate()
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut filter.rarity, None, "Any");
+                    ui.set_style(filter_style.clone());
+                    ui.set_min_width(100.0);
+                    option_clicked |= ui
+                        .selectable_value(&mut filter.rarity, None, "Any")
+                        .clicked();
                     for option in ItemRarity::ALL {
-                        ui.selectable_value(&mut filter.rarity, Some(option), option.label());
+                        option_clicked |= ui
+                            .selectable_value(&mut filter.rarity, Some(option), option.label())
+                            .clicked();
                     }
-                });
+                })
+                .response
         });
         if ui
             .add_enabled(filter.is_active(), egui::Button::new("Reset").small())
@@ -174,50 +214,18 @@ pub(crate) fn draw_item_filter_bar(
             *filter = ItemFilter::default();
         }
     });
+    option_clicked
 }
 
-fn draw_filter_group(ui: &mut egui::Ui, label: &str, add_control: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(label);
-        add_control(ui);
-    });
-}
-
-fn is_weapon(item: &ItemDef) -> bool {
-    matches!(
-        item.bucket_hash,
-        KINETIC_BUCKET | ENERGY_BUCKET | POWER_BUCKET
-    )
-}
-
-fn weapon_ammo_type(item: &ItemDef) -> Option<AmmoType> {
-    if !is_weapon(item) {
-        return None;
-    }
-    if item.bucket_hash == POWER_BUCKET {
-        return Some(AmmoType::Heavy);
-    }
-
-    let name = item.name.trim();
-    if name.eq_ignore_ascii_case("Fighting Lion") {
-        return Some(AmmoType::Primary);
-    }
-    if name.eq_ignore_ascii_case("Eriana's Vow") {
-        return Some(AmmoType::Special);
-    }
-
-    match item.type_name.trim().to_ascii_lowercase().as_str() {
-        "shotgun"
-        | "sniper rifle"
-        | "fusion rifle"
-        | "trace rifle"
-        | "grenade launcher"
-        | "linear fusion rifle" => Some(AmmoType::Special),
-        "auto rifle" | "hand cannon" | "pulse rifle" | "scout rifle" | "sidearm" | "smg"
-        | "submachine gun" | "submachinegun" | "bow" | "combat bow" => Some(AmmoType::Primary),
-        _ => None,
-    }
+fn draw_filter_group(
+    ui: &mut egui::Ui,
+    label: &str,
+    add_control: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) {
+    let response = add_control(ui);
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |node| node.set_label(label));
 }
 
 #[cfg(test)]
@@ -239,23 +247,89 @@ mod tests {
     }
 
     #[test]
-    fn ammo_rules_keep_reference_exceptions_and_power_weapons() {
+    fn long_filter_values_fit_and_controls_have_accessible_labels() {
+        let item = weapon(
+            1,
+            "Test",
+            "A deliberately long custom weapon type",
+            1_498_876_634,
+        );
+        for width in [360.0, 640.0, 900.0] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut filter = ItemFilter {
+                weapon_type: Some(item.type_name.clone()),
+                ..Default::default()
+            };
+            let mut overflow = 0.0;
+            let mut output = egui::FullOutput::default();
+            for _ in 0..3 {
+                output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1024.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.set_width(width);
+                            ui.style_mut()
+                                .text_styles
+                                .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+                            ui.style_mut()
+                                .text_styles
+                                .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+                            let right = ui.max_rect().right();
+                            draw_item_filter_bar(
+                                ui,
+                                "test",
+                                ItemFilterScope::Weapon,
+                                &[&item],
+                                &mut filter,
+                            );
+                            overflow = ui.min_rect().right() - right;
+                        });
+                    },
+                );
+            }
+            assert!(overflow <= 1.0, "{width}px filter overflow: {overflow}");
+            assert_eq!(filter.weapon_type.as_deref(), Some(item.type_name.as_str()));
+            let tree = output.platform_output.accesskit_update.unwrap();
+            for label in ["Weapon type", "Damage type", "Ammo type", "Rarity"] {
+                let ids: Vec<_> = tree
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.value() == Some(label) || node.label() == Some(label))
+                    .map(|(id, _)| *id)
+                    .collect();
+                assert!(!ids.is_empty(), "{label} needs an accessible label");
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_scope_only_enables_weapon_controls_for_weapon_buckets() {
+        let weapon_item = weapon(1, "Test rifle", "Auto Rifle", 1_498_876_634);
+        let ornament = weapon(2, "Test ornament", "Weapon Ornament", 1_498_876_634);
+        let armor = weapon(3, "Test helmet", "Helmet", 3_448_274_439);
+
         assert_eq!(
-            weapon_ammo_type(&weapon(
-                3_549_153_978,
-                "Fighting Lion",
-                "Grenade Launcher",
-                ENERGY_BUCKET
-            )),
-            Some(AmmoType::Primary)
+            ItemFilterScope::from_candidates(&[&weapon_item]),
+            ItemFilterScope::Weapon
         );
         assert_eq!(
-            weapon_ammo_type(&weapon(1, "Ordinary shotgun", "Shotgun", ENERGY_BUCKET)),
-            Some(AmmoType::Special)
+            ItemFilterScope::from_candidates(&[&armor]),
+            ItemFilterScope::Armor
         );
         assert_eq!(
-            weapon_ammo_type(&weapon(2, "Ordinary shotgun", "Shotgun", POWER_BUCKET)),
-            Some(AmmoType::Heavy)
+            ItemFilterScope::from_candidates(&[&ornament]),
+            ItemFilterScope::Armor
+        );
+        assert_eq!(
+            ItemFilterScope::from_candidates(&[]),
+            ItemFilterScope::Armor
         );
     }
 }

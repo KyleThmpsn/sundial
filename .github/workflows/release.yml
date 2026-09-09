@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test -n "$version"
+          grep -Fxq "# Sundial v$version" RELEASE_NOTES.md
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            printf 'Tag %s does not match Cargo version %s.\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: validate-version
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default 1.88.0
+
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --release --workspace --all-targets --all-features --locked
+
+      - name: Lint JSON-only account build
+        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Test JSON-only account build
+        run: cargo test --release --workspace --all-targets --no-default-features --locked
+
+      - name: Check Rust documentation
+        shell: pwsh
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
+
+      - name: Audit dependencies
+        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+      - name: Build Sundial
+        run: cargo build --release --locked -p sundial-suite
+
+      - name: Generate dependency notices
+        shell: pwsh
+        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
+
+      - name: Package release
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Sundial-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: validate-version
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default 1.88.0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            pkg-config \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            desktop-file-utils \
+            python3-gi
+
+      - name: Test Linux desktop installation
+        run: sh packaging/linux/tests/install.sh
+
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --release --workspace --all-targets --all-features --locked
+
+      - name: Lint JSON-only account build
+        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Test JSON-only account build
+        run: cargo test --release --workspace --all-targets --no-default-features --locked
+
+      - name: Check Rust documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
+
+      - name: Audit dependencies
+        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+      - name: Build Sundial
+        run: cargo build --release --locked -p sundial-suite
+
+      - name: Generate dependency notices
+        shell: pwsh
+        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
+
+      - name: Package release
+        run: bash ./scripts/package-linux.sh "${{ needs.validate-version.outputs.version }}"
+
+      - name: Verify compatibility baseline
+        run: |
+          file target/release/sundial
+          dependencies=$(ldd target/release/sundial)
+          printf '%s\n' "$dependencies"
+          if grep -q 'not found' <<< "$dependencies"; then
+            echo 'Release binary has unresolved shared libraries' >&2
+            exit 1
+          fi
+          max_glibc=$(readelf --version-info target/release/sundial \
+            | grep -o 'GLIBC_[0-9.]*' \
+            | sort -Vu \
+            | tail -n 1)
+          echo "Maximum required glibc symbol: $max_glibc"
+          test -n "$max_glibc"
+          dpkg --compare-versions "${max_glibc#GLIBC_}" le 2.35
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Sundial-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [validate-version, windows, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download verified artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: Sundial-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify complete release set
+        shell: bash
+        run: |
+          version="${{ needs.validate-version.outputs.version }}"
+          expected=(
+            "Sundial-v$version-windows-x86_64.zip"
+            "Sundial-v$version-windows-x86_64.zip.sha256"
+            "Sundial-v$version-linux-x86_64.tar.gz"
+            "Sundial-v$version-linux-x86_64.tar.gz.sha256"
+          )
+          mapfile -t actual < <(find dist -maxdepth 1 -type f -printf '%f\n' | sort)
+          mapfile -t expected < <(printf '%s\n' "${expected[@]}" | sort)
+          diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}")
+          cd dist
+          sha256sum --check --strict "Sundial-v$version-windows-x86_64.zip.sha256"
+          sha256sum --check --strict "Sundial-v$version-linux-x86_64.tar.gz.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"

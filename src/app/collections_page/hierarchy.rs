@@ -67,7 +67,6 @@ pub(super) fn branch_counts(branch: &CollectionBranch<'_>) -> AcquisitionCounts 
         let child = branch_counts(child);
         counts.acquired += child.acquired;
         counts.missing += child.missing;
-        counts.no_rule += child.no_rule;
         counts.unknown += child.unknown;
     }
     counts
@@ -152,46 +151,38 @@ fn insert_leaf<'a>(
 
 pub(super) fn sort_hierarchy(hierarchy: &mut CollectionHierarchy<'_>, sort: TableSort) {
     fn sort_branch(branch: &mut CollectionBranch<'_>, sort: TableSort) {
-        branch
-            .leaves
-            .sort_by(|left, right| compare_leaves(left, right, sort));
+        sort_leaves(&mut branch.leaves, sort);
         for child in &mut branch.branches {
             sort_branch(child, sort);
         }
     }
-    hierarchy
-        .leaves
-        .sort_by(|left, right| compare_leaves(left, right, sort));
+    sort_leaves(&mut hierarchy.leaves, sort);
     for branch in &mut hierarchy.branches {
         sort_branch(branch, sort);
+    }
+}
+
+fn sort_leaves(leaves: &mut [CollectionLeaf<'_>], sort: TableSort) {
+    match sort.column {
+        0 => leaves.sort_by_cached_key(|leaf| leaf.definition.name.to_lowercase()),
+        1 => leaves.sort_by_cached_key(|leaf| leaf.definition.type_name.to_lowercase()),
+        _ => leaves.sort_by(|left, right| compare_leaves(left, right, sort.column)),
+    }
+    if sort.descending {
+        leaves.reverse();
     }
 }
 
 fn compare_leaves(
     left: &CollectionLeaf<'_>,
     right: &CollectionLeaf<'_>,
-    sort: TableSort,
+    column: usize,
 ) -> Ordering {
-    let ordering = match sort.column {
-        0 => left
-            .definition
-            .name
-            .to_lowercase()
-            .cmp(&right.definition.name.to_lowercase()),
-        1 => left
-            .definition
-            .type_name
-            .to_lowercase()
-            .cmp(&right.definition.type_name.to_lowercase()),
+    match column {
         2 => left.status.text.cmp(&right.status.text),
         3 => left.definition.index.cmp(&right.definition.index),
         4 => left.definition.hash.cmp(&right.definition.hash),
         _ => Ordering::Equal,
-    };
-    if sort.descending {
-        ordering.reverse()
-    } else {
-        ordering
     }
 }
 

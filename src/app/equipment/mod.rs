@@ -8,6 +8,7 @@ mod actions;
 mod armor_stat_allocation;
 mod armor_stats_adjuster;
 mod character;
+mod character_runtime;
 mod defaults;
 mod document;
 mod model;
@@ -24,13 +25,17 @@ pub(in crate::app) use armor_stats_adjuster::{
     draw_window as draw_armor_stats_window,
 };
 pub(super) use defaults::{
-    class_name, collect_class_armor_defaults, default_ability_values, default_subclass_name,
-    restore_class_armor, selected_attunement_index,
+    class_name, collect_class_armor_default_characters, default_ability_values,
+    default_subclass_name, item_class_is_compatible, selected_attunement_index,
+    subclass_display_name,
 };
+#[cfg(test)]
+pub(in crate::app) use document::legacy as legacy_document_tests;
 pub(super) use document::{
     displayed_plugs, equip_definition, equip_inventory_item, equip_subclass_with_default_abilities,
-    equipment_slot_label, equipped_item_snapshots, native_plug_default, set_equipment_item_flags,
-    set_equipment_item_level, set_equipment_item_plug, set_weapon_slot_empty,
+    equipment_slot_label, equipped_item_snapshots, native_plug_default,
+    restore_class_armor_from_character, set_equipment_item_flags, set_equipment_item_level,
+    set_equipment_item_plug, set_weapon_slot_empty,
 };
 #[cfg(test)]
 pub(super) use document::{inferred_item_level, materialize_authored_plugs};
@@ -43,7 +48,7 @@ pub(in crate::app) use randomize::{
     request_inventory_item_builder,
 };
 
-use document::{equipped_header_label, field_display_text};
+use document::equipped_header_label;
 use picker::{
     character_field_group_layout, equipment_definition_choices, equipment_inventory_choices,
     existing_inventory_choice_matches,
@@ -64,7 +69,7 @@ use super::{
     ARMOR_SLOTS, ConfirmationDialog, ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT,
     PLUG_PICKER_MAX_HEIGHT, PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SLOTS, SundialApp, ViewMode,
     WEAPON_SLOTS, draw_plug_selection_warning, inventory, item_editor,
-    settings::character_ability_issue,
+    settings::{character_ability_issue, character_ability_issue_for_values},
 };
 
 use super::item_editor::{

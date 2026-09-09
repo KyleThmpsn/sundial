@@ -1,0 +1,88 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, upstream]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default 1.88.0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            pkg-config \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            desktop-file-utils \
+            python3-gi
+
+      - name: Test Linux desktop installation
+        run: sh packaging/linux/tests/install.sh
+
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Sundial and Parhelion with all features and targets
+        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Lint JSON account build
+        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Test Sundial and Parhelion with all features
+        run: cargo test --release --workspace --all-features --locked
+
+      - name: Test JSON account build
+        run: cargo test --release --workspace --no-default-features --locked
+
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
+
+      # Narrow Linux accessibility XML exceptions. Any other RustSec vulnerability
+      # still fails this check.
+      - name: Audit dependencies
+        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+  windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust 1.88
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
+          rustup default 1.88.0
+
+      - name: Lint Sundial and Parhelion Windows targets
+        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test Sundial and Parhelion on Windows
+        run: cargo test --release --workspace --all-features --locked

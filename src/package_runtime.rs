@@ -1,8 +1,113 @@
-use std::path::Path;
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
-use tiger_pkg::PackageManager;
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 use tiger_pkg::{DestinyVersion, GameVersion};
+use tiger_pkg::{PackageManager, TagHash};
+
+const MIN_RUNTIME_PACKAGE_ID: u16 = 0x0100;
+const MAX_RUNTIME_PACKAGE_ID: u16 = 0x0CFF;
+
+const PACKAGE_AUTHORING_RUNTIME_MARKERS: [(&[u8], &str); 3] = [
+    (
+        b"mode=package_integrity_bypass",
+        "generated package-header trust",
+    ),
+    (b"SUNCMANF", "generated content manifest"),
+    (
+        b"ev=content_config stage=get route=manifest",
+        "generated manifest routing",
+    ),
+];
+
+pub(crate) fn sunrise_module_path(install: &Path) -> PathBuf {
+    install.join("bin").join("x64").join("steam_api64.dll")
+}
+
+pub(crate) fn installed_sunrise_module_version(install: &Path) -> Option<String> {
+    let bytes = fs::read(sunrise_module_path(install)).ok()?;
+    sunrise_module_version(&bytes)
+}
+
+fn sunrise_module_version(bytes: &[u8]) -> Option<String> {
+    let image = pelite::PeFile::from_bytes(bytes).ok()?;
+    let version_info = image.resources().ok()?.version_info().ok()?.file_info();
+    let is_sunrise = version_info.strings.values().any(|strings| {
+        strings.iter().any(|(key, value)| {
+            (key.eq_ignore_ascii_case("ProductName") || key.eq_ignore_ascii_case("FileDescription"))
+                && value.trim().eq_ignore_ascii_case("Sunrise")
+        })
+    });
+    if !is_sunrise {
+        return None;
+    }
+    let fixed = version_info.fixed?;
+    (fixed.dwSignature == pelite::image::VS_FIXEDFILEINFO_SIGNATURE)
+        .then(|| normalize_sunrise_version(&fixed.dwProductVersion.to_string()))?
+}
+
+pub(crate) fn normalize_sunrise_version(version: &str) -> Option<String> {
+    let mut components = version
+        .trim()
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if components.len() < 2 || components.len() > 4 {
+        return None;
+    }
+    while components.len() > 2 && components.last() == Some(&0) {
+        components.pop();
+    }
+    Some(
+        components
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+}
+
+pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), String> {
+    let module = sunrise_module_path(install);
+    let bytes = fs::read(&module).map_err(|error| {
+        format!(
+            "Could not read installed Sunrise module {}: {error}",
+            module.display()
+        )
+    })?;
+    let version = sunrise_module_version(&bytes).ok_or_else(|| {
+        format!(
+            "The installed Sunrise module has no valid Sunrise version resource: {}",
+            module.display()
+        )
+    })?;
+    // These embedded markers are a capability advertisement, not proof that a particular
+    // generated manifest or package set has already loaded successfully.
+    let missing = missing_package_authoring_runtime_features(&bytes);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Project Sunrise {version} does not advertise the package-authoring runtime features required by Parhelion (missing: {})",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn missing_package_authoring_runtime_features(bytes: &[u8]) -> Vec<&'static str> {
+    PACKAGE_AUTHORING_RUNTIME_MARKERS
+        .iter()
+        .filter_map(|(marker, label)| (!contains_bytes(bytes, marker)).then_some(*label))
+        .collect()
+}
+
+fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && bytes.windows(needle.len()).any(|window| window == needle)
+}
 
 pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -14,7 +119,7 @@ pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager,
         let _ = install;
         Err("Shadowkeep package decompression is currently supported only on x86-64 Linux".into())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     {
         PackageManager::new(
             install.join("packages"),
@@ -22,6 +127,103 @@ pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager,
             None,
         )
         .map_err(|error| format!("Could not open the Shadowkeep packages: {error}"))
+    }
+}
+
+/// Returns whether a value is a canonically encoded package tag accepted by the client.
+///
+/// Keep this local instead of using `tiger_pkg::TagHash::is_valid`: tiger-pkg 0.21 limits that
+/// helper to values through package `0xBFF`, while the Shadowkeep header validator accepts
+/// effective package ids through `0xCFF`.
+pub fn is_valid_package_tag(tag: TagHash) -> bool {
+    let package_id = tag.pkg_id();
+    (MIN_RUNTIME_PACKAGE_ID..=MAX_RUNTIME_PACKAGE_ID).contains(&package_id)
+        && TagHash::new(package_id, tag.entry_index()) == tag
+}
+
+/// Resolves a package name only when its row still matches the live entry directory.
+///
+/// The package reader does not expose the client's registered-context priority. More than one
+/// distinct live candidate is therefore ambiguous and must not be selected by iteration order.
+pub fn resolve_live_named_tag(
+    manager: &PackageManager,
+    name: &str,
+    expected_class: Option<u32>,
+) -> Result<TagHash, String> {
+    let candidates = manager
+        .lookup
+        .named_tags
+        .iter()
+        .filter(|candidate| candidate.name == name)
+        .filter(|candidate| expected_class.is_none_or(|expected| candidate.class_hash == expected))
+        .filter(|candidate| {
+            manager
+                .get_entry(candidate.hash)
+                .is_some_and(|entry| entry.reference == candidate.class_hash)
+        })
+        .map(|candidate| u32::from(candidate.hash))
+        .collect::<BTreeSet<_>>();
+
+    match candidates.len() {
+        0 => Err(match expected_class {
+            Some(class) => {
+                format!("The install has no live named tag {name:?} with class 0x{class:08X}")
+            }
+            None => format!("The install has no live named tag {name:?}"),
+        }),
+        1 => Ok(TagHash(
+            *candidates
+                .first()
+                .expect("one-candidate branch has one named tag"),
+        )),
+        count => Err(format!(
+            "The install has {count} distinct live named tags called {name:?}; package-context priority is ambiguous"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_authoring_runtime_requires_each_loader_capability() {
+        let compatible = PACKAGE_AUTHORING_RUNTIME_MARKERS
+            .iter()
+            .flat_map(|(marker, _)| marker.iter().copied().chain([0]))
+            .collect::<Vec<_>>();
+        assert!(missing_package_authoring_runtime_features(&compatible).is_empty());
+
+        let incomplete = b"mode=package_integrity_bypass\0SUNCMANF";
+        assert_eq!(
+            missing_package_authoring_runtime_features(incomplete),
+            vec!["generated manifest routing"]
+        );
+    }
+
+    #[test]
+    fn package_tag_validation_covers_the_complete_runtime_window() {
+        for tag in [
+            TagHash::new(MIN_RUNTIME_PACKAGE_ID, 0),
+            TagHash::new(MIN_RUNTIME_PACKAGE_ID, 0x1FFF),
+            TagHash::new(MAX_RUNTIME_PACKAGE_ID, 0),
+            TagHash::new(MAX_RUNTIME_PACKAGE_ID, 0x1FFF),
+        ] {
+            assert!(is_valid_package_tag(tag), "{tag} should be valid");
+        }
+
+        assert!(!is_valid_package_tag(TagHash::new(
+            MIN_RUNTIME_PACKAGE_ID - 1,
+            0
+        )));
+        assert!(!is_valid_package_tag(TagHash::new(
+            MAX_RUNTIME_PACKAGE_ID + 1,
+            0
+        )));
+        assert!(!is_valid_package_tag(TagHash::NONE));
+
+        // This is the dependency edge that motivated the shared validator.
+        assert!(!TagHash::new(MAX_RUNTIME_PACKAGE_ID, 0).is_valid());
     }
 }
 

@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.unsent",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x5E73BEF2",
+    "expected_name": "Hush"
+  },
+  "presentation_donor": {
+    "item_hash": "0xD5EACCB7",
+    "expected_name": "Le Monarque"
+  },
+  "identity": {
+    "item_hash": "0xF1753E9B",
+    "collectible_hash": "0x53D7B8B4",
+    "unlock_hash": "0x7641CF12",
+    "pattern_global_id_hash": "0xDD884D52",
+    "name_hash": "0x65DD374B",
+    "type_hash": "0x66AE0AEE",
+    "flavor_hash": "0xAC79895A",
+    "source_hash": "0x7DC27BF9",
+    "collection_name_hash": "0x9CE24F94",
+    "collection_description_hash": "0xA56F99E1",
+    "inventory_hint_hash": "0xBF0B56D6",
+    "collection_requirement_hash": "0x48F2C93E"
+  },
+  "name": "Unsent",
+  "flavor": "\"Let me know when you’re back in the Tower.\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 15,
+        "value": 70
+      },
+      {
+        "definition_index": 17,
+        "value": 85
+      },
+      {
+        "definition_index": 25,
+        "value": 40
+      },
+      {
+        "definition_index": 26,
+        "value": 70
+      },
+      {
+        "definition_index": 27,
+        "value": 65
+      },
+      {
+        "definition_index": 48,
+        "value": 80
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "special",
+    "modern_damage_type": "arc",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      {
+        "choices": [
+          "0x57A047A0"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0x0BF86A01",
+          "0xC89F83AD",
+          "0xA9CA6B03"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xCB8275A3",
+          "0x0C0099B6",
+          "0x23153F37"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9DA139BF",
+          "0x8A98022D"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      {
+        "choices": [
+          "0x566BAE18"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

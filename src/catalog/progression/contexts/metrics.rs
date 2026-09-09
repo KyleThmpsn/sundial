@@ -18,8 +18,8 @@ pub(in crate::catalog) fn scan_metric_objective_owners(
     package: &mut ProgressionPackageData<'_>,
     presentation_nodes: &[PresentationNodeDef],
     objectives: &mut [ObjectiveDef],
+    metric_traits: &[ObjectiveOwnerTraitDef],
 ) -> Result<(), String> {
-    let metric_traits = scan_metric_traits(package)?;
     let ProgressionPackageData {
         manager,
         root,
@@ -112,7 +112,7 @@ pub(in crate::catalog) fn scan_metric_objective_owners(
     Ok(())
 }
 
-fn scan_metric_traits(
+pub(in crate::catalog) fn scan_trait_definitions(
     package: &mut ProgressionPackageData<'_>,
 ) -> Result<Vec<ObjectiveOwnerTraitDef>, String> {
     let ProgressionPackageData {

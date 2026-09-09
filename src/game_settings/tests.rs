@@ -2,7 +2,31 @@
 
 use super::*;
 use super::{key_bindings::*, page::*, preferences::*, schema::*, validation::*, widgets::*};
+use crate::persistence::json_account::ensure_schema_v8_preferences;
 use serde_json::{Map, Value};
+
+#[test]
+fn guided_key_binding_catalog_matches_the_account_domain() {
+    for &(action, _) in ACTIONS {
+        assert!(
+            sundial_account::is_supported_key_binding_action(action),
+            "guided action {action} is missing from the account domain"
+        );
+    }
+    for &input in NAMED_INPUTS {
+        assert!(
+            sundial_account::is_valid_named_binding_input(input),
+            "guided input {input} is missing from the account domain"
+        );
+        for &modifier in MODIFIER_INPUTS {
+            let modified = format!("{modifier}+{input}");
+            assert!(
+                sundial_account::is_valid_named_binding_input(&modified),
+                "guided input {modified} is missing from the account domain"
+            );
+        }
+    }
+}
 
 fn valid_game_settings_document(version: u64) -> Value {
     let key_bindings = ACTIONS
@@ -153,43 +177,6 @@ fn player_name_edit_preserves_every_other_json_value() {
 }
 
 #[test]
-fn orbit_slice_set_is_only_edited_when_the_field_exists() {
-    let mut unsupported = serde_json::json!({"client": {"future": true}});
-    assert!(!set_existing_orbit_slice_set(
-        &mut unsupported,
-        "orbit_hiveship_d2"
-    ));
-    assert!(unsupported.pointer(ORBIT_SLICE_SET_PATH).is_none());
-
-    let mut supported = serde_json::json!({
-        "client": {
-            "orbit_slice_set": "",
-            "future": true
-        }
-    });
-    assert!(set_existing_orbit_slice_set(
-        &mut supported,
-        "orbit_hiveship_d2"
-    ));
-    assert_eq!(
-        supported.pointer(ORBIT_SLICE_SET_PATH),
-        Some(&Value::String("orbit_hiveship_d2".into()))
-    );
-    assert_eq!(
-        supported.pointer("/client/future"),
-        Some(&Value::Bool(true))
-    );
-    assert!(!set_existing_orbit_slice_set(
-        &mut supported,
-        "orbit_hiveship_d2"
-    ));
-    assert!(!set_existing_orbit_slice_set(
-        &mut supported,
-        "orbit-hiveship-d2"
-    ));
-}
-
-#[test]
 fn key_binding_forms_follow_sunrise_schema_versions() {
     assert_eq!(
         SettingsSchema(2).key_binding_format(),
@@ -293,17 +280,6 @@ fn named_key_binding_editing_uses_the_last_known_format_for_future_schemas() {
         "version": MAX_SUPPORTED_SCHEMA + 1
     })));
     assert!(!key_bindings_editable(&serde_json::json!({})));
-}
-
-#[test]
-fn every_picker_choice_is_accepted_by_sunrise() {
-    for &key in NAMED_INPUTS {
-        assert!(valid_named_input(key), "direct key {key:?}");
-        for modifier in ["shift", "control", "alt"] {
-            let input = format!("{modifier}+{key}");
-            assert!(valid_named_input(&input), "modified key {input:?}");
-        }
-    }
 }
 
 #[test]
@@ -431,7 +407,15 @@ fn only_newer_schema_versions_require_a_confirmation() {
 #[test]
 fn presence_gated_preferences_are_optional_but_validated_when_present() {
     let stock = Map::new();
-    assert_eq!(optional_range(&stock, "field_of_view", 55, 105), Ok(()));
+    assert_eq!(
+        optional_range(
+            &stock,
+            FIELD_OF_VIEW_KEY,
+            FIELD_OF_VIEW_MINIMUM,
+            FIELD_OF_VIEW_MAXIMUM,
+        ),
+        Ok(())
+    );
     assert_eq!(
         optional_range(&stock, "vertical_sync_interval", 0, 4),
         Ok(())
@@ -442,12 +426,20 @@ fn presence_gated_preferences_are_optional_but_validated_when_present() {
     );
 
     let patched = serde_json::json!({
-        "field_of_view": 85,
+        "field_of_view": 105,
         "vertical_sync_interval": 1,
         "key_binding_source": "computer"
     });
     let patched = patched.as_object().unwrap();
-    assert_eq!(optional_range(patched, "field_of_view", 55, 105), Ok(()));
+    assert_eq!(
+        optional_range(
+            patched,
+            FIELD_OF_VIEW_KEY,
+            FIELD_OF_VIEW_MINIMUM,
+            FIELD_OF_VIEW_MAXIMUM,
+        ),
+        Ok(())
+    );
     assert_eq!(
         optional_range(patched, "vertical_sync_interval", 0, 4),
         Ok(())
@@ -458,12 +450,20 @@ fn presence_gated_preferences_are_optional_but_validated_when_present() {
     );
 
     let invalid = serde_json::json!({
-        "field_of_view": 106,
+        "field_of_view": 156,
         "vertical_sync_interval": 5,
         "key_binding_source": "cloud"
     });
     let invalid = invalid.as_object().unwrap();
-    assert!(optional_range(invalid, "field_of_view", 55, 105).is_err());
+    assert!(
+        optional_range(
+            invalid,
+            FIELD_OF_VIEW_KEY,
+            FIELD_OF_VIEW_MINIMUM,
+            FIELD_OF_VIEW_MAXIMUM,
+        )
+        .is_err()
+    );
     assert!(optional_range(invalid, "vertical_sync_interval", 0, 4).is_err());
     assert!(
         optional_string_member(invalid, "key_binding_source", &["account", "computer"]).is_err()
@@ -471,50 +471,64 @@ fn presence_gated_preferences_are_optional_but_validated_when_present() {
 }
 
 #[test]
-fn schema_v8_materializes_missing_preferences_without_overwriting_values() {
-    let mut document = valid_game_settings_document(8);
-    assert!(ensure_schema_v8_preferences(&mut document));
-    assert_eq!(
-        document.pointer("/state/account/settings/display/field_of_view"),
-        Some(&Value::from(85))
-    );
-    assert_eq!(
-        document.pointer("/state/account/settings/display/vertical_sync_interval"),
-        Some(&Value::from(0))
-    );
-    assert_eq!(
-        document.pointer("/state/account/settings/key_binding_source"),
-        Some(&Value::String("computer".into()))
-    );
+fn schema_v8_preferences_materialize_through_the_current_schema_without_overwriting_values() {
+    for version in 8..=MAX_SUPPORTED_SCHEMA {
+        let mut document = valid_game_settings_document(version);
+        assert!(
+            ensure_schema_v8_preferences(&mut document),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/field_of_view"),
+            Some(&Value::from(85)),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/vertical_sync_interval"),
+            Some(&Value::from(0)),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/key_binding_source"),
+            Some(&Value::String("computer".into())),
+            "schema {version}"
+        );
 
-    *document
-        .pointer_mut("/state/account/settings/display/field_of_view")
-        .unwrap() = Value::from(100);
-    *document
-        .pointer_mut("/state/account/settings/display/vertical_sync_interval")
-        .unwrap() = Value::from(2);
-    *document
-        .pointer_mut("/state/account/settings/key_binding_source")
-        .unwrap() = Value::String("account".into());
+        *document
+            .pointer_mut("/state/account/settings/display/field_of_view")
+            .unwrap() = Value::from(100);
+        *document
+            .pointer_mut("/state/account/settings/display/vertical_sync_interval")
+            .unwrap() = Value::from(2);
+        *document
+            .pointer_mut("/state/account/settings/key_binding_source")
+            .unwrap() = Value::String("account".into());
 
-    assert!(!ensure_schema_v8_preferences(&mut document));
-    assert_eq!(
-        document.pointer("/state/account/settings/display/field_of_view"),
-        Some(&Value::from(100))
-    );
-    assert_eq!(
-        document.pointer("/state/account/settings/display/vertical_sync_interval"),
-        Some(&Value::from(2))
-    );
-    assert_eq!(
-        document.pointer("/state/account/settings/key_binding_source"),
-        Some(&Value::String("account".into()))
-    );
+        assert!(
+            !ensure_schema_v8_preferences(&mut document),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/field_of_view"),
+            Some(&Value::from(100)),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/display/vertical_sync_interval"),
+            Some(&Value::from(2)),
+            "schema {version}"
+        );
+        assert_eq!(
+            document.pointer("/state/account/settings/key_binding_source"),
+            Some(&Value::String("account".into())),
+            "schema {version}"
+        );
+    }
 }
 
 #[test]
 fn schema_v8_preferences_are_not_added_to_other_schemas() {
-    for version in [6, 7, 9] {
+    for version in [6, 7, MAX_SUPPORTED_SCHEMA + 1] {
         let mut document = valid_game_settings_document(version);
         assert!(!ensure_schema_v8_preferences(&mut document));
         assert!(
@@ -551,12 +565,54 @@ fn vertical_sync_intervals_show_the_effective_frame_rate() {
 }
 
 #[test]
-fn schemas_two_through_eight_share_one_validated_policy() {
+fn supported_schemas_share_one_validated_policy() {
     for version in MIN_SUPPORTED_SCHEMA..=MAX_SUPPORTED_SCHEMA {
         assert_eq!(validate(&valid_game_settings_document(version)), Ok(()));
     }
     assert!(validate(&valid_game_settings_document(1)).is_err());
     assert!(validate(&valid_game_settings_document(MAX_SUPPORTED_SCHEMA + 1)).is_err());
+}
+
+#[test]
+fn guided_edit_preserves_opaque_runtime_configuration() {
+    let mut document = valid_game_settings_document(MAX_SUPPORTED_SCHEMA);
+    let runtime_configuration = serde_json::json!({
+        "core": {
+            "activity_sdk_generation": {
+                "enabled": true,
+                "lua_declarations": false
+            }
+        },
+        "client": {"suppress_peer_relay": true},
+        "server": {
+            "activation": {
+                "activity_public_membership": true,
+                "mission_scripting": true,
+                "prevent_ownerless_channel_close": true
+            }
+        }
+    });
+    let root = document.as_object_mut().unwrap();
+    for (key, value) in runtime_configuration.as_object().unwrap() {
+        root.insert(key.clone(), value.clone());
+    }
+    let mut expected = document.clone();
+    *expected
+        .pointer_mut("/state/account/settings/key_bindings/fire/primary")
+        .unwrap() = Value::String("f".into());
+
+    assert_eq!(validate(&document), Ok(()));
+    assert!(
+        set_named_binding_value(
+            document
+                .pointer_mut("/state/account/settings/key_bindings/fire/primary")
+                .unwrap(),
+            Some("f")
+        )
+        .unwrap()
+    );
+    assert_eq!(document, expected);
+    assert_eq!(validate(&document), Ok(()));
 }
 
 #[test]
@@ -578,4 +634,9 @@ fn schema_six_accepts_presence_gated_preference_fields() {
     display.insert("field_of_view".into(), Value::from(105));
 
     assert_eq!(validate(&document), Ok(()));
+
+    *document
+        .pointer_mut("/state/account/settings/display/field_of_view")
+        .unwrap() = Value::from(106);
+    assert!(validate(&document).is_err());
 }

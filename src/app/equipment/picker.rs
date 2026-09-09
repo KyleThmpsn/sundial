@@ -1,10 +1,14 @@
+use crate::app::account_workspace as account;
+
 use super::*;
 
 pub(super) fn equipment_definition_choices<'a>(
     candidates: impl IntoIterator<Item = &'a ItemDef>,
+    v13_account: bool,
 ) -> Vec<DefinitionChoice> {
     candidates
         .into_iter()
+        .filter(|item| crate::account_contract::definition_available(item.hash, v13_account))
         .map(|item| DefinitionChoice {
             hash: item.hash,
             name: item.name.clone(),
@@ -15,13 +19,14 @@ pub(super) fn equipment_definition_choices<'a>(
 }
 
 pub(super) fn equipment_inventory_choices(
-    document: &Value,
+    document: &super::super::account_workspace::WorkspaceDocument,
     catalog: &Catalog,
     character_index: usize,
     bucket: u64,
     class_type: u64,
+    allow_cross_class_subclasses: bool,
 ) -> Vec<ExistingInventoryChoice> {
-    super::inventory::character_inventory(document, character_index)
+    account::character_inventory(document, character_index)
         .ok()
         .flatten()
         .unwrap_or_default()
@@ -31,12 +36,16 @@ pub(super) fn equipment_inventory_choices(
                 return None;
             }
             let hash = u64::from(snapshot.definition_hash);
+            if !crate::account_contract::definition_available(hash, document.supports_v13_account())
+            {
+                return None;
+            }
             let definition = catalog.inventory_definition(hash)?;
             if !definition.metadata.is_character_inventory_candidate() {
                 return None;
             }
             let item = catalog.get_for_bucket(hash, bucket)?;
-            if item.class_type != 3 && item.class_type != class_type {
+            if !item_class_is_compatible(item, class_type, allow_cross_class_subclasses) {
                 return None;
             }
 
@@ -63,7 +72,7 @@ pub(in crate::app) fn combo_u64(
     id: &str,
     value: &mut u64,
     choices: &[(u64, &str)],
-) {
+) -> bool {
     let selected = choices
         .iter()
         .find(|(candidate, _)| candidate == value)
@@ -72,10 +81,14 @@ pub(in crate::app) fn combo_u64(
         .selected_text(selected)
         .width(160.0)
         .show_ui(ui, |ui| {
+            let mut requested = false;
             for &(candidate, name) in choices {
-                ui.selectable_value(value, candidate, name);
+                requested |= ui.selectable_value(value, candidate, name).clicked();
             }
-        });
+            requested
+        })
+        .inner
+        .unwrap_or(false)
 }
 
 pub(in crate::app) fn ability_combo(
@@ -84,7 +97,7 @@ pub(in crate::app) fn ability_combo(
     value: &mut u64,
     choices: &[AbilityChoice],
     width: f32,
-) {
+) -> bool {
     let selected = choices
         .iter()
         .find(|choice| choice.entry == *value)
@@ -96,13 +109,19 @@ pub(in crate::app) fn ability_combo(
         .selected_text(selected)
         .width(width)
         .show_ui(ui, |ui| {
+            let mut requested = false;
             for choice in choices {
-                ui.selectable_value(value, choice.entry, &choice.name);
+                requested |= ui
+                    .selectable_value(value, choice.entry, &choice.name)
+                    .clicked();
             }
             if choices.is_empty() {
                 ui.label("No named choices found for this subclass");
             }
-        });
+            requested
+        })
+        .inner
+        .unwrap_or(false)
 }
 
 pub(super) fn character_field_group_layout(available_width: f32) -> (usize, [f32; 3]) {

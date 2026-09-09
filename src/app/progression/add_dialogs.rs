@@ -62,6 +62,10 @@ pub(super) fn draw_add_unlock_window(
     catalog: &Catalog,
     state: &mut UiState,
 ) -> bool {
+    if state.read_only {
+        state.add_open = false;
+        return false;
+    }
     if !state.add_open {
         return false;
     }
@@ -392,6 +396,10 @@ pub(super) fn draw_add_investment_window(
     catalog: &Catalog,
     state: &mut UiState,
 ) -> bool {
+    if state.read_only {
+        state.add_open = false;
+        return false;
+    }
     if !state.add_open {
         return false;
     }

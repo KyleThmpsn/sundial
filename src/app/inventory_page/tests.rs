@@ -1,5 +1,56 @@
 //! Focused policy and regression tests for the inventory page feature.
 
+#[test]
+fn blocked_transfer_rows_are_readable_but_never_clickable_or_focusable() {
+    use super::{
+        interactions::draw_character_transfer_destination, model::CharacterTransferDestination,
+    };
+    use eframe::egui;
+
+    for enabled in [false, true] {
+        let context = egui::Context::default();
+        let destination = CharacterTransferDestination {
+            character_index: 1,
+            label: "Titan".to_owned(),
+            detail: "Kinetic Weapons is full".to_owned(),
+            tooltip: "Kinetic Weapons is full".to_owned(),
+            enabled,
+        };
+        let mut position = egui::Pos2::ZERO;
+        let mut clicked = false;
+        for phase in 0..3 {
+            let events = if phase == 0 {
+                vec![]
+            } else {
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            let _ = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let response = draw_character_transfer_destination(ui, &destination);
+                        position = response.rect.center();
+                        assert_eq!(response.sense.is_focusable(), enabled);
+                        clicked |= response.clicked();
+                    });
+                },
+            );
+        }
+        assert_eq!(clicked, enabled);
+    }
+}
+
 use std::collections::HashMap;
 
 use crate::{
@@ -142,6 +193,102 @@ fn character_browse_keeps_all_results_and_orders_native_buckets() {
     assert!(group_position("Chest armor") < group_position("Seasonal artifacts"));
 }
 
+fn emote_groups(individual_items: Vec<u64>) -> Vec<super::model::ItemBucket<u64>> {
+    use super::model::{BucketKey, ItemBucket};
+    let mut groups = vec![
+        ItemBucket {
+            key: BucketKey {
+                scope: InventoryScope::Character,
+                native_id: 12,
+            },
+            label: "Emote collection".into(),
+            capacity: Some(1),
+            addable: true,
+            items: (0..10).collect(),
+        },
+        ItemBucket {
+            key: BucketKey {
+                scope: InventoryScope::Character,
+                native_id: 41,
+            },
+            label: "Emotes".into(),
+            capacity: Some(40),
+            addable: true,
+            items: individual_items,
+        },
+    ];
+    super::buckets::add_candidate_buckets(
+        &mut groups,
+        [27, 47].map(|native_bucket_id| InventoryMetadata {
+            scope: InventoryScope::Character,
+            native_bucket_id,
+            bucket_capacity: Some(10),
+            ..Default::default()
+        }),
+        InventoryScope::Character,
+    );
+    groups
+}
+
+#[test]
+fn collection_occupies_the_emotes_position_without_hiding_native_overflow() {
+    use super::buckets::{bucket_header_label, bucket_overflow_message, prepare_character_buckets};
+    let mut groups = emote_groups(Vec::new());
+    prepare_character_buckets(&mut groups, true);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Emblems", "Emotes", "Finishers"]
+    );
+    let collection = &groups[1];
+    assert_eq!(collection.key.native_id, 12);
+    assert_eq!(collection.capacity, Some(1));
+    assert_eq!(collection.items, (0..10).collect::<Vec<_>>());
+    let usage = BucketUsage {
+        counts: HashMap::from([(12, 10)]),
+        unresolved_count: 0,
+        occupancy_complete: true,
+    };
+    assert_eq!(
+        bucket_header_label(collection, &usage, InventoryScope::Character),
+        "Emotes · 10 / 1"
+    );
+    let message = bucket_overflow_message(collection, &usage, InventoryScope::Character).unwrap();
+    assert!(message.contains("installed limit of 1"));
+    assert!(message.contains("Remove 9 extra items"));
+    let valid = BucketUsage {
+        counts: HashMap::from([(12, 1)]),
+        ..usage
+    };
+    assert!(bucket_overflow_message(collection, &valid, InventoryScope::Character).is_none());
+}
+
+#[test]
+fn existing_individual_emotes_remain_visible_and_legacy_labels_are_preserved() {
+    use super::buckets::prepare_character_buckets;
+    let mut groups = emote_groups(vec![77]);
+    prepare_character_buckets(&mut groups, true);
+    let individual = groups
+        .iter()
+        .find(|group| group.key.native_id == 41)
+        .unwrap();
+    assert_eq!(individual.label, "Individual Emotes");
+    assert_eq!(individual.items, [77]);
+    assert_eq!(individual.capacity, Some(40));
+    let mut legacy = emote_groups(Vec::new());
+    legacy.retain(|group| group.key.native_id != 12);
+    prepare_character_buckets(&mut legacy, false);
+    assert_eq!(
+        legacy
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Emblems", "Emotes", "Finishers"]
+    );
+}
+
 #[test]
 fn character_item_ui_ids_survive_index_shifts_and_disambiguate_bad_soids() {
     let snapshot = |item_index, instance_soid| InventoryItemSnapshot {
@@ -227,23 +374,23 @@ fn bucket_capacity_counts_only_present_rows_and_allows_same_bucket_replacement()
 
 #[test]
 fn multi_field_inventory_edits_are_atomic() {
-    let mut document = json!({
-        "version": 6,
-        "state": {
-            "account": {},
-            "characters": [{
-                "soid": 1,
-                "equipment": {},
-                "inventory": [{
-                    "instance_soid": "0x4000000000000001",
-                    "definition_hash": "0x0000002A",
-                    "level": 106,
-                    "quantity": 1,
-                    "plugs": null
-                }]
+    let mut document = super::super::account_workspace::WorkspaceDocument::json_only(json!({
+    "version": 6,
+    "state": {
+        "account": {},
+        "characters": [{
+            "soid": 1,
+            "equipment": {},
+            "inventory": [{
+                "instance_soid": "0x4000000000000001",
+                "definition_hash": "0x0000002A",
+                "level": 106,
+                "quantity": 1,
+                "plugs": null
             }]
-        }
-    });
+        }]
+    }
+    }));
     let before = document.clone();
     let error = apply_inventory_actions_atomic(
         &mut document,

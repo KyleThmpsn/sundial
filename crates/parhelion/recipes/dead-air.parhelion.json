@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.dead-air",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x50384F33",
+    "expected_name": "Coldheart"
+  },
+  "identity": {
+    "item_hash": "0xDC5090CF",
+    "collectible_hash": "0xB9010D70",
+    "unlock_hash": "0xBC8718BE",
+    "pattern_global_id_hash": "0xD244EE96",
+    "name_hash": "0xCA368A2F",
+    "type_hash": "0x45921B6A",
+    "flavor_hash": "0xFF92F5B6",
+    "source_hash": "0xF41ED0A1",
+    "collection_name_hash": "0x598505F0",
+    "collection_description_hash": "0xE0C43FD5",
+    "inventory_hint_hash": "0xC7D1B70A",
+    "collection_requirement_hash": "0xAA1F18F2"
+  },
+  "name": "Dead Air",
+  "flavor": "\"Same time next week?\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true,
+      "hue_shift_degrees": 140,
+      "saturation": 45
+    },
+    "investment_stats": [
+      {
+        "definition_index": 16,
+        "value": 55
+      },
+      {
+        "definition_index": 22,
+        "value": 80
+      },
+      {
+        "definition_index": 26,
+        "value": 40
+      },
+      {
+        "definition_index": 27,
+        "value": 30
+      }
+    ],
+    "inventory_slot": "kinetic",
+    "ammo_type": "special",
+    "modern_damage_type": "solar",
+    "power_cap_group": 15,
+    "rarity": "exotic",
+    "stat_group_index": null,
+    "socket_columns": [
+      null,
+      {
+        "choices": [
+          "0x5778AFAD",
+          "0x6DAFD49E",
+          "0xE6C8436F"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9FBF6A53",
+          "0xB0FA2B02",
+          "0xE698B22E",
+          "0x64947A48"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x93F6B3E6",
+          "0xA5A4B58A",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xEEB69A10",
+          "0xD2013CA1",
+          "0xF351D2CC"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9DA139BF"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x62C9F17F",
+          "0xF72A1183"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x2F98742C",
+          "0x33594797"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8B18058B",
+          "0x131AF65A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "socket_plug_variants": [
+      {
+        "socket_index": 4,
+        "choice_index": 0,
+        "source_plug_hash": "0xEEB69A10",
+        "classification_donor_hash": "0x93F6B3E6",
+        "sandbox_perks": [
+          {
+            "source_perk_index": 1363,
+            "runtime_values": [],
+            "action_float_values": []
+          }
+        ]
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

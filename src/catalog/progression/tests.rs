@@ -22,11 +22,17 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
             ..row + PROGRESSION_DEFINITION_HASH_OFFSET + 4]
             .copy_from_slice(&hash.to_le_bytes());
         table[row + PROGRESSION_DEFINITION_SCOPE_OFFSET] = scope;
+        table[row + 8..row + 10].copy_from_slice(&u16::MAX.to_le_bytes());
         table[row + PROGRESSION_DEFINITION_SCOPE_SLOT_OFFSET
             ..row + PROGRESSION_DEFINITION_SCOPE_SLOT_OFFSET + 2]
             .copy_from_slice(&scope_slots[index].to_le_bytes());
     }
     let first_row = ROWS;
+    table[first_row + 8..first_row + 10].copy_from_slice(&32_u16.to_le_bytes());
+    table[STEP_ROWS + 4..STEP_ROWS + 6].copy_from_slice(&33_u16.to_le_bytes());
+    table[STEP_ROWS + PROGRESSION_STEP_ROW_SIZE + 4..STEP_ROWS + PROGRESSION_STEP_ROW_SIZE + 6]
+        .copy_from_slice(&u16::MAX.to_le_bytes());
+    table[REWARD_ROWS + 20..REWARD_ROWS + 22].copy_from_slice(&34_u16.to_le_bytes());
     table[first_row + PROGRESSION_DEFINITION_REPEAT_LAST_STEP_OFFSET] = 1;
     let step_descriptor = first_row + PROGRESSION_DEFINITION_STEPS_OFFSET;
     table[step_descriptor..step_descriptor + 8].copy_from_slice(&2_u64.to_le_bytes());
@@ -64,6 +70,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Account,
                 scope_slot: Some(7),
                 repeat_last_step: true,
+                level_value: Some(32),
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -72,17 +79,20 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 factions: Vec::new(),
                 steps: vec![
                     ProgressionStepDefinition {
-                        progress_total: 50,
+                        unlock_flag: Some(33),
+                        cost: 50,
                         name: String::new(),
                         icon_container: None,
                     },
                     ProgressionStepDefinition {
-                        progress_total: 100,
+                        unlock_flag: None,
+                        cost: 100,
                         name: String::new(),
                         icon_container: None,
                     },
                 ],
                 reward_items: vec![ProgressionRewardDefinition {
+                    claim_flag: Some(34),
                     rewarded_at_progression_level: 5,
                     item_hash: 0xBBBB_BBBB,
                     quantity: 3,
@@ -94,6 +104,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Character,
                 scope_slot: Some(9),
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -109,6 +120,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Account,
                 scope_slot: Some(3),
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -124,6 +136,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Unreplicated,
                 scope_slot: None,
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -139,6 +152,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Unreplicated,
                 scope_slot: None,
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -153,15 +167,23 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
 }
 
 fn unlock_flag_display_table(hash: u32) -> Vec<u8> {
-    const HEADER: usize = 32;
-    const ROW: usize = HEADER + 16;
-    const DISPLAY: usize = 80;
+    const HEADER: usize = 0x30;
+    const ROW: usize = 0x40;
+    const CONTENT_HEADER: usize = 0x60;
+    const DISPLAY: usize = 0x70;
 
-    let mut table = vec![0_u8; DISPLAY + UNLOCK_FLAG_DISPLAY_BLOCK_SIZE];
+    let mut table = vec![0_u8; DISPLAY + UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE];
     table[8..16].copy_from_slice(&1_u64.to_le_bytes());
     table[16..24].copy_from_slice(&((HEADER - 16) as i64).to_le_bytes());
+    table[0x18..0x20].copy_from_slice(&1_u64.to_le_bytes());
+    table[0x20..0x28].copy_from_slice(&((CONTENT_HEADER - 0x20) as i64).to_le_bytes());
     table[HEADER..HEADER + 8].copy_from_slice(&1_u64.to_le_bytes());
     table[HEADER + 8..HEADER + 12].copy_from_slice(&UNLOCK_FLAG_DISPLAY_ROW_CLASS.to_le_bytes());
+    table[CONTENT_HEADER - NESTED_ARRAY_TRAILER.len()..CONTENT_HEADER]
+        .copy_from_slice(&NESTED_ARRAY_TRAILER);
+    table[CONTENT_HEADER..CONTENT_HEADER + 8].copy_from_slice(&1_u64.to_le_bytes());
+    table[CONTENT_HEADER + 8..CONTENT_HEADER + 12]
+        .copy_from_slice(&UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS.to_le_bytes());
     table[ROW..ROW + 4].copy_from_slice(&hash.to_le_bytes());
     table[ROW + 4..ROW + 8].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
     table[ROW + UNLOCK_FLAG_DISPLAY_POINTER_OFFSET..ROW + UNLOCK_FLAG_DISPLAY_POINTER_OFFSET + 8]
@@ -196,19 +218,19 @@ fn unlock_flag_displays_validate_aligned_hashes_and_relative_blocks() {
 
     assert_eq!(
         unlock_flag_display_blocks(&table, std::slice::from_ref(&definition)),
-        Ok(vec![80])
+        Ok(vec![112])
     );
 
     let mut wrong_hash = table.clone();
-    wrong_hash[48..52].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
+    wrong_hash[64..68].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
     assert!(unlock_flag_display_blocks(&wrong_hash, &[definition.clone()]).is_err());
 
     let mut wrong_class = table.clone();
-    wrong_class[40..44].copy_from_slice(&0_u32.to_le_bytes());
+    wrong_class[56..60].copy_from_slice(&0_u32.to_le_bytes());
     assert!(unlock_flag_display_blocks(&wrong_class, &[definition.clone()]).is_err());
 
     let mut outside = table;
-    outside[56..64].copy_from_slice(&i64::MAX.to_le_bytes());
+    outside[72..80].copy_from_slice(&i64::MAX.to_le_bytes());
     assert!(unlock_flag_display_blocks(&outside, &[definition.clone()]).is_err());
     assert!(
         unlock_flag_display_blocks(&unlock_flag_display_table(definition.hash as u32), &[])
@@ -235,6 +257,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -243,6 +266,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -251,6 +275,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -259,6 +284,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: None,
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
     ];
@@ -334,17 +360,19 @@ fn repeated_objective_owners_merge_richer_package_metadata() {
 #[test]
 fn condition_references_retain_the_complete_package_program() {
     let mut rows = vec![0_u8; 24];
-    for (index, (kind, operand)) in [(1_u32, 3_u32), (12, 77), (10, 9)].into_iter().enumerate() {
+    for (index, (kind, operand)) in [(1_u8, 3_u16), (12, 77), (10, 9)].into_iter().enumerate() {
         let row = index * CONDITION_EXPRESSION_ROW_SIZE;
-        rows[row..row + 4].copy_from_slice(&kind.to_le_bytes());
-        rows[row + 4..row + 8].copy_from_slice(&operand.to_le_bytes());
+        rows[row] = kind;
+        rows[row + 1..row + 4].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
+        rows[row + 4..row + 6].copy_from_slice(&operand.to_le_bytes());
+        rows[row + 6..row + 8].copy_from_slice(&[0xDD, 0xEE]);
     }
 
     let references = condition_references_from_rows(&rows, 0, 3).unwrap();
 
     assert_eq!(references.flags, vec![3]);
     assert_eq!(references.values, vec![9]);
-    assert_eq!(references.objectives, vec![77]);
+    assert_eq!(references.pool_rows, vec![77]);
     assert_eq!(
         references.programs[0]
             .iter()
@@ -352,6 +380,21 @@ fn condition_references_retain_the_complete_package_program() {
             .collect::<Vec<_>>(),
         vec![(1, 3), (12, 77), (10, 9)]
     );
+}
+
+#[test]
+fn condition_references_preserve_32_bit_constants_without_truncation() {
+    let mut rows = vec![0_u8; 16];
+    rows[0] = 11;
+    rows[4..8].copy_from_slice(&0xFEDC_BA98_u32.to_le_bytes());
+    rows[8] = 1;
+    rows[12..16].copy_from_slice(&0xABCD_1234_u32.to_le_bytes());
+    let references = condition_references_from_rows(&rows, 0, 2).unwrap();
+    assert_eq!(
+        references.programs,
+        vec![vec![[11, 0xFEDC_BA98], [1, 0x1234]]]
+    );
+    assert_eq!(references.flags, vec![0x1234]);
 }
 
 #[test]
@@ -389,7 +432,7 @@ fn objective_conditions_use_row_plus_08_and_ignore_plus_10_decoy() {
         ConditionReferences {
             flags: vec![3],
             values: Vec::new(),
-            objectives: Vec::new(),
+            pool_rows: Vec::new(),
             programs: vec![vec![[CONDITION_FLAG_KIND, 3]]],
         }
     );

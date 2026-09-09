@@ -18,8 +18,8 @@ use super::{
     },
     schema::{
         CHARACTER_INVENTORY_CAPACITY, FILTERED_DISMANTLE_REWARD_CAPACITY,
-        FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION, INVENTORY_FLAG_MASK,
-        LEGACY_DISMANTLE_REWARD_CAPACITY, MAX_ITEM_PLUGS, SchemaMode, require_readable_schema,
+        FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
+        MAX_ITEM_PLUGS, SchemaMode, require_readable_schema,
     },
 };
 
@@ -223,7 +223,7 @@ pub(in crate::app::inventory) fn parse_character_inventory(
     array
         .iter()
         .enumerate()
-        .map(|(item_index, value)| parse_inventory_item(value, character_index, item_index))
+        .map(|(item_index, value)| parse_inventory_item(value, character_index, item_index, mode))
         .collect()
 }
 
@@ -231,6 +231,7 @@ pub(in crate::app::inventory) fn parse_inventory_item(
     value: &Value,
     character_index: usize,
     item_index: usize,
+    mode: SchemaMode,
 ) -> InventoryResult<InventoryItemSnapshot> {
     let location = InventoryItemLocation {
         character_index,
@@ -253,7 +254,7 @@ pub(in crate::app::inventory) fn parse_inventory_item(
         .and_then(|value| parse_plugs(value, &format!("{path}/plugs")))?;
     let flags = object
         .get("flags")
-        .map(|value| parse_flags(value, &format!("{path}/flags")))
+        .map(|value| parse_flags(value, &format!("{path}/flags"), mode.item_flag_mask()))
         .transpose()?;
     Ok(InventoryItemSnapshot {
         location,
@@ -622,14 +623,18 @@ pub(in crate::app::inventory) fn parse_plugs(
     Ok(ItemPlugs::Authored(plugs))
 }
 
-pub(in crate::app::inventory) fn parse_flags(value: &Value, path: &str) -> InventoryResult<u8> {
+pub(in crate::app::inventory) fn parse_flags(
+    value: &Value,
+    path: &str,
+    flag_mask: u8,
+) -> InventoryResult<u8> {
     parse_unsigned_value(value)
-        .filter(|flags| *flags <= u64::from(INVENTORY_FLAG_MASK))
+        .filter(|flags| *flags <= u64::from(flag_mask))
         .map(|flags| flags as u8)
         .ok_or_else(|| {
             InventoryError::new(
                 path,
-                format!("flags must be a whole number between 0 and {INVENTORY_FLAG_MASK}"),
+                format!("flags must be a whole number between 0 and {flag_mask}"),
             )
         })
 }

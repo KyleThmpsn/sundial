@@ -3,7 +3,7 @@
 use eframe::egui;
 
 use crate::{
-    catalog::{ObjectiveOwnerKind, ProgressionContextKind, ProgressionScope},
+    catalog::{Catalog, ObjectiveOwnerKind, ProgressionContextKind, ProgressionScope},
     hash::{format_hash_decimal, format_hash_hex, format_hash_hex_and_decimal, parse_hash_hex},
 };
 
@@ -16,7 +16,7 @@ pub(in crate::app) fn hash_detail_field(
     value: impl Into<String>,
     monospace: bool,
 ) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.label(metadata_label_text(ui, label));
     let value = value.into();
     let absent = value.starts_with('<') && value.ends_with('>');
     let parsed_hash = label
@@ -28,6 +28,11 @@ pub(in crate::app) fn hash_detail_field(
     let text = egui::RichText::new(&value);
     let text = if absent { text.weak().italics() } else { text };
     let text = if monospace { text.monospace() } else { text };
+    let text = if parsed_hash.is_some() {
+        text.weak()
+    } else {
+        text
+    };
     if let Some(parsed_hash) = parsed_hash {
         let response = ui
             .add(egui::Button::new(text).frame(false))
@@ -46,7 +51,7 @@ pub(in crate::app) fn draw_hash_wrapped_detail(
     label: &str,
     value: impl Into<String>,
 ) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.label(metadata_label_text(ui, label));
     let value = value.into();
     let absent = value.starts_with('<') && value.ends_with('>');
     let text = egui::RichText::new(value);
@@ -128,7 +133,7 @@ pub(in crate::app) fn metadata_subsection<R>(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.label(egui::RichText::new(title).strong().small());
+    ui.label(egui::RichText::new(title).strong());
     ui.add_space(2.0);
     add_contents(ui)
 }
@@ -139,7 +144,7 @@ pub(in crate::app) fn metadata_field(
     value: impl Into<String>,
     monospace: bool,
 ) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.label(metadata_label_text(ui, label));
     let value = value.into();
     let absent = value.starts_with('<') && value.ends_with('>');
     let text = egui::RichText::new(&value);
@@ -154,11 +159,26 @@ pub(in crate::app) fn hash_hex_and_decimal_field(
     label: &'static str,
     hash: u64,
 ) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.label(metadata_label_text(ui, label));
     if hash == 0 || hash == u64::from(u32::MAX) {
         ui.label(egui::RichText::new("<not present>").weak().italics());
     } else {
         draw_hash_link(ui, hash, format_hash_hex_and_decimal(hash));
+    }
+    ui.end_row();
+}
+
+pub(in crate::app) fn catalog_hash_hex_and_decimal_field(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    label: &'static str,
+    hash: u64,
+) {
+    ui.label(metadata_label_text(ui, label));
+    if hash == 0 || hash == u64::from(u32::MAX) {
+        ui.label(egui::RichText::new("<not present>").weak().italics());
+    } else {
+        draw_catalog_hash_link(ui, catalog, hash, format_hash_hex_and_decimal(hash));
     }
     ui.end_row();
 }
@@ -173,26 +193,69 @@ pub(in crate::app) const fn item_class_type_label(class_type: u64) -> &'static s
     }
 }
 
+pub(in crate::app) fn metadata_label_text(
+    ui: &egui::Ui,
+    label: impl Into<String>,
+) -> egui::RichText {
+    egui::RichText::new(label.into()).color(ui.visuals().text_color().gamma_multiply(0.92))
+}
+
 pub(in crate::app) fn draw_hash_link(
     ui: &mut egui::Ui,
     hash: u64,
     text: impl Into<String>,
 ) -> egui::Response {
-    let link_color = ui.visuals().hyperlink_color;
-    let response = ui
-        .add(
-            egui::Button::new(
-                egui::RichText::new(text.into())
-                    .monospace()
-                    .color(link_color),
-            )
-            .frame(false),
-        )
-        .on_hover_text(format!("Open details for {}", format_hash_hex(hash)));
+    draw_hash_button(
+        ui,
+        hash,
+        egui::RichText::new(text.into()).monospace().weak(),
+    )
+    .on_hover_text(format!("Open details for {}", format_hash_hex(hash)))
+}
+
+pub(in crate::app) fn draw_catalog_hash_link(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    text: impl Into<String>,
+) -> egui::Response {
+    let response = draw_hash_button(
+        ui,
+        hash,
+        egui::RichText::new(text.into()).monospace().weak(),
+    );
+    catalog_hash_tooltip(response, catalog, hash)
+}
+
+pub(in crate::app) fn draw_named_catalog_hash_link(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    name: impl Into<String>,
+) -> egui::Response {
+    let color = ui.visuals().hyperlink_color;
+    let response = draw_hash_button(
+        ui,
+        hash,
+        crate::app::ui::destiny_text(ui, name).color(color),
+    );
+    catalog_hash_tooltip(response, catalog, hash)
+}
+
+fn draw_hash_button(ui: &mut egui::Ui, hash: u64, text: egui::RichText) -> egui::Response {
+    let response = ui.add(egui::Button::new(text).frame(false));
     if response.clicked() {
         request_definition(ui.ctx(), hash);
     }
     response
+}
+
+fn catalog_hash_tooltip(response: egui::Response, catalog: &Catalog, hash: u64) -> egui::Response {
+    if crate::app::item_editor::catalog_item_tooltip_available(catalog, hash) {
+        crate::app::item_editor::catalog_item_tooltip(response, catalog, hash)
+    } else {
+        response.on_hover_text(format!("Open details for {}", format_hash_hex(hash)))
+    }
 }
 
 pub(in crate::app) fn draw_hash_hex_and_decimal_cells(ui: &mut egui::Ui, hash: u64) {
@@ -236,6 +299,11 @@ pub(in crate::app) const fn progression_context_kind_label(
         ProgressionContextKind::Location => "Location",
         ProgressionContextKind::LocationRelease => "Location release",
         ProgressionContextKind::ExpressionMapping => "Expression mapping",
+        ProgressionContextKind::Progression => "Progression",
+        ProgressionContextKind::Achievement => "Achievement",
+        ProgressionContextKind::Requirement => "Requirement",
+        ProgressionContextKind::ValueCounter => "Value Counter",
+        ProgressionContextKind::PackageExpression => "Package Expression",
     }
 }
 

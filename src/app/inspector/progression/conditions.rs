@@ -2,11 +2,16 @@
 
 use eframe::egui;
 
-use crate::catalog::{Catalog, UnlockDefinition};
+use crate::app::{
+    collections_page::{
+        ExpressionValue, evaluate_expression_value_with, is_supported_condition_instruction,
+    },
+    progression::CollectionStateSnapshot,
+};
+use crate::catalog::{Catalog, CollectionConditionTokenDef, UnlockDefinition};
 
 use super::{
     definitions::definition_name,
-    objectives::resolved_objective_table_text,
     state::{MetadataSelection, ProgressionInspectorState},
 };
 
@@ -20,10 +25,7 @@ pub(in crate::app) fn definition_has_undecoded_opcodes(definition: &UnlockDefini
 }
 
 pub(super) const fn decoded_condition_opcode(opcode: u32) -> bool {
-    matches!(
-        opcode,
-        1 | 2 | 3 | 4 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 22
-    )
+    is_supported_condition_instruction(opcode)
 }
 
 pub(super) fn direct_value_comparison(
@@ -33,7 +35,6 @@ pub(super) fn direct_value_comparison(
 ) -> Option<(String, bool)> {
     let (left, right, operator) = match program {
         [left, right, operator] => (*left, *right, *operator),
-        [left, right, encoding, operator] if *encoding == [22, 0] => (*left, *right, *operator),
         _ => return None,
     };
     let index = u32::try_from(definition_index).ok()?;
@@ -44,16 +45,76 @@ pub(super) fn direct_value_comparison(
     };
     let (label, result) = match (operator[0], reference_first) {
         (8, _) => (format!("= {literal}"), forced_value == literal),
-        (9, _) => (format!("≠ {literal}"), forced_value != literal),
+        (6 | 9, _) => (format!("≠ {literal}"), forced_value != literal),
         (13, true) => (format!("> {literal}"), forced_value > literal),
         (13, false) => (format!("< {literal}"), forced_value < literal),
         (14, true) => (format!("≥ {literal}"), forced_value >= literal),
         (14, false) => (format!("≤ {literal}"), forced_value <= literal),
         (15, true) => (format!("< {literal}"), forced_value < literal),
         (15, false) => (format!("> {literal}"), forced_value > literal),
+        (16, true) => (format!("≤ {literal}"), forced_value <= literal),
+        (16, false) => (format!("≥ {literal}"), forced_value >= literal),
         _ => return None,
     };
     Some((label, result))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ConditionEvaluation {
+    Passed,
+    Failed,
+    Value(i32),
+    Unresolved(String),
+}
+
+impl ConditionEvaluation {
+    pub(super) fn label(&self) -> String {
+        match self {
+            Self::Passed => "Pass".into(),
+            Self::Failed => "Fail".into(),
+            Self::Value(value) => format!("Value {value}"),
+            Self::Unresolved(reason) => format!("Unresolved · {reason}"),
+        }
+    }
+
+    pub(super) const fn is_resolved(&self) -> bool {
+        !matches!(self, Self::Unresolved(_))
+    }
+}
+
+pub(super) fn evaluate_condition_program(
+    program: &[[u32; 2]],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+) -> ConditionEvaluation {
+    let tokens = program
+        .iter()
+        .map(|&[kind, operand]| CollectionConditionTokenDef { kind, operand })
+        .collect::<Vec<_>>();
+    match evaluate_expression_value_with(
+        &tokens,
+        catalog.shared_expression_pool(),
+        |index| {
+            catalog
+                .unlock_flag_definition(index)
+                .and_then(|_| snapshot.and_then(|state| state.evaluated_flag(index, catalog)))
+        },
+        |index| {
+            catalog
+                .unlock_value_definition(index)
+                .and_then(|_| snapshot.and_then(|state| state.evaluated_value(index, catalog)))
+        },
+    ) {
+        Some(ExpressionValue::Boolean(true)) => ConditionEvaluation::Passed,
+        Some(ExpressionValue::Boolean(false)) => ConditionEvaluation::Failed,
+        Some(ExpressionValue::Number(value)) => ConditionEvaluation::Value(value),
+        Some(ExpressionValue::Unknown) => {
+            ConditionEvaluation::Unresolved("referenced state is unavailable".into())
+        }
+        None => ConditionEvaluation::Unresolved(
+            "program is malformed, cyclic, or contains an unsupported opcode".into(),
+        ),
+    }
 }
 
 pub(super) fn draw_condition_programs(
@@ -62,12 +123,27 @@ pub(super) fn draw_condition_programs(
     owner_hash: u64,
     programs: &[Vec<[u32; 2]>],
     catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
     state: &mut ProgressionInspectorState,
 ) {
     for (program_index, program) in programs.iter().enumerate() {
         egui::CollapsingHeader::new(format!("Condition program {}", program_index + 1))
             .id_salt((id_source, owner_hash, program_index))
             .show(ui, |ui| {
+                let evaluation = evaluate_condition_program(program, catalog, snapshot);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Effective result").strong());
+                    let color = match evaluation {
+                        ConditionEvaluation::Passed => ui.visuals().selection.bg_fill,
+                        ConditionEvaluation::Failed => ui.visuals().error_fg_color,
+                        ConditionEvaluation::Value(_) | ConditionEvaluation::Unresolved(_) => {
+                            ui.visuals().warn_fg_color
+                        }
+                    };
+                    ui.colored_label(color, evaluation.label());
+                });
+                draw_condition_dependencies(ui, program, catalog, snapshot, state);
+                ui.add_space(4.0);
                 if ui.available_width() >= 700.0 {
                     egui::Grid::new((id_source, "condition_tokens", owner_hash, program_index))
                         .num_columns(4)
@@ -130,6 +206,95 @@ pub(super) fn draw_condition_programs(
     }
 }
 
+fn draw_condition_dependencies(
+    ui: &mut egui::Ui,
+    program: &[[u32; 2]],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    state: &mut ProgressionInspectorState,
+) {
+    let dependencies = program
+        .iter()
+        .filter(|token| matches!(token[0], 1 | 10 | 12))
+        .collect::<Vec<_>>();
+    if dependencies.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(format!("Evaluated dependencies ({})", dependencies.len()))
+        .default_open(true)
+        .show(ui, |ui| {
+            for token in dependencies {
+                ui.horizontal_wrapped(|ui| {
+                    draw_condition_token_resolution(ui, token, catalog, state);
+                    ui.label(egui::RichText::new("Current:").weak());
+                    ui.monospace(condition_dependency_value(token, catalog, snapshot));
+                });
+            }
+        });
+}
+
+fn condition_dependency_value(
+    token: &[u32; 2],
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+) -> String {
+    let Some(snapshot) = snapshot else {
+        return "save state unavailable".into();
+    };
+    let index = token[1] as usize;
+    match token[0] {
+        1 => catalog.unlock_flag_definition(index).map_or_else(
+            || "definition unavailable".into(),
+            |definition| {
+                format!(
+                    "{} · Saved: {}",
+                    snapshot
+                        .evaluated_flag(index, catalog)
+                        .map_or_else(|| "Unresolved".into(), |value| value.to_string()),
+                    snapshot.flag_text(index, definition)
+                )
+            },
+        ),
+        10 => catalog.unlock_value_definition(index).map_or_else(
+            || "definition unavailable".into(),
+            |definition| {
+                format!(
+                    "{} · Saved: {}",
+                    snapshot
+                        .evaluated_value(index, catalog)
+                        .map_or_else(|| "Unresolved".into(), |value| value.to_string()),
+                    snapshot.value_text(index, definition)
+                )
+            },
+        ),
+        12 => {
+            let Some(program) = catalog.shared_expression(index) else {
+                return "shared expression unavailable".into();
+            };
+            match evaluate_expression_value_with(
+                program,
+                catalog.shared_expression_pool(),
+                |definition_index| {
+                    catalog
+                        .unlock_flag_definition(definition_index)
+                        .and_then(|_| snapshot.evaluated_flag(definition_index, catalog))
+                },
+                |definition_index| {
+                    catalog
+                        .unlock_value_definition(definition_index)
+                        .and_then(|_| snapshot.evaluated_value(definition_index, catalog))
+                },
+            ) {
+                Some(ExpressionValue::Boolean(value)) => value.to_string(),
+                Some(ExpressionValue::Number(value)) => value.to_string(),
+                Some(ExpressionValue::Unknown) => "referenced state unavailable".into(),
+                None => "expression is malformed, cyclic, or unsupported".into(),
+            }
+        }
+        _ => "not a dependency".into(),
+    }
+}
+
 fn draw_condition_token_resolution(
     ui: &mut egui::Ui,
     token: &[u32; 2],
@@ -139,14 +304,14 @@ fn draw_condition_token_resolution(
     let resolution = condition_token_resolution(token[0], token[1], catalog);
     if let Some(selection) = condition_token_selection(token[0], token[1], catalog) {
         if ui
-            .add(egui::Button::new(resolution).frame(false))
+            .add(egui::Button::new(crate::app::ui::destiny_text(ui, resolution)).frame(false))
             .on_hover_text("Open referenced metadata")
             .clicked()
         {
             state.open(selection);
         }
     } else {
-        ui.label(resolution);
+        ui.label(crate::app::ui::destiny_text(ui, resolution));
     }
 }
 
@@ -163,15 +328,6 @@ fn condition_token_selection(
         10 => catalog
             .unlock_value_definition(index)
             .map(|_| MetadataSelection::ValueDefinition(index)),
-        12 => catalog
-            .objective_definition(index)
-            .and_then(|objective| objective.related_unlock_value_definition_index)
-            .map(usize::from)
-            .and_then(|definition_index| {
-                catalog
-                    .unlock_value_definition(definition_index)
-                    .map(|_| MetadataSelection::ValueDefinition(definition_index))
-            }),
         _ => None,
     }
 }
@@ -182,15 +338,30 @@ pub(in crate::app) fn condition_opcode_label(kind: u32) -> String {
         2 => "Not (2)".into(),
         3 => "Or (3)".into(),
         4 => "And (4)".into(),
+        5 => "Nor (5)".into(),
+        6 => "Not equal (6)".into(),
+        7 => "Nand (7)".into(),
         8 => "Equal (8)".into(),
         9 => "Not equal (9)".into(),
         10 => "Value reference (10)".into(),
         11 => "Literal (11)".into(),
-        12 => "Objective reference (12)".into(),
+        12 => "Shared expression (12)".into(),
         13 => "Greater than (13)".into(),
         14 => "Greater than or equal (14)".into(),
         15 => "Less than (15)".into(),
-        22 => "Literal encoding (22)".into(),
+        16 => "Less than or equal (16)".into(),
+        17 => "Add (17)".into(),
+        18 => "Subtract (18)".into(),
+        19 => "Multiply (19)".into(),
+        20 => "Divide (20)".into(),
+        21 => "Modulo (21)".into(),
+        22 => "Negate Number (22)".into(),
+        23 => "FNV-1a Hash (23)".into(),
+        24 => "FNV-1a Combine (24)".into(),
+        28 => "Bitwise Not (28)".into(),
+        25 => "Bitwise and (25)".into(),
+        26 => "Bitwise or (26)".into(),
+        27 => "Bitwise xor (27)".into(),
         _ => format!("Undecoded ({kind})"),
     }
 }
@@ -202,14 +373,11 @@ pub(in crate::app) fn condition_token_resolution(
 ) -> String {
     let index = operand as usize;
     if kind == 12 {
-        let Some(objective) = catalog.objective_definition(index) else {
-            return format!("Objective #{index} unavailable");
+        return if catalog.shared_expression(index).is_some() {
+            format!("Shared expression pool row #{index}")
+        } else {
+            format!("Shared expression pool row #{index} unavailable")
         };
-        return format!(
-            "Objective #{index} · {} · 0x{:08X}",
-            resolved_objective_table_text(catalog, objective, None),
-            objective.hash
-        );
     }
     let definition = match kind {
         1 => catalog.unlock_flag_definition(index),
@@ -233,12 +401,16 @@ pub(in crate::app) fn condition_token_resolution(
 mod tests {
     use crate::catalog::{ProgressionContextDef, ProgressionContextKind, UnlockDefinition};
 
-    use super::{condition_opcode_label, definition_has_undecoded_opcodes};
+    use super::{
+        condition_opcode_label, decoded_condition_opcode, definition_has_undecoded_opcodes,
+    };
 
     #[test]
-    fn objective_reference_opcode_is_decoded() {
+    fn shared_expression_opcode_and_known_native_binary_range_are_decoded() {
         let definition = UnlockDefinition {
+            runtime_writers: Vec::new(),
             tested_by: vec![ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 0,
                 kind: ProgressionContextKind::ExpressionMapping,
                 name: String::new(),
@@ -254,5 +426,11 @@ mod tests {
         assert_eq!(condition_opcode_label(15), "Less than (15)");
         assert_eq!(condition_opcode_label(4), "And (4)");
         assert_eq!(condition_opcode_label(9), "Not equal (9)");
+        assert_eq!(condition_opcode_label(12), "Shared expression (12)");
+        assert_eq!(condition_opcode_label(22), "Negate Number (22)");
+        assert_eq!(condition_opcode_label(23), "FNV-1a Hash (23)");
+        assert!(decoded_condition_opcode(22));
+        assert!(decoded_condition_opcode(23));
+        assert!(decoded_condition_opcode(28));
     }
 }

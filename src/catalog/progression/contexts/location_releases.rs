@@ -122,6 +122,7 @@ fn location_release_progression_context(
 ) -> ProgressionContextDef {
     let activity = activity.filter(|activity| !activity.name.trim().is_empty());
     ProgressionContextDef {
+        direct_references: Vec::new(),
         hash: activity.map_or(location.hash, |activity| activity.hash),
         kind: ProgressionContextKind::LocationRelease,
         name: activity.map_or_else(|| location.name.clone(), |activity| activity.name.clone()),

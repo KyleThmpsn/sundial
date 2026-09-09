@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.night-shift",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x22A0C523",
+    "expected_name": "Loaded Question"
+  },
+  "identity": {
+    "item_hash": "0x54B303AF",
+    "collectible_hash": "0xDA5C0DD0",
+    "unlock_hash": "0x356CC09E",
+    "pattern_global_id_hash": "0x6CDC68B6",
+    "name_hash": "0x42976A0F",
+    "type_hash": "0xBDF48E4A",
+    "flavor_hash": "0x845DDE46",
+    "source_hash": "0x3D55E045",
+    "collection_name_hash": "0x30509B90",
+    "collection_description_hash": "0xD11BDFF5",
+    "inventory_hint_hash": "0x370DB82A",
+    "collection_requirement_hash": "0xDFB0D312"
+  },
+  "name": "Night Shift",
+  "flavor": "There was always someone still awake.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true,
+      "hue_shift_degrees": -170,
+      "contrast": 45
+    },
+    "investment_stats": [
+      {
+        "definition_index": 16,
+        "value": 56
+      },
+      {
+        "definition_index": 18,
+        "value": 0
+      },
+      {
+        "definition_index": 22,
+        "value": 67
+      },
+      {
+        "definition_index": 24,
+        "value": 75
+      },
+      {
+        "definition_index": 26,
+        "value": 40
+      },
+      {
+        "definition_index": 27,
+        "value": 78
+      }
+    ],
+    "inventory_slot": "kinetic",
+    "ammo_type": "special",
+    "modern_damage_type": "void",
+    "power_cap_group": 14,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      {
+        "choices": [
+          "0xEEB69A10"
+        ],
+        "socket_type": 176,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xD2013CA1",
+          "0xC4BE7564",
+          "0xAB0A2647"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x55123589",
+          "0x5C2FD04F",
+          "0xF351D2CC"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8EC817EA",
+          "0x9DA139BF",
+          "0x4682DFF1",
+          "0xFD368D30"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0xB8CF4048"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

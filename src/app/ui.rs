@@ -2,15 +2,65 @@ use eframe::egui;
 
 use super::glyphs::{self, Glyph};
 
+const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
+
+pub(super) fn section_heading(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let style = egui::TextStyle::Name("Section Heading".into());
+    let text = egui::RichText::new(text).strong();
+    let text = if ui.style().text_styles.contains_key(&style) {
+        text.text_style(style)
+    } else {
+        text
+    };
+    ui.label(text)
+}
+
+pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
+    egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
+}
+
+pub(super) fn configure_contrast(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        if style.visuals.dark_mode {
+            style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
+            style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);
+            style.visuals.warn_fg_color = egui::Color32::from_rgb(255, 180, 84);
+        } else {
+            style.visuals.error_fg_color = egui::Color32::from_rgb(175, 0, 0);
+            style.visuals.warn_fg_color = egui::Color32::from_rgb(143, 74, 0);
+        }
+    });
+}
+
 pub(super) const TABLE_CELL_HEIGHT: f32 = 24.0;
 pub(super) const TABLE_COLUMN_GAP: f32 = 12.0;
 pub(super) const HIERARCHY_INDENT: f32 = 14.0;
+
+// Destiny's transparent perk glyphs are authored in white. Keep their native
+// colors, but provide a dark plate when the surrounding application is light.
+pub(super) fn package_icon_backdrop(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::TRANSPARENT
+    } else {
+        egui::Color32::from_gray(55)
+    }
+}
+
+pub(super) fn destiny_text_font_family() -> egui::FontFamily {
+    egui::FontFamily::Name(DESTINY_TEXT_FONT_FAMILY.into())
+}
+
+pub(super) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let mut font_id = egui::TextStyle::Body.resolve(ui.style());
+    font_id.family = destiny_text_font_family();
+    egui::RichText::new(text.into()).font(font_id)
+}
 
 pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
         .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(8, 6))
+        .inner_margin(egui::Margin::symmetric(8, 3))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(add_contents).inner
@@ -55,31 +105,6 @@ pub(super) fn sortable_header_cell(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Sort by {label}"))
     });
-    response
-}
-
-pub(super) fn back_button(ui: &mut egui::Ui, destination: &str) -> egui::Response {
-    let accessible_label = format!("Back to {destination}");
-    let response = ui
-        .button("    Back")
-        .on_hover_text(format!("{accessible_label} (Alt+Left)"));
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label.clone())
-    });
-    if ui.is_rect_visible(response.rect) {
-        let icon_size = 11.0;
-        let icon_center = egui::pos2(
-            response.rect.left() + ui.spacing().button_padding.x + icon_size * 0.5,
-            response.rect.center().y,
-        );
-        let icon_rect = egui::Rect::from_center_size(icon_center, egui::Vec2::splat(icon_size));
-        glyphs::paint_with_stroke(
-            ui,
-            icon_rect,
-            Glyph::ChevronLeft,
-            ui.style().interact(&response).fg_stroke,
-        );
-    }
     response
 }
 
@@ -223,4 +248,51 @@ pub(super) fn single_line_galley(
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
     ui.fonts(|fonts| fonts.layout_job(job))
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn luminance(color: egui::Color32) -> f32 {
+        let linear = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        linear(color.r()) * 0.2126 + linear(color.g()) * 0.7152 + linear(color.b()) * 0.0722
+    }
+
+    #[test]
+    fn guidance_and_status_colors_remain_readable_after_theme_changes() {
+        let ctx = egui::Context::default();
+        configure_contrast(&ctx);
+        for theme in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
+            ctx.set_theme(theme);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let visuals = ui.visuals();
+                    for foreground in [
+                        secondary_text_color(ui),
+                        visuals.warn_fg_color,
+                        visuals.error_fg_color,
+                    ] {
+                        for background in [
+                            visuals.panel_fill,
+                            visuals.window_fill(),
+                            visuals.extreme_bg_color,
+                        ] {
+                            let a = luminance(foreground);
+                            let b = luminance(background);
+                            let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                            assert!(contrast >= 4.5, "contrast {contrast}, theme {theme:?}");
+                        }
+                    }
+                });
+            });
+        }
+    }
 }

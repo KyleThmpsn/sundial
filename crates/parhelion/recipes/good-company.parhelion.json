@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.good-company",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xD84E04AB",
+    "expected_name": "Vigilance Wing"
+  },
+  "identity": {
+    "item_hash": "0x45517CF9",
+    "collectible_hash": "0xA84D7776",
+    "unlock_hash": "0xB92B6460",
+    "pattern_global_id_hash": "0x8F6566B0",
+    "name_hash": "0xD5948405",
+    "type_hash": "0x7BE97724",
+    "flavor_hash": "0x5FBBF3EC",
+    "source_hash": "0x78CC2ABB",
+    "collection_name_hash": "0x75F32A92",
+    "collection_description_hash": "0x88117753",
+    "inventory_hint_hash": "0x5751A020",
+    "collection_requirement_hash": "0x7A93FAA4"
+  },
+  "name": "Good Company",
+  "flavor": "\"Nobody needed anything from this run.\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true,
+      "hue_shift_degrees": -30
+    },
+    "investment_stats": [
+      {
+        "definition_index": 14,
+        "value": 70
+      },
+      {
+        "definition_index": 16,
+        "value": 66
+      },
+      {
+        "definition_index": 22,
+        "value": 66
+      },
+      {
+        "definition_index": 24,
+        "value": 73
+      },
+      {
+        "definition_index": 26,
+        "value": 66
+      },
+      {
+        "definition_index": 27,
+        "value": 66
+      },
+      {
+        "definition_index": 30,
+        "value": 69
+      },
+      {
+        "definition_index": 31,
+        "value": 85
+      },
+      {
+        "definition_index": 32,
+        "value": 20
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "primary",
+    "modern_damage_type": "arc",
+    "power_cap_group": 15,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      null,
+      {
+        "choices": [
+          "0xF3D26338",
+          "0xC1B79779"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x5555AD70",
+          "0xF66D3B73",
+          "0x7060EDB4",
+          "0x5D0B018E"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xEEB69A10",
+          "0xD92A3FE8",
+          "0x0EC3FDC8",
+          "0xA5A4B58A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8E18595D",
+          "0xB94CFC43",
+          "0xCC2B41AE",
+          "0x3C890041"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9DA139BF"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xF72A1183",
+          "0xD2013CA1",
+          "0x5C2FD04F",
+          "0xDD070E81"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "socket_plug_variants": [
+      {
+        "socket_index": 3,
+        "choice_index": 0,
+        "source_plug_hash": "0xEEB69A10",
+        "classification_donor_hash": "0xF72A1183",
+        "sandbox_perks": [
+          {
+            "source_perk_index": 1363,
+            "runtime_values": [],
+            "action_float_values": []
+          }
+        ]
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

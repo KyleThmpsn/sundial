@@ -39,10 +39,12 @@ pub(crate) fn parse_unsigned_value(value: &Value) -> Option<u64> {
 
 /// Computes the FNV-1 name hash used by Sunrise's package-backed name tables.
 pub(crate) fn fnv1_name_hash(name: &str) -> u32 {
-    name.bytes().fold(0x811C_9DC5, |hash, byte| {
-        hash.wrapping_mul(0x0100_0193) ^ u32::from(byte)
+    name.bytes().fold(FNV1_EMPTY_HASH, |hash, byte| {
+        hash.wrapping_mul(0x0100_0193) ^ u32::from(byte.to_ascii_lowercase())
     })
 }
+
+pub(crate) const FNV1_EMPTY_HASH: u32 = 0x811C_9DC5;
 
 #[cfg(test)]
 mod tests {
@@ -63,5 +65,6 @@ mod tests {
             Some(42)
         );
         assert_eq!(fnv1_name_hash("hiveship_d2"), 0xA85E_A752);
+        assert_eq!(fnv1_name_hash("HiveShip_D2"), 0xA85E_A752);
     }
 }

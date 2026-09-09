@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.periapsis",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x02E63C72",
+    "expected_name": "Ancient Gospel"
+  },
+  "presentation_donor": {
+    "item_hash": "0xAD4746D5",
+    "expected_name": "Sunshot"
+  },
+  "identity": {
+    "item_hash": "0xD2D4F4B5",
+    "collectible_hash": "0x2F93AD5A",
+    "unlock_hash": "0xD596A4B4",
+    "pattern_global_id_hash": "0x0664146C",
+    "name_hash": "0x8822FF75",
+    "type_hash": "0x9A907378",
+    "flavor_hash": "0x98834E5C",
+    "source_hash": "0xE225FA47",
+    "collection_name_hash": "0x6705E8E6",
+    "collection_description_hash": "0xF69C5FBF",
+    "inventory_hint_hash": "0xADCAA82C",
+    "collection_requirement_hash": "0x308A57D4"
+  },
+  "name": "Periapsis",
+  "flavor": "The closest we ever came.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "color_replacements": [
+        {
+          "source": [
+            31,
+            28,
+            28
+          ],
+          "replacement": [
+            63,
+            7,
+            7
+          ],
+          "range_percent": 0
+        }
+      ],
+      "hue_shift_degrees": -50,
+      "saturation": 70,
+      "red_balance": 10
+    },
+    "investment_stats": [
+      {
+        "definition_index": 14,
+        "value": 100
+      },
+      {
+        "definition_index": 16,
+        "value": 45
+      },
+      {
+        "definition_index": 22,
+        "value": 65
+      },
+      {
+        "definition_index": 26,
+        "value": 70
+      },
+      {
+        "definition_index": 27,
+        "value": 55
+      },
+      {
+        "definition_index": 32,
+        "value": 18
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "primary",
+    "modern_damage_type": "solar",
+    "power_cap_group": 14,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      {
+        "choices": [
+          "0x3BA5D777"
+        ],
+        "socket_type": 176,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x52FFCEDC",
+          "0x5778AFAD"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x065F4ED0",
+          "0x43F47FCB"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xF54FA31D",
+          "0x0EC3FDC8",
+          "0xA5A4B58A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xD2013CA1",
+          "0x5C2FD04F",
+          "0xF351D2CC"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x4682DFF1",
+          "0x8EC817EA",
+          "0x9DA139BF",
+          "0xFD368D30"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xF1269C83"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null
+    ],
+    "raw_payload_patches": []
+  }
+}

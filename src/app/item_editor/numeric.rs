@@ -3,7 +3,9 @@ use super::*;
 const POWER_PER_LEVEL: i64 = 10;
 const MINIMUM_POWERED_ITEM_POWER: i64 = 750;
 const DEFAULT_MAXIMUM_POWERED_ITEM_POWER: i64 = 1060;
-const MAXIMUM_STORED_ITEM_POWER: i64 = 21_474_836_470;
+// Sunrise computes displayed power as `10 * level` in a signed 32-bit value.
+// Keep the unrestricted editor below that multiplication's overflow boundary.
+const MAXIMUM_STORED_ITEM_POWER: i64 = 2_147_483_640;
 
 pub(crate) fn draw_level_and_quantity(
     ui: &mut egui::Ui,
@@ -93,7 +95,10 @@ pub(crate) fn effective_power_input_max(
 
 pub(crate) fn new_inventory_item_level(native_bucket_id: u8, power_max: Option<i64>) -> i64 {
     if native_bucket_id <= 7 {
-        item_power_input_max(power_max) / POWER_PER_LEVEL
+        // An infusion limit is not a starting Power. Native uncapped-style rows can
+        // be nearly a million Power, so new/randomized items start at the ordinary
+        // default (or their lower limit); the numeric editor still exposes the full cap.
+        item_power_input_max(power_max).min(DEFAULT_MAXIMUM_POWERED_ITEM_POWER) / POWER_PER_LEVEL
     } else {
         0
     }

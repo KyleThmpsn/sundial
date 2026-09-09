@@ -16,6 +16,7 @@ pub(in crate::app) struct EquippedItemSnapshot {
     pub instance_soid_text: String,
     pub level: Option<i64>,
     pub quantity: Option<i64>,
+    pub flags: Option<u8>,
     pub plugs: EquippedItemPlugs,
     pub issues: Vec<String>,
 }

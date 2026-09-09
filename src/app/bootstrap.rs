@@ -1,10 +1,10 @@
 use std::env;
 
-use super::{InstallSelection, Preferences, settings::load_preferences};
+use super::{InstallSelection, preferences::store::LoadedPreferences, settings::load_preferences};
 
-pub(super) fn parse_args() -> (Option<InstallSelection>, bool, Preferences) {
+pub(super) fn parse_args() -> (Option<InstallSelection>, bool, LoadedPreferences) {
     let preferences = load_preferences();
-    let mut install = preferences.install_selection();
+    let mut install = preferences.preferences.install_selection();
     let mut check_only = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {

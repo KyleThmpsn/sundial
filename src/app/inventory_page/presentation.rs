@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::{
     super::{
-        ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, SLOTS,
+        ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT,
         inventory::{DismantleGearClass, DismantleRarity, SchemaMode},
         item_editor::PickerHeight,
     },
@@ -17,7 +17,7 @@ use super::{
 pub(super) fn equipment_target_for_bucket(
     bucket_hash: u64,
 ) -> Option<(&'static str, &'static str)> {
-    SLOTS
+    crate::account_contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .find_map(|(slot, label, bucket)| (*bucket == bucket_hash).then_some((*slot, *label)))
 }
@@ -89,6 +89,7 @@ pub(super) fn dismantle_class_label(gear_class: Option<DismantleGearClass>) -> &
         None => "Any gear",
         Some(DismantleGearClass::Weapon) => "Weapon",
         Some(DismantleGearClass::Armor) => "Armor",
+        Some(DismantleGearClass::Both) => "Weapon + armor",
     }
 }
 

@@ -7,13 +7,19 @@ use std::{
 
 use eframe::egui;
 
-use crate::{catalog::CatalogProgress, game_settings};
+use crate::{
+    catalog::CatalogProgress,
+    game_settings,
+    investment::{CatalogLoadingView, draw_catalog_loading_view},
+    package_authoring::PackageAuthoringUtility,
+};
 
 use super::{
     DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, Preferences, SettingsLayout,
-    SettingsPathResolution, SundialApp, draw_future_schema_warning, load_logo_texture,
+    SettingsPathResolution, SundialApp, diagnostics, draw_future_schema_warning, load_logo_texture,
     settings::{
-        load_json, missing_settings_message, resolve_settings_path, settings_path_for_install,
+        load_workspace_json, missing_settings_message, resolve_settings_path,
+        settings_path_for_install,
     },
 };
 
@@ -39,10 +45,17 @@ pub(super) struct StartupApp {
     pending_settings_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
     preferences: Preferences,
+    preferences_warning: Option<String>,
+    package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
 }
 
 impl StartupApp {
-    pub(super) fn new(selection: Option<InstallSelection>, preferences: Preferences) -> Self {
+    pub(super) fn new(
+        selection: Option<InstallSelection>,
+        preferences: Preferences,
+        preferences_warning: Option<String>,
+        package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
+    ) -> Self {
         let mut app = Self {
             editor: None,
             receiver: None,
@@ -61,6 +74,8 @@ impl StartupApp {
             pending_settings_choice: None,
             pending_future_schema: None,
             preferences,
+            preferences_warning,
+            package_authoring,
         };
         if let Some(selection) = selection {
             app.begin_loading(selection.install_path, selection.preferred_layout);
@@ -84,7 +99,7 @@ impl StartupApp {
         thread::spawn(
             move || match resolve_settings_path(&install_path, preferred_layout) {
                 SettingsPathResolution::Found(settings_layout, settings_path) => {
-                    match load_json(&settings_path) {
+                    match load_workspace_json(&settings_path) {
                         Ok(document) => {
                             if let Some(schema_version) =
                                 game_settings::future_schema_version(&document)
@@ -188,6 +203,7 @@ impl StartupApp {
                 }
                 StartupEvent::Finished(result) => match *result {
                     Ok(mut editor) => {
+                        editor.package_authoring = self.package_authoring.take();
                         editor.logo.clone_from(&self.logo);
                         if let Err(error) = editor.save_preferences() {
                             editor.set_status(
@@ -197,10 +213,12 @@ impl StartupApp {
                                 true,
                             );
                         }
+                        editor.preferences_load_warning = self.preferences_warning.take();
                         self.editor = Some(editor);
                         self.receiver = None;
                     }
                     Err(error) => {
+                        self.record_startup_failure(&error);
                         self.error = Some(error);
                         self.receiver = None;
                     }
@@ -208,12 +226,20 @@ impl StartupApp {
             }
         }
         if disconnected && self.receiver.is_some() {
-            self.error = Some(
-                "The startup task stopped unexpectedly. Try again or choose another folder"
-                    .to_owned(),
-            );
+            let error = "The startup task stopped unexpectedly. Try again or choose another folder"
+                .to_owned();
+            self.record_startup_failure(&error);
+            self.error = Some(error);
             self.receiver = None;
         }
+    }
+
+    fn record_startup_failure(&self, error: &str) {
+        if !self.preferences.troubleshooting_logging {
+            return;
+        }
+        let report = diagnostics::build_startup_failure_report(self.install_path.as_deref(), error);
+        let _ = diagnostics::initialize_log(&report);
     }
 
     fn draw_startup(&mut self, ctx: &egui::Context) {
@@ -232,6 +258,26 @@ impl StartupApp {
                 return;
             }
         }
+        if let Some(warning) = &self.preferences_warning {
+            egui::TopBottomPanel::top("preferences_load_warning").show(ctx, |ui| {
+                ui.colored_label(ui.visuals().warn_fg_color, warning);
+            });
+        }
+        if self.receiver.is_some() {
+            draw_catalog_loading_view(
+                ctx,
+                &logo,
+                CatalogLoadingView {
+                    product_name: "Sundial",
+                    version: DISPLAY_VERSION,
+                    message: self.progress.message,
+                    completed: self.progress.completed,
+                    total: self.progress.total,
+                    source_path: self.install_path.as_deref(),
+                },
+            );
+            return;
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             let top_space = ((ui.available_height() - 440.0) / 2.0).max(16.0);
             ui.add_space(top_space);
@@ -249,10 +295,13 @@ impl StartupApp {
                             if let Some(install_path) = self.pending_settings_choice.clone() {
                                 ui.heading("Choose Sunrise settings");
                                 ui.add_space(6.0);
-                                ui.label("Two existing settings.json files were found. Choose the one Project Sunrise uses for this installation.");
+                                ui.label("Multiple settings.json files were found. Choose the one Project Sunrise uses for this installation.");
                                 ui.add_space(14.0);
                                 for layout in SettingsLayout::ALL {
                                     let path = settings_path_for_install(&install_path, layout);
+                                    if !path.is_file() {
+                                        continue;
+                                    }
                                     if ui
                                         .add_sized(
                                             [400.0, 34.0],
@@ -303,7 +352,26 @@ impl StartupApp {
                                     "Could not load that installation",
                                 );
                                 ui.add_space(6.0);
-                                ui.label(error);
+                                ui.label(&error);
+                                if ui.button("Copy Report").clicked() {
+                                    ui.ctx().copy_text(diagnostics::build_startup_failure_report(
+                                        self.install_path.as_deref(),
+                                        &error,
+                                    ));
+                                }
+                                if self.preferences.troubleshooting_logging
+                                    && let Some(path) = diagnostics::log_path()
+                                {
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Troubleshooting log: {}",
+                                            path.display()
+                                        ))
+                                        .weak()
+                                        .small(),
+                                    );
+                                }
                                 ui.add_space(16.0);
                                 ui.horizontal(|ui| {
                                     if ui.button("Choose another folder").clicked() {
@@ -318,53 +386,29 @@ impl StartupApp {
                                 return;
                             }
 
-                            if self.receiver.is_none() {
-                                ui.heading("Choose your Shadowkeep installation");
-                                ui.add_space(6.0);
-                                ui.label("Select the Destiny 2 Shadowkeep installation you use with Project Sunrise to begin.");
-                                ui.add_space(10.0);
-                                ui.label(
-                                    egui::RichText::new(
-                                        if cfg!(target_os = "linux") {
-                    "Sundial will read the installed packages to build its local item catalog. On first use, it downloads a small, verified Linux package-decompression helper, not Destiny data."
-                                        } else {
-                                            "Sundial will read the installed packages once to build its local item catalog. No Destiny data is downloaded."
-                                        },
-                                    )
-                                    .weak(),
-                                );
-                                ui.add_space(18.0);
-                                if ui
-                                    .add_sized(
-                                        [240.0, 36.0],
-                                        egui::Button::new("Choose Shadowkeep folder…"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.choose_install();
-                                }
-                                return;
-                            }
-
-                            ui.spinner();
-                            ui.strong(self.progress.message);
+                            ui.heading("Choose your Shadowkeep installation");
+                            ui.add_space(6.0);
+                            ui.label("Select the Destiny 2 Shadowkeep installation you use with Project Sunrise to begin.");
                             ui.add_space(10.0);
-                            let mut bar = egui::ProgressBar::new(self.progress.fraction())
-                                .desired_width(400.0)
-                                .corner_radius(egui::CornerRadius::same(3));
-                            if self.progress.total > 0 {
-                                bar = bar.show_percentage();
-                            } else {
-                                bar = bar.animate(true);
-                            }
-                            ui.add(bar);
-                            if let Some(path) = &self.install_path {
-                                ui.add_space(10.0);
-                                ui.label(
-                                    egui::RichText::new(path.display().to_string())
-                                        .weak()
-                                        .small(),
-                                );
+                            ui.label(
+                                egui::RichText::new(
+                                    if cfg!(target_os = "linux") {
+                "Sundial will read the installed packages to build its local item catalog. On first use, it downloads a small, verified Linux package-decompression helper, not Destiny data."
+                                    } else {
+                                        "Sundial will read the installed packages once to build its local item catalog. No Destiny data is downloaded."
+                                    },
+                                )
+                                .weak(),
+                            );
+                            ui.add_space(18.0);
+                            if ui
+                                .add_sized(
+                                    [240.0, 36.0],
+                                    egui::Button::new("Choose Shadowkeep folder…"),
+                                )
+                                .clicked()
+                            {
+                                self.choose_install();
                             }
                         });
                     });
@@ -420,7 +464,7 @@ mod tests {
             preferred_layout: None,
         };
 
-        let app = StartupApp::new(Some(selection), Preferences::default());
+        let app = StartupApp::new(Some(selection), Preferences::default(), None, None);
 
         assert!(app.receiver.is_some());
         assert!(app.error.is_none());
@@ -429,7 +473,7 @@ mod tests {
 
     #[test]
     fn disconnected_startup_worker_becomes_a_recoverable_error() {
-        let mut app = StartupApp::new(None, Preferences::default());
+        let mut app = StartupApp::new(None, Preferences::default(), None, None);
         let (sender, receiver) = mpsc::channel();
         drop(sender);
         app.receiver = Some(receiver);

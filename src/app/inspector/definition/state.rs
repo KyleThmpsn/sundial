@@ -3,25 +3,49 @@ use std::sync::Arc;
 use crate::{catalog::Catalog, hash::format_hash_hex};
 
 use super::matches::CatalogHashMatchIndex;
+use crate::app::inspector::DefinitionInspectionContext;
+
+#[derive(Clone, Debug)]
+pub(super) struct InspectionTarget {
+    pub(super) hash: u64,
+    context: Option<DefinitionInspectionContext>,
+}
 #[derive(Debug, Default)]
 pub(in crate::app) struct HashInspectionState {
     pub(super) current: Option<u64>,
-    pub(super) history: Vec<u64>,
-    pub(super) forward: Vec<u64>,
+    pub(super) history: Vec<InspectionTarget>,
+    pub(super) forward: Vec<InspectionTarget>,
     pub(super) match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
     pub(super) lookup: String,
     pub(super) lookup_error: bool,
+    pub(super) source_context: Option<DefinitionInspectionContext>,
+    pub(super) mutation_feedback: Option<(bool, String)>,
+    pub(super) runtime: super::runtime::RuntimeInspectionState,
 }
 
 pub(super) const HASH_INSPECTOR_HISTORY_LIMIT: usize = 32;
 
 impl HashInspectionState {
     pub(in crate::app) fn open(&mut self, hash: u64) {
-        if hash == 0 || self.current == Some(hash) {
+        self.open_with_context(hash, None);
+    }
+
+    pub(in crate::app) fn open_with_context(
+        &mut self,
+        hash: u64,
+        context: Option<DefinitionInspectionContext>,
+    ) {
+        if hash == 0 {
+            return;
+        }
+        if self.current == Some(hash) && (context.is_none() || context == self.source_context) {
             return;
         }
         if let Some(current) = self.current {
-            self.history.push(current);
+            self.history.push(InspectionTarget {
+                hash: current,
+                context: self.source_context.take(),
+            });
             trim_navigation_stack(&mut self.history);
         }
         self.forward.clear();
@@ -29,6 +53,8 @@ impl HashInspectionState {
         self.match_index = None;
         self.lookup = format_hash_hex(hash);
         self.lookup_error = false;
+        self.source_context = context;
+        self.mutation_feedback = None;
     }
 
     pub(in crate::app) const fn is_open(&self) -> bool {
@@ -38,26 +64,36 @@ impl HashInspectionState {
     pub(super) fn back(&mut self) {
         if let Some(previous) = self.history.pop() {
             if let Some(current) = self.current {
-                self.forward.push(current);
+                self.forward.push(InspectionTarget {
+                    hash: current,
+                    context: self.source_context.take(),
+                });
                 trim_navigation_stack(&mut self.forward);
             }
-            self.current = Some(previous);
+            self.current = Some(previous.hash);
             self.match_index = None;
-            self.lookup = format_hash_hex(previous);
+            self.lookup = format_hash_hex(previous.hash);
             self.lookup_error = false;
+            self.source_context = previous.context;
+            self.mutation_feedback = None;
         }
     }
 
     pub(super) fn forward(&mut self) {
         if let Some(next) = self.forward.pop() {
             if let Some(current) = self.current {
-                self.history.push(current);
+                self.history.push(InspectionTarget {
+                    hash: current,
+                    context: self.source_context.take(),
+                });
                 trim_navigation_stack(&mut self.history);
             }
-            self.current = Some(next);
+            self.current = Some(next.hash);
             self.match_index = None;
-            self.lookup = format_hash_hex(next);
+            self.lookup = format_hash_hex(next.hash);
             self.lookup_error = false;
+            self.source_context = next.context;
+            self.mutation_feedback = None;
         }
     }
 
@@ -66,19 +102,24 @@ impl HashInspectionState {
             return;
         }
         let newer_history = self.history.split_off(history_index + 1);
-        let hash = self
+        let target = self
             .history
             .pop()
             .expect("selected history entry remains after splitting newer entries");
         if let Some(current) = self.current {
-            self.forward.push(current);
+            self.forward.push(InspectionTarget {
+                hash: current,
+                context: self.source_context.take(),
+            });
         }
         self.forward.extend(newer_history.into_iter().rev());
         trim_navigation_stack(&mut self.forward);
-        self.current = Some(hash);
+        self.current = Some(target.hash);
         self.match_index = None;
-        self.lookup = format_hash_hex(hash);
+        self.lookup = format_hash_hex(target.hash);
         self.lookup_error = false;
+        self.source_context = target.context;
+        self.mutation_feedback = None;
     }
 
     pub(super) fn match_index(
@@ -100,16 +141,19 @@ impl HashInspectionState {
     }
 
     pub(in crate::app) fn close(&mut self) {
+        self.runtime.clear();
         self.current = None;
         self.history.clear();
         self.forward.clear();
         self.match_index = None;
         self.lookup.clear();
         self.lookup_error = false;
+        self.source_context = None;
+        self.mutation_feedback = None;
     }
 }
 
-fn trim_navigation_stack(stack: &mut Vec<u64>) {
+fn trim_navigation_stack(stack: &mut Vec<InspectionTarget>) {
     let overflow = stack.len().saturating_sub(HASH_INSPECTOR_HISTORY_LIMIT);
     if overflow > 0 {
         stack.drain(0..overflow);
@@ -119,6 +163,18 @@ fn trim_navigation_stack(stack: &mut Vec<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::inspector::DefinitionInspectionContext;
+
+    fn assert_navigation_state(
+        inspection: &HashInspectionState,
+        current: Option<u64>,
+        history: &[u64],
+        forward: &[u64],
+    ) {
+        assert_eq!(inspection.current, current);
+        assert_eq!(hashes(&inspection.history), history);
+        assert_eq!(hashes(&inspection.forward), forward);
+    }
 
     #[test]
     fn navigation_keeps_a_real_history() {
@@ -128,26 +184,34 @@ mod tests {
 
         inspection.open(0x1111_1111);
         inspection.open(0x1111_1111);
-        assert_eq!(inspection.current, Some(0x1111_1111));
-        assert!(inspection.history.is_empty());
+        assert_navigation_state(&inspection, Some(0x1111_1111), &[], &[]);
 
         inspection.open(0x2222_2222);
         inspection.open(0x3333_3333);
-        assert_eq!(inspection.current, Some(0x3333_3333));
-        assert_eq!(inspection.history, [0x1111_1111, 0x2222_2222]);
-        assert!(inspection.forward.is_empty());
+        assert_navigation_state(
+            &inspection,
+            Some(0x3333_3333),
+            &[0x1111_1111, 0x2222_2222],
+            &[],
+        );
 
         inspection.back();
-        assert_eq!(inspection.current, Some(0x2222_2222));
-        assert_eq!(inspection.history, [0x1111_1111]);
-        assert_eq!(inspection.forward, [0x3333_3333]);
+        assert_navigation_state(
+            &inspection,
+            Some(0x2222_2222),
+            &[0x1111_1111],
+            &[0x3333_3333],
+        );
 
         inspection.open(0x3333_3333);
         inspection.open(0x4444_4444);
         inspection.navigate_history(0);
-        assert_eq!(inspection.current, Some(0x1111_1111));
-        assert!(inspection.history.is_empty());
-        assert_eq!(inspection.forward, [0x4444_4444, 0x3333_3333, 0x2222_2222]);
+        assert_navigation_state(
+            &inspection,
+            Some(0x1111_1111),
+            &[],
+            &[0x4444_4444, 0x3333_3333, 0x2222_2222],
+        );
         assert_eq!(inspection.lookup, "0x11111111");
 
         inspection.close();
@@ -156,6 +220,29 @@ mod tests {
         assert!(inspection.forward.is_empty());
         assert!(inspection.lookup.is_empty());
         assert!(!inspection.lookup_error);
+    }
+
+    #[test]
+    fn navigation_restores_the_original_instance_snapshot() {
+        let mut inspection = HashInspectionState::default();
+        let context = DefinitionInspectionContext {
+            source: "Character 1 equipment · Kinetic".into(),
+            instance_id: Some("0x4000000000000001".into()),
+            authored_level: Some(1_950),
+            flags: Some(1),
+            plug_count: Some(8),
+            ..Default::default()
+        };
+
+        inspection.open_with_context(0xD980_2C4F, Some(context.clone()));
+        assert_eq!(inspection.source_context, Some(context.clone()));
+
+        inspection.open(0x395D_3E2F);
+        assert_eq!(inspection.source_context, None);
+
+        inspection.back();
+        assert_eq!(inspection.current, Some(0xD980_2C4F));
+        assert_eq!(inspection.source_context, Some(context));
     }
 
     #[test]
@@ -168,16 +255,16 @@ mod tests {
         inspection.back();
         inspection.back();
         assert_eq!(inspection.current, Some(0x1111_1111));
-        assert_eq!(inspection.forward, [0x3333_3333, 0x2222_2222]);
+        assert_eq!(hashes(&inspection.forward), [0x3333_3333, 0x2222_2222]);
 
         inspection.forward();
         assert_eq!(inspection.current, Some(0x2222_2222));
-        assert_eq!(inspection.history, [0x1111_1111]);
-        assert_eq!(inspection.forward, [0x3333_3333]);
+        assert_eq!(hashes(&inspection.history), [0x1111_1111]);
+        assert_eq!(hashes(&inspection.forward), [0x3333_3333]);
 
         inspection.forward();
         assert_eq!(inspection.current, Some(0x3333_3333));
-        assert_eq!(inspection.history, [0x1111_1111, 0x2222_2222]);
+        assert_eq!(hashes(&inspection.history), [0x1111_1111, 0x2222_2222]);
         assert!(inspection.forward.is_empty());
 
         inspection.open(0x4444_4444);
@@ -192,7 +279,34 @@ mod tests {
         }
         assert_eq!(inspection.current, Some(40));
         assert_eq!(inspection.history.len(), HASH_INSPECTOR_HISTORY_LIMIT);
-        assert_eq!(inspection.history.first(), Some(&8));
-        assert_eq!(inspection.history.last(), Some(&39));
+        assert_eq!(hashes(&inspection.history).first(), Some(&8));
+        assert_eq!(hashes(&inspection.history).last(), Some(&39));
+    }
+
+    fn hashes(targets: &[InspectionTarget]) -> Vec<u64> {
+        targets.iter().map(|entry| entry.hash).collect()
+    }
+
+    #[test]
+    fn same_definition_instances_keep_separate_history_snapshots() {
+        let mut state = HashInspectionState::default();
+        let first = DefinitionInspectionContext {
+            instance_id: Some("first".into()),
+            plugs: Some(serde_json::json!([1, null])),
+            ..Default::default()
+        };
+        let second = DefinitionInspectionContext {
+            instance_id: Some("second".into()),
+            plugs: Some(serde_json::json!([2])),
+            ..Default::default()
+        };
+        state.open_with_context(7, Some(first.clone()));
+        state.open_with_context(7, Some(second.clone()));
+        state.open(0);
+        assert_eq!(state.source_context, Some(second.clone()));
+        state.back();
+        assert_eq!(state.source_context, Some(first));
+        state.forward();
+        assert_eq!(state.source_context, Some(second));
     }
 }

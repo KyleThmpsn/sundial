@@ -1,0 +1,12 @@
+[package]
+name = "sundial-account"
+version.workspace = true
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]

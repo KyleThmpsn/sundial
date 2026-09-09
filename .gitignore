@@ -1,6 +1,31 @@
-/target/
+# Build output, including standalone Cargo tools.
+target/
 /dist/
 /tmp/
 THIRD_PARTY_NOTICES.md
 *.tmp
-docs/
+
+# Local activity logs and their rotated files.
+*.log
+*.log.[0-9]*
+*.log.lock
+
+# Python caches and editor backup files.
+__pycache__/
+*.py[cod]
+*.rs.bk
+*.swp
+*.swo
+
+# OS metadata.
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local agent guidance; not part of the shared repository.
+/AGENTS.md
+
+# Local research, implementation notes, and diagnostic examples.
+/docs/
+/examples/
+/crates/parhelion/import/

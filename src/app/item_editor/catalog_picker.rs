@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn catalog_button<'a>(
+pub(crate) fn catalog_button<'a>(
     ui: &egui::Ui,
     catalog: &Catalog,
     hash: u64,
@@ -10,7 +10,11 @@ pub(super) fn catalog_button<'a>(
     catalog.icon_texture(ui.ctx(), hash).map_or_else(
         || egui::Button::new(label),
         |texture| {
-            egui::Button::image_and_text((texture.id(), egui::vec2(icon_size, icon_size)), label)
+            egui::Button::image_and_text(
+                egui::Image::new((texture.id(), egui::vec2(icon_size, icon_size)))
+                    .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
+                label,
+            )
         },
     )
 }
@@ -34,6 +38,20 @@ pub(crate) fn draw_catalog_picker_row(
         egui::vec2(ui.available_width(), row.row_height),
         egui::Sense::click(),
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            row.selected,
+            row.secondary.map_or_else(
+                || row.primary.to_owned(),
+                |secondary| format!("{} · {secondary}", row.primary),
+            ),
+        )
+    });
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -56,6 +74,8 @@ pub(crate) fn draw_catalog_picker_row(
         egui::vec2(icon_size, icon_size),
     );
     if let Some(texture) = catalog.icon_texture(ui.ctx(), row.hash) {
+        ui.painter()
+            .rect_filled(icon_rect, 0.0, crate::app::ui::package_icon_backdrop(ui));
         ui.painter().image(
             texture.id(),
             icon_rect,
@@ -162,7 +182,7 @@ pub(crate) fn catalog_item_tooltip_immediate(
     response
 }
 
-fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bool {
+pub(crate) fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bool {
     catalog.display_name(hash).is_some()
         || catalog
             .plug_type_name(hash)
@@ -186,17 +206,17 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
     let icon = catalog.icon_texture(ui.ctx(), hash);
     ui.horizontal_top(|ui| {
         if let Some(icon) = icon {
-            ui.add(egui::Image::new(&icon));
+            ui.add(egui::Image::new(&icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
         }
         ui.vertical(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(name) = name {
-                    ui.label(egui::RichText::new(name).strong());
+                    ui.label(crate::app::ui::destiny_text(ui, name).strong());
                 }
                 ui.horizontal_wrapped(|ui| {
                     if let Some(type_name) = type_name {
-                        ui.label(type_name);
+                        ui.label(crate::app::ui::destiny_text(ui, type_name));
                         ui.label(egui::RichText::new("·").small().weak());
                     }
                     ui.label(
@@ -209,7 +229,7 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             });
             if let Some(description) = description {
                 ui.separator();
-                ui.label(description);
+                ui.label(crate::app::ui::destiny_text(ui, description));
             }
             if let Some(diagnostic) = icon_diagnostic {
                 ui.separator();

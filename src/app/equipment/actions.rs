@@ -1,29 +1,37 @@
+use crate::app::account_validation::apply_with_bucket_limits;
+use crate::app::account_workspace as account;
+
 use super::*;
 
 impl SundialApp {
     pub(super) fn equipment_mutation_allowed(&mut self) -> bool {
-        if super::inventory::schema_mode(&self.document).can_mutate_equipment() {
+        if account::can_mutate_equipment(&self.document) {
             true
         } else {
-            self.set_status(
-                "Equipment editing is disabled for this settings schema",
-                true,
-            );
+            let reason = self
+                .document
+                .account_editing_blocked()
+                .unwrap_or("Equipment editing is disabled for this settings.json schema.")
+                .to_owned();
+            self.set_status(reason, true);
             false
         }
     }
 
     pub(super) fn equipment_flags_mutation_allowed(&mut self) -> bool {
-        if super::inventory::schema_mode(&self.document).can_mutate_equipment_flags() {
+        if account::can_mutate_equipment_flags(&self.document) {
             true
         } else {
-            self.set_status(
-                format!(
-                    "Equipment lock-state editing requires a writable settings schema {} or newer",
-                    super::inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION
-                ),
-                true,
+            let fallback = format!(
+                "Equipment lock-state editing requires a writable settings schema {} or newer",
+                super::inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION
             );
+            let reason = self
+                .document
+                .account_editing_blocked()
+                .unwrap_or(&fallback)
+                .to_owned();
+            self.set_status(reason, true);
             false
         }
     }
@@ -32,13 +40,9 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match equip_definition(
-            &mut self.document,
-            character,
-            slot,
-            item.hash,
-            &item.default_plugs,
-        ) {
+        match apply_with_bucket_limits(&mut self.document, &self.manifest, |candidate| {
+            account::equip_definition(candidate, character, slot, item.hash, &item.default_plugs)
+        }) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(format!("Equipped {}", item.name), false);
@@ -55,25 +59,32 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return false;
         }
-        if !super::inventory::schema_mode(&self.document).can_mutate_character_inventory() {
-            self.set_status("Equipping a stored item requires settings schema 6", true);
+        if !account::can_mutate_character_inventory(&self.document) {
+            let reason = self
+                .document
+                .account_editing_blocked()
+                .unwrap_or("Equipping a stored item requires settings.json schema 6.")
+                .to_owned();
+            self.set_status(reason, true);
             return false;
         }
 
-        let snapshot =
-            match super::inventory::character_inventory(&self.document, location.character_index) {
-                Ok(Some(items)) => items.into_iter().find(|item| item.location == location),
-                Ok(None) => None,
-                Err(error) => {
-                    self.set_status(error.to_string(), true);
-                    return false;
-                }
-            };
+        let snapshot = match account::character_inventory(&self.document, location.character_index)
+        {
+            Ok(Some(items)) => items.into_iter().find(|item| item.location == location),
+            Ok(None) => None,
+            Err(error) => {
+                self.set_status(error.to_string(), true);
+                return false;
+            }
+        };
         let Some(snapshot) = snapshot else {
             self.set_status("The selected inventory item no longer exists", true);
             return false;
         };
-        let Some((_, _, bucket)) = SLOTS
+        let Some((_, _, bucket)) = self
+            .document
+            .equipment_slots()
             .iter()
             .find(|(known_slot, _, _)| *known_slot == slot)
             .copied()
@@ -95,7 +106,13 @@ impl SundialApp {
             return false;
         };
         let item_name = item.name.clone();
-        match equip_inventory_item(&mut self.document, location, slot, &item) {
+        match equip_inventory_item(
+            &mut self.document,
+            location,
+            slot,
+            &item,
+            self.preferences.experimental_cross_class_subclasses,
+        ) {
             Ok(replaced_item) => {
                 self.dirty = true;
                 let slot_label = equipment_slot_label(slot);
@@ -134,7 +151,14 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match equip_subclass_with_default_abilities(&mut self.document, character, item) {
+        match apply_with_bucket_limits(&mut self.document, &self.manifest, |candidate| {
+            equip_subclass_with_default_abilities(
+                candidate,
+                character,
+                item,
+                self.preferences.experimental_cross_class_subclasses,
+            )
+        }) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(format!("Equipped {}", item.name), false);
@@ -143,11 +167,11 @@ impl SundialApp {
         }
     }
 
-    pub(super) fn empty_weapon(&mut self, character: usize, slot: &str) {
+    pub(in crate::app) fn empty_weapon(&mut self, character: usize, slot: &str) {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match set_weapon_slot_empty(&mut self.document, character, slot) {
+        match account::set_weapon_slot_empty(&mut self.document, character, slot) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -173,16 +197,17 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        if !super::inventory::schema_mode(&self.document).can_mutate_character_inventory() {
-            self.set_status("Unequipping to inventory requires settings schema 6", true);
+        if !account::can_mutate_character_inventory(&self.document) {
+            let reason = self
+                .document
+                .account_editing_blocked()
+                .unwrap_or("Unequipping to inventory requires settings.json schema 6.")
+                .to_owned();
+            self.set_status(reason, true);
             return;
         }
 
-        match super::inventory::move_equipment_item_to_inventory(
-            &mut self.document,
-            character,
-            slot,
-        ) {
+        match account::move_equipment_item_to_inventory(&mut self.document, character, slot) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -206,7 +231,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match set_equipment_item_plug(
+        match account::set_equipment_item_plug(
             &mut self.document,
             character,
             slot,
@@ -226,7 +251,7 @@ impl SundialApp {
         if !self.equipment_mutation_allowed() {
             return;
         }
-        match set_equipment_item_level(&mut self.document, character, slot, level) {
+        match account::set_equipment_item_level(&mut self.document, character, slot, level) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(
@@ -247,7 +272,7 @@ impl SundialApp {
         if !self.equipment_flags_mutation_allowed() {
             return;
         }
-        match set_equipment_item_flags(&mut self.document, character, slot, flags) {
+        match account::set_equipment_item_flags(&mut self.document, character, slot, flags) {
             Ok(()) => {
                 self.dirty = true;
                 self.set_status(

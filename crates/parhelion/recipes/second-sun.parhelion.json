@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.second-sun",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x59EFED62",
+    "expected_name": "The Wardcliff Coil"
+  },
+  "presentation_donor": {
+    "item_hash": "0x47A27ADF",
+    "expected_name": "Truth"
+  },
+  "identity": {
+    "item_hash": "0x757D33F5",
+    "collectible_hash": "0xD347B59A",
+    "unlock_hash": "0xF137B0F4",
+    "name_hash": "0xABF44D11",
+    "flavor_hash": "0xB69D2F9C",
+    "source_hash": "0x820A11AF"
+  },
+  "name": "Second Sun",
+  "flavor": "A second dawn, made by our own hands.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "investment_stats": [
+      {
+        "definition_index": 20,
+        "value": 80
+      },
+      {
+        "definition_index": 21,
+        "value": 25
+      },
+      {
+        "definition_index": 22,
+        "value": 70
+      },
+      {
+        "definition_index": 26,
+        "value": 35
+      },
+      {
+        "definition_index": 27,
+        "value": 25
+      },
+      {
+        "definition_index": 25,
+        "value": 25
+      }
+    ],
+    "inventory_slot": "power",
+    "ammo_type": "heavy",
+    "modern_damage_type": "solar",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "socket_columns": [
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0x77DA660F",
+          "0xAB0A2647",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0xD2013CA1",
+          "0x5C2FD04F",
+          "0x2A1CBFD4"
+        ],
+        "socket_type": 92
+      },
+      {
+        "choices": [
+          "0x8EC817EA"
+        ],
+        "socket_type": 180
+      },
+      null,
+      null
+    ]
+  }
+}

@@ -23,8 +23,13 @@ pub(super) fn table_link(
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub(super) fn table_drag_value(ui: &mut egui::Ui, width: f32, value: &mut i32) -> egui::Response {
-    table_drag_value_ranged(ui, width, value, i32::MIN..=i32::MAX)
+pub(super) fn table_drag_value(
+    ui: &mut egui::Ui,
+    width: f32,
+    value: &mut i32,
+    enabled: bool,
+) -> egui::Response {
+    table_drag_value_ranged(ui, width, value, i32::MIN..=i32::MAX, enabled)
 }
 
 pub(super) fn table_drag_value_ranged(
@@ -32,13 +37,14 @@ pub(super) fn table_drag_value_ranged(
     width: f32,
     value: &mut i32,
     range: std::ops::RangeInclusive<i32>,
+    enabled: bool,
 ) -> egui::Response {
     ui.allocate_ui_with_layout(
         egui::vec2(width, TABLE_CELL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
-            ui.add(egui::DragValue::new(value).speed(1.0).range(range))
+            ui.add_enabled(enabled, egui::DragValue::new(value).speed(1.0).range(range))
         },
     )
     .inner
@@ -101,11 +107,12 @@ pub(super) fn draw_remove_cell(
     ui: &mut egui::Ui,
     width: f32,
     accessible_label: &str,
+    enabled: bool,
 ) -> egui::Response {
     let mut layout = egui::Layout::left_to_right(egui::Align::Center);
     layout.main_align = egui::Align::Center;
     let cell = ui.allocate_ui_with_layout(egui::vec2(width, TABLE_CELL_HEIGHT), layout, |ui| {
-        super::super::components::draw_trash_button(ui, true, accessible_label)
+        super::super::components::draw_trash_button(ui, enabled, accessible_label)
     });
     cell.inner
         .on_hover_cursor(egui::CursorIcon::PointingHand)

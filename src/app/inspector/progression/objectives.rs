@@ -166,7 +166,7 @@ pub(in crate::app) fn override_meaning(definition: &UnlockDefinition) -> String 
         .filter_map(|context| definition_context_label(context))
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    labels.sort_by_key(|label| label.to_lowercase());
+    labels.sort_by_cached_key(|label| label.to_lowercase());
     labels.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     match labels.len() {
         1 => return labels.remove(0),
@@ -177,7 +177,7 @@ pub(in crate::app) fn override_meaning(definition: &UnlockDefinition) -> String 
         _ => {}
     }
     if contexts.is_empty() {
-        return "Reader not resolved".to_owned();
+        return "No Known References".to_owned();
     }
 
     let mut kinds = contexts
@@ -213,6 +213,11 @@ const fn objective_context_priority(kind: ProgressionContextKind) -> u8 {
         ProgressionContextKind::Location => 7,
         ProgressionContextKind::ExpressionMapping => 8,
         ProgressionContextKind::Objective => 9,
+        ProgressionContextKind::Progression => 10,
+        ProgressionContextKind::Achievement => 11,
+        ProgressionContextKind::Requirement => 12,
+        ProgressionContextKind::ValueCounter => 13,
+        ProgressionContextKind::PackageExpression => 14,
     }
 }
 
@@ -340,26 +345,6 @@ pub(in crate::app) fn objective_details_tooltip(objective: &ObjectiveDef) -> Str
     lines.join("\n")
 }
 
-#[cfg(test)]
-pub(in crate::app) fn objective_traits_tooltip(objective: &ObjectiveDef) -> String {
-    let Some(owner) = preferred_objective_owner(objective) else {
-        return "No package traits".into();
-    };
-    if owner.traits.is_empty() {
-        return "No package traits".into();
-    }
-    let mut lines = Vec::new();
-    for trait_definition in &owner.traits {
-        let trait_label = objective_owner_trait_label(trait_definition);
-        lines.push(format!("{trait_label}: 0x{:08X}", trait_definition.hash));
-        let description = trait_definition.description.trim();
-        if !description.is_empty() && !description.eq_ignore_ascii_case(&trait_label) {
-            lines.push(format!("{trait_label}: {description}"));
-        }
-    }
-    lines.join("\n")
-}
-
 pub(in crate::app) fn objective_target_text(objective: &crate::catalog::ObjectiveDef) -> String {
     let target = objective.completion_value;
     if objective.maximum_value().is_some() {
@@ -371,32 +356,4 @@ pub(in crate::app) fn objective_target_text(objective: &crate::catalog::Objectiv
     } else {
         format!("≥{target}")
     }
-}
-
-#[cfg(test)]
-pub(in crate::app) fn objective_target_tooltip(objective: &crate::catalog::ObjectiveDef) -> String {
-    let target = objective.completion_value;
-    let counts_downward = if objective.is_counting_downward {
-        "yes"
-    } else {
-        "no"
-    };
-    let overcompletion = if objective.allow_overcompletion {
-        "allowed"
-    } else {
-        "not allowed"
-    };
-    let negative = if objective.allow_negative_value {
-        "allowed"
-    } else {
-        "not allowed"
-    };
-    let completed_changes = if objective.allow_value_change_when_completed {
-        "allowed"
-    } else {
-        "not allowed"
-    };
-    format!(
-        "Completion value: {target}\nCounts downward: {counts_downward}\nOver-completion: {overcompletion}\nNegative values: {negative}\nChanges after completion: {completed_changes}"
-    )
 }

@@ -2,12 +2,15 @@
 
 use eframe::egui;
 use serde_json::{Map, Value};
+use sundial_account::{
+    AccountSettingKey, AccountSettingValue, AccountSettingsCommand, KeyBindingSlot,
+};
 
 use super::{
     page::missing_group,
     preferences::KEY_BINDING_SOURCES,
     schema::{KEY_BINDING_SOURCE_KEY, KeyBindingFormat, show_presence_gated_preference},
-    widgets::string_choice,
+    widgets::{CommandBatch, account_string_choice},
 };
 
 #[derive(Default)]
@@ -130,16 +133,27 @@ pub(super) const ACTIONS: &[(&str, &str)] = &[
     ("screenshot", "Screenshot"),
 ];
 
+fn binding_help(has_source_choice: bool) -> &'static str {
+    if has_source_choice {
+        "Choose a primary and secondary input for each action. With Binding Source set to Account, changes apply after Destiny 2 is fully restarted."
+    } else {
+        "Choose a primary and secondary input for each action. Save and fully restart Destiny 2 to apply changes."
+    }
+}
+
 pub(super) fn draw_key_bindings(
     ui: &mut egui::Ui,
-    settings: &mut Map<String, Value>,
+    settings: &Map<String, Value>,
     state: &mut KeyBindingUiState,
     editable: bool,
-) -> bool {
-    let mut changed = false;
-    ui.heading("Key bindings");
+) -> CommandBatch {
+    let mut changed = CommandBatch::default();
+    ui.heading("Key Bindings");
     if editable {
-        ui.label("Choose a primary and secondary input for each action. With Binding source set to Account, changes apply after Destiny 2 is fully restarted.");
+        ui.label(binding_help(show_presence_gated_preference(
+            settings,
+            KEY_BINDING_SOURCE_KEY,
+        )));
     } else {
         ui.label(
             "This settings schema does not use editable named bindings. These values are read-only.",
@@ -152,11 +166,11 @@ pub(super) fn draw_key_bindings(
             .spacing([18.0, 9.0])
             .striped(true)
             .show(ui, |ui| {
-                changed |= string_choice(
+                changed |= account_string_choice(
                     ui,
                     settings,
                     KEY_BINDING_SOURCE_KEY,
-                    "Binding source",
+                    "Binding Source",
                     KEY_BINDING_SOURCES,
                 );
             });
@@ -166,15 +180,12 @@ pub(super) fn draw_key_bindings(
         if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "Bindings edited here will not apply while the source is Computer. Switch Binding source to Account to have Sunrise use them.",
+                "Bindings edited here will not apply while the source is Computer. Switch Binding Source to Account to have Sunrise use them.",
             );
         }
         ui.add_space(8.0);
     }
-    let Some(bindings) = settings
-        .get_mut("key_bindings")
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(bindings) = settings.get("key_bindings").and_then(Value::as_object) else {
         missing_group(ui, "key bindings");
         return changed;
     };
@@ -205,17 +216,16 @@ pub(super) fn draw_key_bindings(
                 }
                 visible += 1;
                 ui.label(label);
-                let Some(binding) = bindings.get_mut(key).and_then(Value::as_object_mut) else {
+                let Some(binding) = bindings.get(key).and_then(Value::as_object) else {
                     ui.colored_label(ui.visuals().error_fg_color, "Missing");
                     ui.colored_label(ui.visuals().error_fg_color, "Missing");
                     ui.end_row();
                     continue;
                 };
                 if editable {
+                    changed |= binding_picker(ui, state, key, "primary", binding.get("primary"));
                     changed |=
-                        binding_picker(ui, state, key, "primary", binding.get_mut("primary"));
-                    changed |=
-                        binding_picker(ui, state, key, "secondary", binding.get_mut("secondary"));
+                        binding_picker(ui, state, key, "secondary", binding.get("secondary"));
                 } else {
                     binding_label(ui, binding.get("primary"));
                     binding_label(ui, binding.get("secondary"));
@@ -235,11 +245,11 @@ pub(super) fn binding_picker(
     state: &mut KeyBindingUiState,
     action: &str,
     half: &str,
-    value: Option<&mut Value>,
-) -> bool {
+    value: Option<&Value>,
+) -> Option<AccountSettingsCommand> {
     let Some(value) = value else {
         ui.colored_label(ui.visuals().error_fg_color, "Missing");
-        return false;
+        return None;
     };
 
     let (label, valid) = binding_value_label(value);
@@ -332,14 +342,27 @@ pub(super) fn binding_picker(
         },
     );
 
-    let Some(selection) = selection else {
-        return false;
-    };
-    let Ok(changed) = set_named_binding_value(value, selection.as_deref()) else {
-        return false;
+    let selection = selection?;
+    let replacement = selection
+        .as_deref()
+        .map_or(AccountSettingValue::Unassigned, AccountSettingValue::text);
+    let unchanged = match &replacement {
+        AccountSettingValue::Unassigned => value.is_null(),
+        AccountSettingValue::Text(input) => value.as_str() == Some(input),
+        _ => false,
     };
     ui.memory_mut(egui::Memory::close_popup);
-    changed
+    (!unchanged).then(|| AccountSettingsCommand::Set {
+        key: AccountSettingKey::key_binding(
+            action,
+            match half {
+                "primary" => KeyBindingSlot::Primary,
+                "secondary" => KeyBindingSlot::Secondary,
+                _ => unreachable!("guided bindings only expose primary and secondary slots"),
+            },
+        ),
+        value: replacement,
+    })
 }
 
 pub(super) fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
@@ -519,8 +542,7 @@ pub(super) fn modified_input(name: &str) -> Option<(&str, &str)> {
 }
 
 pub(super) fn valid_named_input(name: &str) -> bool {
-    let name = trim_input_name(name);
-    !name.is_empty() && (matches_input_name(name, NAMED_INPUTS) || modified_input(name).is_some())
+    sundial_account::is_valid_named_binding_input(name)
 }
 
 pub(super) fn binding_modifier(name: &str) -> BindingModifier {
@@ -585,6 +607,7 @@ pub(super) fn binding_value_label(value: &Value) -> (String, bool) {
     }
 }
 
+#[cfg(test)]
 pub(super) fn set_named_binding_value(
     value: &mut Value,
     input: Option<&str>,
@@ -628,7 +651,7 @@ pub(super) fn input_code(
             u16::MAX
         )),
         KeyBindingFormat::Named => Err(format!(
-            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise schemas 3 through 8"
+            "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise's named-binding format"
         )),
     }
 }

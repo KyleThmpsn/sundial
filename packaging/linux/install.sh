@@ -11,10 +11,16 @@ icons_dir="$data_home/icons/hicolor/256x256/apps"
 install -Dm755 "$bundle_dir/sundial" "$bin_dir/sundial"
 install -Dm644 "$bundle_dir/$app_id.png" "$icons_dir/$app_id.png"
 
-escaped_executable=$(printf '%s' "$bin_dir/sundial" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g')
+# Exec quoting is decoded after Desktop Entry string escaping. Percent signs are field codes.
+escaped_executable=$(printf '%s' "$bin_dir/sundial" | sed 's/\\/\\\\\\\\/g; s/["$`]/\\\\&/g; s/%/%%/g')
 mkdir -p "$applications_dir"
-sed "s|^Exec=.*|Exec=\"$escaped_executable\"|" \
-    "$bundle_dir/$app_id.desktop" > "$applications_dir/$app_id.desktop"
+while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+        # A stable executable avoids launcher existence checks on an unexpanded %% path.
+        Exec=*) printf 'Exec=/usr/bin/env -- "%s"\n' "$escaped_executable" ;;
+        *) printf '%s\n' "$line" ;;
+    esac
+done < "$bundle_dir/$app_id.desktop" > "$applications_dir/$app_id.desktop"
 chmod 644 "$applications_dir/$app_id.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then

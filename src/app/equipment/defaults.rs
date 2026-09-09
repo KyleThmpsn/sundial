@@ -1,70 +1,26 @@
 use super::*;
 
-pub(in crate::app) fn collect_class_armor_defaults(
+pub(in crate::app) fn collect_class_armor_default_characters(
     document: &Value,
-) -> HashMap<u64, HashMap<String, Value>> {
-    let mut defaults = HashMap::new();
+) -> HashMap<u64, usize> {
     let Some(characters) = document
         .pointer("/state/characters")
         .and_then(Value::as_array)
     else {
-        return defaults;
+        return HashMap::new();
     };
-    for character in characters {
-        let Some(class_type) = character.get("class").and_then(Value::as_u64) else {
-            continue;
-        };
-        let Some(equipment) = character.get("equipment").and_then(Value::as_object) else {
-            continue;
-        };
-        let armor = ARMOR_SLOTS
-            .iter()
-            .filter_map(|slot| {
-                equipment
-                    .get(*slot)
-                    .cloned()
-                    .map(|item| ((*slot).into(), item))
-            })
-            .collect();
-        defaults.entry(class_type).or_insert(armor);
-    }
-    defaults
-}
-
-pub(in crate::app) fn restore_class_armor(
-    character: &mut serde_json::Map<String, Value>,
-    defaults: &HashMap<String, Value>,
-) -> bool {
-    let Some(equipment) = character
-        .get_mut("equipment")
-        .and_then(Value::as_object_mut)
-    else {
-        return false;
-    };
-    let mut changed = false;
-    for &slot in ARMOR_SLOTS {
-        let Some(replacement) = defaults.get(slot) else {
-            continue;
-        };
-        let Some(replacement) = replacement.as_object() else {
-            continue;
-        };
-        let Some(existing) = equipment.get(slot).and_then(Value::as_object) else {
-            continue;
-        };
-        let mut merged = existing.clone();
-        for (key, value) in replacement {
-            if key != "instance_soid" {
-                merged.insert(key.clone(), value.clone());
-            }
-        }
-        let merged = Value::Object(merged);
-        if equipment.get(slot) != Some(&merged) {
-            equipment.insert(slot.into(), merged);
-            changed = true;
-        }
-    }
-    changed
+    characters
+        .iter()
+        .enumerate()
+        .filter_map(|(character_index, character)| {
+            let class_type = character.get("class").and_then(Value::as_u64)?;
+            character.get("equipment").and_then(Value::as_object)?;
+            Some((class_type, character_index))
+        })
+        .fold(HashMap::new(), |mut defaults, (class_type, index)| {
+            defaults.entry(class_type).or_insert(index);
+            defaults
+        })
 }
 
 pub(in crate::app) const fn default_subclass_name(class_type: u64) -> &'static str {
@@ -148,4 +104,22 @@ pub(in crate::app) const fn class_name(class_type: u64) -> &'static str {
         2 => "Warlock",
         _ => "Invalid class",
     }
+}
+
+pub(in crate::app) fn subclass_display_name(item: &ItemDef, show_native_class: bool) -> String {
+    if show_native_class && item.bucket_hash == 3_284_755_031 && item.class_type <= 2 {
+        format!("{} ({})", item.name, class_name(item.class_type))
+    } else {
+        item.name.clone()
+    }
+}
+
+pub(in crate::app) fn item_class_is_compatible(
+    item: &ItemDef,
+    character_class_type: u64,
+    allow_cross_class_subclasses: bool,
+) -> bool {
+    item.class_type == 3
+        || item.class_type == character_class_type
+        || (allow_cross_class_subclasses && item.bucket_hash == 3_284_755_031)
 }

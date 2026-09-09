@@ -13,6 +13,7 @@ use super::{
     inspector::{
         HashInspectionState, draw_catalog_hash_window,
         request_definition as request_hash_inspection,
+        take_definition_context as take_hash_inspection_context,
         take_definition_request as take_hash_inspection_request,
     },
     progression::{CollectionStateSnapshot, collection_state_snapshot},
@@ -28,8 +29,13 @@ mod details;
 mod hierarchy;
 
 use acquisition::{
-    AcquisitionState, FLAG_INSTRUCTION, OBJECTIVE_INSTRUCTION, VALUE_INSTRUCTION,
-    acquisition_status, condition_metadata_lines, condition_program, state_lines,
+    AcquisitionState, FLAG_INSTRUCTION, POOL_INSTRUCTION, VALUE_INSTRUCTION, acquisition_status,
+    condition_metadata_lines, condition_program, for_each_expression_token, state_lines,
+};
+pub(in crate::app) use acquisition::{
+    ExpressionValue, collectible_acquired_state, collectible_acquisition_edit_available,
+    collectible_state, evaluate_expression_value_with, is_supported_condition_instruction,
+    set_collectible_acquisition_state,
 };
 use details::draw_collection_metadata_workspace;
 use hierarchy::{
@@ -41,6 +47,7 @@ const TABLE_ROW_GAP: f32 = 2.0;
 
 #[derive(Debug, Default)]
 pub(super) struct UiState {
+    pub(super) read_only: bool,
     query: String,
     sort: TableSort,
     expansion: HashMap<Vec<String>, bool>,
@@ -66,25 +73,17 @@ enum CollectionStatusFilter {
     All,
     Acquired,
     Missing,
-    NoRule,
     Unknown,
 }
 
 impl CollectionStatusFilter {
-    const ALL: [Self; 5] = [
-        Self::All,
-        Self::Acquired,
-        Self::Missing,
-        Self::NoRule,
-        Self::Unknown,
-    ];
+    const ALL: [Self; 4] = [Self::All, Self::Acquired, Self::Missing, Self::Unknown];
 
     const fn label(self) -> &'static str {
         match self {
             Self::All => "All states",
             Self::Acquired => "Acquired",
             Self::Missing => "Missing",
-            Self::NoRule => "No condition program",
             Self::Unknown => "Unresolved",
         }
     }
@@ -95,7 +94,6 @@ impl CollectionStatusFilter {
                 (self, state),
                 (Self::Acquired, AcquisitionState::Acquired)
                     | (Self::Missing, AcquisitionState::Missing)
-                    | (Self::NoRule, AcquisitionState::NoRule)
                     | (Self::Unknown, AcquisitionState::Unknown)
             )
     }
@@ -133,7 +131,7 @@ pub(super) fn draw_content(
         return false;
     };
 
-    let changed = draw_collection_metadata_workspace(ui, document, catalog, &snapshot, state);
+    let mut changed = draw_collection_metadata_workspace(ui, document, catalog, &snapshot, state);
 
     let mut expansion_action = None;
     collection_toolbar(ui, |ui| {
@@ -174,13 +172,11 @@ pub(super) fn draw_content(
         .cloned()
         .collect::<Vec<_>>();
     ui.horizontal_wrapped(|ui| {
-        ui.label(format!("{} / {} acquired", counts.acquired, counts.total()));
+        ui.label(format!("{} / {} acquired", counts.acquired, counts.total()))
+            .on_hover_text("Calculated from the saved account and package definitions. Conditions that need live game context remain unresolved.");
         let mut remainder = Vec::new();
         if counts.missing > 0 {
             remainder.push(format!("{} missing", counts.missing));
-        }
-        if counts.no_rule > 0 {
-            remainder.push(format!("{} no condition program", counts.no_rule));
         }
         if counts.unknown > 0 {
             remainder.push(format!("{} unresolved", counts.unknown));
@@ -358,12 +354,14 @@ pub(super) fn draw_content(
             });
     });
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
-        state.hash_inspection.open(hash);
+        let context = take_hash_inspection_context(ui.ctx(), hash);
+        state.hash_inspection.open_with_context(hash, context);
     }
-    draw_catalog_hash_window(
+    changed |= draw_catalog_hash_window(
         ui.ctx(),
         catalog,
         Some(document),
+        !state.read_only,
         &mut state.hash_inspection,
         "collections",
     );
@@ -412,38 +410,35 @@ fn collection_matches(query: &str, definition: &CollectibleDef, catalog: &Catalo
         || definition.conditions.iter().any(|condition| {
             condition.field.to_string().contains(query)
                 || condition_program(condition).contains(query)
-                || condition.tokens.iter().any(|token| match token.kind {
-                    FLAG_INSTRUCTION => catalog
-                        .unlock_flag_definition(token.operand as usize)
-                        .is_some_and(|definition| {
-                            unlock_definition_matches(query, token.operand as usize, definition)
-                        }),
-                    VALUE_INSTRUCTION => catalog
-                        .unlock_value_definition(token.operand as usize)
-                        .is_some_and(|definition| {
-                            unlock_definition_matches(query, token.operand as usize, definition)
-                        }),
-                    OBJECTIVE_INSTRUCTION => catalog
-                        .objective_definition(token.operand as usize)
-                        .is_some_and(|objective| {
-                            objective_matches(query, token.operand as usize, objective)
-                        }),
-                    _ => false,
-                })
+                || {
+                    let mut matched = false;
+                    for_each_expression_token(&condition.tokens, catalog, |token| {
+                        matched |= match token.kind {
+                            FLAG_INSTRUCTION => catalog
+                                .unlock_flag_definition(token.operand as usize)
+                                .is_some_and(|definition| {
+                                    unlock_definition_matches(
+                                        query,
+                                        token.operand as usize,
+                                        definition,
+                                    )
+                                }),
+                            VALUE_INSTRUCTION => catalog
+                                .unlock_value_definition(token.operand as usize)
+                                .is_some_and(|definition| {
+                                    unlock_definition_matches(
+                                        query,
+                                        token.operand as usize,
+                                        definition,
+                                    )
+                                }),
+                            POOL_INSTRUCTION => token.operand.to_string().contains(query),
+                            _ => false,
+                        };
+                    });
+                    matched
+                }
         })
-}
-
-fn objective_matches(query: &str, index: usize, objective: &crate::catalog::ObjectiveDef) -> bool {
-    index.to_string().contains(query)
-        || format!("{:08x}", objective.hash).contains(query)
-        || [
-            objective.name.as_str(),
-            objective.progress_description.as_str(),
-            objective.display_description.as_str(),
-            objective.description.as_str(),
-        ]
-        .into_iter()
-        .any(|text| text.to_lowercase().contains(query))
 }
 
 fn unlock_definition_matches(query: &str, index: usize, definition: &UnlockDefinition) -> bool {
@@ -513,7 +508,6 @@ mod tests {
             AcquisitionState::Acquired,
             AcquisitionState::Acquired,
             AcquisitionState::Missing,
-            AcquisitionState::NoRule,
             AcquisitionState::Unknown,
         ];
         let mut counts = acquisition::AcquisitionCounts::default();
@@ -521,13 +515,12 @@ mod tests {
             counts.add(state);
         }
 
-        assert_eq!(counts.total(), 5);
+        assert_eq!(counts.total(), 4);
         assert_eq!(counts.acquired, 2);
         assert_eq!(counts.missing, 1);
-        assert_eq!(counts.no_rule, 1);
         assert_eq!(counts.unknown, 1);
         assert!(CollectionStatusFilter::Unknown.matches(AcquisitionState::Unknown));
         assert!(!CollectionStatusFilter::Unknown.matches(AcquisitionState::Missing));
-        assert!(CollectionStatusFilter::All.matches(AcquisitionState::NoRule));
+        assert!(CollectionStatusFilter::All.matches(AcquisitionState::Acquired));
     }
 }

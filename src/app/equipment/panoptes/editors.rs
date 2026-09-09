@@ -2,11 +2,13 @@
 
 use eframe::egui;
 use serde_json::Value;
+use sundial_account::NO_DEFINITION_HASH;
 
 use crate::{
     app::{
         ARMOR_SLOTS, ITEM_PICKER_MAX_HEIGHT, ITEM_PICKER_MIN_HEIGHT, PLUG_PICKER_MAX_HEIGHT,
         PLUG_PICKER_MIN_HEIGHT, PlugSelectionMode, SundialApp, WEAPON_SLOTS,
+        inspector::DefinitionInspectionContext,
         inventory::{self, InventoryItemAction, InventoryItemSnapshot, ItemPlugs},
         inventory_page::{
             CharacterInventoryEditorContext, InventoryItemUiId, displayed_inventory_plugs,
@@ -22,10 +24,9 @@ use crate::{
 
 use super::{layout, widgets};
 use crate::app::equipment::{
-    EquippedItemSnapshot, displayed_plugs, equipment_definition_choices, native_plug_default,
+    EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue, displayed_plugs,
+    equipment_definition_choices, native_plug_default,
 };
-
-const NO_DEFINITION_HASH: u64 = 0x811C_9DC5;
 
 pub(super) struct EquippedEditor<'a> {
     pub(super) character_index: usize,
@@ -53,7 +54,7 @@ fn panoptes_socket_is_visible(
     current_hash: Option<u64>,
     is_mod_socket: bool,
 ) -> bool {
-    current_hash.is_some_and(|hash| hash != NO_DEFINITION_HASH)
+    current_hash.is_some_and(|hash| hash != u64::from(NO_DEFINITION_HASH.get()))
         || is_mod_socket
         || matches!(
             mode,
@@ -77,33 +78,25 @@ impl SundialApp {
             snapshot,
             group_sockets,
         } = editor;
-        let (is_empty, current_level, current_hash, current_hash_display_text, authored_plugs) = {
-            let equipped = self
-                .characters()
-                .and_then(|characters| characters.get(character_index))
-                .and_then(|character| character.get("equipment"))
-                .and_then(Value::as_object)
-                .and_then(|equipment| equipment.get(slot));
-            let hash_value = equipped.and_then(|item| item.get("definition_hash"));
-            let hash = hash_value.and_then(parse_unsigned_value);
-            (
-                equipped.is_some_and(Value::is_null),
-                equipped
-                    .and_then(|item| item.get("level"))
-                    .and_then(Value::as_i64),
-                hash,
-                hash.map_or_else(
-                    || {
-                        hash_value
-                            .and_then(Value::as_str)
-                            .unwrap_or("<missing>")
-                            .to_owned()
-                    },
-                    format_hash_hex,
-                ),
-                equipped.and_then(|item| item.get("plugs")).cloned(),
-            )
-        };
+        let current_hash = snapshot.and_then(|item| item.definition_hash);
+        let is_empty = snapshot.is_none();
+        let current_level = snapshot.and_then(|item| item.level);
+        let current_hash_display_text =
+            snapshot.map_or_else(|| "<empty>".to_owned(), |item| item.definition_text.clone());
+        let authored_plugs = snapshot.and_then(|item| match &item.plugs {
+            EquippedItemPlugs::NativeDefaults => Some(Value::Null),
+            EquippedItemPlugs::Authored(plugs) => Some(Value::Array(
+                plugs
+                    .iter()
+                    .map(|plug| match plug {
+                        EquippedPlugValue::Empty => Value::Null,
+                        EquippedPlugValue::Hash(hash) => Value::from(*hash),
+                        EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
+                    })
+                    .collect(),
+            )),
+            EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => None,
+        });
         let current =
             current_hash.and_then(|hash| self.manifest.item_handle_for_bucket(hash, bucket_hash));
         let definition_valid = is_empty
@@ -136,6 +129,7 @@ impl SundialApp {
             native_defaults && (!item.sockets.is_empty() || !plugs.is_empty())
         });
         let mut level_change = None;
+        let mut flags_change = None;
 
         ui.push_id(("panoptes-equipped-editor", character_index, slot), |ui| {
             let header_response = widgets::draw_compact_item_header(
@@ -147,6 +141,20 @@ impl SundialApp {
                     type_name,
                     armor_generation,
                     hash: current_hash,
+                    inspection_context: DefinitionInspectionContext {
+                        source: format!("Character {} Equipment · {label}", character_index + 1),
+                        instance_id: snapshot.and_then(|item| {
+                            item.instance_soid.map(|_| item.instance_soid_text.clone())
+                        }),
+                        authored_level: current_level,
+                        flags: snapshot.and_then(|item| item.flags),
+                        quantity: snapshot.and_then(|item| item.quantity),
+                        plug_count: authored_plugs
+                            .as_ref()
+                            .and_then(Value::as_array)
+                            .map(Vec::len),
+                        plugs: authored_plugs.clone(),
+                    },
                     hash_display_text,
                     default_plugs_equipped,
                     valid,
@@ -170,6 +178,7 @@ impl SundialApp {
                                                 self.manifest.item_power_cap(hash)
                                             }),
                                             allow_power_above_cap: self
+                                                .preferences
                                                 .experimental_power_above_cap,
                                             quantity: None,
                                             quantity_max: None,
@@ -188,6 +197,15 @@ impl SundialApp {
                             }
                         });
                     }
+                },
+                |ui| {
+                    ui.add_enabled_ui(guided_editable && !is_empty, |ui| {
+                        flags_change = item_editor::draw_masterwork_flag(
+                            ui,
+                            snapshot.and_then(|item| item.flags),
+                            self.document.supports_v13_account(),
+                        );
+                    });
                 },
             );
 
@@ -216,18 +234,27 @@ impl SundialApp {
                         (Some(&header_response), false),
                         |query_value| {
                             let candidates = if query_value.trim().is_empty() {
-                                manifest.browse(bucket_hash, class_type, show_dummy_items)
+                                manifest.browse(
+                                    bucket_hash,
+                                    class_type,
+                                    show_dummy_items,
+                                    self.preferences.experimental_cross_class_subclasses,
+                                )
                             } else {
                                 manifest.search(
                                     query_value,
                                     bucket_hash,
                                     class_type,
                                     show_dummy_items,
+                                    self.preferences.experimental_cross_class_subclasses,
                                 )
                             };
                             let needle = query_value.to_lowercase();
                             DefinitionPickerChoices {
-                                definitions: equipment_definition_choices(candidates),
+                                definitions: equipment_definition_choices(
+                                    candidates,
+                                    self.document.supports_v13_account(),
+                                ),
                                 existing_inventory: Vec::new(),
                                 clear: (WEAPON_SLOTS.contains(&slot)
                                     && (query_value.trim().is_empty()
@@ -260,6 +287,9 @@ impl SundialApp {
                 );
             }
 
+            if let Some(flags) = flags_change {
+                self.select_equipment_flags(character_index, slot, flags);
+            }
             if let Some(level) = level_change {
                 self.select_equipment_level(character_index, slot, level);
             }
@@ -326,6 +356,7 @@ impl SundialApp {
         let editable = context.editable();
         let mut requested = Vec::new();
         let mut equip_requested = false;
+        let mut flags_change = None;
 
         ui.push_id(("panoptes-stored-editor", ui_identity), |ui| {
             let header_response = widgets::draw_compact_item_header(
@@ -337,6 +368,25 @@ impl SundialApp {
                     type_name,
                     armor_generation,
                     hash: Some(hash),
+                    inspection_context: DefinitionInspectionContext {
+                        source: format!(
+                            "Character {} Inventory · Item {}",
+                            snapshot.location.character_index + 1,
+                            snapshot.location.item_index + 1
+                        ),
+                        instance_id: Some(format!("0x{:016X}", snapshot.instance_soid)),
+                        authored_level: Some(i64::from(snapshot.level)),
+                        flags: snapshot.flags,
+                        quantity: Some(i64::from(snapshot.quantity)),
+                        plug_count: match &snapshot.plugs {
+                            ItemPlugs::NativeDefaults => None,
+                            ItemPlugs::Authored(plugs) => Some(plugs.len()),
+                        },
+                        plugs: Some(match &snapshot.plugs {
+                            ItemPlugs::NativeDefaults => Value::Null,
+                            ItemPlugs::Authored(plugs) => serde_json::json!(plugs),
+                        }),
+                    },
                     hash_display_text: Some(&hash_display_text),
                     default_plugs_equipped,
                     valid,
@@ -344,14 +394,16 @@ impl SundialApp {
                 },
                 |ui| {
                     ui.add_enabled_ui(editable, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             for action in item_editor::draw_level_and_quantity(
                                 ui,
                                 ("panoptes-inventory-numeric", ui_identity),
                                 NumericItemFields {
                                     level: Some(i64::from(snapshot.level)),
                                     power_max: self.manifest.item_power_cap(hash),
-                                    allow_power_above_cap: self.experimental_power_above_cap,
+                                    allow_power_above_cap: self
+                                        .preferences
+                                        .experimental_power_above_cap,
                                     quantity: None,
                                     quantity_max: None,
                                 },
@@ -375,7 +427,19 @@ impl SundialApp {
                         });
                     equip_requested = equip.clicked();
                 },
+                |ui| {
+                    ui.add_enabled_ui(editable, |ui| {
+                        flags_change = item_editor::draw_masterwork_flag(
+                            ui,
+                            snapshot.flags,
+                            self.document.supports_v13_account(),
+                        );
+                    });
+                },
             );
+            if let Some(flags) = flags_change {
+                requested.push(InventoryItemAction::SetFlags(flags));
+            }
 
             let picker_key = inventory_item_state_key(ui_identity);
             let picker_action = {
@@ -395,17 +459,26 @@ impl SundialApp {
                         (Some(&header_response), false),
                         |query_value| {
                             let candidates = if query_value.trim().is_empty() {
-                                manifest.browse(bucket_hash, context.class_type(), show_dummy_items)
+                                manifest.browse(
+                                    bucket_hash,
+                                    context.class_type(),
+                                    show_dummy_items,
+                                    self.preferences.experimental_cross_class_subclasses,
+                                )
                             } else {
                                 manifest.search(
                                     query_value,
                                     bucket_hash,
                                     context.class_type(),
                                     show_dummy_items,
+                                    self.preferences.experimental_cross_class_subclasses,
                                 )
                             };
                             DefinitionPickerChoices {
-                                definitions: equipment_definition_choices(candidates),
+                                definitions: equipment_definition_choices(
+                                    candidates,
+                                    self.document.supports_v13_account(),
+                                ),
                                 existing_inventory: Vec::new(),
                                 clear: None,
                                 random_item_builder_hash: (WEAPON_SLOTS.contains(&slot)
@@ -506,7 +579,10 @@ impl SundialApp {
             let native_default = native_plug_default(&item.default_plugs, socket_index);
             let current_label = current_hash.map_or_else(
                 || "None".to_owned(),
-                |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
+                |hash| {
+                    self.manifest
+                        .plug_label(hash, self.preferences.show_plug_hashes)
+                },
             );
             let picker_snapshot = item_editor::plug_picker_snapshot(
                 &self.manifest,
@@ -623,7 +699,10 @@ impl SundialApp {
             let native_default = native_plug_default(&item.default_plugs, socket_index);
             let current_label = current_hash.map_or_else(
                 || "None".to_owned(),
-                |hash| self.manifest.plug_label(hash, self.show_plug_hashes),
+                |hash| {
+                    self.manifest
+                        .plug_label(hash, self.preferences.show_plug_hashes)
+                },
             );
             let picker_snapshot = item_editor::plug_picker_snapshot(
                 &self.manifest,
@@ -696,6 +775,11 @@ mod tests {
             false
         ));
         assert!(!panoptes_socket_is_visible(
+            PlugSelectionMode::SocketAndGearType,
+            None,
+            false
+        ));
+        assert!(!panoptes_socket_is_visible(
             PlugSelectionMode::MatchingSocketType,
             None,
             false
@@ -721,7 +805,7 @@ mod tests {
         ));
         assert!(!panoptes_socket_is_visible(
             PlugSelectionMode::Supported,
-            Some(NO_DEFINITION_HASH),
+            Some(u64::from(NO_DEFINITION_HASH.get())),
             false
         ));
         assert!(panoptes_socket_is_visible(

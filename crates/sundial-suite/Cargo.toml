@@ -1,0 +1,27 @@
+[package]
+name = "sundial-suite"
+version.workspace = true
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+description = "Sundial desktop application with Parhelion package authoring"
+publish = false
+
+[[bin]]
+name = "sundial"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Retired PR88 prototype for development only; never enable in release packages.
+sqlite-account = ["sundial/sqlite-account"]
+
+[dependencies]
+parhelion = { path = "../parhelion" }
+sundial = { path = "../..", default-features = false }
+
+[build-dependencies]
+winresource = "0.1.31"

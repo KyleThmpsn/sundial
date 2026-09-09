@@ -35,15 +35,15 @@ impl UnlockTable {
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::AccountFlagRuns => "Account acquired flags",
-            Self::ProfileFlagRuns => "Profile unlock flags",
-            Self::CharacterFlags => "Character flags",
-            Self::ObjectiveValues => "Account objective values",
-            Self::CharacterObjectFlagRuns => "Character object acquired flags",
-            Self::CharacterObjectObjectiveValues => "Character object objective values",
-            Self::AccountProgressions => "Account progressions",
-            Self::CharacterProgressions => "Character progressions",
-            Self::UnreplicatedProgressions => "Unreplicated progressions",
+            Self::AccountFlagRuns => "Account Acquired Flags",
+            Self::ProfileFlagRuns => "Profile Unlock Flags",
+            Self::CharacterFlags => "Character Flags",
+            Self::ObjectiveValues => "Account Objective Values",
+            Self::CharacterObjectFlagRuns => "Character Object Acquired Flags",
+            Self::CharacterObjectObjectiveValues => "Character Object Objective Values",
+            Self::AccountProgressions => "Account Progressions",
+            Self::CharacterProgressions => "Character Progressions",
+            Self::UnreplicatedProgressions => "Unreplicated Progressions",
         }
     }
 
@@ -81,17 +81,19 @@ impl InvestmentTable {
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::FlagOverrides => "Unlock flag overrides",
-            Self::ValueOverrides => "Unlock value overrides",
+            Self::FlagOverrides => "Unlock Flag Overrides",
+            Self::ValueOverrides => "Unlock Value Overrides",
         }
     }
 
     pub(super) const fn explanation(self) -> &'static str {
         match self {
             Self::FlagOverrides => {
-                "Supplies the selected logical unlock-flag value when Family 5 data is rebuilt."
+                "Overrides the unlock flag used by the linked activities and objectives."
             }
-            Self::ValueOverrides => "Supplies the selected value when Family 5 data is rebuilt.",
+            Self::ValueOverrides => {
+                "Overrides the value used by the linked activities and objectives."
+            }
         }
     }
 
@@ -105,6 +107,7 @@ impl InvestmentTable {
 
 #[derive(Debug, Default)]
 pub(in crate::app) struct UiState {
+    pub(in crate::app) read_only: bool,
     pub(super) unlock_table: UnlockTable,
     pub(super) investment_table: InvestmentTable,
     pub(super) query: String,

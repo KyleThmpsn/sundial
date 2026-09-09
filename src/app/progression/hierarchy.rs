@@ -57,8 +57,7 @@ pub(super) fn progression_definition_matches(
                 || faction.description.to_lowercase().contains(query)
         })
         || definition.steps.iter().any(|step| {
-            step.name.to_lowercase().contains(query)
-                || step.progress_total.to_string().contains(query)
+            step.name.to_lowercase().contains(query) || step.cost.to_string().contains(query)
         })
         || definition.reward_items.iter().any(|reward| {
             format!("{:08x}", reward.item_hash).contains(query)
@@ -478,10 +477,11 @@ pub(super) fn sort_objective_hierarchy(hierarchy: &mut ObjectiveHierarchy<'_>, s
     }
 
     sort_objective_leaves(&mut hierarchy.leaves, sort);
-    hierarchy.branches.sort_by(|left, right| {
-        canonical_root_position(&left.label)
-            .cmp(&canonical_root_position(&right.label))
-            .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+    hierarchy.branches.sort_by_cached_key(|branch| {
+        (
+            canonical_root_position(&branch.label),
+            branch.label.to_lowercase(),
+        )
     });
     for branch in &mut hierarchy.branches {
         sort_branch(branch, sort);

@@ -1,0 +1,194 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.june-ninth",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xC7EDADF6",
+    "expected_name": "The Recluse"
+  },
+  "presentation_donor": {
+    "item_hash": "0x9BADD9A6",
+    "expected_name": "Imminent Storm"
+  },
+  "identity": {
+    "item_hash": "0x3BEF48A2",
+    "collectible_hash": "0x6412B5B3",
+    "unlock_hash": "0x907F72D7",
+    "name_hash": "0xC4B79C28",
+    "flavor_hash": "0x6019E453",
+    "source_hash": "0xD78769A2"
+  },
+  "name": "June Ninth",
+  "flavor": "Some hope for the future, some wait for the call.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "color_replacements": [
+        {
+          "source": [
+            52,
+            49,
+            49
+          ],
+          "replacement": [
+            159,
+            120,
+            75
+          ],
+          "range_percent": 40
+        }
+      ],
+      "hue_shift_degrees": 40,
+      "saturation": 60,
+      "brightness": -10,
+      "contrast": 65
+    },
+    "investment_stats": [
+      {
+        "definition_index": 15,
+        "value": 64
+      },
+      {
+        "definition_index": 16,
+        "value": 66
+      },
+      {
+        "definition_index": 22,
+        "value": 55
+      },
+      {
+        "definition_index": 24,
+        "value": 89
+      },
+      {
+        "definition_index": 27,
+        "value": 83
+      },
+      {
+        "definition_index": 30,
+        "value": 70
+      },
+      {
+        "definition_index": 32,
+        "value": 15
+      }
+    ],
+    "inventory_slot": "kinetic",
+    "ammo_type": "primary",
+    "modern_damage_type": "void",
+    "power_cap_group": 15,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      null,
+      {
+        "choices": [
+          "0xC1B79779",
+          "0xDA3C553C",
+          "0x3203BACE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x43F47FCB",
+          "0xF66D3B73",
+          "0x7554E3EE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xA7C9148B",
+          "0x6C7E97E1",
+          "0xA5A4B58A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xEF30F2DE",
+          "0xA5D8EDC8",
+          "0xF351D2CC"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x979E212D"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x5A3387EB"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xA9CA6B03"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x33594797"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

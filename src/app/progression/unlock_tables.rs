@@ -125,7 +125,7 @@ pub(super) fn draw_flag_slots(
         &[
             (index_width, "Index"),
             (hash_width, "Hash"),
-            (tested_by_width, "Readers"),
+            (tested_by_width, "References"),
             (state_width, "Slot"),
             (TABLE_ACTION_WIDTH, ""),
         ],
@@ -197,8 +197,13 @@ pub(super) fn draw_flag_slots(
                                     state_width,
                                     egui::RichText::new(slot.to_string()).monospace(),
                                 );
-                                if draw_remove_cell(ui, TABLE_ACTION_WIDTH, "Remove state entry")
-                                    .clicked()
+                                if draw_remove_cell(
+                                    ui,
+                                    TABLE_ACTION_WIDTH,
+                                    "Remove state entry",
+                                    !state.read_only,
+                                )
+                                .clicked()
                                     && set_unlock_flag(document, config.id, slot, false)
                                 {
                                     changed = true;
@@ -415,7 +420,24 @@ pub(super) fn draw_objective_values(
                                     );
                                     let row = leaf.row;
                                     let mut value = row.value;
-                                    if table_drag_value(ui, value_width, &mut value).changed()
+                                    let reserved = id == "character_object_objective_values"
+                                        && RESERVED_CHARACTER_OBJECTIVE_VALUES
+                                            .iter()
+                                            .any(|(index, _)| *index == row.index);
+                                    if reserved {
+                                        table_cell(
+                                            ui,
+                                            value_width,
+                                            egui::RichText::new(value.to_string()).monospace(),
+                                        )
+                                        .on_hover_text("Reserved runtime value");
+                                    } else if table_drag_value(
+                                        ui,
+                                        value_width,
+                                        &mut value,
+                                        !state.read_only,
+                                    )
+                                    .changed()
                                         && set_unlock_value(document, id, row.index, value)
                                     {
                                         changed = true;
@@ -425,10 +447,13 @@ pub(super) fn draw_objective_values(
                                         state_width,
                                         egui::RichText::new(row.index.to_string()).monospace(),
                                     );
-                                    if draw_remove_cell(
+                                    if reserved {
+                                        table_cell(ui, TABLE_ACTION_WIDTH, "");
+                                    } else if draw_remove_cell(
                                         ui,
                                         TABLE_ACTION_WIDTH,
                                         "Remove objective value",
+                                        !state.read_only,
                                     )
                                     .clicked()
                                         && remove_unlock_value(document, id, row.index)
@@ -490,7 +515,7 @@ pub(super) fn draw_progression_values(
             (name_width, "Name"),
             (slot_width, "Slot"),
             (lane_width, "Progress"),
-            (target_width, "Target"),
+            (target_width, "Ladder Total"),
             (lane_width, "Lane 1"),
             (lane_width, "Lane 2"),
             (TABLE_ACTION_WIDTH, ""),
@@ -617,8 +642,13 @@ pub(super) fn draw_progression_values(
                             let target = definition.and_then(progression_target);
                             if let Some(previous_lanes) = row.lanes {
                                 let mut lanes = previous_lanes;
-                                let mut row_changed =
-                                    table_drag_value(ui, lane_width, &mut lanes[0]).changed();
+                                let mut row_changed = table_drag_value(
+                                    ui,
+                                    lane_width,
+                                    &mut lanes[0],
+                                    !state.read_only,
+                                )
+                                .changed();
                                 table_cell(
                                     ui,
                                     target_width,
@@ -631,8 +661,13 @@ pub(super) fn draw_progression_values(
                                 );
                                 for lane in &mut lanes[1..] {
                                     if state.edit_progression_lanes {
-                                        row_changed |=
-                                            table_drag_value(ui, lane_width, lane).changed();
+                                        row_changed |= table_drag_value(
+                                            ui,
+                                            lane_width,
+                                            lane,
+                                            !state.read_only,
+                                        )
+                                        .changed();
                                     } else {
                                         table_cell(
                                             ui,
@@ -659,8 +694,13 @@ pub(super) fn draw_progression_values(
                                     );
                                     changed = true;
                                 }
-                                if draw_remove_cell(ui, TABLE_ACTION_WIDTH, "Remove progression")
-                                    .clicked()
+                                if draw_remove_cell(
+                                    ui,
+                                    TABLE_ACTION_WIDTH,
+                                    "Remove progression",
+                                    !state.read_only,
+                                )
+                                .clicked()
                                     && remove_progression_value(document, id, row.definition_index)
                                 {
                                     state.record_progression_change(
@@ -672,7 +712,8 @@ pub(super) fn draw_progression_values(
                                     changed = true;
                                 }
                             } else {
-                                let add = missing_progression_cell(ui, lane_width);
+                                let add =
+                                    missing_progression_cell(ui, lane_width, !state.read_only);
                                 table_cell(
                                     ui,
                                     target_width,
@@ -712,11 +753,13 @@ pub(super) fn draw_progression_values(
 }
 
 pub(in crate::app) fn progression_target(definition: &ProgressionDefinition) -> Option<i32> {
-    definition
-        .steps
-        .iter()
-        .map(|step| step.progress_total)
-        .max()
+    if definition.steps.is_empty() {
+        return None;
+    }
+    definition.steps.iter().try_fold(0_i32, |total, step| {
+        (step.cost >= 0).then_some(())?;
+        total.checked_add(step.cost)
+    })
 }
 
 pub(in crate::app) fn saved_progression_lanes(
@@ -760,14 +803,15 @@ pub(in crate::app) fn saved_progression_lanes(
     saved
 }
 
-pub(super) fn missing_progression_cell(ui: &mut egui::Ui, width: f32) -> bool {
+pub(super) fn missing_progression_cell(ui: &mut egui::Ui, width: f32, enabled: bool) -> bool {
     ui.allocate_ui_with_layout(
         egui::vec2(width, TABLE_CELL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(egui::RichText::new("Missing").weak());
-            ui.small_button("Add").clicked()
+            ui.add_enabled(enabled, egui::Button::new("Add").small())
+                .clicked()
         },
     )
     .inner

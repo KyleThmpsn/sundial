@@ -48,6 +48,7 @@ pub(super) struct CharacterTransferTarget {
 pub(super) struct CharacterInventoryCardContext<'a> {
     pub(super) bucket_usage: &'a BucketUsage,
     pub(super) transfer_targets: &'a [CharacterTransferTarget],
+    pub(super) occupied_equipment_slots: &'a [&'static str],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,5 +132,24 @@ impl CharacterInventoryEntry {
             Self::Equipped(snapshot) => snapshot.definition_hash,
             Self::Stored { snapshot, .. } => Some(u64::from(snapshot.definition_hash)),
         }
+    }
+
+    pub(super) const fn is_stored(&self) -> bool {
+        matches!(self, Self::Stored { .. })
+    }
+
+    pub(super) fn level(&self) -> i64 {
+        match self {
+            Self::Equipped(snapshot) => snapshot.level.unwrap_or_default(),
+            Self::Stored { snapshot, .. } => snapshot.level as i64,
+        }
+    }
+
+    pub(super) fn locked(&self) -> bool {
+        let flags = match self {
+            Self::Equipped(snapshot) => snapshot.flags.unwrap_or_default(),
+            Self::Stored { snapshot, .. } => snapshot.flags.unwrap_or_default(),
+        };
+        flags & super::super::inventory::INVENTORY_FLAG_LOCKED != 0
     }
 }

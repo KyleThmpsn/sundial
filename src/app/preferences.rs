@@ -1,3 +1,8 @@
+pub use crate::investment::PlugSelectionMode;
+pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
+
+pub(super) mod store;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -7,49 +12,15 @@ use std::{
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
+use super::ui::destiny_text_font_family;
+
 const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
-    ("Destiny Symbols 360", "Destiny_Symbols_360.ttf"),
     ("Destiny Symbols PC", "Destiny_Symbols_PC.otf"),
+    ("Destiny Symbols 360", "Destiny_Symbols_360.ttf"),
 ];
-const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
-const GEAR_TYPE_WARNING: &str = "High risk: this exposes plugs used anywhere on the same broad gear type, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
-const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum PlugSelectionMode {
-    #[default]
-    Supported,
-    MatchingSocketType,
-    GearType,
-    AnyPlug,
-}
-
-impl PlugSelectionMode {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Supported => "Compatible",
-            Self::MatchingSocketType => "Socket type",
-            Self::GearType => "Gear type",
-            Self::AnyPlug => "All",
-        }
-    }
-}
-
-pub(super) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
-    match mode {
-        PlugSelectionMode::Supported => {}
-        PlugSelectionMode::MatchingSocketType => {
-            ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-        }
-        PlugSelectionMode::GearType => {
-            ui.colored_label(ui.visuals().error_fg_color, GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::AnyPlug => {
-            ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-        }
-    }
-}
+pub(super) const MIN_AUTOMATIC_BACKUP_LIMIT: u16 = 5;
+pub(super) const MAX_AUTOMATIC_BACKUP_LIMIT: u16 = 100;
+const DEFAULT_AUTOMATIC_BACKUP_LIMIT: u16 = 20;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,15 +68,17 @@ pub(super) enum CharacterInventoryLayout {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsLayout {
+    GameRoot,
     Root,
     BinX64,
 }
 
 impl SettingsLayout {
-    pub(super) const ALL: [Self; 2] = [Self::Root, Self::BinX64];
+    pub(super) const ALL: [Self; 3] = [Self::GameRoot, Self::Root, Self::BinX64];
 
     pub(super) fn relative_path(self) -> PathBuf {
         match self {
+            Self::GameRoot => PathBuf::from("settings.json"),
             Self::Root => PathBuf::from("Sunrise").join("settings.json"),
             Self::BinX64 => PathBuf::from("bin")
                 .join("x64")
@@ -116,6 +89,7 @@ impl SettingsLayout {
 
     pub(super) const fn preference_value(self) -> &'static str {
         match self {
+            Self::GameRoot => "game_root",
             Self::Root => "root",
             Self::BinX64 => "bin_x64",
         }
@@ -123,6 +97,7 @@ impl SettingsLayout {
 
     pub(super) fn from_preference(value: &str) -> Option<Self> {
         match value {
+            "game_root" => Some(Self::GameRoot),
             "root" => Some(Self::Root),
             "bin_x64" => Some(Self::BinX64),
             _ => None,
@@ -155,6 +130,12 @@ pub(super) struct Preferences {
     #[serde(default = "default_show_safety_warnings")]
     pub(super) show_safety_warnings: bool,
     #[serde(default)]
+    pub(super) review_changes_before_saving: bool,
+    #[serde(default)]
+    pub(super) limit_automatic_backups: bool,
+    #[serde(default = "default_automatic_backup_limit")]
+    pub(super) automatic_backup_limit: u16,
+    #[serde(default)]
     pub(super) color_theme: ColorTheme,
     #[serde(default)]
     pub(super) always_open_json_editor_in_second_window: bool,
@@ -165,15 +146,35 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) character_inventory_layout: CharacterInventoryLayout,
     #[serde(default)]
-    pub(super) experimental_orbit_backdrops: bool,
-    #[serde(default)]
     pub(super) experimental_progression: bool,
     #[serde(default)]
+    pub(super) experimental_activity_state: bool,
+    #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
+    #[serde(default)]
+    pub(super) experimental_extended_fov: bool,
+    #[serde(default)]
+    pub(super) experimental_cross_class_subclasses: bool,
+    #[serde(default)]
+    pub(super) experimental_package_authoring: bool,
+    #[serde(default)]
+    pub(super) parhelion_warning_acknowledged: bool,
+    #[serde(default)]
+    pub(super) show_parhelion_experimental_options: bool,
+    #[serde(default)]
+    pub(super) troubleshooting_logging: bool,
 }
 
 const fn default_show_safety_warnings() -> bool {
     true
+}
+
+const fn default_automatic_backup_limit() -> u16 {
+    DEFAULT_AUTOMATIC_BACKUP_LIMIT
+}
+
+pub(super) fn normalized_automatic_backup_limit(limit: u16) -> u16 {
+    limit.clamp(MIN_AUTOMATIC_BACKUP_LIMIT, MAX_AUTOMATIC_BACKUP_LIMIT)
 }
 
 pub(super) fn configure_destiny_symbol_fonts(
@@ -181,6 +182,12 @@ pub(super) fn configure_destiny_symbol_fonts(
     install: &Path,
 ) -> Result<(), String> {
     let mut fonts = egui::FontDefinitions::default();
+    let proportional_fallbacks = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     let mut loaded = Vec::new();
     let mut errors = Vec::new();
     for &(name, file_name) in DESTINY_SYMBOL_FONTS {
@@ -202,6 +209,35 @@ pub(super) fn configure_destiny_symbol_fonts(
             .or_default()
             .extend(loaded.clone());
     }
+    let mut destiny_text_fonts = loaded;
+    destiny_text_fonts.extend(proportional_fallbacks);
+    fonts
+        .families
+        .insert(destiny_text_font_family(), destiny_text_fonts);
+    // Read the installed game's bold face without bundling game assets.
+    let heading_style = egui::TextStyle::Name("Section Heading".into());
+    let bold_family = egui::FontFamily::Name("Sundial Section Heading".into());
+    let bold_font = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Bold.otf"));
+    if let Ok(bytes) = bold_font {
+        let name = "sundial-section-bold".to_owned();
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        let mut fallbacks = vec![name];
+        fallbacks.extend(fonts.families[&egui::FontFamily::Proportional].clone());
+        fonts.families.insert(bold_family.clone(), fallbacks);
+        ctx.all_styles_mut(|style| {
+            let size = egui::TextStyle::Body.resolve(style).size;
+            style.text_styles.insert(
+                heading_style.clone(),
+                egui::FontId::new(size, bold_family.clone()),
+            );
+        });
+    } else {
+        ctx.all_styles_mut(|style| {
+            style.text_styles.remove(&heading_style);
+        });
+    }
     ctx.set_fonts(fonts);
     if errors.is_empty() {
         Ok(())
@@ -216,21 +252,50 @@ impl Default for Preferences {
             install: None,
             settings_layout: None,
             really_unsafe_warning_acknowledged: false,
-            default_plug_selection_mode: PlugSelectionMode::Supported,
+            default_plug_selection_mode: PlugSelectionMode::SocketAndGearType,
             show_safety_warnings: true,
+            review_changes_before_saving: false,
+            limit_automatic_backups: false,
+            automatic_backup_limit: DEFAULT_AUTOMATIC_BACKUP_LIMIT,
             color_theme: ColorTheme::Dark,
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
-            experimental_orbit_backdrops: false,
             experimental_progression: false,
+            experimental_activity_state: false,
             experimental_power_above_cap: false,
+            experimental_extended_fov: false,
+            experimental_cross_class_subclasses: false,
+            experimental_package_authoring: false,
+            parhelion_warning_acknowledged: false,
+            show_parhelion_experimental_options: false,
+            troubleshooting_logging: false,
         }
     }
 }
 
 impl Preferences {
+    pub(super) fn normalize_for_runtime(&mut self) {
+        self.automatic_backup_limit =
+            normalized_automatic_backup_limit(self.automatic_backup_limit);
+        if self.default_plug_selection_mode == PlugSelectionMode::AnyPlug
+            && !self.really_unsafe_warning_acknowledged
+        {
+            self.default_plug_selection_mode = PlugSelectionMode::SocketAndGearType;
+        }
+    }
+
+    pub(super) fn reset_editable_settings(&mut self) {
+        let install = self.install.take();
+        let settings_layout = self.settings_layout.take();
+        *self = Self {
+            install,
+            settings_layout,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn install_selection(&self) -> Option<InstallSelection> {
         Some(InstallSelection {
             install_path: self.install.clone()?,

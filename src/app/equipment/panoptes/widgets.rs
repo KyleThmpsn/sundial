@@ -3,7 +3,12 @@
 use eframe::egui;
 
 use crate::{
-    app::{inspector::request_definition, item_editor},
+    app::{
+        inspector::{
+            DefinitionInspectionContext, request_definition, request_definition_with_context,
+        },
+        item_editor,
+    },
     catalog::Catalog,
     hash::format_hash_hex,
 };
@@ -45,6 +50,7 @@ pub(super) struct CompactItemHeader<'a> {
     pub(super) type_name: Option<&'a str>,
     pub(super) armor_generation: Option<&'static str>,
     pub(super) hash: Option<u64>,
+    pub(super) inspection_context: DefinitionInspectionContext,
     pub(super) hash_display_text: Option<&'a str>,
     pub(super) default_plugs_equipped: bool,
     pub(super) valid: bool,
@@ -56,6 +62,7 @@ pub(super) fn draw_compact_item_header(
     catalog: &Catalog,
     header: CompactItemHeader<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
+    context_menu: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let mut icon_response = None;
     let mut hash_rect = None;
@@ -88,20 +95,26 @@ pub(super) fn draw_compact_item_header(
                             ui.label(egui::RichText::new(hash_text).monospace().weak());
                         hash_rect = Some(hash_response.rect);
                     }
-                    if header.default_plugs_equipped {
-                        ui.label(egui::RichText::new("Default plugs equipped").weak());
-                    }
                 });
             });
-            ui.label(
-                egui::RichText::new(header.title)
-                    .size(15.0)
-                    .color(if header.valid {
-                        ui.visuals().strong_text_color()
-                    } else {
-                        ui.visuals().error_fg_color
-                    }),
-            );
+            if header.default_plugs_equipped {
+                ui.label(egui::RichText::new("Default Plugs Equipped").weak());
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(header.title)
+                        .size(15.0)
+                        .color(if header.valid {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().error_fg_color
+                        }),
+                );
+                if header.hash.is_some_and(crate::dummy_items::contains) {
+                    item_editor::draw_item_badge(ui, "Dummy")
+                        .on_hover_text("Display-only dummy definition");
+                }
+            });
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut drew_metadata = false;
@@ -131,33 +144,43 @@ pub(super) fn draw_compact_item_header(
         | header_area.response)
         .interact(egui::Sense::click());
     if let Some(hash) = header.hash {
+        let card_response = ui.interact(
+            response.rect,
+            response.id.with(("item_card", hash)),
+            egui::Sense::click(),
+        );
+        let tooltip_response =
+            item_editor::catalog_item_tooltip(card_response.clone(), catalog, hash);
         if let Some(hash_rect) = hash_rect {
             let hash_response = ui
                 .interact(
-                    hash_rect,
+                    hash_rect.expand2(egui::vec2(4.0, 2.0)),
                     response.id.with(("definition_hash", hash)),
                     egui::Sense::click(),
                 )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Inspect Item");
             if hash_response.clicked() {
-                request_definition(ui.ctx(), hash);
+                request_definition_with_context(ui.ctx(), hash, header.inspection_context.clone());
             }
         }
-        response.context_menu(|ui| {
-            if ui.button("Inspect definition").clicked() {
-                request_definition(ui.ctx(), hash);
+        card_response.context_menu(|ui| {
+            if ui.button("Inspect Item").clicked() {
+                request_definition_with_context(ui.ctx(), hash, header.inspection_context.clone());
                 ui.close_menu();
             }
-            if ui.button("Copy hash (hex)").clicked() {
+            context_menu(ui);
+            ui.separator();
+            if ui.button("Copy Hash (Hex)").clicked() {
                 ui.ctx().copy_text(format_hash_hex(hash));
                 ui.close_menu();
             }
-            if ui.button("Copy hash (decimal)").clicked() {
+            if ui.button("Copy Hash (Decimal)").clicked() {
                 ui.ctx().copy_text(hash.to_string());
                 ui.close_menu();
             }
         });
-        item_editor::catalog_item_tooltip(response, catalog, hash)
+        response | card_response | tooltip_response
     } else {
         response
     }
@@ -202,8 +225,11 @@ pub(super) fn draw_socket_button(
     let response = match texture {
         None => ui.add_sized([button_side, button_side], egui::Button::new("")),
         Some(texture) => ui.add(
-            egui::ImageButton::new((texture.id(), egui::vec2(SOCKET_ICON, SOCKET_ICON)))
-                .corner_radius(3),
+            egui::ImageButton::new(
+                egui::Image::new((texture.id(), egui::vec2(SOCKET_ICON, SOCKET_ICON)))
+                    .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
+            )
+            .corner_radius(3),
         ),
     };
     let response = if let Some(hash) = hash {

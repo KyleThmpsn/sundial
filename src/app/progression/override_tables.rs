@@ -70,7 +70,7 @@ pub(super) fn draw_flag_overrides(
     }
     columns.extend([
         (value_width, "Logical flag value"),
-        (meaning_width, "Readers"),
+        (meaning_width, "References"),
         (action_width, ""),
     ]);
     let sort = sortable_table_header(
@@ -123,26 +123,29 @@ pub(super) fn draw_flag_overrides(
                                 egui::vec2(value_width, TABLE_CELL_HEIGHT),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
-                                    egui::ComboBox::from_id_salt((
-                                        "family5_flag_override_value",
-                                        row.definition_index,
-                                    ))
-                                    .selected_text(flag_override_state_label(value))
-                                    .width(value_width - 12.0)
-                                    .show_ui(ui, |ui| {
-                                        for candidate in 0..=FAMILY5_FLAG_VALUE_MAXIMUM {
-                                            ui.selectable_value(
-                                                &mut value,
-                                                candidate,
-                                                flag_override_state_label(candidate),
-                                            );
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text(flag_override_state_help());
+                                    ui.add_enabled_ui(!state.read_only, |ui| {
+                                        egui::ComboBox::from_id_salt((
+                                            "family5_flag_override_value",
+                                            row.definition_index,
+                                        ))
+                                        .selected_text(flag_override_state_label(value))
+                                        .width(value_width - 12.0)
+                                        .show_ui(ui, |ui| {
+                                            for candidate in 0..=FAMILY5_FLAG_VALUE_MAXIMUM {
+                                                ui.selectable_value(
+                                                    &mut value,
+                                                    candidate,
+                                                    flag_override_state_label(candidate),
+                                                );
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text(flag_override_state_help())
+                                    });
                                 },
                             );
-                            if value != prior_value
+                            if !state.read_only
+                                && value != prior_value
                                 && set_investment_override(
                                     document,
                                     InvestmentTable::FlagOverrides,
@@ -163,7 +166,13 @@ pub(super) fn draw_flag_overrides(
                                 MetadataSelection::FlagOverride(row.definition_index, row.value),
                                 state,
                             );
-                            if draw_remove_cell(ui, action_width, "Remove flag override").clicked()
+                            if draw_remove_cell(
+                                ui,
+                                action_width,
+                                "Remove flag override",
+                                !state.read_only,
+                            )
+                            .clicked()
                                 && remove_investment_override(
                                     document,
                                     InvestmentTable::FlagOverrides,
@@ -253,7 +262,7 @@ pub(super) fn draw_value_overrides(
     }
     columns.extend([
         (value_width, "Value"),
-        (meaning_width, "Readers"),
+        (meaning_width, "References"),
         (action_width, ""),
     ]);
     let sort = sortable_table_header(
@@ -304,7 +313,8 @@ pub(super) fn draw_value_overrides(
                             }
                             let mut value = row.value;
                             let prior_value = value;
-                            if table_drag_value(ui, value_width, &mut value).changed()
+                            if table_drag_value(ui, value_width, &mut value, !state.read_only)
+                                .changed()
                                 && set_investment_override(
                                     document,
                                     InvestmentTable::ValueOverrides,
@@ -319,7 +329,13 @@ pub(super) fn draw_value_overrides(
                                 changed = true;
                             }
                             draw_override_meaning(ui, meaning_width, definition, selection, state);
-                            if draw_remove_cell(ui, action_width, "Remove value override").clicked()
+                            if draw_remove_cell(
+                                ui,
+                                action_width,
+                                "Remove value override",
+                                !state.read_only,
+                            )
+                            .clicked()
                                 && remove_investment_override(
                                     document,
                                     InvestmentTable::ValueOverrides,
@@ -364,7 +380,7 @@ pub(super) fn draw_override_meaning(
         egui::RichText::new(meaning).underline()
     };
     let response = table_link(ui, width, text).on_hover_text(format!(
-        "{} reader{}",
+        "{} reference{}",
         definition.tested_by.len(),
         if definition.tested_by.len() == 1 {
             ""
@@ -388,10 +404,10 @@ pub(super) fn draw_override_coverage_summary(
         ui.label(summary).on_hover_text(tooltip);
         if unresolved_readers > 0 {
             ui.label(
-                egui::RichText::new(format!("· {unresolved_readers} with no resolved reader"))
+                egui::RichText::new(format!("· {unresolved_readers} with no known references"))
                     .weak(),
             )
-            .on_hover_text("No package reader relationship was found for this definition.");
+            .on_hover_text("No package reference was found for this definition. This does not prove it is unused.");
         }
         if partially_decoded > 0 {
             ui.label(

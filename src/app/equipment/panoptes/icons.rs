@@ -9,9 +9,9 @@ use eframe::egui;
 use crate::catalog::Catalog;
 
 /// The game's own empty mod-socket plate, used only for unoccupied mod sockets.
-const EMPTY_MOD_SOCKET: u64 = 0x1CB5_C883;
+const EMPTY_MOD_SOCKET: u32 = 0x1CB5_C883;
 fn empty_mod(catalog: &Catalog, context: &egui::Context) -> Option<egui::TextureHandle> {
-    catalog.icon_texture(context, EMPTY_MOD_SOCKET)
+    catalog.icon_texture(context, u64::from(EMPTY_MOD_SOCKET))
 }
 
 pub(super) fn socket(
@@ -33,14 +33,4 @@ pub(super) fn gear(
     hash: Option<u64>,
 ) -> Option<egui::TextureHandle> {
     hash.and_then(|hash| catalog.icon_texture(context, hash))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn package_fallback_hashes_are_canonical_u32_values() {
-        assert!(u32::try_from(EMPTY_MOD_SOCKET).is_ok());
-    }
 }

@@ -9,6 +9,10 @@ pub(in crate::app) fn draw_content(
     state: &mut UiState,
     view: View,
 ) -> bool {
+    if state.read_only {
+        state.add_open = false;
+        state.edit_progression_lanes = false;
+    }
     if let Some(error) = catalog.progression_package_error() {
         ui.colored_label(ui.visuals().warn_fg_color, "Package scan incomplete")
             .on_hover_text(error);
@@ -39,24 +43,35 @@ pub(in crate::app) fn draw_content(
     };
 
     let hash_inspector_open = state.hash_inspection.is_open();
-    draw_progression_metadata_workspace(
+    let inspector_full_width = draw_progression_metadata_workspace(
         ui,
         catalog,
+        document,
         &mut state.metadata_inspector,
         hash_inspector_open,
     );
 
-    let changed = match view {
-        View::Unlocks => draw_unlocks(ui, document, &policy.unlocks, catalog, state),
-        View::Investment => draw_investment(ui, document, &policy.investment, catalog, state),
+    if let Some(selection) = state.metadata_inspector.take_reveal_request() {
+        reveal_metadata_selection(view, selection, catalog, state);
+    }
+
+    let mut changed = if inspector_full_width {
+        false
+    } else {
+        match view {
+            View::Unlocks => draw_unlocks(ui, document, &policy.unlocks, catalog, state),
+            View::Investment => draw_investment(ui, document, &policy.investment, catalog, state),
+        }
     };
     if let Some(hash) = take_hash_inspection_request(ui.ctx()) {
-        state.hash_inspection.open(hash);
+        let context = take_hash_inspection_context(ui.ctx(), hash);
+        state.hash_inspection.open_with_context(hash, context);
     }
-    draw_catalog_hash_window(
+    changed |= draw_catalog_hash_window(
         ui.ctx(),
         catalog,
         Some(document),
+        !state.read_only,
         &mut state.hash_inspection,
         "progression",
     );
@@ -64,6 +79,54 @@ pub(in crate::app) fn draw_content(
         state.cached_progression = Some(Ok(policy));
     }
     changed
+}
+
+fn reveal_metadata_selection(
+    view: View,
+    selection: MetadataSelection,
+    catalog: &Catalog,
+    state: &mut UiState,
+) {
+    let index = selection.definition_index();
+    state.query = catalog
+        .unlock_value_definition(index)
+        .filter(|_| selection.is_value())
+        .or_else(|| {
+            catalog
+                .unlock_flag_definition(index)
+                .filter(|_| !selection.is_value())
+        })
+        .map_or_else(
+            || index.to_string(),
+            |definition| format_hash_hex(definition.hash),
+        );
+    match view {
+        View::Investment => {
+            state.investment_table = if selection.is_value() {
+                InvestmentTable::ValueOverrides
+            } else {
+                InvestmentTable::FlagOverrides
+            };
+        }
+        View::Unlocks => {
+            let definition = if selection.is_value() {
+                catalog.unlock_value_definition(index)
+            } else {
+                catalog.unlock_flag_definition(index)
+            };
+            state.unlock_table = match (selection.is_value(), definition.map(|value| value.bank()))
+            {
+                (false, Some(ACCOUNT_FLAG_BANK)) => UnlockTable::AccountFlagRuns,
+                (false, Some(PROFILE_FLAG_BANK)) => UnlockTable::ProfileFlagRuns,
+                (false, Some(CHARACTER_OBJECT_FLAG_BANK)) => UnlockTable::CharacterObjectFlagRuns,
+                (false, Some(CHARACTER_FLAG_BANK)) | (false, _) => UnlockTable::CharacterFlags,
+                (true, Some(CHARACTER_OBJECTIVE_BANK)) => {
+                    UnlockTable::CharacterObjectObjectiveValues
+                }
+                (true, _) => UnlockTable::ObjectiveValues,
+            };
+        }
+    }
 }
 
 pub(super) fn draw_unlocks(
@@ -96,7 +159,9 @@ pub(super) fn draw_unlocks(
         draw_filter(ui, &mut state.query);
         if state.unlock_table != UnlockTable::UnreplicatedProgressions
             && !state.unlock_table.is_progression()
-            && ui.button("+ Add").clicked()
+            && ui
+                .add_enabled(!state.read_only, egui::Button::new("+ Add"))
+                .clicked()
         {
             state.add_open = true;
             state.add_query.clear();
@@ -104,11 +169,17 @@ pub(super) fn draw_unlocks(
             state.add_progression_lanes = [0; 3];
         }
         if state.unlock_table.is_progression() {
-            ui.checkbox(&mut state.edit_progression_lanes, "Edit Lane 1–2")
-                .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
+            ui.add_enabled(
+                !state.read_only,
+                egui::Checkbox::new(&mut state.edit_progression_lanes, "Edit Lanes 1 and 2"),
+            )
+            .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
             if let Some(last_change) = state.last_progression_change
                 && ui
-                    .button("Undo progression change")
+                    .add_enabled(
+                        !state.read_only,
+                        egui::Button::new("Undo Progression Change"),
+                    )
                     .on_hover_text(last_change.label())
                     .clicked()
             {
@@ -249,7 +320,7 @@ pub(super) fn draw_investment(
         InvestmentTable::FlagOverrides => investment.flag_overrides.len(),
         InvestmentTable::ValueOverrides => investment.value_overrides.len(),
     };
-    let can_add = row_count < FAMILY5_OVERRIDE_CAPACITY;
+    let can_add = !state.read_only && row_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
         ui.label(egui::RichText::new("Table").strong());
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
@@ -266,11 +337,15 @@ pub(super) fn draw_investment(
             "Settings field: {}",
             state.investment_table.field_name()
         ));
-        let add = ui.add_enabled(can_add, egui::Button::new("Add override"));
+        let add = ui.add_enabled(can_add, egui::Button::new("Add Override"));
         let add = if can_add {
             add
         } else {
-            add.on_disabled_hover_text("100-row settings limit")
+            add.on_disabled_hover_text(if state.read_only {
+                "Enable Progression Editing in Preferences to change state"
+            } else {
+                "100-row settings limit"
+            })
         };
         if add.clicked() {
             state.add_open = true;
@@ -289,7 +364,10 @@ pub(super) fn draw_investment(
             });
         if let Some(last_change) = state.last_investment_change {
             if ui
-                .button("Undo last override change")
+                .add_enabled(
+                    !state.read_only,
+                    egui::Button::new("Undo Last Override Change"),
+                )
                 .on_hover_text(last_change.label())
                 .clicked()
             {

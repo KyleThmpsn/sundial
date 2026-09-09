@@ -73,19 +73,39 @@ pub(in crate::catalog) fn scan_record_objective_owners(
                 condition_references_at(&definitions, definition + offset)?,
             );
         }
+        let context = ProgressionContextDef {
+            direct_references: Vec::new(),
+            hash: u64::from(hash),
+            kind: ProgressionContextKind::Record,
+            name: name.clone(),
+            type_name: String::new(),
+            description: String::new(),
+            paths: paths.clone(),
+            condition_programs: Vec::new(),
+        };
+        attach_direct_reference(
+            flag_definitions,
+            u16_at(&definitions, definition + 98)?,
+            "Record category flag",
+            &context,
+        )?;
+        attach_direct_reference(
+            flag_definitions,
+            u16_at(&definitions, definition + 100)?,
+            "Record completion flag",
+            &context,
+        )?;
+        attach_direct_reference(
+            value_definitions,
+            u16_at(&definitions, definition + 82)?,
+            "Redeemed interval count",
+            &context,
+        )?;
         attach_condition_context(
             flag_definitions,
             value_definitions,
             &condition_references,
-            &ProgressionContextDef {
-                hash: u64::from(hash),
-                kind: ProgressionContextKind::Record,
-                name: name.clone(),
-                type_name: String::new(),
-                description: String::new(),
-                paths: paths.clone(),
-                condition_programs: Vec::new(),
-            },
+            &context,
         );
 
         for objective_index in record_objective_indices(&definitions, definition, objectives.len())

@@ -54,10 +54,6 @@ pub(crate) fn apply_to_catalog(
     }
 }
 
-pub(crate) fn manifest_version() -> &'static str {
-    &definition_database().manifest_version
-}
-
 fn definitions() -> impl Iterator<Item = PlugDefinition<'static>> {
     definition_database().plugs.iter().filter_map(|definition| {
         Some(PlugDefinition {
@@ -76,6 +72,10 @@ fn definition_database() -> &'static DefinitionDatabase {
         assert_eq!(
             database.schema, DEFINITION_DATABASE_SCHEMA,
             "embedded unnamed plug definition database schema is unsupported"
+        );
+        assert!(
+            !database.manifest_version.trim().is_empty(),
+            "embedded unnamed plug definition database must identify its source manifest"
         );
         database
     })

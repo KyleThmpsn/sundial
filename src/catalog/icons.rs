@@ -1,27 +1,29 @@
 use std::{
-    collections::HashMap,
-    path::Path,
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    thread,
     time::{Duration, Instant},
 };
 
 use tiger_pkg::{PackageManager, TagHash};
 
-use crate::package_runtime;
-
-use super::{
-    Catalog,
-    package::{array_at, i64_at, relative_offset, u16_at, u32_at},
+use crate::{
+    icon_schema::{
+        ICON_BACKGROUND_LAYER_OFFSET, ICON_FOREGROUND_LAYER_OFFSET, ICON_PRIMARY_LAYER_OFFSET,
+        ICON_WATERMARK_LAYER_OFFSET,
+    },
+    image_processing::{blend_rgba_pixel, decode_bc1},
+    investment_schema::{
+        GLOBALS_ITEM_ICON_TABLE_SLOT, ITEM_ICON_CONTAINER_OFFSET, ITEM_ICON_ROW_CLASS,
+        ITEM_ICON_ROW_SIZE, ITEM_STRING_ICON_INDEX_OFFSET, investment_globals_table_tag,
+    },
+    package_payload::{array_at, i64_at, relative_offset, u16_at, u32_at},
+    package_runtime,
 };
 
-const ITEM_ICON_INDEX_OFFSET: usize = 0x80;
-const ITEM_ICON_TABLE_SLOT: usize = 75;
-const ITEM_ICON_TABLE_ROW_SIZE: usize = 24;
-const ITEM_ICON_CONTAINER_OFFSET: usize = 16;
-const ICON_PRIMARY_CONTAINER_OFFSET: usize = 0x14;
-// Shadowkeep stores the opaque rarity background before its translucent watermark treatment.
-const ICON_BACKGROUND_CONTAINER_OFFSET: usize = 0x1C;
-const ICON_BACKGROUND_OVERLAY_CONTAINER_OFFSET: usize = 0x20;
-const ICON_OVERLAY_CONTAINER_OFFSET: usize = 0x24;
+use super::Catalog;
+
 const CATALOG_ICON_SIZE: usize = 96;
 const MAX_CACHED_CATALOG_ICONS: usize = 512;
 const FAILED_ICON_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -29,12 +31,51 @@ const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
 
 #[derive(Default)]
 pub(super) struct IconRuntime {
-    manager: Option<PackageManager>,
     textures: HashMap<u64, (CachedIcon, u64)>,
+    pending: HashSet<u64>,
+    worker: Option<IconWorker>,
     access_counter: u64,
+    suspended: bool,
+}
+
+struct IconWorker {
+    requests: Option<Sender<IconLoadRequest>>,
+    results: Receiver<IconLoadResult>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy)]
+struct IconLoadRequest {
+    hash: u64,
+    container: u32,
+}
+
+struct IconLoadResult {
+    hash: u64,
+    loaded: Result<LoadedCatalogIcon, String>,
 }
 
 impl Catalog {
+    /// Stops icon and inspector work and waits until their package files have been released.
+    pub(crate) fn suspend_package_access(&self) {
+        self.inspection_access.suspend();
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.suspend();
+    }
+
+    /// Allows package-backed icon work to start again after an authoring session.
+    pub(crate) fn resume_package_access(&self) {
+        self.inspection_access.resume();
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.resume();
+    }
+
     /// Loads an installed package icon on demand and keeps only displayed icons on the GPU.
     pub(crate) fn icon_texture(
         &self,
@@ -94,23 +135,44 @@ pub(super) fn scan_item_icon_containers(
     manager: &PackageManager,
     globals: &[u8],
 ) -> Result<Vec<Option<u32>>, String> {
-    let slot = 16 + ITEM_ICON_TABLE_SLOT * 16;
-    let table_tag = TagHash(u32_at(globals, slot)?);
+    let table_tag = TagHash(investment_globals_table_tag(
+        globals,
+        GLOBALS_ITEM_ICON_TABLE_SLOT,
+    )?);
     let table = manager
         .read_tag(table_tag)
         .map_err(|error| format!("Could not read item icon table: {error}"))?;
-    let (count, rows, _) = array_at(&table, 8)?;
+    let (count, rows, class) = array_at(&table, 8)?;
+    if class != ITEM_ICON_ROW_CLASS || count > usize::from(u16::MAX) {
+        return Err(format!(
+            "Item icon table has incompatible layout ({count} rows, class 0x{class:08X})"
+        ));
+    }
     (0..count)
         .map(|index| {
             let row = rows
                 .checked_add(
                     index
-                        .checked_mul(ITEM_ICON_TABLE_ROW_SIZE)
+                        .checked_mul(ITEM_ICON_ROW_SIZE)
                         .ok_or("Item icon table offset overflowed")?,
                 )
                 .ok_or("Item icon table offset overflowed")?;
             let tag = u32_at(&table, row + ITEM_ICON_CONTAINER_OFFSET)?;
-            Ok((tag != u32::MAX && TagHash(tag).is_valid()).then_some(tag))
+            if tag == u32::MAX {
+                return Ok(None);
+            }
+            let tag_hash = TagHash(tag);
+            if !package_runtime::is_valid_package_tag(tag_hash) {
+                return Err(format!(
+                    "Item icon row {index} has malformed container reference 0x{tag:08X}; absent references must be 0xFFFFFFFF"
+                ));
+            }
+            if manager.get_entry(tag_hash).is_none() {
+                return Err(format!(
+                    "Item icon row {index} references unavailable container tag {tag_hash}"
+                ));
+            }
+            Ok(Some(tag))
         })
         .collect()
 }
@@ -119,7 +181,7 @@ pub(super) fn item_icon_container(
     item_strings: &[u8],
     containers_by_index: &[Option<u32>],
 ) -> Option<u32> {
-    let index = u16_at(item_strings, ITEM_ICON_INDEX_OFFSET).ok()?;
+    let index = u16_at(item_strings, ITEM_STRING_ICON_INDEX_OFFSET).ok()?;
     (index != u16::MAX)
         .then(|| {
             containers_by_index
@@ -138,6 +200,7 @@ impl IconRuntime {
         hash: u64,
         container: u32,
     ) -> Option<eframe::egui::TextureHandle> {
+        self.install_completed(context);
         self.access_counter = self.access_counter.wrapping_add(1);
         let access = self.access_counter;
         let now = Instant::now();
@@ -150,14 +213,20 @@ impl IconRuntime {
             }
         }
         self.textures.remove(&hash);
-        if self.manager.is_none() {
-            match package_runtime::open_shadowkeep_packages(install_path) {
-                Ok(manager) => self.manager = Some(manager),
+        if self.pending.contains(&hash) {
+            return None;
+        }
+        if self.suspended {
+            return None;
+        }
+        if self.worker.is_none() {
+            match IconWorker::spawn(install_path.to_owned(), context.clone()) {
+                Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     self.cache(
                         hash,
                         CachedIcon::Failed {
-                            error: format!("Could not open the installed packages: {error}"),
+                            error,
                             retry_after: now + FAILED_ICON_RETRY_DELAY,
                         },
                         access,
@@ -166,32 +235,28 @@ impl IconRuntime {
                 }
             }
         }
-        let loaded = load_catalog_icon(
-            self.manager
-                .as_ref()
-                .expect("icon package manager was initialized"),
-            TagHash(container),
-        );
-        let cached = match loaded {
-            Ok(loaded) => CachedIcon::Loaded {
-                texture: context.load_texture(
-                    format!("catalog-icon-{hash:08X}"),
-                    loaded.image,
-                    eframe::egui::TextureOptions::LINEAR,
-                ),
-                warnings: loaded.warnings,
-            },
-            Err(error) => CachedIcon::Failed {
-                error,
-                retry_after: now + FAILED_ICON_RETRY_DELAY,
-            },
-        };
-        let texture = match &cached {
-            CachedIcon::Loaded { texture, .. } => Some(texture.clone()),
-            CachedIcon::Failed { .. } => None,
-        };
-        self.cache(hash, cached, access);
-        texture
+        let request = IconLoadRequest { hash, container };
+        let queued = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.requests.as_ref())
+            .is_some_and(|requests| requests.send(request).is_ok());
+        if queued {
+            self.pending.insert(hash);
+        } else {
+            self.fail_worker("The package icon loader stopped unexpectedly");
+            self.access_counter = self.access_counter.wrapping_add(1);
+            let access = self.access_counter;
+            self.cache(
+                hash,
+                CachedIcon::Failed {
+                    error: "The package icon loader stopped unexpectedly".to_owned(),
+                    retry_after: now + FAILED_ICON_RETRY_DELAY,
+                },
+                access,
+            );
+        }
+        None
     }
 
     pub(super) fn diagnostic(&self, hash: u64) -> Option<String> {
@@ -216,6 +281,139 @@ impl IconRuntime {
             self.textures.remove(&oldest);
         }
         self.textures.insert(hash, (icon, access));
+    }
+
+    fn install_completed(&mut self, context: &eframe::egui::Context) {
+        let mut completed = Vec::new();
+        let mut disconnected = false;
+        if let Some(worker) = &self.worker {
+            loop {
+                match worker.results.try_recv() {
+                    Ok(result) => completed.push(result),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for result in completed {
+            self.pending.remove(&result.hash);
+            self.access_counter = self.access_counter.wrapping_add(1);
+            let access = self.access_counter;
+            let cached = match result.loaded {
+                Ok(loaded) => CachedIcon::Loaded {
+                    texture: context.load_texture(
+                        format!("catalog-icon-{:08X}", result.hash),
+                        loaded.image,
+                        eframe::egui::TextureOptions::LINEAR,
+                    ),
+                    warnings: loaded.warnings,
+                },
+                Err(error) => CachedIcon::Failed {
+                    error,
+                    retry_after: Instant::now() + FAILED_ICON_RETRY_DELAY,
+                },
+            };
+            self.cache(result.hash, cached, access);
+        }
+        if disconnected {
+            self.fail_worker("The package icon loader stopped unexpectedly");
+        }
+    }
+
+    fn fail_worker(&mut self, fallback_error: &str) {
+        let mut error = fallback_error.to_owned();
+        if let Some(mut worker) = self.worker.take()
+            && let Err(join_error) = worker.shutdown()
+        {
+            error = join_error;
+        }
+        let retry_after = Instant::now() + FAILED_ICON_RETRY_DELAY;
+        for hash in std::mem::take(&mut self.pending) {
+            self.access_counter = self.access_counter.wrapping_add(1);
+            self.cache(
+                hash,
+                CachedIcon::Failed {
+                    error: error.clone(),
+                    retry_after,
+                },
+                self.access_counter,
+            );
+        }
+    }
+
+    fn suspend(&mut self) {
+        self.suspended = true;
+        self.pending.clear();
+        if let Some(mut worker) = self.worker.take() {
+            drop(worker.shutdown());
+        }
+    }
+
+    fn resume(&mut self) {
+        self.suspended = false;
+    }
+}
+
+impl IconWorker {
+    fn spawn(install_path: PathBuf, context: eframe::egui::Context) -> Result<Self, String> {
+        let (request_sender, request_receiver) = mpsc::channel::<IconLoadRequest>();
+        let (result_sender, result_receiver) = mpsc::channel::<IconLoadResult>();
+        let thread = thread::Builder::new()
+            .name("sundial-icon-loader".to_owned())
+            .spawn(move || {
+                run_icon_worker(&install_path, &context, request_receiver, result_sender)
+            })
+            .map_err(|error| format!("Could not start the package icon loader: {error}"))?;
+        Ok(Self {
+            requests: Some(request_sender),
+            results: result_receiver,
+            thread: Some(thread),
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), String> {
+        self.requests.take();
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| "The package icon loader panicked".to_owned())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for IconWorker {
+    fn drop(&mut self) {
+        drop(self.shutdown());
+    }
+}
+
+fn run_icon_worker(
+    install_path: &Path,
+    context: &eframe::egui::Context,
+    requests: Receiver<IconLoadRequest>,
+    results: Sender<IconLoadResult>,
+) {
+    let manager = package_runtime::open_shadowkeep_packages(install_path)
+        .map_err(|error| format!("Could not open the installed packages: {error}"));
+    while let Ok(request) = requests.recv() {
+        let loaded = match &manager {
+            Ok(manager) => load_catalog_icon(manager, TagHash(request.container)),
+            Err(error) => Err(error.clone()),
+        };
+        if results
+            .send(IconLoadResult {
+                hash: request.hash,
+                loaded,
+            })
+            .is_err()
+        {
+            break;
+        }
+        context.request_repaint();
     }
 }
 
@@ -246,23 +444,23 @@ fn load_catalog_icon(
     let background = load_optional_catalog_icon_layer(
         manager,
         &container,
-        ICON_BACKGROUND_CONTAINER_OFFSET,
+        ICON_BACKGROUND_LAYER_OFFSET,
         "background",
         &mut warnings,
     );
     let background_overlay = load_optional_catalog_icon_layer(
         manager,
         &container,
-        ICON_BACKGROUND_OVERLAY_CONTAINER_OFFSET,
+        ICON_WATERMARK_LAYER_OFFSET,
         "watermark",
         &mut warnings,
     );
-    let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_CONTAINER_OFFSET)?
+    let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_LAYER_OFFSET)?
         .ok_or("Item icon has no primary texture")?;
     let overlay = load_optional_catalog_icon_layer(
         manager,
         &container,
-        ICON_OVERLAY_CONTAINER_OFFSET,
+        ICON_FOREGROUND_LAYER_OFFSET,
         "foreground overlay",
         &mut warnings,
     );
@@ -308,7 +506,7 @@ fn load_catalog_icon_layer_at(
     texture_index: usize,
 ) -> Result<Option<eframe::egui::ColorImage>, String> {
     let layer_tag = TagHash(u32_at(icon_container, layer_offset)?);
-    if !layer_tag.is_valid() {
+    if !package_runtime::is_valid_package_tag(layer_tag) {
         return Ok(None);
     }
     let layer = manager
@@ -345,7 +543,7 @@ fn load_catalog_icon_layer_at(
         .get_entry(texture_tag)
         .ok_or("Icon layer texture is missing from the package index")?;
     let data_tag = TagHash(entry.reference);
-    if !data_tag.is_valid() {
+    if !package_runtime::is_valid_package_tag(data_tag) {
         return Err("Icon layer texture has no data resource".into());
     }
     let data = manager
@@ -380,23 +578,6 @@ fn composite_catalog_icon(
     eframe::egui::ColorImage::from_rgba_unmultiplied([CATALOG_ICON_SIZE, CATALOG_ICON_SIZE], &rgba)
 }
 
-fn blend_rgba_pixel(destination: &mut [u8], source: [u8; 4]) {
-    let source_alpha = u32::from(source[3]);
-    if source_alpha == 0 {
-        return;
-    }
-    let destination_alpha = u32::from(destination[3]);
-    let inverse_source_alpha = 255 - source_alpha;
-    let output_alpha = source_alpha + (destination_alpha * inverse_source_alpha + 127) / 255;
-    for channel in 0..3 {
-        let premultiplied = u32::from(source[channel]) * source_alpha
-            + (u32::from(destination[channel]) * destination_alpha * inverse_source_alpha + 127)
-                / 255;
-        destination[channel] = ((premultiplied + output_alpha / 2) / output_alpha) as u8;
-    }
-    destination[3] = output_alpha as u8;
-}
-
 fn decode_catalog_texture(header: &[u8], data: &[u8]) -> Result<eframe::egui::ColorImage, String> {
     let format = u32_at(header, 4)?;
     let width = usize::from(u16_at(header, 0x0E)?);
@@ -427,81 +608,35 @@ fn decode_catalog_texture(header: &[u8], data: &[u8]) -> Result<eframe::egui::Co
     ))
 }
 
-fn decode_bc1(data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
-    let block_width = width.div_ceil(4);
-    let block_height = height.div_ceil(4);
-    let required = block_width
-        .checked_mul(block_height)
-        .and_then(|blocks| blocks.checked_mul(8))
-        .ok_or("BC1 item icon size overflowed")?;
-    if data.len() < required {
-        return Err("BC1 item icon data is truncated".into());
-    }
-    let mut rgba = vec![0; width * height * 4];
-    for block_y in 0..block_height {
-        for block_x in 0..block_width {
-            let offset = (block_y * block_width + block_x) * 8;
-            let color_0 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-            let color_1 = u16::from_le_bytes([data[offset + 2], data[offset + 3]]);
-            let mut colors = [[0_u8; 4]; 4];
-            colors[0] = rgb565(color_0);
-            colors[1] = rgb565(color_1);
-            if color_0 > color_1 {
-                for channel in 0..3 {
-                    colors[2][channel] = ((2 * u16::from(colors[0][channel])
-                        + u16::from(colors[1][channel]))
-                        / 3) as u8;
-                    colors[3][channel] = ((u16::from(colors[0][channel])
-                        + 2 * u16::from(colors[1][channel]))
-                        / 3) as u8;
-                }
-                colors[2][3] = 255;
-                colors[3][3] = 255;
-            } else {
-                for channel in 0..3 {
-                    colors[2][channel] =
-                        ((u16::from(colors[0][channel]) + u16::from(colors[1][channel])) / 2) as u8;
-                }
-                colors[2][3] = 255;
-            }
-            let indices = u32::from_le_bytes([
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            for pixel_y in 0..4 {
-                for pixel_x in 0..4 {
-                    let x = block_x * 4 + pixel_x;
-                    let y = block_y * 4 + pixel_y;
-                    if x >= width || y >= height {
-                        continue;
-                    }
-                    let pixel = pixel_y * 4 + pixel_x;
-                    let color = colors[((indices >> (pixel * 2)) & 3) as usize];
-                    rgba[(y * width + x) * 4..(y * width + x + 1) * 4].copy_from_slice(&color);
-                }
-            }
-        }
-    }
-    Ok(rgba)
-}
-
-fn rgb565(color: u16) -> [u8; 4] {
-    let red = ((color >> 11) & 0x1F) as u8;
-    let green = ((color >> 5) & 0x3F) as u8;
-    let blue = (color & 0x1F) as u8;
-    [
-        (u16::from(red) * 255 / 31) as u8,
-        (u16::from(green) * 255 / 63) as u8,
-        (u16::from(blue) * 255 / 31) as u8,
-        255,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_icon_worker_releases_pending_hashes() {
+        let (request_sender, _request_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        drop(result_sender);
+        let hash = 0x1234_5678;
+        let mut runtime = IconRuntime {
+            pending: HashSet::from([hash]),
+            worker: Some(IconWorker {
+                requests: Some(request_sender),
+                results: result_receiver,
+                thread: None,
+            }),
+            ..IconRuntime::default()
+        };
+
+        runtime.install_completed(&eframe::egui::Context::default());
+
+        assert!(runtime.worker.is_none());
+        assert!(runtime.pending.is_empty());
+        assert_eq!(
+            runtime.diagnostic(hash).as_deref(),
+            Some("The package icon loader stopped unexpectedly")
+        );
+    }
 
     #[test]
     fn rgba_catalog_texture_decodes_package_pixels() {

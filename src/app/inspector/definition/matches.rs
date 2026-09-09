@@ -40,11 +40,15 @@ pub(super) struct CatalogHashMatches<'a> {
     pub(super) item: Option<&'a ItemDef>,
     pub(super) item_package_metadata: Option<&'a ItemPackageMetadata>,
     pub(super) item_stat_definition: Option<&'a ItemStatDefinition>,
-    pub(super) sandbox_perk_definition: Option<&'a SandboxPerkDefinition>,
     pub(super) investment_stat_references: Vec<(u64, &'a ItemInvestmentStat)>,
-    pub(super) intrinsic_perk_item_references: &'a [u64],
     pub(super) inventory_metadata: Option<&'a InventoryMetadata>,
     pub(super) item_material_requirement_set_indices: Option<ItemMaterialRequirementSetIndices>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CatalogMatchGroup {
+    pub(super) label: &'static str,
+    pub(super) count: usize,
 }
 
 impl CatalogHashMatchIndex {
@@ -330,32 +334,97 @@ impl<'a> CatalogHashMatches<'a> {
             item: catalog.item(hash),
             item_package_metadata: catalog.item_package_metadata(hash),
             item_stat_definition: catalog.item_stat_definition_by_hash(hash),
-            sandbox_perk_definition: catalog.sandbox_perk_definition_by_hash(hash),
             investment_stat_references: catalog.item_investment_stat_references(hash),
-            intrinsic_perk_item_references: catalog.intrinsic_perk_references(hash),
             inventory_metadata: catalog.inventory_metadata(hash),
             item_material_requirement_set_indices: catalog
                 .item_material_requirement_set_indices(hash),
         }
     }
 
+    pub(super) fn match_groups(&self) -> Vec<CatalogMatchGroup> {
+        let mut groups = Vec::with_capacity(16);
+        push_match_group(
+            &mut groups,
+            "Item Definition",
+            usize::from(self.item_package_metadata.is_some() || self.item.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Inventory Metadata",
+            usize::from(self.inventory_metadata.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression Definition",
+            self.progression_definitions.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression Reward Reference",
+            self.progression_reward_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Faction Progression Reference",
+            self.progression_faction_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Unlock Flag Definition",
+            self.flag_definitions.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Unlock Value Definition",
+            self.value_definitions.len(),
+        );
+        push_match_group(&mut groups, "Objective", self.objectives.len());
+        push_match_group(
+            &mut groups,
+            "Objective Owner Reference",
+            self.owner_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Objective Trait Reference",
+            self.trait_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Progression Reader Reference",
+            self.context_matches.len(),
+        );
+        push_match_group(&mut groups, "Collectible", self.collectible_matches.len());
+        push_match_group(
+            &mut groups,
+            "Material Requirement Set",
+            self.material_requirement_set_matches.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Item Stat Definition",
+            usize::from(self.item_stat_definition.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Investment Stat Reference",
+            self.investment_stat_references.len(),
+        );
+        push_match_group(
+            &mut groups,
+            "Inventory Bucket Item",
+            self.bucket_items.len(),
+        );
+        groups
+    }
+
     pub(super) fn count(&self) -> usize {
-        usize::from(self.item_package_metadata.is_some() || self.item.is_some())
-            + usize::from(self.inventory_metadata.is_some())
-            + self.progression_definitions.len()
-            + self.progression_reward_matches.len()
-            + self.progression_faction_matches.len()
-            + self.flag_definitions.len()
-            + self.value_definitions.len()
-            + self.objectives.len()
-            + self.owner_matches.len()
-            + self.trait_matches.len()
-            + self.context_matches.len()
-            + self.collectible_matches.len()
-            + self.material_requirement_set_matches.len()
-            + usize::from(self.item_stat_definition.is_some())
-            + usize::from(self.sandbox_perk_definition.is_some())
-            + usize::from(!self.intrinsic_perk_item_references.is_empty())
-            + usize::from(!self.bucket_items.is_empty())
+        self.match_groups().iter().map(|group| group.count).sum()
+    }
+}
+
+fn push_match_group(groups: &mut Vec<CatalogMatchGroup>, label: &'static str, count: usize) {
+    if count > 0 {
+        groups.push(CatalogMatchGroup { label, count });
     }
 }

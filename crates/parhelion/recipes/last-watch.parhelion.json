@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.last-watch",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x63344D56",
+    "expected_name": "Threat Level"
+  },
+  "presentation_donor": {
+    "item_hash": "0xCA44FDCB",
+    "expected_name": "Perfect Paradox"
+  },
+  "identity": {
+    "item_hash": "0x8FFCED58",
+    "collectible_hash": "0xD1F19A35",
+    "unlock_hash": "0x063FB3BD",
+    "pattern_global_id_hash": "0x208BE8AD",
+    "name_hash": "0x79727E64",
+    "type_hash": "0x781C3EAD",
+    "flavor_hash": "0xE360A0A1",
+    "source_hash": "0xE62E8DEE",
+    "collection_name_hash": "0x8A90DF21",
+    "collection_description_hash": "0x7157F01E",
+    "inventory_hint_hash": "0xB263B73D",
+    "collection_requirement_hash": "0x334966BD"
+  },
+  "name": "Last Watch",
+  "flavor": "\"We’ll be here when word comes.\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "hue_shift_degrees": 140,
+      "saturation": 75,
+      "contrast": 25
+    },
+    "investment_stats": [
+      {
+        "definition_index": 22,
+        "value": 70
+      },
+      {
+        "definition_index": 26,
+        "value": 65
+      },
+      {
+        "definition_index": 27,
+        "value": 25
+      }
+    ],
+    "inventory_slot": "kinetic",
+    "ammo_type": "special",
+    "modern_damage_type": "kinetic",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      {
+        "choices": [
+          "0x976D834D"
+        ],
+        "socket_type": 176,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x4D7CC7E8",
+          "0x3E749F8C"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x287C2953",
+          "0x2F32DB2D"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8CB6409D",
+          "0x61414688",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9FB218C5",
+          "0xF351D2CC",
+          "0x5C2FD04F"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x4682DFF1",
+          "0x8EC817EA",
+          "0x9DA139BF"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8A8536B5",
+          "0xE1A49AA1",
+          "0x3AAEB299",
+          "0xF3D7B6ED",
+          "0x1EE5F5CC"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0xC4BE7564"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null
+    ],
+    "raw_payload_patches": []
+  }
+}

@@ -1,5 +1,8 @@
 use super::*;
 
+const VIRTUALIZED_CARD_ESTIMATED_HEIGHT: f32 = 112.0;
+const VIRTUALIZED_CARD_OVERSCAN: f32 = 160.0;
+
 pub(crate) fn draw_responsive_item_cards<T>(
     ui: &mut egui::Ui,
     items: &[T],
@@ -30,6 +33,68 @@ pub(crate) fn draw_responsive_item_cards<T>(
             }
         });
     });
+}
+
+pub(crate) fn draw_virtualized_responsive_item_cards<T>(
+    ui: &mut egui::Ui,
+    scope: impl Hash,
+    items: &[T],
+    minimum_card_width: f32,
+    maximum_card_width: f32,
+    item_id: impl Fn(&T) -> egui::Id,
+    mut draw: impl FnMut(&mut egui::Ui, &T),
+) {
+    let Some((column_count, grid_width)) = responsive_item_card_layout(
+        ui.available_width(),
+        ui.spacing().item_spacing.x,
+        items.len(),
+        minimum_card_width,
+        maximum_card_width,
+    ) else {
+        return;
+    };
+    let root_id = ui.make_persistent_id(scope);
+    let estimate_id = root_id.with("estimated-height");
+    let mut estimated_height = ui
+        .data(|data| data.get_temp::<f32>(estimate_id))
+        .unwrap_or(VIRTUALIZED_CARD_ESTIMATED_HEIGHT);
+    ui.scope(|ui| {
+        ui.set_width(grid_width);
+        ui.columns(column_count, |columns| {
+            let mut counts = vec![0_usize; column_count];
+            for (index, item) in items.iter().enumerate() {
+                let column = index % column_count;
+                if counts[column] != 0 {
+                    columns[column].add_space(3.0);
+                }
+                let height_id = root_id.with(("item-height", item_id(item)));
+                let cached_height = columns[column]
+                    .data(|data| data.get_temp::<f32>(height_id))
+                    .unwrap_or(estimated_height);
+                let anticipated_rect = egui::Rect::from_min_size(
+                    columns[column].next_widget_position(),
+                    egui::vec2(columns[column].available_width(), cached_height),
+                );
+                let visible = columns[column]
+                    .clip_rect()
+                    .expand(VIRTUALIZED_CARD_OVERSCAN)
+                    .intersects(anticipated_rect);
+                if visible {
+                    let response = columns[column].scope(|ui| draw(ui, item)).response;
+                    let measured_height = response.rect.height().max(1.0);
+                    columns[column].data_mut(|data| data.insert_temp(height_id, measured_height));
+                    estimated_height = measured_height;
+                } else {
+                    columns[column].allocate_space(egui::vec2(
+                        columns[column].available_width(),
+                        cached_height,
+                    ));
+                }
+                counts[column] += 1;
+            }
+        });
+    });
+    ui.data_mut(|data| data.insert_temp(estimate_id, estimated_height));
 }
 
 pub(super) fn responsive_item_card_layout(
