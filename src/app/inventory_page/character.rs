@@ -234,24 +234,30 @@ impl SundialApp {
         let inventory_capacity = account::character_inventory_capacity(&self.document);
         let randomize_request = ui
             .horizontal_wrapped(|ui| {
-                ui.strong(format!("Character {}", character_index + 1));
+                ui.add_enabled_ui(equipment_editable, |ui| {
+                    self.draw_plug_safety_choice(ui, true);
+                });
+                ui.separator();
+                let request = equipment::draw_randomize_menu(ui, equipment_editable, editable);
+                if equipment::draw_armor_stats_button(ui, equipment_editable).clicked() {
+                    self.armor_stats_adjuster.open(character_index);
+                }
+                ui.separator();
                 ui.label(
                     egui::RichText::new(format!(
                         "{stored_count} / {inventory_capacity} stored · {equipped_count} equipped"
                     ))
                     .weak(),
                 );
-                let request = equipment::draw_randomize_menu(ui, equipment_editable, editable);
-                if equipment::draw_armor_stats_button(ui, equipment_editable).clicked() {
-                    self.armor_stats_adjuster.open(character_index);
-                }
                 request
             })
             .inner;
         equipment::draw_randomize_dialogs(self, ui.ctx(), character_index, randomize_request);
         equipment::draw_armor_stats_window(self, ui.ctx(), character_index);
         self.draw_equipped_armor_stat_row(ui, character_index);
-        ui.add_enabled_ui(equipment_editable, |ui| self.draw_item_safety_controls(ui));
+        if self.preferences.show_safety_warnings {
+            super::super::draw_plug_selection_warning(ui, self.plug_selection_mode);
+        }
         ui.separator();
     }
 

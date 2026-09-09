@@ -490,6 +490,16 @@ fn account_cleanup_and_package_removal_commit_or_rollback_together() {
     let target = temporary.path().join("packages");
     let backups = temporary.path().join("backups");
     fs::create_dir(&target).unwrap();
+    #[cfg(windows)]
+    {
+        let runtime_directory = temporary.path().join("bin/x64");
+        fs::create_dir_all(&runtime_directory).unwrap();
+        fs::copy(
+            source.parent().unwrap().join("bin/x64/oo2core_3_win64.dll"),
+            runtime_directory.join("oo2core_3_win64.dll"),
+        )
+        .unwrap();
+    }
     // Copy, never link or mutate the live installation. Native ownership checks stay enabled.
     let names = discover_target_source_artifact_names(&source).unwrap();
     for name in &names {
@@ -498,7 +508,7 @@ fn account_cleanup_and_package_removal_commit_or_rollback_together() {
     let authored = preview_uninstall(&source).unwrap();
     assert!(!authored.artifacts().is_empty());
     let settings = temporary.path().join("settings.json");
-    for version in [6, 8, 13] {
+    for version in [6, 8, 16] {
         for fail_after in [Some(1), None] {
             for artifact in authored.artifacts() {
                 fs::copy(

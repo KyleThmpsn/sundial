@@ -540,7 +540,12 @@ fn condition_tokens_at(
                 .ok_or_else(|| format!("Package data ended at {row}"))?;
             Ok(CollectionConditionTokenDef {
                 kind: u32::from(kind),
-                operand: u32::from(u16_at(data, row + 4)?),
+                // The native constant arm loads a dword. Slot and pool arms load a word.
+                operand: if kind == 11 {
+                    u32_at(data, row + 4)?
+                } else {
+                    u32::from(u16_at(data, row + 4)?)
+                },
             })
         })
         .collect()
@@ -571,8 +576,7 @@ mod tests {
         data[54..56].copy_from_slice(&[0xD4, 0xE5]);
         data[56] = 11;
         data[57..60].copy_from_slice(&[0xF6, 0x17, 0x28]);
-        data[60..62].copy_from_slice(&42_u16.to_le_bytes());
-        data[62..64].copy_from_slice(&[0x39, 0x4A]);
+        data[60..64].copy_from_slice(&0x4A39_002A_u32.to_le_bytes());
 
         assert_eq!(
             condition_tokens_at(&data, 0).unwrap(),
@@ -583,7 +587,7 @@ mod tests {
                 },
                 CollectionConditionTokenDef {
                     kind: 11,
-                    operand: 42,
+                    operand: 0x4A39_002A,
                 },
             ]
         );

@@ -96,7 +96,7 @@ impl RowChoices {
 enum RowCommand {
     ChangeRole(Option<u16>),
     Reset,
-    RemoveAdded,
+    Remove,
     Activate,
     EditChoice { index: usize, hash: Option<u32> },
 }

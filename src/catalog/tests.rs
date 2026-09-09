@@ -49,6 +49,78 @@ fn supported_shadowkeep_build_loads_collection_expression_contracts() {
         "unexpected collectible acquisition-expression coverage: {collectible_contract:?}"
     );
     assert_eq!(catalog.progression_package_error(), None);
+    assert_direct_unlock_contracts(&catalog);
+    let cached =
+        Catalog::load_or_scan_with_progress(&install, temp.0.join("catalog.json"), false, |_| {})
+            .unwrap();
+    assert!(cached.loaded_from_cache);
+    assert_eq!(
+        cached.unlock_flag_definitions(),
+        catalog.unlock_flag_definitions()
+    );
+    assert_eq!(
+        cached.unlock_value_definitions(),
+        catalog.unlock_value_definitions()
+    );
+}
+
+fn assert_direct_unlock_contracts(catalog: &Catalog) {
+    let rank_flags = catalog
+        .progression_definitions()
+        .iter()
+        .flat_map(|definition| &definition.steps)
+        .filter_map(|step| step.unlock_flag)
+        .collect::<HashSet<_>>();
+    let claim_flags = catalog
+        .progression_definitions()
+        .iter()
+        .flat_map(|definition| &definition.reward_items)
+        .filter_map(|reward| reward.claim_flag)
+        .collect::<HashSet<_>>();
+    assert_eq!(rank_flags.len(), 128);
+    assert_eq!(claim_flags.len(), 760);
+    assert!(rank_flags.iter().chain(&claim_flags).all(|slot| {
+        !catalog
+            .unlock_flag_definition(usize::from(*slot))
+            .unwrap()
+            .tested_by
+            .is_empty()
+    }));
+    assert_eq!(
+        catalog
+            .unlock_value_definitions()
+            .iter()
+            .flat_map(|definition| &definition.runtime_writers)
+            .filter(|writer| matches!(writer, UnlockWriter::ValueCounter { .. }))
+            .count(),
+        62
+    );
+    for kind in [
+        ProgressionContextKind::Achievement,
+        ProgressionContextKind::Requirement,
+        ProgressionContextKind::Record,
+        ProgressionContextKind::Progression,
+        ProgressionContextKind::Activity,
+        ProgressionContextKind::PackageExpression,
+    ] {
+        assert!(
+            catalog
+                .unlock_flag_definitions()
+                .iter()
+                .flat_map(|definition| &definition.tested_by)
+                .any(|context| context.kind == kind),
+            "Missing {kind:?} references"
+        );
+    }
+    assert!(
+        catalog
+            .unlock_value_definitions()
+            .iter()
+            .flat_map(|definition| &definition.tested_by)
+            .flat_map(|context| &context.condition_programs)
+            .flatten()
+            .any(|token| token[0] == 11 && token[1] > u32::from(u16::MAX))
+    );
 }
 
 #[test]
@@ -67,6 +139,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
         compact_slot: Some(26),
         name: Some("Crucible Access".into()),
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: Vec::new(),
     };
     let value = UnlockDefinition {
@@ -75,6 +148,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
         compact_slot: Some(58),
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: Vec::new(),
     };
     let reader_named_value = UnlockDefinition {
@@ -83,7 +157,9 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
         compact_slot: None,
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: vec![ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: 0x22EB_C08C,
             kind: ProgressionContextKind::Record,
             name: "Tradition Is Bigger Than You".into(),
@@ -191,6 +267,7 @@ fn optional_unlock_display_failure_keeps_core_definitions() {
         compact_slot: Some(26),
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: Vec::new(),
     }];
     let mut errors = Vec::new();

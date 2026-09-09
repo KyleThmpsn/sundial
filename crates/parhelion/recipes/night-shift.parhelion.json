@@ -21,29 +21,38 @@
     "collection_requirement_hash": "0xDFB0D312"
   },
   "name": "Night Shift",
-  "flavor": "There would be no relief at dawn. We took our places anyway.",
+  "flavor": "There was always someone still awake.",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
     "icon_edit": {
       "flip_horizontal": true,
-      "hue_shift_degrees": -170
+      "hue_shift_degrees": -170,
+      "contrast": 45
     },
     "investment_stats": [
       {
+        "definition_index": 16,
+        "value": 56
+      },
+      {
         "definition_index": 18,
-        "value": 70
+        "value": 0
       },
       {
         "definition_index": 22,
-        "value": 65
+        "value": 67
       },
       {
         "definition_index": 24,
-        "value": 35
+        "value": 75
       },
       {
         "definition_index": 26,
         "value": 40
+      },
+      {
+        "definition_index": 27,
+        "value": 78
       }
     ],
     "inventory_slot": "kinetic",
@@ -94,7 +103,10 @@
       },
       {
         "choices": [
-          "0x4682DFF1"
+          "0x8EC817EA",
+          "0x9DA139BF",
+          "0x4682DFF1",
+          "0xFD368D30"
         ],
         "socket_type": 180,
         "choice_weight_bits": [],
@@ -106,7 +118,18 @@
       null,
       null,
       null,
-      null
+      null,
+      {
+        "choices": [
+          "0xB8CF4048"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
     ],
     "raw_payload_patches": []
   }

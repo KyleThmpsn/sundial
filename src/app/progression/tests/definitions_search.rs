@@ -9,6 +9,7 @@ fn progression_tables_include_package_definitions_without_authored_values() {
             scope: ProgressionScope::Account,
             scope_slot: Some(0),
             repeat_last_step: false,
+            level_value: Some(0),
             name: String::new(),
             description: String::new(),
             source: String::new(),
@@ -24,6 +25,7 @@ fn progression_tables_include_package_definitions_without_authored_values() {
             scope: ProgressionScope::Account,
             scope_slot: Some(1),
             repeat_last_step: false,
+            level_value: Some(0),
             name: String::new(),
             description: String::new(),
             source: String::new(),
@@ -39,6 +41,7 @@ fn progression_tables_include_package_definitions_without_authored_values() {
             scope: ProgressionScope::Character,
             scope_slot: Some(0),
             repeat_last_step: false,
+            level_value: Some(0),
             name: String::new(),
             description: String::new(),
             source: String::new(),
@@ -118,7 +121,7 @@ fn progression_save_state_distinguishes_missing_rows_and_merges_duplicates() {
 }
 
 #[test]
-fn progression_target_uses_the_highest_package_progress_total() {
+fn progression_target_sums_rank_costs_instead_of_taking_the_largest_step() {
     let definition: ProgressionDefinition = serde_json::from_value(json!({
         "definition_index": 4,
         "hash": 1,
@@ -133,7 +136,7 @@ fn progression_target_uses_the_highest_package_progress_total() {
     }))
     .unwrap();
 
-    assert_eq!(progression_target(&definition), Some(250));
+    assert_eq!(progression_target(&definition), Some(400));
 }
 
 #[test]
@@ -161,10 +164,13 @@ fn override_coverage_filters_distinguish_mapping_and_decode_confidence() {
         compact_slot: None,
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: Vec::new(),
     };
     let partial = UnlockDefinition {
+        runtime_writers: Vec::new(),
         tested_by: vec![ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: 2,
             kind: ProgressionContextKind::Activity,
             name: String::new(),
@@ -199,7 +205,9 @@ fn rendered_definition_identifiers_are_filterable() {
         compact_slot: Some(502),
         name: Some("Sweet Business Acquired".into()),
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: vec![ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: 7,
             kind: ProgressionContextKind::Activity,
             name: "The Shattered Throne".into(),

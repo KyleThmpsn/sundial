@@ -26,6 +26,7 @@ pub(super) struct ResolvedWeapon {
     pub(super) weapon_page: u16,
     pub(super) count_selection: SunriseAcquiredPoolSelection,
     pub(super) socket_column_indices: Vec<Option<ResolvedSocketColumn>>,
+    pub(super) has_authored_shader: bool,
 }
 
 pub(super) fn resolve_project_weapons(
@@ -356,6 +357,7 @@ pub(super) fn resolve_project_weapons(
             // Family is checked against the catalog, and the native translation group above
             // must match. Collections placement follows authored rarity independently.
             if presentation.inventory_slot != authored_inventory_slot
+                && presentation.inventory_slot != gameplay_inventory_slot
                 && !matches!(
                     (presentation.inventory_slot, authored_inventory_slot),
                     (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy)
@@ -373,6 +375,30 @@ pub(super) fn resolve_project_weapons(
             &definition,
             &weapon.overrides.socket_columns,
         )?;
+        let mut has_authored_shader = false;
+        for item in socket_column_indices
+            .iter()
+            .flatten()
+            .flat_map(|column| &column.choices)
+            .copied()
+            .collect::<BTreeSet<_>>()
+        {
+            let row = item_rows + usize::from(item) * ITEM_ROW_SIZE;
+            if read_u32(stock_item_table, row)? == 0xFD36_8D30 {
+                continue; // The empty Default Shader alone does not request shader support.
+            }
+            let plug = read_tag(
+                manager,
+                TagHash(read_u32(stock_item_table, row + 16)?),
+                "authored shader choice",
+            )?;
+            if crate::plug_classification::PlugClassification::category(&plug).ok()
+                == Some(2_973_005_342)
+            {
+                has_authored_shader = true;
+                break;
+            }
+        }
         let inherited_icon = presentation_donor.as_ref().map_or(
             ResolvedIconDonor {
                 item_index: donor_item_index,
@@ -409,6 +435,7 @@ pub(super) fn resolve_project_weapons(
                 weapon_page,
                 count_selection,
                 socket_column_indices,
+                has_authored_shader,
             })
         })()
         .map_err(|error| {

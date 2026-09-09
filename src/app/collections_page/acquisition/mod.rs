@@ -23,13 +23,13 @@ pub(in crate::app) use edits::{
     collectible_acquisition_edit_available, set_collectible_acquisition_state,
 };
 use expression::{
-    ADD_INSTRUCTION, AND_INSTRUCTION, BITWISE_AND_INSTRUCTION, BITWISE_OR_INSTRUCTION,
-    BITWISE_XOR_INSTRUCTION, DIVIDE_INSTRUCTION, EQUAL_INSTRUCTION, FNV1_COMBINE_INSTRUCTION,
-    GREATER_OR_EQUAL_INSTRUCTION, GREATER_THAN_INSTRUCTION, LESS_OR_EQUAL_INSTRUCTION,
-    LESS_THAN_INSTRUCTION, LITERAL_INSTRUCTION, MODULO_INSTRUCTION, MULTIPLY_INSTRUCTION,
-    NAND_INSTRUCTION, NEGATE_NUMBER_INSTRUCTION, NOR_INSTRUCTION, NOT_EQUAL_ALTERNATE_INSTRUCTION,
-    NOT_EQUAL_INSTRUCTION, NOT_INSTRUCTION, OR_INSTRUCTION, SUBTRACT_INSTRUCTION,
-    evaluate_expression_with, is_supported_instruction,
+    ADD_INSTRUCTION, AND_INSTRUCTION, BITWISE_AND_INSTRUCTION, BITWISE_NOT_INSTRUCTION,
+    BITWISE_OR_INSTRUCTION, BITWISE_XOR_INSTRUCTION, DIVIDE_INSTRUCTION, EQUAL_INSTRUCTION,
+    GREATER_OR_EQUAL_INSTRUCTION, GREATER_THAN_INSTRUCTION, HASH_COMBINE_INSTRUCTION,
+    HASH_NUMBER_INSTRUCTION, LESS_OR_EQUAL_INSTRUCTION, LESS_THAN_INSTRUCTION, LITERAL_INSTRUCTION,
+    MODULO_INSTRUCTION, MULTIPLY_INSTRUCTION, NAND_INSTRUCTION, NEGATE_NUMBER_INSTRUCTION,
+    NOR_INSTRUCTION, NOT_EQUAL_ALTERNATE_INSTRUCTION, NOT_EQUAL_INSTRUCTION, NOT_INSTRUCTION,
+    OR_INSTRUCTION, SUBTRACT_INSTRUCTION, evaluate_expression_with, is_supported_instruction,
 };
 pub(in crate::app) use expression::{
     ExpressionValue, evaluate_expression_value_with,
@@ -225,17 +225,21 @@ pub(super) fn acquisition_status(
     match evaluation {
         AcquisitionEvaluation::Acquired => StateLine {
             text: "Acquired".into(),
-            tooltip: format!("Acquisition condition: true\nProgram: {program}"),
+            tooltip: format!(
+                "Acquisition condition from available state: true\nProgram: {program}"
+            ),
             state: evaluation.state(),
         },
         AcquisitionEvaluation::Missing => StateLine {
             text: "Missing".into(),
-            tooltip: format!("Acquisition condition: false\nProgram: {program}"),
+            tooltip: format!(
+                "Acquisition condition from available state: false\nProgram: {program}"
+            ),
             state: evaluation.state(),
         },
         AcquisitionEvaluation::Unconditional => StateLine {
             text: "Acquired".into(),
-            tooltip: "No acquisition condition; this collectible is unconditionally acquired"
+            tooltip: "No acquisition condition. This collectible is unconditionally acquired"
                 .into(),
             state: evaluation.state(),
         },
@@ -362,14 +366,8 @@ pub(super) fn evaluate_expression(
     evaluate_expression_with(
         tokens,
         catalog.shared_expression_pool(),
-        |index| {
-            let definition = catalog.unlock_flag_definition(index)?;
-            snapshot.flag_value(index, definition)
-        },
-        |index| {
-            let definition = catalog.unlock_value_definition(index)?;
-            snapshot.value(index, definition)
-        },
+        |index| snapshot.evaluated_flag(index, catalog),
+        |index| snapshot.evaluated_value(index, catalog),
     )
 }
 
@@ -473,7 +471,9 @@ pub(super) fn condition_token_label(kind: u32) -> String {
         DIVIDE_INSTRUCTION => "Divide".into(),
         MODULO_INSTRUCTION => "Modulo".into(),
         NEGATE_NUMBER_INSTRUCTION => "Negate number".into(),
-        FNV1_COMBINE_INSTRUCTION => "FNV-1 combine".into(),
+        HASH_NUMBER_INSTRUCTION => "Hash number".into(),
+        HASH_COMBINE_INSTRUCTION => "Combine hash".into(),
+        BITWISE_NOT_INSTRUCTION => "Bitwise NOT".into(),
         BITWISE_AND_INSTRUCTION => "Bitwise and".into(),
         BITWISE_OR_INSTRUCTION => "Bitwise or".into(),
         BITWISE_XOR_INSTRUCTION => "Bitwise xor".into(),

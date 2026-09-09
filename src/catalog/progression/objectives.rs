@@ -226,6 +226,7 @@ pub(in crate::catalog) fn scan_objectives(
             unlock_value_definitions,
             &condition_references,
             &ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: u64::from(definition_hash),
                 kind: ProgressionContextKind::Objective,
                 name: description.clone(),

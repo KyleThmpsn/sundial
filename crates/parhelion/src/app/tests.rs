@@ -120,7 +120,7 @@ fn standard_workbench_controls_are_not_reported_as_technical_overrides() {
     let details = technical_recipe_features(&recipe);
     assert_eq!(details.len(), 1);
     assert!(details[0].contains("Socket 1: choice weights, reusable plug set"));
-    assert!(details[0].contains("Socket Options → Show Native Rows"));
+    assert!(details[0].contains("Socket Options → Show Socket Details"));
 }
 
 #[test]

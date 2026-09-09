@@ -158,7 +158,57 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         &ctx,
         &mut app,
         &donor,
-        text_origin(&output, "Remove Added Socket") + egui::vec2(8.0, 6.0),
+        text_origin(&output, "Remove Socket") + egui::vec2(8.0, 6.0),
+    );
+    assert_eq!(app.recipe, original);
+}
+
+#[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket removal UI check"]
+fn base_socket_menu_removes_and_restores_choices() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let donor = catalog.weapon_donor(0x4CE3_CE93).unwrap();
+    let mut app = PackageAuthoringApp {
+        catalog: Some(catalog),
+        recipe: WeaponRecipe::new_named_weapon_for_donor(
+            "Removed Socket Test",
+            donor.summary.hash,
+            &donor.summary.name,
+        )
+        .unwrap(),
+        ..Default::default()
+    };
+    let original = app.recipe.clone();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, &donor, vec![]);
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    let options = text_origins(&output, "…")[0];
+    click(&ctx, &mut app, &donor, options + egui::vec2(5.0, 6.0));
+    frame(&ctx, &mut app, &donor, vec![]);
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    click(
+        &ctx,
+        &mut app,
+        &donor,
+        text_origin(&output, "Remove Socket") + egui::vec2(8.0, 6.0),
+    );
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    assert!(text(&output).contains("Socket 1 Removed"));
+    assert_eq!(
+        app.recipe.overrides.socket_columns.len(),
+        donor.sockets.len()
+    );
+    assert!(
+        app.recipe.overrides.socket_columns[1..]
+            .iter()
+            .all(Option::is_none)
+    );
+    click(
+        &ctx,
+        &mut app,
+        &donor,
+        text_origin(&output, "Restore Socket") + egui::vec2(8.0, 6.0),
     );
     assert_eq!(app.recipe, original);
 }

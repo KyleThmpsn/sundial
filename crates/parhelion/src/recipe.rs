@@ -908,7 +908,7 @@ impl WeaponRecipeOverrides {
                 column
                     .as_ref()
                     .map(|column| {
-                        if column.choices.is_empty()
+                        if (column.choices.is_empty() && column.socket_type != Some(u16::MAX))
                             || column.choices.len() > MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES
                         {
                             return Err(RecipeError::Validation(format!(

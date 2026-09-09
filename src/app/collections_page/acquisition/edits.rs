@@ -118,6 +118,9 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
     catalog: &Catalog,
     state: &mut UiState,
 ) -> bool {
+    if state.read_only {
+        return false;
+    }
     let current = acquisition_status(definition, snapshot, catalog).state;
     let desired = match current {
         AcquisitionState::Acquired => false,

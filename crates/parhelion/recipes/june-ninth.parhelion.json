@@ -3,12 +3,12 @@
   "namespace": "parhelion.june-ninth",
   "collection_placement": "sunrise_badge",
   "donor": {
-    "item_hash": "0x1355ADF8",
-    "expected_name": "Breakneck"
+    "item_hash": "0xC7EDADF6",
+    "expected_name": "The Recluse"
   },
   "presentation_donor": {
-    "item_hash": "0x69D89F26",
-    "expected_name": "Galliard-42 XN7568"
+    "item_hash": "0x9BADD9A6",
+    "expected_name": "Imminent Storm"
   },
   "identity": {
     "item_hash": "0x3BEF48A2",
@@ -23,52 +23,54 @@
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
     "icon_edit": {
-      "flip_horizontal": true
+      "color_replacements": [
+        {
+          "source": [
+            52,
+            49,
+            49
+          ],
+          "replacement": [
+            159,
+            120,
+            75
+          ],
+          "range_percent": 40
+        }
+      ],
+      "hue_shift_degrees": 40,
+      "saturation": 60,
+      "brightness": -10,
+      "contrast": 65
     },
     "investment_stats": [
       {
-        "definition_index": 14,
-        "value": 48
-      },
-      {
         "definition_index": 15,
-        "value": 87
+        "value": 64
       },
       {
         "definition_index": 16,
-        "value": 72
+        "value": 66
       },
       {
         "definition_index": 22,
-        "value": 83
+        "value": 55
       },
       {
         "definition_index": 24,
-        "value": 76
-      },
-      {
-        "definition_index": 25,
-        "value": 80
-      },
-      {
-        "definition_index": 26,
-        "value": 72
-      },
-      {
-        "definition_index": 27,
         "value": 89
       },
       {
-        "definition_index": 30,
-        "value": 100
+        "definition_index": 27,
+        "value": 83
       },
       {
-        "definition_index": 31,
-        "value": 100
+        "definition_index": 30,
+        "value": 70
       },
       {
         "definition_index": 32,
-        "value": 18
+        "value": 15
       }
     ],
     "inventory_slot": "kinetic",
@@ -94,7 +96,7 @@
       },
       {
         "choices": [
-          "0x7060EDB4",
+          "0x43F47FCB",
           "0xF66D3B73",
           "0x7554E3EE"
         ],
@@ -133,7 +135,7 @@
       },
       {
         "choices": [
-          "0xC3E3B370"
+          "0x979E212D"
         ],
         "socket_type": null,
         "choice_weight_bits": [],
@@ -155,7 +157,37 @@
       },
       null,
       null,
-      null
+      {
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xA9CA6B03"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x33594797"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
     ],
     "raw_payload_patches": []
   }

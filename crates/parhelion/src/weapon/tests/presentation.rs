@@ -60,6 +60,63 @@ fn collection_material_set_matches_authored_rarity() {
 }
 
 #[test]
+fn equipment_restriction_tracks_rarity_without_changing_other_fields() {
+    for rarity in [
+        AuthoredWeaponRarity::Common,
+        AuthoredWeaponRarity::Uncommon,
+        AuthoredWeaponRarity::Rare,
+        AuthoredWeaponRarity::Legendary,
+        AuthoredWeaponRarity::Exotic,
+    ] {
+        let mut data = synthetic_weapon_identity_fields(rarity, 7);
+        let block = data.len() + 16;
+        data.resize(block + 0x30, 0xA5);
+        write_relative_pointer(&mut data, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET, block).unwrap();
+        write_u32(&mut data, block - 4, ITEM_EQUIPMENT_BLOCK_CLASS).unwrap();
+        write_u16(&mut data, block + ITEM_EQUIPMENT_SLOT_OFFSET, 7).unwrap();
+        write_u16(
+            &mut data,
+            block + ITEM_EQUIPMENT_SLOT_SENTINEL_OFFSET,
+            u16::MAX,
+        )
+        .unwrap();
+        for original in [(0xDAD1_1536, 0xEF7B_6AD3), (0x811C_9DC5, 0)] {
+            write_u32(&mut data, block + 0x10, original.0).unwrap();
+            write_u32(&mut data, block + 0x14, original.1).unwrap();
+            let before = data.clone();
+            sync_weapon_equipment_rarity(&mut data).unwrap();
+            let expected = if rarity == AuthoredWeaponRarity::Exotic {
+                (0xDAD1_1536, 0xEF7B_6AD3)
+            } else {
+                (0x811C_9DC5, 0)
+            };
+            assert_eq!(weapon_equipment_label(&data).unwrap(), expected);
+            assert!(
+                changed_offsets(&before, &data)
+                    .iter()
+                    .all(|offset| { (block + 0x10..block + 0x18).contains(offset) })
+            );
+            let normalized = data.clone();
+            sync_weapon_equipment_rarity(&mut data).unwrap();
+            assert_eq!(data, normalized);
+        }
+        if rarity != AuthoredWeaponRarity::Exotic {
+            write_u32(&mut data, block + 0x10, 0x1234_5678).unwrap();
+            let before = data.clone();
+            sync_weapon_equipment_rarity(&mut data).unwrap();
+            assert_eq!(
+                data, before,
+                "unrelated unique-equip restrictions must survive"
+            );
+        }
+        write_u32(&mut data, block - 4, 0).unwrap();
+        let before = data.clone();
+        assert!(sync_weapon_equipment_rarity(&mut data).is_err());
+        assert_eq!(data, before);
+    }
+}
+
+#[test]
 fn translation_art_and_dye_edits_preserve_the_gear_art_selector() {
     const TRANSLATION_ROOT: usize = 0xC0;
     let mut target = synthetic_weapon_identity_fields(AuthoredWeaponRarity::Legendary, 0x0123);
@@ -410,4 +467,35 @@ fn authored_weapon_icon_row_preserves_stock_rows_and_selects_its_container() {
     let mut strings = vec![0u8; ITEM_STRING_ICON_INDEX_OFFSET + 2];
     write_u16(&mut strings, ITEM_STRING_ICON_INDEX_OFFSET, icon_index).unwrap();
     validate_authored_item_icon(&authored, &strings, item_hash, icon_index, container).unwrap();
+}
+
+#[test]
+fn shader_unlock_preserves_base_colors_and_unrelated_render_data() {
+    let mut data = synthetic_weapon_identity_fields(AuthoredWeaponRarity::Exotic, 42);
+    let dye = |channel_index, dye_reference_index| WeaponDyeReferenceOverride {
+        channel_index,
+        dye_reference_index,
+    };
+    let original = [
+        vec![dye(7, 11)],
+        vec![dye(4, 20), dye(8, 21)],
+        vec![dye(4, 30), dye(5, 31), dye(6, 32)],
+    ];
+    set_weapon_render_dye_rows(&mut data, &original).unwrap();
+    let art = weapon_art_arrangements(&data).unwrap();
+    unlock_weapon_shader_dyes(&mut data).unwrap();
+    assert_eq!(
+        weapon_render_dye_rows(&data).unwrap(),
+        [
+            vec![dye(7, 11)],
+            vec![dye(8, 21), dye(4, 30), dye(5, 31), dye(6, 32)],
+            vec![]
+        ]
+    );
+    assert_eq!(weapon_art_arrangements(&data).unwrap(), art);
+    assert_eq!(weapon_pattern_index(&data).unwrap(), Some(42));
+    assert_eq!(weapon_rarity(&data).unwrap(), AuthoredWeaponRarity::Exotic);
+    let once = data.clone();
+    unlock_weapon_shader_dyes(&mut data).unwrap();
+    assert_eq!(data, once);
 }

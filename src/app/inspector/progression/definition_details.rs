@@ -34,7 +34,7 @@ pub(super) fn draw_unlock_definition_metadata(
             );
             metadata_field(
                 ui,
-                "Condition References",
+                "Known References",
                 definition.tested_by.len().to_string(),
                 true,
             );
@@ -116,7 +116,26 @@ fn draw_context_metadata(
             progression_context_kind_label(context.kind),
             false,
         );
-        catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", context.hash);
+        match context.kind {
+            crate::catalog::ProgressionContextKind::PackageExpression => {
+                metadata_field(
+                    ui,
+                    "Package Tag",
+                    format!("0x{:08X}", context.hash >> 32),
+                    true,
+                );
+                metadata_field(
+                    ui,
+                    "Expression Offset",
+                    format!("0x{:X}", context.hash as u32),
+                    true,
+                );
+            }
+            crate::catalog::ProgressionContextKind::ExpressionMapping => {
+                metadata_field(ui, "Mapping Index", context.hash.to_string(), true);
+            }
+            _ => catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", context.hash),
+        }
         metadata_field(ui, "Name", metadata_text(&context.name), false);
         metadata_field(ui, "Type", metadata_text(&context.type_name), false);
         metadata_field(
@@ -133,6 +152,9 @@ fn draw_context_metadata(
         );
     });
     draw_metadata_paths(ui, &context.paths);
+    for reference in &context.direct_references {
+        ui.label(reference);
+    }
     draw_condition_programs(
         ui,
         "context",

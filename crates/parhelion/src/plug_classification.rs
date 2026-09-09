@@ -38,8 +38,12 @@ fn category_offset(definition: &[u8]) -> AuthoringResult<usize> {
 }
 
 impl PlugClassification {
+    pub(crate) fn category(definition: &[u8]) -> AuthoringResult<u32> {
+        read_u32(definition, category_offset(definition)?)
+    }
+
     pub fn from_template(definition: &[u8], strings: &[u8]) -> AuthoringResult<Self> {
-        let category = read_u32(definition, category_offset(definition)?)?;
+        let category = Self::category(definition)?;
         let rarity = *definition
             .get(ITEM_RARITY_OFFSET)
             .filter(|&&rarity| (1..=6).contains(&rarity))

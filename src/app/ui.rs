@@ -4,6 +4,17 @@ use super::glyphs::{self, Glyph};
 
 const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
 
+pub(super) fn section_heading(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let style = egui::TextStyle::Name("Section Heading".into());
+    let text = egui::RichText::new(text).strong();
+    let text = if ui.style().text_styles.contains_key(&style) {
+        text.text_style(style)
+    } else {
+        text
+    };
+    ui.label(text)
+}
+
 pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
     egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
 }

@@ -43,6 +43,7 @@ use super::{
 
 mod add_dialogs;
 mod document;
+mod evaluation;
 mod hierarchy;
 mod mutations;
 mod override_tables;

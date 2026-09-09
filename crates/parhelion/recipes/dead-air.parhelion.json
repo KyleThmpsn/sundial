@@ -21,11 +21,13 @@
     "collection_requirement_hash": "0xAA1F18F2"
   },
   "name": "Dead Air",
-  "flavor": "Let's break the silence.",
+  "flavor": "\"Same time next week?\"",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
     "icon_edit": {
-      "flip_horizontal": true
+      "flip_horizontal": true,
+      "hue_shift_degrees": 140,
+      "saturation": 45
     },
     "investment_stats": [
       {
@@ -48,13 +50,38 @@
     "inventory_slot": "kinetic",
     "ammo_type": "special",
     "modern_damage_type": "solar",
-    "power_cap_group": 11,
+    "power_cap_group": 15,
     "rarity": "exotic",
     "stat_group_index": null,
     "socket_columns": [
       null,
-      null,
-      null,
+      {
+        "choices": [
+          "0x5778AFAD",
+          "0x6DAFD49E",
+          "0xE6C8436F"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9FBF6A53",
+          "0xB0FA2B02",
+          "0xE698B22E",
+          "0x64947A48"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
       {
         "choices": [
           "0x93F6B3E6",
@@ -83,7 +110,7 @@
       },
       {
         "choices": [
-          "0x4682DFF1"
+          "0x9DA139BF"
         ],
         "socket_type": 180,
         "choice_weight_bits": [],
@@ -94,7 +121,8 @@
       },
       {
         "choices": [
-          "0x62C9F17F"
+          "0x62C9F17F",
+          "0xF72A1183"
         ],
         "socket_type": 92,
         "choice_weight_bits": [],
@@ -105,7 +133,20 @@
       },
       {
         "choices": [
-          "0x2F98742C"
+          "0x2F98742C",
+          "0x33594797"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8B18058B",
+          "0x131AF65A"
         ],
         "socket_type": 92,
         "choice_weight_bits": [],

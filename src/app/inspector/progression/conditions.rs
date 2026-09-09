@@ -97,14 +97,12 @@ pub(super) fn evaluate_condition_program(
         |index| {
             catalog
                 .unlock_flag_definition(index)
-                .and_then(|definition| {
-                    snapshot.and_then(|state| state.flag_value(index, definition))
-                })
+                .and_then(|_| snapshot.and_then(|state| state.evaluated_flag(index, catalog)))
         },
         |index| {
             catalog
                 .unlock_value_definition(index)
-                .and_then(|definition| snapshot.and_then(|state| state.value(index, definition)))
+                .and_then(|_| snapshot.and_then(|state| state.evaluated_value(index, catalog)))
         },
     ) {
         Some(ExpressionValue::Boolean(true)) => ConditionEvaluation::Passed,
@@ -247,11 +245,27 @@ fn condition_dependency_value(
     match token[0] {
         1 => catalog.unlock_flag_definition(index).map_or_else(
             || "definition unavailable".into(),
-            |definition| snapshot.flag_text(index, definition),
+            |definition| {
+                format!(
+                    "{} · Saved: {}",
+                    snapshot
+                        .evaluated_flag(index, catalog)
+                        .map_or_else(|| "Unresolved".into(), |value| value.to_string()),
+                    snapshot.flag_text(index, definition)
+                )
+            },
         ),
         10 => catalog.unlock_value_definition(index).map_or_else(
             || "definition unavailable".into(),
-            |definition| snapshot.value_text(index, definition),
+            |definition| {
+                format!(
+                    "{} · Saved: {}",
+                    snapshot
+                        .evaluated_value(index, catalog)
+                        .map_or_else(|| "Unresolved".into(), |value| value.to_string()),
+                    snapshot.value_text(index, definition)
+                )
+            },
         ),
         12 => {
             let Some(program) = catalog.shared_expression(index) else {
@@ -263,12 +277,12 @@ fn condition_dependency_value(
                 |definition_index| {
                     catalog
                         .unlock_flag_definition(definition_index)
-                        .and_then(|definition| snapshot.flag_value(definition_index, definition))
+                        .and_then(|_| snapshot.evaluated_flag(definition_index, catalog))
                 },
                 |definition_index| {
                     catalog
                         .unlock_value_definition(definition_index)
-                        .and_then(|definition| snapshot.value(definition_index, definition))
+                        .and_then(|_| snapshot.evaluated_value(definition_index, catalog))
                 },
             ) {
                 Some(ExpressionValue::Boolean(value)) => value.to_string(),
@@ -341,8 +355,10 @@ pub(in crate::app) fn condition_opcode_label(kind: u32) -> String {
         19 => "Multiply (19)".into(),
         20 => "Divide (20)".into(),
         21 => "Modulo (21)".into(),
-        22 => "Negate number (22, empirical)".into(),
-        24 => "FNV-1 combine (24)".into(),
+        22 => "Negate Number (22)".into(),
+        23 => "FNV-1a Hash (23)".into(),
+        24 => "FNV-1a Combine (24)".into(),
+        28 => "Bitwise Not (28)".into(),
         25 => "Bitwise and (25)".into(),
         26 => "Bitwise or (26)".into(),
         27 => "Bitwise xor (27)".into(),
@@ -392,7 +408,9 @@ mod tests {
     #[test]
     fn shared_expression_opcode_and_known_native_binary_range_are_decoded() {
         let definition = UnlockDefinition {
+            runtime_writers: Vec::new(),
             tested_by: vec![ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 0,
                 kind: ProgressionContextKind::ExpressionMapping,
                 name: String::new(),
@@ -409,9 +427,10 @@ mod tests {
         assert_eq!(condition_opcode_label(4), "And (4)");
         assert_eq!(condition_opcode_label(9), "Not equal (9)");
         assert_eq!(condition_opcode_label(12), "Shared expression (12)");
-        assert_eq!(condition_opcode_label(22), "Negate number (22, empirical)");
-        assert_eq!(condition_opcode_label(23), "Undecoded (23)");
+        assert_eq!(condition_opcode_label(22), "Negate Number (22)");
+        assert_eq!(condition_opcode_label(23), "FNV-1a Hash (23)");
         assert!(decoded_condition_opcode(22));
-        assert!(!decoded_condition_opcode(23));
+        assert!(decoded_condition_opcode(23));
+        assert!(decoded_condition_opcode(28));
     }
 }

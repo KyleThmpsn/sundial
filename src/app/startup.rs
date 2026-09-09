@@ -352,7 +352,13 @@ impl StartupApp {
                                     "Could not load that installation",
                                 );
                                 ui.add_space(6.0);
-                                ui.label(error);
+                                ui.label(&error);
+                                if ui.button("Copy Report").clicked() {
+                                    ui.ctx().copy_text(diagnostics::build_startup_failure_report(
+                                        self.install_path.as_deref(),
+                                        &error,
+                                    ));
+                                }
                                 if self.preferences.troubleshooting_logging
                                     && let Some(path) = diagnostics::log_path()
                                 {

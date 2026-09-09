@@ -15,9 +15,11 @@ use super::{Catalog, resolve_string};
 mod conditions;
 mod contexts;
 mod definitions;
+mod direct;
 mod item_contexts;
 mod models;
 mod objectives;
+mod package_conditions;
 mod presentation;
 mod records;
 mod schema;
@@ -28,6 +30,7 @@ use conditions::*;
 use contexts::*;
 #[cfg(test)]
 use definitions::*;
+use direct::{attach_conditional_flag_writes, attach_direct_reference, attach_flag_writes};
 #[cfg(test)]
 use item_contexts::*;
 #[cfg(test)]
@@ -41,7 +44,7 @@ pub(crate) use models::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
     ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope,
-    ProgressionStepDefinition, UnlockDefinition,
+    ProgressionStepDefinition, UnlockDefinition, UnlockWriter,
 };
 pub(super) use models::{PendingProgressionContext, PresentationNodeDef, ProgressionPackageData};
 
@@ -51,11 +54,18 @@ pub(super) use contexts::{
     scan_metric_objective_owners, scan_trait_definitions,
 };
 pub(super) use definitions::scan_progression_definitions;
+pub(super) use direct::{
+    attach_progression_references, scan_context_writers, scan_destination_writers,
+    scan_direct_tables, scan_progression_context_outputs,
+};
 pub(super) use item_contexts::{
     ItemProgressionContext, attach_item_condition_contexts, scan_collectible_condition_contexts,
     scan_collectible_item_paths,
 };
 pub(super) use objectives::{scan_milestone_objective_owners, scan_objectives};
+pub(super) use package_conditions::{
+    expand_shared_condition_contexts, scan_package_condition_contexts,
+};
 pub(super) use presentation::{
     attach_presentation_node_objective_owners, definition_index_list, presentation_paths,
     scan_presentation_nodes,

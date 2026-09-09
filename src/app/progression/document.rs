@@ -88,10 +88,12 @@ pub(super) struct Progression {
 }
 
 pub(in crate::app) struct CollectionStateSnapshot {
-    flags: HashSet<(u8, usize)>,
-    values: HashMap<(u8, usize), i32>,
-    flag_overrides: HashMap<usize, u8>,
-    value_overrides: HashMap<usize, i32>,
+    pub(super) flags: HashSet<(u8, usize)>,
+    pub(super) values: HashMap<(u8, usize), i32>,
+    pub(super) flag_overrides: HashMap<usize, u8>,
+    pub(super) value_overrides: HashMap<usize, i32>,
+    pub(super) account_progressions: Vec<ProgressionValue>,
+    pub(super) character_progressions: Vec<ProgressionValue>,
 }
 
 impl CollectionStateSnapshot {
@@ -243,6 +245,8 @@ pub(in crate::app) fn collection_state_snapshot(
     Some(CollectionStateSnapshot {
         flags,
         values,
+        account_progressions: policy.unlocks.account_progressions,
+        character_progressions: policy.unlocks.character_progressions,
         flag_overrides: policy
             .investment
             .flag_overrides
@@ -697,6 +701,7 @@ mod tests {
             compact_slot,
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         }
     }

@@ -37,7 +37,7 @@ impl OverrideFilter {
         match self {
             Self::All => "All coverage",
             Self::Unmapped => "Not in package table",
-            Self::NoResolvedReaders => "No package references",
+            Self::NoResolvedReaders => "No Package References",
             Self::PartiallyDecoded => "Partially decoded",
         }
     }
@@ -94,8 +94,8 @@ pub(super) fn draw_override_metadata(
                 condition_program_decode,
                 false,
             );
-            metadata_field(ui, "Readers", usage.readers, false);
-            metadata_field(ui, "Reader kinds", usage.reader_types, false);
+            metadata_field(ui, "References", usage.readers, false);
+            metadata_field(ui, "Reference Types", usage.reader_types, false);
             metadata_field(ui, "Condition usage", usage.condition_usage, false);
             if let Some(impact) = usage.forced_impact {
                 metadata_field(ui, "Result", impact, false);
@@ -303,7 +303,9 @@ mod tests {
             compact_slot: None,
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: vec![ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 3,
                 kind: ProgressionContextKind::Activity,
                 name: "Power-gated activity".into(),

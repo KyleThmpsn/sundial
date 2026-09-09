@@ -9,6 +9,10 @@ pub(in crate::app) fn draw_content(
     state: &mut UiState,
     view: View,
 ) -> bool {
+    if state.read_only {
+        state.add_open = false;
+        state.edit_progression_lanes = false;
+    }
     if let Some(error) = catalog.progression_package_error() {
         ui.colored_label(ui.visuals().warn_fg_color, "Package scan incomplete")
             .on_hover_text(error);
@@ -67,7 +71,7 @@ pub(in crate::app) fn draw_content(
         ui.ctx(),
         catalog,
         Some(document),
-        true,
+        !state.read_only,
         &mut state.hash_inspection,
         "progression",
     );
@@ -155,7 +159,9 @@ pub(super) fn draw_unlocks(
         draw_filter(ui, &mut state.query);
         if state.unlock_table != UnlockTable::UnreplicatedProgressions
             && !state.unlock_table.is_progression()
-            && ui.button("+ Add").clicked()
+            && ui
+                .add_enabled(!state.read_only, egui::Button::new("+ Add"))
+                .clicked()
         {
             state.add_open = true;
             state.add_query.clear();
@@ -163,11 +169,17 @@ pub(super) fn draw_unlocks(
             state.add_progression_lanes = [0; 3];
         }
         if state.unlock_table.is_progression() {
-            ui.checkbox(&mut state.edit_progression_lanes, "Edit Lane 1–2")
-                .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
+            ui.add_enabled(
+                !state.read_only,
+                egui::Checkbox::new(&mut state.edit_progression_lanes, "Edit Lanes 1 and 2"),
+            )
+            .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
             if let Some(last_change) = state.last_progression_change
                 && ui
-                    .button("Undo progression change")
+                    .add_enabled(
+                        !state.read_only,
+                        egui::Button::new("Undo Progression Change"),
+                    )
                     .on_hover_text(last_change.label())
                     .clicked()
             {
@@ -308,7 +320,7 @@ pub(super) fn draw_investment(
         InvestmentTable::FlagOverrides => investment.flag_overrides.len(),
         InvestmentTable::ValueOverrides => investment.value_overrides.len(),
     };
-    let can_add = row_count < FAMILY5_OVERRIDE_CAPACITY;
+    let can_add = !state.read_only && row_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
         ui.label(egui::RichText::new("Table").strong());
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
@@ -325,11 +337,15 @@ pub(super) fn draw_investment(
             "Settings field: {}",
             state.investment_table.field_name()
         ));
-        let add = ui.add_enabled(can_add, egui::Button::new("Add override"));
+        let add = ui.add_enabled(can_add, egui::Button::new("Add Override"));
         let add = if can_add {
             add
         } else {
-            add.on_disabled_hover_text("100-row settings limit")
+            add.on_disabled_hover_text(if state.read_only {
+                "Enable Progression Editing in Preferences to change state"
+            } else {
+                "100-row settings limit"
+            })
         };
         if add.clicked() {
             state.add_open = true;
@@ -348,7 +364,10 @@ pub(super) fn draw_investment(
             });
         if let Some(last_change) = state.last_investment_change {
             if ui
-                .button("Undo last override change")
+                .add_enabled(
+                    !state.read_only,
+                    egui::Button::new("Undo Last Override Change"),
+                )
                 .on_hover_text(last_change.label())
                 .clicked()
             {

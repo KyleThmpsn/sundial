@@ -47,6 +47,7 @@ const TABLE_ROW_GAP: f32 = 2.0;
 
 #[derive(Debug, Default)]
 pub(super) struct UiState {
+    pub(super) read_only: bool,
     query: String,
     sort: TableSort,
     expansion: HashMap<Vec<String>, bool>,
@@ -171,7 +172,8 @@ pub(super) fn draw_content(
         .cloned()
         .collect::<Vec<_>>();
     ui.horizontal_wrapped(|ui| {
-        ui.label(format!("{} / {} acquired", counts.acquired, counts.total()));
+        ui.label(format!("{} / {} acquired", counts.acquired, counts.total()))
+            .on_hover_text("Calculated from the saved account and package definitions. Conditions that need live game context remain unresolved.");
         let mut remainder = Vec::new();
         if counts.missing > 0 {
             remainder.push(format!("{} missing", counts.missing));
@@ -359,7 +361,7 @@ pub(super) fn draw_content(
         ui.ctx(),
         catalog,
         Some(document),
-        true,
+        !state.read_only,
         &mut state.hash_inspection,
         "collections",
     );

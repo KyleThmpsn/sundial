@@ -75,6 +75,21 @@ fn remove_last_added_socket(recipe: &mut WeaponRecipe, socket_index: usize) -> b
     true
 }
 
+fn remove_base_socket(recipe: &mut WeaponRecipe, socket_count: usize, socket_index: usize) {
+    recipe.overrides.socket_columns.resize_with(
+        recipe.overrides.socket_columns.len().max(socket_count),
+        || None,
+    );
+    recipe.overrides.socket_columns[socket_index] = Some(WeaponSocketColumnRecipe {
+        socket_type: Some(u16::MAX),
+        ..Default::default()
+    });
+    recipe
+        .overrides
+        .socket_plug_variants
+        .retain(|variant| usize::from(variant.socket_index) != socket_index);
+}
+
 fn draw_add_socket(
     ui: &mut egui::Ui,
     catalog: &InvestmentCatalog,
@@ -352,6 +367,7 @@ pub(super) fn draw_socket_override_diagnostics(
                         continue;
                     }
                     if let Some(socket_type) = socket_type
+                        && socket_type != u16::MAX
                         && !catalog.weapon_socket_type_is_known(donor.summary.hash, socket_type)
                     {
                         ui.colored_label(

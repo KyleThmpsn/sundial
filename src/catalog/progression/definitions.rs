@@ -307,10 +307,8 @@ pub(super) fn progression_definitions_from_data(
                     )
                     .ok_or("Progression step row offset overflowed")?;
                 steps.push(ProgressionStepDefinition {
-                    progress_total: i32_at(
-                        table,
-                        step_row + PROGRESSION_STEP_PROGRESS_TOTAL_OFFSET,
-                    )?,
+                    cost: i32_at(table, step_row + PROGRESSION_STEP_PROGRESS_TOTAL_OFFSET)?,
+                    unlock_flag: native_unlock_slot(u16_at(table, step_row + 4)?),
                     name: String::new(),
                     icon_container: None,
                 });
@@ -351,6 +349,7 @@ pub(super) fn progression_definitions_from_data(
                     )?,
                     item_hash,
                     quantity: i32_at(table, reward_row + PROGRESSION_REWARD_QUANTITY_OFFSET)?,
+                    claim_flag: native_unlock_slot(u16_at(table, reward_row + 20)?),
                 });
             }
         }
@@ -361,6 +360,7 @@ pub(super) fn progression_definitions_from_data(
             scope,
             scope_slot,
             repeat_last_step: bool_at(table, row + PROGRESSION_DEFINITION_REPEAT_LAST_STEP_OFFSET)?,
+            level_value: native_unlock_slot(u16_at(table, row + 8)?),
             name: String::new(),
             description: String::new(),
             source: String::new(),
@@ -372,4 +372,8 @@ pub(super) fn progression_definitions_from_data(
         });
     }
     Ok(definitions)
+}
+
+fn native_unlock_slot(slot: u16) -> Option<u16> {
+    (slot != u16::MAX).then_some(slot)
 }

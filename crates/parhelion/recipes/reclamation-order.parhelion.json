@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.reclamation-order",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xE0794C51",
+    "expected_name": "Black Talon"
+  },
+  "presentation_donor": {
+    "item_hash": "0x9FF5BE8E",
+    "expected_name": "Traitor's Fate"
+  },
+  "identity": {
+    "item_hash": "0xE1A78896",
+    "collectible_hash": "0xE0FC1DCF",
+    "unlock_hash": "0xE9719A53",
+    "pattern_global_id_hash": "0x9FF97BB3",
+    "name_hash": "0xB3C12AF6",
+    "type_hash": "0xBBE7789B",
+    "flavor_hash": "0x4934B717",
+    "source_hash": "0xB1CD2A9C",
+    "collection_name_hash": "0x32686E47",
+    "collection_description_hash": "0xF1CCD028",
+    "inventory_hint_hash": "0xC77F71CF",
+    "collection_requirement_hash": "0xC8B393C3"
+  },
+  "name": "Reclamation Order",
+  "flavor": "\"Nothing inside was yours to bury.\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "hue_shift_degrees": -80,
+      "green_balance": -10
+    },
+    "investment_stats": [],
+    "inventory_slot": "energy",
+    "ammo_type": "heavy",
+    "modern_damage_type": "void",
+    "power_cap_group": 11,
+    "rarity": "exotic",
+    "stat_group_index": null,
+    "socket_columns": [
+      null,
+      null,
+      null,
+      {
+        "choices": [
+          "0x6842D015",
+          "0x151FBDCC",
+          "0x790AF318",
+          "0x85CDB86E"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xB3D392D7",
+          "0x6475A53F",
+          "0x5C2FD04F",
+          "0xDD070E81"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9DA139BF",
+          "0x8A98022D"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      {
+        "choices": [
+          "0xE944CC82",
+          "0x9A6B194D",
+          "0x30C4EA97",
+          "0xB94CFC43"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null
+    ],
+    "raw_payload_patches": []
+  }
+}

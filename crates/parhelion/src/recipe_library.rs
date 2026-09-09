@@ -19,7 +19,7 @@ const EVERY_END_FILE_NAME: &str = "every-end.parhelion.json";
 const EVERY_END_TEMPLATE: &str = include_str!("../recipes/every-end.parhelion.json");
 const SECOND_SUN_FILE_NAME: &str = "second-sun.parhelion.json";
 const SECOND_SUN_TEMPLATE: &str = include_str!("../recipes/second-sun.parhelion.json");
-pub(crate) const BUNDLED_RECIPES: [(&str, &str); 13] = [
+pub(crate) const BUNDLED_RECIPES: [(&str, &str); 15] = [
     (EVERY_END_FILE_NAME, EVERY_END_TEMPLATE),
     (SECOND_SUN_FILE_NAME, SECOND_SUN_TEMPLATE),
     (
@@ -35,8 +35,8 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 13] = [
         include_str!("../recipes/stay.parhelion.json"),
     ),
     (
-        "afterfire.parhelion.json",
-        include_str!("../recipes/afterfire.parhelion.json"),
+        "still-here.parhelion.json",
+        include_str!("../recipes/still-here.parhelion.json"),
     ),
     (
         "unsent.parhelion.json",
@@ -63,8 +63,16 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 13] = [
         include_str!("../recipes/night-shift.parhelion.json"),
     ),
     (
-        "breach-notice.parhelion.json",
-        include_str!("../recipes/breach-notice.parhelion.json"),
+        "vaultbreaker.parhelion.json",
+        include_str!("../recipes/vaultbreaker.parhelion.json"),
+    ),
+    (
+        "good-company.parhelion.json",
+        include_str!("../recipes/good-company.parhelion.json"),
+    ),
+    (
+        "reclamation-order.parhelion.json",
+        include_str!("../recipes/reclamation-order.parhelion.json"),
     ),
 ];
 const LIBRARY_STATE_SCHEMA: u32 = 1;
@@ -719,7 +727,10 @@ mod tests {
         }
         if matches!(
             file_name,
-            "afterfire.parhelion.json" | "dead-air.parhelion.json" | "night-shift.parhelion.json"
+            "still-here.parhelion.json"
+                | "dead-air.parhelion.json"
+                | "night-shift.parhelion.json"
+                | "good-company.parhelion.json"
         ) {
             // These recipes intentionally inherit their gameplay donor's appearance.
             assert!(recipe.presentation_donor.is_none());
@@ -731,11 +742,16 @@ mod tests {
         }
         assert_eq!(
             recipe.overrides.rarity,
-            Some(if recipe.namespace == "parhelion.dead-air" {
-                crate::RecipeRarity::Exotic
-            } else {
-                crate::RecipeRarity::Legendary
-            })
+            Some(
+                if matches!(
+                    recipe.namespace.as_str(),
+                    "parhelion.dead-air" | "parhelion.reclamation-order"
+                ) {
+                    crate::RecipeRarity::Exotic
+                } else {
+                    crate::RecipeRarity::Legendary
+                }
+            )
         );
         assert!(recipe.inventory_hint.is_none());
         assert!(recipe.runtime_component_donors.is_empty());
@@ -786,7 +802,7 @@ mod tests {
                 vec![(0, 0xEEB6_9A10), (3, 0xD201_3CA1), (4, 0x5512_3589)],
             ),
             (
-                "breach-notice",
+                "vaultbreaker",
                 vec![(0, 0xDD5C_B37A), (3, 0xC4BE_7564), (4, 0x5C2F_D04F)],
             ),
         ];
@@ -809,9 +825,19 @@ mod tests {
     fn bundled_weapons_offer_distinct_trait_choices_and_keep_custom_defaults() {
         for (filename, json) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            for socket in [3, 4] {
+            let sockets: &[usize] = match filename {
+                "good-company.parhelion.json" | "reclamation-order.parhelion.json" => &[3, 4, 8],
+                _ => &[3, 4],
+            };
+            for &socket in sockets {
                 let column = recipe.overrides.socket_columns[socket].as_ref().unwrap();
-                let expected_count = if filename == EVERY_END_FILE_NAME {
+                let expected_count = if matches!(
+                    filename,
+                    EVERY_END_FILE_NAME
+                        | "stay.parhelion.json"
+                        | "good-company.parhelion.json"
+                        | "reclamation-order.parhelion.json"
+                ) {
                     4
                 } else {
                     3
@@ -873,7 +899,14 @@ mod tests {
     fn new_weapon_identities_match_native_derivation_and_defaults_have_shaders() {
         for (name, json) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            if name == "stay.parhelion.json" || name == "afterfire.parhelion.json" {
+            if matches!(
+                name,
+                "stay.parhelion.json"
+                    | "still-here.parhelion.json"
+                    | "vaultbreaker.parhelion.json"
+                    | "good-company.parhelion.json"
+                    | "reclamation-order.parhelion.json"
+            ) {
                 assert_eq!(
                     recipe.to_spec().unwrap().identity,
                     crate::WeaponCloneIdentity::from_namespace(&recipe.namespace).unwrap()
@@ -896,7 +929,7 @@ mod tests {
         for (index, hash) in [(6, 0x62C9F17F), (7, 0x2F98742C)] {
             let column = recipe.overrides.socket_columns[index].as_ref().unwrap();
             assert_eq!(column.socket_type, Some(92));
-            assert_eq!(column.choices.len(), 1);
+            assert_eq!(column.choices.len(), 2);
             assert_eq!(column.choices[0].parse_u32().unwrap(), hash);
         }
     }
@@ -907,8 +940,8 @@ mod tests {
             (
                 "dead-air.parhelion.json",
                 crate::recipe::RecipeDamageType::Solar,
-                11,
-                0,
+                15,
+                140,
             ),
             (
                 "night-shift.parhelion.json",
@@ -960,10 +993,11 @@ mod tests {
     }
 
     #[test]
-    fn june_ninth_keeps_void_damage_in_the_kinetic_slot() {
+    fn june_ninth_is_a_void_smg_in_the_kinetic_slot() {
         let recipe =
             WeaponRecipe::from_json_str(include_str!("../recipes/june-ninth.parhelion.json"))
                 .unwrap();
+        assert_eq!(recipe.donor.item_hash.parse_u32().unwrap(), 0xC7ED_ADF6);
         assert_eq!(
             recipe.overrides.inventory_slot,
             Some(crate::recipe::RecipeInventorySlot::Kinetic)
@@ -984,8 +1018,9 @@ mod tests {
                 .item_hash
                 .parse_u32()
                 .unwrap(),
-            0x69D8_9F26
+            0x9BAD_D9A6
         );
+        assert_eq!(recipe.overrides.socket_columns.len(), 12);
     }
 
     #[test]

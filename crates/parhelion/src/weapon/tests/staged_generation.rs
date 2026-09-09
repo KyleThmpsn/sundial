@@ -104,6 +104,41 @@ fn real_default_weapon_generation_preserves_native_chains() {
             .unwrap(),
         )
     };
+    // Include Every End in profile checks even though the runtime-chain audit below
+    // exercises the other recipes with explicit slot and ammunition overrides.
+    for (_, json) in crate::recipe_library::BUNDLED_RECIPES {
+        let recipe = crate::WeaponRecipe::from_json_str(json).unwrap();
+        let spec = recipe.to_spec().unwrap();
+        let (definition, _) = load(spec.identity.item_hash);
+        assert_eq!(
+            weapon_equipment_label(&definition).unwrap().0 == EXOTIC_WEAPON_EQUIPMENT_LABEL,
+            weapon_rarity(&definition).unwrap() == AuthoredWeaponRarity::Exotic,
+            "{} unique-equip group",
+            recipe.name
+        );
+        if spec.overrides.render_dye_rows.is_none() {
+            let dyes = weapon_render_dye_rows(&definition).unwrap();
+            assert!(
+                dyes[2].is_empty(),
+                "{} shader is blocked by locked dyes",
+                recipe.name
+            );
+            let appearance = spec
+                .render_gear_donor
+                .as_ref()
+                .map(|d| d.item_hash)
+                .or_else(|| spec.presentation_donor.as_ref().map(|d| d.item_hash))
+                .unwrap_or(spec.donor_item_hash);
+            let (source, _) = load(appearance);
+            for locked in weapon_render_dye_rows(&source).unwrap()[2].iter() {
+                assert!(
+                    dyes[1].contains(locked),
+                    "{} lost its base dye",
+                    recipe.name
+                );
+            }
+        }
+    }
     let dependencies = crate::shared_tag_dependency_index::dependencies(
         &read_tag(&manager, RUNTIME_DEPENDENCY_COMPANION, "loading index").unwrap(),
         RUNTIME_DEPENDENCY_COMPANION,
@@ -129,6 +164,27 @@ fn real_default_weapon_generation_preserves_native_chains() {
         let spec = recipe.to_spec().unwrap();
         eprintln!("Checking {} ({:08X})", recipe.name, spec.identity.item_hash);
         let (definition, item_strings) = load(spec.identity.item_hash);
+        assert_eq!(
+            weapon_equipment_label(&definition).unwrap().0 == EXOTIC_WEAPON_EQUIPMENT_LABEL,
+            weapon_rarity(&definition).unwrap() == AuthoredWeaponRarity::Exotic,
+            "{} equipment restriction must match authored rarity",
+            recipe.name
+        );
+        for &(index, value) in &spec.overrides.investment_stats {
+            let resource =
+                relative_target(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
+            let (count, _, rows, _) = array_at(&definition, resource).unwrap();
+            let row = (0..count)
+                .map(|row| rows + row * ITEM_INVESTMENT_STAT_ROW_SIZE)
+                .find(|row| read_u16(&definition, *row).unwrap() == index)
+                .unwrap();
+            assert_eq!(
+                read_u32(&definition, row + 4).unwrap() as i32,
+                value,
+                "{} stat {index}",
+                recipe.name
+            );
+        }
         assert!(
             item_strings[item_string_watermark_overrides(&item_strings).unwrap()]
                 .iter()
@@ -239,6 +295,11 @@ fn real_default_weapon_generation_preserves_native_chains() {
         let (_, _, socket_rows, _) = array_at(&definition, socket_resource).unwrap();
         for (socket, column) in spec.overrides.socket_columns.iter().enumerate() {
             let Some(column) = column else { continue };
+            if column.choices.is_empty() {
+                assert_eq!(column.socket_type, Some(u16::MAX));
+                assert_eq!(defaults[socket], u16::MAX);
+                continue;
+            }
             let plug_hash =
                 read_u32(&items, rows + usize::from(defaults[socket]) * ITEM_ROW_SIZE).unwrap();
             let (plug, plug_strings) = load(plug_hash);

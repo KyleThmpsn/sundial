@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "namespace": "parhelion.breach-notice",
+  "namespace": "parhelion.vaultbreaker",
   "collection_placement": "sunrise_badge",
   "donor": {
     "item_hash": "0xEFA7A89F",
@@ -11,39 +11,67 @@
     "expected_name": "The Fourth Horseman"
   },
   "identity": {
-    "item_hash": "0xBF816DD9",
-    "collectible_hash": "0x163E4ED6",
-    "unlock_hash": "0xAAAC4040",
-    "pattern_global_id_hash": "0x39420DD0",
-    "name_hash": "0x523D4BE5",
-    "type_hash": "0xF8923E04",
-    "flavor_hash": "0x9B752ECC",
-    "source_hash": "0x7D3F629B",
-    "collection_name_hash": "0x91CDAE32",
-    "collection_description_hash": "0xC3A57363",
-    "inventory_hint_hash": "0x57755F40",
-    "collection_requirement_hash": "0x43B18CC4"
+    "item_hash": "0x64AB4DFE",
+    "collectible_hash": "0xF7E62A17",
+    "unlock_hash": "0x3077EA7B",
+    "pattern_global_id_hash": "0x4993F64B",
+    "name_hash": "0x8716B19E",
+    "type_hash": "0xFB9265F3",
+    "flavor_hash": "0xE180BDA7",
+    "source_hash": "0xD516F914",
+    "collection_name_hash": "0x78BC2C8F",
+    "collection_description_hash": "0xC6513BC0",
+    "inventory_hint_hash": "0x603D313F",
+    "collection_requirement_hash": "0xB2298D6B"
   },
-  "name": "Breach Notice",
-  "flavor": "One round left. Make it count.",
+  "name": "Vaultbreaker",
+  "flavor": "\"We used to come here every week. A lock doesn’t change that.\"",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
+    "icon_edit": {
+      "hue_shift_degrees": -40,
+      "saturation": 70
+    },
     "investment_stats": [
       {
-        "definition_index": 24,
-        "value": 40
+        "definition_index": 14,
+        "value": 100
+      },
+      {
+        "definition_index": 15,
+        "value": 84
+      },
+      {
+        "definition_index": 16,
+        "value": 74
       },
       {
         "definition_index": 22,
-        "value": 65
+        "value": 74
       },
       {
-        "definition_index": 27,
-        "value": 35
+        "definition_index": 24,
+        "value": 89
+      },
+      {
+        "definition_index": 25,
+        "value": 77
       },
       {
         "definition_index": 26,
-        "value": 45
+        "value": 74
+      },
+      {
+        "definition_index": 27,
+        "value": 74
+      },
+      {
+        "definition_index": 30,
+        "value": 77
+      },
+      {
+        "definition_index": 32,
+        "value": 15
       }
     ],
     "inventory_slot": "energy",
@@ -51,12 +79,18 @@
     "modern_damage_type": "arc",
     "power_cap_group": 11,
     "rarity": "legendary",
+    "stat_group_index": null,
     "socket_columns": [
       {
         "choices": [
           "0xDD5CB37A"
         ],
-        "socket_type": 176
+        "socket_type": 176,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
@@ -66,7 +100,12 @@
           "0xAB0A2647",
           "0x61414688"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -74,13 +113,25 @@
           "0xD2013CA1",
           "0xF351D2CC"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x8EC817EA"
+          "0x9DA139BF",
+          "0x819221EB",
+          "0x51487F22"
         ],
-        "socket_type": 180
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
@@ -93,9 +144,11 @@
         "choice_index": 0,
         "source_plug_hash": "0xDD5CB37A",
         "name": "Micro-Missile Frame",
-        "description": "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.",
-        "additional_sandbox_perks": [405],
         "classification_donor_hash": "0x6185084A",
+        "description": "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.",
+        "additional_sandbox_perks": [
+          405
+        ],
         "sandbox_perks": [
           {
             "source_perk_index": 1178,
@@ -519,6 +572,7 @@
           }
         ]
       }
-    ]
+    ],
+    "raw_payload_patches": []
   }
 }

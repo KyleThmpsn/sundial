@@ -110,6 +110,25 @@ impl FileLog {
 }
 
 fn append_at(path: &Path, entry: &Entry, limit: usize) -> io::Result<()> {
+    let record = bounded_record(entry, MAX_ENTRY_BYTES.min(limit));
+    append_text_at(path, &record, limit)
+}
+
+/// Shared bounded append and rotation for activity and diagnostic records.
+pub(crate) fn append_text_at(path: &Path, text: &str, limit: usize) -> io::Result<()> {
+    if limit < 32 {
+        return Err(io::Error::other("Log size limit is too small"));
+    }
+    let record = if text.len() > limit {
+        let suffix = "\n[truncated]\n";
+        let mut end = limit - suffix.len();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{suffix}", &text[..end])
+    } else {
+        text.to_owned()
+    };
     fs::create_dir_all(
         path.parent()
             .ok_or_else(|| io::Error::other("Missing log directory"))?,
@@ -121,7 +140,6 @@ fn append_at(path: &Path, entry: &Entry, limit: usize) -> io::Result<()> {
         .write(true)
         .open(path.with_extension("log.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)?;
-    let record = bounded_record(entry, MAX_ENTRY_BYTES.min(limit));
     let size = match fs::metadata(path) {
         Ok(metadata) => metadata.len(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => 0,

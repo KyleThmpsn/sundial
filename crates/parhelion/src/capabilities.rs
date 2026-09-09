@@ -202,6 +202,7 @@ pub(crate) fn appearance_compatibility(
         return AppearanceCompatibility::Blocked("Different weapon family");
     }
     if candidate.inventory_slot != Some(target)
+        && candidate.inventory_slot != base.inventory_slot
         && !matches!(
             (candidate.inventory_slot, target),
             (
@@ -215,7 +216,7 @@ pub(crate) fn appearance_compatibility(
     {
         return AppearanceCompatibility::Blocked("Different inventory slot");
     }
-    // Kinetic/Energy placement is an independent bucket field. Cross-slot
+    // Authored placement is an independent bucket field. Cross-slot
     // appearance still requires a known, identical native animation group.
     match animation_compatibility(
         base.weapon_translation_group,
@@ -734,6 +735,12 @@ fn validate_socket_column(
         }
         return;
     };
+    if socket.is_some_and(|socket| socket.socket_type != u16::MAX)
+        && socket_type_override == Some(u16::MAX)
+        && choices.is_empty()
+    {
+        return;
+    }
     let maximum = socket_type_override.map_or_else(
         || socket.map_or(0, |socket| socket.max_authored_choices),
         authored_socket_choice_limit,

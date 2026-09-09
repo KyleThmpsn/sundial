@@ -137,6 +137,24 @@ pub(in crate::catalog) fn scan_activity_condition_contexts(
         .collect::<Result<HashMap<_, _>, String>>()?;
 
     for activity in &activities {
+        attach_flag_writes(
+            &definitions,
+            activity.definition_start + 120,
+            flag_definitions,
+            &activity_progression_context(activity, ProgressionContextKind::Activity),
+        )?;
+        attach_conditional_flag_writes(
+            &definitions,
+            activity.definition_start + 136,
+            flag_definitions,
+            &activity_progression_context(activity, ProgressionContextKind::Activity),
+        )?;
+        attach_direct_reference(
+            flag_definitions,
+            u16_at(&definitions, activity.definition_start + 216)?,
+            "Activity flag",
+            &activity_progression_context(activity, ProgressionContextKind::Activity),
+        )?;
         let Some(references) = references_by_start.get(&activity.definition_start) else {
             continue;
         };
@@ -185,6 +203,7 @@ fn activity_progression_context(
     kind: ProgressionContextKind,
 ) -> ProgressionContextDef {
     ProgressionContextDef {
+        direct_references: Vec::new(),
         hash: activity.hash,
         kind,
         name: activity.name.clone(),

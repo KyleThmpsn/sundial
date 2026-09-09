@@ -22,11 +22,17 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
             ..row + PROGRESSION_DEFINITION_HASH_OFFSET + 4]
             .copy_from_slice(&hash.to_le_bytes());
         table[row + PROGRESSION_DEFINITION_SCOPE_OFFSET] = scope;
+        table[row + 8..row + 10].copy_from_slice(&u16::MAX.to_le_bytes());
         table[row + PROGRESSION_DEFINITION_SCOPE_SLOT_OFFSET
             ..row + PROGRESSION_DEFINITION_SCOPE_SLOT_OFFSET + 2]
             .copy_from_slice(&scope_slots[index].to_le_bytes());
     }
     let first_row = ROWS;
+    table[first_row + 8..first_row + 10].copy_from_slice(&32_u16.to_le_bytes());
+    table[STEP_ROWS + 4..STEP_ROWS + 6].copy_from_slice(&33_u16.to_le_bytes());
+    table[STEP_ROWS + PROGRESSION_STEP_ROW_SIZE + 4..STEP_ROWS + PROGRESSION_STEP_ROW_SIZE + 6]
+        .copy_from_slice(&u16::MAX.to_le_bytes());
+    table[REWARD_ROWS + 20..REWARD_ROWS + 22].copy_from_slice(&34_u16.to_le_bytes());
     table[first_row + PROGRESSION_DEFINITION_REPEAT_LAST_STEP_OFFSET] = 1;
     let step_descriptor = first_row + PROGRESSION_DEFINITION_STEPS_OFFSET;
     table[step_descriptor..step_descriptor + 8].copy_from_slice(&2_u64.to_le_bytes());
@@ -64,6 +70,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Account,
                 scope_slot: Some(7),
                 repeat_last_step: true,
+                level_value: Some(32),
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -72,17 +79,20 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 factions: Vec::new(),
                 steps: vec![
                     ProgressionStepDefinition {
-                        progress_total: 50,
+                        unlock_flag: Some(33),
+                        cost: 50,
                         name: String::new(),
                         icon_container: None,
                     },
                     ProgressionStepDefinition {
-                        progress_total: 100,
+                        unlock_flag: None,
+                        cost: 100,
                         name: String::new(),
                         icon_container: None,
                     },
                 ],
                 reward_items: vec![ProgressionRewardDefinition {
+                    claim_flag: Some(34),
                     rewarded_at_progression_level: 5,
                     item_hash: 0xBBBB_BBBB,
                     quantity: 3,
@@ -94,6 +104,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Character,
                 scope_slot: Some(9),
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -109,6 +120,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Account,
                 scope_slot: Some(3),
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -124,6 +136,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Unreplicated,
                 scope_slot: None,
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -139,6 +152,7 @@ fn progression_definitions_preserve_native_order_scope_and_object_slot() {
                 scope: ProgressionScope::Unreplicated,
                 scope_slot: None,
                 repeat_last_step: false,
+                level_value: None,
                 name: String::new(),
                 description: String::new(),
                 source: String::new(),
@@ -243,6 +257,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -251,6 +266,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -259,6 +275,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: Some(58),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
         UnlockDefinition {
@@ -267,6 +284,7 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
             compact_slot: None,
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         },
     ];
@@ -362,6 +380,21 @@ fn condition_references_retain_the_complete_package_program() {
             .collect::<Vec<_>>(),
         vec![(1, 3), (12, 77), (10, 9)]
     );
+}
+
+#[test]
+fn condition_references_preserve_32_bit_constants_without_truncation() {
+    let mut rows = vec![0_u8; 16];
+    rows[0] = 11;
+    rows[4..8].copy_from_slice(&0xFEDC_BA98_u32.to_le_bytes());
+    rows[8] = 1;
+    rows[12..16].copy_from_slice(&0xABCD_1234_u32.to_le_bytes());
+    let references = condition_references_from_rows(&rows, 0, 2).unwrap();
+    assert_eq!(
+        references.programs,
+        vec![vec![[11, 0xFEDC_BA98], [1, 0x1234]]]
+    );
+    assert_eq!(references.flags, vec![0x1234]);
 }
 
 #[test]

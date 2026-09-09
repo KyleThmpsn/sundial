@@ -1,7 +1,6 @@
 use std::{
     fmt::Write as _,
-    fs::{self, OpenOptions},
-    io::Write as _,
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -9,11 +8,12 @@ use std::{
 use crate::{
     package_authoring::{parhelion_data_directory, parhelion_recipe_library_directory},
     package_runtime::sunrise_module_path,
-    paths, storage,
+    paths,
 };
 
 use super::persistence_compatibility::{PersistenceCompatibility, WARNING_MESSAGE};
 
+const MAX_LOG_BYTES: usize = 5 * 1024 * 1024;
 const MAX_RUNTIME_FILES: usize = 10_000;
 const LOG_DIRECTORY_NAME: &str = "logs";
 const LOG_FILE_NAME: &str = "sundial-troubleshooting.log";
@@ -25,6 +25,12 @@ pub(super) struct CatalogSummary<'a> {
     pub plugs: usize,
     pub icons: usize,
     pub descriptions: usize,
+    pub unlock_flags: usize,
+    pub unlock_values: usize,
+    pub progressions: usize,
+    pub objectives: usize,
+    pub expressions: usize,
+    pub progression_error: Option<&'a str>,
 }
 
 pub(super) struct ReportContext<'a> {
@@ -39,6 +45,7 @@ pub(super) struct ReportContext<'a> {
     #[cfg(feature = "sqlite-account")]
     pub account_database_path: &'a Path,
     pub catalog: CatalogSummary<'a>,
+    pub recent_activity: &'a str,
     pub current_status: &'a str,
     pub source_warning: Option<&'a str>,
     pub has_unsaved_changes: bool,
@@ -69,7 +76,7 @@ pub(super) fn log_path() -> Option<PathBuf> {
 pub(super) fn build_report(context: &ReportContext<'_>) -> String {
     let mut report = String::new();
     writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 1").expect("writing to a String cannot fail");
+    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
     writeln!(
         report,
         "generated_unix_seconds = {}",
@@ -87,9 +94,14 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
     let runtime_scans = append_sunrise_runtime_files(&mut report, context.install_path);
     append_bin_files(&mut report, context.settings_path, &runtime_scans);
     append_package_summary(&mut report, context.install_path);
+    report.push_str(
+        "Recent Sundial Activity (Newest First)\n-------------------------------------\n",
+    );
+    report.push_str(context.recent_activity);
+    report.push_str("\n\n");
 
     report.push_str(
-        "Privacy\n-------\nFile contents, account records, inventory, character data, and environment variables are not included. Full local paths and Sundial status messages are included.\n",
+        "Privacy\n-------\nSettings and account files are not copied into this report. Full local paths, file metadata, errors, and Sundial status messages are included. Messages can contain item names or other contextual details. Review before sharing. Parhelion activity is in its separate log.\n",
     );
     report
 }
@@ -97,7 +109,7 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
 pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &str) -> String {
     let mut report = String::new();
     writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 1").expect("writing to a String cannot fail");
+    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
     writeln!(
         report,
         "generated_unix_seconds = {}",
@@ -134,7 +146,7 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
         report.push_str("selected_install = unavailable\n\n");
     }
     report.push_str(
-        "Privacy\n-------\nFile contents, account records, inventory, character data, and environment variables are not included. Full local paths and Sundial status messages are included.\n",
+        "Privacy\n-------\nSettings and account files are not copied into this report. Full local paths, file metadata, errors, and Sundial status messages are included. Messages can contain item names or other contextual details. Review before sharing. Parhelion activity is in its separate log.\n",
     );
     report
 }
@@ -146,14 +158,10 @@ pub(super) fn initialize_log(report: &str) -> Result<PathBuf, String> {
 }
 
 fn initialize_log_at(path: &Path, report: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or("Sundial's troubleshooting log path has no parent folder")?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
-    storage::replace_file(path, report.as_bytes())
-        .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
-    Ok(())
+    append_log_text_at(
+        path,
+        &format!("\n===== Session Environment Snapshot =====\n{report}"),
+    )
 }
 
 pub(super) fn append_snapshot(report: &str) -> Result<PathBuf, String> {
@@ -177,20 +185,8 @@ fn append_log_text(text: &str) -> Result<PathBuf, String> {
 }
 
 fn append_log_text_at(path: &Path, text: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or("Sundial's troubleshooting log path has no parent folder")?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.flush())
-        .map_err(|error| format!("Could not update {}: {error}", path.display()))?;
-    Ok(())
+    crate::activity_log::append_text_at(path, text, MAX_LOG_BYTES)
+        .map_err(|error| format!("Could not update {}: {error}", path.display()))
 }
 
 fn append_build_information(report: &mut String) {
@@ -333,7 +329,9 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
     writeln!(
         report,
         "source_warning = {}",
-        context.source_warning.map_or("none", single_line)
+        context
+            .source_warning
+            .map_or_else(|| "none".to_owned(), single_line)
     )
     .expect("writing to a String cannot fail");
     writeln!(
@@ -353,6 +351,25 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
         context.catalog.plugs,
         context.catalog.icons,
         context.catalog.descriptions
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(
+        report,
+        "progression_counts = flags:{} values:{} progressions:{} objectives:{} expressions:{}",
+        context.catalog.unlock_flags,
+        context.catalog.unlock_values,
+        context.catalog.progressions,
+        context.catalog.objectives,
+        context.catalog.expressions
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(
+        report,
+        "progression_package_error = {}",
+        context
+            .catalog
+            .progression_error
+            .map_or_else(|| "none".to_owned(), single_line)
     )
     .expect("writing to a String cannot fail");
     writeln!(report).expect("writing to a String cannot fail");
@@ -749,8 +766,8 @@ fn unix_seconds(time: SystemTime) -> Option<u64> {
         .map(|value| value.as_secs())
 }
 
-fn single_line(value: &str) -> &str {
-    value.split(['\r', '\n']).next().unwrap_or_default()
+fn single_line(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
 }
 
 #[cfg(test)]
@@ -807,7 +824,14 @@ mod tests {
                 plugs: 2,
                 icons: 3,
                 descriptions: 4,
+                unlock_flags: 5,
+                unlock_values: 6,
+                progressions: 7,
+                objectives: 8,
+                expressions: 9,
+                progression_error: Some("Missing table\nread failed"),
             },
+            recent_activity: "[Error] Earlier failure",
             current_status: "Ready",
             source_warning: None,
             has_unsaved_changes: false,
@@ -815,15 +839,12 @@ mod tests {
         });
 
         assert!(report.contains("runtime.toml"));
-        if let Some(data_directory) = crate::package_authoring::parhelion_data_directory() {
-            assert!(report.contains(&format!(
-                "parhelion_package_backups_directory = {}",
-                data_directory.join("backups").join("packages").display()
-            )));
-        }
-        assert!(
-            report.contains("cache\\build_data.bin") || report.contains("cache/build_data.bin")
-        );
+        assert!(report.contains(
+            "progression_counts = flags:5 values:6 progressions:7 objectives:8 expressions:9"
+        ));
+        assert!(report.contains("progression_package_error = Missing table read failed"));
+        assert!(report.contains("[Error] Earlier failure"));
+        assert_report_paths(&report);
         assert_account_feature_details(&report);
         assert!(report.contains("state_db_exists = false"));
         assert!(report.contains("alternate_runtime_persistence_detected = true"));
@@ -834,6 +855,18 @@ mod tests {
         assert!(!report.contains("not-in-report"));
         assert!(!report.contains("private account bytes"));
         assert!(!report.contains("private cache bytes"));
+    }
+
+    fn assert_report_paths(report: &str) {
+        assert!(
+            report.contains("cache\\build_data.bin") || report.contains("cache/build_data.bin")
+        );
+        if let Some(data_directory) = crate::package_authoring::parhelion_data_directory() {
+            assert!(report.contains(&format!(
+                "parhelion_package_backups_directory = {}",
+                data_directory.join("backups").join("packages").display()
+            )));
+        }
     }
 
     fn assert_account_feature_details(report: &str) {
@@ -888,18 +921,21 @@ mod tests {
     }
 
     #[test]
-    fn log_initialization_replaces_an_old_session_and_events_append() {
+    fn log_initialization_preserves_old_sessions_and_events_append() {
         let directory = TestDirectory::new("troubleshooting-log-write");
         let log = directory.0.join("nested").join("troubleshooting.log");
 
         initialize_log_at(&log, "first session").unwrap();
         append_log_text_at(&log, "\nstatus event").unwrap();
-        assert_eq!(
-            fs::read_to_string(&log).unwrap(),
-            "first session\nstatus event"
+        assert!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .ends_with("first session\nstatus event")
         );
 
         initialize_log_at(&log, "second session").unwrap();
-        assert_eq!(fs::read_to_string(log).unwrap(), "second session");
+        let text = fs::read_to_string(log).unwrap();
+        assert!(text.contains("first session\nstatus event"));
+        assert!(text.ends_with("second session"));
     }
 }

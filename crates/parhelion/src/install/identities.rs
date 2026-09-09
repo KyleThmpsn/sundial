@@ -28,6 +28,7 @@ fn with_generation<T>(
     authored_directory: &Path,
     read: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
+    super::validation::decoder::ensure_initialized(target)?;
     if !paths_equal(target, authored_directory) {
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its

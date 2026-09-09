@@ -8,7 +8,10 @@ use super::{
         scan_inventory_bucket_descriptors, scan_items, scan_power_cap_definitions,
         scan_sandbox_perk_catalog, scan_stat_definitions, scan_stat_groups,
     },
-    progression::{scan_progression_definitions, sort_progression_contexts},
+    progression::{
+        attach_progression_references, expand_shared_condition_contexts,
+        scan_package_condition_contexts, scan_progression_definitions, sort_progression_contexts,
+    },
 };
 use crate::{
     investment_localization::LocalizedStringCache, investment_schema::investment_globals_table_tag,
@@ -94,6 +97,15 @@ pub(super) fn scan_packages(
         ),
         &mut progression.errors,
     );
+    if let Err(error) = attach_progression_references(
+        &progression_definitions,
+        &mut progression.unlock_flag_definitions,
+        &mut progression.unlock_value_definitions,
+    ) {
+        progression
+            .errors
+            .push(format!("Progression unlock references: {error}"));
+    }
     let mut item_scan = scan_items(
         ItemScanContext {
             manager,
@@ -122,6 +134,22 @@ pub(super) fn scan_packages(
         report,
     )?;
     enrich_item_metadata(&sources, &mut item_scan, &power_cap_definitions);
+    if let Err(error) = scan_package_condition_contexts(
+        &sources.manager,
+        &sources.root,
+        &progression.shared_expression_pool,
+        &mut progression.unlock_flag_definitions,
+        &mut progression.unlock_value_definitions,
+    ) {
+        progression
+            .errors
+            .push(format!("Package condition references: {error}"));
+    }
+    expand_shared_condition_contexts(
+        &progression.shared_expression_pool,
+        &mut progression.unlock_flag_definitions,
+        &mut progression.unlock_value_definitions,
+    );
     sort_progression_contexts(&mut progression.unlock_flag_definitions);
     sort_progression_contexts(&mut progression.unlock_value_definitions);
     let progression::ResolvedCollections {

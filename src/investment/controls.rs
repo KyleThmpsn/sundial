@@ -57,10 +57,12 @@ pub fn draw_catalog_loading_view(
                         ui.add(bar);
                         if let Some(path) = view.source_path {
                             ui.add_space(10.0);
-                            ui.label(
-                                egui::RichText::new(path.display().to_string())
-                                    .weak()
-                                    .small(),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(path.display().to_string())
+                                        .text_style(egui::TextStyle::Body),
+                                )
+                                .wrap(),
                             );
                         }
                     });

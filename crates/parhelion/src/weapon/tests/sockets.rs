@@ -180,3 +180,79 @@ fn socket_columns_replace_inherited_randomized_selection_programs() {
 
     assert!(read_numeric_program(&data, descriptor).unwrap().is_empty());
 }
+
+#[test]
+fn removing_socket_clears_native_choices_and_preserves_neighbor_rows() {
+    let mut data = synthetic_socket_definition();
+    let resource = relative_target(&data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET).unwrap();
+    let (_, _, rows, _) = array_at(&data, resource).unwrap();
+    let before = data.clone();
+    let columns = vec![
+        None,
+        Some(ResolvedSocketColumn {
+            socket_type: Some(u16::MAX),
+            ..Default::default()
+        }),
+        None,
+    ];
+    set_weapon_socket_columns(&mut data, &columns).unwrap();
+    validate_weapon_socket_columns(&data, &columns, &[176, u16::MAX, u16::MAX]).unwrap();
+    let (_, _, after_rows, _) = array_at(&data, resource).unwrap();
+    assert_eq!(rows, after_rows);
+    for lane in [0, 2] {
+        let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
+        assert_eq!(
+            &data[row..row + ITEM_ORDINARY_SOCKET_ROW_SIZE],
+            &before[row..row + ITEM_ORDINARY_SOCKET_ROW_SIZE]
+        );
+    }
+    let removed = rows + ITEM_ORDINARY_SOCKET_ROW_SIZE;
+    assert_eq!(
+        read_u16(&data, removed + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET).unwrap(),
+        u16::MAX
+    );
+    assert_eq!(
+        read_u16(
+            &data,
+            removed + ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET
+        )
+        .unwrap(),
+        u16::MAX
+    );
+    assert_eq!(
+        read_u16(
+            &data,
+            removed + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET
+        )
+        .unwrap(),
+        u16::MAX
+    );
+    assert_eq!(
+        array_at(&data, removed + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET)
+            .unwrap()
+            .0,
+        0
+    );
+    assert!(
+        read_numeric_program(
+            &data,
+            removed + ITEM_ORDINARY_SOCKET_RANDOMIZED_SELECTION_PROGRAM_OFFSET
+        )
+        .unwrap()
+        .is_empty()
+    );
+}
+
+#[test]
+fn removed_socket_rejects_leftover_choices_and_selection_metadata() {
+    let mut column = WeaponSocketColumnOverride {
+        socket_type: Some(u16::MAX),
+        ..Default::default()
+    };
+    validate_socket_column_shapes(&[Some(column.clone())]).unwrap();
+    column.reusable_plug_set_index = Some(3);
+    assert!(validate_socket_column_shapes(&[Some(column.clone())]).is_err());
+    column.reusable_plug_set_index = None;
+    column.choices.push(20);
+    assert!(validate_socket_column_shapes(&[Some(column)]).is_err());
+}

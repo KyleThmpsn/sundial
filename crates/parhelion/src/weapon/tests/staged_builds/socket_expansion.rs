@@ -230,3 +230,60 @@ fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() 
     assert_eq!(staged.read_tag(stock_tag).unwrap(), stock_definition);
     assert_eq!(staged.read_tag(plug_tag).unwrap(), source_plug);
 }
+
+#[test]
+#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES pointing to Shadowkeep packages"]
+fn real_removed_socket_stages_and_rescans_without_shifting_neighbors() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    let view = crate::workflow::FilteredPackageView::create(&packages, &ignored).unwrap();
+    let install = view.path().parent().unwrap();
+    fs::write(install.join("destiny2.exe"), []).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let cache = temporary.path().join("catalog.json");
+    let baseline = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
+    let donor = baseline.weapon_donor(BREACHLIGHT).unwrap();
+    let source = open_manager(view.path()).unwrap();
+    let source_items = item_table(&source);
+    let (stock_tag, stock_definition) = item_definition(&source, &source_items, BREACHLIGHT);
+    let mut expected_defaults = default_hashes(&source_items, &stock_definition);
+    drop(source);
+    let mut recipe = crate::WeaponRecipe::new_weapon_for_donor(
+        "parhelion.removed-socket.integration",
+        BREACHLIGHT,
+        "Breachlight",
+    )
+    .unwrap();
+    recipe.overrides.socket_columns = vec![None; donor.sockets.len()];
+    recipe.overrides.socket_columns[3] = Some(WeaponSocketColumnRecipe {
+        socket_type: Some(u16::MAX),
+        ..Default::default()
+    });
+    let snapshot = crate::BatchBuildSnapshot::new(crate::BatchBuildRequest {
+        package_directory: view.path().to_path_buf(),
+        staging_root: temporary.path().join("staging"),
+        ignore_installed_authored_overlays: false,
+        recipes: vec![recipe.clone()],
+    })
+    .unwrap();
+    let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
+    for artifact in &build.artifacts {
+        view.add_overlay(&build.run_directory.join(&artifact.file_name))
+            .unwrap();
+    }
+    let staged = open_manager(view.path()).unwrap();
+    let items = item_table(&staged);
+    let hash = recipe.identity.item_hash.parse_u32().unwrap();
+    let (_, definition) = item_definition(&staged, &items, hash);
+    expected_defaults[3] = None;
+    assert_eq!(default_hashes(&items, &definition), expected_defaults);
+    assert_eq!(staged.read_tag(stock_tag).unwrap(), stock_definition);
+    let catalog = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
+    let authored = catalog.weapon_donor(hash).unwrap();
+    assert_eq!(authored.sockets.len(), donor.sockets.len());
+    assert_eq!(authored.sockets[3].socket_type, u16::MAX);
+    assert!(authored.sockets[3].ordered_embedded_choices.is_empty());
+}

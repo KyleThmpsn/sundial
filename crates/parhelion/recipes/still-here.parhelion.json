@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.still-here",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x23F4BF01",
+    "expected_name": "Hammerhead"
+  },
+  "identity": {
+    "item_hash": "0x49B65D25",
+    "collectible_hash": "0xF183D26A",
+    "unlock_hash": "0xC6A7A7A4",
+    "pattern_global_id_hash": "0xAA93D6DC",
+    "name_hash": "0x42F72D21",
+    "type_hash": "0x53FDD3A8",
+    "flavor_hash": "0xA65BCA6C",
+    "source_hash": "0x49A903B7",
+    "collection_name_hash": "0x7D8458D6",
+    "collection_description_hash": "0x97C79D0F",
+    "inventory_hint_hash": "0xC4E4EDB0",
+    "collection_requirement_hash": "0x78552144"
+  },
+  "name": "Still Here",
+  "flavor": "\"We weren’t finished.\"",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "icon_edit": {
+      "color_replacements": [
+        {
+          "source": [
+            95,
+            92,
+            91
+          ],
+          "replacement": [
+            209,
+            202,
+            125
+          ],
+          "range_percent": 48
+        }
+      ],
+      "hue_shift_degrees": -130,
+      "saturation": 40,
+      "red_balance": 11,
+      "green_balance": 4,
+      "blue_balance": -16
+    },
+    "investment_stats": [
+      {
+        "definition_index": 14,
+        "value": 60
+      },
+      {
+        "definition_index": 15,
+        "value": 40
+      },
+      {
+        "definition_index": 16,
+        "value": 45
+      },
+      {
+        "definition_index": 22,
+        "value": 65
+      },
+      {
+        "definition_index": 24,
+        "value": 35
+      },
+      {
+        "definition_index": 25,
+        "value": 20
+      },
+      {
+        "definition_index": 26,
+        "value": 45
+      },
+      {
+        "definition_index": 27,
+        "value": 40
+      },
+      {
+        "definition_index": 30,
+        "value": 65
+      },
+      {
+        "definition_index": 31,
+        "value": 85
+      }
+    ],
+    "inventory_slot": "energy",
+    "ammo_type": "special",
+    "modern_damage_type": "solar",
+    "power_cap_group": 11,
+    "rarity": "legendary",
+    "stat_group_index": null,
+    "socket_columns": [
+      null,
+      {
+        "choices": [
+          "0xC1B79779",
+          "0x3203BACE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x43F47FCB",
+          "0x7554E3EE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xB517FC25",
+          "0xA9CA6B03",
+          "0xDD070E81"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x6E75405C",
+          "0xD2013CA1",
+          "0x5C2FD04F"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8EC817EA"
+        ],
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "raw_payload_patches": []
+  }
+}

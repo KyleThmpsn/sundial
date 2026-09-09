@@ -9,7 +9,7 @@ pub(in crate::app) fn draw_catalog_hash_window(
     ctx: &egui::Context,
     catalog: &Catalog,
     document: Option<&mut Value>,
-    progression_state_enabled: bool,
+    progression_editable: bool,
     hash_inspection: &mut HashInspectionState,
     viewport_salt: &'static str,
 ) -> bool {
@@ -62,16 +62,12 @@ pub(in crate::app) fn draw_catalog_hash_window(
     let viewport_id = egui::ViewportId::from_hash_of(("catalog_hash_inspector", viewport_salt));
     let (action, close_requested) = {
         let document_ref = document.as_deref();
-        let collection_state = if progression_state_enabled {
-            document_ref.and_then(collection_state_snapshot)
-        } else {
-            None
-        };
+        let collection_state = document_ref.and_then(collection_state_snapshot);
         let content = HashInspectorContent {
             catalog,
             document: document_ref,
             collection_state: collection_state.as_ref(),
-            progression_editable: progression_state_enabled && document_ref.is_some(),
+            progression_editable: progression_editable && document_ref.is_some(),
             mutation_feedback: hash_inspection.mutation_feedback.as_ref(),
             hash,
             resolved_name: &resolved_name,
@@ -138,21 +134,22 @@ pub(in crate::app) fn draw_catalog_hash_window(
     hash_inspection.lookup = lookup;
     hash_inspection.lookup_error = lookup_error;
 
-    let changed = action.progression_edit.is_some_and(|edit| {
-        match document
-            .ok_or_else(|| "No editable Sunrise state is loaded".to_owned())
-            .and_then(|document| apply_inspector_progression_edit(document, catalog, edit))
-        {
-            Ok(message) => {
-                hash_inspection.mutation_feedback = Some((false, message));
-                true
+    let changed = progression_editable
+        && action.progression_edit.is_some_and(|edit| {
+            match document
+                .ok_or_else(|| "No editable Sunrise state is loaded".to_owned())
+                .and_then(|document| apply_inspector_progression_edit(document, catalog, edit))
+            {
+                Ok(message) => {
+                    hash_inspection.mutation_feedback = Some((false, message));
+                    true
+                }
+                Err(error) => {
+                    hash_inspection.mutation_feedback = Some((true, error));
+                    false
+                }
             }
-            Err(error) => {
-                hash_inspection.mutation_feedback = Some((true, error));
-                false
-            }
-        }
-    });
+        });
 
     if close_requested {
         hash_inspection.close();

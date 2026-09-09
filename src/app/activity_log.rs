@@ -32,7 +32,7 @@ impl ActivityLog {
         self.entries.push_back(entry);
     }
 
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         self.entries
             .iter()
             .rev()

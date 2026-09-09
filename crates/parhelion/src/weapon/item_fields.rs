@@ -435,6 +435,23 @@ pub(super) fn transplant_weapon_render_gear(
     Ok(())
 }
 
+pub(super) fn unlock_weapon_shader_dyes(data: &mut Vec<u8>) -> AuthoringResult<()> {
+    let mut arrays = weapon_render_dye_rows(data)?;
+    if arrays[2].is_empty() {
+        return Ok(());
+    }
+    // Keep the original appearance when no shader is selected, but let custom
+    // shader dyes win. Locked channels previously took precedence over defaults.
+    let locked = std::mem::take(&mut arrays[2]);
+    let channels = locked
+        .iter()
+        .map(|row| row.channel_index)
+        .collect::<BTreeSet<_>>();
+    arrays[1].retain(|row| !channels.contains(&row.channel_index));
+    arrays[1].extend(locked);
+    set_weapon_render_dye_rows(data, &arrays)
+}
+
 pub(super) fn replace_translation_array(
     data: &mut Vec<u8>,
     descriptor: usize,
@@ -755,6 +772,43 @@ pub(super) fn set_weapon_rarity(
             "Weapon rarity authoring changed bytes outside the audited one-byte field",
         ));
     }
+    Ok(())
+}
+
+// Shadowkeep equipment blocks carry the FNV-1 label separately from the display tier.
+// `exotic_weapon` gates equipping across all three weapon slots. Its companion hash
+// selects the restriction text. Ordinary weapons use the empty-string hash and zero.
+const EQUIPMENT_UNIQUE_LABEL_OFFSET: usize = 0x10;
+const EMPTY_EQUIPMENT_LABEL: u32 = 0x811C_9DC5;
+pub(super) const EXOTIC_WEAPON_EQUIPMENT_LABEL: u32 = 0xDAD1_1536;
+const EXOTIC_WEAPON_EQUIPMENT_TEXT: u32 = 0xEF7B_6AD3;
+
+pub(super) fn weapon_equipment_label(data: &[u8]) -> AuthoringResult<(u32, u32)> {
+    weapon_equipment_slot(data)?;
+    let block = relative_target(data, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET)?;
+    Ok((
+        read_u32(data, block + EQUIPMENT_UNIQUE_LABEL_OFFSET)?,
+        read_u32(data, block + EQUIPMENT_UNIQUE_LABEL_OFFSET + 4)?,
+    ))
+}
+
+pub(super) fn sync_weapon_equipment_rarity(data: &mut [u8]) -> AuthoringResult<()> {
+    let rarity = weapon_rarity(data)?;
+    let original = weapon_equipment_label(data)?;
+    let expected = if rarity == AuthoredWeaponRarity::Exotic {
+        (EXOTIC_WEAPON_EQUIPMENT_LABEL, EXOTIC_WEAPON_EQUIPMENT_TEXT)
+    } else if matches!(
+        original.0,
+        EXOTIC_WEAPON_EQUIPMENT_LABEL | EMPTY_EQUIPMENT_LABEL
+    ) {
+        (EMPTY_EQUIPMENT_LABEL, 0)
+    } else {
+        // Preserve unrelated unique-equip groups rather than removing all restrictions.
+        original
+    };
+    let block = relative_target(data, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET)?;
+    write_u32(data, block + EQUIPMENT_UNIQUE_LABEL_OFFSET, expected.0)?;
+    write_u32(data, block + EQUIPMENT_UNIQUE_LABEL_OFFSET + 4, expected.1)?;
     Ok(())
 }
 

@@ -299,6 +299,11 @@ pub(in crate::app) const fn progression_context_kind_label(
         ProgressionContextKind::Location => "Location",
         ProgressionContextKind::LocationRelease => "Location release",
         ProgressionContextKind::ExpressionMapping => "Expression mapping",
+        ProgressionContextKind::Progression => "Progression",
+        ProgressionContextKind::Achievement => "Achievement",
+        ProgressionContextKind::Requirement => "Requirement",
+        ProgressionContextKind::ValueCounter => "Value Counter",
+        ProgressionContextKind::PackageExpression => "Package Expression",
     }
 }
 

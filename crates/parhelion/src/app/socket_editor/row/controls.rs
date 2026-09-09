@@ -10,6 +10,18 @@ pub(super) fn draw_disabled(
     context: &mut SocketRowContext<'_>,
     choices: &RowChoices,
 ) -> Option<RowCommand> {
+    if !context.is_added
+        && choices.socket_type_override == Some(u16::MAX)
+        && context.donor.sockets[context.socket_index].socket_type != u16::MAX
+        && choices.current_len == 0
+    {
+        let mut restore = false;
+        ui.horizontal(|ui| {
+            ui.weak(format!("Socket {} Removed", context.socket_index + 1));
+            restore = ui.button("Restore Socket").clicked();
+        });
+        return restore.then_some(RowCommand::Reset);
+    }
     let catalog = context.catalog;
     let donor = context.donor;
     let socket_index = context.socket_index;
@@ -321,22 +333,30 @@ fn draw_options(
         }
         ui.separator();
         if is_added {
-            if ui.add_enabled(can_remove_added, egui::Button::new("Remove Added Socket"))
+            if ui.add_enabled(can_remove_added, egui::Button::new("Remove Socket"))
                 .on_hover_text(if can_remove_added { "Remove this socket and its custom perk assignments" } else { "Remove later added sockets first to preserve socket order" })
                 .clicked() {
-                command = Some(RowCommand::RemoveAdded);
+                command = Some(RowCommand::Remove);
                 ui.close_menu();
             }
-        } else if ui.add_enabled(is_overridden, egui::Button::new("Reset Choices & Role"))
+        } else {
+            if ui.button("Remove Socket")
+                .on_hover_text("Remove this socket's choices and custom perk assignments. Other sockets keep their positions.")
+                .clicked() {
+                command = Some(RowCommand::Remove);
+                ui.close_menu();
+            }
+            if ui.add_enabled(is_overridden, egui::Button::new("Reset Choices & Role"))
             .on_hover_text("Restore the base weapon's choices and role. Custom overrides on retained choices remain.")
             .clicked() {
             command = Some(RowCommand::Reset);
             ui.close_menu();
+            }
         }
     }).response.on_hover_text(if is_added {
         "Socket options: reuse custom perks or remove this added socket"
     } else {
-        "Socket options: reuse custom perks or reset this socket"
+        "Socket options: reuse custom perks, remove or reset this socket"
     });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Socket Options"));
 });

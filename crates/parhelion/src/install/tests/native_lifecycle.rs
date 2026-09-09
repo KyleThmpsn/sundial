@@ -1,5 +1,6 @@
 //! Native release acceptance on copied package inputs, never the live installation.
 use super::*;
+mod faults;
 
 const CHILD_SCHEMA: &str = "PARHELION_LIFECYCLE_CHILD_SCHEMA";
 const CHILD_ROOT: &str = "PARHELION_LIFECYCLE_CHILD_ROOT";

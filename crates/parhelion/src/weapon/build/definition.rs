@@ -119,11 +119,19 @@ pub(super) fn apply_presentation(
     }
     if let Some(arrays) = &donor.weapon.overrides.render_dye_rows {
         set_weapon_render_dye_rows(definition, arrays)?;
+    } else if donor.has_authored_shader {
+        unlock_weapon_shader_dyes(definition)?;
     }
     // Structured geometry and render-dye overrides intentionally win over their donors.
     if let Some(rarity) = donor.weapon.overrides.rarity {
         set_weapon_rarity(definition, rarity)?;
     }
+    if donor.weapon.overrides.rarity.is_some()
+        || weapon_rarity(definition)? != AuthoredWeaponRarity::Exotic
+    {
+        sync_weapon_equipment_rarity(definition)?;
+    }
+    let equipment_label = weapon_equipment_label(definition)?;
     let collection_material_set = collection_material_set_for_rarity(weapon_rarity(definition)?);
     if let Some(stat_group_index) = donor.weapon.overrides.stat_group_index {
         set_item_string_stat_group_index(strings, stat_group_index)?;
@@ -176,6 +184,11 @@ pub(super) fn apply_presentation(
         strings,
         &donor.weapon.overrides.raw_payload_patches,
     )?;
+    if weapon_equipment_label(definition)? != equipment_label {
+        return Err(invalid(
+            "Raw equipment patches changed the rarity-controlled unique-equip restriction",
+        ));
+    }
 
     Ok(collection_material_set)
 }

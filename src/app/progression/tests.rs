@@ -4,5 +4,6 @@ use super::{hierarchy::*, mutations::*, override_tables::*, state::*, unlock_tab
 use serde_json::json;
 
 mod definitions_search;
+mod editing;
 mod hierarchy_presentation;
 mod mutations_undo;

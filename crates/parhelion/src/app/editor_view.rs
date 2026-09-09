@@ -760,13 +760,17 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_socket_options(&mut self, ui: &mut egui::Ui, has_authored_columns: bool) {
+        draw_plug_safety_selector(
+            ui,
+            "parhelion-socket-column-plug-safety",
+            &mut self.plug_selection_mode,
+        );
         ui.menu_button("Socket Options", |ui| {
-                    draw_plug_safety_selector(ui, "parhelion-socket-column-plug-safety", &mut self.plug_selection_mode);
                     if self.show_experimental_options {
-                        ui.checkbox(&mut self.show_technical_socket_rows, "Show Native Rows")
-                            .on_hover_text("Show the complete native socket-row fields beneath each plug column.");
+                        ui.checkbox(&mut self.show_technical_socket_rows, "Show Socket Details")
+                            .on_hover_text("Show additional socket settings beneath each plug column.");
+                        ui.separator();
                     }
-                    ui.separator();
                     if ui.add_enabled(has_authored_columns, egui::Button::new("Restore All Base Sockets"))
                         .on_hover_text("Remove every explicit socket and custom perk override, then return to the base weapon's collection roll")
                         .clicked() {

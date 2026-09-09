@@ -25,7 +25,7 @@
     "collection_requirement_hash": "0x48F2C93E"
   },
   "name": "Unsent",
-  "flavor": "Some words are better left unsaid.",
+  "flavor": "\"Let me know when you’re back in the Tower.\"",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
     "investment_stats": [
@@ -38,38 +38,54 @@
         "value": 85
       },
       {
-        "definition_index": 48,
-        "value": 80
-      },
-      {
-        "definition_index": 27,
-        "value": 65
+        "definition_index": 25,
+        "value": 40
       },
       {
         "definition_index": 26,
         "value": 70
       },
       {
-        "definition_index": 25,
-        "value": 40
+        "definition_index": 27,
+        "value": 65
+      },
+      {
+        "definition_index": 48,
+        "value": 80
       }
     ],
     "inventory_slot": "energy",
     "ammo_type": "special",
-    "modern_damage_type": "void",
+    "modern_damage_type": "arc",
     "power_cap_group": 11,
     "rarity": "legendary",
+    "stat_group_index": null,
     "socket_columns": [
-      null,
+      {
+        "choices": [
+          "0x57A047A0"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
       null,
       null,
       {
         "choices": [
-          "0x6AC988C7",
+          "0x0BF86A01",
           "0xC89F83AD",
           "0xA9CA6B03"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -77,32 +93,49 @@
           "0x0C0099B6",
           "0x23153F37"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x9DA139BF"
+          "0x9DA139BF",
+          "0x8A98022D"
         ],
-        "socket_type": 180
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
-      null,
-      null
-    ],
-    "socket_plug_variants": [
       {
-        "socket_index": 3,
-        "choice_index": 0,
-        "source_plug_hash": "0x6AC988C7",
-        "classification_donor_hash": "0x93F6B3E6",
-        "sandbox_perks": [
-          {
-            "source_perk_index": 1053,
-            "runtime_values": []
-          }
-        ]
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      {
+        "choices": [
+          "0x566BAE18"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       }
-    ]
+    ],
+    "raw_payload_patches": []
   }
 }

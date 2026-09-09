@@ -130,6 +130,7 @@ pub(super) fn scan_unlock_definitions(
                 compact_slot: (slot != UNLOCK_DEFINITION_UNBANKED_SLOT).then_some(slot),
                 name: None,
                 description: None,
+                runtime_writers: Vec::new(),
                 tested_by: Vec::new(),
             })
         })

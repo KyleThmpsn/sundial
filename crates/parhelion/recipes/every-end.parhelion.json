@@ -6,6 +6,10 @@
     "item_hash": "0xA25B8F8F",
     "expected_name": "Arc Logic"
   },
+  "presentation_donor": {
+    "item_hash": "0x43D0F8F7",
+    "expected_name": "Foregone Conclusion"
+  },
   "identity": {
     "item_hash": "0x53554E44",
     "collectible_hash": "0x4449414C",
@@ -18,35 +22,89 @@
   "flavor": "Do not go gentle into that good night…",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
+    "icon_edit": {
+      "flip_horizontal": true,
+      "hue_shift_degrees": 30
+    },
     "investment_stats": [
-      { "definition_index": 15, "value": 100 },
-      { "definition_index": 16, "value": 100 },
-      { "definition_index": 22, "value": 100 },
-      { "definition_index": 24, "value": 100 },
-      { "definition_index": 25, "value": 100 },
-      { "definition_index": 26, "value": 100 },
-      { "definition_index": 27, "value": 100 },
-      { "definition_index": 30, "value": 100 },
-      { "definition_index": 31, "value": 20 }
+      {
+        "definition_index": 15,
+        "value": 100
+      },
+      {
+        "definition_index": 16,
+        "value": 100
+      },
+      {
+        "definition_index": 22,
+        "value": 100
+      },
+      {
+        "definition_index": 24,
+        "value": 100
+      },
+      {
+        "definition_index": 25,
+        "value": 100
+      },
+      {
+        "definition_index": 26,
+        "value": 100
+      },
+      {
+        "definition_index": 27,
+        "value": 100
+      },
+      {
+        "definition_index": 30,
+        "value": 100
+      },
+      {
+        "definition_index": 31,
+        "value": 20
+      }
     ],
     "inventory_slot": null,
+    "ammo_type": null,
     "modern_damage_type": "solar",
     "power_cap_group": 11,
+    "rarity": null,
+    "stat_group_index": null,
     "socket_columns": [
       {
         "choices": [
           "0x56E77AA2"
-        ]
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x3203BACE"
-        ]
+          "0x3203BACE",
+          "0xC1B79779"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x7060EDB4"
-        ]
+          "0x7060EDB4",
+          "0x43F47FCB"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -54,7 +112,13 @@
           "0xA5A4B58A",
           "0x0EC3FDC8",
           "0x74812567"
-        ]
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
@@ -62,30 +126,73 @@
           "0xD2013CA1",
           "0xF351D2CC",
           "0xA9CA6B03"
-        ]
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x9DA139BF"
+          "0x8EC817EA"
         ],
-        "socket_type": 180
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
           "0x8A8536B5"
-        ]
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
           "0x28CE6A3F"
-        ]
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
-      null,
       {
         "choices": [
-          "0x8838B9DA"
-        ]
+          "0x8B18058B",
+          "0xC4BE7564"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x8838B9DA",
+          "0x35FE7A24",
+          "0x0251C0F0"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       }
-    ]
+    ],
+    "raw_payload_patches": []
   }
 }

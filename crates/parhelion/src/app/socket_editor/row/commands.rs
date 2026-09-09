@@ -1,7 +1,7 @@
 //! Recipe changes happen after controls have selected one command.
 use super::super::{
     LogEntry, materialize_socket_column, recipe_socket_choices, reconcile_socket_plug_variants,
-    remove_last_added_socket, set_recipe_socket_column, set_socket_role,
+    remove_base_socket, remove_last_added_socket, set_recipe_socket_column, set_socket_role,
     shift_socket_choice_queries_after_removal,
 };
 use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
@@ -22,11 +22,19 @@ pub(super) fn apply(
             RowContinuation::Finished
         }
         Some(RowCommand::Reset) => reset(context, choices),
-        Some(RowCommand::RemoveAdded) => {
-            if context.can_remove_added
-                && context.is_added
-                && remove_last_added_socket(context.recipe, context.socket_index)
-            {
+        Some(RowCommand::Remove) => {
+            let removed = if context.is_added {
+                context.can_remove_added
+                    && remove_last_added_socket(context.recipe, context.socket_index)
+            } else {
+                remove_base_socket(
+                    context.recipe,
+                    context.donor.sockets.len(),
+                    context.socket_index,
+                );
+                true
+            };
+            if removed {
                 if *context.private_perk_socket == Some(context.socket_index) {
                     *context.private_perk_socket = None;
                 }

@@ -149,9 +149,7 @@ fn draw_sockets_page(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
             ui.weak("Saved plug values were not available at this entry point.");
         }
     } else {
-        ui.weak(
-            "Catalog defaults and options only. Open an owned item to compare its saved plugs.",
-        );
+        ui.weak("Catalog defaults and options only. Open an owned item to see its saved plugs.");
     }
     draw_hash_item_sockets(
         ui,
@@ -949,7 +947,7 @@ fn draw_hash_item_sockets(
                 .id_salt("socket-table-columns")
                 .show(ui, |ui| {
                     egui::Grid::new(("hash_item_socket_rows", item.hash))
-                        .num_columns(if plugs.is_some() { 6 } else { 4 })
+                        .num_columns(if plugs.is_some() { 5 } else { 4 })
                         .spacing([12.0, 3.0])
                         .striped(true)
                         .show(ui, |ui| {
@@ -957,7 +955,6 @@ fn draw_hash_item_sockets(
                             ui.strong("Default Plug");
                             if plugs.is_some() {
                                 ui.strong("Saved Plug");
-                                ui.strong("Comparison");
                             }
                             ui.strong("Plug Choices");
                             ui.strong("Option Sets");
@@ -1008,7 +1005,6 @@ fn draw_hash_item_sockets(
                                         catalog,
                                         plugs,
                                         socket_index,
-                                        default_hash,
                                     );
                                 }
                                 ui.monospace(

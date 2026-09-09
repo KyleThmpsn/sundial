@@ -177,7 +177,7 @@ pub(in crate::app) fn override_meaning(definition: &UnlockDefinition) -> String 
         _ => {}
     }
     if contexts.is_empty() {
-        return "Reader not resolved".to_owned();
+        return "No Known References".to_owned();
     }
 
     let mut kinds = contexts
@@ -213,6 +213,11 @@ const fn objective_context_priority(kind: ProgressionContextKind) -> u8 {
         ProgressionContextKind::Location => 7,
         ProgressionContextKind::ExpressionMapping => 8,
         ProgressionContextKind::Objective => 9,
+        ProgressionContextKind::Progression => 10,
+        ProgressionContextKind::Achievement => 11,
+        ProgressionContextKind::Requirement => 12,
+        ProgressionContextKind::ValueCounter => 13,
+        ProgressionContextKind::PackageExpression => 14,
     }
 }
 

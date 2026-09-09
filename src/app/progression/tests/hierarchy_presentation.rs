@@ -76,8 +76,10 @@ fn unnamed_objectives_use_real_reverse_context_without_claiming_ownership() {
         compact_slot: Some(5_662),
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: vec![
             ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 0,
                 kind: ProgressionContextKind::Objective,
                 name: String::new(),
@@ -87,6 +89,7 @@ fn unnamed_objectives_use_real_reverse_context_without_claiming_ownership() {
                 condition_programs: Vec::new(),
             },
             ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 0xAABB_CCDD,
                 kind: ProgressionContextKind::PresentationNode,
                 name: "Menagerie".into(),
@@ -129,7 +132,9 @@ fn unnamed_objectives_surface_their_unlock_definition_reference() {
         compact_slot: Some(404),
         name: None,
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: vec![ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: objective.hash,
             kind: ProgressionContextKind::Objective,
             name: String::new(),
@@ -220,6 +225,7 @@ fn compact_override_table_sort_maps_to_semantic_columns() {
 #[test]
 fn override_meaning_uses_authored_names_then_exact_package_readers() {
     let context = |name: &str| ProgressionContextDef {
+        direct_references: Vec::new(),
         hash: 1,
         kind: ProgressionContextKind::ActivityAvailability,
         name: name.into(),
@@ -234,6 +240,7 @@ fn override_meaning_uses_authored_names_then_exact_package_readers() {
         compact_slot: Some(3),
         name: Some("Authored package meaning".into()),
         description: None,
+        runtime_writers: Vec::new(),
         tested_by: vec![context("The Menagerie")],
     };
     assert_eq!(override_meaning(&definition), "Authored package meaning");
@@ -254,7 +261,7 @@ fn override_meaning_uses_authored_names_then_exact_package_readers() {
     );
 
     definition.tested_by.clear();
-    assert_eq!(override_meaning(&definition), "Reader not resolved");
+    assert_eq!(override_meaning(&definition), "No Known References");
 }
 
 #[test]
@@ -436,6 +443,7 @@ fn filtered_hierarchy_auto_expands_matching_branches() {
 fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
     let mut contexts = (0..300)
         .map(|index| ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: index,
             kind: ProgressionContextKind::Activity,
             name: format!("Activity {index}"),
@@ -446,6 +454,7 @@ fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
         })
         .collect::<Vec<_>>();
     contexts.push(ProgressionContextDef {
+        direct_references: Vec::new(),
         hash: 999,
         kind: ProgressionContextKind::ActivityAvailability,
         name: "Activity 0".into(),
@@ -455,6 +464,7 @@ fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
         condition_programs: Vec::new(),
     });
     let definition = UnlockDefinition {
+        runtime_writers: Vec::new(),
         tested_by: contexts,
         ..UnlockDefinition::default()
     };
@@ -478,8 +488,10 @@ fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
 #[test]
 fn tested_by_rows_hide_empty_internal_refs_and_generic_inventory_buckets() {
     let definition = UnlockDefinition {
+        runtime_writers: Vec::new(),
         tested_by: vec![
             ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 1,
                 kind: ProgressionContextKind::ExpressionMapping,
                 name: String::new(),
@@ -489,6 +501,7 @@ fn tested_by_rows_hide_empty_internal_refs_and_generic_inventory_buckets() {
                 condition_programs: Vec::new(),
             },
             ProgressionContextDef {
+                direct_references: Vec::new(),
                 hash: 2,
                 kind: ProgressionContextKind::InventoryItem,
                 name: String::new(),

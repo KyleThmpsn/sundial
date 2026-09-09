@@ -1,6 +1,6 @@
 use super::*;
 
-mod decoder;
+pub(super) mod decoder;
 
 pub(super) fn validate_request(request: &InstallRequest) -> Result<ValidatedRun, InstallError> {
     check_game_before_validation(request)?;

@@ -8,11 +8,12 @@ use crate::catalog::collections::{
 use crate::catalog::progression::{
     PendingProgressionContext, PresentationNodeDef, ProgressionPackageData,
     attach_presentation_node_objective_owners, scan_activity_condition_contexts,
-    scan_collectible_condition_contexts, scan_collectible_item_paths,
-    scan_location_condition_contexts, scan_metric_objective_owners,
-    scan_milestone_objective_owners, scan_objectives, scan_presentation_nodes,
-    scan_record_objective_owners, scan_trait_definitions, scan_unlock_flag_definitions,
-    scan_unlock_flag_displays, scan_unlock_value_definitions,
+    scan_collectible_condition_contexts, scan_collectible_item_paths, scan_context_writers,
+    scan_destination_writers, scan_direct_tables, scan_location_condition_contexts,
+    scan_metric_objective_owners, scan_milestone_objective_owners, scan_objectives,
+    scan_presentation_nodes, scan_progression_context_outputs, scan_record_objective_owners,
+    scan_trait_definitions, scan_unlock_flag_definitions, scan_unlock_flag_displays,
+    scan_unlock_value_definitions,
 };
 use crate::catalog::{
     CatalogProgress, CollectionConditionTokenDef, ObjectiveDef, ObjectiveOwnerTraitDef,
@@ -119,6 +120,30 @@ pub(super) fn read(
         &mut unlock_value_definitions,
         &mut progression_package_errors,
     );
+    if let Err(error) = scan_direct_tables(
+        manager,
+        root,
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
+    ) {
+        progression_package_errors.push(format!("Direct unlock references: {error}"));
+    }
+    if let Err(error) = scan_context_writers(
+        manager,
+        root,
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
+    ) {
+        progression_package_errors.push(format!("Unlock context writers: {error}"));
+    }
+    if let Err(error) = scan_destination_writers(manager, root, &mut unlock_flag_definitions) {
+        progression_package_errors.push(format!("Destination unlock writers: {error}"));
+    }
+    if let Err(error) =
+        scan_progression_context_outputs(manager, root, &mut unlock_value_definitions)
+    {
+        progression_package_errors.push(format!("Progression context outputs: {error}"));
+    }
     let collectible_item_paths = retain_progression_scan(
         "Collectible item paths",
         scan_collectible_item_paths(manager, root, &presentation_nodes),

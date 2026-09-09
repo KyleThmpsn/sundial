@@ -3,17 +3,18 @@
   "namespace": "parhelion.stay",
   "collection_placement": "sunrise_badge",
   "donor": {
-    "item_hash": "0x249F67B4",
-    "expected_name": "Falling Guillotine"
+    "item_hash": "0x70BEF156",
+    "expected_name": "Whisper of the Worm"
   },
   "presentation_donor": {
-    "item_hash": "0x6F22FCEC",
-    "expected_name": "Worldline Zero"
+    "item_hash": "0xC98208A4",
+    "expected_name": "Alone as a god"
   },
   "identity": {
     "item_hash": "0xB969E867",
     "collectible_hash": "0xC0A78648",
     "unlock_hash": "0xE4232D16",
+    "pattern_global_id_hash": "0x3DAFFD7E",
     "name_hash": "0xD7502D27",
     "type_hash": "0x88F6F22A",
     "flavor_hash": "0x7E1701DE",
@@ -21,70 +22,115 @@
     "collection_name_hash": "0x8432DB68",
     "collection_description_hash": "0xE50FC7FD",
     "inventory_hint_hash": "0x46118A8A",
-    "collection_requirement_hash": "0x373AD7AA",
-    "pattern_global_id_hash": "0x3DAFFD7E"
+    "collection_requirement_hash": "0x373AD7AA"
   },
   "name": "Stay",
   "flavor": "Not yet.",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
+    "icon_edit": {
+      "hue_shift_degrees": 100,
+      "saturation": 35
+    },
     "investment_stats": [
       {
-        "definition_index": 15,
-        "value": 60
+        "definition_index": 16,
+        "value": 100
       },
       {
-        "definition_index": 19,
-        "value": 35
+        "definition_index": 22,
+        "value": 100
       },
       {
         "definition_index": 24,
-        "value": 50
+        "value": 100
       },
       {
-        "definition_index": 40,
-        "value": 55
+        "definition_index": 25,
+        "value": 100
       },
       {
-        "definition_index": 37,
-        "value": 40
+        "definition_index": 26,
+        "value": 100
+      },
+      {
+        "definition_index": 27,
+        "value": 100
+      },
+      {
+        "definition_index": 30,
+        "value": 100
+      },
+      {
+        "definition_index": 31,
+        "value": 100
       }
     ],
-    "inventory_slot": "power",
-    "ammo_type": "heavy",
-    "modern_damage_type": "void",
-    "rarity": "legendary",
+    "inventory_slot": "kinetic",
+    "ammo_type": "special",
+    "modern_damage_type": "kinetic",
     "power_cap_group": 11,
+    "rarity": "legendary",
+    "stat_group_index": null,
     "socket_columns": [
       null,
       null,
       null,
       {
         "choices": [
-          "0x151FBDCC",
-          "0x6842D015",
-          "0x9A6B194D"
+          "0x0EC3FDC8",
+          "0xCAB3DB58",
+          "0x50BAF5B4",
+          "0xAB0A2647"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0xE944CC82",
-          "0xDD070E81",
+          "0x08222A83",
+          "0x39169B67",
+          "0xAADFDE43",
           "0x5C2FD04F"
         ],
-        "socket_type": 92
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       {
         "choices": [
-          "0x4682DFF1"
+          "0x510A1ADC",
+          "0x8A98022D",
+          "0x849D9655"
         ],
-        "socket_type": 180
+        "socket_type": 180,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
       },
       null,
       null,
-      null,
-      null
-    ]
+      {
+        "choices": [
+          "0xA9CA6B03"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "raw_payload_patches": []
   }
 }

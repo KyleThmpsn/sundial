@@ -92,6 +92,7 @@ pub(in crate::catalog) fn scan_presentation_nodes(
     }
     for node in &nodes {
         let context = ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: node.hash,
             kind: ProgressionContextKind::PresentationNode,
             name: node.name.clone(),

@@ -40,6 +40,11 @@ pub(super) fn add_progression_context(
                 existing.condition_programs.push(program.clone());
             }
         }
+        for reference in &context.direct_references {
+            if !existing.direct_references.contains(reference) {
+                existing.direct_references.push(reference.clone());
+            }
+        }
         return;
     }
     definition.tested_by.push(context.clone());
@@ -74,6 +79,11 @@ const fn progression_context_priority(kind: ProgressionContextKind) -> u8 {
         ProgressionContextKind::LocationRelease => 7,
         ProgressionContextKind::ActivityAvailability => 8,
         ProgressionContextKind::ExpressionMapping => 9,
+        ProgressionContextKind::Progression => 10,
+        ProgressionContextKind::Achievement => 11,
+        ProgressionContextKind::Requirement => 12,
+        ProgressionContextKind::ValueCounter => 13,
+        ProgressionContextKind::PackageExpression => 14,
     }
 }
 
@@ -202,7 +212,11 @@ pub(super) fn condition_references_from_rows(
                 .copied()
                 .ok_or_else(|| format!("Package data ended at {row}"))?,
         );
-        let raw_operand = u32::from(u16_at(data, row + 4)?);
+        let raw_operand = if kind == 11 {
+            u32_at(data, row + 4)?
+        } else {
+            u32::from(u16_at(data, row + 4)?)
+        };
         program.push([kind, raw_operand]);
         let operand = usize::try_from(raw_operand)
             .map_err(|_| "Condition-expression definition index is too large")?;

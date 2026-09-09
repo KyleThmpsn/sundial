@@ -353,7 +353,7 @@ fn native_overlay_compression_preserves_originals_and_round_trips_new_blocks() {
 fn rebuild_asset_copy(
     before: &[u8],
     layout: &PackageLayout,
-    payloads: &[Vec<u8>],
+    blocks: &[Vec<u8>],
     encoder: &PackageBlockEncoder,
 ) -> Vec<u8> {
     assert_eq!(
@@ -364,25 +364,20 @@ fn rebuild_asset_copy(
     // discarding old physical payloads. Shared-tag tables and entry prefixes stay in place.
     let prefix = layout.sparse_overlay_metadata_prefix(before).unwrap();
     let mut bytes = prefix.to_vec();
-    let mut next_block = 0usize;
-    for (index, payload) in payloads.iter().enumerate() {
-        write_payload(
+    // Entries may share blocks. Recompress physical blocks without moving their entry slices.
+    assert_eq!(blocks.len(), layout.block_count);
+    for (index, block) in blocks.iter().enumerate() {
+        let encoded = encoder.encode(layout.package_id, block).unwrap();
+        let offset = append_aligned(&mut bytes, &encoded.stored);
+        write_block_header(
             &mut bytes,
-            layout,
-            layout.block_table_offset,
-            index,
-            payload,
+            layout.block_table_offset + index * BLOCK_HEADER_SIZE,
+            offset,
+            &encoded,
             0,
-            &mut next_block,
-            payload.len().div_ceil(BLOCK_SIZE),
-            encoder,
         )
         .unwrap();
     }
-    assert_eq!(
-        next_block, layout.block_count,
-        "this regression preserves the existing block directory"
-    );
     let hash_range = layout.update_package_tables_hash(&mut bytes).unwrap();
     append_opaque_trailer(&mut bytes, layout.opaque_trailer(before).unwrap()).unwrap();
     layout.set_file_size(&mut bytes).unwrap();
@@ -397,10 +392,6 @@ fn rebuild_asset_copy(
     let mut normalized = bytes[..prefix.len()].to_vec();
     normalized[hash_range.clone()].copy_from_slice(&before[hash_range]);
     normalized[0x160..0x168].copy_from_slice(&before[0x160..0x168]);
-    for index in 0..layout.entry_count {
-        let location = layout.entry_table_offset + index * ENTRY_HEADER_SIZE + 8;
-        normalized[location..location + 8].copy_from_slice(&before[location..location + 8]);
-    }
     let blocks = layout.block_table_offset
         ..layout.block_table_offset + layout.block_count * BLOCK_HEADER_SIZE;
     normalized[blocks.clone()].copy_from_slice(&before[blocks]);
@@ -442,7 +433,10 @@ fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    let after = rebuild_asset_copy(&before, &layout, &payloads, &encoder);
+    let blocks = (0..layout.block_count)
+        .map(|index| source.get_block(index).unwrap().as_ref().to_vec())
+        .collect::<Vec<_>>();
+    let after = rebuild_asset_copy(&before, &layout, &blocks, &encoder);
     let copy_path = fixture.native_packages.join(path.file_name().unwrap());
     let mut copy_file = OpenOptions::new()
         .write(true)

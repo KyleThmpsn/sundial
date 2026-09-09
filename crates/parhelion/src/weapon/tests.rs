@@ -1,4 +1,5 @@
 use super::*;
+mod combinations;
 mod independent_damage;
 mod staged_generation;
 use crate::progression::COLLECTIBLE_DISPLAY_CONDITION_OFFSET;

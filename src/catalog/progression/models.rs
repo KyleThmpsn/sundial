@@ -9,7 +9,10 @@ pub(crate) enum ProgressionScope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProgressionStepDefinition {
-    pub progress_total: i32,
+    #[serde(alias = "progress_total")]
+    pub cost: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlock_flag: Option<u16>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21,6 +24,8 @@ pub(crate) struct ProgressionRewardDefinition {
     pub rewarded_at_progression_level: i32,
     pub item_hash: u64,
     pub quantity: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_flag: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +44,8 @@ pub(crate) struct ProgressionDefinition {
     pub scope: ProgressionScope,
     pub scope_slot: Option<u16>,
     pub repeat_last_step: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_value: Option<u16>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -143,6 +150,26 @@ pub(crate) struct UnlockDefinition {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tested_by: Vec<ProgressionContextDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_writers: Vec<UnlockWriter>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum UnlockWriter {
+    ProgressionStep {
+        definition_index: u16,
+        step_index: u16,
+    },
+    ProgressionLevel {
+        definition_index: u16,
+    },
+    ValueCounter {
+        programs: Vec<Vec<[u32; 2]>>,
+    },
+    /// The writer requires activity, item, or other client context not in this snapshot.
+    Context {
+        source: String,
+    },
 }
 
 impl UnlockDefinition {
@@ -163,6 +190,11 @@ pub(crate) enum ProgressionContextKind {
     Location,
     LocationRelease,
     ExpressionMapping,
+    Progression,
+    Achievement,
+    Requirement,
+    ValueCounter,
+    PackageExpression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +210,8 @@ pub(crate) struct ProgressionContextDef {
     pub paths: Vec<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub condition_programs: Vec<Vec<[u32; 2]>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct_references: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

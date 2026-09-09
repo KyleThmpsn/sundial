@@ -574,7 +574,9 @@ pub(super) fn set_weapon_socket_columns(
             continue;
         };
         let maximum = authored_socket_choice_limit(authored_socket_types[lane]);
-        if !(1..=maximum).contains(&column.choices.len()) {
+        let removed =
+            lane < count && authored_socket_types[lane] == u16::MAX && column.choices.is_empty();
+        if !removed && !(1..=maximum).contains(&column.choices.len()) {
             return Err(invalid(format!(
                 "Socket lane {lane} accepts at most {maximum} authored choices, but {} were requested",
                 column.choices.len()
@@ -633,7 +635,7 @@ pub(super) fn set_weapon_socket_columns(
         write_u16(
             data,
             row + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET,
-            column.choices[0],
+            column.choices.first().copied().unwrap_or(u16::MAX),
         )?;
         write_u16(
             data,
@@ -737,7 +739,8 @@ pub(super) fn validate_weapon_socket_columns(
         };
         let row = rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE;
         if read_u16(data, row)? != column.socket_type.unwrap_or(expected_socket_types[lane])
-            || read_u16(data, row + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET)? != column.choices[0]
+            || read_u16(data, row + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET)?
+                != column.choices.first().copied().unwrap_or(u16::MAX)
             || read_u16(data, row + ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET)?
                 != column.reusable_plug_set_index.unwrap_or(u16::MAX)
             || read_u16(data, row + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET)?

@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn source_items_may_have_no_flavor_text() {
+    let mut text = project_weapon("parhelion.empty-flavor", 1).text;
+    text.flavor.clear();
+    validate_weapon_clone_text(&text).unwrap();
+    text.flavor = "\0".to_owned();
+    assert!(validate_weapon_clone_text(&text).is_err());
+    text.flavor = " ".to_owned();
+    assert!(validate_weapon_clone_text(&text).is_err());
+    text.flavor.clear();
+    text.name.clear();
+    assert!(validate_weapon_clone_text(&text).is_err());
+}
+
+#[test]
 fn runtime_value_shape_accepts_native_package_schema_handles() {
     let runtime = WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {

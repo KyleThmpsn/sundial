@@ -601,7 +601,7 @@ fn draw_hash_progression_definition(
                         }
                         ui.strong("Index");
                         ui.strong("Name");
-                        ui.strong("Progress Total");
+                        ui.strong("Rank Cost");
                         ui.end_row();
                         for (step_index, step) in definition.steps.iter().enumerate() {
                             if has_step_icons {
@@ -629,7 +629,7 @@ fn draw_hash_progression_definition(
                             } else {
                                 ui.label(&step.name);
                             }
-                            ui.monospace(step.progress_total.to_string());
+                            ui.monospace(step.cost.to_string());
                             ui.end_row();
                         }
                     });

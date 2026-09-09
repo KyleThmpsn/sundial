@@ -38,24 +38,7 @@ fn saved_plug(value: &Value, index: usize) -> SavedPlug<'_> {
     }
 }
 
-fn comparison_status(saved: &SavedPlug<'_>, default: Option<u64>) -> &'static str {
-    match saved {
-        SavedPlug::NativeDefault => "Uses Native Defaults",
-        SavedPlug::Empty => "Explicitly Empty",
-        SavedPlug::Hash(hash) if Some(*hash) == default => "Matches Default",
-        SavedPlug::Hash(_) => "Different Plug",
-        SavedPlug::Missing => "No Saved Entry",
-        SavedPlug::Invalid(_) => "Invalid Value",
-    }
-}
-
-pub(super) fn draw_saved_plug(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    plugs: &Value,
-    index: usize,
-    default: Option<u64>,
-) {
+pub(super) fn draw_saved_plug(ui: &mut egui::Ui, catalog: &Catalog, plugs: &Value, index: usize) {
     let saved = saved_plug(plugs, index);
     match &saved {
         SavedPlug::Hash(hash) => draw_plug(ui, catalog, *hash),
@@ -70,7 +53,6 @@ pub(super) fn draw_saved_plug(
             });
         }
     }
-    ui.label(comparison_status(&saved, default));
 }
 
 fn draw_plug(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
@@ -97,17 +79,5 @@ mod tests {
             assert!(matches!(saved_plug(&plugs, index), SavedPlug::Invalid(_)));
         }
         assert_eq!(saved_plug(&plugs, 7), SavedPlug::Missing);
-        assert_eq!(
-            comparison_status(&SavedPlug::Hash(12), Some(12)),
-            "Matches Default"
-        );
-        assert_eq!(
-            comparison_status(&SavedPlug::Hash(13), Some(12)),
-            "Different Plug"
-        );
-        assert_ne!(
-            comparison_status(&SavedPlug::Empty, Some(12)),
-            comparison_status(&SavedPlug::NativeDefault, Some(12))
-        );
     }
 }

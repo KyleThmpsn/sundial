@@ -19,7 +19,7 @@
     "source_hash": "0xD050A5C8"
   },
   "name": "Redacted",
-  "flavor": "A weapon authored with Parhelion.",
+  "flavor": "\"A rocket sidearm? Are you insane?\" — Unknown",
   "source": "Source: Guardians Make Their Own Fate",
   "overrides": {
     "icon_edit": {
@@ -170,7 +170,19 @@
         "randomized_selection_program": []
       },
       null,
-      null
+      null,
+      {
+        "choices": [
+          "0xAD875AEB",
+          "0x882F1653"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
     ],
     "socket_plug_variants": [
       {
@@ -178,11 +190,11 @@
         "choice_index": 0,
         "source_plug_hash": "0xDD5CB37A",
         "name": "Micro-Missile Frame",
+        "classification_donor_hash": "0xC68424BC",
         "description": "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.",
         "additional_sandbox_perks": [
           405
         ],
-        "classification_donor_hash": "0xC68424BC",
         "sandbox_perks": [
           {
             "source_perk_index": 1178,

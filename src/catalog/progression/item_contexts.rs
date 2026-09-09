@@ -98,6 +98,7 @@ pub(in crate::catalog) fn attach_item_condition_contexts(
 ) {
     let direct_references = scan_condition_expressions(item);
     let direct_context = ProgressionContextDef {
+        direct_references: Vec::new(),
         hash: item_context.hash,
         kind: ProgressionContextKind::InventoryItem,
         name: item_context.name.to_owned(),
@@ -115,6 +116,7 @@ pub(in crate::catalog) fn attach_item_condition_contexts(
 
     for pending in collectible_contexts {
         let context = ProgressionContextDef {
+            direct_references: Vec::new(),
             hash: pending.hash,
             kind: pending.kind,
             name: item_context.name.to_owned(),

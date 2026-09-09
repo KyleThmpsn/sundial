@@ -104,10 +104,9 @@ impl SundialApp {
                         self.select_view(view);
                     }
                 }
-                if self.preferences.experimental_progression
-                    && ui
-                        .selectable_label(self.view_mode == ViewMode::Progression, "Progression")
-                        .clicked()
+                if ui
+                    .selectable_label(self.view_mode == ViewMode::Progression, "Progression")
+                    .clicked()
                 {
                     self.select_view(ViewMode::Progression);
                 }

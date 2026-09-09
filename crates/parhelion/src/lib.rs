@@ -74,9 +74,9 @@ pub(crate) use format::SUNDIAL_BUILD_SIGNATURE;
 pub(crate) use icon_edit::WeaponIconEdit;
 pub use install::{
     BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError, InstallReport,
-    InstallRequest, MAX_PACKAGE_BACKUP_RETENTION, UninstallPlan, UninstallReport,
-    install_staged_packages, preview_uninstall, preview_uninstall_with_account_cleanup,
-    prune_package_backups, uninstall_custom_packages,
+    InstallRequest, MAX_PACKAGE_BACKUP_RETENTION, ReplacementReview, UninstallPlan,
+    UninstallReport, install_staged_packages, preview_replacement, preview_uninstall,
+    preview_uninstall_with_account_cleanup, prune_package_backups, uninstall_custom_packages,
 };
 #[cfg(test)]
 pub(crate) use recipe::{ARC_LOGIC_DONOR_HASH, RecipeCollectionPlacement};

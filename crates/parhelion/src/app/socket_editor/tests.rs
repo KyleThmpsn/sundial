@@ -141,3 +141,51 @@ fn changing_added_socket_role_retains_choices_and_explicit_role() {
     assert_eq!(added.socket_type, Some(176));
     assert_eq!(added.choices, vec![HexHash::new(20)]);
 }
+
+#[test]
+fn removing_base_socket_preserves_neighbor_columns_and_private_perks() {
+    let donor = donor();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.remove-socket",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20], None);
+    set_recipe_socket_column(&mut recipe, 3, 1, &[11], vec![20], None);
+    set_recipe_socket_column(&mut recipe, 3, 2, &[12], vec![20], None);
+    recipe.overrides.socket_plug_variants = vec![variant(0), variant(1), variant(2)];
+    for variant in &mut recipe.overrides.socket_plug_variants {
+        variant
+            .sandbox_perks
+            .push(crate::recipe::WeaponSandboxPerkRuntimeRecipe {
+                source_perk_index: 1,
+                activation: None,
+                runtime_values: Vec::new(),
+                action_float_values: Vec::new(),
+            });
+    }
+    let before = recipe.clone();
+    remove_base_socket(&mut recipe, 3, 1);
+    assert_eq!(recipe.overrides.socket_columns.len(), 3);
+    assert_eq!(
+        recipe.overrides.socket_columns[0],
+        before.overrides.socket_columns[0]
+    );
+    assert_eq!(
+        recipe.overrides.socket_columns[2],
+        before.overrides.socket_columns[2]
+    );
+    assert_eq!(
+        recipe.overrides.socket_plug_variants,
+        vec![
+            before.overrides.socket_plug_variants[0].clone(),
+            before.overrides.socket_plug_variants[2].clone()
+        ]
+    );
+    let reloaded = WeaponRecipe::from_json_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
+    let spec = reloaded.to_spec().unwrap();
+    let removed = spec.overrides.socket_columns[1].as_ref().unwrap();
+    assert_eq!(removed.socket_type, Some(u16::MAX));
+    assert!(removed.choices.is_empty());
+}

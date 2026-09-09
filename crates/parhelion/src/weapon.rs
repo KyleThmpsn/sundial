@@ -803,6 +803,7 @@ pub struct WeaponDyeReferenceOverride {
 }
 
 /// One curated socket column. Choice order is significant and `choices[0]` is the default.
+/// An empty column with socket type `u16::MAX` removes an existing socket without shifting lanes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WeaponSocketColumnOverride {
     pub choices: Vec<u32>,

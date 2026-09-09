@@ -9,7 +9,7 @@ use super::preferences::{
 use super::settings::{backups_path, preferences_path};
 use super::{
     ARMOR_SLOTS, ConfirmationDialog, INVENTORY_LAYOUT_PREVIEW_HASH, InventoryLayoutPreviewItem,
-    PreferencesTab, SundialApp, ViewMode, WEAPON_SLOTS, diagnostics, equipment, preferences,
+    PreferencesTab, SundialApp, WEAPON_SLOTS, diagnostics, equipment, preferences,
 };
 use crate::account_contract::EQUIPMENT_SLOTS as SLOTS;
 use crate::game_settings;
@@ -248,9 +248,6 @@ impl SundialApp {
         self.plug_selection_mode = self.preferences.default_plug_selection_mode;
         self.troubleshooting_log_error = None;
         self.remember_plug_selection_mode_after_confirmation = false;
-        if !self.preferences.experimental_progression && self.view_mode == ViewMode::Progression {
-            self.select_view(ViewMode::Characters);
-        }
     }
 
     pub(super) fn draw_interface_preferences(
@@ -260,7 +257,18 @@ impl SundialApp {
     ) -> bool {
         let mut preferences_changed = false;
 
-        ui.strong("Appearance");
+        if ui
+            .checkbox(
+                &mut self.preferences.always_open_json_editor_in_second_window,
+                "Open All Settings (JSON) in a Second Window",
+            )
+            .changed()
+        {
+            preferences_changed = true;
+        }
+        ui.add_space(12.0);
+
+        super::ui::section_heading(ui, "Appearance");
         let mut requested_theme = self.preferences.color_theme;
         ui.horizontal(|ui| {
             ui.label("Color Theme:");
@@ -290,7 +298,7 @@ impl SundialApp {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.strong("Loadout Layout");
+            super::ui::section_heading(ui, "Loadout Layout");
             crate::ui_help::info(
                 ui,
                 "Used on Characters & loadouts. Character inventory keeps its item cards.",
@@ -299,15 +307,6 @@ impl SundialApp {
         let mut requested_inventory_layout = self.preferences.character_inventory_layout;
         if self.draw_inventory_layout_choices(ui, &mut requested_inventory_layout) {
             self.preferences.character_inventory_layout = requested_inventory_layout;
-            preferences_changed = true;
-        }
-        if ui
-            .checkbox(
-                &mut self.preferences.always_open_json_editor_in_second_window,
-                "Open All Settings (JSON) in a Second Window",
-            )
-            .changed()
-        {
             preferences_changed = true;
         }
 
@@ -322,7 +321,7 @@ impl SundialApp {
         let mut preferences_changed = false;
 
         ui.horizontal(|ui| {
-            ui.strong("Item Editing");
+            super::ui::section_heading(ui, "Item Editing");
             crate::ui_help::info(
                 ui,
                 "Choose the plug selection mode Sundial uses when it starts.",
@@ -390,7 +389,7 @@ impl SundialApp {
         }
 
         ui.add_space(12.0);
-        ui.strong("Experimental");
+        super::ui::section_heading(ui, "Experimental");
         preferences_changed |= ui.checkbox(
             &mut self.preferences.experimental_activity_state,
             "Show Activity State",
@@ -432,22 +431,16 @@ impl SundialApp {
             .horizontal(|ui| {
                 let response = ui.checkbox(
                     &mut self.preferences.experimental_progression,
-                    "Enable Progression",
+                    "Enable Progression Editing",
                 );
                 crate::ui_help::info(
                     ui,
-                    "Shows package-backed Unlocks, Investment, and Collections editing.",
+                    "Allows changes to Unlocks, Investment overrides, and Collections acquisition state. Browsing and inspection are always available.",
                 );
                 response
             })
             .inner;
-        if progression_response.changed() {
-            preferences_changed = true;
-            if !self.preferences.experimental_progression && self.view_mode == ViewMode::Progression
-            {
-                self.select_view(ViewMode::Characters);
-            }
-        }
+        preferences_changed |= progression_response.changed();
         ui.add_space(6.0);
         let mut enable_parhelion = self.preferences.experimental_package_authoring;
         let package_authoring_response = ui.horizontal(|ui| {
@@ -476,7 +469,7 @@ impl SundialApp {
     ) -> bool {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
-            ui.strong("Installation and Compatibility");
+            super::ui::section_heading(ui, "Installation and Compatibility");
             crate::ui_help::info(ui, "Select the Destiny 2 Shadowkeep installation. Sundial finds Project Sunrise's settings.json inside it automatically.");
         });
         ui.add_space(10.0);
@@ -533,7 +526,7 @@ impl SundialApp {
             .color(super::ui::secondary_text_color(ui)),
         );
         ui.add_space(12.0);
-        ui.strong("Catalog");
+        super::ui::section_heading(ui, "Catalog");
         ui.label(format!(
             "Local catalog cache: {}",
             self.manifest.cache_path.display()
@@ -558,13 +551,13 @@ impl SundialApp {
         ui.label("The first scan reads the installed packages. Later starts use the local cache unless the package files change.");
 
         ui.add_space(12.0);
-        ui.strong("Troubleshooting");
+        super::ui::section_heading(ui, "Troubleshooting");
         if ui.button("Activity Log…").clicked() {
             self.activity_log_open = true;
         }
         let logging_response = ui.checkbox(
             &mut self.preferences.troubleshooting_logging,
-            "Enable troubleshooting logging",
+            "Enable Troubleshooting Logging",
         );
         if logging_response.changed() {
             preferences_changed = true;
@@ -576,7 +569,7 @@ impl SundialApp {
         }
         ui.label(
             egui::RichText::new(
-                "Creates a fresh environment snapshot at startup and records later Sundial status messages. The log includes full local paths and file metadata, but not settings contents or account data.",
+                "Adds an environment snapshot at startup and records later Sundial status messages. Keeps recent sessions in 5 MB files with two older files. Copy Report includes the current environment and recent Sundial activity. Review paths and messages before sharing.",
             )
             .color(super::ui::secondary_text_color(ui)),
         );
@@ -590,7 +583,7 @@ impl SundialApp {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Refresh log").clicked() {
+            if ui.button("Refresh Log").clicked() {
                 let result = diagnostics::log_path().map_or_else(
                     || Err("Could not locate Sundial's local log folder".to_owned()),
                     |path| {
@@ -609,11 +602,11 @@ impl SundialApp {
                     Err(error) => self.set_status(error, true),
                 }
             }
-            if ui.button("Copy report").clicked() {
+            if ui.button("Copy Report").clicked() {
                 ui.ctx().copy_text(self.build_troubleshooting_report());
                 self.set_status("Copied troubleshooting report", false);
             }
-            if ui.button("Open log folder").clicked() {
+            if ui.button("Open Log Folder").clicked() {
                 let result = diagnostics::log_path()
                     .ok_or("Could not locate Sundial's local log folder".to_owned())
                     .and_then(|path| {
@@ -641,7 +634,7 @@ impl SundialApp {
     pub(super) fn draw_saving_recovery_preferences(&mut self, ui: &mut egui::Ui) -> bool {
         let mut preferences_changed = false;
 
-        ui.strong("Saving");
+        super::ui::section_heading(ui, "Saving");
         let review_response = ui.horizontal(|ui| {
             let response = ui.checkbox(
                 &mut self.preferences.review_changes_before_saving,
@@ -654,7 +647,7 @@ impl SundialApp {
 
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.strong("Automatic Backups");
+            super::ui::section_heading(ui, "Automatic Backups");
             crate::ui_help::info(ui, "Sundial creates a source-specific backup before every save. Each installation has its own backup history. Legacy unscoped backups, recovery snapshots, and manual settings.json.bak safety copies are never removed.");
         });
         ui.add_space(6.0);
@@ -673,7 +666,7 @@ impl SundialApp {
         ui.label("When enabled, older automatic backups are removed after saving.");
 
         ui.add_space(12.0);
-        ui.strong("Recovery");
+        super::ui::section_heading(ui, "Recovery");
         #[cfg(feature = "sqlite-account")]
         let account_source = self.document.source_info();
         ui.label("Sunrise Settings");

@@ -1252,7 +1252,7 @@ impl PackageAuthoringApp {
                             close_requested = true;
                         }
                         let mut install_button = egui::Button::new(
-                            egui::RichText::new("Review Installation").strong(),
+                            egui::RichText::new("Review").strong(),
                         )
                         .min_size([180.0, ui.spacing().interact_size.y].into());
                         if can_install {
@@ -1296,7 +1296,7 @@ impl PackageAuthoringApp {
             self.build_dialog_step = BuildDialogStep::Build;
             return;
         };
-        ui.heading("Review Installation");
+        ui.heading("Review Before Installing");
         egui::ScrollArea::vertical()
             .id_salt("install-review-contents")
             .max_height((ui.available_height() - 56.0).max(120.0))
@@ -1480,9 +1480,7 @@ impl PackageAuthoringApp {
             if ui.button("Close").clicked() {
                 self.build_status_open = false;
             }
-            if matches!(self.latest_install, Some(Err(_)))
-                && ui.button("Review Installation").clicked()
-            {
+            if matches!(self.latest_install, Some(Err(_))) && ui.button("Review").clicked() {
                 self.start_replacement_review();
                 self.build_dialog_step = BuildDialogStep::ReviewInstall;
             }
@@ -1729,7 +1727,7 @@ fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
         .filter_map(|(active, label)| active.then_some(label))
         .collect::<Vec<_>>();
         if !fields.is_empty() {
-            features.push(format!("Socket {}: {}. Edit under Weapon → Perks & Sockets → Socket Options → Show Native Rows.", index + 1, fields.join(", ")));
+            features.push(format!("Socket {}: {}. Edit under Weapon → Perks & Sockets → Socket Options → Show Socket Details.", index + 1, fields.join(", ")));
         }
     }
     features

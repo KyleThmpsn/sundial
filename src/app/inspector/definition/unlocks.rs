@@ -125,8 +125,30 @@ fn draw_hash_unlock_definition(
                     .map_or_else(|| "<none>".into(), |slot| slot.to_string()),
                 true,
             );
-            hash_detail_field(ui, "Readers", definition.tested_by.len().to_string(), true);
+            hash_detail_field(
+                ui,
+                "Known References",
+                definition.tested_by.len().to_string(),
+                true,
+            );
             draw_unlock_state(ui, index, definition, editor.snapshot, value_definition);
+            if let Some(snapshot) = editor.snapshot {
+                let evaluated = if value_definition {
+                    snapshot
+                        .evaluated_value(index, catalog)
+                        .map(|value| value.to_string())
+                } else {
+                    snapshot
+                        .evaluated_flag(index, catalog)
+                        .map(|value| value.to_string())
+                };
+                hash_detail_field(
+                    ui,
+                    "Evaluated State",
+                    evaluated.unwrap_or_else(|| "Unresolved".into()),
+                    true,
+                );
+            }
             if editor.progression_editable {
                 draw_unlock_state_editor(
                     ui,
@@ -256,7 +278,9 @@ fn draw_unlock_state(
     hash_state_field(
         ui,
         state,
-        format!("Current loaded progression state · {storage}"),
+        format!(
+            "Saved account state · {storage}\nActivity, progression, and other runtime writers can change the in-game result."
+        ),
     );
 }
 
@@ -270,10 +294,11 @@ fn draw_hash_unlock_readers(
     if definition.tested_by.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!("Readers ({})", definition.tested_by.len()))
+    egui::CollapsingHeader::new(format!("Known References ({})", definition.tested_by.len()))
         .id_salt(("hash_unlock_readers", definition_kind, definition_index))
         .default_open(definition.tested_by.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT)
         .show(ui, |ui| {
+            ui.label("Package expressions, direct references, and runtime outputs found by Sundial. Each output is identified separately.");
             for (context_index, context) in definition.tested_by.iter().enumerate() {
                 let semantic_name = (!context.name.trim().is_empty())
                     .then_some(context.name.trim())
@@ -307,6 +332,9 @@ fn draw_hash_unlock_readers(
                     ))
                     .default_open(definition.tested_by.len() == 1)
                     .show(ui, |ui| {
+                        for reference in &context.direct_references {
+                            ui.label(reference);
+                        }
                         egui::Grid::new((
                             "hash_unlock_reader_fields",
                             definition_kind,
@@ -316,12 +344,14 @@ fn draw_hash_unlock_readers(
                         .num_columns(2)
                         .spacing([16.0, 4.0])
                         .show(ui, |ui| {
-                            catalog_hash_hex_and_decimal_field(
-                                ui,
-                                catalog,
-                                "Definition Hash",
-                                context.hash,
-                            );
+                            match context.kind {
+                                crate::catalog::ProgressionContextKind::PackageExpression => {
+                                    hash_detail_field(ui, "Package Tag", format!("0x{:08X}", context.hash >> 32), true);
+                                    hash_detail_field(ui, "Expression Offset", format!("0x{:X}", context.hash as u32), true);
+                                }
+                                crate::catalog::ProgressionContextKind::ExpressionMapping => hash_detail_field(ui, "Mapping Index", context.hash.to_string(), true),
+                                _ => catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", context.hash),
+                            }
                             hash_detail_field(ui, "Name", metadata_text(&context.name), false);
                             hash_detail_field(ui, "Type", metadata_text(&context.type_name), false);
                             hash_detail_field(

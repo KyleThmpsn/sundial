@@ -107,6 +107,7 @@ impl InvestmentTable {
 
 #[derive(Debug, Default)]
 pub(in crate::app) struct UiState {
+    pub(in crate::app) read_only: bool,
     pub(super) unlock_table: UnlockTable,
     pub(super) investment_table: InvestmentTable,
     pub(super) query: String,

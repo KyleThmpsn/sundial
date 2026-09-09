@@ -214,6 +214,30 @@ pub(super) fn configure_destiny_symbol_fonts(
     fonts
         .families
         .insert(destiny_text_font_family(), destiny_text_fonts);
+    // Read the installed game's bold face without bundling game assets.
+    let heading_style = egui::TextStyle::Name("Section Heading".into());
+    let bold_family = egui::FontFamily::Name("Sundial Section Heading".into());
+    let bold_font = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Bold.otf"));
+    if let Ok(bytes) = bold_font {
+        let name = "sundial-section-bold".to_owned();
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        let mut fallbacks = vec![name];
+        fallbacks.extend(fonts.families[&egui::FontFamily::Proportional].clone());
+        fonts.families.insert(bold_family.clone(), fallbacks);
+        ctx.all_styles_mut(|style| {
+            let size = egui::TextStyle::Body.resolve(style).size;
+            style.text_styles.insert(
+                heading_style.clone(),
+                egui::FontId::new(size, bold_family.clone()),
+            );
+        });
+    } else {
+        ctx.all_styles_mut(|style| {
+            style.text_styles.remove(&heading_style);
+        });
+    }
     ctx.set_fonts(fonts);
     if errors.is_empty() {
         Ok(())

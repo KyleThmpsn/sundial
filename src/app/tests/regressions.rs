@@ -4,6 +4,7 @@ mod character_fields;
 mod confirmation_layout;
 mod loadout_safety;
 mod parhelion_confirmation;
+mod progression_access;
 mod save_validation;
 mod schema_smoke;
 mod shortcuts;

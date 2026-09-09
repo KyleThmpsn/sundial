@@ -344,7 +344,11 @@ pub(super) fn resolve_added_damage_carrier_source(
                 else {
                     continue;
                 };
-                if weapon_inventory_slot(&definition).ok() != Some(target_slot) {
+                let peer_slot = weapon_inventory_slot(&definition).ok();
+                if !matches!(
+                    peer_slot,
+                    Some(WeaponInventorySlot::Energy | WeaponInventorySlot::Power)
+                ) {
                     continue;
                 }
                 let Ok(carrier) = weapon_damage_carrier(&definition) else {
@@ -365,7 +369,11 @@ pub(super) fn resolve_added_damage_carrier_source(
                         .ok()
                         .and_then(|resource| array_at(&definition, resource).ok())
                         .map(|(count, _, _, _)| count);
-                let score = u8::from(weapon_rarity(&definition).ok() == gameplay_rarity) * 2
+                // Slot and element are authored independently. Prefer a peer in the
+                // requested slot, but a compatible elemental peer of this exact
+                // runtime entity also proves the carrier when that slot has none.
+                let score = u8::from(peer_slot == Some(target_slot)) * 4
+                    + u8::from(weapon_rarity(&definition).ok() == gameplay_rarity) * 2
                     + u8::from(peer_socket_count == gameplay_socket_count);
                 runtime_peers.push((pattern.item_hash, family, definition, score));
             }
@@ -407,7 +415,7 @@ pub(super) fn resolve_added_damage_carrier_source(
 
     let presentation = presentation_definition.ok_or_else(|| {
         invalid(
-            "No stock runtime peer or target-slot presentation donor proves the requested elemental damage carrier family",
+            "No stock elemental runtime peer or presentation donor proves the requested elemental damage carrier family",
         )
     })?;
     let carrier = weapon_damage_carrier(presentation)?;

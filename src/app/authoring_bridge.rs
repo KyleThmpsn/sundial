@@ -360,6 +360,7 @@ fn synchronize_loaded_authored_collection_unlocks(
             compact_slot: Some(slot),
             name: None,
             description: None,
+            runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         };
         let state = super::progression::collection_state_snapshot(&document)

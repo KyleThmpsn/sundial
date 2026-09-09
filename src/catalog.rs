@@ -55,7 +55,7 @@ use progression::unlock_state_indices;
 pub(crate) use progression::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
-    ProgressionFactionDefinition, ProgressionScope, UnlockDefinition,
+    ProgressionFactionDefinition, ProgressionScope, UnlockDefinition, UnlockWriter,
 };
 use scan::scan_packages;
 
@@ -368,6 +368,19 @@ fn objectives_by_unlock_value(objectives: &[ObjectiveDef]) -> HashMap<usize, Vec
 }
 
 impl Catalog {
+    #[cfg(test)]
+    pub(crate) fn with_test_progression(
+        mut self,
+        flags: Vec<UnlockDefinition>,
+        values: Vec<UnlockDefinition>,
+        progressions: Vec<ProgressionDefinition>,
+    ) -> Self {
+        self.unlock_flag_definitions = flags;
+        self.unlock_value_definitions = values;
+        self.progression_definitions = progressions;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(
         items: Vec<ItemDef>,

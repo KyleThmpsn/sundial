@@ -21,14 +21,17 @@ pub(super) const SUBTRACT_INSTRUCTION: u32 = 18;
 pub(super) const MULTIPLY_INSTRUCTION: u32 = 19;
 pub(super) const DIVIDE_INSTRUCTION: u32 = 20;
 pub(super) const MODULO_INSTRUCTION: u32 = 21;
-/// Empirical unary numeric negation retained for legacy package rows; not in the decoded table.
 pub(super) const NEGATE_NUMBER_INSTRUCTION: u32 = 22;
-pub(super) const FNV1_COMBINE_INSTRUCTION: u32 = 24;
+pub(super) const HASH_NUMBER_INSTRUCTION: u32 = 23;
+pub(super) const HASH_COMBINE_INSTRUCTION: u32 = 24;
 pub(super) const BITWISE_AND_INSTRUCTION: u32 = 25;
 pub(super) const BITWISE_OR_INSTRUCTION: u32 = 26;
 pub(super) const BITWISE_XOR_INSTRUCTION: u32 = 27;
+pub(super) const BITWISE_NOT_INSTRUCTION: u32 = 28;
 
-const FNV1_PRIME: u32 = 0x0100_0193;
+const FNV_PRIME: u32 = 0x0100_0193;
+const FNV_OFFSET_BASIS: u32 = 0x811C_9DC5;
+const NATIVE_STACK_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum ExpressionValue {
@@ -80,10 +83,12 @@ pub(in crate::app) const fn is_supported_instruction(kind: u32) -> bool {
             | DIVIDE_INSTRUCTION
             | MODULO_INSTRUCTION
             | NEGATE_NUMBER_INSTRUCTION
-            | FNV1_COMBINE_INSTRUCTION
+            | HASH_NUMBER_INSTRUCTION
+            | HASH_COMBINE_INSTRUCTION
             | BITWISE_AND_INSTRUCTION
             | BITWISE_OR_INSTRUCTION
             | BITWISE_XOR_INSTRUCTION
+            | BITWISE_NOT_INSTRUCTION
     )
 }
 
@@ -141,6 +146,14 @@ fn negate(value: ExpressionValue) -> ExpressionValue {
     })
 }
 
+// Client build 86657, evaluator RVA 0x554310. The hash arms process the four
+// big-endian bytes, XORing each byte before multiplying. This is FNV-1a.
+fn hash_number(seed: u32, value: i32) -> i32 {
+    value.to_be_bytes().into_iter().fold(seed, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(FNV_PRIME)
+    }) as i32
+}
+
 fn apply_stack_instruction(kind: u32, stack: &mut Vec<ExpressionValue>) -> Option<bool> {
     let result = match kind {
         NOT_INSTRUCTION => negate(stack.pop()?),
@@ -191,10 +204,24 @@ fn apply_stack_instruction(kind: u32, stack: &mut Vec<ExpressionValue>) -> Optio
                 .map(|()| true);
         }
         DIVIDE_INSTRUCTION => {
-            return push_numeric_operation(stack, i32::checked_div).map(|()| true);
+            return push_numeric_operation(stack, |left, right| {
+                if right == 0 {
+                    Some(0)
+                } else {
+                    left.checked_div(right)
+                }
+            })
+            .map(|()| true);
         }
         MODULO_INSTRUCTION => {
-            return push_numeric_operation(stack, i32::checked_rem).map(|()| true);
+            return push_numeric_operation(stack, |left, right| {
+                if right == 0 {
+                    Some(0)
+                } else {
+                    left.checked_rem(right)
+                }
+            })
+            .map(|()| true);
         }
         NEGATE_NUMBER_INSTRUCTION => {
             let value = stack.pop()?;
@@ -203,9 +230,20 @@ fn apply_stack_instruction(kind: u32, stack: &mut Vec<ExpressionValue>) -> Optio
             }));
             return Some(true);
         }
-        FNV1_COMBINE_INSTRUCTION => {
+        HASH_NUMBER_INSTRUCTION | BITWISE_NOT_INSTRUCTION => {
+            let value = stack.pop()?;
+            stack.push(value.number().map_or(ExpressionValue::Unknown, |value| {
+                ExpressionValue::Number(if kind == HASH_NUMBER_INSTRUCTION {
+                    hash_number(FNV_OFFSET_BASIS, value)
+                } else {
+                    !value
+                })
+            }));
+            return Some(true);
+        }
+        HASH_COMBINE_INSTRUCTION => {
             return push_numeric_operation(stack, |left, right| {
-                Some(((left as u32).wrapping_mul(FNV1_PRIME) ^ right as u32) as i32)
+                Some(hash_number(left as u32, right))
             })
             .map(|()| true);
         }
@@ -232,7 +270,7 @@ fn evaluate_program_with(
     value: &mut impl FnMut(usize) -> Option<i32>,
 ) -> Option<ExpressionValue> {
     if tokens.is_empty() {
-        return Some(ExpressionValue::Boolean(true));
+        return Some(ExpressionValue::Number(0));
     }
 
     let mut stack = Vec::new();
@@ -263,6 +301,9 @@ fn evaluate_program_with(
             _ if apply_stack_instruction(token.kind, &mut stack)? => {}
             _ => return None,
         }
+        if stack.len() > NATIVE_STACK_CAPACITY {
+            return None;
+        }
     }
 
     if stack.len() == 1 {
@@ -279,6 +320,10 @@ pub(super) fn evaluate_expression_with(
     flag: impl FnMut(usize) -> Option<bool>,
     value: impl FnMut(usize) -> Option<i32>,
 ) -> Option<bool> {
+    // An absent condition passes. Numeric programs, including pool rows, return zero.
+    if tokens.is_empty() {
+        return Some(true);
+    }
     evaluate_expression_value_with(tokens, expression_pool, flag, value)?.truthy()
 }
 
@@ -373,7 +418,7 @@ mod tests {
             assert_eq!(evaluate(&program), Some(true), "opcode {opcode}");
         }
 
-        let combined = 6_u32.wrapping_mul(FNV1_PRIME) ^ 7;
+        let combined = 0xE409_7F1F_u32;
         assert_eq!(
             evaluate(&[
                 token(11, 6),
@@ -462,10 +507,100 @@ mod tests {
 
     #[test]
     fn refuses_undocumented_or_underflowing_programs() {
-        assert_eq!(evaluate(&[token(11, 6), token(11, 7), token(23, 0)]), None);
         assert_eq!(evaluate(&[token(99, 1)]), None);
         assert_eq!(evaluate(&[token(3, u32::MAX)]), None);
-        assert_eq!(evaluate(&[token(11, 1), token(11, 0), token(20, 0)]), None);
+        assert_eq!(
+            evaluate(&[token(11, 1), token(11, 0), token(20, 0)]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn native_unary_hash_and_complement_use_the_full_integer() {
+        for (input, expected) in [
+            (0, 0x4B95_F515),
+            (0x1234_5678, 0x5B14_54E5),
+            (u32::MAX, 0xE316_0FB1),
+        ] {
+            assert_eq!(
+                evaluate(&[
+                    token(11, input),
+                    token(23, 0),
+                    token(11, expected),
+                    token(8, 0),
+                ]),
+                Some(true)
+            );
+        }
+        assert_eq!(
+            evaluate(&[
+                token(11, 0x1234_5678),
+                token(28, 0),
+                token(11, 0xEDCB_A987),
+                token(8, 0),
+            ]),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn native_signed_division_and_modulo_return_zero_for_zero_divisors() {
+        for (opcode, expected) in [(20, -2_i32), (21, -1)] {
+            assert_eq!(
+                evaluate(&[
+                    token(11, (-7_i32) as u32),
+                    token(11, 3),
+                    token(opcode, 0),
+                    token(11, expected as u32),
+                    token(8, 0),
+                ]),
+                Some(true)
+            );
+            assert_eq!(
+                evaluate(&[
+                    token(11, 7),
+                    token(11, 0),
+                    token(opcode, 0),
+                    token(11, 0),
+                    token(8, 0),
+                ]),
+                Some(true)
+            );
+            // Native IDIV traps on this input. Refuse it without crashing Sundial.
+            assert_eq!(
+                evaluate(&[
+                    token(11, i32::MIN as u32),
+                    token(11, u32::MAX),
+                    token(opcode, 0),
+                ]),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn absent_conditions_pass_but_empty_numeric_pool_rows_return_zero() {
+        assert_eq!(evaluate(&[]), Some(true));
+        assert_eq!(
+            evaluate_expression_value_with(&[], &[], |_| None, |_| None),
+            Some(ExpressionValue::Number(0))
+        );
+        assert_eq!(
+            evaluate_expression_with(
+                &[token(12, 0), token(11, 0), token(8, 0)],
+                &[vec![]],
+                |_| None,
+                |_| None,
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn rejects_programs_that_overflow_the_native_stack() {
+        let mut program = vec![token(11, 1); 257];
+        program.extend(vec![token(17, 0); 256]);
+        assert_eq!(evaluate(&program), None);
     }
 
     #[test]

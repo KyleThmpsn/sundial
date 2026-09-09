@@ -57,8 +57,7 @@ pub(super) fn progression_definition_matches(
                 || faction.description.to_lowercase().contains(query)
         })
         || definition.steps.iter().any(|step| {
-            step.name.to_lowercase().contains(query)
-                || step.progress_total.to_string().contains(query)
+            step.name.to_lowercase().contains(query) || step.cost.to_string().contains(query)
         })
         || definition.reward_items.iter().any(|reward| {
             format!("{:08x}", reward.item_hash).contains(query)

@@ -73,7 +73,7 @@ fn successful_install_report_is_compact_and_ends_with_close() {
         ] {
             assert!(labels.contains(label), "Missing {label}");
         }
-        assert!(!labels.contains("Review Installation"));
+        assert!(!labels.contains("Review"));
         assert!(!labels.contains("Back to Build"));
         assert!(!labels.contains("parhelion-backup-v2"));
         assert!(!labels.contains(r"\\?\"));
@@ -578,10 +578,7 @@ fn build_pages_replace_each_other_and_selection_precedes_build() {
             labels.contains("Build Validated"),
             step == BuildDialogStep::Build
         );
-        assert_eq!(
-            labels.contains("Review Installation"),
-            step != BuildDialogStep::Install
-        );
+        assert_eq!(labels.contains("Review"), step != BuildDialogStep::Install);
         assert_eq!(
             labels.contains("This replaces your installed custom weapon set."),
             step == BuildDialogStep::ReviewInstall
@@ -1310,7 +1307,7 @@ fn text_origins(output: &egui::FullOutput, label: &str) -> Vec<egui::Pos2> {
 }
 
 #[test]
-fn socket_options_plug_safety_selection_survives_menu_close() {
+fn visible_plug_safety_selection_survives_menu_close() {
     fn frame(
         ctx: &egui::Context,
         app: &mut PackageAuthoringApp,
@@ -1359,13 +1356,7 @@ fn socket_options_plug_safety_selection_survives_menu_close() {
     for target in [PlugSelectionMode::AnyPlug, PlugSelectionMode::Supported] {
         frame(&ctx, &mut app, vec![]);
         let output = frame(&ctx, &mut app, vec![]);
-        click(
-            &ctx,
-            &mut app,
-            text_origin(&output, "Socket Options") + egui::vec2(8.0, 6.0),
-        );
-        frame(&ctx, &mut app, vec![]);
-        let output = frame(&ctx, &mut app, vec![]);
+        assert!(text(&output).contains("Plug Safety"));
         let current = app.plug_selection_mode.label();
         click(
             &ctx,
@@ -1590,7 +1581,7 @@ fn a_private_clone_without_value_edits_still_exists_and_can_be_removed() {
 fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     let mut app = PackageAuthoringApp {
         recipe: WeaponRecipe::from_json_str(include_str!(
-            "../../recipes/breach-notice.parhelion.json"
+            "../../recipes/vaultbreaker.parhelion.json"
         ))
         .unwrap(),
         ..Default::default()
@@ -1795,7 +1786,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 app.recipe.name
             );
             assert!(text(&output).contains("Perks & Sockets"));
-            if app.recipe.namespace == "parhelion.breach-notice" && width >= 860.0 {
+            if app.recipe.namespace == "parhelion.vaultbreaker" && width >= 860.0 {
                 let baseline = |label: &str| {
                     output
                         .shapes

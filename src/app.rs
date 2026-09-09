@@ -134,16 +134,16 @@ enum ViewMode {
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 enum PreferencesTab {
     #[default]
-    Interface,
     Editing,
+    Interface,
     Installation,
     SavingRecovery,
 }
 
 impl PreferencesTab {
     const ALL: [Self; 4] = [
-        Self::Interface,
         Self::Editing,
+        Self::Interface,
         Self::Installation,
         Self::SavingRecovery,
     ];
@@ -540,9 +540,6 @@ impl SundialApp {
     }
 
     fn select_view(&mut self, view: ViewMode) {
-        if view == ViewMode::Progression && !self.preferences.experimental_progression {
-            return;
-        }
         if self.view_mode == view {
             if should_open_json_editor_window_on_selection(
                 self.preferences.always_open_json_editor_in_second_window,
@@ -615,7 +612,14 @@ impl SundialApp {
                 plugs: catalog_stats.plugs,
                 icons: catalog_stats.icons,
                 descriptions: catalog_stats.descriptions,
+                unlock_flags: self.manifest.unlock_flag_definitions().len(),
+                unlock_values: self.manifest.unlock_value_definitions().len(),
+                progressions: self.manifest.progression_definitions().len(),
+                objectives: self.manifest.objectives().len(),
+                expressions: self.manifest.shared_expression_pool().len(),
+                progression_error: self.manifest.progression_package_error(),
             },
+            recent_activity: &self.activity_log.text(),
             current_status: &self.status,
             source_warning: self.source_warning.as_deref(),
             has_unsaved_changes: self.has_unsaved_changes(),
@@ -885,6 +889,12 @@ impl SundialApp {
                     }
                 }
                 ViewMode::Progression => {
+                    let read_only = !self.preferences.experimental_progression;
+                    self.progression_ui.read_only = read_only;
+                    self.collections_ui.read_only = read_only;
+                    if read_only {
+                        ui.label("Browsing only. Enable Progression Editing under Preferences > Editing > Experimental to change progression state.");
+                    }
                     ui.heading("Progression");
                     ui.add_space(8.0);
                     let section_changed = ui

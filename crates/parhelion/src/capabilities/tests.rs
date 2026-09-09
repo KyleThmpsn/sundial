@@ -309,6 +309,31 @@ fn cross_slot_profiles_require_a_compatible_target_slot_presentation_donor() {
 }
 
 #[test]
+fn moved_machine_gun_keeps_native_slot_appearance_choices() {
+    let mut base = summary(
+        Some(WeaponInventorySlot::Power),
+        WeaponDamageProfile::KineticEmpty,
+    );
+    base.type_name = "Machine Gun".to_owned();
+    let mut appearance = base.clone();
+    appearance.hash += 1;
+    for target in [WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy] {
+        assert!(presentation_donor_candidate_is_compatible(
+            &appearance,
+            &base,
+            target
+        ));
+        appearance.weapon_translation_group = Some(2);
+        assert!(!presentation_donor_candidate_is_compatible(
+            &appearance,
+            &base,
+            target
+        ));
+        appearance.weapon_translation_group = base.weapon_translation_group;
+    }
+}
+
+#[test]
 fn kinetic_energy_appearance_requires_matching_known_animations() {
     for (source, target) in [
         (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic),

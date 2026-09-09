@@ -140,3 +140,24 @@ fn exact_size_limit_rotates_only_when_the_next_entry_would_overflow() {
         limit as u64
     );
 }
+
+#[test]
+fn raw_diagnostic_snapshots_rotate_and_truncate_at_utf8_boundaries() {
+    let directory = TestDirectory::new("diagnostic-rotation");
+    let path = directory.0.join("sundial-troubleshooting.log");
+    append_text_at(&path, "First snapshot", 100).unwrap();
+    append_text_at(&path, &"é".repeat(100), 100).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.len() <= 100);
+    assert!(text.ends_with("\n[truncated]\n"));
+    assert_eq!(
+        fs::read_to_string(path.with_extension("log.1")).unwrap(),
+        "First snapshot"
+    );
+    append_text_at(&path, "Next session", 100).unwrap();
+    assert_eq!(
+        fs::read_to_string(path.with_extension("log.2")).unwrap(),
+        "First snapshot"
+    );
+    assert!(append_text_at(&path, "invalid limit", 0).is_err());
+}

@@ -102,7 +102,9 @@ pub(super) fn validate_weapon_clone_text(text: &WeaponCloneText) -> AuthoringRes
             validate_localized_text(label, value)?;
         }
     }
-    validate_localized_text("Flavor text", &text.flavor)?;
+    if !text.flavor.is_empty() {
+        validate_localized_text("Flavor text", &text.flavor)?;
+    }
     validate_localized_text("Source text", &text.source)?;
     let mut locales = BTreeSet::new();
     for locale in &text.locale_overrides {
@@ -166,6 +168,9 @@ pub(super) fn validate_weapon_clone_text(text: &WeaponCloneText) -> AuthoringRes
             ),
         ] {
             if let Some(value) = value {
+                if label == "flavor" && value.is_empty() {
+                    continue;
+                }
                 validate_localized_text(&format!("Locale {} {label}", locale.locale_index), value)?;
             }
         }
@@ -320,6 +325,19 @@ pub(super) fn validate_socket_column_choices(
     lane: usize,
     column: &WeaponSocketColumnOverride,
 ) -> AuthoringResult<()> {
+    if column.socket_type == Some(u16::MAX) && column.choices.is_empty() {
+        if !column.choice_weight_bits.is_empty()
+            || !column.choice_conditions.is_empty()
+            || column.reusable_plug_set_index.is_some()
+            || column.randomized_plug_set_index.is_some()
+            || !column.randomized_selection_program.is_empty()
+        {
+            return Err(invalid(format!(
+                "Removed socket {lane} cannot retain plug selection settings"
+            )));
+        }
+        return Ok(());
+    }
     if !(1..=MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES).contains(&column.choices.len()) {
         return Err(invalid(format!(
             "Authored socket column {lane} must contain between one and {MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES} choices"
@@ -906,6 +924,7 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
                 .collect::<Vec<_>>();
             for (socket_index, socket_type) in socket_types.iter().copied().enumerate() {
                 if let Some(socket_type) = socket_type
+                    && socket_type != u16::MAX
                     && !catalog.weapon_socket_type_is_known(spec.donor_item_hash, socket_type)
                 {
                     return Err(invalid(format!(

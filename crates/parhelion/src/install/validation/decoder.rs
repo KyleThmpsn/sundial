@@ -1,11 +1,11 @@
-//! Initialize decompression before reading a staged runtime-map payload.
+//! Initialize decompression before reading runtime maps or native ownership tables.
 use std::{path::Path, sync::OnceLock};
 
 // tiger-pkg retains its decoder for the process lifetime. Raw package validation must
 // remain usable without it, but compressed payload reads must never reach its panic path.
 static READY: OnceLock<()> = OnceLock::new();
 
-pub(super) fn ensure_initialized(target_packages: &Path) -> Result<(), String> {
+pub(in crate::install) fn ensure_initialized(target_packages: &Path) -> Result<(), String> {
     if READY.get().is_some() {
         return Ok(());
     }
@@ -53,6 +53,8 @@ mod tests {
     fn missing_decoder_returns_an_error_in_a_fresh_process() {
         if std::env::var_os(CHILD).is_some() {
             let packages = std::env::current_dir().unwrap().join("packages");
+            let error = crate::install::identities::installed_identities(&packages).unwrap_err();
+            assert!(error.contains("oo2core_3_win64.dll"), "{error}");
             let error = super::ensure_initialized(&packages).unwrap_err();
             assert!(error.contains("compressed package validation"), "{error}");
             assert!(error.contains("oo2core_3_win64.dll"), "{error}");
