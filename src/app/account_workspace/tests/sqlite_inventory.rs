@@ -1,4 +1,4 @@
-//! Item identity and opaque state regressions for the optional SQLite account source.
+//! Item identity and opaque state regressions for the SQLite account source.
 
 use super::*;
 use crate::app::inventory::{NewInventoryItem, set_inventory_locked_flag};
@@ -46,7 +46,7 @@ fn equip_subclass(document: &mut WorkspaceDocument, item_index: usize) {
 #[test]
 fn new_subclass_abilities_survive_swaps_before_save_and_reload_while_stored() {
     let directory = TestDirectory::new("sqlite-new-subclass-abilities");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [5, 7, 10, 11, 2]);
     let mut document = load_fixture(&directory);
@@ -101,7 +101,7 @@ fn new_subclass_abilities_survive_swaps_before_save_and_reload_while_stored() {
 #[test]
 fn replacing_the_last_loaded_item_does_not_reuse_its_persistence_state() {
     let directory = TestDirectory::new("sqlite-replaced-item-identity");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [6, 8, 20, 21, 3]);
     let mut document = load_fixture(&directory);
@@ -120,7 +120,7 @@ fn replacing_the_last_loaded_item_does_not_reuse_its_persistence_state() {
     let connection = Connection::open(database_path).unwrap();
     let serial: i64 = connection
         .query_row(
-            "SELECT mutation_serial FROM character_items WHERE location = 1 AND position = 0",
+            "SELECT mutation_serial FROM items WHERE location = 1 AND position = 0",
             [],
             |row| row.get(0),
         )
@@ -134,7 +134,7 @@ fn replacing_the_last_loaded_item_does_not_reuse_its_persistence_state() {
 #[test]
 fn removing_a_new_subclass_does_not_leak_its_unsaved_ability_selection() {
     let directory = TestDirectory::new("sqlite-removed-new-subclass");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [5, 7, 10, 11, 2]);
     let mut document = load_fixture(&directory);
@@ -162,15 +162,15 @@ fn removing_a_new_subclass_does_not_leak_its_unsaved_ability_selection() {
 }
 
 #[test]
-fn sqlite_lock_controls_preserve_upper_flags_for_stored_and_equipped_items() {
-    const FLAGS: u32 = 0xABCD_EF01;
+fn sqlite_lock_controls_preserve_masterwork_flags_for_stored_and_equipped_items() {
+    const FLAGS: u32 = 5;
     let directory = TestDirectory::new("sqlite-opaque-item-flags");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, FLAGS);
     Connection::open(&database_path)
         .unwrap()
         .execute(
-            "UPDATE character_items SET flags = ? WHERE location = 0 AND position = 0",
+            "UPDATE items SET flags = ? WHERE location = 0 AND position = 0",
             [i64::from(FLAGS)],
         )
         .unwrap();
@@ -187,8 +187,8 @@ fn sqlite_lock_controls_preserve_upper_flags_for_stored_and_equipped_items() {
             .iter()
             .find(|item| item.slot == "kinetic")
             .unwrap();
-        assert_eq!(inventory[0].flags, Some(u8::from(!locked)));
-        assert_eq!(kinetic.flags, Some(u8::from(!locked)));
+        assert_eq!(inventory[0].flags, Some(4 | u8::from(!locked)));
+        assert_eq!(kinetic.flags, Some(4 | u8::from(!locked)));
         assert!(kinetic.issues.is_empty());
         account::apply_inventory_item_action(
             &mut document,

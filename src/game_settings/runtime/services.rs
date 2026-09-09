@@ -168,7 +168,9 @@ pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value, json_account: bool) 
             }
         });
     }
-    changed |= super::entitlements::draw(ui, document);
+    if json_account {
+        changed |= super::entitlements::draw(ui, document);
+    }
     changed |= super::character_page::draw(ui, document, json_account);
     if let Err(error) = validate(document, json_account) {
         ui.colored_label(ui.visuals().error_fg_color, error);
@@ -199,8 +201,8 @@ pub(super) fn validate(document: &Value, json_account: bool) -> Result<(), Strin
             return Err("Client join slots must be 400–8192".into());
         }
     }
-    super::entitlements::validate(document)?;
     if json_account {
+        super::entitlements::validate(document)?;
         super::character_page::validate(document)?;
     }
     Ok(())

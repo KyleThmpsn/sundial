@@ -42,10 +42,12 @@ use super::{
 };
 
 mod add_dialogs;
+mod browser;
 mod document;
 mod evaluation;
 mod hierarchy;
 mod mutations;
+mod native;
 mod override_tables;
 mod page;
 mod state;
@@ -63,7 +65,7 @@ use document::{
     FlagOverride, FlagRun, IndexedValue, InvestmentPolicy, OBJECTIVE_VALUE_CAPACITY,
     PROFILE_FLAG_BANK, PROFILE_FLAG_CAPACITY, PROGRESSION_DEFINITION_CAPACITY, Progression,
     ProgressionValue, RESERVED_CHARACTER_OBJECTIVE_VALUES, UnlockPolicy, ValueOverride,
-    compress_flag_slots, expanded_flag_slots, parse, parse_investment, parse_unlocks,
+    compress_flag_slots, expanded_flag_slots, parse, parse_document_unlocks, parse_investment,
 };
 pub(super) use document::{
     CollectionStateSnapshot, collection_flag_state_text, collection_state_snapshot,

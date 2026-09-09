@@ -2694,7 +2694,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "parhelion"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "egui",
@@ -2702,6 +2702,7 @@ dependencies = [
  "image",
  "libloading 0.8.9",
  "rfd",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
@@ -3552,7 +3553,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sundial"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "directories",
  "eframe",
@@ -3575,11 +3576,11 @@ dependencies = [
 
 [[package]]
 name = "sundial-account"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "sundial-suite"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "parhelion",
  "sundial",

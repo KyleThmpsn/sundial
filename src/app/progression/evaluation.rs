@@ -14,6 +14,9 @@ impl CollectionStateSnapshot {
             return None;
         }
         let authored = self.flag_overrides.get(&index).copied();
+        if authored.is_some_and(|value| value > 2) {
+            return None;
+        }
         if let Some(value @ (1 | 2)) = authored {
             return Some(value == 2);
         }

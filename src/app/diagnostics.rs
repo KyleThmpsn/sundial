@@ -202,7 +202,7 @@ fn append_build_information(report: &mut String) {
     #[cfg(feature = "sqlite-account")]
     writeln!(
         report,
-        "experimental_pr88_sqlite_account_support = {}",
+        "sqlite_account_support = {}",
         cfg!(feature = "sqlite-account")
     )
     .expect("writing to a String cannot fail");
@@ -442,7 +442,7 @@ fn append_settings_candidates(report: &mut String, install: &Path) {
         let state_db = directory.join("state.db");
         #[cfg(feature = "sqlite-account")]
         {
-            let sqlite = directory.join("state.sqlite3");
+            let sqlite = directory.join("investment.sqlite3");
             append_path(report, "state_sqlite3", &sqlite);
             writeln!(report, "state_sqlite3_exists = {}", sqlite.is_file())
                 .expect("writing to a String cannot fail");
@@ -791,7 +791,7 @@ mod tests {
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&packages).unwrap();
         let settings = sunrise.join("settings.json");
-        let database = sunrise.join("state.sqlite3");
+        let database = sunrise.join("investment.sqlite3");
         fs::write(&settings, br#"{"secret":"not-in-report"}"#).unwrap();
         fs::write(&database, b"private account bytes").unwrap();
         fs::write(cache.join("build_data.bin"), b"private cache bytes").unwrap();

@@ -146,10 +146,13 @@ pub(super) fn draw_key_bindings(
     settings: &Map<String, Value>,
     state: &mut KeyBindingUiState,
     editable: bool,
+    numeric: bool,
 ) -> CommandBatch {
     let mut changed = CommandBatch::default();
     ui.heading("Key Bindings");
-    if editable {
+    if numeric {
+        ui.label("Edit native input codes. Use -1 to leave an input unassigned. Save and fully restart Destiny 2 to apply changes.");
+    } else if editable {
         ui.label(binding_help(show_presence_gated_preference(
             settings,
             KEY_BINDING_SOURCE_KEY,
@@ -175,7 +178,7 @@ pub(super) fn draw_key_bindings(
                 );
             });
         ui.label(
-            "Account uses the bindings in this settings.json. Computer leaves bindings under Destiny's control in cvars.xml.",
+            "Account uses the bindings in the active account source. Computer leaves bindings under Destiny's control in cvars.xml.",
         );
         if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
             ui.colored_label(
@@ -222,7 +225,16 @@ pub(super) fn draw_key_bindings(
                     ui.end_row();
                     continue;
                 };
-                if editable {
+                if numeric {
+                    changed |=
+                        numeric_binding(ui, key, KeyBindingSlot::Primary, binding.get("primary"));
+                    changed |= numeric_binding(
+                        ui,
+                        key,
+                        KeyBindingSlot::Secondary,
+                        binding.get("secondary"),
+                    );
+                } else if editable {
                     changed |= binding_picker(ui, state, key, "primary", binding.get("primary"));
                     changed |=
                         binding_picker(ui, state, key, "secondary", binding.get("secondary"));
@@ -653,5 +665,30 @@ pub(super) fn input_code(
         KeyBindingFormat::Named => Err(format!(
             "Key binding {label} {half} must be unassigned, a recognized key name, or one modifier plus a key for Sunrise's named-binding format"
         )),
+    }
+}
+
+fn numeric_binding(
+    ui: &mut egui::Ui,
+    action: &str,
+    slot: KeyBindingSlot,
+    value: Option<&Value>,
+) -> Option<AccountSettingsCommand> {
+    let mut code = value.and_then(Value::as_i64).unwrap_or(-1);
+    if ui
+        .add(egui::DragValue::new(&mut code).range(-1..=0x473))
+        .on_hover_text("Use -1 for unassigned, or an input from 0 to 115 with one optional modifier: add 256 for Alt, 512 for Control, or 1024 for Shift.")
+        .changed()
+    {
+        Some(AccountSettingsCommand::Set {
+            key: AccountSettingKey::key_binding(action, slot),
+            value: if code < 0 {
+                AccountSettingValue::Unassigned
+            } else {
+                AccountSettingValue::InputCode(code as u16)
+            },
+        })
+    } else {
+        None
     }
 }

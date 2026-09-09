@@ -159,6 +159,66 @@ fn actual_schemas_all_pages_preserve_data_across_sizes_themes_and_navigation() {
     );
 }
 
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
+    for size in [egui::vec2(640.0, 480.0), egui::vec2(1280.0, 800.0)] {
+        for dark in [false, true] {
+            let directory = TestDirectory::new("v18-page-smoke");
+            let json: Value = serde_json::from_str(include_str!(
+                "../../../../tests/fixtures/sunrise-v18-169fd29-defaults.json"
+            ))
+            .unwrap();
+            let mut app = with_document(directory.0.clone(), json.clone());
+            let database = crate::persistence::investment_path(&app.settings_path);
+            std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+            let db = rusqlite::Connection::open(&database).unwrap();
+            db.execute_batch("BEGIN").unwrap();
+            for sql in [
+                include_str!("../../../persistence/sqlite_account/fixtures/investment_schema.sql"),
+                include_str!(
+                    "../../../persistence/sqlite_account/fixtures/account_settings_schema.sql"
+                ),
+                include_str!(
+                    "../../../persistence/sqlite_account/fixtures/investment_defaults.sql"
+                ),
+                include_str!(
+                    "../../../persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+                ),
+            ] {
+                db.execute_batch(sql).unwrap();
+            }
+            db.execute_batch("COMMIT").unwrap();
+            app.document = WorkspaceDocument::load(json, &app.settings_path);
+            assert_eq!(
+                app.document.source_info().kind,
+                account::AccountSourceKind::Sqlite
+            );
+            app.persisted_document = app.document.clone();
+            let original = app.document.clone();
+            let native = crate::persistence::sqlite_account::package::read(&database).unwrap();
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            for (index, page) in pages().into_iter().enumerate() {
+                select(&mut app, page);
+                for _ in 0..2 {
+                    draw(&mut app, &ctx, size);
+                    assert_eq!(app.document, original, "v18 page {index}");
+                    assert!(!app.dirty, "v18 page {index}");
+                }
+            }
+            assert_eq!(
+                crate::persistence::sqlite_account::package::read(&database).unwrap(),
+                native
+            );
+        }
+    }
+}
+
 #[test]
 fn committed_historical_defaults_validate_without_repair_or_schema_upgrade() {
     for fixture in FIXTURES.into_iter().chain(HISTORICAL_FIXTURES) {

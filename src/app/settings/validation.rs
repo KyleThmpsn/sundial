@@ -21,7 +21,7 @@ pub(in crate::app) fn validate_workspace_document(
         validate_document(document.json())
     } else {
         game_settings::validate_non_account(document.json())?;
-        progression::validate(document.json())
+        progression::validate(&document.progression_view(0))
     }
 }
 
@@ -259,7 +259,7 @@ pub(in crate::app) fn character_ability_issue_for_values(
 pub(in crate::app) fn repair_known_ability_pairs(
     document: &mut account::WorkspaceDocument,
 ) -> Result<usize, String> {
-    if document.supports_v13_account() {
+    if document.uses_json_account() && document.supports_v13_account() {
         return Ok(0);
     }
     let mut repairs = Vec::new();

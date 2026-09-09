@@ -677,10 +677,21 @@ impl SundialApp {
                     .selectable_label(self.selected_character == index, label)
                     .clicked()
                 {
+                    if self.selected_character != index {
+                        self.progression_ui.invalidate_document();
+                        self.collections_ui.reset_navigation();
+                    }
                     self.selected_character = index;
                 }
             }
         });
+    }
+
+    fn draw_progression_character_tabs(&mut self, ui: &mut egui::Ui) {
+        if !self.document.uses_json_account() {
+            self.draw_character_tabs(ui);
+            ui.separator();
+        }
     }
 
     fn open_package_authoring(&mut self, ctx: &egui::Context) {
@@ -776,11 +787,18 @@ impl SundialApp {
 }
 
 fn preserve_inactive_json_account_domains(defaults: &mut Value, source: &Value) {
+    if let Some(server) = defaults.get_mut("server").and_then(Value::as_object_mut) {
+        if let Some(value) = source.pointer("/server/entitlements") {
+            server.insert("entitlements".into(), value.clone());
+        } else {
+            server.remove("entitlements");
+        }
+    }
     let Some(default_state) = defaults.get_mut("state").and_then(Value::as_object_mut) else {
         return;
     };
     let source_state = source.get("state").and_then(Value::as_object);
-    for key in ["account", "characters"] {
+    for key in ["account", "characters", "unlocks", "investment"] {
         if let Some(value) = source_state.and_then(|state| state.get(key)) {
             default_state.insert(key.to_owned(), value.clone());
         } else {
@@ -793,15 +811,15 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind)
     let message = match source {
         AccountSourceKind::Json => return,
         AccountSourceKind::Sqlite => {
-            "state.sqlite3 is the active account source. /state/account and /state/characters in this JSON are inactive legacy data; editing them changes settings.json only and will not change or sync the active account."
+            "investment.sqlite3 is the active account source. Account, character, unlock, investment and entitlement data in this JSON is inactive legacy data. Editing it changes settings.json only."
         }
         AccountSourceKind::Blocked => {
-            "SQLite account loading is blocked. /state/account and /state/characters in this JSON are not a fallback and editing them will not unblock or change the active account source."
+            "SQLite account loading is blocked. Legacy account data in this JSON is not a fallback. Editing it will not unblock or change the active account source."
         }
     };
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Account source notice:");
+            ui.strong("Account Source Notice:");
             ui.label(message);
         });
     });
@@ -857,10 +875,11 @@ impl SundialApp {
                     let account_settings = account::account_settings_map(&self.document);
                     let bindings_editable = account::named_key_bindings_editable(&self.document);
                     let json_account = self.document.uses_json_account();
+                    let mut runtime_document=self.document.runtime_view();
                     let edits = game_settings::draw_page(
                         ui,
                         game_settings::PageContext {
-                            json_document: self.document.json_mut(),
+                            json_document: &mut runtime_document,
                             account_settings: account_settings.as_ref().map_err(String::as_str),
                             bindings_editable,
                             json_account,
@@ -869,6 +888,10 @@ impl SundialApp {
                             key_bindings: &mut self.key_binding_ui,
                         },
                     );
+                    if edits.json_changed && let Err(error)=self.document.apply_runtime_view(runtime_document) {
+                        self.set_status(error,true);
+                        return;
+                    }
                     let account_changed =
                         match account::apply_account_settings(
                             &mut self.document,
@@ -889,7 +912,8 @@ impl SundialApp {
                     }
                 }
                 ViewMode::Progression => {
-                    let read_only = !self.preferences.experimental_progression;
+                    self.draw_progression_character_tabs(ui);
+                    let read_only = !self.preferences.experimental_progression || self.document.account_editing_blocked().is_some();
                     self.progression_ui.read_only = read_only;
                     self.collections_ui.read_only = read_only;
                     if read_only {
@@ -930,6 +954,7 @@ impl SundialApp {
                     }
                     ui.separator();
 
+                    let mut progression_document = self.document.progression_view(self.selected_character);
                     match self.progression_section {
                         ProgressionSection::Unlocks | ProgressionSection::Investment => {
                             let view = match self.progression_section {
@@ -939,12 +964,16 @@ impl SundialApp {
                             };
                             if progression::draw_content(
                                 ui,
-                                self.document.json_mut(),
+                                &mut progression_document,
                                 &self.manifest,
                                 self.destiny_symbol_font_error.as_deref(),
                                 &mut self.progression_ui,
                                 view,
                             ) {
+                                if let Err(error)=self.document.apply_progression_view(self.selected_character,progression_document.clone()) {
+                                    self.set_status(error,true);
+                                    return;
+                                }
                                 self.dirty = true;
                                 self.set_status(
                                     "Progression updated. Click Save to write it",
@@ -955,10 +984,14 @@ impl SundialApp {
                         ProgressionSection::Collections => {
                             if collections_page::draw_content(
                                 ui,
-                                self.document.json_mut(),
+                                &mut progression_document,
                                 &self.manifest,
                                 &mut self.collections_ui,
                             ) {
+                                if let Err(error)=self.document.apply_progression_view(self.selected_character,progression_document.clone()) {
+                                    self.set_status(error,true);
+                                    return;
+                                }
                                 self.dirty = true;
                                 self.set_status(
                                     "Progression state updated. Click Save to write it",
@@ -1042,15 +1075,25 @@ impl SundialApp {
             let context = inspector::take_definition_context(ctx, hash);
             self.hash_inspection.open_with_context(hash, context);
         }
+        let mut inspector_document = self.document.progression_view(self.selected_character);
         let inspector_changed = inspector::draw_catalog_hash_window(
             ctx,
             &self.manifest,
-            Some(self.document.json_mut()),
-            self.preferences.experimental_progression && !self.json_editor.has_unapplied_changes(),
+            Some(&mut inspector_document),
+            self.preferences.experimental_progression
+                && self.document.account_editing_blocked().is_none()
+                && !self.json_editor.has_unapplied_changes(),
             &mut self.hash_inspection,
             "global",
         );
         if inspector_changed {
+            if let Err(error) = self
+                .document
+                .apply_progression_view(self.selected_character, inspector_document)
+            {
+                self.set_status(error, true);
+                return;
+            }
             self.dirty = true;
             self.progression_ui.invalidate_document();
             self.set_status("Progression state updated. Click Save to write it", false);

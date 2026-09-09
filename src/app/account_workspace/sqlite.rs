@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde_json::json;
 use sundial_account as domain;
 
-use super::super::{ARMOR_SLOTS, SLOTS, WEAPON_SLOTS};
+use super::super::{ARMOR_SLOTS, WEAPON_SLOTS};
 use super::{
     DismantleGearClass, DismantleRarity, DismantleRewardAction, DismantleRewardLocation,
     DismantleRewardSnapshot, EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue,
@@ -12,7 +12,7 @@ use super::{
     SqliteAccountDocument,
 };
 
-const SQLITE_PATH: &str = "state.sqlite3";
+const SQLITE_PATH: &str = "investment.sqlite3";
 
 pub(super) fn character_metadata(
     document: &SqliteAccountDocument,
@@ -315,12 +315,11 @@ pub(super) fn apply_inventory_item_action(
 ) -> Result<(), InventoryError> {
     let item = inventory_item(document, location)?;
     let item_id = item.id;
-    let current_flags = item.flags;
     let command = match action {
         InventoryItemAction::Remove => domain::CharacterCommand::RemoveInventoryItem { item_id },
         action => domain::CharacterCommand::UpdateInventoryItem {
             item_id,
-            update: domain_item_update(action, current_flags),
+            update: domain_item_update(action),
         },
     };
     document
@@ -439,7 +438,7 @@ pub(super) fn equipped_item_snapshots(
     character_index: usize,
 ) -> Result<Vec<EquippedItemSnapshot>, String> {
     let character = character(document, character_index)?;
-    Ok(SLOTS
+    Ok(crate::account_contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .filter_map(|&(slot, slot_label, bucket_hash)| {
             character
@@ -532,16 +531,11 @@ pub(super) fn set_equipment_item_flags(
     slot: &str,
     flags: Option<u8>,
 ) -> Result<(), String> {
-    let current_flags = character(document, character_index)?
-        .equipment
-        .get(&domain::EquipmentSlot::new(slot))
-        .and_then(Option::as_ref)
-        .and_then(|item| item.flags);
     update_equipment(
         document,
         character_index,
         slot,
-        domain::ItemUpdate::SetFlags(merge_editor_flags(current_flags, flags)),
+        domain::ItemUpdate::SetFlags(flags.map(u32::from)),
     )
 }
 
@@ -791,18 +785,7 @@ fn editor_flags(flags: Option<u32>) -> Option<u8> {
     flags.map(|flags| (flags & u32::from(u8::MAX)) as u8)
 }
 
-fn merge_editor_flags(current: Option<u32>, edited: Option<u8>) -> Option<u32> {
-    let opaque = current.unwrap_or_default() & !u32::from(u8::MAX);
-    match edited {
-        Some(flags) => Some(opaque | u32::from(flags)),
-        None => (opaque != 0).then_some(opaque),
-    }
-}
-
-fn domain_item_update(
-    action: InventoryItemAction,
-    current_flags: Option<u32>,
-) -> domain::ItemUpdate {
+fn domain_item_update(action: InventoryItemAction) -> domain::ItemUpdate {
     match action {
         InventoryItemAction::SetDefinitionHash(hash) => {
             domain::ItemUpdate::SetDefinitionHash(domain::DefinitionHash::new(hash))
@@ -818,9 +801,7 @@ fn domain_item_update(
                     .collect(),
             ),
         }),
-        InventoryItemAction::SetFlags(flags) => {
-            domain::ItemUpdate::SetFlags(merge_editor_flags(current_flags, flags))
-        }
+        InventoryItemAction::SetFlags(flags) => domain::ItemUpdate::SetFlags(flags.map(u32::from)),
         InventoryItemAction::Remove => unreachable!("remove actions are handled separately"),
     }
 }

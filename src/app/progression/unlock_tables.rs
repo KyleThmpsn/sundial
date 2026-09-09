@@ -420,7 +420,8 @@ pub(super) fn draw_objective_values(
                                     );
                                     let row = leaf.row;
                                     let mut value = row.value;
-                                    let reserved = id == "character_object_objective_values"
+                                    let reserved = document.get("_native_progression").is_none()
+                                        && id == "character_object_objective_values"
                                         && RESERVED_CHARACTER_OBJECTIVE_VALUES
                                             .iter()
                                             .any(|(index, _)| *index == row.index);

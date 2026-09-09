@@ -52,7 +52,7 @@ pub(in crate::app) fn add_profile_item(
             sqlite::add_profile_item(document, definition_hash, quantity)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -71,7 +71,7 @@ pub(in crate::app) fn apply_profile_item_action(
             sqlite::apply_profile_item_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -89,7 +89,7 @@ pub(in crate::app) fn add_dismantle_reward(
             sqlite::add_dismantle_reward(document, definition_hash)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -110,7 +110,7 @@ pub(in crate::app) fn apply_dismantle_reward_action(
             sqlite::apply_dismantle_reward_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -130,7 +130,7 @@ pub(in crate::app) fn add_inventory_item(
             sqlite::add_inventory_item(document, character_index, item)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -152,7 +152,7 @@ pub(in crate::app) fn apply_inventory_item_action(
             sqlite::apply_inventory_item_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -173,7 +173,7 @@ pub(in crate::app) fn remove_character_inventory_items(
             sqlite::remove_character_inventory_items(document, character_index, item_indices)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -204,12 +204,12 @@ pub(in crate::app) fn swap_inventory_item_with_equipment(
             sqlite::swap_inventory_item_with_equipment(document, location, slot)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
 
-/// Returns the ability selection PR-88 stores with one unequipped item instance.
+/// Returns the ability selection Sunrise stores with one unequipped item instance.
 ///
 /// Legacy JSON schemas keep abilities on the character row, so they deliberately return no
 /// item-specific selection and retain their existing default-on-equip behavior.
@@ -242,7 +242,7 @@ pub(in crate::app) fn move_inventory_item_to_character(
             destination_character_index,
         ),
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }
@@ -263,7 +263,7 @@ pub(in crate::app) fn move_equipment_item_to_inventory(
             sqlite::move_equipment_item_to_inventory(document, character_index, slot)
         }
         AccountDocument::Blocked(reason) => {
-            Err(InventoryError::new("state.sqlite3", reason.clone()))
+            Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
     }
 }

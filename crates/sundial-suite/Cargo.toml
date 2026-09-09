@@ -15,12 +15,12 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = []
-# Retired PR88 prototype for development only; never enable in release packages.
-sqlite-account = ["sundial/sqlite-account"]
+default = ["sqlite-account"]
+# Official Sunrise investment database support.
+sqlite-account = ["sundial/sqlite-account", "parhelion/sqlite-account"]
 
 [dependencies]
-parhelion = { path = "../parhelion" }
+parhelion = { path = "../parhelion", default-features = false }
 sundial = { path = "../..", default-features = false }
 
 [build-dependencies]

@@ -34,7 +34,7 @@
     },
     "investment_stats": [],
     "inventory_slot": "energy",
-    "ammo_type": "heavy",
+    "ammo_type": "special",
     "modern_damage_type": "void",
     "power_cap_group": 11,
     "rarity": "exotic",

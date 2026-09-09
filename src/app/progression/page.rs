@@ -28,6 +28,8 @@ pub(in crate::app) fn draw_content(
         ui.add_space(4.0);
     }
 
+    super::native::draw(ui, document, catalog, view, &mut state.native_query);
+    super::browser::draw(ui, document, catalog, state);
     let cached = state
         .cached_progression
         .take()
@@ -320,7 +322,8 @@ pub(super) fn draw_investment(
         InvestmentTable::FlagOverrides => investment.flag_overrides.len(),
         InvestmentTable::ValueOverrides => investment.value_overrides.len(),
     };
-    let can_add = !state.read_only && row_count < FAMILY5_OVERRIDE_CAPACITY;
+    let hidden_count = super::native::hidden_count(document, state.investment_table);
+    let can_add = !state.read_only && row_count + hidden_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
         ui.label(egui::RichText::new("Table").strong());
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
@@ -344,7 +347,7 @@ pub(super) fn draw_investment(
             add.on_disabled_hover_text(if state.read_only {
                 "Enable Progression Editing in Preferences to change state"
             } else {
-                "100-row settings limit"
+                "100-row native limit, including preserved rows"
             })
         };
         if add.clicked() {
@@ -384,6 +387,12 @@ pub(super) fn draw_investment(
     }
     ui.add_space(4.0);
     ui.label(state.investment_table.explanation());
+    let capacity = format!("{} / 100 Overrides", row_count + hidden_count);
+    ui.label(if hidden_count == 0 {
+        capacity
+    } else {
+        format!("{capacity} · {hidden_count} Preserved Native Rows")
+    });
     ui.add_space(4.0);
     let query = state.query.clone();
 

@@ -84,6 +84,29 @@ pub(super) fn save_changed_sources(
     json_changed: bool,
     account_changed: bool,
 ) -> Result<WorkspaceSaveReceipt, WorkspaceSaveError> {
+    save_changed_sources_with_json(
+        document,
+        persisted_document,
+        settings_path,
+        json_changed,
+        account_changed,
+        save_json,
+    )
+}
+
+pub(super) fn save_changed_sources_with_json(
+    document: &mut WorkspaceDocument,
+    persisted_document: &WorkspaceDocument,
+    settings_path: &Path,
+    json_changed: bool,
+    account_changed: bool,
+    save_json: impl FnOnce(
+        &Path,
+        &serde_json::Value,
+        &serde_json::Value,
+        bool,
+    ) -> Result<SaveJsonResult, SaveJsonError>,
+) -> Result<WorkspaceSaveReceipt, WorkspaceSaveError> {
     let mut context = SaveContext {
         document,
         persisted_document,
@@ -96,9 +119,9 @@ pub(super) fn save_changed_sources(
         json_changed,
         account_changed,
         |context| context.document.save_sqlite(),
-        |context| save_context_json(context),
+        |context| save_context_json(context, save_json),
         |context, receipt| {
-            context.document.restore_sqlite_backup(&receipt.backup)?;
+            context.document.rollback_sqlite_save(receipt)?;
             context
                 .document
                 .rebase_account_revision_from(context.persisted_document);
@@ -116,7 +139,7 @@ pub(super) fn save_changed_sources(
             |_context| -> Result<(), String> {
                 unreachable!("SQLite saves are disabled in this build")
             },
-            |context| save_context_json(context),
+            |context| save_context_json(context, save_json),
             |_context, _receipt| unreachable!("there is no SQLite write to roll back"),
         )?;
         let _ = receipt.sqlite;
@@ -130,7 +153,15 @@ pub(super) fn save_changed_sources(
     })
 }
 
-fn save_context_json(context: &SaveContext<'_>) -> Result<SaveJsonResult, SaveJsonError> {
+fn save_context_json(
+    context: &SaveContext<'_>,
+    save_json: impl FnOnce(
+        &Path,
+        &serde_json::Value,
+        &serde_json::Value,
+        bool,
+    ) -> Result<SaveJsonResult, SaveJsonError>,
+) -> Result<SaveJsonResult, SaveJsonError> {
     save_json(
         context.settings_path,
         context.document.json(),

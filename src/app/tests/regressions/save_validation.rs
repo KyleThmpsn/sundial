@@ -131,7 +131,7 @@ fn unrelated_json_edits_require_repairing_known_invalid_settings() {
 fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     let directory = TestDirectory::new("save-sqlite-unchanged-json");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
+        &directory.0.join("data").join("investment.sqlite3"),
         3,
     );
     let mut app = app(directory.0.clone());

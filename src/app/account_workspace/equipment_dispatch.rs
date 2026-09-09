@@ -5,7 +5,9 @@ use super::*;
 impl WorkspaceDocument {
     /// The JSON version does not upgrade the independent SQLite account contract.
     pub(in crate::app) fn supports_v13_account(&self) -> bool {
-        self.uses_json_account() && crate::app::inventory::schema_mode(self.json()).supports_v13()
+        self.source_info().kind == AccountSourceKind::Sqlite
+            || (self.uses_json_account()
+                && crate::app::inventory::schema_mode(self.json()).supports_v13())
     }
 
     pub(in crate::app) fn equipment_slots(
@@ -14,7 +16,7 @@ impl WorkspaceDocument {
         if self.uses_json_account() {
             crate::app::inventory::schema_mode(self.json()).equipment_slots()
         } else {
-            crate::account_contract::EQUIPMENT_SLOTS
+            crate::account_contract::ALL_EQUIPMENT_SLOTS
         }
     }
 }

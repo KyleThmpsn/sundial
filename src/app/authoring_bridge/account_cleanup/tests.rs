@@ -95,13 +95,11 @@ fn equipped_custom_plugs_and_reward_rules_are_removed_without_deleting_stock_ite
 fn automatic_cleanup_respects_the_selected_account_backend_build() {
     let directory = crate::test_support::TestDirectory::new("cleanup-backend-gate");
     let settings = directory.0.join("settings.json");
+    std::fs::create_dir_all(directory.0.join("data")).unwrap();
     std::fs::write(
-        directory.0.join("state.sqlite3"),
+        directory.0.join("data").join("investment.sqlite3"),
         b"existing account database",
     )
     .unwrap();
-    assert_eq!(
-        crate::investment::validate_authored_cleanup_backend(&settings).is_err(),
-        cfg!(feature = "sqlite-account")
-    );
+    assert!(crate::investment::validate_authored_cleanup_backend(&settings).is_err());
 }

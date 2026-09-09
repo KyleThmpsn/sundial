@@ -4,6 +4,20 @@ mod activity;
 mod activity_page;
 mod character_page;
 mod entitlements;
+#[cfg(feature = "sqlite-account")]
+pub(crate) use entitlements::validate_native as validate_native_entitlements;
+#[cfg(feature = "sqlite-account")]
+pub(crate) fn validate_native_details(document: &serde_json::Value) -> Result<(), String> {
+    validate_native_entitlements(document)?;
+    character_page::validate(document)?;
+    if !document
+        .pointer("/state/account/profile_setup_completed")
+        .is_some_and(serde_json::Value::is_boolean)
+    {
+        return Err("Profile Setup Completed must be boolean".into());
+    }
+    Ok(())
+}
 mod fields;
 mod page;
 mod services;

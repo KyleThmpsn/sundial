@@ -3,6 +3,9 @@ use super::*;
 use sundial::investment::AuthoredAccountCleanup;
 const BACKUP_NAME: &str = "account-settings.json";
 
+#[cfg(all(test, feature = "sqlite-account"))]
+mod native_tests;
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(in crate::install) struct AccountCleanupRecord {
@@ -22,6 +25,9 @@ fn target_path(record: &AccountCleanupRecord, packages: &Path) -> Result<PathBuf
     if record.relative_path != Path::new("settings.json")
         && record.relative_path != Path::new("Sunrise/settings.json")
         && record.relative_path != Path::new("bin/x64/Sunrise/settings.json")
+        && record.relative_path != Path::new("data/investment.sqlite3")
+        && record.relative_path != Path::new("Sunrise/data/investment.sqlite3")
+        && record.relative_path != Path::new("bin/x64/Sunrise/data/investment.sqlite3")
     {
         return Err(InstallError::validation(
             "Uninstall account record has an unsupported settings path",
@@ -64,7 +70,7 @@ pub(super) fn prepare(
         cleaned: digest(&cleanup.cleaned_bytes),
     };
     let path = target_path(&record, packages)?;
-    reject_recovery_backup(&path, &record.original)?;
+    verify_source(&path, &record.original)?;
     let destination = backup.join(BACKUP_NAME);
     let mut file = OpenOptions::new()
         .write(true)
@@ -86,14 +92,18 @@ pub(super) fn commit(
 ) -> Result<(), InstallError> {
     let path = target_path(record, packages)?;
     reject_recovery_backup(&backup.join(BACKUP_NAME), &record.original)?;
-    reject_recovery_backup(&path, &record.original)?;
+    verify_source(&path, &record.original)?;
     if digest(&cleanup.cleaned_bytes) != record.cleaned {
         return Err(InstallError::validation("Account proposal changed"));
     }
     if record.original != record.cleaned {
-        sundial::package_authoring::replace_authoring_file(&path, &cleanup.cleaned_bytes)
-            .map_err(|e| InstallError::validation(e.to_string()))?;
-        reject_recovery_backup(&path, &record.cleaned)?;
+        sundial::investment::replace_authored_account_source(
+            &path,
+            &cleanup.original_bytes,
+            &cleanup.cleaned_bytes,
+        )
+        .map_err(|e| InstallError::validation(e.to_string()))?;
+        verify_source(&path, &record.cleaned)?;
     }
     Ok(())
 }
@@ -124,10 +134,13 @@ pub(in crate::install) fn verify_account_recovery(
             &transaction.backup_directory.join(BACKUP_NAME),
             &record.original,
         )?;
-        let current = digest_file(&path).map_err(|e| InstallError::validation(e.to_string()))?;
+        let current = digest(
+            &sundial::investment::read_authored_account_source(&path)
+                .map_err(InstallError::validation)?,
+        );
         if record.original != current && record.cleaned != current {
             return Err(InstallError::validation(
-                "Account settings changed outside this package operation; recovery will not overwrite them",
+                "Account settings changed outside this package operation. Recovery will not overwrite them",
             ));
         }
     }
@@ -137,7 +150,7 @@ pub(in crate::install) fn verify_account_recovery(
 pub(super) fn verify_committed(transaction: &InstallTransactionRecord) -> Result<(), InstallError> {
     if let Some(record) = &transaction.account_cleanup {
         let path = target_path(record, &transaction.target_packages_directory)?;
-        reject_recovery_backup(&path, &record.cleaned)?;
+        verify_source(&path, &record.cleaned)?;
     }
     Ok(())
 }
@@ -150,14 +163,33 @@ pub(in crate::install) fn recover_account(
         check_game_before_recovery(check)?;
         verify_account_recovery(transaction)?;
         let path = target_path(record, &transaction.target_packages_directory)?;
-        let current = digest_file(&path).map_err(|e| InstallError::validation(e.to_string()))?;
+        let current = digest(
+            &sundial::investment::read_authored_account_source(&path)
+                .map_err(InstallError::validation)?,
+        );
         if record.original != current {
-            restore_recovery_backup(
-                &transaction.backup_directory.join(BACKUP_NAME),
-                &path,
-                &record.original,
-            )?;
+            let expected = sundial::investment::read_authored_account_source(&path)
+                .map_err(InstallError::validation)?;
+            if digest(&expected) != record.cleaned {
+                return Err(InstallError::validation(
+                    "The account changed before recovery",
+                ));
+            }
+            let original = fs::read(transaction.backup_directory.join(BACKUP_NAME))
+                .map_err(|e| InstallError::validation(e.to_string()))?;
+            sundial::investment::replace_authored_account_source(&path, &expected, &original)
+                .map_err(InstallError::validation)?;
+            verify_source(&path, &record.original)?;
         }
+    }
+    Ok(())
+}
+
+fn verify_source(path: &Path, expected: &TransactionDigest) -> Result<(), InstallError> {
+    let bytes = sundial::investment::read_authored_account_source(path)
+        .map_err(InstallError::validation)?;
+    if digest(&bytes) != *expected {
+        return Err(InstallError::validation("The account changed after review"));
     }
     Ok(())
 }

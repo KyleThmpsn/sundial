@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 
 pub(crate) const MIN_SUPPORTED_SCHEMA: u64 = 2;
-pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 16;
+pub(crate) const MAX_SUPPORTED_SCHEMA: u64 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SettingsSchema(pub(super) u64);

@@ -157,7 +157,7 @@ impl SundialApp {
         #[cfg(feature = "sqlite-account")]
         if let Some(receipt) = &sqlite_receipt {
             backups.push(format!(
-                "state.sqlite3 backup: {}",
+                "investment.sqlite3 backup: {}",
                 receipt
                     .backup
                     .file_name()

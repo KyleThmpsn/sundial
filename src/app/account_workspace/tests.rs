@@ -2,10 +2,11 @@
 
 #[cfg(feature = "sqlite-account")]
 mod sqlite_inventory;
+#[cfg(feature = "sqlite-account")]
+mod sqlite_smoke;
 
 use crate::app::account_workspace as account;
 
-#[cfg(feature = "sqlite-account")]
 use std::fs;
 
 #[cfg(feature = "sqlite-account")]
@@ -109,29 +110,34 @@ fn json_account_change_tracking_excludes_game_settings() {
 
 #[cfg(not(feature = "sqlite-account"))]
 #[test]
-fn standard_build_ignores_retired_sqlite_sources_and_source_transitions() {
+fn json_only_build_blocks_sqlite_sources_and_source_transitions() {
     let directory = TestDirectory::new("workspace-no-sqlite-feature");
+    fs::create_dir_all(directory.0.join("data")).unwrap();
     let settings_path = settings_path(&directory);
     let json_document = WorkspaceDocument::load(json_characters(2), &settings_path);
     assert_eq!(json_document.source_info().kind, AccountSourceKind::Json);
 
-    std::fs::write(directory.0.join("state.sqlite3"), b"SQLite source").unwrap();
-    assert_eq!(json_document.verify_account_source_unchanged(), Ok(()));
+    std::fs::write(
+        directory.0.join("data").join("investment.sqlite3"),
+        b"SQLite source",
+    )
+    .unwrap();
+    assert!(json_document.verify_account_source_unchanged().is_err());
 
     let document = WorkspaceDocument::load(json_characters(2), &settings_path);
-    assert_eq!(document.source_info().kind, AccountSourceKind::Json);
-    assert!(document.account_editing_blocked().is_none());
-    assert_eq!(account::character_count(&document), 2);
+    assert_eq!(document.source_info().kind, AccountSourceKind::Blocked);
+    assert!(document.account_editing_blocked().is_some());
+    assert_eq!(account::character_count(&document), 0);
     assert!(!document.source_info().detail.contains("sqlite"));
     assert_eq!(
-        std::fs::read(directory.0.join("state.sqlite3")).unwrap(),
+        std::fs::read(directory.0.join("data").join("investment.sqlite3")).unwrap(),
         b"SQLite source"
     );
 }
 
 #[test]
-fn json_source_materializes_schema_eight_preferences_through_schema_thirteen() {
-    for version in [8, crate::game_settings::MAX_SUPPORTED_SCHEMA] {
+fn json_source_materializes_preferences_before_sqlite_schema() {
+    for version in [8, 16, 17] {
         let directory = TestDirectory::new(&format!("workspace-json-normalization-{version}"));
         let document = WorkspaceDocument::load(
             json!({
@@ -167,80 +173,54 @@ fn json_source_materializes_schema_eight_preferences_through_schema_thirteen() {
 
 #[cfg(feature = "sqlite-account")]
 #[test]
-fn empty_and_uninitialized_databases_keep_json_account_behavior() {
-    for name in ["zero-byte", "uninitialized"] {
-        let directory = TestDirectory::new(name);
-        let database_path = directory.0.join("state.sqlite3");
-        if name == "zero-byte" {
-            fs::File::create(&database_path).unwrap();
-        } else {
-            drop(Connection::open(&database_path).unwrap());
-        }
-        let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
+fn empty_database_blocks_stale_json() {
+    let directory = TestDirectory::new("workspace-empty-source");
+    fs::create_dir_all(directory.0.join("data")).unwrap();
+    fs::File::create(directory.0.join("data").join("investment.sqlite3")).unwrap();
+    let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
 
-        assert_eq!(document.source_info().kind, AccountSourceKind::Json);
-        assert_eq!(account::character_count(&document), 2);
-    }
+    assert_eq!(document.source_info().kind, AccountSourceKind::Blocked);
+    assert_eq!(account::character_count(&document), 0);
 }
 
 #[cfg(feature = "sqlite-account")]
 #[test]
-fn exact_pr88_database_is_authoritative_over_stale_json_account_data() {
+fn official_database_is_authoritative_and_preserves_inactive_json() {
     let directory = TestDirectory::new("workspace-sqlite-source");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
+        &directory.0.join("data").join("investment.sqlite3"),
         3,
     );
-    let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
-
-    assert_eq!(document.source_info().kind, AccountSourceKind::Sqlite);
-    assert_eq!(account::character_count(&document), 1);
-}
-
-#[cfg(feature = "sqlite-account")]
-#[test]
-fn json_workspace_requires_reload_when_sqlite_becomes_authoritative() {
-    let directory = TestDirectory::new("workspace-source-transition");
-    let settings_path = settings_path(&directory);
-    let document = WorkspaceDocument::load(json_characters(2), &settings_path);
-    assert_eq!(document.verify_account_source_unchanged(), Ok(()));
-
-    crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
-        3,
-    );
-
-    let error = document.verify_account_source_unchanged().unwrap_err();
-    assert!(error.contains("became authoritative"));
-    assert_eq!(document.source_info().kind, AccountSourceKind::Json);
-}
-
-#[cfg(feature = "sqlite-account")]
-#[test]
-fn missing_to_empty_database_transition_keeps_legacy_json_source() {
-    let directory = TestDirectory::new("workspace-empty-transition");
-    let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
-    fs::File::create(directory.0.join("state.sqlite3")).unwrap();
-
-    assert_eq!(document.verify_account_source_unchanged(), Ok(()));
-}
-
-#[cfg(feature = "sqlite-account")]
-#[test]
-fn sqlite_source_does_not_materialize_stale_json_account_preferences() {
-    let directory = TestDirectory::new("workspace-sqlite-no-json-normalization");
-    crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
-        3,
-    );
-    let json = json!({
-        "version": 8,
-        "state": {"account": {"settings": {"display": {}}}}
-    });
+    let mut json = json_characters(2);
+    json["state"]["account"] = json!({"settings": {"display": {}}});
     let document = WorkspaceDocument::load(json.clone(), &settings_path(&directory));
 
     assert_eq!(document.source_info().kind, AccountSourceKind::Sqlite);
+    assert_eq!(account::character_count(&document), 1);
     assert_eq!(document.json(), &json);
+}
+
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn json_workspace_requires_reload_when_any_database_appears() {
+    for initialized in [false, true] {
+        let directory = TestDirectory::new("workspace-source-transition");
+        let settings_path = settings_path(&directory);
+        let document = WorkspaceDocument::load(json_characters(2), &settings_path);
+        assert_eq!(document.verify_account_source_unchanged(), Ok(()));
+
+        let database_path = directory.0.join("data").join("investment.sqlite3");
+        if initialized {
+            crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+        } else {
+            fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+            fs::File::create(&database_path).unwrap();
+        }
+
+        let error = document.verify_account_source_unchanged().unwrap_err();
+        assert!(error.contains("became authoritative"));
+        assert_eq!(document.source_info().kind, AccountSourceKind::Json);
+    }
 }
 
 #[cfg(feature = "sqlite-account")]
@@ -248,7 +228,7 @@ fn sqlite_source_does_not_materialize_stale_json_account_preferences() {
 fn sqlite_workspace_validation_ignores_stale_json_account_domains() {
     let directory = TestDirectory::new("workspace-sqlite-validation");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
+        &directory.0.join("data").join("investment.sqlite3"),
         3,
     );
     let stale_json = json!({
@@ -274,7 +254,7 @@ fn sqlite_workspace_validation_ignores_stale_json_account_domains() {
 fn sqlite_facade_mutates_every_account_domain_without_touching_json() {
     let directory = TestDirectory::new("workspace-sqlite-mutations");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
+        &directory.0.join("data").join("investment.sqlite3"),
         3,
     );
     let mut document = WorkspaceDocument::load(
@@ -391,7 +371,7 @@ fn sqlite_facade_mutates_every_account_domain_without_touching_json() {
 #[test]
 fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     let directory = TestDirectory::new("workspace-sqlite-subclass-abilities");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [6, 8, 20, 21, 3]);
     let mut document = WorkspaceDocument::load(
@@ -477,7 +457,7 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
 #[test]
 fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults() {
     let directory = TestDirectory::new("workspace-sqlite-invalid-subclass-abilities");
-    let database_path = directory.0.join("state.sqlite3");
+    let database_path = directory.0.join("data").join("investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [63, 63, 63, 63, 63]);
     let mut document = WorkspaceDocument::load(
@@ -524,7 +504,12 @@ fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults()
 #[test]
 fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     let corrupt = TestDirectory::new("workspace-corrupt-source");
-    fs::write(corrupt.0.join("state.sqlite3"), b"not a SQLite database").unwrap();
+    fs::create_dir_all(corrupt.0.join("data")).unwrap();
+    fs::write(
+        corrupt.0.join("data").join("investment.sqlite3"),
+        b"not a SQLite database",
+    )
+    .unwrap();
     let corrupt_document = WorkspaceDocument::load(json_characters(2), &settings_path(&corrupt));
     assert_eq!(
         corrupt_document.source_info().kind,
@@ -533,7 +518,9 @@ fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     assert_eq!(account::character_count(&corrupt_document), 0);
 
     let incompatible = TestDirectory::new("workspace-incompatible-source");
-    let connection = Connection::open(incompatible.0.join("state.sqlite3")).unwrap();
+    fs::create_dir_all(incompatible.0.join("data")).unwrap();
+    let connection =
+        Connection::open(incompatible.0.join("data").join("investment.sqlite3")).unwrap();
     connection.pragma_update(None, "user_version", 2).unwrap();
     drop(connection);
     let incompatible_document =
@@ -550,10 +537,10 @@ fn set_fixture_inventory_subclass_abilities(database_path: &std::path::Path, abi
     let connection = Connection::open(database_path).unwrap();
     connection
         .execute(
-            "UPDATE character_items SET definition_hash = 201, quantity = 1, \
-             movement_ability_entry = ?, grenade_ability_entry = ?, \
-             super_ability_entry = ?, melee_ability_entry = ?, class_ability_entry = ? \
-             WHERE account_id = 1 AND character_position = 0 AND location = 1 \
+            "UPDATE items SET definition_hash = 201, quantity = 1, \
+             movement_ability = ?, grenade_ability = ?, \
+             super_ability = ?, melee_ability = ?, class_ability = ? \
+             WHERE character_slot = 0 AND location = 1 \
              AND position = 0;",
             abilities,
         )
@@ -608,39 +595,160 @@ fn json_characters(count: usize) -> serde_json::Value {
 
 #[cfg(feature = "sqlite-account")]
 #[test]
-fn v13_json_does_not_upgrade_the_sqlite_equipment_contract() {
+fn official_sqlite_equipment_contract_is_independent_of_json_version() {
     let directory = TestDirectory::new("workspace-sqlite-v13-gates");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("state.sqlite3"),
+        &directory.0.join("data/investment.sqlite3"),
         3,
     );
-    let mut document = WorkspaceDocument::load(json!({"version":13}), &settings_path(&directory));
-    assert!(!document.supports_v13_account());
-    assert_eq!(document.equipment_slots().len(), 16);
-    assert!(
-        document
-            .equipment_slots()
-            .iter()
-            .all(|(slot, _, _)| *slot != "artifact")
-    );
-    // PR88 already supports opaque u32 flags, independent of the JSON settings version.
+    let mut document = WorkspaceDocument::load(json!({"version":8}), &settings_path(&directory));
+    assert!(document.supports_v13_account());
+    assert_eq!(document.equipment_slots().len(), 17);
     assert_eq!(
         crate::persistence::sqlite_account::SqliteAccountDocument::character_capabilities()
             .item_flag_mask,
-        u32::MAX
+        7
     );
     account::set_equipment_item_flags(&mut document, 0, "kinetic", Some(4)).unwrap();
-    let original = document.clone();
-    assert!(account::equip_definition(&mut document, 0, "artifact", 42, &[]).is_err());
+    account::equip_definition(&mut document, 0, "artifact", 42, &[]).unwrap();
     assert!(
-        account::equip_definition(
-            &mut document,
-            0,
-            "emote",
-            crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH,
-            &[]
-        )
-        .is_err()
+        account::equipped_item_snapshots(&document, 0)
+            .unwrap()
+            .iter()
+            .any(|item| item.slot == "artifact" && item.definition_hash == Some(42))
     );
-    assert_eq!(document, original);
+    let AccountDocument::Sqlite(native) = &mut document.account else {
+        panic!("expected SQLite")
+    };
+    crate::persistence::sqlite_account::tests::save_fixture_document(
+        native,
+        &directory.0.join("artifact-backup.sqlite3"),
+    );
+    let reopened = WorkspaceDocument::load(json!({"version":18}), &settings_path(&directory));
+    assert!(
+        account::equipped_item_snapshots(&reopened, 0)
+            .unwrap()
+            .iter()
+            .any(|item| item.slot == "artifact" && item.definition_hash == Some(42))
+    );
+}
+
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_json() {
+    let directory = TestDirectory::new("workspace-v18-domains");
+    let path = directory.0.join("data/investment.sqlite3");
+    crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters; INSERT INTO unlocks VALUES(0,2,42,0,2); INSERT INTO unlocks VALUES(1,2,50,0,2);").unwrap();
+    let json = json!({"version":18,"state":{"account":{"opaque":true},"characters":["legacy"],"unlocks":{"opaque":true}},"server":{"entitlements":["legacy"]}});
+    let mut document = WorkspaceDocument::load(json.clone(), &settings_path(&directory));
+    let original = document.clone();
+    let mut runtime = document.runtime_view();
+    runtime["server"]["entitlements"] = json!([{"name":"123","owned":"application"}]);
+    runtime["state"]["account"]["profile_setup_completed"] = json!(false);
+    runtime["state"]["characters"][1]["content_bypass"] = json!(true);
+    document.apply_runtime_view(runtime).unwrap();
+    let mut progression = document.progression_view(1);
+    progression["state"]["unlocks"]["character_flags"] = json!([51]);
+    document.apply_progression_view(1, progression).unwrap();
+    assert_eq!(document.json(), &json);
+    let summaries = super::sqlite_change_summaries(
+        match &original.account {
+            AccountDocument::Sqlite(v) => v,
+            _ => panic!(),
+        },
+        match &document.account {
+            AccountDocument::Sqlite(v) => v,
+            _ => panic!(),
+        },
+        50,
+    );
+    for domain in ["runtime", "entitlements", "progression"] {
+        assert!(
+            summaries.iter().any(|s| s.contains(domain)),
+            "{domain}: {summaries:?}"
+        );
+    }
+    let AccountDocument::Sqlite(native) = &mut document.account else {
+        panic!()
+    };
+    crate::persistence::sqlite_account::tests::save_fixture_document(
+        native,
+        &directory.0.join("backup.sqlite3"),
+    );
+    assert!(
+        !db.query_row("SELECT profile_setup_completed FROM account", [], |r| r
+            .get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(
+        db.query_row(
+            "SELECT content_bypass FROM characters WHERE slot=1",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT slot FROM unlocks WHERE character_slot=0 AND bank=2",
+            [],
+            |r| r.get::<_, i32>(0)
+        )
+        .unwrap(),
+        42
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT slot FROM unlocks WHERE character_slot=1 AND bank=2",
+            [],
+            |r| r.get::<_, i32>(0)
+        )
+        .unwrap(),
+        51
+    );
+    assert_eq!(
+        db.query_row("SELECT ownership FROM entitlements", [], |r| r
+            .get::<_, i32>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[cfg(feature = "sqlite-account")]
+#[test]
+fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
+    let directory = TestDirectory::new("sqlite-runtime-draft");
+    let path = directory.0.join("data/investment.sqlite3");
+    crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+    let mut document = WorkspaceDocument::load(json!({"version":18}), &settings_path(&directory));
+    let before = crate::persistence::sqlite_account::package::read(&path).unwrap();
+    let mut draft = document.runtime_view();
+    draft["server"]["entitlements"] = json!([{"name":"","owned":"handle"}]);
+    draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x");
+    document.apply_runtime_view(draft).unwrap();
+    assert!(document.save_sqlite().is_err());
+    assert_eq!(
+        crate::persistence::sqlite_account::package::read(&path).unwrap(),
+        before
+    );
+    let mut draft = document.runtime_view();
+    draft["server"]["entitlements"][0]["name"] = json!("test");
+    draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x1234");
+    document.apply_runtime_view(draft).unwrap();
+    let AccountDocument::Sqlite(native) = &mut document.account else {
+        panic!()
+    };
+    crate::persistence::sqlite_account::tests::save_fixture_document(
+        native,
+        &directory.0.join("backup.sqlite3"),
+    );
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT last_orbited_destination FROM characters", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0x1234
+    );
 }

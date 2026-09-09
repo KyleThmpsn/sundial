@@ -111,14 +111,22 @@ fn failed_backup_writer_does_not_register_an_automatic_backup() {
 fn sqlite_backup_can_write_and_restore_a_reserved_flat_file() {
     let directory = TestDirectory::new("flat-sqlite-backup");
     let root = directory.0.join("backups");
-    let source = directory.0.join("state.sqlite3");
+    fs::create_dir_all(directory.0.join("data")).unwrap();
+    let source = directory.0.join("data").join("investment.sqlite3");
     let db = rusqlite::Connection::open(&source).unwrap();
     db.execute_batch("CREATE TABLE fixture (value INTEGER); INSERT INTO fixture VALUES (42);")
         .unwrap();
-    let backup = create(&root, &source, "state-v1", "sqlite3", true, |path, _| {
-        db.backup(rusqlite::MAIN_DB, path, None)
-            .map_err(|error| error.to_string())
-    })
+    let backup = create(
+        &root,
+        &source,
+        "investment-v2",
+        "sqlite3",
+        true,
+        |path, _| {
+            db.backup(rusqlite::MAIN_DB, path, None)
+                .map_err(|error| error.to_string())
+        },
+    )
     .unwrap();
     let saved = rusqlite::Connection::open(&backup).unwrap();
     assert_eq!(
@@ -208,7 +216,7 @@ fn source_identity_is_stable_across_creation_and_normalized_paths() {
     );
     assert_ne!(
         before,
-        source_directory(&root, &directory.0.join("state.sqlite3")).unwrap()
+        source_directory(&root, &directory.0.join("data").join("investment.sqlite3")).unwrap()
     );
     #[cfg(windows)]
     assert_eq!(

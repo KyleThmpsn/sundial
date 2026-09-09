@@ -14,6 +14,7 @@ mod definitions;
 pub use account_sync::{
     AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredProfileSyncReport,
     AuthoredSocketChange, preview_authored_account_cleanup, preview_authored_account_replacement,
+    read_authored_account_source, replace_authored_account_source,
     synchronize_authored_collection_unlocks, validate_authored_cleanup_backend,
 };
 pub use controls::{

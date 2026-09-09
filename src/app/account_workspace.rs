@@ -58,8 +58,6 @@ pub(super) enum AccountSourceKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum JsonSelectionReason {
     DatabaseMissing,
-    #[cfg_attr(not(feature = "sqlite-account"), allow(dead_code))]
-    DatabaseEmpty,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,27 +87,128 @@ pub(super) struct AccountSourceInfo {
 }
 
 impl WorkspaceDocument {
+    pub(super) fn runtime_view(&self) -> Value {
+        #[cfg(feature = "sqlite-account")]
+        if let AccountDocument::Sqlite(document) = &self.account {
+            let mut view = self.json.clone();
+            if view.get("server").is_none_or(Value::is_null) {
+                view["server"] = serde_json::json!({});
+            }
+            if view["server"].is_object() {
+                view["server"]["entitlements"] = document.entitlements().clone();
+            }
+            if view.get("state").is_none_or(Value::is_null) {
+                view["state"] = serde_json::json!({});
+            }
+            if view["state"].is_object() {
+                view["state"]["account"] = document.runtime()["account"].clone();
+                view["state"]["characters"] = document.runtime()["characters"].clone();
+            }
+            return view;
+        }
+        self.json.clone()
+    }
+    pub(super) fn apply_runtime_view(&mut self, mut view: Value) -> Result<(), String> {
+        #[cfg(feature = "sqlite-account")]
+        if let AccountDocument::Sqlite(document) = &mut self.account {
+            let native = serde_json::json!({"account":view["state"]["account"],"characters":view["state"]["characters"]});
+            if let Some(state) = view.get_mut("state").and_then(Value::as_object_mut) {
+                for key in ["account", "characters"] {
+                    match self.json.pointer(&format!("/state/{key}")) {
+                        Some(value) => {
+                            state.insert(key.into(), value.clone());
+                        }
+                        None => {
+                            state.remove(key);
+                        }
+                    }
+                }
+                if state.is_empty() && self.json.get("state").is_none() {
+                    view.as_object_mut().unwrap().remove("state");
+                }
+            }
+            document.set_runtime(native);
+            let entitlements = view
+                .pointer("/server/entitlements")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            if let Some(server) = view.get_mut("server").and_then(Value::as_object_mut) {
+                match self.json.pointer("/server/entitlements") {
+                    Some(value) => {
+                        server.insert("entitlements".into(), value.clone());
+                    }
+                    None => {
+                        server.remove("entitlements");
+                    }
+                }
+                if server.is_empty() && self.json.get("server").is_none() {
+                    view.as_object_mut().unwrap().remove("server");
+                }
+            }
+            document.set_entitlements(entitlements);
+        }
+        let _ = &mut view;
+        self.json = view;
+        Ok(())
+    }
+
+    pub(super) fn progression_view(&self, index: usize) -> Value {
+        #[cfg(feature = "sqlite-account")]
+        if let AccountDocument::Sqlite(document) = &self.account {
+            return document.progression_view(index);
+        }
+        let _ = index;
+        self.json.clone()
+    }
+    pub(super) fn apply_progression_view(
+        &mut self,
+        index: usize,
+        value: Value,
+    ) -> Result<(), String> {
+        super::progression::validate(&value)?;
+        match &mut self.account {
+            #[cfg(feature = "sqlite-account")]
+            AccountDocument::Sqlite(document) => document
+                .apply_progression_view(index, &value)
+                .map_err(|e| e.to_string()),
+            AccountDocument::Json(_) => {
+                let _ = index;
+                self.json = value;
+                Ok(())
+            }
+            AccountDocument::Blocked(reason) => Err(reason.clone()),
+        }
+    }
+
     pub(super) fn load(mut json: Value, settings_path: &Path) -> Self {
-        let database_path = settings_path.with_file_name("state.sqlite3");
+        let database_path = crate::persistence::investment_path(settings_path);
         #[cfg(feature = "sqlite-account")]
         let account = match sqlite_persistence::load_document(&database_path) {
             Ok(SqliteAccountDocumentLoad::Missing) => {
-                AccountDocument::Json(JsonSelectionReason::DatabaseMissing)
+                if crate::game_settings::schema_version(&json).is_some_and(|v|v>=18) {
+                    AccountDocument::Blocked("Settings v18 requires data/investment.sqlite3. Start Sunrise to initialize it, then reload.".into())
+                } else { AccountDocument::Json(JsonSelectionReason::DatabaseMissing) }
             }
             Ok(SqliteAccountDocumentLoad::Empty) => {
-                AccountDocument::Json(JsonSelectionReason::DatabaseEmpty)
+                AccountDocument::Blocked("The Sunrise database is empty or uninitialized. Start Sunrise to initialize it, then reload.".into())
             }
             Ok(SqliteAccountDocumentLoad::Loaded(document)) => AccountDocument::Sqlite(document),
             Ok(SqliteAccountDocumentLoad::Incompatible(reason)) => AccountDocument::Blocked(
                 format!("{reason}. Reload after Sunrise or Sundial is updated."),
             ),
             Err(error) => AccountDocument::Blocked(format!(
-                "Sundial could not safely read state.sqlite3: {error}"
+                "Sundial could not safely read investment.sqlite3: {error}"
             )),
         };
         #[cfg(not(feature = "sqlite-account"))]
-        // PR 88 was closed. A neighboring database is not an upstream account contract.
-        let account = AccountDocument::Json(JsonSelectionReason::DatabaseMissing);
+        // JSON-only builds must not edit an inactive JSON account.
+        let account = if database_path.try_exists().unwrap_or(true)
+            || crate::game_settings::schema_version(&json).is_some_and(|v| v >= 18)
+        {
+            AccountDocument::Blocked("This build does not include SQLite support. Use the standard Sundial build to edit this account.".into())
+        } else {
+            AccountDocument::Json(JsonSelectionReason::DatabaseMissing)
+        };
 
         if matches!(account, AccountDocument::Json(_)) {
             ensure_schema_v8_preferences(&mut json);
@@ -126,7 +225,7 @@ impl WorkspaceDocument {
     pub(super) fn json_only(json: Value) -> Self {
         Self {
             json,
-            database_path: PathBuf::from("state.sqlite3"),
+            database_path: PathBuf::from("investment.sqlite3"),
             account: AccountDocument::Json(JsonSelectionReason::DatabaseMissing),
         }
     }
@@ -206,23 +305,16 @@ impl WorkspaceDocument {
                 contract: "JSON schema selected by settings.json version",
             },
             #[cfg(feature = "sqlite-account")]
-            AccountDocument::Sqlite(document) => AccountSourceInfo {
+            AccountDocument::Sqlite(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Sqlite,
-                label: "state.sqlite3",
-                detail: "Account, character, inventory, equipment, and account-setting edits use state.sqlite3. Player identity and client/server settings remain in settings.json; Sundial does not sync account data between them.".to_owned(),
+                label: "investment.sqlite3",
+                detail: "Characters, inventory, equipment, preferences, ownership and progression use investment.sqlite3. Player identity and runtime configuration use settings.json.".to_owned(),
                 database_path: self.database_path.clone(),
-                contract: match (
-                    document.schema_version(),
-                    document.account_format_version(),
-                    document.settings_payload_version(),
-                ) {
-                    (1, 1, 1) => "SQLite schema 1 · account format 1 · settings payload 1",
-                    _ => "Unsupported SQLite contract",
-                },
+                contract: "Sunrise Investment Database - Schema 2",
             },
             AccountDocument::Blocked(reason) => AccountSourceInfo {
                 kind: AccountSourceKind::Blocked,
-                label: "Account editing blocked",
+                label: "Account Editing Blocked",
                 detail: format!(
                     "{reason} Sundial will not fall back to possibly stale JSON account data."
                 ),
@@ -244,22 +336,12 @@ impl WorkspaceDocument {
     }
 
     pub(super) fn verify_account_source_unchanged(&self) -> Result<(), String> {
-        #[cfg(feature = "sqlite-account")]
-        if matches!(self.account, AccountDocument::Json(_)) {
-            return match sqlite_persistence::load_document(&self.database_path) {
-                Ok(SqliteAccountDocumentLoad::Missing | SqliteAccountDocumentLoad::Empty) => Ok(()),
-                Ok(SqliteAccountDocumentLoad::Loaded(_)) => Err(
-                    "state.sqlite3 became authoritative after this workspace loaded. Reload before saving so account edits are not written to inactive JSON data"
-                        .to_owned(),
-                ),
-                Ok(SqliteAccountDocumentLoad::Incompatible(reason)) => Err(format!(
-                    "state.sqlite3 appeared or changed after this workspace loaded, but its contract is incompatible: {reason}. Reload before saving"
-                )),
-                Err(error) => Err(format!(
-                    "state.sqlite3 appeared or changed after this workspace loaded and could not be read safely: {error}. Reload before saving"
-                )),
-            };
+        if matches!(self.account, AccountDocument::Json(_))
+            && self.database_path.try_exists().map_err(|e| e.to_string())?
+        {
+            return Err("investment.sqlite3 became authoritative after this workspace loaded. Reload before saving".into());
         }
+
         Ok(())
     }
 
@@ -277,8 +359,8 @@ impl WorkspaceDocument {
     }
 
     #[cfg(feature = "sqlite-account")]
-    pub(super) fn restore_sqlite_backup(&self, backup: &Path) -> Result<(), String> {
-        sqlite_persistence::restore_backup(&self.database_path, backup)
+    pub(super) fn rollback_sqlite_save(&self, receipt: &SqliteSaveReceipt) -> Result<(), String> {
+        sqlite_persistence::rollback_save(&self.database_path, receipt)
             .map_err(|error| error.to_string())
     }
 
@@ -316,7 +398,7 @@ impl Default for WorkspaceDocument {
     fn default() -> Self {
         Self {
             json: Value::Null,
-            database_path: PathBuf::from("state.sqlite3"),
+            database_path: PathBuf::from("investment.sqlite3"),
             account: AccountDocument::Json(JsonSelectionReason::DatabaseMissing),
         }
     }
@@ -330,7 +412,7 @@ fn blocked_string(document: &WorkspaceDocument) -> String {
 }
 
 fn blocked_inventory(document: &WorkspaceDocument) -> InventoryError {
-    InventoryError::new("state.sqlite3", blocked_string(document))
+    InventoryError::new("investment.sqlite3", blocked_string(document))
 }
 
 pub(super) fn character_count(document: &WorkspaceDocument) -> usize {

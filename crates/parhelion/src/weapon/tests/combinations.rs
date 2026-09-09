@@ -8,6 +8,7 @@ use sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_with_
 mod good_company;
 mod invalid;
 mod private;
+mod reclamation_order;
 mod stat_groups;
 mod stress;
 

@@ -521,7 +521,7 @@ impl SundialApp {
         #[cfg(feature = "sqlite-account")]
         ui.label(
             egui::RichText::new(
-                "Sundial saves account edits only to the active source. It never mirrors account data between state.sqlite3 and settings.json.",
+                "Sundial saves account edits only to the active source. It never mirrors account data between investment.sqlite3 and settings.json.",
             )
             .color(super::ui::secondary_text_color(ui)),
         );

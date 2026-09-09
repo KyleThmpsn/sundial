@@ -1,4 +1,4 @@
-//! Adapter for the provisional SQLite contract in Sunrise PR 88.
+//! Adapter for the official Sunrise investment database (schema 2).
 //!
 //! The contract is pinned to one reviewed commit. Sundial never creates or migrates a database,
 //! and unknown nested versions are surfaced explicitly so they cannot be mistaken for the pinned
@@ -7,9 +7,14 @@
 
 mod contract;
 mod document;
+mod entitlements;
 mod error;
+pub(crate) mod package;
+mod progression;
 mod reader;
+mod runtime;
 mod settings;
+mod validation;
 mod writer;
 
 use std::path::Path;
@@ -28,37 +33,11 @@ pub(crate) struct SqliteAccountSnapshot {
     settings: AccountSettingsState,
 }
 
-#[cfg(test)]
-impl SqliteAccountSnapshot {
-    pub(crate) const fn primary_soid(&self) -> InstanceSoid {
-        self.primary_soid
-    }
-
-    pub(crate) const fn profile(&self) -> &ProfileState {
-        &self.profile
-    }
-
-    pub(crate) const fn characters(&self) -> &CharacterState {
-        &self.characters
-    }
-
-    pub(crate) const fn settings(&self) -> &AccountSettingsState {
-        &self.settings
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SqliteAccountLoad {
-    #[cfg(test)]
-    Missing,
     Empty,
     Incompatible(SqliteAccountIncompatibility),
     Loaded(SqliteAccountSnapshot),
-}
-
-#[cfg(test)]
-pub(crate) fn load(path: &Path) -> Result<SqliteAccountLoad, SqliteAccountError> {
-    reader::load(path)
 }
 
 pub(crate) fn load_document(path: &Path) -> Result<SqliteAccountDocumentLoad, SqliteAccountError> {
@@ -71,8 +50,11 @@ pub(crate) fn save_document(
     writer::save(document)
 }
 
-pub(crate) fn restore_backup(path: &Path, backup: &Path) -> Result<(), SqliteAccountError> {
-    writer::restore_backup(path, backup)
+pub(crate) fn rollback_save(
+    path: &Path,
+    receipt: &SqliteSaveReceipt,
+) -> Result<(), SqliteAccountError> {
+    writer::rollback_save(path, receipt)
 }
 
 pub(crate) fn validate_backup(backup: &Path) -> Result<(), SqliteAccountError> {

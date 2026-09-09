@@ -478,7 +478,8 @@ impl SundialApp {
             melee,
             class_ability,
         };
-        let abilities_editable = !self.document.supports_v13_account();
+        let abilities_editable =
+            !self.document.uses_json_account() || !self.document.supports_v13_account();
         let display_values_need_materialization = self.document.uses_json_account()
             && [
                 ("race", original_values.race),
@@ -630,8 +631,10 @@ impl SundialApp {
             .then(|| self.class_armor_defaults.get(&edited.class_type).copied())
             .flatten();
         let mut candidate = self.document.clone();
-        let metadata_updates =
-            edited.metadata_updates(!selecting_subclass && !candidate.supports_v13_account());
+        let metadata_updates = edited.metadata_updates(
+            !selecting_subclass
+                && (!candidate.uses_json_account() || !candidate.supports_v13_account()),
+        );
         if let Err(error) =
             account::apply_character_updates(&mut candidate, index, metadata_updates)
         {

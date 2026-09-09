@@ -320,7 +320,7 @@ fn authored_unlock_settings_path(
             Err(super::settings::missing_settings_message(install))
         }
         super::SettingsPathResolution::Ambiguous => Err(
-            "Multiple settings.json files exist for this installation; open Sundial and select the active layout before installing authored packages"
+            "Multiple settings.json files exist for this installation. Open Sundial and select the active layout before installing authored packages"
                 .to_owned(),
         ),
     }
@@ -331,10 +331,70 @@ fn synchronize_authored_collection_unlocks_at(
     unlocks: &[(usize, u8, u16)],
     save: impl FnOnce(&Path, &serde_json::Value, &serde_json::Value) -> Result<PathBuf, String>,
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
-    // Unlock policy remains part of settings.json even when state.sqlite3 is the active account
-    // inventory backend. The supported SQLite contract has no unlock/progression storage.
     let original = super::settings::load_workspace_json(settings_path)?;
+    let database_path = crate::persistence::investment_path(settings_path);
+    if database_path
+        .try_exists()
+        .map_err(|error| error.to_string())?
+        || crate::game_settings::schema_version(&original).is_some_and(|v| v >= 18)
+    {
+        #[cfg(feature = "sqlite-account")]
+        {
+            use crate::persistence::sqlite_account::{self, SqliteAccountDocumentLoad};
+            let mut document =
+                match sqlite_account::load_document(&database_path).map_err(|e| e.to_string())? {
+                    SqliteAccountDocumentLoad::Loaded(document) => document,
+                    _ => return Err(
+                        "A compatible Sunrise investment database is required for authored unlocks"
+                            .into(),
+                    ),
+                };
+            let changed = apply_native_authored_unlocks(&mut document, unlocks)?;
+            let backup = if changed == 0 {
+                None
+            } else {
+                Some(
+                    sqlite_account::save_document(&mut document)
+                        .map_err(|e| e.to_string())?
+                        .backup,
+                )
+            };
+            return Ok((database_path, backup, changed));
+        }
+        #[cfg(not(feature = "sqlite-account"))]
+        return Err("This build does not include SQLite account support".into());
+    }
     synchronize_loaded_authored_collection_unlocks(settings_path, original, unlocks, save)
+}
+
+#[cfg(feature = "sqlite-account")]
+fn apply_native_authored_unlocks(
+    document: &mut crate::persistence::sqlite_account::SqliteAccountDocument,
+    unlocks: &[(usize, u8, u16)],
+) -> Result<usize, String> {
+    let mut changed = 0;
+    for unlock in unlocks {
+        let count = if matches!(unlock.1, 3 | 6) {
+            document.characters().characters().len()
+        } else {
+            1
+        };
+        let mut definition_changed = false;
+        for index in 0..count {
+            let (view, edits) = authored_unlock_changes(
+                document.progression_view(index),
+                std::slice::from_ref(unlock),
+            )?;
+            if edits != 0 {
+                document
+                    .apply_progression_view(index, &view)
+                    .map_err(|error| error.to_string())?;
+                definition_changed = true;
+            }
+        }
+        changed += usize::from(definition_changed);
+    }
+    Ok(changed)
 }
 
 fn synchronize_loaded_authored_collection_unlocks(
@@ -343,7 +403,23 @@ fn synchronize_loaded_authored_collection_unlocks(
     unlocks: &[(usize, u8, u16)],
     save: impl FnOnce(&Path, &serde_json::Value, &serde_json::Value) -> Result<PathBuf, String>,
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
-    let mut document = original.clone();
+    let (document, changed) = authored_unlock_changes(original.clone(), unlocks)?;
+    let backup = if changed == 0 {
+        None
+    } else {
+        // Refuse to overwrite edits made by Sunrise, Sundial, or the user while the authored
+        // package installation was finishing.
+        super::settings::verify_workspace_source_unchanged(settings_path, &original, false)?;
+        Some(save(settings_path, &document, &original)?)
+    };
+    Ok((settings_path.to_path_buf(), backup, changed))
+}
+
+fn authored_unlock_changes(
+    original: serde_json::Value,
+    unlocks: &[(usize, u8, u16)],
+) -> Result<(serde_json::Value, usize), String> {
+    let mut document = original;
     let mut changed = 0usize;
     for &(definition_index, bank, slot) in unlocks {
         if bank == crate::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_BANK
@@ -386,15 +462,7 @@ fn synchronize_loaded_authored_collection_unlocks(
         }
         changed += 1;
     }
-    let backup = if changed == 0 {
-        None
-    } else {
-        // Refuse to overwrite edits made by Sunrise, Sundial, or the user while the authored
-        // package installation was finishing.
-        super::settings::verify_workspace_source_unchanged(settings_path, &original, false)?;
-        Some(save(settings_path, &document, &original)?)
-    };
-    Ok((settings_path.to_path_buf(), backup, changed))
+    Ok((document, changed))
 }
 
 pub(crate) fn show_plug_safety_warnings() -> bool {
@@ -586,6 +654,52 @@ mod tests {
     use super::*;
     use crate::{app::SettingsLayout, test_support::TestDirectory};
 
+    #[cfg(feature = "sqlite-account")]
+    #[test]
+    fn native_authored_unlocks_cover_character_scopes_and_repeat_without_changes() {
+        let directory = TestDirectory::new("authored-native-scopes");
+        let path = directory.0.join("investment.sqlite3");
+        crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters;").unwrap();
+        let crate::persistence::sqlite_account::SqliteAccountDocumentLoad::Loaded(mut document) =
+            crate::persistence::sqlite_account::load_document(&path).unwrap()
+        else {
+            panic!()
+        };
+        let unlocks = [(200, 1, 42), (201, 3, 43), (202, 6, 44)];
+        assert_eq!(
+            apply_native_authored_unlocks(&mut document, &unlocks).unwrap(),
+            3
+        );
+        assert_eq!(
+            apply_native_authored_unlocks(&mut document, &unlocks).unwrap(),
+            0
+        );
+        crate::persistence::sqlite_account::tests::save_fixture_document(
+            &mut document,
+            &directory.0.join("backup.sqlite3"),
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM unlocks WHERE bank=0 AND slot=42 AND value=2",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM unlocks WHERE value=2 AND ((bank=4 AND slot=43) OR (bank=2 AND slot=44))",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            4
+        );
+    }
+
     #[test]
     fn authored_unlock_path_honors_each_saved_layout() {
         let directory = TestDirectory::new("authored-unlock-layout");
@@ -636,17 +750,17 @@ mod tests {
 
     #[cfg(feature = "sqlite-account")]
     #[test]
-    fn sqlite_presence_does_not_redirect_unlock_policy_away_from_settings_json() {
+    fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
         let directory = TestDirectory::new("authored-unlock-sqlite");
         let settings = directory.0.join("settings.json");
-        let database = directory.0.join("state.sqlite3");
+        let database = directory.0.join("data").join("investment.sqlite3");
         fs::write(
             &settings,
             serde_json::to_vec(&unlock_settings_for_test()).unwrap(),
         )
         .unwrap();
         crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
-        let database_before = fs::read(&database).unwrap();
+        let json_before = fs::read(&settings).unwrap();
 
         let (saved_path, backup, changed) = synchronize_authored_collection_unlocks_at(
             &settings,
@@ -655,14 +769,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(saved_path, settings);
+        assert_eq!(saved_path, database);
         assert_eq!(changed, 1);
         assert!(backup.is_some_and(|path| path.is_file()));
-        assert_eq!(fs::read(&database).unwrap(), database_before);
+        assert_eq!(fs::read(&settings).unwrap(), json_before);
+        let db = rusqlite::Connection::open(&database).unwrap();
+        assert_eq!(db.query_row("SELECT value FROM unlocks WHERE character_slot=-1 AND bank=0 AND slot=42 AND lane=0",[],|r|r.get::<_,i32>(0)).unwrap(),2);
         let saved = super::super::settings::load_workspace_json(&settings).unwrap();
         assert_eq!(
             saved.pointer("/state/unlocks/account_flag_runs"),
-            Some(&json!([[42, 1]]))
+            Some(&json!([]))
         );
     }
 

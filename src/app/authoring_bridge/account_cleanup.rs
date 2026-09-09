@@ -27,8 +27,21 @@ pub(crate) fn preview_account_replacement(
 ) -> Result<AuthoredAccountCleanup, String> {
     let preferences = crate::app::settings::load_preferences().preferences;
     let settings_path = super::authored_unlock_settings_path(install, &preferences)?;
-    // The development-only SQLite account contract needs its own coordinated transaction.
-    // Never pretend that cleaning its inactive JSON inventory removes database instances.
+    let database_path = crate::persistence::investment_path(&settings_path);
+    if database_path
+        .try_exists()
+        .map_err(|error| error.to_string())?
+    {
+        #[cfg(feature = "sqlite-account")]
+        return crate::persistence::sqlite_account::package::preview(
+            &database_path,
+            hashes,
+            unlocks,
+            socket_changes,
+        );
+        #[cfg(not(feature = "sqlite-account"))]
+        return Err("This build does not include SQLite account support".into());
+    }
     crate::investment::validate_authored_cleanup_backend(&settings_path)?;
     let original_bytes = std::fs::read(&settings_path).map_err(|e| e.to_string())?;
     let original: Value = crate::package_authoring::read_json(original_bytes.as_slice())
@@ -60,6 +73,9 @@ fn clean(
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
 ) -> Result<Cleaned, String> {
+    if crate::game_settings::schema_version(original).is_some_and(|v| v >= 18) {
+        return Err("Settings v18 requires a Sunrise investment database".into());
+    }
     let mode = inventory::schema_mode(original);
     if mode.is_read_only() || mode.is_future() {
         return Err("Automatic cleanup requires a supported settings schema".into());

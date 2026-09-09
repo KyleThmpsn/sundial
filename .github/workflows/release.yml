@@ -77,11 +77,11 @@ jobs:
 
       - name: Generate dependency notices
         shell: pwsh
-        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
+        run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
 
       - name: Package release
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
+        run: ./packaging/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -153,10 +153,10 @@ jobs:
 
       - name: Generate dependency notices
         shell: pwsh
-        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
+        run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
 
       - name: Package release
-        run: bash ./scripts/package-linux.sh "${{ needs.validate-version.outputs.version }}"
+        run: bash ./packaging/package-linux.sh "${{ needs.validate-version.outputs.version }}"
 
       - name: Verify compatibility baseline
         run: |

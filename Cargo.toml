@@ -28,7 +28,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 
 [workspace.lints.clippy]
 cognitive_complexity = "deny"
@@ -44,9 +44,8 @@ unsafe_op_in_unsafe_fn = "deny"
 workspace = true
 
 [features]
-default = []
-# Retired Sunrise PR 88 prototype, retained for development and regression tests.
-# Do not enable in distributed builds; the eventual upstream contract must be re-audited.
+default = ["sqlite-account"]
+# Official Sunrise investment database support. JSON-only builds remain available.
 sqlite-account = ["dep:rusqlite"]
 
 [dependencies]

@@ -123,7 +123,7 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     let compatible = TestDirectory::new("check-compatible-sqlite");
     let compatible_settings = compatible.0.join("settings.json");
     crate::persistence::sqlite_account::tests::create_fixture(
-        &compatible.0.join("state.sqlite3"),
+        &compatible.0.join("data").join("investment.sqlite3"),
         3,
     );
     let compatible_document = WorkspaceDocument::load(
@@ -137,7 +137,12 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
 
     let blocked = TestDirectory::new("check-blocked-sqlite");
     let blocked_settings = blocked.0.join("settings.json");
-    fs::write(blocked.0.join("state.sqlite3"), b"not SQLite").unwrap();
+    fs::create_dir_all(blocked.0.join("data")).unwrap();
+    fs::write(
+        blocked.0.join("data").join("investment.sqlite3"),
+        b"not SQLite",
+    )
+    .unwrap();
     let blocked_document =
         WorkspaceDocument::load(serde_json::json!({"version": 8}), &blocked_settings);
     assert!(

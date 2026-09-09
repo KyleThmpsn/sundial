@@ -34,7 +34,58 @@ pub(super) fn sqlite_change_summaries(
     summarize_dismantle_rewards(before, after, limit, &mut changes);
     summarize_characters(before, after, limit, &mut changes);
     summarize_account_settings(before, after, limit, &mut changes);
+    for (path, old, new) in [
+        ("runtime", before.runtime(), after.runtime()),
+        ("entitlements", before.entitlements(), after.entitlements()),
+    ] {
+        summarize_native_value(path, old, new, limit, &mut changes);
+    }
+    for index in 0..before
+        .characters()
+        .characters()
+        .len()
+        .max(after.characters().characters().len())
+        .max(1)
+    {
+        summarize_native_value(
+            &format!("progression/character_{}", index + 1),
+            &before.progression_view(index),
+            &after.progression_view(index),
+            limit,
+            &mut changes,
+        );
+    }
     changes
+}
+
+#[cfg(feature = "sqlite-account")]
+fn summarize_native_value(
+    path: &str,
+    before: &Value,
+    after: &Value,
+    limit: usize,
+    changes: &mut Vec<String>,
+) {
+    if before == after || changes.len() >= limit {
+        return;
+    }
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        for key in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
+            summarize_native_value(
+                &format!("{path}/{key}"),
+                before.get(key).unwrap_or(&Value::Null),
+                after.get(key).unwrap_or(&Value::Null),
+                limit,
+                changes,
+            );
+        }
+    } else {
+        push_summary(
+            changes,
+            limit,
+            format!("investment.sqlite3/{path}: updated"),
+        );
+    }
 }
 
 #[cfg(feature = "sqlite-account")]
@@ -63,7 +114,7 @@ fn summarize_profile_items(
         .collect::<BTreeSet<_>>()
     {
         summarize_profile_item(
-            &format!("state.sqlite3/profile_items/{id}"),
+            &format!("investment.sqlite3/profile_items/{id}"),
             before.get(&id).copied(),
             after.get(&id).copied(),
             limit,
@@ -144,7 +195,7 @@ fn summarize_dismantle_rewards(
         .copied()
         .collect::<BTreeSet<_>>()
     {
-        let path = format!("state.sqlite3/dismantle_rewards/{id}");
+        let path = format!("investment.sqlite3/dismantle_rewards/{id}");
         match (before.get(&id).copied(), after.get(&id).copied()) {
             (None, Some(reward)) => push_summary(
                 changes,
@@ -207,7 +258,7 @@ fn summarize_characters(
         .copied()
         .collect::<BTreeSet<_>>()
     {
-        let path = format!("state.sqlite3/characters/{id}");
+        let path = format!("investment.sqlite3/characters/{id}");
         match (before.get(&id).copied(), after.get(&id).copied()) {
             (None, Some(character)) => push_summary(
                 changes,
@@ -377,7 +428,7 @@ fn summarize_account_settings(
                 changes,
                 limit,
                 format!(
-                    "state.sqlite3/account_settings/{}: {} -> {}",
+                    "investment.sqlite3/account_settings/{}: {} -> {}",
                     account_setting_key_label(key),
                     account_setting_value_label(before),
                     account_setting_value_label(after)

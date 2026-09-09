@@ -55,14 +55,53 @@ pub fn preview_authored_account_replacement(
     authoring_bridge::preview_account_replacement(install, item_hashes, unlocks, socket_changes)
 }
 
-/// Checks the account backend before a JSON cleanup/recovery transaction.
-pub fn validate_authored_cleanup_backend(settings_path: &Path) -> Result<(), String> {
-    #[cfg(feature = "sqlite-account")]
-    if settings_path.with_file_name("state.sqlite3").exists() {
-        return Err("Automatic account updates during package replacement or uninstall are not available for SQLite accounts. Package-only uninstall remains available.".into());
+/// Checks that package transactions use the active account source.
+pub fn validate_authored_cleanup_backend(path: &Path) -> Result<(), String> {
+    if is_database(path) {
+        #[cfg(feature = "sqlite-account")]
+        return Ok(());
+        #[cfg(not(feature = "sqlite-account"))]
+        return Err("This build does not include SQLite account support".into());
     }
-    let _ = settings_path;
+    if crate::persistence::investment_path(path)
+        .try_exists()
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "The active account uses SQLite. Reload the package operation before updating it"
+                .into(),
+        );
+    }
     Ok(())
+}
+fn is_database(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "investment.sqlite3")
+}
+/// Returns journal bytes. SQLite uses a complete logical snapshot including uncheckpointed WAL data.
+pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {
+    validate_authored_cleanup_backend(path)?;
+    #[cfg(feature = "sqlite-account")]
+    if is_database(path) {
+        return crate::persistence::sqlite_account::package::read(path);
+    }
+    std::fs::read(path).map_err(|e| e.to_string())
+}
+/// Applies reviewed journal bytes with a concurrent-change check and an atomic backend write.
+pub fn replace_authored_account_source(
+    path: &Path,
+    expected: &[u8],
+    updated: &[u8],
+) -> Result<(), String> {
+    validate_authored_cleanup_backend(path)?;
+    #[cfg(feature = "sqlite-account")]
+    if is_database(path) {
+        return crate::persistence::sqlite_account::package::replace(path, expected, updated);
+    }
+    if std::fs::read(path).map_err(|e| e.to_string())? != expected {
+        return Err("The account changed after review".into());
+    }
+    crate::package_authoring::replace_authoring_file(path, updated).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,13 +112,9 @@ pub struct AuthoredProfileSyncReport {
     pub total_unlocks: usize,
 }
 
-/// Ensures every authored collection unlock is set in the selected `settings.json` policy.
-///
-/// Unlock policy remains in `settings.json` even when SQLite supplies account inventory. The
-/// active settings layout is resolved through Sundial preferences. Existing flags are kept,
-/// missing flags are inserted through Sundial's compact-run encoder. Authored bank-1 rows may use
-/// the explicitly bounded padding extension of the Shadowkeep account-flag region. Any changed
-/// file is backed up and atomically verified by Sundial's settings persistence layer.
+/// Ensures every authored collection unlock is set in the active account source.
+/// JSON accounts use compact runs. SQLite accounts use the native sparse unlock banks.
+/// Saves preserve existing values and require a verified backup and an unchanged source.
 pub fn synchronize_authored_collection_unlocks(
     install: &Path,
     unlocks: &[AuthoredCollectionUnlock],

@@ -63,7 +63,9 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         ui.selectable_value(tab, Tab::Interface, "Interface");
         ui.selectable_value(tab, Tab::Social, "Social");
         ui.selectable_value(tab, Tab::KeyBindings, "Key Bindings")
-            .on_hover_text(if bindings_editable {
+            .on_hover_text(if !json_account {
+                "Edit the numeric input codes stored in the active account database."
+            } else if bindings_editable {
                 "Edit named key bindings used by supported Sunrise schemas."
             } else {
                 "Key bindings are shown read-only for the active account source or settings schema."
@@ -78,7 +80,11 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
             Tab::Sunrise => PageEdits {
-                json_changed: super::runtime::draw(ui, json_document, json_account),
+                json_changed: super::runtime::draw(
+                    ui,
+                    json_document,
+                    json_account || account_settings.is_ok(),
+                ),
                 account_commands: Vec::new(),
             },
             Tab::Player => PageEdits {
@@ -91,13 +97,13 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
                 draw_display(
                     ui,
                     settings,
-                    extended_fov && runtime_available && json_account,
+                    extended_fov && (runtime_available || !json_account),
                 )
             }),
             Tab::Interface => draw_account_settings(ui, account_settings, draw_interface),
             Tab::Social => draw_account_settings(ui, account_settings, draw_social),
             Tab::KeyBindings => draw_account_settings(ui, account_settings, |ui, settings| {
-                draw_key_bindings(ui, settings, key_bindings, bindings_editable)
+                draw_key_bindings(ui, settings, key_bindings, bindings_editable, !json_account)
             }),
         })
         .inner
