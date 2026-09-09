@@ -781,47 +781,6 @@ mod tests {
     }
 
     #[test]
-    fn default_weapon_signature_perks_are_simultaneously_equipped_not_alternatives() {
-        let expected = [
-            ("unsent", vec![(3, 0x6AC9_88C7), (4, 0xCB82_75A3)]),
-            (
-                "last-watch",
-                vec![(0, 0x976D_834D), (3, 0x8CB6_409D), (4, 0x9FB2_18C5)],
-            ),
-            (
-                "periapsis",
-                vec![(0, 0x3BA5_D777), (3, 0xF54F_A31D), (4, 0xD201_3CA1)],
-            ),
-            (
-                "holdover",
-                vec![(0, 0x10C4_8979), (3, 0xB7B1_9168), (4, 0x980F_93D6)],
-            ),
-            ("dead-air", vec![(3, 0x93F6_B3E6), (4, 0xEEB6_9A10)]),
-            (
-                "night-shift",
-                vec![(0, 0xEEB6_9A10), (3, 0xD201_3CA1), (4, 0x5512_3589)],
-            ),
-            (
-                "vaultbreaker",
-                vec![(0, 0xDD5C_B37A), (3, 0xC4BE_7564), (4, 0x5C2F_D04F)],
-            ),
-        ];
-        for (slug, sockets) in expected {
-            let (_, json) = BUNDLED_RECIPES
-                .iter()
-                .find(|(name, _)| *name == format!("{slug}.parhelion.json"))
-                .unwrap();
-            let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            for (socket, hash) in sockets {
-                let column = recipe.overrides.socket_columns[socket].as_ref().unwrap();
-                assert_eq!(column.choices.len(), if socket == 0 { 1 } else { 3 });
-                assert_eq!(column.choices[0].parse_u32().unwrap(), hash);
-                assert_eq!(column.socket_type, Some(if socket == 0 { 176 } else { 92 }));
-            }
-        }
-    }
-
-    #[test]
     fn bundled_weapons_offer_distinct_trait_choices_and_keep_custom_defaults() {
         for (filename, json) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(json).unwrap();

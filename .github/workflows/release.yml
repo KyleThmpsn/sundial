@@ -24,6 +24,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
           test -n "$version"
+          grep -Fxq "# Sundial v$version" RELEASE_NOTES.md
           if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
             printf 'Tag %s does not match Cargo version %s.\n' "$GITHUB_REF_NAME" "$version" >&2
             exit 1
@@ -189,6 +190,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Download verified artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -216,4 +220,4 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"
