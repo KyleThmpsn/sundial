@@ -5,7 +5,9 @@ use crate::{
     appended_tags::AppendedTagAllocator,
     error::{input as invalid, validation},
     shared_tag_memory::SharedTagDependencies,
-    tag_payload::{read_i64, read_u16, read_u32, read_u64, write_u32},
+    tag_payload::{
+        bounded_relative_target as relative_target, read_u16, read_u32, read_u64, write_u32,
+    },
 };
 use std::collections::{BTreeMap, BTreeSet};
 use sundial::package_authoring::{
@@ -496,19 +498,6 @@ fn assigned_tag(
 fn checked_add(base: usize, relative: usize, description: &str) -> AuthoringResult<usize> {
     base.checked_add(relative)
         .ok_or_else(|| invalid(format!("{description} offset overflowed")))
-}
-
-fn relative_target(data: &[u8], field: usize, description: &str) -> AuthoringResult<usize> {
-    let relative = read_i64(data, field)?;
-    let target = field
-        .checked_add_signed(relative as isize)
-        .ok_or_else(|| invalid(format!("{description} relative reference overflowed")))?;
-    if target >= data.len() {
-        return Err(invalid(format!(
-            "{description} relative reference points outside its payload"
-        )));
-    }
-    Ok(target)
 }
 
 pub(super) fn read_tag(data: &[u8], offset: usize) -> AuthoringResult<TagHash> {

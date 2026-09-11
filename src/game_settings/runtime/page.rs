@@ -1,4 +1,4 @@
-//! Compact runtime groups; advanced activity forms stay collapsed by default.
+//! Sunrise settings organized into focused subtabs.
 
 use super::{
     fields::{FIELDS, Field, Kind},
@@ -7,43 +7,118 @@ use super::{
 use eframe::egui;
 use serde_json::Value;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Tab {
+    #[default]
+    Profile,
+    Presentation,
+    Activities,
+    Destinations,
+    Networking,
+    Logging,
+    Characters,
+    Entitlements,
+    Advanced,
+}
+
+impl Tab {
+    const ALL: [Self; 9] = [
+        Self::Profile,
+        Self::Presentation,
+        Self::Activities,
+        Self::Destinations,
+        Self::Networking,
+        Self::Logging,
+        Self::Characters,
+        Self::Entitlements,
+        Self::Advanced,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Profile => "Profile",
+            Self::Presentation => "Presentation",
+            Self::Activities => "Activities",
+            Self::Destinations => "Destinations",
+            Self::Networking => "Networking",
+            Self::Logging => "Logging",
+            Self::Characters => "Characters",
+            Self::Entitlements => "Entitlements",
+            Self::Advanced => "Advanced",
+        }
+    }
+}
+
 pub(in crate::game_settings) fn draw(
     ui: &mut egui::Ui,
     document: &mut Value,
-    json_account: bool,
+    account_available: bool,
 ) -> bool {
     if !super::available(document) {
         return false;
     }
-    ui.horizontal(|ui| {
-        ui.strong("Sunrise Runtime Settings");
-        crate::ui_help::info(
-            ui,
-            "Omitted settings use Sunrise's runtime defaults. Opening this page does not add them.",
-        );
+    let id = ui.make_persistent_id("sunrise_settings_tab");
+    let mut tab = ui
+        .data_mut(|data| data.get_temp::<Tab>(id))
+        .unwrap_or_default();
+    ui.horizontal_wrapped(|ui| {
+        for candidate in Tab::ALL {
+            ui.selectable_value(&mut tab, candidate, candidate.label());
+        }
     });
-    ui.label("Save, then fully restart Destiny 2 to apply.");
+    ui.data_mut(|data| data.insert_temp(id, tab));
+    ui.separator();
+    ui.add_space(8.0);
+    let changed = match tab {
+        Tab::Profile => draw_group(ui, document, "Profile & Catalysts", account_available),
+        Tab::Presentation => draw_group(ui, document, "Presentation", account_available),
+        Tab::Activities => {
+            draw_group(ui, document, "Activities & Scripting", account_available)
+                | draw_group(ui, document, "Server Activation", account_available)
+        }
+        Tab::Destinations => super::activity_page::draw(ui, document),
+        Tab::Networking => {
+            ui.strong("External Server");
+            let mut changed = draw_group(ui, document, "External Server", account_available);
+            ui.add_space(12.0);
+            ui.strong("Server Networking");
+            changed |= draw_group(ui, document, "Server Networking", account_available);
+            changed
+        }
+        Tab::Logging => draw_group(ui, document, "Logging", account_available),
+        Tab::Characters => super::character_page::draw(ui, document, account_available),
+        Tab::Entitlements if account_available => super::entitlements::draw(ui, document),
+        Tab::Entitlements => {
+            ui.label("The active account is unavailable.");
+            false
+        }
+        Tab::Advanced => draw_group(ui, document, "Advanced Runtime", account_available),
+    };
+    if let Err(error) = super::services::validate(document, account_available) {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    }
+    changed
+}
+
+fn draw_group(
+    ui: &mut egui::Ui,
+    document: &mut Value,
+    group: &str,
+    account_available: bool,
+) -> bool {
     let mut changed = false;
-    for group in [
-        "Profile & Catalysts",
-        "Presentation",
-        "Activities & Scripting",
-        "Advanced Runtime",
-    ] {
-        egui::CollapsingHeader::new(group).default_open(group == "Profile & Catalysts").show(ui, |ui| {
-            for &field in FIELDS.iter().filter(|field| field.group == group) {
-                ui.push_id(field.path, |ui| {
-                    ui.add_enabled_ui(json_account || !field.account_owned(), |ui| {
-                        changed |= draw_field(ui, document, field, json_account);
-                    }).response.on_disabled_hover_text("This field belongs to a JSON account; the active SQLite account is unchanged.");
-                });
-            }
+    for &field in FIELDS
+        .iter()
+        .chain(super::services::FIELDS)
+        .filter(|field| field.group == group)
+    {
+        ui.push_id(field.path, |ui| {
+            ui.add_enabled_ui(account_available || !field.account_owned(), |ui| {
+                changed |= draw_field(ui, document, field, account_available);
+            })
+            .response
+            .on_disabled_hover_text("The active account is unavailable.");
         });
     }
-    egui::CollapsingHeader::new("Activity Destinations (Advanced)").show(ui, |ui| {
-        changed |= super::activity_page::draw(ui, document);
-    });
-    changed |= super::services::draw(ui, document, json_account);
     changed
 }
 
@@ -51,8 +126,9 @@ pub(super) fn draw_field(
     ui: &mut egui::Ui,
     document: &mut Value,
     field: Field,
-    json_account: bool,
+    account_available: bool,
 ) -> bool {
+    let field = field.for_document(document);
     let mut value = match optional_value(document, field.path) {
         Ok(value) => value.cloned().unwrap_or_else(|| field.default_value()),
         Err(error) => {
@@ -116,7 +192,8 @@ pub(super) fn draw_field(
         }
         crate::ui_help::info(ui, field.help);
         if document.pointer(field.path).is_none() {
-            ui.label(egui::RichText::new("Runtime Default").small().weak());
+            ui.label(egui::RichText::new("Using Default").small().weak())
+                .on_hover_text("No value is saved for this setting, so Sunrise uses its built-in default. Change this control to save your own value.");
         }
     });
     let error_id = ui.make_persistent_id(("runtime-error", field.path));
@@ -126,7 +203,7 @@ pub(super) fn draw_field(
         let result = if text_field {
             write_value(document, field.path, value).map(|()| true)
         } else {
-            set_field(document, field.path, value, json_account)
+            set_field(document, field.path, value, account_available)
         };
         match result {
             Ok(changed) => {

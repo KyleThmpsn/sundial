@@ -49,7 +49,10 @@ pub(super) fn add_table_spec(table: UnlockTable) -> AddTableSpec {
         },
         UnlockTable::AccountProgressions
         | UnlockTable::CharacterProgressions
-        | UnlockTable::UnreplicatedProgressions => {
+        | UnlockTable::UnreplicatedProgressions
+        | UnlockTable::FlagDefinitions
+        | UnlockTable::ValueDefinitions
+        | UnlockTable::StoredValues => {
             unreachable!("progression tables use their package definition picker")
         }
     }
@@ -69,7 +72,7 @@ pub(super) fn draw_add_unlock_window(
     if !state.add_open {
         return false;
     }
-    if state.unlock_table == UnlockTable::UnreplicatedProgressions {
+    if state.unlock_table.field_name().is_none() {
         state.add_open = false;
         return false;
     }
@@ -338,8 +341,11 @@ pub(super) fn occupied_slots(
             .iter()
             .map(|row| row.definition_index)
             .collect(),
-        UnlockTable::UnreplicatedProgressions => {
-            unreachable!("unreplicated progressions have no Sunrise settings bank")
+        UnlockTable::UnreplicatedProgressions
+        | UnlockTable::FlagDefinitions
+        | UnlockTable::ValueDefinitions
+        | UnlockTable::StoredValues => {
+            unreachable!("read-only tables have no editable settings bank")
         }
     };
     for slot in slots {

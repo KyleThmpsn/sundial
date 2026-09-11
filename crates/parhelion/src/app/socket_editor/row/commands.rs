@@ -5,6 +5,8 @@ use super::super::{
     shift_socket_choice_queries_after_removal,
 };
 use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
+#[cfg(test)]
+mod tests;
 
 pub(super) fn apply(
     context: &mut SocketRowContext<'_>,
@@ -44,6 +46,22 @@ pub(super) fn apply(
             RowContinuation::Finished
         }
         Some(RowCommand::EditChoice { index, hash }) => edit_choice(context, choices, index, hash),
+        Some(RowCommand::MakeDefault(index)) => {
+            match super::super::make_choice_default(
+                context.recipe,
+                context.donor.sockets.len(),
+                context.socket_index,
+                &choices.inherited,
+                index,
+            ) {
+                Ok(()) => {
+                    context.queries.clear();
+                    *context.page = 0;
+                }
+                Err(error) => context.log.push(LogEntry::error(error)),
+            }
+            RowContinuation::Finished
+        }
         Some(RowCommand::Activate) => {
             *context.show_technical_row = true;
             if !choices.is_overridden {
@@ -135,12 +153,38 @@ fn edit_choice(
         }
         return RowContinuation::Finished;
     };
-    let mut updated = current.clone();
-    if updated
-        .iter()
-        .enumerate()
-        .any(|(index, candidate)| index != choice_index && *candidate == hash)
+    let private = match super::super::super::custom_perks::resolve_picked_perk(
+        context.recipe_library,
+        Some(recipe),
+        catalog,
+        hash,
+    ) {
+        Ok(private) => private,
+        Err(error) => {
+            log.push(LogEntry::error(error));
+            return RowContinuation::Finished;
+        }
+    };
+    let hash = match private
+        .as_ref()
+        .map(|variant| variant.source_plug_hash.parse_u32())
+        .transpose()
     {
+        Ok(source) => source.unwrap_or(hash),
+        Err(error) => {
+            log.push(LogEntry::error(error.to_string()));
+            return RowContinuation::Finished;
+        }
+    };
+    let mut updated = current.clone();
+    if super::super::super::custom_perks::choice_conflicts(
+        recipe,
+        socket.index,
+        choice_index,
+        hash,
+        private.as_ref(),
+        &updated,
+    ) {
         log.push(LogEntry::error(format!(
             "{} already contains {}",
             socket.label,
@@ -153,6 +197,10 @@ fn edit_choice(
     } else {
         updated.push(hash);
     }
+    recipe.overrides.socket_plug_variants.retain(|variant| {
+        usize::from(variant.socket_index) != socket.index
+            || usize::from(variant.choice_index) != choice_index
+    });
     set_recipe_socket_column(
         recipe,
         donor.sockets.len(),
@@ -161,6 +209,14 @@ fn edit_choice(
         updated,
         None,
     );
+    if let Some(private) = private {
+        super::super::super::custom_perks::attach_picked_perk(
+            recipe,
+            socket.index,
+            choice_index,
+            private,
+        );
+    }
     RowContinuation::TechnicalFields {
         scroll_to_header: false,
     }

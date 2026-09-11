@@ -50,10 +50,20 @@ fn read_preferences(path: &Path) -> Result<Option<Preferences>, String> {
 fn load_from_paths(current: Option<&Path>, legacy: Option<&Path>) -> LoadedPreferences {
     for path in [current, legacy].into_iter().flatten() {
         match read_preferences(path) {
-            Ok(Some(preferences)) => {
+            Ok(Some(mut preferences)) => {
+                let warning = if preferences.plug_defaults_version < 1 {
+                    preferences.default_plug_selection_mode =
+                        super::PlugSelectionMode::SocketAndGearType;
+                    preferences.plug_defaults_version = 1;
+                    save_preferences_from(current.unwrap_or(path), &preferences, path).err().map(|error| {
+                        format!("The Socket + Gear Type default is active, but its one-time migration could not be saved: {error}")
+                    })
+                } else {
+                    None
+                };
                 return LoadedPreferences {
                     preferences,
-                    warning: None,
+                    warning,
                 };
             }
             Ok(None) => {}
@@ -77,17 +87,44 @@ pub(in crate::app) fn save_preferences(
     path: &Path,
     preferences: &Preferences,
 ) -> Result<(), String> {
+    save_preferences_from(path, preferences, path)
+}
+
+fn save_preferences_from(
+    path: &Path,
+    preferences: &Preferences,
+    source: &Path,
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Sundial's preferences path has no parent folder")?;
-    let encoded = serde_json::to_vec_pretty(preferences)
+    let mut document = serde_json::to_value(preferences)
         .map_err(|error| format!("Could not encode Sundial's preferences: {error}"))?;
+    if source != path {
+        let raw = fs::read(source)
+            .map_err(|error| format!("Could not read legacy preferences: {error}"))?;
+        let mut legacy: serde_json::Value = serde_json::from_slice(&raw)
+            .map_err(|error| format!("Could not decode legacy preferences: {error}"))?;
+        if let (Some(legacy), Some(updated)) = (legacy.as_object_mut(), document.as_object()) {
+            legacy.extend(updated.clone());
+        }
+        document = legacy;
+    }
     // Never silently replace a damaged file with defaults. Keep its exact bytes for recovery.
     match fs::read(path) {
         Ok(raw) if serde_json::from_slice::<Preferences>(&raw).is_err() => {
             preserve_invalid_preferences(path, &raw)?;
         }
-        Ok(_) => {}
+        Ok(raw) => {
+            let mut existing: serde_json::Value = serde_json::from_slice(&raw)
+                .map_err(|error| format!("Could not decode existing preferences: {error}"))?;
+            if let (Some(existing), Some(updated)) =
+                (existing.as_object_mut(), document.as_object())
+            {
+                existing.extend(updated.clone());
+            }
+            document = existing;
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(format!(
@@ -98,6 +135,8 @@ pub(in crate::app) fn save_preferences(
     }
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create Sundial's preferences folder: {error}"))?;
+    let encoded = serde_json::to_vec_pretty(&document)
+        .map_err(|error| format!("Could not encode Sundial's preferences: {error}"))?;
     storage::replace_file(path, &encoded)
         .map_err(|error| format!("Could not save Sundial's preferences: {error}"))
 }

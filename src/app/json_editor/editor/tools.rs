@@ -173,7 +173,6 @@ impl JsonEditorState {
         let suggestions: Vec<_> = available
             .iter()
             .filter(|(key, _)| !current.contains_key(*key))
-            .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         ui.horizontal(|ui| {
             let label = ui.label("Missing Setting");
@@ -231,7 +230,7 @@ impl JsonEditorState {
             let all = ui.add_enabled(!matches.is_empty(), egui::Button::new("Replace All"))
                 .on_hover_text("Literal replacement throughout the full JSON, including collapsed content. Search ignores ASCII case.").clicked();
             if one || all {
-                let ranges = if all { matches } else { std::slice::from_ref(selected.as_ref().unwrap()) };
+                let ranges = if all { matches } else { selected.as_slice() };
                 let updated = super::super::operations::replace_ranges(text, ranges, &self.replacement);
                 self.commit_edit(text, updated);
                 self.current_match = None;

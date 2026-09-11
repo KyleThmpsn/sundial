@@ -26,10 +26,9 @@ pub(in crate::app) fn equipped_item_snapshots(
     character_index: usize,
 ) -> Result<Vec<EquippedItemSnapshot>, String> {
     match &document.account {
-        AccountDocument::Json(_) => {
+        AccountDocument::Json => {
             crate::app::equipment::equipped_item_snapshots(&document.json, character_index)
         }
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => {
             sqlite::equipped_item_snapshots(document, character_index)
         }
@@ -60,14 +59,13 @@ pub(in crate::app) fn equip_definition(
         return Err("The emote wheel requires a v13+ JSON account".into());
     }
     match &mut document.account {
-        AccountDocument::Json(_) => crate::app::equipment::equip_definition(
+        AccountDocument::Json => crate::app::equipment::equip_definition(
             &mut document.json,
             character_index,
             slot,
             definition_hash,
             default_plugs,
         ),
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => sqlite::equip_definition(
             document,
             character_index,
@@ -86,13 +84,12 @@ pub(in crate::app) fn set_equipment_item_level(
     level: i64,
 ) -> Result<(), String> {
     match &mut document.account {
-        AccountDocument::Json(_) => crate::app::equipment::set_equipment_item_level(
+        AccountDocument::Json => crate::app::equipment::set_equipment_item_level(
             &mut document.json,
             character_index,
             slot,
             level,
         ),
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => {
             sqlite::set_equipment_item_level(document, character_index, slot, level)
         }
@@ -107,13 +104,12 @@ pub(in crate::app) fn set_equipment_item_flags(
     flags: Option<u8>,
 ) -> Result<(), String> {
     match &mut document.account {
-        AccountDocument::Json(_) => crate::app::equipment::set_equipment_item_flags(
+        AccountDocument::Json => crate::app::equipment::set_equipment_item_flags(
             &mut document.json,
             character_index,
             slot,
             flags,
         ),
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => {
             sqlite::set_equipment_item_flags(document, character_index, slot, flags)
         }
@@ -131,7 +127,7 @@ pub(in crate::app) fn set_equipment_item_plug(
     hash: Option<u64>,
 ) -> Result<(), String> {
     match &mut document.account {
-        AccountDocument::Json(_) => crate::app::equipment::set_equipment_item_plug(
+        AccountDocument::Json => crate::app::equipment::set_equipment_item_plug(
             &mut document.json,
             character_index,
             slot,
@@ -139,7 +135,6 @@ pub(in crate::app) fn set_equipment_item_plug(
             default_plugs,
             hash,
         ),
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => sqlite::set_equipment_item_plug(
             document,
             character_index,
@@ -158,10 +153,9 @@ pub(in crate::app) fn set_weapon_slot_empty(
     slot: &str,
 ) -> Result<(), String> {
     match &mut document.account {
-        AccountDocument::Json(_) => {
+        AccountDocument::Json => {
             crate::app::equipment::set_weapon_slot_empty(&mut document.json, character_index, slot)
         }
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => {
             sqlite::set_weapon_slot_empty(document, character_index, slot)
         }
@@ -175,12 +169,11 @@ pub(in crate::app) fn restore_class_armor(
     destination_character_index: usize,
 ) -> Result<bool, String> {
     match &mut document.account {
-        AccountDocument::Json(_) => crate::app::equipment::restore_class_armor_from_character(
+        AccountDocument::Json => crate::app::equipment::restore_class_armor_from_character(
             &mut document.json,
             source_character_index,
             destination_character_index,
         ),
-        #[cfg(feature = "sqlite-account")]
         AccountDocument::Sqlite(document) => sqlite::restore_class_armor(
             document,
             source_character_index,

@@ -8,6 +8,7 @@ use sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_with_
 mod good_company;
 mod invalid;
 mod private;
+mod projectiles;
 mod reclamation_order;
 mod stat_groups;
 mod stress;
@@ -174,6 +175,7 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                             }));
                         recipe.overrides.socket_plug_variants.push(
                             crate::WeaponSocketPlugVariantRecipe {
+                                replace_effects: false,
                                 socket_index: donor.sockets.len() as u16,
                                 choice_index: 0,
                                 source_plug_hash: 0xDD5C_B37A.into(),
@@ -183,6 +185,8 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                                 investment_stats: Vec::new(),
                                 additional_sandbox_perks: Vec::new(),
                                 sandbox_perks: vec![crate::WeaponSandboxPerkRuntimeRecipe {
+                                    program: None,
+                                    projectiles: Vec::new(),
                                     source_perk_index: 1178,
                                     activation: None,
                                     runtime_values: Vec::new(),
@@ -299,16 +303,30 @@ fn verify_private_default(
     manager: &tiger_pkg::PackageManager,
     tables: &Tables,
     hash: u32,
-    source: u32,
+    variant: &WeaponSocketPlugVariantOverride,
 ) {
+    let source = variant.source_plug_hash;
     assert_ne!(hash, source);
     let (plug, _) = tables.load(manager, hash);
     let (stock_plug, _) = tables.load(manager, source);
     let private = weapon_sandbox_perks(&plug).unwrap();
     let stock = weapon_sandbox_perks(&stock_plug).unwrap();
-    assert_eq!(private.len(), stock.len());
+    assert_eq!(
+        private.len(),
+        stock.len() + variant.additional_sandbox_perks.len()
+    );
+    verify_additional_perks(
+        manager,
+        &tables.globals,
+        &private[stock.len()..],
+        &variant.additional_sandbox_perks,
+    );
     for (&private_index, &stock_index) in private.iter().zip(&stock) {
-        if stock_index == 1178 {
+        if let Some(edit) = variant
+            .sandbox_perks
+            .iter()
+            .find(|edit| edit.source_perk_index == stock_index)
+        {
             assert_ne!(private_index, stock_index);
             let authored_action = load_sandbox_perk_runtime_action(
                 manager,
@@ -322,11 +340,36 @@ fn verify_private_default(
                 usize::from(stock_index),
             )
             .unwrap();
-            assert_eq!(authored_action.action_tag, stock_action.action_tag);
-            assert_eq!(authored_action.action_payload, stock_action.action_payload);
+            if edit.runtime_values.is_empty()
+                && edit.action_float_values.is_empty()
+                && edit.activation.is_none()
+            {
+                assert_eq!(authored_action.action_tag, stock_action.action_tag);
+                assert_eq!(authored_action.action_payload, stock_action.action_payload);
+            } else {
+                assert_ne!(authored_action.action_tag, stock_action.action_tag);
+            }
         } else {
             assert_eq!(private_index, stock_index);
         }
+    }
+}
+
+fn verify_additional_perks(
+    manager: &tiger_pkg::PackageManager,
+    globals: &[u8],
+    private: &[u16],
+    stock: &[u16],
+) {
+    assert_eq!(private.len(), stock.len());
+    for (&private_index, &stock_index) in private.iter().zip(stock) {
+        assert_ne!(private_index, stock_index);
+        let private =
+            load_sandbox_perk_runtime_action(manager, globals, usize::from(private_index)).unwrap();
+        let source =
+            load_sandbox_perk_runtime_action(manager, globals, usize::from(stock_index)).unwrap();
+        assert_eq!(private.action_tag, source.action_tag);
+        assert_eq!(private.action_payload, source.action_payload);
     }
 }
 
@@ -345,6 +388,16 @@ fn verify_sockets(
     let (_, _, rows, _) = array_at(definition, resource).unwrap();
     for (socket, column) in spec.overrides.socket_columns.iter().enumerate() {
         let Some(column) = column else { continue };
+        if column.socket_type == Some(u16::MAX) {
+            assert_eq!(defaults[socket], u16::MAX);
+            assert!(column.choices.is_empty());
+            let row = rows + socket * ITEM_ORDINARY_SOCKET_ROW_SIZE;
+            assert_eq!(read_u16(definition, row).unwrap(), u16::MAX);
+            let (count, _, _, _) =
+                array_at(definition, row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET).unwrap();
+            assert_eq!(count, 0);
+            continue;
+        }
         let hash = tables.plug_hash(defaults[socket]);
         let variant = spec
             .overrides
@@ -352,7 +405,7 @@ fn verify_sockets(
             .iter()
             .find(|variant| usize::from(variant.socket_index) == socket);
         let expected_hash = if let Some(variant) = variant {
-            verify_private_default(manager, tables, hash, variant.source_plug_hash);
+            verify_private_default(manager, tables, hash, variant);
             hash
         } else {
             column.choices[0]
@@ -365,16 +418,26 @@ fn verify_sockets(
         let (count, _, choices, _) =
             array_at(definition, row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET).unwrap();
         assert_eq!(count, column.choices.len());
-        for (choice, &expected) in column.choices.iter().enumerate() {
-            let actual = tables.plug_hash(
-                read_u16(
-                    definition,
-                    choices + choice * ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE,
-                )
-                .unwrap(),
-            );
-            assert_eq!(actual, if choice == 0 { expected_hash } else { expected });
-        }
+        verify_embedded_choices(tables, definition, choices, &column.choices, expected_hash);
+    }
+}
+
+fn verify_embedded_choices(
+    tables: &Tables,
+    definition: &[u8],
+    choices: usize,
+    expected: &[u32],
+    default_hash: u32,
+) {
+    for (choice, &expected) in expected.iter().enumerate() {
+        let actual = tables.plug_hash(
+            read_u16(
+                definition,
+                choices + choice * ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE,
+            )
+            .unwrap(),
+        );
+        assert_eq!(actual, if choice == 0 { default_hash } else { expected });
     }
 }
 

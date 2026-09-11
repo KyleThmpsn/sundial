@@ -2,19 +2,45 @@
 use super::SqliteAccountError;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
+
 pub(super) fn load(db: &Connection) -> Result<Value, SqliteAccountError> {
     let setup: bool = db
         .query_row(
             "SELECT profile_setup_completed FROM account WHERE id=1",
             [],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .map_err(sql)?;
-    let mut stmt=db.prepare("SELECT preview_available,appearance_value,last_orbited_destination,content_bypass,level,equipped_title FROM characters ORDER BY slot").map_err(sql)?;
-    let rows=stmt.query_map([],|r|Ok(json!({"preview_available":r.get::<_,bool>(0)?,"appearance_value":r.get::<_,f64>(1)?,"last_orbited_destination":r.get::<_,u32>(2)?,"content_bypass":r.get::<_,bool>(3)?,"level":r.get::<_,u8>(4)?,"equipped_title":r.get::<_,u16>(5)?}))).map_err(sql)?.collect::<Result<Vec<_>,_>>().map_err(sql)?;
-    Ok(json!({"account":{"profile_setup_completed":setup},"characters":rows}))
+    let mut statement = db
+        .prepare(
+            "SELECT preview_available, appearance_value, last_orbited_destination,
+                    content_bypass, level, equipped_title, acquired_subclass_mask
+             FROM characters ORDER BY slot",
+        )
+        .map_err(sql)?;
+    let characters = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "preview_available": row.get::<_, bool>(0)?,
+                "appearance_value": row.get::<_, f64>(1)?,
+                "last_orbited_destination": row.get::<_, u32>(2)?,
+                "content_bypass": row.get::<_, bool>(3)?,
+                "level": row.get::<_, u8>(4)?,
+                "equipped_title": row.get::<_, u16>(5)?,
+                "acquired_subclass_mask": row.get::<_, i64>(6)? as u64,
+            }))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    Ok(json!({
+        "account": {"profile_setup_completed": setup},
+        "characters": characters,
+    }))
 }
+
 pub(super) fn save(db: &Connection, value: &Value) -> Result<(), SqliteAccountError> {
+    validate(value)?;
     let setup = value["account"]["profile_setup_completed"]
         .as_bool()
         .ok_or_else(invalid)?;
@@ -50,13 +76,49 @@ pub(super) fn save(db: &Connection, value: &Value) -> Result<(), SqliteAccountEr
             .as_u64()
             .and_then(|v| u16::try_from(v).ok())
             .ok_or_else(invalid)?;
-        db.execute("UPDATE characters SET preview_available=?,appearance_value=?,last_orbited_destination=?,content_bypass=?,level=?,equipped_title=? WHERE slot=?",params![preview,appearance,destination,content,level,title,slot]).map_err(sql)?;
+        let mask = row["acquired_subclass_mask"].as_u64().ok_or_else(invalid)?;
+        db.execute(
+            "UPDATE characters
+             SET preview_available=?, appearance_value=?, last_orbited_destination=?,
+                 content_bypass=?, level=?, equipped_title=?, acquired_subclass_mask=?
+             WHERE slot=?",
+            params![
+                preview,
+                appearance,
+                destination,
+                content,
+                level,
+                title,
+                mask as i64,
+                slot
+            ],
+        )
+        .map_err(sql)?;
     }
     Ok(())
 }
+
+pub(super) fn validate(value: &Value) -> Result<(), SqliteAccountError> {
+    let rows = value["characters"].as_array().ok_or_else(invalid)?;
+    for row in rows {
+        if row["level"]
+            .as_u64()
+            .is_none_or(|value| value > u64::from(u8::MAX))
+            || row["equipped_title"]
+                .as_u64()
+                .is_none_or(|value| value > u64::from(u16::MAX))
+            || row["acquired_subclass_mask"].as_u64().is_none()
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
 fn invalid() -> SqliteAccountError {
     SqliteAccountError::invalid_data("characters", "invalid native runtime details")
 }
+
 fn sql(error: rusqlite::Error) -> SqliteAccountError {
     SqliteAccountError::sqlite("edit runtime details in", error)
 }

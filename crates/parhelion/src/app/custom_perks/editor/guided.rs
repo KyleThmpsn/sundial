@@ -4,7 +4,7 @@ use sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind;
 mod profiles;
 use profiles::{PROJECTILE_PROFILES, ProjectileProfile};
 
-pub(super) const GUIDED_SUPPORT_NOTICE: &str = "Guided parameter support is currently extremely limited. More parameters and perks will be added as their behavior is mapped and verified.";
+pub(super) const GUIDED_SUPPORT_NOTICE: &str = "Mapped projectile properties include speed, gravity and travel distance for supported assets. Other properties are still being mapped.";
 
 pub(in crate::app) fn has_guided_profile(perk_index: u16) -> bool {
     PROJECTILE_PROFILES
@@ -14,7 +14,7 @@ pub(in crate::app) fn has_guided_profile(perk_index: u16) -> bool {
 
 pub(in crate::app) fn guided_support_notice(ui: &mut egui::Ui) {
     ui.label(GUIDED_SUPPORT_NOTICE).on_hover_text(
-        "Guided runtime support currently covers Micro-Missile's projectile speed multiplier. Stat Bonuses While Equipped are separate, not conditional bonuses. You can also author names, descriptions, classification and additional effects. Package fields and experimental controls are not verified guided support.",
+        "Micro-Missile's speed multiplier has gameplay evidence. Gravity, distance and other projectile combinations are mapped from native code and still need gameplay checks. Stat Bonuses While Equipped are separate from conditional bonuses.",
     );
 }
 
@@ -40,7 +40,11 @@ impl ProjectileSpeed {
         loaded: &PrivatePerkRuntimeGraph,
         profile: &'static ProjectileProfile,
     ) -> Option<Self> {
-        if loaded.action_tag != profile.action_tag {
+        // An independently opened entity has no parent action. Exact graph, owner,
+        // schema, unique field and original value checks below still apply.
+        let independent_entity =
+            loaded.action_tag == 0 && loaded.action_payload.is_empty() && loaded.graphs.len() == 1;
+        if loaded.action_tag != profile.action_tag && !independent_entity {
             return None;
         }
         let mut graphs = loaded
@@ -123,6 +127,7 @@ impl ProjectileSpeed {
         Ok(values[0])
     }
 
+    #[cfg(test)]
     pub(super) fn set(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
@@ -186,66 +191,22 @@ pub(super) fn equivalent(
 }
 
 impl PerkEditor {
-    pub(super) fn draw_verified_parameters(
+    pub(super) fn draw_verified_projectile_speed(
         &mut self,
         ui: &mut egui::Ui,
         loaded: &PrivatePerkRuntimeGraph,
-    ) {
+        tag: u32,
+        owner: u32,
+    ) -> bool {
         let parameters = ProjectileSpeed::discover_all(loaded);
-        ui.strong("Guided Parameters");
-        if parameters.is_empty() {
-            ui.label("No guided parameters have been verified for this perk and its current data. Other editing options are shown below where supported.");
-            return;
+        if let Some(speed) = parameters
+            .iter()
+            .find(|speed| speed.profile.graph_tag == tag && speed.profile.owner_tag == owner)
+        {
+            ui.label("Projectile Speed Multiplier")
+                .on_hover_text(speed.profile.evidence);
+            return true;
         }
-        for speed in parameters {
-            ui.push_id(speed.profile.id, |ui| {
-                self.draw_projectile_speed(ui, loaded, &speed)
-            });
-        }
-    }
-
-    fn draw_projectile_speed(
-        &mut self,
-        ui: &mut egui::Ui,
-        loaded: &PrivatePerkRuntimeGraph,
-        speed: &ProjectileSpeed,
-    ) {
-        ui.label(format!(
-            "{} · Projectile Speed Multiplier",
-            speed.profile.perk
-        ))
-        .on_hover_text(speed.profile.evidence);
-        let current = speed.value(loaded, &self.draft);
-        let mut value = current.clone().unwrap_or(speed.profile.default_multiplier);
-        if let Err(error) = current {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add(egui::DragValue::new(&mut value).speed(0.1).suffix(" ×"))
-                .changed()
-            {
-                self.parameter_error = speed.set(loaded, &mut self.draft, value).err();
-                self.value_text.retain(|(locator, _), _| {
-                    !speed
-                        .targets
-                        .iter()
-                        .any(|(field, _)| equivalent(loaded, locator, &field.locator))
-                });
-            }
-            ui.label(format!("Original: {} ×", speed.profile.default_multiplier));
-            if ui.button("Reset Speed").clicked() {
-                self.parameter_error = speed
-                    .set(loaded, &mut self.draft, speed.profile.default_multiplier)
-                    .err();
-                self.value_text.retain(|(locator, _), _| {
-                    !speed
-                        .targets
-                        .iter()
-                        .any(|(field, _)| equivalent(loaded, locator, &field.locator))
-                });
-            }
-        });
-        ui.label("Scope: This custom perk's projectile. Stock perks are unchanged.");
+        false
     }
 }

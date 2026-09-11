@@ -448,7 +448,10 @@ impl SundialApp {
         if let Some(hash) = hash {
             item_editor::catalog_item_tooltip(response, &self.manifest, hash)
         } else {
-            response.on_hover_text(format!("{context_label}\nEmpty"))
+            response.on_hover_ui(|ui| {
+                crate::ui_help::tooltip_title(ui, context_label);
+                ui.label("Empty");
+            })
         }
     }
 }

@@ -7,9 +7,11 @@ mod buckets;
 mod character;
 mod definitions;
 mod interactions;
+mod materials;
 mod model;
 mod presentation;
 mod profile;
+mod rewards;
 
 #[cfg(test)]
 mod tests;

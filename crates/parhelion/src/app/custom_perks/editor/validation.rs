@@ -46,7 +46,7 @@ fn finite(value: &WeaponRuntimeValue) -> bool {
 }
 
 impl PerkEditor {
-    pub(super) fn validation_errors(&self) -> Vec<String> {
+    pub(in crate::app::custom_perks) fn validation_errors(&self) -> Vec<String> {
         let Some(loaded) = &self.graph else {
             return vec!["Wait for the perk data to load.".into()];
         };
@@ -109,6 +109,11 @@ impl PerkEditor {
                 errors.push(error);
             }
         }
+        errors.extend(
+            movement::mapped(loaded)
+                .into_iter()
+                .filter_map(|(_, parameter)| parameter.value(&self.draft).err()),
+        );
         errors.sort();
         errors.dedup();
         errors

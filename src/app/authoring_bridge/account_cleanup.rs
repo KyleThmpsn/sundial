@@ -1,12 +1,15 @@
 //! Exact-identity cleanup proposals for package replacement and uninstall.
 //! Does not save settings or scan backup accounts.
 use crate::app::{equipment, inventory, progression};
-use crate::investment::{AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredSocketChange};
+use crate::investment::{
+    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredSlotReplacement, AuthoredSocketChange,
+};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
+mod placement;
 mod sockets;
 #[cfg(test)]
 mod tests;
@@ -16,7 +19,7 @@ pub(crate) fn preview_account_cleanup(
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
 ) -> Result<AuthoredAccountCleanup, String> {
-    preview_account_replacement(install, hashes, unlocks, &[])
+    preview_account_replacement(install, hashes, unlocks, &[], None)
 }
 
 pub(crate) fn preview_account_replacement(
@@ -24,6 +27,7 @@ pub(crate) fn preview_account_replacement(
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
     socket_changes: &[AuthoredSocketChange],
+    slots: Option<&AuthoredSlotReplacement>,
 ) -> Result<AuthoredAccountCleanup, String> {
     let preferences = crate::app::settings::load_preferences().preferences;
     let settings_path = super::authored_unlock_settings_path(install, &preferences)?;
@@ -32,15 +36,13 @@ pub(crate) fn preview_account_replacement(
         .try_exists()
         .map_err(|error| error.to_string())?
     {
-        #[cfg(feature = "sqlite-account")]
-        return crate::persistence::sqlite_account::package::preview(
+        return crate::persistence::sqlite_account::package::preview_replacement(
             &database_path,
             hashes,
             unlocks,
             socket_changes,
+            slots,
         );
-        #[cfg(not(feature = "sqlite-account"))]
-        return Err("This build does not include SQLite account support".into());
     }
     crate::investment::validate_authored_cleanup_backend(&settings_path)?;
     let original_bytes = std::fs::read(&settings_path).map_err(|e| e.to_string())?;
@@ -48,6 +50,7 @@ pub(crate) fn preview_account_replacement(
         .map_err(|e| e.to_string())?;
     let (mut cleaned, removed_items, cleared_plugs, cleared_unlocks, removed_reward_rules) =
         clean(&original, hashes, unlocks)?;
+    let slot_moves = placement::relocate(&mut cleaned, hashes, slots)?;
     let resized_items = sockets::resize(&mut cleaned, hashes, socket_changes)?;
     let cleaned_bytes = if cleaned == original {
         original_bytes.clone()
@@ -63,6 +66,7 @@ pub(crate) fn preview_account_replacement(
         removed_reward_rules,
         cleared_unlocks,
         resized_items,
+        slot_moves,
     })
 }
 
@@ -182,14 +186,13 @@ fn clean_equipment(
 ) -> Result<usize, String> {
     let mut plugs = 0;
     for row in equipment::equipped_item_snapshots(document, character)? {
-        if row
+        if let Some(hash) = row
             .definition_hash
-            .is_some_and(|hash| u32::try_from(hash).is_ok_and(|hash| hashes.contains(&hash)))
+            .and_then(|hash| u32::try_from(hash).ok())
+            .filter(|hash| hashes.contains(hash))
         {
             equipment::set_weapon_slot_empty(document, character, row.slot)?;
-            *removed
-                .entry(row.definition_hash.unwrap() as u32)
-                .or_default() += 1;
+            *removed.entry(hash).or_default() += 1;
         } else if let equipment::EquippedItemPlugs::Authored(values) = row.plugs {
             for (index, value) in values.iter().enumerate() {
                 if let equipment::EquippedPlugValue::Hash(hash) = value

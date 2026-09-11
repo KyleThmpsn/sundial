@@ -3,12 +3,14 @@
 //! the old editor key. Keep lookup, insertion, reset and reconciliation together.
 use super::*;
 
+#[cfg(test)]
 fn matches_variant(variant: &WeaponSocketPlugVariantRecipe, key: PerkEditorKey) -> bool {
     variant.socket_index == key.socket_index
         && variant.choice_index == key.choice_index
         && variant.source_plug_hash.parse_u32().ok() == Some(key.source_plug_hash)
 }
 
+#[cfg(test)]
 pub(in crate::app) fn private_perk(
     recipe: &WeaponRecipe,
     key: PerkEditorKey,
@@ -34,6 +36,7 @@ pub(in crate::app) fn private_perk_runtime_values(
     private_perk(recipe, key).map(|perk| &perk.runtime_values)
 }
 
+#[cfg(test)]
 fn private_perk_mut(
     recipe: &mut WeaponRecipe,
     key: PerkEditorKey,
@@ -51,6 +54,7 @@ fn private_perk_mut(
         })
 }
 
+#[cfg(test)]
 pub(in crate::app) fn upsert_private_perk_runtime_values(
     recipe: &mut WeaponRecipe,
     key: PerkEditorKey,
@@ -67,6 +71,7 @@ pub(in crate::app) fn upsert_private_perk_runtime_values(
             .overrides
             .socket_plug_variants
             .push(WeaponSocketPlugVariantRecipe {
+                replace_effects: false,
                 investment_stats: Vec::new(),
                 socket_index: key.socket_index,
                 choice_index: key.choice_index,
@@ -92,15 +97,19 @@ pub(in crate::app) fn upsert_private_perk_runtime_values(
         perk.runtime_values = values;
     } else {
         variant.sandbox_perks.push(WeaponSandboxPerkRuntimeRecipe {
+            program: None,
+            projectiles: Vec::new(),
             source_perk_index: key.source_perk_index,
             activation: None,
             runtime_values: values,
             action_float_values: Vec::new(),
         });
     }
-    variant
-        .sandbox_perks
-        .sort_unstable_by_key(|perk| perk.source_perk_index);
+    if !variant.replace_effects {
+        variant
+            .sandbox_perks
+            .sort_unstable_by_key(|perk| perk.source_perk_index);
+    }
     recipe
         .overrides
         .socket_plug_variants
@@ -137,6 +146,7 @@ pub(in crate::app) fn remove_private_perk_runtime_values(
         {
             perk.runtime_values.clear();
             perk.action_float_values.clear();
+            perk.projectiles.clear();
             perk.activation = None;
         }
         return;

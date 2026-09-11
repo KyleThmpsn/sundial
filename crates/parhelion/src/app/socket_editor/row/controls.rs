@@ -47,7 +47,7 @@ pub(super) fn draw_disabled(
                     activate = ui.small_button("Activate Socket…").clicked();
                 }
                 if context.is_added {
-                    options_command = draw_options(ui, socket_index, choices.is_overridden, true, context.can_remove_added, context.private_perk_socket);
+                    options_command = draw_options(ui, context, choices);
                 }
             },
         );
@@ -74,7 +74,6 @@ pub(super) fn draw_active(
     let RowChoices {
         socket_type_override,
         current_len,
-        is_overridden,
         page_start,
         page_end,
         can_add,
@@ -161,14 +160,7 @@ pub(super) fn draw_active(
         } else {
             ui.allocate_space(egui::vec2(add_width, ui.spacing().interact_size.y));
         }
-        options_command = draw_options(
-            ui,
-            socket.index,
-            is_overridden,
-            context.is_added,
-            context.can_remove_added,
-            context.private_perk_socket,
-        );
+        options_command = draw_options(ui, context, choices);
     });
     if selected_type != socket_type_override {
         Some(RowCommand::ChangeRole(selected_type))
@@ -218,7 +210,7 @@ fn draw_choice(
             variant.description.as_deref(),
         )
     });
-    ui.allocate_ui_with_layout(
+    let tile = ui.allocate_ui_with_layout(
         egui::vec2(f32::from(button_width), ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
         |ui| {
@@ -242,7 +234,7 @@ fn draw_choice(
                 socket.index,
                 socket_type_override,
                 choice_index,
-                Some(hash),
+                variant.is_none().then_some(hash),
                 context.queries.entry(choice_index).or_default(),
                 PlugChoicePickerButton {
                     tooltip: tooltip.as_deref(),
@@ -279,6 +271,51 @@ fn draw_choice(
             }
         },
     );
+    choice_menu(ui, &tile.response, choice_index).or(selection)
+}
+
+fn choice_menu(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    choice_index: usize,
+) -> Option<RowCommand> {
+    let mut selection = None;
+    let removable = choice_index > 0;
+    // The picker button owns pointer clicks inside the tile. Use its bounds
+    // to open the context menu over that child as well.
+    let menu_id = ui.id().with("socket-choice-context-menu");
+    let mut menu = ui.ctx().data_mut(|data| {
+        data.get_temp::<egui::menu::MenuRootManager>(menu_id)
+            .unwrap_or_default()
+    });
+    egui::menu::MenuRoot::context_click_interaction(response, &mut menu);
+    if ui.rect_contains_pointer(response.rect)
+        && ui.input(|input| input.pointer.secondary_clicked())
+    {
+        if let Some(position) = ui.input(|input| input.pointer.interact_pos()) {
+            egui::menu::MenuRoot::handle_menu_response(
+                &mut menu,
+                egui::menu::MenuResponse::Create(position, response.id),
+            );
+        }
+    }
+    menu.show(response, |ui| {
+        if removable && ui.button("Make Default").clicked() {
+            selection = Some(RowCommand::MakeDefault(choice_index));
+            ui.close_menu();
+        }
+        if removable && ui.button("Remove Choice").clicked() {
+            selection = Some(RowCommand::EditChoice {
+                index: choice_index,
+                hash: None,
+            });
+            ui.close_menu();
+        }
+        if !removable {
+            ui.weak("Default Choice");
+        }
+    });
+    ui.ctx().data_mut(|data| data.insert_temp(menu_id, menu));
     selection
 }
 
@@ -316,17 +353,19 @@ fn draw_paging(ui: &mut egui::Ui, page: &mut usize, choices: &RowChoices) {
 
 fn draw_options(
     ui: &mut egui::Ui,
-    socket_index: usize,
-    is_overridden: bool,
-    is_added: bool,
-    can_remove_added: bool,
-    private_perk_socket: &mut Option<usize>,
+    context: &mut SocketRowContext<'_>,
+    choices: &RowChoices,
 ) -> Option<RowCommand> {
+    let socket_index = context.socket_index;
+    let is_overridden = choices.is_overridden;
+    let is_added = context.is_added;
+    let can_remove_added = context.can_remove_added;
+    let private_perk_socket = &mut *context.private_perk_socket;
     let mut command = None;
     ui.push_id(("socket-options", socket_index), |ui| {
     let response = ui.menu_button("…", |ui| {
         if ui.button("Custom Perks…")
-            .on_hover_text("Custom perk editing is planned for a future release. Reuse a saved custom perk in this socket.")
+            .on_hover_text("Create or edit a private perk, tune mapped parameters, or reuse a saved custom perk in this socket.")
             .clicked() {
             *private_perk_socket = Some(socket_index);
             ui.close_menu();
@@ -354,9 +393,9 @@ fn draw_options(
             }
         }
     }).response.on_hover_text(if is_added {
-        "Socket options: reuse custom perks or remove this added socket"
+        "Socket options: edit custom perks or remove this added socket"
     } else {
-        "Socket options: reuse custom perks, remove or reset this socket"
+        "Socket options: edit custom perks, remove or reset this socket"
     });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Socket Options"));
 });

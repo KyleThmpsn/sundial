@@ -50,9 +50,11 @@ mod mutations;
 mod native;
 mod override_tables;
 mod page;
+pub(in crate::app) mod seasonal;
 mod state;
 mod table_ui;
 mod unlock_tables;
+mod workspace;
 
 #[cfg(test)]
 mod tests;

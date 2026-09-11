@@ -2,6 +2,7 @@
 use super::*;
 
 pub(super) struct Output {
+    pub lore: Option<lore::Plan>,
     pub assets: assets::Plan,
     pub icons: assets::IconRows,
     pub runtime: runtime::Payloads,
@@ -67,6 +68,7 @@ pub(super) fn prepare(
 ) -> AuthoringResult<emission::PackageEmission> {
     output.synchronize_payloads()?;
     let Output {
+        lore,
         assets,
         icons,
         runtime,
@@ -108,6 +110,7 @@ pub(super) fn prepare(
     }
     host_new_tags.extend(runtime.weapon_tags);
     Ok(emission::PackageEmission {
+        lore,
         hud_table: assets.hud_table,
         item_table_tag: sources.item_table_tag,
         item_hash_index_table_tag: sources.item_hash_index_table_tag,

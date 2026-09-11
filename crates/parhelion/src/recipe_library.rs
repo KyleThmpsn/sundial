@@ -13,7 +13,10 @@ use tempfile::NamedTempFile;
 use crate::WeaponRecipe;
 
 mod restore;
+mod transfer;
 pub(crate) use restore::RestoreDefaults;
+pub(crate) use restore::RestoreRecipe;
+pub(crate) use transfer::ImportReport;
 
 const EVERY_END_FILE_NAME: &str = "every-end.parhelion.json";
 const EVERY_END_TEMPLATE: &str = include_str!("../recipes/every-end.parhelion.json");
@@ -88,6 +91,9 @@ struct RecipeLibraryState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecipeLibraryEntry {
+    pub collection_destination: Option<crate::collection::Destination>,
+    pub badge: Option<crate::presentation::Badge>,
+    pub corner_icon: Option<crate::presentation::Artwork>,
     pub path: PathBuf,
     pub name: String,
     pub namespace: String,
@@ -158,6 +164,9 @@ impl RecipeLibrary {
         for path in paths {
             match WeaponRecipe::load_json(&path) {
                 Ok(recipe) => scan.entries.push(RecipeLibraryEntry {
+                    collection_destination: recipe.overrides.collection_destination,
+                    badge: recipe.overrides.badge.clone(),
+                    corner_icon: recipe.overrides.corner_icon.clone(),
                     bundled: path
                         .file_name()
                         .and_then(|name| name.to_str())

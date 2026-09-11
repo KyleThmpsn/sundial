@@ -2,7 +2,7 @@
 use super::*;
 
 mod text_fields;
-use text_fields::OptionalText;
+use text_fields::{OptionalText, TextSection};
 
 impl PackageAuthoringApp {
     pub(super) fn draw_core_recipe_editor(&mut self, ui: &mut egui::Ui) {
@@ -146,10 +146,8 @@ impl PackageAuthoringApp {
 
         egui::CollapsingHeader::new("Text Presentation")
             .id_salt(("parhelion-text-presentation", panel_scope.as_str()))
-            .default_open(false)
+            .default_open(self.recipe.overrides.lore.is_some())
             .show(ui, |ui| {
-            ui.label("Source text");
-            ui.add(egui::TextEdit::singleline(&mut self.recipe.source).desired_width(f32::INFINITY));
             ui.weak("Turning off optional text also removes its translations.");
             let mut custom_type = self.recipe.type_name.is_some();
             if ui
@@ -177,40 +175,6 @@ impl PackageAuthoringApp {
             }
 
             ui.separator();
-            let mut custom_collection_name = self.recipe.collection_name.is_some();
-            if ui
-                .checkbox(&mut custom_collection_name, "Separate Collections name")
-                .changed()
-            {
-                let value = custom_collection_name.then(|| self.recipe.name.clone());
-                text_fields::set(&mut self.recipe, OptionalText::CollectionName, value);
-            }
-            if let Some(value) = &mut self.recipe.collection_name {
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Name shown only in Collections"),
-                );
-            }
-            let mut custom_collection_description = self.recipe.collection_description.is_some();
-            if ui
-                .checkbox(
-                    &mut custom_collection_description,
-                    "Separate Collections description",
-                )
-                .changed()
-            {
-                let value = custom_collection_description.then(|| self.recipe.flavor.clone());
-                text_fields::set(&mut self.recipe, OptionalText::CollectionDescription, value);
-            }
-            if let Some(value) = &mut self.recipe.collection_description {
-                ui.add(
-                    egui::TextEdit::multiline(value)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(2)
-                        .hint_text("Description shown only in Collections"),
-                );
-            }
             let mut inventory_hint = self.recipe.inventory_hint.is_some();
             if ui
                 .checkbox(&mut inventory_hint, "Inventory acquisition hint")
@@ -231,26 +195,10 @@ impl PackageAuthoringApp {
                         .hint_text("Inventory tooltip acquisition line"),
                 );
             }
-            let mut collection_requirement = self.recipe.collection_requirement.is_some();
-            if ui
-                .checkbox(&mut collection_requirement, "Collections requirement line")
-                .on_hover_text(
-                    "Writes the collectible-display requirement/warning text. Reacquisition remains enabled; leave this disabled for the normal blank line.",
-                )
-                .changed()
-            {
-                let value = collection_requirement.then(|| "Collection requirement".to_owned());
-                text_fields::set(&mut self.recipe, OptionalText::CollectionRequirement, value);
-            }
-            if let Some(value) = &mut self.recipe.collection_requirement {
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Collections requirement or warning"),
-                );
-            }
             ui.separator();
-            self.draw_locale_text_overrides(ui);
+            self.presentation_editor.draw_lore(ui, &mut self.recipe.overrides, &self.packages, self.recipe.donor.item_hash.parse_u32().ok());
+            ui.separator();
+            self.draw_locale_text_overrides(ui, TextSection::Weapon);
             });
 
         ui.add_space(4.0);
@@ -304,6 +252,9 @@ impl PackageAuthoringApp {
             );
         });
         self.draw_runtime_source_summary(ui);
+        if self.show_experimental_options && ui.button("Perks & Patterns…").clicked() {
+            runtime_dependencies::request(ui.ctx(), None);
+        }
         ui.add_space(5.0);
         if !self.show_experimental_options
             && !AdvancedGameplayPage::STABLE.contains(&self.advanced_gameplay_page)
@@ -357,6 +308,150 @@ impl PackageAuthoringApp {
         }
     }
 
+    pub(super) fn draw_collections_workspace(&mut self, ui: &mut egui::Ui) {
+        let mut badges = self
+            .recipe_entries
+            .iter()
+            .filter_map(|entry| entry.badge.clone())
+            .collect::<Vec<_>>();
+        badges.sort_by(|a, b| a.name.cmp(&b.name));
+        badges.dedup();
+        ui.scope(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading("Collections");
+                self.draw_collection_capacity(ui);
+            });
+            ui.add_space(8.0);
+            if ui.available_width() >= 700.0 {
+                ui.columns(2, |columns| {
+                    egui::Frame::group(columns[0].style())
+                        .inner_margin(12)
+                        .show(&mut columns[0], |ui| {
+                            ui.set_width(ui.available_width());
+                            self.draw_collection_destination(ui);
+                        });
+                    columns[0].add_space(8.0);
+                    egui::Frame::group(columns[0].style())
+                        .inner_margin(12)
+                        .show(&mut columns[0], |ui| {
+                            ui.set_width(ui.available_width());
+                            self.draw_collection_text(ui);
+                        });
+                    egui::Frame::group(columns[1].style())
+                        .inner_margin(12)
+                        .show(&mut columns[1], |ui| {
+                            ui.set_width(ui.available_width());
+                            self.presentation_editor.draw_badge(
+                                ui,
+                                &mut self.recipe.overrides,
+                                &badges,
+                            );
+                        });
+                });
+            } else {
+                egui::Frame::group(ui.style())
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.draw_collection_destination(ui);
+                    });
+                ui.add_space(8.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.presentation_editor.draw_badge(
+                            ui,
+                            &mut self.recipe.overrides,
+                            &badges,
+                        );
+                    });
+                ui.add_space(8.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.draw_collection_text(ui);
+                    });
+            }
+        });
+    }
+
+    fn draw_collection_text(&mut self, ui: &mut egui::Ui) {
+        ui.strong("Collections Text");
+        let source_label = ui.label("Source");
+        ui.add_sized(
+            [ui.available_width(), ui.spacing().interact_size.y],
+            egui::TextEdit::singleline(&mut self.recipe.source).desired_width(f32::INFINITY),
+        )
+        .labelled_by(source_label.id);
+        ui.add_space(5.0);
+        let custom_text = self.recipe.collection_name.is_some()
+            || self.recipe.collection_description.is_some()
+            || self.recipe.collection_requirement.is_some();
+        egui::CollapsingHeader::new("Custom Text")
+            .id_salt(("collection-custom-text", self.recipe_panel_scope()))
+            .default_open(custom_text)
+            .show(ui, |ui| {
+        let mut custom_collection_name = self.recipe.collection_name.is_some();
+        if ui
+            .checkbox(&mut custom_collection_name, "Separate Collections Name")
+            .changed()
+        {
+            let value = custom_collection_name.then(|| self.recipe.name.clone());
+            text_fields::set(&mut self.recipe, OptionalText::CollectionName, value);
+        }
+        if let Some(value) = &mut self.recipe.collection_name {
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Name shown only in Collections"),
+            );
+        }
+        let mut custom_collection_description = self.recipe.collection_description.is_some();
+        if ui
+            .checkbox(
+                &mut custom_collection_description,
+                "Separate Collections Description",
+            )
+            .changed()
+        {
+            let value = custom_collection_description.then(|| self.recipe.flavor.clone());
+            text_fields::set(&mut self.recipe, OptionalText::CollectionDescription, value);
+        }
+        if let Some(value) = &mut self.recipe.collection_description {
+            ui.add(
+                egui::TextEdit::multiline(value)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(2)
+                    .hint_text("Description shown only in Collections"),
+            );
+        }
+        let mut collection_requirement = self.recipe.collection_requirement.is_some();
+        if ui
+                .checkbox(&mut collection_requirement, "Collections Requirement Line")
+                .on_hover_text(
+                    "Writes the collectible-display requirement/warning text. Reacquisition remains enabled. Leave this disabled for the normal blank line.",
+                )
+                .changed()
+            {
+                let value = collection_requirement.then(|| "Collection requirement".to_owned());
+                text_fields::set(&mut self.recipe, OptionalText::CollectionRequirement, value);
+            }
+        if let Some(value) = &mut self.recipe.collection_requirement {
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Collections requirement or warning"),
+            );
+        }
+        })
+        .header_response
+        .on_hover_text("Turning off optional text also removes its translations.");
+        ui.add_space(5.0);
+        self.draw_locale_text_overrides(ui, TextSection::Collections);
+    }
+
     pub(super) fn draw_appearance_workspace(&mut self, ui: &mut egui::Ui) {
         ui.heading("Icon & Colors");
         ui.label("These follow the appearance on the Weapon tab unless you choose another source.");
@@ -371,6 +466,10 @@ impl PackageAuthoringApp {
             ui.add_space(8.0);
             self.draw_render_gear_donor_picker(ui);
         }
+        ui.add_space(12.0);
+        ui.separator();
+        self.presentation_editor
+            .draw_corner(ui, &mut self.recipe.overrides);
         ui.add_space(12.0);
         ui.separator();
         let appearance = self
@@ -479,7 +578,7 @@ impl PackageAuthoringApp {
             .map(|weapon| format!("0x{:08X}", weapon.icon_definition_hash));
         let icon_definition_is_available = icon_definition_hash.is_some();
         let icon_definition_hash =
-            icon_definition_hash.unwrap_or_else(|| "Build to allocate".to_owned());
+            icon_definition_hash.unwrap_or_else(|| "Assigned During Build".to_owned());
         let fields = [
             ("Item", self.recipe.identity.item_hash.to_string(), true),
             (
@@ -555,64 +654,76 @@ impl PackageAuthoringApp {
         }
     }
 
-    pub(super) fn draw_locale_text_overrides(&mut self, ui: &mut egui::Ui) {
+    fn draw_locale_text_overrides(&mut self, ui: &mut egui::Ui, section: TextSection) {
+        let used = self
+            .recipe
+            .locale_overrides
+            .iter()
+            .map(|locale| locale.locale_index)
+            .collect::<BTreeSet<_>>();
         ui.horizontal_wrapped(|ui| {
-            ui.label("Localized text overrides");
-            draw_authoring_info_icon(
-                ui,
-                "Sparse replacements for the 13 native localization payloads. Indices deliberately follow package order because this client data does not prove human language names for every slot.",
-            );
-            let used = self
-                .recipe
-                .locale_overrides
-                .iter()
-                .map(|locale| locale.locale_index)
-                .collect::<BTreeSet<_>>();
-            let next = (0_u8..13).find(|index| !used.contains(index));
-            if ui
-                .add_enabled(next.is_some(), egui::Button::new("+ Add locale"))
-                .on_disabled_hover_text("All 13 locale payloads already have an override.")
-                .clicked()
-                && let Some(locale_index) = next
-            {
-                self.recipe.locale_overrides.push(WeaponLocaleTextRecipe {
-                    locale_index,
-                    ..Default::default()
+            ui.strong("Translations");
+            ui.add_enabled_ui(used.len() < text_fields::LANGUAGES.len(), |ui| {
+                ui.menu_button("Add Language", |ui| {
+                    for (index, language) in text_fields::LANGUAGES.iter().enumerate() {
+                        let locale_index = index as u8;
+                        if !used.contains(&locale_index) && ui.button(*language).clicked() {
+                            self.recipe.locale_overrides.push(WeaponLocaleTextRecipe {
+                                locale_index,
+                                ..Default::default()
+                            });
+                            ui.close_menu();
+                        }
+                    }
                 });
-            }
+            });
         });
 
         let primary = [
             ("Weapon Name", Some(self.recipe.name.clone()), false),
             ("Flavor Text", Some(self.recipe.flavor.clone()), true),
-            ("Source text", Some(self.recipe.source.clone()), true),
-            ("Item-type label", self.recipe.type_name.clone(), false),
+            ("Collections Source", Some(self.recipe.source.clone()), true),
+            ("Item-Type Label", self.recipe.type_name.clone(), false),
             (
-                "Collections name",
+                "Collections Name",
                 self.recipe.collection_name.clone(),
                 false,
             ),
             (
-                "Collections description",
+                "Collections Description",
                 self.recipe.collection_description.clone(),
                 true,
             ),
-            ("Inventory hint", self.recipe.inventory_hint.clone(), false),
+            ("Inventory Hint", self.recipe.inventory_hint.clone(), false),
             (
-                "Collections requirement",
+                "Collections Requirement",
                 self.recipe.collection_requirement.clone(),
                 false,
             ),
         ];
         let mut remove = None;
         for (index, locale) in self.recipe.locale_overrides.iter_mut().enumerate() {
-            let response = egui::CollapsingHeader::new(format!("Locale {}", locale.locale_index))
-                .id_salt(("locale-text-override", index))
+            egui::CollapsingHeader::new(text_fields::language(locale.locale_index))
+                .id_salt(("locale-text-override", section, index))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Payload index");
-                        ui.add(egui::DragValue::new(&mut locale.locale_index).range(0..=12));
-                        if ui.button("Remove locale").clicked() {
+                        egui::ComboBox::from_id_salt(("translation-language", section, index))
+                            .selected_text(text_fields::language(locale.locale_index))
+                            .show_ui(ui, |ui| {
+                                for (candidate, name) in text_fields::LANGUAGES.iter().enumerate() {
+                                    let candidate = candidate as u8;
+                                    if candidate == locale.locale_index
+                                        || !used.contains(&candidate)
+                                    {
+                                        ui.selectable_value(
+                                            &mut locale.locale_index,
+                                            candidate,
+                                            *name,
+                                        );
+                                    }
+                                }
+                            });
+                        if ui.button(section.clear_label()).clicked() {
                             remove = Some(index);
                         }
                     });
@@ -626,19 +737,19 @@ impl PackageAuthoringApp {
                         &mut locale.inventory_hint,
                         &mut locale.collection_requirement,
                     ];
-                    for ((label, fallback, multiline), value) in primary.iter().zip(fields) {
-                        if let Some(fallback) = fallback {
+                    for (field, ((label, fallback, multiline), value)) in
+                        primary.iter().zip(fields).enumerate()
+                    {
+                        if section.includes(field)
+                            && let Some(fallback) = fallback
+                        {
                             draw_optional_locale_text_field(ui, label, value, fallback, *multiline);
                         }
                     }
                 });
-            response.header_response.on_hover_text(format!(
-                "Overrides only localization payload {}; all unselected fields use the primary recipe text.",
-                locale.locale_index
-            ));
         }
         if let Some(index) = remove {
-            self.recipe.locale_overrides.remove(index);
+            text_fields::clear_locale(&mut self.recipe, index, section);
         }
         let unique = self
             .recipe
@@ -649,7 +760,7 @@ impl PackageAuthoringApp {
         if unique.len() != self.recipe.locale_overrides.len() {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Each locale payload index can be overridden only once.",
+                "Each language can appear only once.",
             );
         }
     }
@@ -710,15 +821,16 @@ impl PackageAuthoringApp {
                 || !self.recipe.overrides.socket_plug_variants.is_empty();
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Perks & Sockets");
-                if ui.button("Custom Perks…")
-                    .on_hover_text("Custom perk editing is planned for a future release. Reuse a saved custom perk.")
-                    .clicked() {
-                    self.private_perk_socket = Some(self.recipe.overrides.socket_plug_variants.first()
-                        .map_or(0, |variant| usize::from(variant.socket_index)));
+                if ui
+                    .button("Use Custom Perk…")
+                    .on_hover_text("Add a saved custom perk to this weapon.")
+                    .clicked()
+                {
+                    self.perk_workbench.open = true;
                 }
                 self.draw_socket_options(ui, has_authored_columns);
             });
-            ui.label("First choice starts equipped. Extra choices are alternatives.")
+            ui.label("First choice starts equipped. Right-click an extra choice to make it default.")
                 .on_hover_text("Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
@@ -728,6 +840,7 @@ impl PackageAuthoringApp {
                 recipe,
                 plug_queries,
                 socket_choice_pages,
+                recipe_library,
                 plug_selection_mode,
                 show_plug_safety_warnings,
                 show_technical_socket_rows,
@@ -740,6 +853,7 @@ impl PackageAuthoringApp {
                     ui,
                     SocketPickerContext {
                         catalog,
+                        recipe_library: recipe_library.as_ref(),
                         recipe,
                         queries: plug_queries,
                         pages: socket_choice_pages,
@@ -776,7 +890,6 @@ impl PackageAuthoringApp {
                         .clicked() {
                         self.recipe.overrides.socket_columns.clear();
                         self.recipe.overrides.socket_plug_variants.clear();
-                        self.perk_editor = None;
                         self.private_perk_socket = None;
                         self.plug_queries.clear();
                         ui.close_menu();

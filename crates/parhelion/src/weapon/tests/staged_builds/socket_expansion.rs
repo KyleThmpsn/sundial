@@ -28,6 +28,7 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
         });
     }
     recipe.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantRecipe {
+        replace_effects: false,
         investment_stats: Vec::new(),
         socket_index: 10,
         choice_index: 0,
@@ -37,6 +38,8 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
         description: None,
         additional_sandbox_perks: Vec::new(),
         sandbox_perks: vec![WeaponSandboxPerkRuntimeRecipe {
+            program: None,
+            projectiles: Vec::new(),
             source_perk_index: 1178,
             activation: None,
             runtime_values: Vec::new(),

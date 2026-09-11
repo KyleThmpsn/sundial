@@ -14,14 +14,9 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
-[features]
-default = ["sqlite-account"]
-# Official Sunrise investment database support.
-sqlite-account = ["sundial/sqlite-account", "parhelion/sqlite-account"]
-
 [dependencies]
-parhelion = { path = "../parhelion", default-features = false }
-sundial = { path = "../..", default-features = false }
+parhelion = { path = "../parhelion" }
+sundial = { path = "../.." }
 
 [build-dependencies]
 winresource = "0.1.31"

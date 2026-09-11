@@ -2,6 +2,7 @@ use super::super::package::{preview, read, replace};
 use super::*;
 use crate::investment::{AuthoredCollectionUnlock, AuthoredSocketChange};
 use std::collections::BTreeSet;
+mod placement;
 
 #[test]
 fn override_only_cleanup_is_reported_as_removed_account_data() {

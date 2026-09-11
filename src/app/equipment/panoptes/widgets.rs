@@ -52,7 +52,6 @@ pub(super) struct CompactItemHeader<'a> {
     pub(super) hash: Option<u64>,
     pub(super) inspection_context: DefinitionInspectionContext,
     pub(super) hash_display_text: Option<&'a str>,
-    pub(super) default_plugs_equipped: bool,
     pub(super) valid: bool,
     pub(super) invalid_message: &'a str,
 }
@@ -79,10 +78,10 @@ pub(super) fn draw_compact_item_header(
         icon_response = Some(if header.hash.is_some() {
             response
         } else {
-            response.on_hover_text(format!(
-                "{}: {}\nClick to change",
-                header.heading, header.title
-            ))
+            response.on_hover_ui(|ui| {
+                crate::ui_help::tooltip_title(ui, format!("{}: {}", header.heading, header.title));
+                ui.label("Click to change");
+            })
         });
 
         ui.vertical(|ui| {
@@ -97,9 +96,6 @@ pub(super) fn draw_compact_item_header(
                     }
                 });
             });
-            if header.default_plugs_equipped {
-                ui.label(egui::RichText::new("Default Plugs Equipped").weak());
-            }
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(header.title)
@@ -136,7 +132,13 @@ pub(super) fn draw_compact_item_header(
                         .color(ui.visuals().error_fg_color),
                 );
             }
-            trailing(ui);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
+                    ui.next_widget_position(),
+                    egui::pos2(ui.max_rect().right() - 26.0, ui.max_rect().bottom()),
+                )),
+                trailing,
+            );
         });
     });
 
@@ -164,22 +166,12 @@ pub(super) fn draw_compact_item_header(
                 request_definition_with_context(ui.ctx(), hash, header.inspection_context.clone());
             }
         }
-        card_response.context_menu(|ui| {
-            if ui.button("Inspect Item").clicked() {
-                request_definition_with_context(ui.ctx(), hash, header.inspection_context.clone());
-                ui.close_menu();
-            }
-            context_menu(ui);
-            ui.separator();
-            if ui.button("Copy Hash (Hex)").clicked() {
-                ui.ctx().copy_text(format_hash_hex(hash));
-                ui.close_menu();
-            }
-            if ui.button("Copy Hash (Decimal)").clicked() {
-                ui.ctx().copy_text(hash.to_string());
-                ui.close_menu();
-            }
-        });
+        item_editor::draw_context_menu(
+            ui,
+            &card_response,
+            Some((hash, header.inspection_context.clone())),
+            context_menu,
+        );
         response | card_response | tooltip_response
     } else {
         response

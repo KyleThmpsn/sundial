@@ -54,6 +54,17 @@ pub enum Product {
     Parhelion,
 }
 
+impl Product {
+    pub fn log_path(&self) -> Option<PathBuf> {
+        crate::paths::data_dir().map(|directory| {
+            directory.join("logs").join(match self {
+                Self::Sundial => "sundial.log",
+                Self::Parhelion => "parhelion.log",
+            })
+        })
+    }
+}
+
 /// Appends events across sessions, retaining the current file and two archives.
 /// Errors remain visible to the UI but never escape into editing/install flows.
 #[derive(Default)]
@@ -64,12 +75,7 @@ pub struct FileLog {
 
 impl FileLog {
     pub fn enable(&mut self, product: Product) {
-        self.path = crate::paths::data_dir().map(|directory| {
-            directory.join("logs").join(match product {
-                Product::Sundial => "sundial.log",
-                Product::Parhelion => "parhelion.log",
-            })
-        });
+        self.path = product.log_path();
         if self.path.is_none() {
             self.error = Some("Could not locate the log folder".to_owned());
         }

@@ -134,7 +134,7 @@ impl SundialApp {
                                                     && definition.metadata.native_bucket_id
                                                         == group.key.native_id
                                             };
-                                            let filter_candidates = manifest
+                                            let bucket_candidates = manifest
                                                 .character_inventory_candidates(
                                                     "",
                                                     class_type,
@@ -143,6 +143,8 @@ impl SundialApp {
                                                 )
                                                 .filter(|definition| crate::account_contract::definition_available(definition.hash, self.document.supports_v13_account()))
                                                 .filter(in_bucket)
+                                                .collect::<Vec<_>>();
+                                            let filter_candidates = bucket_candidates.iter()
                                                 .filter_map(|definition| definition.item)
                                                 .collect::<Vec<_>>();
                                             let filter_scope =
@@ -157,15 +159,9 @@ impl SundialApp {
                                                 &filter_candidates,
                                                 filter,
                                             );
-                                            let definitions = manifest
-                                                .character_inventory_candidates(
-                                                    query,
-                                                    class_type,
-                                                    show_dummy_items,
-                                                    allow_cross_class_subclasses,
-                                                )
-                                                .filter(|definition| crate::account_contract::definition_available(definition.hash, self.document.supports_v13_account()))
-                                                .filter(in_bucket)
+                                            let search = crate::catalog::CatalogSearchQuery::new(query);
+                                            let definitions = bucket_candidates.into_iter()
+                                                .filter(|definition| search.matches(manifest, definition.hash, &[definition.name, definition.type_name]))
                                                 .filter(|definition| {
                                                     definition.item.is_some_and(|item| {
                                                         filter.matches(manifest, item)

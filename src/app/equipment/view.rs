@@ -199,20 +199,7 @@ impl SundialApp {
                 hash,
                 snapshot.map_or_else(|| "<empty>".to_owned(), |item| item.definition_text.clone()),
                 snapshot.map(|item| item.instance_soid_text.clone()),
-                snapshot.and_then(|item| match &item.plugs {
-                    EquippedItemPlugs::NativeDefaults => Some(Value::Null),
-                    EquippedItemPlugs::Authored(plugs) => Some(Value::Array(
-                        plugs
-                            .iter()
-                            .map(|plug| match plug {
-                                EquippedPlugValue::Empty => Value::Null,
-                                EquippedPlugValue::Hash(hash) => Value::from(*hash),
-                                EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
-                            })
-                            .collect(),
-                    )),
-                    EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => None,
-                }),
+                snapshot.and_then(|item| item.plugs.display_value()),
             )
         };
         let current =
@@ -275,38 +262,51 @@ impl SundialApp {
                             "invalid for slot/class"
                         },
                     };
+                    let inspection_context = current_hash.map(|_| DefinitionInspectionContext {
+                        source: format!(
+                            "Character {} Equipment · {equipped_label}",
+                            character_index + 1
+                        ),
+                        instance_id: header_soid.map(str::to_owned),
+                        authored_level: current_level,
+                        flags: current_flags,
+                        plug_count: authored_plugs
+                            .as_ref()
+                            .and_then(Value::as_array)
+                            .map(Vec::len),
+                        plugs: authored_plugs.clone(),
+                        quantity: snapshot.and_then(|item| item.quantity),
+                    });
                     let header_response = item_editor::draw_catalog_item_header_with_trailing(
                         ui,
                         &self.manifest,
                         current_hash,
-                        current_hash.map(|_| DefinitionInspectionContext {
-                            source: format!(
-                                "Character {} Equipment · {equipped_label}",
-                                character_index + 1
-                            ),
-                            instance_id: header_soid.map(str::to_owned),
-                            authored_level: current_level,
-                            flags: current_flags,
-                            plug_count: authored_plugs
-                                .as_ref()
-                                .and_then(Value::as_array)
-                                .map(Vec::len),
-                            plugs: authored_plugs.clone(),
-                            quantity: snapshot.and_then(|item| item.quantity),
-                        }),
+                        inspection_context.clone(),
                         header,
                         |_| {},
                     );
-                    if !is_empty && self.document.supports_v13_account() {
-                        header_response.context_menu(|ui| {
-                            ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
-                                if let Some(flags) =
-                                    item_editor::draw_masterwork_flag(ui, current_flags, true)
-                                {
-                                    self.select_equipment_flags(character_index, slot, flags);
+                    if !is_empty {
+                        item_editor::draw_context_menu(
+                            ui,
+                            &header_response,
+                            current_hash.zip(inspection_context),
+                            |ui| {
+                                ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
+                                    if let Some(flags) = item_editor::draw_state_flags(
+                                        ui,
+                                        current_flags,
+                                        self.document.supports_v13_account(),
+                                    ) {
+                                        self.select_equipment_flags(character_index, slot, flags);
+                                    }
+                                });
+                                if let Some(soid) = snapshot.and_then(|item| item.instance_soid) {
+                                    ui.add_enabled_ui(guided_editable, |ui| {
+                                        self.draw_item_seen(ui, soid)
+                                    });
                                 }
-                            });
-                        });
+                            },
+                        );
                     }
 
                     if let Some(snapshot) = snapshot {

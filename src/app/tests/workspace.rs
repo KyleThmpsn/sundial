@@ -1,8 +1,6 @@
 use crate::app::change_review::collect_change_summaries;
 use crate::app::*;
-#[cfg(feature = "sqlite-account")]
 use crate::test_support::TestDirectory;
-#[cfg(feature = "sqlite-account")]
 use std::fs;
 
 #[test]
@@ -117,7 +115,6 @@ fn sqlite_default_restore_does_not_create_missing_json_account_domains() {
     assert!(defaults.pointer("/state/server").is_some());
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     let compatible = TestDirectory::new("check-compatible-sqlite");

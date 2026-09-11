@@ -362,13 +362,7 @@ impl Catalog {
             .get(&gear_kind(item.bucket_hash))
             .cloned()
             .unwrap_or_default();
-        let cosmetic = self.items.iter().any(|definition| {
-            definition.sockets.iter().any(|socket| {
-                socket.socket_type == socket_type
-                    && self.cosmetic_socket_pools.contains(&socket.pool)
-            })
-        });
-        if cosmetic {
+        if self.cosmetic_socket_types.contains(&socket_type) {
             options.extend(self.socket_type_options(socket_type));
             sort_plug_options(&mut options, &self.names);
         }

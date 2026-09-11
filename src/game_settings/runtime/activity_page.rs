@@ -89,9 +89,9 @@ const ARRIVAL_FIELDS: &[Field] = &[
 ];
 
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
-    ui.label("Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them.");
+    ui.horizontal(|ui| { ui.strong("Activity Destinations"); crate::ui_help::info(ui, "Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them."); });
     let mut changed = false;
-    egui::CollapsingHeader::new("Default destination").show(ui, |ui| {
+    egui::CollapsingHeader::new("Default Destination").show(ui, |ui| {
         match optional_value(document, activity::DESTINATION) {
             Err(error) => { ui.colored_label(ui.visuals().error_fg_color, error); }
             Ok(value) => {
@@ -154,7 +154,7 @@ pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
             });
     }
     if rows.len() < activity::ARRIVAL_CAPACITY {
-        egui::CollapsingHeader::new("Add arrival override").show(ui, |ui| {
+        egui::CollapsingHeader::new("Add Arrival Override").show(ui, |ui| {
             if let Some(Action::Apply(row)) = form::draw(
                 ui,
                 ("arrival-new", rows.len()),

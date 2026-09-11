@@ -55,6 +55,7 @@ impl PackageAuthoringApp {
 
         self.recipe_library = recipe_library;
         self.recipe_entries = recipe_entries;
+        self.library_state.refresh_metadata(&self.recipe_entries);
         self.enabled_recipe_paths = enabled_recipe_paths;
         self.limit_package_backups = backup_preferences.limit_package_backups;
         self.package_backup_retention = backup_preferences.package_backup_retention;
@@ -70,7 +71,7 @@ impl PackageAuthoringApp {
         }
         let mut recipes = Vec::with_capacity(self.enabled_recipe_paths.len());
         for path in &self.enabled_recipe_paths {
-            let recipe = if self.recipe_path.as_ref() == Some(path) {
+            let mut recipe = if self.recipe_path.as_ref() == Some(path) {
                 let saved = WeaponRecipe::load_json(path).map_err(|error| {
                     format!(
                         "Could not check included recipe {}: {error}",
@@ -89,6 +90,13 @@ impl PackageAuthoringApp {
                     format!("Could not load included recipe {}: {error}", path.display())
                 })?
             };
+            if let Some(catalog) = self.catalog.as_ref() {
+                custom_perks::repair_socket_picks(
+                    self.recipe_library.as_ref(),
+                    catalog,
+                    &mut recipe,
+                )?;
+            }
             recipes.push(recipe);
         }
         Ok(BatchBuildRequest {
@@ -116,6 +124,18 @@ impl PackageAuthoringApp {
     pub(super) fn save_edits_for_build(&mut self) -> Result<(), String> {
         if let Some((_, error)) = &self.invalid_weapon_name {
             return Err(error.clone());
+        }
+        if let Some(catalog) = self.catalog.as_ref() {
+            let repaired = custom_perks::repair_socket_picks(
+                self.recipe_library.as_ref(),
+                catalog,
+                &mut self.recipe,
+            )?;
+            if repaired != 0 {
+                self.log.push(LogEntry::info(format!(
+                    "Recovered custom perk data for {repaired} socket choices"
+                )));
+            }
         }
         if !self.recipe_requires_initial_save && self.recipe == self.recipe_baseline {
             return Ok(());
@@ -153,6 +173,10 @@ impl PackageAuthoringApp {
 
     pub(super) fn invalidate_results(&mut self) {
         self.build_progress = None;
+        self.build_activity = build_status::Activity::default();
+        if self.install_receiver.is_none() {
+            self.install_status = build_status::InstallStatus::default();
+        }
         self.latest_build = None;
         self.latest_install = None;
         self.build_status_open = false;
@@ -295,6 +319,7 @@ impl PackageAuthoringApp {
         match library.scan() {
             Ok(scan) => {
                 self.recipe_entries = scan.entries;
+                self.library_state.refresh_metadata(&self.recipe_entries);
                 match library.enabled_paths(&self.recipe_entries) {
                     Ok(enabled) => self.enabled_recipe_paths = enabled,
                     Err(error) => self.log.push(LogEntry::error(format!(
@@ -390,6 +415,7 @@ impl PackageAuthoringApp {
                     destination.display()
                 )));
                 self.refresh_recipe_library();
+                self.reveal_library_entries(vec![destination]);
                 true
             }
             Err(error) => {
@@ -404,13 +430,13 @@ impl PackageAuthoringApp {
             self.log.push(LogEntry::error(error));
             return;
         }
-        let Some(library) = self.recipe_library.as_ref() else {
+        if self.recipe_library.is_none() {
             return;
-        };
+        }
         let suggested = format!("{}.parhelion.json", self.recipe.slug());
         let Some(path) = rfd::FileDialog::new()
+            .set_title(format!("Export {}", self.recipe.name))
             .add_filter("Parhelion weapon recipe", &["json"])
-            .set_directory(library.root())
             .set_file_name(suggested)
             .save_file()
         else {
@@ -429,9 +455,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn export_recipe_to(&mut self, path: &std::path::Path) -> Result<(), String> {
-        use sundial::package_authoring::{
-            path_is_within, paths_equal, resolve_path_for_comparison,
-        };
+        use sundial::package_authoring::{paths_equal, resolve_path_for_comparison};
 
         let library = self
             .recipe_library
@@ -461,13 +485,6 @@ impl PackageAuthoringApp {
             self.refresh_recipe_library();
             return Ok(());
         }
-        let root =
-            resolve_path_for_comparison(library.root()).map_err(|error| error.to_string())?;
-        if path_is_within(&target, &root) {
-            return Err("Use Save Copy to create another library recipe, or export outside the recipe library.".into());
-        }
-        self.recipe
-            .save_json(path)
-            .map_err(|error| error.to_string())
+        library.export(&self.recipe, path)
     }
 }

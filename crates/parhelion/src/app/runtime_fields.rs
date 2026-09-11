@@ -57,13 +57,19 @@ pub(super) fn draw_runtime_value_override_field(
         RuntimeEditorLayout::Inline => {
             ui.horizontal(|ui| {
                 let label_width = (ui.available_width() * 0.42).clamp(220.0, 360.0);
-                let response = ui.add_sized(
-                    [label_width, ui.spacing().interact_size.y],
-                    egui::Label::new(&field.path_label)
-                        .selectable(true)
-                        .truncate(),
+                ui.allocate_ui_with_layout(
+                    egui::vec2(label_width, ui.spacing().interact_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(label_width);
+                        ui.add(
+                            egui::Label::new(&field.path_label)
+                                .selectable(true)
+                                .truncate(),
+                        )
+                        .on_hover_text(runtime_field_tooltip(field));
+                    },
                 );
-                response.on_hover_text(runtime_field_tooltip(field));
                 next_value = draw_runtime_value_editor(
                     ui,
                     &field.locator,
@@ -92,7 +98,7 @@ pub(super) fn draw_runtime_value_override_field(
                     text_state,
                 );
             });
-            if can_reset && ui.small_button("Reset to donor").clicked() {
+            if can_reset && ui.small_button("Reset to Donor").clicked() {
                 reset = true;
             }
         }
@@ -397,4 +403,164 @@ fn draw_runtime_float_decimal(ui: &mut egui::Ui, bits: u32) -> Option<u32> {
             .custom_formatter(|value, _| format!("{:?}", value as f32)),
     );
     (response.changed() && value.to_bits() != bits).then_some(value.to_bits())
+}
+
+pub(super) fn runtime_field_is_editable(field: &WeaponRuntimeField) -> bool {
+    field.locator.is_buildable()
+        && encode_weapon_runtime_value(&field.kind, &field.value)
+            .is_ok_and(|bytes| bytes.len() == field.locator.byte_size as usize)
+}
+
+pub(super) fn runtime_field_is_in_editor_scope(
+    source: WeaponRuntimeFieldSource,
+    buildable: bool,
+    customized: bool,
+    show_experimental_options: bool,
+    show_all_native_values: bool,
+) -> bool {
+    if customized {
+        return true;
+    }
+    if !buildable {
+        return false;
+    }
+    source != WeaponRuntimeFieldSource::OpaqueNativeType
+        || (show_experimental_options && show_all_native_values)
+}
+
+pub(super) fn private_perk_runtime_field_is_visible(
+    field: &WeaponRuntimeField,
+    query: &str,
+    values: &[WeaponRuntimeValueOverride],
+    show_all_native_values: bool,
+    occurrences: usize,
+) -> bool {
+    let customized = values.iter().any(|value| value.locator == field.locator);
+    if occurrences != 1 && !customized {
+        return false;
+    }
+    if !runtime_field_is_in_editor_scope(
+        field.source,
+        runtime_field_is_editable(field),
+        customized,
+        true,
+        show_all_native_values,
+    ) {
+        return false;
+    }
+    query.is_empty()
+        || field.name.to_ascii_lowercase().contains(query)
+        || field.path_label.to_ascii_lowercase().contains(query)
+        || runtime_value_kind_label(&field.kind)
+            .to_ascii_lowercase()
+            .contains(query)
+        || format!("0x{:08x}", field.locator.binding_hash).contains(query)
+        || format!("0x{:08x}", field.locator.root_schema).contains(query)
+        || format!("0x{:08x}", field.locator.type_handle).contains(query)
+        || format!("0x{:x}", field.owner_offset).contains(query)
+        || format!("0x{:x}", field.locator.value_offset).contains(query)
+        || field.locator.path.iter().any(|element| {
+            format!("0x{:08x}", element.name_hash).contains(query)
+                || format!("0x{:08x}", element.type_handle).contains(query)
+        })
+}
+
+fn runtime_field_tooltip(field: &WeaponRuntimeField) -> String {
+    let source = match field.source {
+        WeaponRuntimeFieldSource::GeneratedSchema => "generated package schema",
+        WeaponRuntimeFieldSource::NativeMember => "named native member",
+        WeaponRuntimeFieldSource::OpaqueNativeType => "unnamed native fixed-size type",
+    };
+    let path = field
+        .locator
+        .path
+        .iter()
+        .map(|element| {
+            format!(
+                "0x{:08X}:0x{:08X}@+0x{:X}",
+                element.name_hash, element.type_handle, element.byte_offset
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let generated_kind = field
+        .generated_kind
+        .map_or_else(|| "N/A".to_owned(), |kind| format!("0x{kind:02X}"));
+    format!(
+        "{}\nSource: {source}\nValue Type: {}\nOriginal: {}\nBinding: 0x{:08X}, resource index {} (zero-based)\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
+        field.name,
+        runtime_value_kind_label(&field.kind),
+        original_value(&field.value),
+        field.locator.binding_hash,
+        field.locator.resource_index,
+        field.locator.root.label(),
+        field.locator.root_schema,
+        field.locator.type_handle,
+        field.locator.value_offset,
+        field.owner_offset,
+        field.locator.byte_size,
+    )
+}
+
+fn original_value(value: &WeaponRuntimeValue) -> String {
+    match value {
+        WeaponRuntimeValue::Boolean(value) => value.to_string(),
+        WeaponRuntimeValue::Signed(value) => value.to_string(),
+        WeaponRuntimeValue::Unsigned(value) => value.to_string(),
+        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
+        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!("{:?}", bits.map(f32::from_bits)),
+        WeaponRuntimeValue::Bytes(bytes) => {
+            format!("{} bytes (Reset restores the package value)", bytes.len())
+        }
+    }
+}
+
+pub(super) fn parse_runtime_hex_u64(value: &str) -> Option<u64> {
+    let digits = value
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| value.trim().strip_prefix("0X"))
+        .unwrap_or(value.trim())
+        .replace('_', "");
+    (!digits.is_empty())
+        .then(|| u64::from_str_radix(&digits, 16).ok())
+        .flatten()
+}
+
+pub(super) fn format_runtime_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn parse_runtime_hex_bytes(value: &str, expected_size: usize) -> Option<Vec<u8>> {
+    let digits = normalized_hex_bytes(value);
+    if digits.len() != expected_size.checked_mul(2)?
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    (0..expected_size)
+        .map(|index| u8::from_str_radix(&digits[index * 2..index * 2 + 2], 16).ok())
+        .collect()
+}
+
+pub(super) fn valid_hex_patch_text(value: &str) -> bool {
+    let digits = normalized_hex_bytes(value);
+    !digits.is_empty()
+        && digits.len() % 2 == 0
+        && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalized_hex_bytes(value: &str) -> String {
+    let mut digits = value
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace() && *character != '_')
+        .collect::<String>();
+    if digits.starts_with("0x") || digits.starts_with("0X") {
+        digits.drain(..2);
+    }
+    digits
 }

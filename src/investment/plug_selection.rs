@@ -48,19 +48,43 @@ pub(crate) fn candidates_for_socket(
     socket_index: usize,
     mode: PlugSelectionMode,
 ) -> Vec<u64> {
-    let Some(socket) = item.sockets.get(socket_index) else {
-        return Vec::new();
+    candidates_for_socket_type(catalog, item, socket_index, None, mode).into_owned()
+}
+
+/// An override only retains native support when it names the original socket type.
+/// Broader modes use the requested type without claiming native compatibility.
+pub(crate) fn candidates_for_socket_type<'a>(
+    catalog: &'a Catalog,
+    item: &'a ItemDef,
+    socket_index: usize,
+    socket_type_override: Option<u16>,
+    mode: PlugSelectionMode,
+) -> std::borrow::Cow<'a, [u64]> {
+    use std::borrow::Cow;
+    let socket = item.sockets.get(socket_index);
+    let Some(socket_type) =
+        socket_type_override.or_else(|| socket.map(|socket| socket.socket_type))
+    else {
+        return Cow::Borrowed(&[]);
     };
     match mode {
-        PlugSelectionMode::Supported => catalog.socket_options(socket).to_vec(),
-        PlugSelectionMode::SocketAndGearType => catalog
-            .socket_and_gear_type_options(item, socket_index)
-            .to_vec(),
-        PlugSelectionMode::MatchingSocketType => {
-            catalog.socket_type_options(socket.socket_type).to_vec()
+        PlugSelectionMode::Supported => Cow::Borrowed(
+            socket
+                .filter(|socket| socket.socket_type == socket_type)
+                .map_or(&[][..], |socket| catalog.socket_options(socket)),
+        ),
+        PlugSelectionMode::SocketAndGearType => {
+            Cow::Borrowed(catalog.socket_and_gear_type_options_for_type(item, socket_type))
         }
-        PlugSelectionMode::GearType => catalog.gear_type_options(item, socket_index),
-        PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
+        PlugSelectionMode::MatchingSocketType => {
+            Cow::Borrowed(catalog.socket_type_options(socket_type))
+        }
+        PlugSelectionMode::GearType => Cow::Owned(if socket_type_override.is_some() {
+            catalog.gear_type_options_for_type(item, socket_type)
+        } else {
+            catalog.gear_type_options(item, socket_index)
+        }),
+        PlugSelectionMode::AnyPlug => Cow::Borrowed(catalog.all_plug_options()),
     }
 }
 

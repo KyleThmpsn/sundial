@@ -17,9 +17,10 @@ fn native_activation_clone_keeps_stock_effects_and_residency() {
         let authored = clone_private_sandbox_perk_runtime(
             &manager,
             &stock,
-            &[],
-            &[],
-            Some(condition),
+            custom_runtime::PrivateRuntimeEdits {
+                activation: Some(condition),
+                ..Default::default()
+            },
             allocator,
             &mut tags,
         )

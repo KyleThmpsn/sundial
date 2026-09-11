@@ -1,6 +1,38 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn slot_replacement_requires_exact_consent_for_moves_and_deletions() {
+    use sundial::investment::AuthoredSlotChange;
+    for capacity in [1, 2] {
+        let root = tempfile::tempdir().unwrap();
+        let packages = root.path().join("packages");
+        fs::create_dir(&packages).unwrap();
+        let path = root.path().join("settings.json");
+        let value = json!({"version":8,"state":{"account":{"primary_soid":"0x0000000000000001"},"characters":[{"soid":"0x0000000000000002","class":0,"equipment":{"kinetic":item(20,100,json!([300])),"energy":item(21,200,json!(null))}}]}});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let slots = AuthoredSlotReplacement {
+            changes: vec![AuthoredSlotChange {
+                definition_hash: 100,
+                previous_bucket: 0,
+                incoming_bucket: 1,
+            }],
+            incoming_buckets: BTreeMap::from([(100, 1), (200, 1)]),
+            weapon_capacities: [10, capacity, 10],
+        };
+        let review = test_review_with_slots(&packages, BTreeSet::new(), vec![], Some(slots));
+        assert!(validate_consent(&review, None).is_err());
+        validate_consent(&review, Some(&review)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let mut stale = review.clone();
+        stale.slots.as_mut().unwrap().weapon_capacities[1] += 1;
+        assert!(validate_consent(&review, Some(&stale)).is_err());
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        assert!(verify_account(&packages, Some(&review)).is_err());
+    }
+}
+
 fn item(id: u64, hash: u32, plugs: serde_json::Value) -> serde_json::Value {
     json!({"instance_soid": format!("0x{id:016X}"), "definition_hash": hash,
         "level": 100, "quantity": 1, "plugs": plugs})

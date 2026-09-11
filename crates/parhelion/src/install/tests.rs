@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 mod account_replacement;
 mod native_lifecycle;
+mod progress;
 mod spill;
 mod transaction_safety;
 
@@ -374,6 +375,7 @@ impl Fixture {
             .collect();
         let transaction = InstallTransactionRecord {
             account_cleanup: None,
+            client_settings: None,
             schema: INSTALL_TRANSACTION_SCHEMA,
             state,
             target_packages_directory: fs::canonicalize(&self.target).unwrap(),
@@ -1625,6 +1627,7 @@ fn rollback_refuses_to_overwrite_a_concurrently_changed_target() {
         target_packages_directory: fixture.target.clone(),
         backup_directory: fixture.backups.clone(),
         account_cleanup: None,
+        client_settings: None,
         artifacts: vec![InstallTransactionArtifact {
             remove_target: false,
             file_name: original.file_name.clone(),

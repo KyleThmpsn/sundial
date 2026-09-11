@@ -7,16 +7,19 @@ type DyeColorResults = BTreeMap<u16, Result<WeaponDyeColors, String>>;
 #[derive(Default)]
 pub(super) struct DyeColors {
     colors: DyeColorResults,
-    receiver: Option<Receiver<DyeColorResults>>,
-    worker: Option<thread::JoinHandle<()>>,
+    job: Option<DyeColorJob>,
+}
+
+struct DyeColorJob {
+    indices: Vec<u16>,
+    worker: thread::JoinHandle<DyeColorResults>,
 }
 
 impl Drop for DyeColors {
     fn drop(&mut self) {
         // Match the library-preview lifetime: no package handles may survive catalog release.
-        self.receiver = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(job) = self.job.take() {
+            let _ = job.worker.join();
         }
     }
 }
@@ -28,17 +31,14 @@ impl DyeColors {
         packages: &Path,
         rows: &[Vec<WeaponDyeReferenceRecipe>; 3],
     ) {
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.is_finished())
-        {
-            let _ = self.worker.take().unwrap().join();
-            if let Some(receiver) = self.receiver.take() {
-                if let Ok(colors) = receiver.try_recv() {
-                    self.colors.extend(colors);
-                }
-            }
+        if let Some(job) = self.job.take_if(|job| job.worker.is_finished()) {
+            let colors = job.worker.join().unwrap_or_else(|_| {
+                job.indices
+                    .into_iter()
+                    .map(|index| (index, Err("Dye color loading stopped unexpectedly".into())))
+                    .collect()
+            });
+            self.colors.extend(colors);
         }
         let indices: BTreeSet<_> = rows
             .iter()
@@ -47,7 +47,7 @@ impl DyeColors {
             .map(|row| row.dye_reference_index)
             .collect();
         self.colors.retain(|index, _| indices.contains(index));
-        if self.worker.is_none() && !packages.as_os_str().is_empty() {
+        if self.job.is_none() && !packages.as_os_str().is_empty() {
             let missing: Vec<_> = indices
                 .into_iter()
                 .filter(|index| !self.colors.contains_key(index))
@@ -55,9 +55,8 @@ impl DyeColors {
             if !missing.is_empty() {
                 let packages = packages.to_owned();
                 let ctx = ctx.clone();
-                let (sender, receiver) = mpsc::channel();
-                self.receiver = Some(receiver);
-                self.worker = Some(thread::spawn(move || {
+                let indices = missing.clone();
+                let worker = thread::spawn(move || {
                     let colors =
                         load_weapon_dye_colors(&packages, &missing).unwrap_or_else(|error| {
                             missing
@@ -65,12 +64,13 @@ impl DyeColors {
                                 .map(|index| (index, Err(error.clone())))
                                 .collect()
                         });
-                    let _ = sender.send(colors);
                     ctx.request_repaint();
-                }));
+                    colors
+                });
+                self.job = Some(DyeColorJob { indices, worker });
             }
         }
-        if self.worker.is_some() {
+        if self.job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -88,7 +88,10 @@ impl DyeColors {
                     let (rect, response) = ui.allocate_exact_size(egui::vec2(25.0, 20.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 3.0, color);
                     ui.painter().rect_stroke(rect, 3.0, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
-                    response.on_hover_text(format!("{label} albedo · #{:02X}{:02X}{:02X}\nLinear RGB: {:.4}, {:.4}, {:.4}\nBase material tint, before textures, lighting and shader overrides.", color.r(), color.g(), color.b(), rgb[0], rgb[1], rgb[2]));
+                    response.on_hover_ui(|ui| {
+                        sundial::investment::tooltip_title(ui, format!("{label} Albedo"));
+                        ui.label(format!("#{:02X}{:02X}{:02X}\nLinear RGB: {:.4}, {:.4}, {:.4}\nBase material tint, before textures, lighting and shader overrides.", color.r(), color.g(), color.b(), rgb[0], rgb[1], rgb[2]));
+                    });
                 }
             });
             }
@@ -832,14 +835,17 @@ impl PackageAuthoringApp {
                 if let Some((item_hash, donor_name, container_tag)) = icon_editor_target
                     && let Some(rarity) = self.authored_icon_rarity()
                 {
-                    self.icon_editor = Some(WeaponIconEditor::open(
-                        &self.packages,
-                        item_hash,
-                        donor_name,
-                        container_tag,
-                        rarity,
-                        self.recipe.overrides.icon_edit.clone(),
-                    ));
+                    self.icon_editor = Some(
+                        WeaponIconEditor::open(
+                            &self.packages,
+                            item_hash,
+                            donor_name,
+                            container_tag,
+                            rarity,
+                            self.recipe.overrides.icon_edit.clone(),
+                        )
+                        .with_corner(self.recipe.overrides.corner_icon.as_ref()),
+                    );
                 }
             }
             None => {}

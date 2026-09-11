@@ -447,6 +447,11 @@ pub struct WeaponSocketColumnRecipe {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponSandboxPerkRuntimeRecipe {
+    /// A complete authored action program. No source action behavior is inherited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<sundial::package_authoring::sandbox_perk::program::Program>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projectiles: Vec<sundial::package_authoring::sandbox_perk::projectile::Selection>,
     pub source_perk_index: u16,
     /// Experimental kill-filter override. Omitted means the original activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -475,6 +480,9 @@ pub struct WeaponSandboxPerkActionFloatRecipe {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponSocketPlugVariantRecipe {
+    /// Uses complete authored effect and stat lists, replacing template contributions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_effects: bool,
     /// Native equipped-plug stat contributions, not conditional action multipliers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub investment_stats: Vec<WeaponStatOverride>,
@@ -493,6 +501,26 @@ pub struct WeaponSocketPlugVariantRecipe {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_sandbox_perks: Vec<u16>,
     pub sandbox_perks: Vec<WeaponSandboxPerkRuntimeRecipe>,
+}
+
+impl WeaponSocketPlugVariantRecipe {
+    #[must_use]
+    pub fn effect_indices(&self, inherited: &[u16]) -> Vec<u16> {
+        let mut indices = if self.replace_effects {
+            self.sandbox_perks
+                .iter()
+                .map(|effect| effect.source_perk_index)
+                .collect::<Vec<_>>()
+        } else {
+            inherited.to_vec()
+        };
+        for &index in &self.additional_sandbox_perks {
+            if !indices.contains(&index) {
+                indices.push(index);
+            }
+        }
+        indices
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -802,6 +830,16 @@ fn parse_raw_patch_bytes(value: &str, index: usize) -> Result<Vec<u8>, RecipeErr
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WeaponRecipeOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_destination: Option<crate::collection::Destination>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_from_sunrise_badge: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<crate::presentation::Badge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_icon: Option<crate::presentation::Artwork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lore: Option<String>,
     /// Optional color/opacity treatment of the selected icon donor's private primary image.
     #[serde(default, skip_serializing_if = "WeaponIconEdit::is_identity")]
     pub icon_edit: WeaponIconEdit,
@@ -985,6 +1023,11 @@ impl WeaponRecipeOverrides {
         Ok(WeaponCloneOverrides {
             icon_edit: self.icon_edit.clone(),
             hud_icon: self.hud_icon.clone(),
+            badge: self.badge.clone(),
+            exclude_from_sunrise_badge: self.exclude_from_sunrise_badge,
+            collection_destination: self.collection_destination,
+            corner_icon: self.corner_icon.clone(),
+            lore: self.lore.clone(),
             investment_stats,
             removed_investment_stats,
             base_sandbox_perks: self.base_sandbox_perks.clone(),
@@ -1032,6 +1075,7 @@ impl WeaponRecipeOverrides {
                 .enumerate()
                 .map(|(variant_index, variant)| {
                     Ok(WeaponSocketPlugVariantOverride {
+                        replace_effects: variant.replace_effects,
                         investment_stats: variant.investment_stats.iter()
                             .map(|stat| (stat.definition_index, stat.value)).collect(),
                         socket_index: variant.socket_index,
@@ -1053,7 +1097,9 @@ impl WeaponRecipeOverrides {
                             .enumerate()
                             .map(|(perk_index, perk)| {
                                 Ok(WeaponSandboxPerkRuntimeOverride {
+                                    program: perk.program.clone(),
                                     source_perk_index: perk.source_perk_index,
+                                    projectiles: perk.projectiles.clone(),
                                     activation: perk.activation,
                                     runtime_values: perk.runtime_values.clone(),
                                     action_float_values: perk
@@ -1260,7 +1306,19 @@ impl WeaponRecipe {
         self.render_gear_donor = None;
         self.icon_donor = None;
         self.runtime_component_donors.clear();
-        self.overrides = WeaponRecipeOverrides::default();
+        // A new base invalidates donor-owned rows and socket positions. The authored
+        // collection, story and independent artwork do not depend on those rows.
+        let previous = std::mem::take(&mut self.overrides);
+        self.overrides = WeaponRecipeOverrides {
+            collection_destination: previous.collection_destination,
+            exclude_from_sunrise_badge: previous.exclude_from_sunrise_badge,
+            badge: previous.badge,
+            corner_icon: previous.corner_icon,
+            lore: previous.lore,
+            icon_edit: previous.icon_edit,
+            hud_icon: previous.hud_icon,
+            ..Default::default()
+        };
     }
 
     /// Changes the geometry baseline and restores every presentation sub-source to follow it.

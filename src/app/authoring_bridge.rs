@@ -32,6 +32,66 @@ use super::{
 
 pub(crate) const AUTHORING_SOCKET_RESET_WIDTH: f32 = SOCKET_PICKER_RESET_WIDTH;
 
+pub(crate) fn draw_asset_choice_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    detail: &str,
+    selected: bool,
+) -> egui::Response {
+    super::item_editor::draw_picker_row(
+        ui,
+        None,
+        super::item_editor::CatalogPickerRow {
+            hash: 0,
+            primary: name,
+            primary_max_rows: 1,
+            secondary: Some(detail),
+            icon_size: 0.0,
+            row_height: crate::investment::authoring_choice_row_height(ui),
+            selected,
+        },
+    )
+    .on_hover_ui(|ui| {
+        ui.set_max_width(320.0);
+        crate::ui_help::tooltip_title(ui, name);
+        ui.label(super::ui::destiny_text(ui, detail));
+    })
+}
+
+pub(crate) fn draw_authoring_choice_row(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: Option<u32>,
+    name: &str,
+    description: Option<&str>,
+    selected: bool,
+) -> egui::Response {
+    let response = super::item_editor::draw_catalog_picker_row(
+        ui,
+        catalog,
+        super::item_editor::CatalogPickerRow {
+            hash: u64::from(hash.unwrap_or_default()),
+            primary: name,
+            primary_max_rows: 1,
+            secondary: description,
+            icon_size: if hash.is_some() { 32.0 } else { 0.0 },
+            row_height: crate::investment::authoring_choice_row_height(ui),
+            selected,
+        },
+    );
+    if let Some(hash) = hash {
+        catalog_item_tooltip(response, catalog, u64::from(hash))
+    } else {
+        response.on_hover_ui(|ui| {
+            ui.set_max_width(320.0);
+            crate::ui_help::tooltip_title(ui, name);
+            if let Some(description) = description {
+                ui.label(super::ui::destiny_text(ui, description));
+            }
+        })
+    }
+}
+
 pub(crate) fn authoring_socket_reset_width(ui: &egui::Ui) -> f32 {
     super::item_editor::socket_picker_reset_width(ui)
 }
@@ -300,6 +360,11 @@ pub(crate) fn synchronize_authored_collection_unlocks(
     )
 }
 
+pub(crate) fn authored_client_settings_path(install: &Path) -> Result<PathBuf, String> {
+    let preferences = super::settings::load_preferences().preferences;
+    authored_unlock_settings_path(install, &preferences)
+}
+
 fn authored_unlock_settings_path(
     install: &Path,
     preferences: &super::Preferences,
@@ -338,7 +403,6 @@ fn synchronize_authored_collection_unlocks_at(
         .map_err(|error| error.to_string())?
         || crate::game_settings::schema_version(&original).is_some_and(|v| v >= 18)
     {
-        #[cfg(feature = "sqlite-account")]
         {
             use crate::persistence::sqlite_account::{self, SqliteAccountDocumentLoad};
             let mut document =
@@ -361,13 +425,10 @@ fn synchronize_authored_collection_unlocks_at(
             };
             return Ok((database_path, backup, changed));
         }
-        #[cfg(not(feature = "sqlite-account"))]
-        return Err("This build does not include SQLite account support".into());
     }
     synchronize_loaded_authored_collection_unlocks(settings_path, original, unlocks, save)
 }
 
-#[cfg(feature = "sqlite-account")]
 fn apply_native_authored_unlocks(
     document: &mut crate::persistence::sqlite_account::SqliteAccountDocument,
     unlocks: &[(usize, u8, u16)],
@@ -500,7 +561,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
     button_width: f32,
     mode: PlugSelectionMode,
 ) -> Option<(usize, Option<u64>)> {
-    let snapshot = plug_picker_snapshot_for_mode(
+    let mut snapshot = plug_picker_snapshot_for_mode(
         catalog,
         item,
         socket_index,
@@ -509,6 +570,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
         Some(button_text),
         mode,
     );
+    snapshot.custom_current = current_hash.is_none() && button_tooltip.is_some();
     let row_height = ui
         .spacing()
         .interact_size
@@ -581,7 +643,7 @@ fn plug_picker_snapshot_for_mode(
         .filter(|socket_type| {
             item.sockets
                 .get(socket_index)
-                .is_some_and(|socket| socket.socket_type != *socket_type)
+                .is_none_or(|socket| socket.socket_type != *socket_type)
         })
         .map_or_else(
             || match item.default_plugs.get(socket_index) {
@@ -606,38 +668,19 @@ fn plug_picker_snapshot_for_mode(
             mode,
         );
     };
-    let show_types = matches!(
+    let (choices, show_types) = super::item_editor::plug_choices_for_socket_type(
+        catalog,
+        item,
+        socket_index,
+        Some(socket_type),
         mode,
-        PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
     );
-    let allowed = match mode {
-        PlugSelectionMode::Supported | PlugSelectionMode::SocketAndGearType => catalog
-            .socket_and_gear_type_options_for_type(item, socket_type)
-            .to_vec(),
-        PlugSelectionMode::MatchingSocketType => catalog.socket_type_options(socket_type).to_vec(),
-        PlugSelectionMode::GearType => catalog.gear_type_options_for_type(item, socket_type),
-        PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
-    };
-    let choices = allowed
-        .into_iter()
-        .map(|hash| super::item_editor::PlugChoice {
-            hash,
-            label: catalog.plug_label(hash, true),
-            type_name: if show_types {
-                catalog
-                    .plug_type_name(hash)
-                    .unwrap_or("Unknown type")
-                    .to_owned()
-            } else {
-                String::new()
-            },
-        })
-        .collect();
     super::item_editor::PlugPickerSnapshot {
         socket_index,
         socket_label: format!("Socket {} · type {socket_type}", socket_index + 1),
         current_hash,
         current_label,
+        custom_current: false,
         native_default,
         native_default_label: None,
         choices,
@@ -654,7 +697,6 @@ mod tests {
     use super::*;
     use crate::{app::SettingsLayout, test_support::TestDirectory};
 
-    #[cfg(feature = "sqlite-account")]
     #[test]
     fn native_authored_unlocks_cover_character_scopes_and_repeat_without_changes() {
         let directory = TestDirectory::new("authored-native-scopes");
@@ -748,7 +790,6 @@ mod tests {
         assert!(error.contains("Multiple settings.json files exist"));
     }
 
-    #[cfg(feature = "sqlite-account")]
     #[test]
     fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
         let directory = TestDirectory::new("authored-unlock-sqlite");

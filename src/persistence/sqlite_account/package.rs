@@ -177,6 +177,23 @@ pub(super) fn verify_unedited_tables(
     let before: Snapshot = serde_json::from_slice(before).map_err(err)?;
     let after: Snapshot = serde_json::from_slice(after).map_err(err)?;
     for (name, table) in &before.tables {
+        // An insert may advance only the sequence owned by an edited table.
+        // Preserve sequence rows for every other table, including extensions.
+        if name == "sqlite_sequence"
+            && let Some(updated) = after.tables.get(name)
+            && table.columns == updated.columns
+            && let Some(column) = table.columns.iter().position(|column| column == "name")
+        {
+            let unedited = |row: &&Vec<Cell>| !matches!(row.get(column), Some(Cell::Text(owner)) if edited.contains(&owner.as_str()));
+            if table
+                .rows
+                .iter()
+                .filter(unedited)
+                .eq(updated.rows.iter().filter(unedited))
+            {
+                continue;
+            }
+        }
         if !edited.contains(&name.as_str()) && after.tables.get(name) != Some(table) {
             return Err(format!(
                 "Saving would change unedited table {name}. The database was not changed"
@@ -289,11 +306,24 @@ fn insert_table(db: &Connection, name: &str, table: &Table) -> Result<(), String
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn preview(
     path: &Path,
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
     changes: &[AuthoredSocketChange],
+) -> Result<AuthoredAccountCleanup, String> {
+    preview_replacement(path, hashes, unlocks, changes, None)
+}
+
+mod placement;
+
+pub(crate) fn preview_replacement(
+    path: &Path,
+    hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    changes: &[AuthoredSocketChange],
+    slots: Option<&crate::investment::AuthoredSlotReplacement>,
 ) -> Result<AuthoredAccountCleanup, String> {
     let mut source = open(path, false)?;
     let tx = source.transaction().map_err(err)?;
@@ -316,6 +346,7 @@ pub(crate) fn preview(
         removed_reward_rules: 0,
         cleared_unlocks: 0,
         resized_items: BTreeMap::new(),
+        slot_moves: vec![],
     };
     for hash in hashes {
         report.cleared_plugs += staged
@@ -380,6 +411,7 @@ pub(crate) fn preview(
             &format!("character_slot={slot}"),
         )?;
     }
+    report.slot_moves = placement::relocate(&staged, hashes, slots)?;
     resize(&staged, hashes, changes, &mut report.resized_items)?;
     validate(&staged)?;
     report.cleaned_bytes = serde_json::to_vec(&snapshot(&staged)?).map_err(err)?;

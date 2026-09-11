@@ -159,6 +159,7 @@ pub(super) fn build_install_transaction(
         backup_directory: backup_directory.to_path_buf(),
         artifacts,
         account_cleanup: None,
+        client_settings: None,
     };
     validate_install_transaction(&transaction, &validated.target_packages_directory)
         .map_err(|error| error.message)?;

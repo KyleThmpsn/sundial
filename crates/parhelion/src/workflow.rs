@@ -24,9 +24,7 @@ use crate::package_profile::{
     authored_package, authored_packages_for_file_names, canonical_package,
 };
 use crate::recipe::WeaponRecipe;
-use crate::weapon::{
-    build_weapon_project_after_catalog_validation, validate_weapon_clone_specs_against_catalog,
-};
+use crate::weapon::{compile_with_progress, validate_catalog_with_progress};
 use crate::{NewWeaponProjectBundle, SUNDIAL_BUILD_SIGNATURE, WeaponProjectSpec};
 
 mod package_views;
@@ -81,7 +79,13 @@ pub struct BuildReport {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildPhase {
     InspectingSource,
+    LoadingCatalog,
+    CheckingRecipes,
+    PreparingSource,
+    HashingSource,
     CompilingProject,
+    BuildingPayloads,
+    RecheckingSource,
     WritingPackages,
     ValidatingPackages,
     StagingRecipes,
@@ -93,7 +97,13 @@ impl BuildPhase {
     pub const fn label(self) -> &'static str {
         match self {
             Self::InspectingSource => "Inspecting source packages",
+            Self::LoadingCatalog => "Loading donor catalog",
+            Self::CheckingRecipes => "Checking recipe compatibility",
+            Self::PreparingSource => "Preparing source packages",
+            Self::HashingSource => "Recording source checksums",
             Self::CompilingProject => "Compiling weapon project",
+            Self::BuildingPayloads => "Building package payloads",
+            Self::RecheckingSource => "Rechecking source packages",
             Self::WritingPackages => "Writing package set",
             Self::ValidatingPackages => "Validating package artifacts",
             Self::StagingRecipes => "Staging recipe snapshots",
@@ -184,32 +194,96 @@ fn plan_snapshot(
     snapshot: &BatchBuildSnapshot,
     progress: &mut impl FnMut(BuildProgress),
 ) -> Result<PlannedSnapshot, String> {
-    progress(BuildProgress::phase(BuildPhase::InspectingSource, 0, 3));
+    progress(BuildProgress::artifact(
+        BuildPhase::InspectingSource,
+        "Checking Recipes",
+        0,
+        2,
+    ));
     let project = project_spec(snapshot)?;
-    progress(BuildProgress::phase(BuildPhase::InspectingSource, 1, 3));
+    progress(BuildProgress::artifact(
+        BuildPhase::InspectingSource,
+        "Inspecting Package Headers",
+        1,
+        2,
+    ));
     let source_inspection = inspect_snapshot(snapshot)?;
-    progress(BuildProgress::phase(BuildPhase::InspectingSource, 2, 3));
+    progress(BuildProgress::phase(BuildPhase::InspectingSource, 2, 2));
     let install_directory = snapshot
         .request
         .package_directory
         .parent()
         .ok_or_else(|| "The package directory has no Shadowkeep install root".to_owned())?;
-    validate_weapon_clone_specs_against_catalog(install_directory, project.weapons.iter())
-        .map_err(|error| format!("Weapon project compatibility validation failed: {error}"))?;
+    progress(BuildProgress::phase(BuildPhase::LoadingCatalog, 0, 0));
+    validate_catalog_with_progress(
+        install_directory,
+        project.weapons.iter(),
+        &mut |loading, label, completed, total| {
+            progress(BuildProgress::artifact(
+                if loading {
+                    BuildPhase::LoadingCatalog
+                } else {
+                    BuildPhase::CheckingRecipes
+                },
+                label,
+                completed,
+                total,
+            ));
+        },
+    )
+    .map_err(|error| format!("Weapon project compatibility validation failed.\n{error:#}"))?;
+    progress(BuildProgress::phase(BuildPhase::PreparingSource, 0, 0));
     let source = PackageSource::prepare(
         &snapshot.request.package_directory,
         &source_inspection.ignored_authored_files,
     )?;
     let result = (|| {
-        let source_artifacts = source_artifact_reports(source.path())?;
-        progress(BuildProgress::phase(BuildPhase::InspectingSource, 3, 3));
-        progress(BuildProgress::phase(BuildPhase::CompilingProject, 0, 1));
-        let compilation = build_weapon_project_after_catalog_validation(source.path(), &project)
-            .map_err(|error| format!("Weapon project compilation failed: {error}"));
-        let source_artifacts_after = source_artifact_reports(source.path())?;
+        progress(BuildProgress::phase(BuildPhase::HashingSource, 0, 0));
+        let source_artifacts =
+            source_artifact_reports_with_progress(source.path(), &mut |name, completed, total| {
+                progress(BuildProgress::artifact(
+                    BuildPhase::HashingSource,
+                    name,
+                    completed,
+                    total,
+                ));
+            })?;
+        let compilation = compile_with_progress(
+            source.path(),
+            &project,
+            &mut |phase, label, completed, total| {
+                progress(BuildProgress::artifact(
+                    match phase {
+                        crate::weapon::CompilePhase::Authoring => BuildPhase::CompilingProject,
+                        crate::weapon::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
+                    },
+                    label,
+                    completed,
+                    total,
+                ));
+            },
+        )
+        .map_err(|error| format!("Weapon project compilation failed.\n{error:#}"));
+        if compilation.is_ok() {
+            progress(BuildProgress::phase(
+                BuildPhase::RecheckingSource,
+                0,
+                source_artifacts.len(),
+            ));
+        }
+        let source_artifacts_after =
+            source_artifact_reports_with_progress(source.path(), &mut |name, completed, total| {
+                if compilation.is_ok() {
+                    progress(BuildProgress::artifact(
+                        BuildPhase::RecheckingSource,
+                        name,
+                        completed,
+                        total,
+                    ));
+                }
+            })?;
         validate_source_artifacts_unchanged(&source_artifacts, &source_artifacts_after)?;
         let bundle = compilation?;
-        progress(BuildProgress::phase(BuildPhase::CompilingProject, 1, 1));
         Ok(PlannedSnapshot {
             source_inspection,
             source_artifacts,
@@ -320,11 +394,16 @@ pub fn build_and_stage_snapshot_with_progress(
     let staged_run = staging_retention::StagedRun::begin(&snapshot.request.staging_root, &slug)?;
     let run_directory = staged_run.directory().to_owned();
     let result = (|| {
-        progress(BuildProgress::phase(BuildPhase::WritingPackages, 0, 1));
         let paths = bundle
-            .write_new(&run_directory)
+            .write_new_with_progress(&run_directory, &mut |name, completed, total| {
+                progress(BuildProgress::artifact(
+                    BuildPhase::WritingPackages,
+                    name,
+                    completed,
+                    total,
+                ));
+            })
             .map_err(|error| format!("Could not write staged packages: {error}"))?;
-        progress(BuildProgress::phase(BuildPhase::WritingPackages, 1, 1));
         let artifacts = artifact_reports_with_progress(&paths, &mut progress)?;
         validate_outputs(&artifacts)?;
         let staged_recipe_paths =
@@ -414,9 +493,14 @@ fn project_spec(snapshot: &BatchBuildSnapshot) -> Result<WeaponProjectSpec, Stri
         .recipes
         .iter()
         .map(|recipe| {
-            recipe
-                .to_spec()
-                .map_err(|error| format!("Recipe {:?} is invalid: {error}", recipe.name))
+            recipe.to_spec().map_err(|error| {
+                format!(
+                    "Recipe: {:?} ({})\nItem: {}\n{error}",
+                    recipe.name,
+                    recipe.namespace,
+                    recipe.identity.item_hash.as_str()
+                )
+            })
         })
         .collect::<Result<Vec<_>, String>>()
         .map(|weapons| WeaponProjectSpec { weapons })
@@ -656,7 +740,16 @@ impl FilteredPackageView {
         }
         // Staging can be on another volume; only the small authored output needs copying.
         if fs::hard_link(source, &target).is_err() {
-            fs::copy(source, &target).map_err(|error| {
+            let copy = (|| -> std::io::Result<()> {
+                let mut source = File::open(source)?;
+                let mut destination = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)?;
+                std::io::copy(&mut source, &mut destination)?;
+                Ok(())
+            })();
+            copy.map_err(|error| {
                 format!(
                     "Could not add {} to the read-only package view: {error}",
                     source.display()
@@ -907,8 +1000,16 @@ fn artifact_reports_with_progress(
     Ok(reports)
 }
 
+#[cfg(test)]
 fn source_artifact_reports(package_directory: &Path) -> Result<Vec<ArtifactMetadata>, String> {
-    let mut reports = Vec::new();
+    source_artifact_reports_with_progress(package_directory, &mut |_, _, _| {})
+}
+
+fn source_artifact_reports_with_progress(
+    package_directory: &Path,
+    progress: &mut dyn FnMut(&str, usize, usize),
+) -> Result<Vec<ArtifactMetadata>, String> {
+    let mut sources = Vec::new();
     for profile in CANONICAL_PACKAGES {
         let mut has_latest = false;
         for patch_id in 0..=profile.stock_patch_id {
@@ -943,13 +1044,7 @@ fn source_artifact_reports(package_directory: &Path) -> Result<Vec<ArtifactMetad
                 ));
             }
             has_latest |= patch_id == profile.stock_patch_id;
-            let digest = digest_file(&path)
-                .map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
-            reports.push(ArtifactMetadata {
-                file_name,
-                byte_length: digest.byte_length,
-                sha256: digest.sha256,
-            });
+            sources.push((file_name, path));
         }
         if !has_latest {
             return Err(format!(
@@ -957,6 +1052,18 @@ fn source_artifact_reports(package_directory: &Path) -> Result<Vec<ArtifactMetad
                 profile.package_id, profile.stock_patch_id
             ));
         }
+    }
+    let mut reports = Vec::with_capacity(sources.len());
+    for (file_name, path) in &sources {
+        progress(file_name, reports.len(), sources.len());
+        let digest = digest_file(path)
+            .map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
+        reports.push(ArtifactMetadata {
+            file_name: file_name.clone(),
+            byte_length: digest.byte_length,
+            sha256: digest.sha256,
+        });
+        progress(file_name, reports.len(), sources.len());
     }
     Ok(reports)
 }

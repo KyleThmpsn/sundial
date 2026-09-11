@@ -5,6 +5,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod owner;
+
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG: u32 = 0x80EC_3F60;
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS: u32 = 0x8080_9780;
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS: u32 = 0x8080_9252;
@@ -728,40 +730,43 @@ pub fn retarget_weapon_component_owner(
         ));
     }
 
-    let mut replacements = 0;
+    let mut owner_fields = owner::event_owner_fields(entity, old_owner_tag)?;
     for index in 0..components.count {
         let row = components.rows + index * WEAPON_ENTITY_COMPONENT_ROW_SIZE;
         if read_u32(entity, row)? == old_owner_tag {
-            write_u32(entity, row, new_owner_tag)?;
-            replacements += 1;
+            owner_fields.insert(row);
         }
     }
     for index in 0..descriptors.count {
         let descriptor = descriptors.rows + index * WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE;
         if read_u32(entity, descriptor)? == old_owner_tag {
-            write_u32(entity, descriptor, new_owner_tag)?;
-            replacements += 1;
+            owner_fields.insert(descriptor);
         }
         let resource = resource_map.rows + index * WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE;
         if read_u32(entity, resource + 0x10)? == old_owner_tag {
-            write_u32(entity, resource + 0x10, new_owner_tag)?;
-            replacements += 1;
+            owner_fields.insert(resource + 0x10);
         }
     }
-    if replacements == 0 {
+    if owner_fields.is_empty() {
         return Err(format!(
             "Weapon entity does not reference component owner 0x{old_owner_tag:08X}"
         ));
     }
-    validate_weapon_entity(entity)?;
-    Ok(replacements)
+    let mut authored = entity.to_vec();
+    for offset in &owner_fields {
+        write_u32(&mut authored, *offset, new_owner_tag)?;
+    }
+    validate_weapon_entity(&authored)?;
+    entity.copy_from_slice(&authored);
+    Ok(owner_fields.len())
 }
 
 /// Retargets the structurally proven owner-tag fields in a cloned component-owner payload.
 ///
 /// Component resource descriptors store an absolute offset into the owner payload. Both the
-/// resource prefix and the pointed-to concrete object begin with the owning tag. Only those
-/// fields are rewritten; unrelated aligned integers that happen to equal the tag are preserved.
+/// resource prefix and the pointed-to concrete object begin with the owning tag. Nested
+/// objects also carry reciprocal typed references to their instance or definition. Those
+/// fields are rewritten while unrelated aligned integers are preserved.
 pub fn retarget_weapon_component_owner_payload(
     owner_payload: &mut [u8],
     entity: &[u8],
@@ -846,6 +851,10 @@ pub fn retarget_weapon_component_owner_payload(
         owner_fields.insert(concrete_offset);
     }
 
+    owner_fields.extend(owner::self_reference_owner_fields(
+        owner_payload,
+        old_owner_tag,
+    ));
     for offset in &owner_fields {
         write_u32(owner_payload, *offset, new_owner_tag)?;
     }

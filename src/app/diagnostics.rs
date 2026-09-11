@@ -18,6 +18,8 @@ const MAX_RUNTIME_FILES: usize = 10_000;
 const LOG_DIRECTORY_NAME: &str = "logs";
 const LOG_FILE_NAME: &str = "sundial-troubleshooting.log";
 
+mod activity;
+
 pub(super) struct CatalogSummary<'a> {
     pub cache_path: &'a Path,
     pub loaded_from_cache: bool,
@@ -42,7 +44,6 @@ pub(super) struct ReportContext<'a> {
     pub account_source: &'a str,
     pub account_contract: &'a str,
     pub account_detail: &'a str,
-    #[cfg(feature = "sqlite-account")]
     pub account_database_path: &'a Path,
     pub catalog: CatalogSummary<'a>,
     pub recent_activity: &'a str,
@@ -74,17 +75,7 @@ pub(super) fn log_path() -> Option<PathBuf> {
 }
 
 pub(super) fn build_report(context: &ReportContext<'_>) -> String {
-    let mut report = String::new();
-    writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
-    writeln!(
-        report,
-        "generated_unix_seconds = {}",
-        unix_seconds(SystemTime::now())
-            .map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
-    )
-    .expect("writing to a String cannot fail");
-    writeln!(report).expect("writing to a String cannot fail");
+    let mut report = report_header();
 
     append_build_information(&mut report);
     append_path_section(&mut report, context);
@@ -100,24 +91,13 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
     report.push_str(context.recent_activity);
     report.push_str("\n\n");
 
-    report.push_str(
-        "Privacy\n-------\nSettings and account files are not copied into this report. Full local paths, file metadata, errors, and Sundial status messages are included. Messages can contain item names or other contextual details. Review before sharing. Parhelion activity is in its separate log.\n",
-    );
+    activity::append_parhelion_log(&mut report);
+
     report
 }
 
 pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &str) -> String {
-    let mut report = String::new();
-    writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
-    writeln!(
-        report,
-        "generated_unix_seconds = {}",
-        unix_seconds(SystemTime::now())
-            .map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
-    )
-    .expect("writing to a String cannot fail");
-    writeln!(report).expect("writing to a String cannot fail");
+    let mut report = report_header();
     append_build_information(&mut report);
     report.push_str("Startup failure\n---------------\n");
     writeln!(report, "error = {}", error.replace(['\r', '\n'], " "))
@@ -145,9 +125,22 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
     } else {
         report.push_str("selected_install = unavailable\n\n");
     }
-    report.push_str(
-        "Privacy\n-------\nSettings and account files are not copied into this report. Full local paths, file metadata, errors, and Sundial status messages are included. Messages can contain item names or other contextual details. Review before sharing. Parhelion activity is in its separate log.\n",
-    );
+    activity::append_parhelion_log(&mut report);
+    report
+}
+
+fn report_header() -> String {
+    let mut report = String::new();
+    writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
+    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
+    writeln!(
+        report,
+        "generated_unix_seconds = {}",
+        unix_seconds(SystemTime::now())
+            .map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(report).expect("writing to a String cannot fail");
     report
 }
 
@@ -199,13 +192,6 @@ fn append_build_information(report: &mut String) {
         .expect("writing to a String cannot fail");
     writeln!(report, "debug_build = {}", cfg!(debug_assertions))
         .expect("writing to a String cannot fail");
-    #[cfg(feature = "sqlite-account")]
-    writeln!(
-        report,
-        "sqlite_account_support = {}",
-        cfg!(feature = "sqlite-account")
-    )
-    .expect("writing to a String cannot fail");
     writeln!(report, "process_id = {}", std::process::id())
         .expect("writing to a String cannot fail");
     append_optional_path(report, "current_executable", std::env::current_exe());
@@ -235,7 +221,6 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
     if let Some(parent) = context.settings_path.parent() {
         append_path(report, "active_settings_directory", parent);
     }
-    #[cfg(feature = "sqlite-account")]
     append_path(
         report,
         "active_account_database",
@@ -440,7 +425,6 @@ fn append_settings_candidates(report: &mut String, install: &Path) {
         append_path(report, "settings_json", &settings);
         let directory = settings.parent().unwrap_or(install);
         let state_db = directory.join("state.db");
-        #[cfg(feature = "sqlite-account")]
         {
             let sqlite = directory.join("investment.sqlite3");
             append_path(report, "state_sqlite3", &sqlite);
@@ -815,7 +799,6 @@ mod tests {
             account_source: "settings.json",
             account_contract: "test contract",
             account_detail: "test detail",
-            #[cfg(feature = "sqlite-account")]
             account_database_path: &database,
             catalog: CatalogSummary {
                 cache_path: &directory.0.join("catalog.json"),
@@ -845,7 +828,7 @@ mod tests {
         assert!(report.contains("progression_package_error = Missing table read failed"));
         assert!(report.contains("[Error] Earlier failure"));
         assert_report_paths(&report);
-        assert_account_feature_details(&report);
+        assert_account_source_details(&report);
         assert!(report.contains("state_db_exists = false"));
         assert!(report.contains("alternate_runtime_persistence_detected = true"));
         assert!(report.contains("detection_evidence = runtime_state_header"));
@@ -869,15 +852,8 @@ mod tests {
         }
     }
 
-    fn assert_account_feature_details(report: &str) {
-        #[cfg(feature = "sqlite-account")]
+    fn assert_account_source_details(report: &str) {
         assert!(report.contains("state_sqlite3_exists = true"));
-        #[cfg(not(feature = "sqlite-account"))]
-        {
-            assert!(!report.contains("state_sqlite3_exists"));
-            assert!(!report.contains("active_account_database"));
-            assert!(!report.contains("sqlite_account_support"));
-        }
     }
 
     #[test]

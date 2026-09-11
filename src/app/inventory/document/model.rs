@@ -198,6 +198,21 @@ pub(crate) enum InventoryItemAction {
     Remove,
 }
 
+impl InventoryItemAction {
+    pub(crate) fn set_plug(
+        current: &[Option<u32>],
+        socket_index: usize,
+        hash: Option<u64>,
+    ) -> Self {
+        let mut plugs = current.to_vec();
+        if plugs.len() <= socket_index {
+            plugs.resize(socket_index + 1, None);
+        }
+        plugs[socket_index] = hash.and_then(|hash| u32::try_from(hash).ok());
+        Self::SetPlugs(ItemPlugs::Authored(plugs))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NewInventoryItem {
     pub definition_hash: u32,

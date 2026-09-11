@@ -21,6 +21,7 @@ mod badge_icon;
 mod block_codec;
 mod capabilities;
 mod chain;
+pub mod collection;
 mod error;
 mod extend;
 mod format;
@@ -30,8 +31,10 @@ mod install;
 mod manifest;
 mod package_profile;
 mod payload_guards;
+pub mod perk;
 mod plug_classification;
 mod preferences;
+pub mod presentation;
 mod progression;
 mod recipe;
 mod recipe_library;
@@ -52,8 +55,7 @@ pub(crate) use badge::SunriseProjectMetadata;
 pub(crate) use badge::{
     SUNRISE_BADGE_DESCRIPTION, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME,
     SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement,
-    append_badge_icon_row, author_sunrise_badge_graph, patch_badges_root_objective,
-    sunrise_badge_collectible_parents,
+    append_badge_icon_row, author_sunrise_badge_graph, sunrise_badge_collectible_parents,
 };
 pub(crate) use badge_icon::build_badge_icon_plan;
 pub(crate) use capabilities::{
@@ -65,17 +67,17 @@ pub(crate) use capabilities::{
 };
 pub(crate) use chain::{PackageIdentity, PatchChain, PatchFile};
 pub(crate) use error::{AuthoringError, AuthoringResult};
-pub(crate) use extend::{
-    ExtendedOverlayArtifact, ReplacementSpec, build_extended_overlay,
-    build_extended_overlay_with_references, build_standalone_package_with_references,
-};
+#[cfg(test)]
+pub(crate) use extend::build_standalone_package_with_references;
+pub(crate) use extend::{ExtendedOverlayArtifact, ReplacementSpec};
 pub(crate) use extend::{NewTagReference, NewTagReferenceOverride, NewTagSpec, NewTagStorageMode};
 pub(crate) use format::SUNDIAL_BUILD_SIGNATURE;
 pub(crate) use icon_edit::WeaponIconEdit;
 pub use install::{
-    BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError, InstallReport,
-    InstallRequest, MAX_PACKAGE_BACKUP_RETENTION, ReplacementReview, UninstallPlan,
-    UninstallReport, install_staged_packages, preview_replacement, preview_uninstall,
+    BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError, InstallPhase,
+    InstallProgress, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
+    ReplacementReview, UninstallPlan, UninstallReport, install_staged_packages,
+    install_staged_packages_with_progress, preview_replacement, preview_uninstall,
     preview_uninstall_with_account_cleanup, prune_package_backups, uninstall_custom_packages,
 };
 #[cfg(test)]
@@ -91,7 +93,7 @@ pub use recipe::{
     WeaponSocketPlugVariantRecipe,
 };
 pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
-pub(crate) use watermark::{WeaponIconRequest, build_watermark_plan, item_icon_row_with_container};
+pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub(crate) use weapon::{
     AuthoredWeaponRarity, ModernDamageType, NewWeaponPlan, NewWeaponProjectBundle, WeaponAmmoType,
     WeaponArtArrangementOverride, WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec,

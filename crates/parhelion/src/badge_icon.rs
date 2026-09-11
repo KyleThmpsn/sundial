@@ -102,8 +102,24 @@ pub fn build_badge_icon_plan(
     current_entry_count: usize,
     appended_ordinal_base: usize,
 ) -> AuthoringResult<BadgeIconPlan> {
+    build_icon_plan(
+        manager,
+        destination_package_id,
+        current_entry_count,
+        appended_ordinal_base,
+        None,
+    )
+}
+
+pub(crate) fn build_icon_plan(
+    manager: &PackageManager,
+    destination_package_id: u16,
+    current_entry_count: usize,
+    appended_ordinal_base: usize,
+    artwork: Option<&crate::presentation::Artwork>,
+) -> AuthoringResult<BadgeIconPlan> {
     let donor = read_and_validate_donor(manager)?;
-    let source = decode_source()?;
+    let source = artwork.map_or_else(decode_source, |artwork| Ok(artwork.pixels().clone()))?;
     let low_data = render_card(&source, &donor.low_data, LOW_WIDTH, LOW_HEIGHT)?;
     let high_data = render_card(&source, &donor.high_data, HIGH_WIDTH, HIGH_HEIGHT)?;
     validate_pixel_buffer(
@@ -155,7 +171,7 @@ pub fn build_badge_icon_plan(
         tags,
     )?;
 
-    let new_tags = vec![
+    let mut new_tags = vec![
         NewTagSpec {
             template_tag: DONOR_LOW_DATA,
             payload: low_data,
@@ -194,6 +210,11 @@ pub fn build_badge_icon_plan(
     ];
     let reference_overrides = reciprocal_reference_overrides(ordinals);
     validate_append_plan(&new_tags, &reference_overrides, ordinals, tags)?;
+    if appended_ordinal_base != 0 || artwork.is_some() {
+        let fingerprint =
+            crate::watermark::private_icon_fingerprint(&new_tags[5].payload, &new_tags[2].payload);
+        write_u32(&mut new_tags[5].payload, 0x10, fingerprint)?;
+    }
 
     Ok(BadgeIconPlan {
         new_tags,

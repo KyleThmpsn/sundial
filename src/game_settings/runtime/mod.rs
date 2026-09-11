@@ -4,9 +4,7 @@ mod activity;
 mod activity_page;
 mod character_page;
 mod entitlements;
-#[cfg(feature = "sqlite-account")]
 pub(crate) use entitlements::validate_native as validate_native_entitlements;
-#[cfg(feature = "sqlite-account")]
 pub(crate) fn validate_native_details(document: &serde_json::Value) -> Result<(), String> {
     validate_native_entitlements(document)?;
     character_page::validate(document)?;
@@ -44,6 +42,8 @@ pub(crate) fn validate(document: &Value, json_account: bool) -> Result<(), Strin
     for field in FIELDS
         .iter()
         .chain(services::FIELDS)
+        .copied()
+        .map(|field| field.for_document(document))
         .filter(|field| json_account || !field.account_owned())
     {
         if let Some(value) = optional_value(document, field.path)? {
@@ -59,7 +59,7 @@ fn set_field(
     document: &mut Value,
     path: &str,
     value: Value,
-    json_account: bool,
+    account_available: bool,
 ) -> Result<bool, String> {
     if !available(document) {
         return Err("These settings require schema 16 or newer".into());
@@ -67,12 +67,12 @@ fn set_field(
     let field = FIELDS
         .iter()
         .chain(services::FIELDS)
+        .copied()
+        .map(|field| field.for_document(document))
         .find(|field| field.path == path)
         .ok_or("Unknown runtime setting")?;
-    if field.account_owned() && !json_account {
-        return Err(
-            "This setting belongs to the JSON account, not the active SQLite account".into(),
-        );
+    if field.account_owned() && !account_available {
+        return Err("The active account is unavailable".into());
     }
     field.validate(&value)?;
     if optional_value(document, path)? == Some(&value) {

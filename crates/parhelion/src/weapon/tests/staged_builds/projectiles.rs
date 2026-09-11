@@ -268,6 +268,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
         overrides: WeaponCloneOverrides {
             socket_columns,
             socket_plug_variants: vec![WeaponSocketPlugVariantOverride {
+                replace_effects: false,
                 investment_stats: vec![(13, 10)],
                 socket_index: TRAIT_SOCKET_INDEX as u16,
                 choice_index: 0,
@@ -277,6 +278,8 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
                 additional_sandbox_perks: Vec::new(),
                 name: Some("Micro-Missile Frame".to_owned()),
                 sandbox_perks: vec![WeaponSandboxPerkRuntimeOverride {
+                    program: None,
+                    projectiles: Vec::new(),
                     source_perk_index: MICRO_MISSILE_PERK_INDEX as u16,
                     activation: None,
                     runtime_values: Vec::new(),
@@ -993,9 +996,10 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
     let private_action = clone_private_sandbox_perk_runtime(
         &manager,
         &action,
-        &values,
-        &[],
-        None,
+        custom_runtime::PrivateRuntimeEdits {
+            values: &values,
+            ..Default::default()
+        },
         allocator,
         &mut tags,
     )

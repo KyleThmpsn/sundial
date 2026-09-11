@@ -76,7 +76,7 @@ pub(crate) const EQUIPMENT_SLOTS: &[EquipmentSlotContract] = &[
     ("finisher", "Finisher", 3_683_254_069),
 ];
 
-/// Complete metadata; use equipment_slots_for_schema for JSON and the legacy slice for SQLite.
+/// Complete metadata in SQLite native slot order. Use equipment_slots_for_schema for JSON.
 pub(crate) const ALL_EQUIPMENT_SLOTS: &[EquipmentSlotContract] = &all_equipment_slots();
 
 const fn all_equipment_slots() -> [EquipmentSlotContract; 17] {

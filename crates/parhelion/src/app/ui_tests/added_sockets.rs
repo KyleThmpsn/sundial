@@ -44,6 +44,92 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, donor: &WeaponDonor
 }
 
 #[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket UI check"]
+fn extra_choice_context_menu_promotes_its_private_definition() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = InvestmentCatalog::load_with_cache_path(
+        packages.parent().unwrap(),
+        &temporary.path().join("catalog.json"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let donor = catalog.weapon_donor(0x4CE3_CE93).unwrap();
+    let source = donor.sockets[0].native_default.unwrap();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.default-choice-ui",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    socket_editor::set_recipe_socket_column(
+        &mut recipe,
+        donor.sockets.len(),
+        0,
+        &[source],
+        vec![0xDD5C_B37A, source],
+        None,
+    );
+    recipe
+        .overrides
+        .socket_plug_variants
+        .push(WeaponSocketPlugVariantRecipe {
+            replace_effects: false,
+            investment_stats: vec![],
+            socket_index: 0,
+            choice_index: 1,
+            source_plug_hash: source.into(),
+            name: Some("Alternate Choice".into()),
+            classification_donor_hash: None,
+            description: None,
+            additional_sandbox_perks: vec![],
+            sandbox_perks: vec![],
+        });
+    let mut app = PackageAuthoringApp {
+        catalog: Some(catalog),
+        recipe,
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, &donor, vec![]);
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    let pos = text_origin(&output, "Alternate Choice") + egui::vec2(8.0, 6.0);
+    for pressed in [true, false] {
+        frame(
+            &ctx,
+            &mut app,
+            &donor,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    click(
+        &ctx,
+        &mut app,
+        &donor,
+        text_origin(&output, "Make Default") + egui::vec2(8.0, 6.0),
+    );
+    assert_eq!(
+        socket_editor::recipe_socket_choices(&app.recipe, 0, &[]).unwrap(),
+        vec![source, 0xDD5C_B37A]
+    );
+    assert_eq!(app.recipe.overrides.socket_plug_variants[0].choice_index, 0);
+    assert_eq!(
+        app.recipe.overrides.socket_plug_variants[0].name.as_deref(),
+        Some("Alternate Choice")
+    );
+}
+
+#[test]
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only package-backed socket UI check"]
 fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());

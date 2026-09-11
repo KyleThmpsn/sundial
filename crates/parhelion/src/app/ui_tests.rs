@@ -3,8 +3,49 @@ use super::*;
 
 mod added_sockets;
 mod authoring_safety;
+pub(super) mod build_flow;
 mod runtime_layout;
 mod socket_account_updates;
+
+#[test]
+fn personalization_controls_fit_narrow_and_wide_weapon_panels_without_mutating_drafts() {
+    for width in [320.0, 540.0, 900.0] {
+        let mut editor = crate::presentation::ui::Editor::default();
+        let mut draft = crate::WeaponRecipe::every_end().overrides;
+        draft.badge = Some(crate::presentation::Badge {
+            name: "The Wanderers".into(),
+            description: "A personal collection.".into(),
+            icon: None,
+        });
+        draft.lore = Some("First paragraph.\n\nSecond paragraph.".into());
+        let artwork = crate::presentation::Artwork::from_png(include_bytes!(
+            "../../../../assets/parhelion/watermark/sunrise-watermark-0-96x96.png"
+        ))
+        .unwrap();
+        draft.badge.as_mut().unwrap().icon = Some(artwork.clone());
+        draft.corner_icon = Some(artwork);
+        let before = draft.clone();
+        let (output, overflow) = render(width, |ui| {
+            editor.draw_badge(ui, &mut draft, &[]);
+            editor.draw_corner(ui, &mut draft);
+            editor.draw_lore(ui, &mut draft, std::path::Path::new(""), None);
+        });
+        let labels = text(&output);
+        for label in [
+            "Collections Badge",
+            "Badge Artwork",
+            "Release Watermark",
+            "Custom Lore Tab",
+        ] {
+            assert!(labels.contains(label), "Missing {label}");
+        }
+        assert!(
+            overflow < 1.0,
+            "Personalization overflows at {width}: {overflow}"
+        );
+        assert_eq!(draft, before);
+    }
+}
 
 #[test]
 fn replacement_confirmation_names_removals_without_changing_account_or_recipe() {
@@ -33,7 +74,7 @@ fn replacement_confirmation_names_removals_without_changing_account_or_recipe() 
     assert!(labels.contains("Account Changes"));
     assert!(labels.contains("Remove 1 saved item:"));
     assert!(labels.contains("Back Up, Remove & Install"));
-    assert!(labels.contains("Cancel"));
+    assert!(labels.contains("Back to Build"));
     assert_eq!(std::fs::read(path).unwrap(), original);
     assert_eq!(app.recipe, before);
     assert!(app.install_receiver.is_none());
@@ -66,7 +107,6 @@ fn successful_install_report_is_compact_and_ends_with_close() {
         let labels = text(&output);
         for label in [
             "Packages Installed",
-            "Open Backup Folder",
             "Installation Details",
             "Close",
             "Account is read-only",
@@ -74,6 +114,7 @@ fn successful_install_report_is_compact_and_ends_with_close() {
             assert!(labels.contains(label), "Missing {label}");
         }
         assert!(!labels.contains("Review"));
+        assert!(!labels.contains("Open Backup Folder"));
         assert!(!labels.contains("Back to Build"));
         assert!(!labels.contains("parhelion-backup-v2"));
         assert!(!labels.contains(r"\\?\"));
@@ -105,10 +146,7 @@ fn build_report_counts_and_lists_optional_packages() {
     };
     let (output, _) = render(1200.0, |ui| draw_build_report(ui, &report));
     let labels = text(&output);
-    assert!(labels.contains(&format!(
-        "{} packages staged for installation",
-        report.artifacts.len()
-    )));
+    assert!(labels.contains(&format!("{} Verified Packages", report.artifacts.len())));
     assert!(labels.contains("Package Details"));
     assert!(!labels.contains(&report.artifacts[0].file_name));
     let (output, overflow) = render(620.0, |ui| reports::draw_build_details(ui, &report));
@@ -118,24 +156,6 @@ fn build_report_counts_and_lists_optional_packages() {
         assert!(!labels.contains(&artifact.sha256));
     }
     assert!(overflow < 1.0);
-}
-
-#[test]
-fn custom_perk_release_notice_preserves_recipes_with_experimental_options_on_or_off() {
-    let mut app = PackageAuthoringApp {
-        recipe: WeaponRecipe::every_end(),
-        ..Default::default()
-    };
-    let before = app.recipe.clone();
-    for experimental in [false, true] {
-        app.show_experimental_options = experimental;
-        app.private_perk_socket = Some(0);
-        let (output, _) = render(640.0, |ui| app.draw_custom_perks_window(ui.ctx()));
-        let labels = text(&output);
-        assert!(labels.contains("Custom perk editing is planned for a future release."));
-        assert!(labels.contains("Use Existing Custom Perk"));
-        assert_eq!(app.recipe, before);
-    }
 }
 
 #[test]
@@ -198,6 +218,7 @@ fn icon_rarity_follows_authored_tier_or_gameplay_donor_and_invalidates_cache() {
         assert_eq!(effective_icon_rarity(authored, inherited), expected);
     }
     let legendary = AuthoredIconPreviewKey {
+        corner_icon: None,
         item_hash: 1,
         container_tag: 2,
         rarity: R::Legendary,
@@ -210,15 +231,6 @@ fn icon_rarity_follows_authored_tier_or_gameplay_donor_and_invalidates_cache() {
             ..legendary.clone()
         }
     );
-}
-
-#[test]
-fn constructing_the_editor_does_not_initialize_user_storage() {
-    let app = PackageAuthoringApp::default();
-    assert!(app.recipe_library.is_none());
-    assert!(app.recipe_entries.is_empty());
-    assert!(app.enabled_recipe_paths.is_empty());
-    assert!(!app.recipe_dirty);
 }
 
 #[test]
@@ -236,46 +248,64 @@ fn preferences_pages_are_readable_and_keep_the_footer_visible() {
             };
             app.log
                 .push(LogEntry::info("Test event belongs in the separate log"));
-            let before = app.recipe.clone();
-            for size in [egui::vec2(900.0, 640.0), egui::vec2(1320.0, 900.0)] {
-                let ctx = egui::Context::default();
-                ctx.set_visuals(if dark {
-                    egui::Visuals::dark()
-                } else {
-                    egui::Visuals::light()
-                });
-                let mut output = egui::FullOutput::default();
-                for _ in 0..3 {
-                    output = ctx.run(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                            ..Default::default()
-                        },
-                        |ctx| app.draw_preferences_window(ctx),
-                    );
-                }
-                let labels = text(&output);
-                assert!(labels.contains("Parhelion Preferences"));
-                assert!(labels.contains("Editor & Library") && labels.contains("Builds & Backups"));
-                assert!(
-                    !labels.contains("Test event belongs"),
-                    "log must not be embedded in Preferences"
-                );
-                for label in ["Done", "Activity Log…", "Changes apply immediately."] {
-                    let pos = text_origin(&output, label);
-                    assert!(
-                        pos.x < size.x - 10.0 && pos.y < size.y - 20.0,
-                        "footer {label} at {pos:?}"
-                    );
-                }
-                if page == preferences_view::PreferencesPage::EditorLibrary {
-                    assert_body_label_readable(&output, "Shows detailed behavior");
-                }
-                assert_eq!(app.recipe, before);
-                assert!(!app.preferences_changed);
-                assert!(app.catalog_receiver.is_none());
-            }
+            verify_preferences_sizes(&mut app, page, dark);
         }
+    }
+}
+
+fn verify_preferences_sizes(
+    app: &mut PackageAuthoringApp,
+    page: preferences_view::PreferencesPage,
+    dark: bool,
+) {
+    let before = app.recipe.clone();
+    for size in [egui::vec2(560.0, 760.0), egui::vec2(960.0, 760.0)] {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
+        let mut output = egui::FullOutput::default();
+        for _ in 0..3 {
+            output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ctx| app.draw_preferences_window(ctx),
+            );
+        }
+        let labels = text(&output);
+        assert!(labels.contains("Parhelion Preferences"));
+        assert!(labels.contains("Editor & Library") && labels.contains("Builds & Backups"));
+        assert!(
+            !labels.contains("Test event belongs"),
+            "log must not be embedded in Preferences"
+        );
+        for label in ["Done", "Activity Log…"] {
+            let pos = text_origin(&output, label);
+            assert!(
+                pos.x < size.x - 10.0 && pos.y < size.y - 20.0,
+                "footer {label} at {pos:?}"
+            );
+        }
+        if page == preferences_view::PreferencesPage::EditorLibrary {
+            assert_body_label_readable(&output, "Enable Experimental Features");
+        }
+        assert_eq!(app.recipe, before);
+        assert!(!app.preferences_changed);
+        assert!(app.catalog_receiver.is_none());
+        build_flow::capture(
+            &ctx,
+            output,
+            &format!(
+                "preferences-{page:?}-{}-{}",
+                if dark { "dark" } else { "light" },
+                size.x
+            ),
+            size.x,
+        );
     }
 }
 
@@ -333,9 +363,9 @@ fn build_preferences_stay_locked_during_installation_review() {
     assert!(text(&output).contains("locked during a package operation"));
     let tree = output.platform_output.accesskit_update.unwrap();
     for label in [
-        "Keep last",
-        "Include recipe snapshots in package backups",
-        "Build from a temporary stock package view",
+        "Keep Last",
+        "Include Recipe Snapshots in Package Backups",
+        "Build From a Temporary Stock Package View",
     ] {
         let node = tree
             .nodes
@@ -358,7 +388,7 @@ fn identity_groups_are_compact_aligned_and_read_only() {
         let (output, overflow) = render(width, |ui| app.draw_identity_workspace(ui));
         let labels = text(&output);
         assert!(labels.contains("Game Records") && labels.contains("Text References"));
-        assert!(labels.contains("Build to allocate"));
+        assert!(labels.contains("Assigned During Build"));
         assert_eq!(labels.matches("Copy").count(), 13);
         assert!(overflow < 1.0, "Identity overflow at {width}: {overflow}");
         assert_eq!(app.recipe, before);
@@ -533,7 +563,10 @@ fn base_perk_projection_warning_preserves_authored_rows_and_fits() {
             app.recipe.overrides.base_sandbox_perks = Some((0..count).collect());
             let before = app.recipe.clone();
             let (output, overflow) = render(width, |ui| app.draw_base_sandbox_perks(ui, None));
-            assert_eq!(text(&output).contains("Sunrise compatibility"), count > 4);
+            assert_eq!(
+                text(&output).contains("Sunrise copies the first 4 effects"),
+                count > 4
+            );
             assert!(text(&output).contains("16 entries total"));
             assert!(overflow <= 1.0, "{width}px overflow: {overflow}");
             assert_eq!(app.recipe, before, "warnings must not trim or reset perks");
@@ -578,7 +611,15 @@ fn build_pages_replace_each_other_and_selection_precedes_build() {
             labels.contains("Build Validated"),
             step == BuildDialogStep::Build
         );
-        assert_eq!(labels.contains("Review"), step != BuildDialogStep::Install);
+        assert!(
+            labels.contains("1. Build")
+                && labels.contains("2. Review")
+                && labels.contains("3. Install")
+        );
+        assert_eq!(
+            labels.contains("Review Installation"),
+            step != BuildDialogStep::Install
+        );
         assert_eq!(
             labels.contains("This replaces your installed custom weapon set."),
             step == BuildDialogStep::ReviewInstall
@@ -623,7 +664,7 @@ fn library_rows_show_authored_metadata_and_search_it_without_changing_selection(
             .abs()
             < 1.0
     );
-    assert!(labels.contains("1 recipe ·"));
+    assert!(labels.lines().any(|line| line == "1 recipe"));
     assert_eq!(app.recipe, before);
     assert!(app.enabled_recipe_paths.is_empty());
 }
@@ -746,12 +787,12 @@ fn filtered_build_selection_changes_only_the_draft_and_cancel_discards_it() {
             let _ = ctx.run(click, |ctx| app.draw_library_windows(ctx));
         }
     };
-    click_label(&mut app, "Select Shown");
+    click_label(&mut app, "Select All");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([shown.clone(), hidden.clone()])
     );
-    click_label(&mut app, "Clear Shown");
+    click_label(&mut app, "Clear All");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([hidden.clone()])
@@ -878,8 +919,7 @@ fn core_fields_and_build_selection_expose_accessible_names() {
     assert!(!checkboxes.is_empty());
     assert!(checkboxes.iter().all(|(_, node)| {
         node.label().is_some_and(|label| {
-            label.starts_with("Include default Parhelion weapons")
-                || (label.starts_with("Include ") && label.contains("in this build"))
+            label.starts_with("Include default Parhelion weapons") || label.starts_with("Select ")
         })
     }));
 }
@@ -934,7 +974,7 @@ fn build_selection_is_keyboard_operable_without_duplicate_row_tab_stops() {
     let mut reached = false;
     for _ in 0..8 {
         let output = frame(&mut app, Some(egui::Key::Tab));
-        if focused_label(&output).starts_with(&format!("Include {name} in this build")) {
+        if focused_label(&output).starts_with(&format!("Select {name} ·")) {
             reached = true;
             break;
         }
@@ -964,7 +1004,13 @@ fn workbench_tabs_keep_recipe_and_build_selection_unchanged() {
     assert_eq!(app.workbench_page, WorkbenchPage::Weapon);
     assert_eq!(
         WorkbenchPage::ALL.map(WorkbenchPage::label),
-        ["Weapon", "Appearance", "Advanced Gameplay", "Identity"]
+        [
+            "Weapon",
+            "Appearance",
+            "Collections",
+            "Advanced Gameplay",
+            "Identity"
+        ]
     );
     for page in WorkbenchPage::ALL {
         app.workbench_page = page;
@@ -975,6 +1021,45 @@ fn workbench_tabs_keep_recipe_and_build_selection_unchanged() {
         assert!(overflow < 1.0, "{page:?} overflow: {overflow}");
         assert_eq!(app.recipe, before);
         assert_eq!(app.enabled_recipe_paths, selected);
+    }
+}
+
+#[test]
+fn collection_capacity_separates_excluded_draft_from_selected_build() {
+    let mut app = PackageAuthoringApp::default();
+    app.recipe_entries.clear();
+    app.enabled_recipe_paths.clear();
+    app.recipe_path = Some(PathBuf::from("draft.parhelion.json"));
+    app.recipe.overrides.rarity = Some(RecipeRarity::Legendary);
+    app.recipe.overrides.collection_destination = Some(crate::collection::Destination {
+        ammo: crate::collection::Ammo::Special,
+        family: crate::collection::Family::Sidearms,
+    });
+    app.recipe.overrides.badge = Some(crate::presentation::Badge {
+        name: "Travelers".into(),
+        ..Default::default()
+    });
+    let before = app.recipe.clone();
+    for included in [false, true] {
+        if included {
+            app.enabled_recipe_paths
+                .insert(app.recipe_path.clone().unwrap());
+        }
+        for width in [320.0, 900.0] {
+            let (output, overflow) = render(width, |ui| app.draw_collection_capacity(ui));
+            let labels = text(&output);
+            assert!(labels.contains(if included {
+                "5 / 96 Custom Nodes Used"
+            } else {
+                "0 / 96 Custom Nodes Used"
+            }));
+            assert_eq!(labels.contains("This recipe adds 5 nodes."), !included);
+            assert!(
+                overflow < 1.0,
+                "Collections overflow at {width}: {overflow}"
+            );
+            assert_eq!(app.recipe, before);
+        }
     }
 }
 
@@ -1532,7 +1617,7 @@ fn runtime_bytes_and_reset_fit_a_narrow_editor() {
             draw_runtime_value_override_field(ui, &field, &mut saved, &mut drafts)
         });
         assert!(overflow < 1.0, "width={width}, overflow={overflow}");
-        assert!(text(&output).contains("Reset to donor"));
+        assert!(text(&output).contains("Reset to Donor"));
         assert_eq!(saved.len(), 1);
     }
 }
@@ -1598,6 +1683,9 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     assert!(app.recipe_path.is_none());
     let first_copy = app.recipe.clone();
     app.recipe_entries.push(RecipeLibraryEntry {
+        collection_destination: None,
+        badge: None,
+        corner_icon: None,
         path: PathBuf::from("existing-copy.parhelion.json"),
         name: first_copy.name.clone(),
         namespace: first_copy.namespace.clone(),
@@ -1955,14 +2043,14 @@ fn assert_private_window_survives_tab_changes(app: &mut PackageAuthoringApp) {
     app.private_perk_socket = Some(0);
     for page in WorkbenchPage::ALL {
         app.workbench_page = page;
-        let (output, _) = render(1320.0, |ui| app.draw_custom_perks_window(ui.ctx()));
+        let (output, _) = render(1320.0, |ui| app.draw_perk_workbench(ui.ctx()));
         assert!(
-            text(&output).contains("Custom Perks"),
+            text(&output).contains("Custom Perk Workbench"),
             "window missing on {page:?}"
         );
-        assert!(text(&output).contains("Custom perk editing is planned for a future release."));
-        assert!(text(&output).contains("Use Existing Custom Perk"));
-        assert_eq!(app.private_perk_socket, Some(0));
+        assert!(text(&output).contains("Apply to Weapon"));
+        assert!(text(&output).contains("This Weapon"));
+        assert!(app.perk_workbench.open);
         assert_eq!(
             app.recipe, before,
             "opening a private window must be read-only"

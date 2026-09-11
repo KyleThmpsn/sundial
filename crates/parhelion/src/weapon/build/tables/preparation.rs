@@ -54,15 +54,14 @@ impl WeaponTables {
         &mut self,
         context: &WeaponBuildContext<'_>,
         resolved: &[resolve::ResolvedWeapon],
+        progress: &mut Progress<'_>,
     ) -> AuthoringResult<()> {
         for (ordinal, donor) in resolved.iter().enumerate() {
+            let operation = format!("Authoring {}", donor.weapon.text.name);
+            progress.start(&operation);
             self.author_weapon(context, ordinal, donor)
-                .map_err(|error| {
-                    error.context(format!(
-                        "Weapon {:?} ({})",
-                        donor.weapon.text.name, donor.weapon.namespace
-                    ))
-                })?;
+                .map_err(|error| error.context(donor.weapon.error_context()))?;
+            progress.finish(&operation);
         }
         Ok(())
     }

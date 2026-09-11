@@ -29,7 +29,7 @@ pub(super) fn clear_item_string_watermark_overrides(data: &mut [u8]) -> Authorin
     Ok(())
 }
 
-pub(super) fn weapon_inventory_slot(data: &[u8]) -> AuthoringResult<WeaponInventorySlot> {
+pub(crate) fn weapon_inventory_slot(data: &[u8]) -> AuthoringResult<WeaponInventorySlot> {
     let root_value = *data
         .get(ITEM_INVENTORY_SLOT_OFFSET)
         .ok_or_else(|| invalid("Weapon inventory-slot root byte is unavailable"))?;
@@ -41,7 +41,7 @@ pub(super) fn weapon_inventory_slot(data: &[u8]) -> AuthoringResult<WeaponInvent
     Ok(root_slot)
 }
 
-pub(super) fn weapon_equipment_slot(data: &[u8]) -> AuthoringResult<WeaponInventorySlot> {
+pub(crate) fn weapon_equipment_slot(data: &[u8]) -> AuthoringResult<WeaponInventorySlot> {
     let block = relative_target(data, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET)?;
     if block < 4 || read_u32(data, block - 4)? != ITEM_EQUIPMENT_BLOCK_CLASS {
         return Err(invalid("Weapon has no recognized equipment-slot block"));
@@ -134,11 +134,13 @@ pub(super) fn item_string_client_classification(
     let second_type_key = u32::from_le_bytes(
         tuple[8..12]
             .try_into()
-            .map_err(|_| invalid("Item-string duplicate type key has the wrong size"))?,
+            .map_err(|_| invalid("Item-string second type key has the wrong size"))?,
     );
-    if first_type_key == 0 || first_type_key != second_type_key {
+    // These are independent stock keys, not duplicates. Traveler's Chosen uses
+    // 0x0D51B658 / 0x3EB02F1A. Preserve both when moving its appearance or slot.
+    if first_type_key == 0 || second_type_key == 0 {
         return Err(invalid(format!(
-            "Item-string client type keys are not the same nonzero value (0x{first_type_key:08X}, 0x{second_type_key:08X})"
+            "Item-string client type keys must both be nonzero (0x{first_type_key:08X}, 0x{second_type_key:08X})"
         )));
     }
     Ok(tuple)
@@ -399,6 +401,27 @@ pub(super) fn weapon_presentation_tuple(
     })
 }
 
+pub(super) fn validate_weapon_translation_markers(data: &[u8]) -> AuthoringResult<()> {
+    let root = relative_target(data, ITEM_TRANSLATION_BLOCK_POINTER_OFFSET)?;
+    for offset in
+        std::iter::once(TRANSLATION_ART_DESCRIPTOR_OFFSET).chain(TRANSLATION_DYE_DESCRIPTOR_OFFSETS)
+    {
+        let descriptor = root + offset;
+        if read_u64(data, descriptor)? == 0 {
+            continue;
+        }
+        let (_, header, _, _) = array_at(data, descriptor)?;
+        // Sunrise's serialized array reader requires a tag-class marker before
+        // the header, even though the client's pointer-based reader does not.
+        if header < 4 || read_u32(data, header - 4)? >> 16 != 0x8080 {
+            return Err(validation(format!(
+                "Authored weapon translation array at 0x{descriptor:X} is missing its native header marker"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn transplant_weapon_geometry(
     target: &mut Vec<u8>,
     source: &[u8],
@@ -459,7 +482,7 @@ pub(super) fn replace_translation_array(
     rows: &[u8],
     row_size: usize,
 ) -> AuthoringResult<()> {
-    if rows.len() % row_size != 0 {
+    if row_size == 0 || rows.len() % row_size != 0 {
         return Err(invalid("Translation array rows are not stride-aligned"));
     }
     let count = rows.len() / row_size;
@@ -470,6 +493,11 @@ pub(super) fn replace_translation_array(
     while data.len() % 16 != 0 {
         data.push(0);
     }
+    // Serialized readers require the native marker immediately before an array
+    // header. The client can follow an unmarked array, but Sunrise omits it from
+    // the equipped character's model and material selections.
+    data.extend_from_slice(&[0; 8]);
+    data.extend_from_slice(&NESTED_ARRAY_TRAILER);
     let header = data.len();
     data.extend_from_slice(&[0; 16]);
     write_u32(data, header + 8, row_class)?;
@@ -545,36 +573,34 @@ pub(super) fn set_weapon_render_dye_rows(
     arrays: &[Vec<WeaponDyeReferenceOverride>; 3],
 ) -> AuthoringResult<()> {
     let root = weapon_translation_topology(data)?.root;
+    let mut encoded_arrays: [Vec<u8>; 3] = Default::default();
     for (array, rows) in arrays.iter().enumerate() {
         if rows.len() > 32 {
             return Err(invalid(format!(
                 "Translation dye array {array} cannot contain more than 32 rows"
             )));
         }
-        let mut encoded = Vec::with_capacity(rows.len() * TRANSLATION_DYE_ROW_SIZE);
+        let encoded = &mut encoded_arrays[array];
+        encoded.reserve(rows.len() * TRANSLATION_DYE_ROW_SIZE);
         for row in rows {
             encoded.push(row.channel_index as u8);
             encoded.push(0);
             encoded.extend_from_slice(&row.dye_reference_index.to_le_bytes());
         }
+    }
+    for (array, encoded) in encoded_arrays.iter().enumerate() {
         replace_translation_array(
             data,
             root + TRANSLATION_DYE_DESCRIPTOR_OFFSETS[array],
             TRANSLATION_DYE_ROW_CLASS,
-            &encoded,
+            encoded,
             TRANSLATION_DYE_ROW_SIZE,
         )?;
     }
     let topology = weapon_translation_topology(data)?;
     let tuple = weapon_presentation_tuple(data, &topology)?;
-    for (array, expected) in arrays.iter().enumerate() {
-        let mut encoded = Vec::with_capacity(expected.len() * TRANSLATION_DYE_ROW_SIZE);
-        for row in expected {
-            encoded.push(row.channel_index as u8);
-            encoded.push(0);
-            encoded.extend_from_slice(&row.dye_reference_index.to_le_bytes());
-        }
-        if tuple.dye_arrays[array] != encoded {
+    for (array, encoded) in encoded_arrays.iter().enumerate() {
+        if tuple.dye_arrays[array] != *encoded {
             return Err(validation(format!(
                 "Authored render-dye array {array} did not retain every requested row"
             )));
@@ -1129,6 +1155,12 @@ pub(super) fn weapon_damage_socket_lanes(data: &[u8]) -> AuthoringResult<Vec<(us
     let (count, _, rows, class) = array_at(data, resource)?;
     if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count > 64 {
         return Err(invalid("Weapon ordinary-socket rows are incompatible"));
+    }
+    let end = rows
+        .checked_add(count * ITEM_ORDINARY_SOCKET_ROW_SIZE)
+        .ok_or_else(|| invalid("Weapon ordinary-socket row extent overflowed"))?;
+    if end > data.len() {
+        return Err(invalid("Weapon ordinary-socket rows are truncated"));
     }
     Ok((0..count)
         .filter_map(|lane| {

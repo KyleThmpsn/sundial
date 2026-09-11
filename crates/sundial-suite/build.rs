@@ -6,10 +6,7 @@ fn main() {
         resource
             .set_icon("../../assets/sundial-alt.ico")
             .set("ProductName", "Sundial")
-            .set(
-                "FileDescription",
-                "Project Sunrise character, loadout, and package editor",
-            )
+            .set("FileDescription", "Sundial")
             .set("OriginalFilename", "Sundial.exe")
             .set("LegalCopyright", "Copyright © 2026 Kyle Thompson")
             .compile()

@@ -17,6 +17,9 @@ use crate::{
 use tiger_pkg::{PackageManager, TagHash};
 
 pub mod activation;
+pub mod dependencies;
+pub mod program;
+pub mod projectile;
 
 /// Package class for the finished sandbox-perk catalog.
 pub const FINISHED_SANDBOX_PERK_CATALOG_CLASS: u32 = 0x8080_5C97;
@@ -48,7 +51,7 @@ const FINISHED_SANDBOX_PERK_NAME_REFERENCE_OFFSET: usize = 0;
 #[must_use]
 pub fn sunrise_perk_projection_warning(perk_count: usize) -> Option<&'static str> {
     (perk_count > 4).then_some(
-        "Sunrise compatibility: the reviewed runtime copies only the first 4 sandbox-perk entries per item or plug into replicated appearance data. Later entries are omitted from that path. This is not a package-format limit; your entries are preserved.",
+        "Sunrise copies the first 4 effects per item or perk into replicated appearance data. Later effects remain in the package but are omitted from that data.",
     )
 }
 

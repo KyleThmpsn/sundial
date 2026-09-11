@@ -15,6 +15,18 @@ pub(super) fn section_heading(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.label(text)
 }
 
+pub(super) fn field_label(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.label(crate::ui_help::emphasized_text(ui, text))
+        },
+    )
+    .inner
+}
+
 pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
     egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
 }

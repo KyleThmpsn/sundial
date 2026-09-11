@@ -190,6 +190,29 @@ impl Catalog {
             .find(|definition| definition.hash == hash)
     }
 
+    /// Energy spent when socketing a mod, separate from its artifact unlock cost.
+    pub(crate) fn mod_energy_cost(&self, hash: u64) -> Option<(i32, &'static str)> {
+        let metadata = self.item_package_metadata.get(&hash)?;
+        let cost = metadata.investment_stats.iter().find_map(|stat| {
+            let label = match self.item_stat_definition(stat.definition_index)?.hash {
+                3_779_394_102 => "Arc Energy Cost",
+                3_344_745_325 => "Solar Energy Cost",
+                2_399_985_800 => "Void Energy Cost",
+                3_578_062_600 => "Energy Cost",
+                _ => return None,
+            };
+            Some((stat.value, label))
+        });
+        cost.or_else(|| {
+            // The artifact's weapon mods have no energy-cost stat and cost zero.
+            self.seasonal()?
+                .mods
+                .iter()
+                .any(|entry| entry.item_hash == hash)
+                .then_some((0, "Energy Cost"))
+        })
+    }
+
     pub(crate) fn item_scaled_stat(
         &self,
         item_hash: u64,

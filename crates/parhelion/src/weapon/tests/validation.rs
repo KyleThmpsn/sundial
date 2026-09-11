@@ -124,56 +124,10 @@ fn namespace_identity_is_stable_distinct_and_uses_fnv_localization_keys() {
 }
 
 #[test]
-fn generic_clone_defaults_to_exact_donor_inheritance() {
-    let namespace = "parhelion.generic-donor";
-    let spec = WeaponCloneSpec {
-        namespace: namespace.to_owned(),
-        donor_item_hash: 0x6212_9AF7,
-        expected_donor_name: Some("Tranquility".to_owned()),
-        presentation_donor: None,
-        icon_donor: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        identity: WeaponCloneIdentity::from_namespace(namespace)
-            .expect("namespace should allocate"),
-        text: WeaponCloneText {
-            name: "Quiet Reflection".to_owned(),
-            flavor: "An exact donor clone.".to_owned(),
-            source: "Source: unit test".to_owned(),
-            ..WeaponCloneText::default()
-        },
-        overrides: WeaponCloneOverrides::default(),
-    };
-
-    spec.validate().expect("generic recipe should validate");
-    assert!(spec.overrides.investment_stats.is_empty());
-    assert!(spec.overrides.modern_damage_type.is_none());
-    assert!(spec.overrides.power_cap_group.is_none());
-    assert!(spec.overrides.socket_columns.is_empty());
-}
-
-#[test]
-fn catalog_compatibility_validation_is_lazy_for_exact_donor_inheritance() {
-    let namespace = "parhelion.catalog-free-inheritance";
-    let spec = WeaponCloneSpec {
-        namespace: namespace.to_owned(),
-        donor_item_hash: 0x6212_9AF7,
-        expected_donor_name: None,
-        presentation_donor: None,
-        icon_donor: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        identity: WeaponCloneIdentity::from_namespace(namespace)
-            .expect("namespace should allocate"),
-        text: WeaponCloneText {
-            name: "Catalog-free inheritance".to_owned(),
-            flavor: "Exact donor bytes need no compatibility lookup.".to_owned(),
-            source: "Source: unit test".to_owned(),
-            ..WeaponCloneText::default()
-        },
-        overrides: WeaponCloneOverrides::default(),
-    };
-
+fn exact_donor_inheritance_validates_without_loading_a_catalog() {
+    let spec = project_weapon("parhelion.generic-donor", 0x6212_9AF7);
+    spec.validate().unwrap();
+    assert_eq!(spec.overrides, WeaponCloneOverrides::default());
     validate_weapon_clone_specs_against_catalog(
         Path::new("this-install-deliberately-does-not-exist"),
         [&spec],
@@ -183,28 +137,8 @@ fn catalog_compatibility_validation_is_lazy_for_exact_donor_inheritance() {
 
 #[test]
 fn generic_clone_rejects_ambiguous_overrides_and_donor_collision() {
-    let namespace = "parhelion.invalid-generic";
-    let mut spec = WeaponCloneSpec {
-        namespace: namespace.to_owned(),
-        donor_item_hash: 0x6212_9AF7,
-        expected_donor_name: None,
-        presentation_donor: None,
-        icon_donor: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        identity: WeaponCloneIdentity::from_namespace(namespace)
-            .expect("namespace should allocate"),
-        text: WeaponCloneText {
-            name: "Invalid".to_owned(),
-            flavor: "Invalid".to_owned(),
-            source: "Invalid".to_owned(),
-            ..WeaponCloneText::default()
-        },
-        overrides: WeaponCloneOverrides {
-            investment_stats: vec![(15, 50), (15, 60)],
-            ..WeaponCloneOverrides::default()
-        },
-    };
+    let mut spec = project_weapon("parhelion.invalid-generic", 0x6212_9AF7);
+    spec.overrides.investment_stats = vec![(15, 50), (15, 60)];
     assert!(spec.validate().is_err());
 
     spec.overrides.investment_stats.clear();

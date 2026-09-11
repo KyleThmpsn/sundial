@@ -11,6 +11,7 @@ use sundial::package_authoring::weapon_runtime::{
     WeaponRuntimeFieldLocator, WeaponRuntimePathElement, WeaponRuntimeRootKind, WeaponRuntimeValue,
 };
 
+mod personalization;
 mod presentation;
 
 mod validation;

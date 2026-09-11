@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main, upstream]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,22 +47,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Lint Sundial and Parhelion with all features and targets
-        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Lint Sundial and Parhelion Across All Targets
+        run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
 
-      - name: Lint JSON account build
-        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
-
-      - name: Test Sundial and Parhelion with all features
-        run: cargo test --release --workspace --all-features --locked
-
-      - name: Test JSON account build
-        run: cargo test --release --workspace --no-default-features --locked
+      - name: Test Sundial and Parhelion
+        run: cargo test --release --workspace --locked
 
       - name: Check documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
+        run: cargo doc --release --workspace --no-deps --locked --lib
 
       # Narrow Linux accessibility XML exceptions. Any other RustSec vulnerability
       # still fails this check.
@@ -82,7 +77,7 @@ jobs:
           rustup default 1.88.0
 
       - name: Lint Sundial and Parhelion Windows targets
-        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
 
       - name: Test Sundial and Parhelion on Windows
-        run: cargo test --release --workspace --all-features --locked
+        run: cargo test --release --workspace --locked

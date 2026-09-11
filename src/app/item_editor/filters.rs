@@ -61,7 +61,7 @@ impl ItemFilter {
         if self
             .weapon_type
             .as_deref()
-            .is_some_and(|selected| item.type_name.trim() != selected)
+            .is_some_and(|selected| !item.type_name.trim().eq_ignore_ascii_case(selected.trim()))
         {
             return false;
         }
@@ -307,6 +307,17 @@ mod tests {
                 assert!(!ids.is_empty(), "{label} needs an accessible label");
             }
         }
+    }
+
+    #[test]
+    fn weapon_type_matching_ignores_case_and_surrounding_whitespace() {
+        let catalog = Catalog::for_test(Vec::new(), Default::default());
+        let filter = ItemFilter {
+            weapon_type: Some("Auto Rifle".into()),
+            ..Default::default()
+        };
+        assert!(filter.matches(&catalog, &weapon(1, "Rifle", " auto RIFLE ", 1_498_876_634)));
+        assert!(!filter.matches(&catalog, &weapon(2, "Sidearm", "Sidearm", 1_498_876_634)));
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub(super) fn hidden_count(document: &Value, table: InvestmentTable) -> usize {
 
 struct Row {
     bank: &'static str,
+    family: bool,
     slot: usize,
     lane: i64,
     value: i64,
@@ -86,6 +87,7 @@ fn row(catalog: &Catalog, family: bool, bank: usize, slot: usize, lane: i64, val
         })
         .unwrap_or_else(|| "No Package Name".into());
     Row {
+        family,
         bank: if family {
             if bank == 0 {
                 "Flag Overrides"
@@ -124,45 +126,60 @@ fn rows(document: &Value, catalog: &Catalog, view: View) -> Vec<Row> {
         .collect()
 }
 
-pub(super) fn draw(
-    ui: &mut egui::Ui,
-    document: &Value,
-    catalog: &Catalog,
-    view: View,
-    query: &mut String,
-) {
+pub(super) fn draw(ui: &mut egui::Ui, document: &Value, catalog: &Catalog, query: &str) {
     let Some(native) = document.get("_native_progression") else {
         return;
     };
-    egui::CollapsingHeader::new("Native SQLite State").id_salt("native_progression").show(ui, |ui| {
-        let character = native["character_slot"].as_i64().unwrap_or(0) + 1;
-        ui.label(format!("Shared account state and Character {character}. Values reflect the current workspace, including unsaved edits."));
-        ui.label("All stored rows are visible here, including zero values and preserved raw bytes. Missing native rows read as zero. Only flag value 2 is set. Claimable rewards also depend on their objective conditions.");
-        ui.add(egui::TextEdit::singleline(query).hint_text("Search Bank, Slot, Value, Name, Or Hash").desired_width(ui.available_width()));
-        let all = rows(document, catalog, view);
-        let search = query.trim().to_lowercase();
-        let filtered = all.iter().filter(|row| search.is_empty() || format!("{} {} {} {} {} {} {}", row.bank, row.slot, row.lane, row.value, row.meaning, row.name, row.hash.map_or_else(String::new, |hash| format!("{hash} {hash:08x}"))).to_lowercase().contains(&search)).collect::<Vec<_>>();
-        ui.label(format!("{} / {} Stored Rows", filtered.len(), all.len()));
-        ui.spacing_mut().item_spacing.y = TABLE_ROW_GAP;
-        egui::ScrollArea::both().id_salt("native_progression_rows").max_height(240.0).auto_shrink([false, false]).show_rows(ui, TABLE_CELL_HEIGHT, filtered.len(), |ui, range| {
-            egui::Grid::new("native_progression_grid").striped(true).show(ui, |ui| {
-                for index in range {
-                    let row = filtered[index];
-                    ui.label(row.bank);
-                    ui.monospace(if matches!(view, View::Investment) {
-                        format!("Definition #{}", row.slot)
-                    } else {
-                        format!("Slot {} · Lane {}", row.slot, row.lane)
-                    });
-                    ui.monospace(row.value.to_string());
-                    ui.label(row.meaning);
-                    draw_hash_hex_cell(ui, 110.0, row.hash);
-                    ui.label(&row.name);
-                    ui.end_row();
-                }
-            });
+    let character = native["character_slot"].as_i64().unwrap_or(0) + 1;
+    ui.label(format!("Shared account state and Character {character}. Values reflect the current workspace, including unsaved edits."));
+    let mut all = rows(document, catalog, View::Unlocks);
+    all.extend(rows(document, catalog, View::Investment));
+    let search = query.trim().to_lowercase();
+    let filtered = all
+        .iter()
+        .filter(|row| {
+            search.is_empty()
+                || format!(
+                    "{} {} {} {} {} {} {}",
+                    row.bank,
+                    row.slot,
+                    row.lane,
+                    row.value,
+                    row.meaning,
+                    row.name,
+                    row.hash
+                        .map_or_else(String::new, |hash| format!("{hash} {hash:08x}"))
+                )
+                .to_lowercase()
+                .contains(&search)
+        })
+        .collect::<Vec<_>>();
+    ui.label(format!("{} / {} Stored Rows", filtered.len(), all.len()));
+    ui.spacing_mut().item_spacing.y = TABLE_ROW_GAP;
+    egui::ScrollArea::both()
+        .id_salt("native_progression_rows")
+        .max_height(ui.available_height().max(TABLE_ROW_STRIDE * 3.0))
+        .auto_shrink([false, false])
+        .show_rows(ui, TABLE_CELL_HEIGHT, filtered.len(), |ui, range| {
+            egui::Grid::new("native_progression_grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    for index in range {
+                        let row = filtered[index];
+                        ui.label(row.bank);
+                        ui.monospace(if row.family {
+                            format!("Definition #{}", row.slot)
+                        } else {
+                            format!("Slot {} · Lane {}", row.slot, row.lane)
+                        });
+                        ui.monospace(row.value.to_string());
+                        ui.label(row.meaning);
+                        draw_hash_hex_cell(ui, 110.0, row.hash);
+                        ui.label(&row.name);
+                        ui.end_row();
+                    }
+                });
         });
-    });
 }
 
 #[cfg(test)]
@@ -260,16 +277,23 @@ mod tests {
                     egui::Visuals::light()
                 });
                 let mut state = UiState::default();
-                for view in [View::Unlocks, View::Investment] {
-                    let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,size)), ..Default::default() }, |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            for id in ["native_progression", "all_unlock_definitions"] {
-                                egui::collapsing_header::CollapsingState::load_with_default_open(ctx, ui.make_persistent_id(id), true).store(ctx);
-                            }
-                            draw(ui, &document, &catalog, view, &mut state.native_query);
-                            super::super::browser::draw(ui, &document, &catalog, &mut state);
-                        });
-                    });
+                for table in [
+                    super::super::state::UnlockTable::FlagDefinitions,
+                    super::super::state::UnlockTable::ValueDefinitions,
+                ] {
+                    state.unlock_table = table;
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                draw(ui, &document, &catalog, &state.query);
+                                super::super::browser::draw(ui, &document, &catalog, &mut state);
+                            });
+                        },
+                    );
                     assert!(!output.shapes.is_empty());
                     assert_eq!(document, before);
                 }

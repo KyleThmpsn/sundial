@@ -20,6 +20,7 @@ pub(in crate::weapon::build) fn author(
     custom_plugs: &[ResolvedCustomPlug],
     templates: &PerkTemplates,
     weapon_runtime_start: usize,
+    progress: &mut Progress<'_>,
 ) -> AuthoringResult<(Payloads, custom_plugs::CustomPlugPayloads)> {
     let weapon_runtime_tag_allocator =
         AppendedTagAllocator::new(HOST_PACKAGE_ID, weapon_runtime_start);
@@ -43,26 +44,32 @@ pub(in crate::weapon::build) fn author(
     let mut sandbox_perk_indices = std::mem::take(&mut sources.stock_sandbox_perk_indices);
     let authored_pattern_global_ids = super::author_entities(
         &sources.manager,
-        &sources.stock_sandbox_patterns,
-        &sources.stock_entity_assignments,
+        EntitySources {
+            sandbox_patterns: &sources.stock_sandbox_patterns,
+            entity_assignments: &sources.stock_entity_assignments,
+        },
         resolved,
         weapon_runtime_tag_allocator,
         &mut entity_assignments,
         &mut weapon_runtime_new_tags,
+        progress,
     )?;
-    let custom_payloads = custom_plugs::author_payloads(
-        &sources.manager,
-        custom_plugs,
-        &templates.definition,
-        &templates.strings,
-        custom_plugs::PerkCatalog {
-            entity_assignments: &mut entity_assignments,
-            finished_sandbox_perks: &mut finished_sandbox_perks,
-            sandbox_perk_indices: &mut sandbox_perk_indices,
-            private_perk_runtime_new_tags: &mut private_perk_runtime_new_tags,
-            private_perk_runtime_tag_allocator,
-        },
-    )?;
+    let custom_payloads = progress.step("Compiling Private Perks", || {
+        custom_plugs::author_payloads(
+            &sources.manager,
+            custom_plugs,
+            resolved,
+            &templates.definition,
+            &templates.strings,
+            custom_plugs::PerkCatalog {
+                entity_assignments: &mut entity_assignments,
+                finished_sandbox_perks: &mut finished_sandbox_perks,
+                sandbox_perk_indices: &mut sandbox_perk_indices,
+                private_perk_runtime_new_tags: &mut private_perk_runtime_new_tags,
+                private_perk_runtime_tag_allocator,
+            },
+        )
+    })?;
     Ok((
         Payloads {
             entity_assignments,

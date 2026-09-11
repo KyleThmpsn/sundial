@@ -272,7 +272,7 @@ impl SundialApp {
         let mut requested_theme = self.preferences.color_theme;
         ui.horizontal(|ui| {
             ui.label("Color Theme:");
-            ui.radio_value(&mut requested_theme, ColorTheme::Dark, "Dark (recommended)");
+            ui.radio_value(&mut requested_theme, ColorTheme::Dark, "Dark (Recommended)");
             ui.radio_value(&mut requested_theme, ColorTheme::Light, "Light");
         });
         if requested_theme != self.preferences.color_theme {
@@ -372,6 +372,11 @@ impl SundialApp {
             }
         }
 
+        if self.preferences.show_safety_warnings {
+            draw_plug_selection_warning(ui, self.preferences.default_plug_selection_mode);
+        }
+        ui.add_space(6.0);
+
         let warning_response = ui.checkbox(
             &mut self.preferences.show_safety_warnings,
             "Show Plug-Selection Safety Warnings",
@@ -384,17 +389,32 @@ impl SundialApp {
         );
         preferences_changed |= hash_response.changed();
 
-        if self.preferences.show_safety_warnings {
-            draw_plug_selection_warning(ui, self.preferences.default_plug_selection_mode);
-        }
-
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Experimental");
-        preferences_changed |= ui.checkbox(
-            &mut self.preferences.experimental_activity_state,
-            "Show Activity State",
-        ).on_hover_text("Shows the raw current activity index on v13+ accounts. Its effect in game is not verified. Saved values are preserved when hidden.").changed();
+        let mut enable_parhelion = self.preferences.experimental_package_authoring;
+        let package_authoring_response = ui.horizontal(|ui| {
+            let response = ui.checkbox(
+                &mut enable_parhelion,
+                "Enable Parhelion Weapon Workbench",
+            );
+            crate::ui_help::info(ui, "Build custom Destiny weapons by combining stats, plugs, private perks, runtime behavior, and appearance sources from the selected Shadowkeep installation.");
+            response
+        }).inner;
+        if package_authoring_response.changed() {
+            preferences_changed |= self.request_parhelion_enabled(enable_parhelion);
+        }
+        if self.preferences.experimental_package_authoring && ui.button("Open Parhelion").clicked()
+        {
+            self.open_package_authoring(ctx);
+        }
         ui.add_space(6.0);
+        if self.document.uses_json_account() && self.document.supports_v13_account() {
+            preferences_changed |= ui.checkbox(
+                &mut self.preferences.experimental_activity_state,
+                "Show Activity State",
+            ).on_hover_text("Shows the raw current activity index on v13+ accounts. Its effect in game is not verified. Saved values are preserved when hidden.").changed();
+            ui.add_space(6.0);
+        }
         preferences_changed |= ui
             .checkbox(
                 &mut self.preferences.experimental_extended_fov,
@@ -441,23 +461,6 @@ impl SundialApp {
             })
             .inner;
         preferences_changed |= progression_response.changed();
-        ui.add_space(6.0);
-        let mut enable_parhelion = self.preferences.experimental_package_authoring;
-        let package_authoring_response = ui.horizontal(|ui| {
-            let response = ui.checkbox(
-                &mut enable_parhelion,
-                "Enable Parhelion Weapon Workbench",
-            );
-            crate::ui_help::info(ui, "Build custom Destiny weapons by combining stats, plugs, private perks, runtime behavior, and appearance sources from the selected Shadowkeep installation.");
-            response
-        }).inner;
-        if package_authoring_response.changed() {
-            preferences_changed |= self.request_parhelion_enabled(enable_parhelion);
-        }
-        if self.preferences.experimental_package_authoring && ui.button("Open Parhelion").clicked()
-        {
-            self.open_package_authoring(ctx);
-        }
 
         preferences_changed
     }
@@ -474,9 +477,9 @@ impl SundialApp {
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
-        ui.label("Shadowkeep Installation");
+        ui.label("Sunrise Destiny 2 Installation");
         preference_path(ui, &self.install_path);
-        if ui.button("Choose installation…").clicked() {
+        if ui.button("Choose Installation…").clicked() {
             self.choose_install(ctx);
         }
         ui.add_space(8.0);
@@ -503,7 +506,7 @@ impl SundialApp {
                 ui.end_row();
                 ui.label("Detected Sunrise Version");
                 ui.monospace(&self.sunrise_version)
-                    .on_hover_text("Shown for reference; this does not control compatibility.");
+                    .on_hover_text("Shown for reference. This does not control compatibility.");
                 ui.end_row();
                 ui.label("Account Format");
                 ui.monospace(account_source.contract);
@@ -518,7 +521,10 @@ impl SundialApp {
             },
             &account_source.detail,
         );
-        #[cfg(feature = "sqlite-account")]
+        if account_source.kind != AccountSourceKind::Json {
+            ui.label("Account Database");
+            preference_path(ui, &account_source.database_path);
+        }
         ui.label(
             egui::RichText::new(
                 "Sundial saves account edits only to the active source. It never mirrors account data between investment.sqlite3 and settings.json.",
@@ -544,7 +550,7 @@ impl SundialApp {
             catalog_stats.icons,
             catalog_stats.descriptions,
         ));
-        if ui.button("Rebuild catalog from game files").clicked() {
+        if ui.button("Rebuild Catalog from Game Files").clicked() {
             self.rebuild_catalog(ctx);
         }
         ui.add_space(6.0);
@@ -569,7 +575,7 @@ impl SundialApp {
         }
         ui.label(
             egui::RichText::new(
-                "Adds an environment snapshot at startup and records later Sundial status messages. Keeps recent sessions in 5 MB files with two older files. Copy Report includes the current environment and recent Sundial activity. Review paths and messages before sharing.",
+                "Saves startup details and Sundial activity. Copy Report includes current diagnostics and recent activity, including Parhelion when available.",
             )
             .color(super::ui::secondary_text_color(ui)),
         );
@@ -653,7 +659,7 @@ impl SundialApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let retention_response =
-                ui.checkbox(&mut self.preferences.limit_automatic_backups, "Keep last");
+                ui.checkbox(&mut self.preferences.limit_automatic_backups, "Keep Last");
             preferences_changed |= retention_response.changed();
             let limit_response = ui.add_enabled(
                 self.preferences.limit_automatic_backups,
@@ -667,25 +673,23 @@ impl SundialApp {
 
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Recovery");
-        #[cfg(feature = "sqlite-account")]
         let account_source = self.document.source_info();
         ui.label("Sunrise Settings");
         preference_path(ui, &self.settings_path);
         if ui
             .button("Reset to Sunrise Defaults…")
-            .on_hover_text("Restore the settings bundled with this installed Sunrise version; the current settings.json is backed up first")
+            .on_hover_text("Restore the settings bundled with this installed Sunrise version. The current settings.json is backed up first")
             .clicked()
         {
             self.confirmation = Some(ConfirmationDialog::ResetDefaults);
         }
-        #[cfg(feature = "sqlite-account")]
         {
             ui.add_space(8.0);
-            ui.label("Sunrise account database");
+            ui.label("Sunrise Account Database");
             preference_path(ui, &account_source.database_path);
             if matches!(account_source.kind, AccountSourceKind::Sqlite | AccountSourceKind::Blocked)
-                && ui.button("Restore backup…")
-                    .on_hover_text("Restore a verified Sundial account backup; the current database is preserved first")
+                && ui.button("Restore Backup…")
+                    .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
                     .clicked()
             {
                 self.request_sqlite_backup_restore();

@@ -78,6 +78,16 @@ fn collect<C: AccountCatalog>(document: &WorkspaceDocument, catalog: &C) -> Buck
     }
     for index in 0..account::character_count(document) {
         let owner = Owner::Character(index);
+        if let Some(native) = document.native_account() {
+            for stack in native.character_stacks(index) {
+                count(
+                    &mut buckets,
+                    catalog,
+                    owner,
+                    u64::from(stack.definition_hash),
+                );
+            }
+        }
         if let Ok(Some(items)) = account::character_inventory(document, index) {
             for item in items {
                 count(

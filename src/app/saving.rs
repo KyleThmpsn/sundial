@@ -97,24 +97,17 @@ impl SundialApp {
             }
         };
         let json_result = source_receipt.json;
-        #[cfg(feature = "sqlite-account")]
         let sqlite_receipt = source_receipt.sqlite;
-        #[cfg(feature = "sqlite-account")]
         let sqlite_checkpoint_warning = sqlite_receipt
             .as_ref()
             .and_then(|receipt| receipt.checkpoint_warning.as_deref());
-        #[cfg(feature = "sqlite-account")]
         let sqlite_checkpoint_failed = sqlite_checkpoint_warning.is_some();
-        #[cfg(feature = "sqlite-account")]
         let sqlite_checkpoint_note = sqlite_checkpoint_warning
             .map_or_else(String::new, |warning| {
                 format!(" SQLite checkpoint warning: {warning}.")
             });
-        #[cfg(not(feature = "sqlite-account"))]
-        let (sqlite_checkpoint_failed, sqlite_checkpoint_note) = (false, String::new());
-        let automatic_backup_created = json_result.is_some();
-        #[cfg(feature = "sqlite-account")]
-        let automatic_backup_created = automatic_backup_created || sqlite_receipt.is_some();
+
+        let automatic_backup_created = json_result.is_some() || sqlite_receipt.is_some();
         let (retention_note, retention_failed) = if automatic_backup_created {
             self.apply_backup_retention()
         } else {
@@ -154,7 +147,6 @@ impl SundialApp {
                     .to_string_lossy()
             ));
         }
-        #[cfg(feature = "sqlite-account")]
         if let Some(receipt) = &sqlite_receipt {
             backups.push(format!(
                 "investment.sqlite3 backup: {}",
@@ -209,6 +201,7 @@ impl SundialApp {
             super::settings::require_game_closed(platform::destiny_is_running())?;
         }
         if account_changed || json_account_changed {
+            self.validate_title_selections()?;
             validate_new_account_catalog_issues(
                 &self.document,
                 &self.persisted_document,
@@ -314,14 +307,12 @@ impl SundialApp {
                     self.preferences.automatic_backup_limit,
                 ));
                 let json_removed = prune_automatic_backups(&root, &self.settings_path, keep)?;
-                #[cfg(feature = "sqlite-account")]
                 let sqlite_removed = prune_automatic_backups(
                     &root,
                     &self.document.source_info().database_path,
                     keep,
                 )?;
-                #[cfg(not(feature = "sqlite-account"))]
-                let sqlite_removed = 0;
+
                 Ok(json_removed + sqlite_removed)
             });
         match result {

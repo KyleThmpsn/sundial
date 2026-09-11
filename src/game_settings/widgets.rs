@@ -343,12 +343,9 @@ pub(super) fn float_slider(
 }
 
 pub(super) fn fixed(ui: &mut egui::Ui, values: &Map<String, Value>, key: &str, label: &str) {
+    let Some(value) = values.get(key) else { return };
     ui.label(label);
-    if let Some(value) = values.get(key) {
-        ui.add_enabled(false, egui::Label::new(value.to_string()))
-            .on_hover_text("Project Sunrise requires this exact value.");
-    } else {
-        ui.colored_label(ui.visuals().error_fg_color, "Missing");
-    }
+    ui.add_enabled(false, egui::Label::new(value.to_string()))
+        .on_hover_text("Project Sunrise requires this exact value.");
     ui.end_row();
 }

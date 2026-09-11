@@ -6,7 +6,7 @@ fn sunrise_projection_warning_is_advisory_and_starts_after_four_entries() {
     for count in [5, 16, 64, usize::MAX] {
         let warning = super::sunrise_perk_projection_warning(count).unwrap();
         assert!(warning.contains("replicated appearance data"));
-        assert!(warning.contains("not a package-format limit"));
+        assert!(warning.contains("Later effects remain in the package"));
     }
 }
 

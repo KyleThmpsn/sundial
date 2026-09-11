@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod inventory;
+
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use sundial_account::{
     AccountSettingsCapabilities, AccountSettingsState, CharacterAbilities, CharacterCapabilities,
@@ -51,6 +53,7 @@ struct ItemPersistence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SqliteAccountDocument {
+    inventory_state: super::inventory_state::InventoryState,
     progression: super::progression::Progression,
     entitlements: serde_json::Value,
     runtime: serde_json::Value,
@@ -100,6 +103,7 @@ impl SqliteAccountDocument {
     }
 
     pub(super) fn validate_native_edits(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        super::runtime::validate(&self.runtime)?;
         let mut view = serde_json::json!({"state": self.runtime});
         if self.entitlements != super::entitlements::load(db)? {
             view["server"] = serde_json::json!({"entitlements": self.entitlements});
@@ -121,6 +125,20 @@ impl SqliteAccountDocument {
     pub(crate) fn progression_view(&self, index: usize) -> serde_json::Value {
         self.progression.view(index)
     }
+    pub(crate) fn account_flag_is_set(&self, definition_index: u16, slot: u16) -> bool {
+        self.progression.account_flag_is_set(definition_index, slot)
+    }
+    pub(crate) fn set_account_flag(
+        &mut self,
+        definition_index: u16,
+        slot: u16,
+    ) -> Result<bool, SqliteAccountError> {
+        self.progression.set_account_flag(definition_index, slot)
+    }
+    pub(crate) fn account_flags_changed_from(&self, before: &Self) -> bool {
+        self.progression
+            .account_flags_changed_from(&before.progression)
+    }
     pub(crate) fn apply_progression_view(
         &mut self,
         index: usize,
@@ -139,6 +157,7 @@ impl SqliteAccountDocument {
         self.reward_positions.get(&id).copied()
     }
     pub(super) fn refresh_positions(&mut self) {
+        self.inventory_state.refresh_positions();
         self.profile_positions = self
             .profile
             .profile_items()
@@ -452,6 +471,7 @@ fn load_in_transaction(
         load_persistence(connection, &snapshot)?;
     Ok(SqliteAccountDocumentLoad::Loaded(Box::new(
         SqliteAccountDocument {
+            inventory_state: super::inventory_state::InventoryState::load(connection)?,
             progression: super::progression::Progression::load(connection)?,
             entitlements: super::entitlements::load(connection)?,
             runtime: super::runtime::load(connection)?,
@@ -742,6 +762,7 @@ fn load_preserved_rows(
         "profile_items",
         "dismantle_rewards",
         "entitlements",
+        "character_stacks",
     ]
     .into_iter()
     .map(|table| Ok((table.into(), super::writer::rows(db, table)?)))

@@ -28,7 +28,7 @@ pub(in crate::app) fn hash_detail_field(
     let text = egui::RichText::new(&value);
     let text = if absent { text.weak().italics() } else { text };
     let text = if monospace { text.monospace() } else { text };
-    let text = if parsed_hash.is_some() {
+    let text = if parsed_hash.is_some() || label == "Instance ID" {
         text.weak()
     } else {
         text

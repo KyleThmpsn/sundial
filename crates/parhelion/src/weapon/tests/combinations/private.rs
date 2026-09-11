@@ -84,6 +84,12 @@ pub(super) fn verify_private(
             perks.len(),
             stock_perks.len() + variant.additional_sandbox_perks.len()
         );
+        verify_additional_perks(
+            manager,
+            &tables.globals,
+            &perks[stock_perks.len()..],
+            &variant.additional_sandbox_perks,
+        );
         for edit in &variant.sandbox_perks {
             let position = stock_perks
                 .iter()

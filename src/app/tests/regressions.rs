@@ -8,6 +8,7 @@ mod progression_access;
 mod save_validation;
 mod schema_smoke;
 mod shortcuts;
+mod update;
 
 use crate::app::*;
 use crate::test_support::TestDirectory;
@@ -16,6 +17,7 @@ fn app(install_path: PathBuf) -> SundialApp {
     let json = serde_json::json!({"version": 8, "state": {"characters": []}});
     let document = WorkspaceDocument::json_only(json.clone());
     SundialApp {
+        account_details: Default::default(),
         settings_path: install_path.join("settings.json"),
         settings_layout: SettingsLayout::GameRoot,
         persistence_compatibility: PersistenceCompatibility::inspect(&install_path),
@@ -61,7 +63,6 @@ fn app(install_path: PathBuf) -> SundialApp {
         confirmation: None,
         pending_save_action: None,
         pending_equipment_delete: None,
-        #[cfg(feature = "sqlite-account")]
         pending_sqlite_restore: None,
         exit_confirmed: false,
         dirty: false,

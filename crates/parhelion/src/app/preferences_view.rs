@@ -26,16 +26,20 @@ impl PackageAuthoringApp {
         }
         let mut open = true;
         let mut done = false;
+        let available =
+            (ctx.screen_rect().size() - egui::vec2(48.0, 48.0)).max(egui::vec2(320.0, 260.0));
         egui::Window::new("Parhelion Preferences")
             .id(egui::Id::new("parhelion-preferences"))
             .collapsible(false)
             .resizable(true)
-            .min_width(420.0)
-            .default_width(660.0)
-            .default_height(460.0)
+            .min_size(egui::vec2(720.0, 520.0).min(available))
+            .default_size(egui::vec2(960.0, 640.0).min(available))
+            .max_size(available)
             .open(&mut open)
             .show(ctx, |ui| {
                 workbench_style(ui);
+                ui.heading("Preferences");
+                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     for page in PreferencesPage::ALL {
                         ui.selectable_value(&mut self.preferences_page, page, page.label());
@@ -44,17 +48,23 @@ impl PackageAuthoringApp {
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt(("parhelion-preferences-content", self.preferences_page))
-                    .max_height((ui.available_height() - 65.0).max(100.0))
+                    .max_height((ui.available_height() - 42.0).max(100.0))
                     .auto_shrink([false, false])
-                    .show(ui, |ui| self.draw_preferences_page(ui));
+                    .show(ui, |ui| {
+                        ui.add_space(6.0);
+                        self.draw_preferences_page(ui);
+                    });
                 ui.separator();
-                ui.label("Changes apply immediately.");
                 ui.horizontal(|ui| {
                     if ui.button("Activity Log…").clicked() {
                         self.activity_log_open = true;
                     }
+                    if ui.link("Sundial Preferences").clicked() {
+                        self.open_sundial_preferences = true;
+                        done = true;
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        done = ui.button("Done").clicked();
+                        done |= ui.button("Done").clicked();
                     });
                 });
             });
@@ -75,21 +85,18 @@ impl PackageAuthoringApp {
     }
 
     fn draw_editor_library_preferences(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Editor");
+        preference_heading(ui, "Experimental");
         let mut show = self.show_experimental_options;
         if ui
-            .checkbox(&mut show, "Show advanced technical controls (experimental)")
+            .checkbox(&mut show, "Enable Experimental Features")
+            .on_hover_text("Enables advanced effect building, behavior, inventory, socket, material and package controls. Existing weapon and custom perk editing stays available. Saved overrides remain active when this is off.")
             .changed()
         {
             self.set_show_experimental_options(show);
         }
-        ui.label("Shows detailed behavior, inventory, socket, material, and raw package fields. Existing overrides stay active when these controls are hidden.");
-        ui.label(
-            "Build validation checks the package data. Test new gameplay combinations in game.",
-        );
-        ui.separator();
+        ui.add_space(12.0);
         let editable = self.package_preferences_editable();
-        ui.heading("Recipe Library");
+        preference_heading(ui, "Recipe Library");
         if let Some(library) = self.recipe_library.clone() {
             draw_preference_path(ui, library.root());
             ui.horizontal_wrapped(|ui| {
@@ -111,8 +118,8 @@ impl PackageAuthoringApp {
         } else {
             ui.label("Recipe library unavailable. Check the activity log for details.");
         }
-        ui.separator();
-        ui.heading("Weapon Catalog");
+        ui.add_space(12.0);
+        preference_heading(ui, "Weapon Catalog");
         if let Some(progress) = self.catalog_progress {
             ui.label(format!(
                 "{} ({}/{})",
@@ -148,23 +155,23 @@ impl PackageAuthoringApp {
             ui.label("Build and backup options are locked during a package operation or installation review.");
         }
         ui.add_enabled_ui(editable, |ui| {
-            ui.heading("Build Files");
+            preference_heading(ui, "Build Files");
             ui.label("Game packages · selected in Sundial");
             draw_preference_path(ui, &self.packages);
             let mut changed = path_row(ui, "Staging Folder", &mut self.staging, "Each build creates a separate folder here. Staging does not install packages.");
-            changed |= ui.checkbox(&mut self.ignore_installed, "Build from a temporary stock package view").changed();
+            changed |= ui.checkbox(&mut self.ignore_installed, "Build From a Temporary Stock Package View").changed();
             ui.label("Ignores recognized Parhelion overlays while building. Installed packages are not moved or changed.");
-            ui.separator();
-            ui.heading("Package Backups");
+            ui.add_space(12.0);
+            preference_heading(ui, "Package Backups");
             changed |= path_row(ui, "Backup Folder", &mut self.backup_root, "Installation backs up affected authored packages here before replacing them.");
             let mut backups_changed = false;
             ui.horizontal_wrapped(|ui| {
-                backups_changed |= ui.checkbox(&mut self.limit_package_backups, "Keep last").changed();
+                backups_changed |= ui.checkbox(&mut self.limit_package_backups, "Keep Last").changed();
                 backups_changed |= named_control(ui.add_enabled(self.limit_package_backups,
                     egui::DragValue::new(&mut self.package_backup_retention).range(1..=MAX_PACKAGE_BACKUP_RETENTION)), "Package backups to keep").changed();
                 ui.label("automatic package backups");
             });
-            backups_changed |= ui.checkbox(&mut self.backup_recipe_snapshots, "Include recipe snapshots in package backups")
+            backups_changed |= ui.checkbox(&mut self.backup_recipe_snapshots, "Include Recipe Snapshots in Package Backups")
                 .on_hover_text("Copies the normalized recipes recorded by the staged manifest into the matching backup generation.").changed();
             ui.label("The installer only prunes its own automatic package backups. Manually named snapshots are preserved. Settings backups are managed separately in Sundial.");
             if backups_changed {
@@ -174,14 +181,14 @@ impl PackageAuthoringApp {
                 self.invalidate_results();
             }
         });
-        ui.separator();
-        ui.heading("Installed Custom Packages");
+        ui.add_space(12.0);
+        preference_heading(ui, "Installed Custom Packages");
         ui.label("Remove Parhelion's installed package set. The review lets you also remove its items and progression from the selected account. Stock packages, recipes and unrelated account data are kept, with a recovery backup.");
         if ui
             .add_enabled(
                 editable
                     && !self.has_background_work()
-                    && self.perk_editor.is_none()
+                    && !self.perk_workbench.editing()
                     && self.icon_editor.is_none()
                     && !self.build_status_open,
                 egui::Button::new("Uninstall Custom Packages…"),
@@ -212,6 +219,10 @@ impl PackageAuthoringApp {
                 workbench_style(ui);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{} recent events · newest first", self.log.len()));
+                    sundial::investment::draw_authoring_info_icon(
+                        ui,
+                        format!("Latest {ACTIVITY_LOG_CAPACITY} events · timestamps in UTC.\nLog files keep recent sessions: 5 MB each, with two older files."),
+                    );
                     if ui.button("Copy Log").clicked() {
                         ui.ctx().copy_text(self.activity_log_text());
                     }
@@ -219,10 +230,6 @@ impl PackageAuthoringApp {
                         self.log.file.open_folder();
                     }
                 });
-                ui.label(format!(
-                    "Latest {ACTIVITY_LOG_CAPACITY} events · timestamps in UTC."
-                ));
-                ui.label("Log files keep recent sessions: 5 MB each, with two older files.");
                 if let Some(error) = self.log.file.error() {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
@@ -271,4 +278,15 @@ fn draw_preference_path(ui: &mut egui::Ui, path: &Path) {
 
 fn activity_entry_text(entry: &LogEntry) -> String {
     entry.formatted()
+}
+
+fn preference_heading(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let style = egui::TextStyle::Name("Section Heading".into());
+    let text = egui::RichText::new(text).strong();
+    let text = if ui.style().text_styles.contains_key(&style) {
+        text.text_style(style)
+    } else {
+        text
+    };
+    ui.label(text)
 }

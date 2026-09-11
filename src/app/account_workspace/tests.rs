@@ -1,27 +1,21 @@
 //! Account workspace routing and source-selection tests.
 
-#[cfg(feature = "sqlite-account")]
 mod sqlite_inventory;
-#[cfg(feature = "sqlite-account")]
 mod sqlite_smoke;
 
 use crate::app::account_workspace as account;
 
 use std::fs;
 
-#[cfg(feature = "sqlite-account")]
 use rusqlite::Connection;
 use serde_json::json;
-#[cfg(feature = "sqlite-account")]
 use sundial_account::{
     AccountSettingKey, AccountSettingValue, AccountSettingsCommand, CharacterAbilities,
     CharacterMetadataUpdate,
 };
 
-#[cfg(feature = "sqlite-account")]
 use crate::catalog::{AbilityChoice, AbilityOptions, AttunementChoice, ItemDef};
 
-#[cfg(feature = "sqlite-account")]
 use super::super::inventory::{
     InventoryItemAction, InventoryItemLocation, ProfileItemAction, ProfileItemLocation,
 };
@@ -47,15 +41,6 @@ fn json_workspace_exposes_neutral_character_metadata() {
     let metadata = account::character_metadata(&document, 0).unwrap();
     assert_eq!(metadata.class_type, 2);
     assert_eq!(metadata.abilities.super_ability, 20);
-}
-
-#[test]
-fn missing_database_keeps_existing_json_account_behavior() {
-    let directory = TestDirectory::new("workspace-json-source");
-    let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
-
-    assert_eq!(document.source_info().kind, AccountSourceKind::Json);
-    assert_eq!(account::character_count(&document), 2);
 }
 
 #[test]
@@ -108,33 +93,6 @@ fn json_account_change_tracking_excludes_game_settings() {
     assert!(character_edit.json_account_changed_from(&original));
 }
 
-#[cfg(not(feature = "sqlite-account"))]
-#[test]
-fn json_only_build_blocks_sqlite_sources_and_source_transitions() {
-    let directory = TestDirectory::new("workspace-no-sqlite-feature");
-    fs::create_dir_all(directory.0.join("data")).unwrap();
-    let settings_path = settings_path(&directory);
-    let json_document = WorkspaceDocument::load(json_characters(2), &settings_path);
-    assert_eq!(json_document.source_info().kind, AccountSourceKind::Json);
-
-    std::fs::write(
-        directory.0.join("data").join("investment.sqlite3"),
-        b"SQLite source",
-    )
-    .unwrap();
-    assert!(json_document.verify_account_source_unchanged().is_err());
-
-    let document = WorkspaceDocument::load(json_characters(2), &settings_path);
-    assert_eq!(document.source_info().kind, AccountSourceKind::Blocked);
-    assert!(document.account_editing_blocked().is_some());
-    assert_eq!(account::character_count(&document), 0);
-    assert!(!document.source_info().detail.contains("sqlite"));
-    assert_eq!(
-        std::fs::read(directory.0.join("data").join("investment.sqlite3")).unwrap(),
-        b"SQLite source"
-    );
-}
-
 #[test]
 fn json_source_materializes_preferences_before_sqlite_schema() {
     for version in [8, 16, 17] {
@@ -142,10 +100,13 @@ fn json_source_materializes_preferences_before_sqlite_schema() {
         let document = WorkspaceDocument::load(
             json!({
                 "version": version,
-                "state": {"account": {"settings": {"display": {}}}}
+                "state": {"characters": [{}, {}], "account": {"settings": {"display": {}}}}
             }),
             &settings_path(&directory),
         );
+
+        assert_eq!(document.source_info().kind, AccountSourceKind::Json);
+        assert_eq!(account::character_count(&document), 2);
 
         assert_eq!(
             document
@@ -171,7 +132,6 @@ fn json_source_materializes_preferences_before_sqlite_schema() {
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn empty_database_blocks_stale_json() {
     let directory = TestDirectory::new("workspace-empty-source");
@@ -183,7 +143,6 @@ fn empty_database_blocks_stale_json() {
     assert_eq!(account::character_count(&document), 0);
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn official_database_is_authoritative_and_preserves_inactive_json() {
     let directory = TestDirectory::new("workspace-sqlite-source");
@@ -200,7 +159,6 @@ fn official_database_is_authoritative_and_preserves_inactive_json() {
     assert_eq!(document.json(), &json);
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn json_workspace_requires_reload_when_any_database_appears() {
     for initialized in [false, true] {
@@ -223,7 +181,6 @@ fn json_workspace_requires_reload_when_any_database_appears() {
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn sqlite_workspace_validation_ignores_stale_json_account_domains() {
     let directory = TestDirectory::new("workspace-sqlite-validation");
@@ -249,7 +206,6 @@ fn sqlite_workspace_validation_ignores_stale_json_account_domains() {
     assert!(super::super::settings::validate_workspace_document(&json_document).is_err());
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn sqlite_facade_mutates_every_account_domain_without_touching_json() {
     let directory = TestDirectory::new("workspace-sqlite-mutations");
@@ -367,7 +323,6 @@ fn sqlite_facade_mutates_every_account_domain_without_touching_json() {
     );
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     let directory = TestDirectory::new("workspace-sqlite-subclass-abilities");
@@ -453,7 +408,6 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults() {
     let directory = TestDirectory::new("workspace-sqlite-invalid-subclass-abilities");
@@ -500,7 +454,6 @@ fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults()
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     let corrupt = TestDirectory::new("workspace-corrupt-source");
@@ -532,7 +485,6 @@ fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     assert_eq!(account::character_count(&incompatible_document), 0);
 }
 
-#[cfg(feature = "sqlite-account")]
 fn set_fixture_inventory_subclass_abilities(database_path: &std::path::Path, abilities: [u8; 5]) {
     let connection = Connection::open(database_path).unwrap();
     connection
@@ -547,7 +499,6 @@ fn set_fixture_inventory_subclass_abilities(database_path: &std::path::Path, abi
         .unwrap();
 }
 
-#[cfg(feature = "sqlite-account")]
 fn sqlite_subclass_item() -> ItemDef {
     let choice = |entry| AbilityChoice {
         entry,
@@ -593,7 +544,6 @@ fn json_characters(count: usize) -> serde_json::Value {
     json!({"state": {"characters": vec![json!({}); count]}})
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn official_sqlite_equipment_contract_is_independent_of_json_version() {
     let directory = TestDirectory::new("workspace-sqlite-v13-gates");
@@ -633,7 +583,6 @@ fn official_sqlite_equipment_contract_is_independent_of_json_version() {
     );
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_json() {
     let directory = TestDirectory::new("workspace-v18-domains");
@@ -716,7 +665,6 @@ fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_js
     );
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
     let directory = TestDirectory::new("sqlite-runtime-draft");

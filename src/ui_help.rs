@@ -2,6 +2,30 @@
 
 use eframe::egui;
 
+pub(crate) fn tooltip_title_style() -> egui::TextStyle {
+    egui::TextStyle::Name("Tooltip Title".into())
+}
+
+pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let mut font = ui
+        .style()
+        .text_styles
+        .get(&tooltip_title_style())
+        // Font definitions take effect on the next egui pass, while styles
+        // change immediately. Use the body font during that transition.
+        .filter(|font| ui.fonts(|fonts| fonts.families().contains(&font.family)))
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    font.size = body.size;
+    egui::RichText::new(text).font(font).strong()
+}
+
+pub(crate) fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
+    let size = egui::TextStyle::Body.resolve(ui.style()).size + 2.0;
+    ui.label(emphasized_text(ui, title).size(size))
+}
+
 /// Hover for a tooltip, or click/keyboard-activate to keep the help open.
 pub(crate) fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     let text = text.into();

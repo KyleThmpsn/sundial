@@ -44,43 +44,42 @@ pub(super) fn apply_socket_overrides(
     custom_plugs: &[ResolvedCustomPlug],
     ordinal: usize,
 ) -> AuthoringResult<Vec<Option<ResolvedSocketColumn>>> {
-    if !donor.socket_column_indices.is_empty() {
-        set_weapon_socket_columns(definition, &donor.socket_column_indices)?;
-    }
     let mut expected_socket_columns = donor.socket_column_indices.clone();
-    for custom_plug in custom_plugs
+    for (custom_plug, usage) in custom_plugs
         .iter()
-        .filter(|custom_plug| custom_plug.weapon_ordinal == ordinal)
+        .flat_map(|plug| plug.uses.iter().map(move |usage| (plug, usage)))
+        .filter(|(_, usage)| usage.weapon_ordinal == ordinal)
     {
         let source_item_index = u16::try_from(custom_plug.source_item_index)
             .map_err(|_| invalid("Private socket-plug donor index does not fit 16 bits"))?;
-        replace_socket_choice_item_index(
-            definition,
-            custom_plug.socket_index,
-            custom_plug.choice_index,
-            source_item_index,
-            custom_plug.authored_item_index,
-        )?;
-        if let Some(Some(column)) = expected_socket_columns.get_mut(custom_plug.socket_index) {
-            let selected = column
-                .choices
-                .get_mut(custom_plug.choice_index)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "Private socket {} choice {} is outside the authored column",
-                        custom_plug.socket_index, custom_plug.choice_index
-                    ))
-                })?;
+        if let Some(Some(column)) = expected_socket_columns.get_mut(usage.socket_index) {
+            let selected = column.choices.get_mut(usage.choice_index).ok_or_else(|| {
+                invalid(format!(
+                    "Private socket {} choice {} is outside the authored column",
+                    usage.socket_index, usage.choice_index
+                ))
+            })?;
             if *selected != source_item_index {
                 return Err(invalid(format!(
                     "Private socket {} choice {} does not select source plug 0x{:08X}",
-                    custom_plug.socket_index,
-                    custom_plug.choice_index,
-                    custom_plug.source_item_hash
+                    usage.socket_index, usage.choice_index, custom_plug.source_item_hash
                 )));
             }
             *selected = custom_plug.authored_item_index;
+        } else {
+            replace_socket_choice_item_index(
+                definition,
+                usage.socket_index,
+                usage.choice_index,
+                source_item_index,
+                custom_plug.authored_item_index,
+            )?;
         }
+    }
+    // Resolve private choices before writing the column. Distinct variants can share a stock
+    // source while their final native item indices must remain unique.
+    if !expected_socket_columns.is_empty() {
+        set_weapon_socket_columns(definition, &expected_socket_columns)?;
     }
     Ok(expected_socket_columns)
 }

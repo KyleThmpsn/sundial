@@ -9,6 +9,7 @@ mod contract;
 mod document;
 mod entitlements;
 mod error;
+mod inventory_state;
 pub(crate) mod package;
 mod progression;
 mod reader;
@@ -23,6 +24,7 @@ use sundial_account::{AccountSettingsState, CharacterState, InstanceSoid, Profil
 
 pub(crate) use document::{SqliteAccountDocument, SqliteAccountDocumentLoad};
 pub(crate) use error::{SqliteAccountError, SqliteAccountIncompatibility};
+pub(crate) use inventory_state::{CharacterStack, PendingReward};
 pub(crate) use writer::{SqliteRestoreReceipt, SqliteSaveReceipt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

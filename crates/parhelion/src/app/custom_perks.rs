@@ -1,24 +1,25 @@
 //! Custom-perk authoring owns recipe mutations, window navigation and parameter drafts.
 //! Native recipe types remain unchanged; only this feature's UI/state lives here.
 use super::*;
+use sundial::package_authoring::sandbox_perk::projectile::{
+    self, Selection as ProjectileSelection,
+};
 
 mod editor;
 mod mutations;
-mod reuse;
-mod window;
-pub(super) use reuse::ReusePicker;
-
-// Release gate for editor entry points only; recipe parsing and compilation remain supported.
-fn authoring_available() -> bool {
-    false
-}
+mod picked;
+pub(super) mod workbench;
+pub(super) use picked::{
+    attach_picked_perk, choice_conflicts, repair_socket_picks, resolve_picked_perk,
+};
 
 // Test-only compatibility helpers are also used by the workbench integration tests.
 #[cfg(test)]
 pub(super) use mutations::{private_perk_runtime_values, remove_private_perk_runtime_values};
 
-use mutations::private_perk;
-pub(super) use mutations::{reconcile_socket_plug_variants, upsert_private_perk_runtime_values};
+pub(super) use mutations::reconcile_socket_plug_variants;
+#[cfg(test)]
+pub(super) use mutations::upsert_private_perk_runtime_values;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct PerkEditorKey {
@@ -34,6 +35,9 @@ struct PrivatePerkRuntimeGraph {
     action_payload: Vec<u8>,
     graphs: Vec<(u32, WeaponRuntimeGraph)>,
     warnings: Vec<String>,
+    projectile_slots: Vec<(u32, u32)>,
+    projectile_catalog: Arc<projectile::catalog::Catalog>,
+    native_assets: Vec<sundial::package_authoring::tft::Reference>,
 }
 
 enum PrivatePerkGraphEvent {
@@ -41,11 +45,17 @@ enum PrivatePerkGraphEvent {
 }
 
 pub(super) struct PerkEditor {
+    entity_source: Option<u32>,
     key: PerkEditorKey,
     plug_label: String,
     packages: PathBuf,
     draft: Vec<WeaponRuntimeValueOverride>,
     action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
+    projectile_draft: Vec<ProjectileSelection>,
+    original_projectile_draft: Vec<ProjectileSelection>,
+    projectile_labels: BTreeMap<u16, String>,
+    projectile_query: String,
+    pending_movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
     original_draft: Vec<WeaponRuntimeValueOverride>,
     original_action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     parameter_error: Option<String>,
@@ -56,38 +66,4 @@ pub(super) struct PerkEditor {
     query: String,
     value_text: BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
     show_all_native_values: bool,
-}
-
-enum PerkEditorAction {
-    Apply {
-        key: PerkEditorKey,
-        values: Vec<WeaponRuntimeValueOverride>,
-        action_values: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
-    },
-    Cancel,
-}
-
-impl PackageAuthoringApp {
-    pub(super) fn draw_perk_editor(&mut self, ctx: &egui::Context) {
-        if !authoring_available() {
-            return;
-        }
-        let action = self
-            .perk_editor
-            .as_mut()
-            .and_then(|editor| editor.show(ctx, self.show_experimental_options));
-        match action {
-            Some(PerkEditorAction::Apply {
-                key,
-                values,
-                action_values,
-            }) => {
-                upsert_private_perk_runtime_values(&mut self.recipe, key, values)
-                    .action_float_values = action_values;
-                self.perk_editor = None;
-            }
-            Some(PerkEditorAction::Cancel) => self.perk_editor = None,
-            None => {}
-        }
-    }
 }

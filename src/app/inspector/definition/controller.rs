@@ -184,6 +184,21 @@ fn apply_inspector_progression_edit(
             definition_index,
             set,
         } => {
+            if document.get("_native_progression").is_some()
+                && let Some(entry) = catalog
+                    .seasonal()
+                    .and_then(|season| season.mod_for_flag(definition_index))
+            {
+                crate::app::progression::seasonal::apply(
+                    document,
+                    catalog,
+                    crate::app::progression::seasonal::Edit::Mod {
+                        sale_index: entry.sale_index,
+                        owned: set,
+                    },
+                )?;
+                return Ok("Artifact mod and seasonal counters updated".into());
+            }
             let definition = catalog
                 .unlock_flag_definition(definition_index)
                 .ok_or_else(|| {
@@ -207,6 +222,13 @@ fn apply_inspector_progression_edit(
             definition_index,
             value,
         } => {
+            if document.get("_native_progression").is_some()
+                && crate::app::progression::seasonal::is_derived_value(definition_index)
+            {
+                return Err(
+                    "Use Seasonal XP or Artifact Mods to update this runtime-derived value".into(),
+                );
+            }
             let definition = catalog
                 .unlock_value_definition(definition_index)
                 .ok_or_else(|| {

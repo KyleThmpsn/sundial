@@ -110,7 +110,10 @@ fn read_tag(manager: &PackageManager, tag: TagHash, description: &str) -> Result
         .map_err(|error| format!("Could not read {description} tag {tag}: {error}"))
 }
 
-fn decode_strings(manager: &PackageManager, tag: TagHash) -> Result<Vec<(u32, String)>, String> {
+pub(crate) fn decode_strings(
+    manager: &PackageManager,
+    tag: TagHash,
+) -> Result<Vec<(u32, String)>, String> {
     let header = manager.read_tag(tag).map_err(|error| error.to_string())?;
     let (hash_count, hash_data, _) = array_at(&header, 8)?;
     let data = manager

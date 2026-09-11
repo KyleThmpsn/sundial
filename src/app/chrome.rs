@@ -4,10 +4,10 @@ use super::background_tasks::CatalogTaskKind;
 use super::platform::load_logo_texture;
 use super::save_support::SaveAction;
 use super::{
-    CREDITS_URL, ConfirmationDialog, DISPLAY_VERSION, MAIN_SIDEBAR_WIDTH, PROJECT_URL, SUNRISE_URL,
-    SundialApp, TIGER_PKG_URL, ViewMode, persistence_compatibility,
+    CREDITS_URL, ConfirmationDialog, DISPLAY_VERSION, MAIN_SIDEBAR_WIDTH, PROJECT_URL,
+    PreferencesTab, SUNRISE_URL, SundialApp, TIGER_PKG_URL, ViewMode, persistence_compatibility,
 };
-use crate::updates::{RELEASES_URL, UpdateStatus};
+use crate::updates::UpdateStatus;
 use eframe::egui;
 
 impl SundialApp {
@@ -127,7 +127,7 @@ impl SundialApp {
                 self.about_open |= footer.about.clicked();
                 self.activity_log_open |= footer.activity_log.clicked();
                 if footer.update.is_some_and(|response| response.clicked()) {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(RELEASES_URL));
+                    self.update_check.window_open = true;
                 }
             });
 
@@ -147,18 +147,37 @@ impl SundialApp {
                     } else {
                         egui::Color32::from_rgb(64, 122, 80)
                     };
-                    ui.label(
-                        egui::RichText::new(egui_phosphor::regular::DATABASE)
-                            .size(16.0)
-                            .color(source_color),
-                    )
-                    .on_hover_text(format!(
-                        "{}\n\n{}\n\nPath: {}\nContract: {}",
-                        account_source.label,
-                        account_source.detail,
-                        account_source.database_path.display(),
-                        account_source.contract,
-                    ));
+                    let source_button = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(egui_phosphor::regular::DATABASE)
+                                    .size(16.0)
+                                    .color(source_color),
+                            )
+                            .min_size(egui::vec2(26.0, 24.0))
+                            .frame(false),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_ui(|ui| {
+                            ui.set_max_width(240.0);
+                            crate::ui_help::tooltip_title(ui, "Account Database");
+                            ui.label(if account_source.kind == AccountSourceKind::Blocked {
+                                "Account editing is unavailable."
+                            } else {
+                                "Account edits save to SQLite."
+                            });
+                        });
+                    source_button.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            "Account Database",
+                        )
+                    });
+                    if source_button.clicked() {
+                        self.preferences_tab = PreferencesTab::Installation;
+                        self.select_view(ViewMode::Preferences);
+                    }
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
@@ -180,6 +199,7 @@ impl SundialApp {
             .clone();
         let update_status = self.update_check.status().clone();
         let mut retry_update_check = false;
+        let mut show_update = false;
         egui::Window::new("About Sundial")
             .open(&mut self.about_open)
             .collapsible(false)
@@ -191,12 +211,12 @@ impl SundialApp {
                     ui.heading("Sundial");
                     ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
                     ui.add_space(8.0);
-                    ui.label("A simple Project Sunrise settings editor.");
+                    ui.label("Edit Project Sunrise accounts and settings, and create custom weapon packages.");
                     ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
                     ui.add_space(8.0);
                     match &update_status {
                         UpdateStatus::NotStarted => {
-                            retry_update_check = ui.button("Check for updates").clicked();
+                            retry_update_check = ui.button("Check for Updates").clicked();
                         }
                         UpdateStatus::Checking => {
                             ui.horizontal(|ui| {
@@ -207,31 +227,44 @@ impl SundialApp {
                         UpdateStatus::Current => {
                             ui.label(egui::RichText::new("Sundial is up to date.").weak());
                         }
-                        UpdateStatus::Available(version) => {
+                        UpdateStatus::Available(release) => {
                             ui.colored_label(
                                 ui.visuals().warn_fg_color,
-                                format!("Sundial {version} is available."),
+                                format!("Sundial {} is available.", release.version),
                             );
-                            ui.hyperlink_to("Open GitHub Releases", RELEASES_URL);
+                            show_update = ui.button("View Update and Release Notes").clicked();
                         }
                         UpdateStatus::Failed => {
                             ui.label(
                                 egui::RichText::new("Could not check for updates.").weak(),
                             );
-                            retry_update_check = ui.button("Try again").clicked();
+                            retry_update_check = ui.button("Try Again").clicked();
                         }
                     }
                 });
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label("Built for Project Sunrise 0.1 through 0.4.0.");
-                ui.hyperlink_to("Project Sunrise on GitHub", SUNRISE_URL);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("Built for ");
+                    ui.hyperlink_to("Project Sunrise", SUNRISE_URL);
+                    ui.label(".");
+                });
                 ui.add_space(6.0);
-                ui.label("Local Destiny package parsing is powered by tiger-pkg.");
-                ui.hyperlink_to("tiger-pkg on GitHub", TIGER_PKG_URL);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("Destiny package parsing is powered by ");
+                    ui.hyperlink_to("tiger-pkg", TIGER_PKG_URL);
+                    ui.label(".");
+                });
                 ui.add_space(6.0);
-                ui.hyperlink_to("For additional credits, see the project README.", CREDITS_URL);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("For additional credits, see the project ");
+                    ui.hyperlink_to("README", CREDITS_URL);
+                    ui.label(".");
+                });
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
@@ -245,6 +278,7 @@ impl SundialApp {
         if retry_update_check {
             self.update_check.retry(ctx);
         }
+        self.update_check.window_open |= show_update;
     }
 
     pub(super) fn draw_catalog_progress(&self, ctx: &egui::Context) {
@@ -304,7 +338,7 @@ fn sidebar_footer(ui: &mut egui::Ui, available_update: Option<&str>) -> SidebarF
                 .small(),
             )
             .on_hover_text(format!(
-                "Sundial {version} is available. Open GitHub Releases."
+                "Sundial {version} is available. View release notes and update."
             ))
         });
         SidebarFooter {

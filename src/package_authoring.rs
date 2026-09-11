@@ -11,6 +11,15 @@ use serde::de::DeserializeOwned;
 use tiger_pkg::PackageManager;
 
 pub use crate::investment_localization::resolve_item_name;
+
+/// Validated native weapon bucket capacities, shared with the installed inventory catalog.
+pub fn weapon_bucket_capacities(
+    manager: &PackageManager,
+    root: &[u8],
+) -> Result<[usize; 3], String> {
+    crate::catalog::weapon_bucket_capacities(manager, root)
+}
+pub use crate::package_runtime::tft;
 pub use crate::package_runtime::{is_valid_package_tag, resolve_live_named_tag};
 pub use crate::weapon_dyes::{WeaponDyeColors, load_weapon_dye_colors};
 
@@ -118,7 +127,6 @@ pub mod investment_schema {
 
 /// Finished sandbox-perk catalog and runtime-key map authoring.
 pub mod sandbox_perk {
-    pub use crate::sandbox_perk::activation;
     pub use crate::sandbox_perk::{
         FINISHED_SANDBOX_PERK_CATALOG_CLASS, FINISHED_SANDBOX_PERK_DETAIL_ROW_CLASS,
         FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE, FINISHED_SANDBOX_PERK_ROW_CLASS,
@@ -140,6 +148,7 @@ pub mod sandbox_perk {
         validate_finished_sandbox_perk_catalog, validate_sandbox_perk_index_catalog,
         validate_sandbox_perk_runtime_map,
     };
+    pub use crate::sandbox_perk::{activation, dependencies, program, projectile};
 }
 
 /// Weapon sandbox-pattern and runtime entity graph helpers shared with package authoring tools.
@@ -239,6 +248,8 @@ pub struct PackageAuthoringUpdate {
     pub packages_changed: bool,
     /// A preference change requested from the hosted Parhelion settings surface.
     pub preferences_changed: Option<PackageAuthoringPreferences>,
+    /// Opens the host preferences without closing the workbench.
+    pub open_sundial_preferences: bool,
 }
 
 /// An optional package-authoring surface composed into Sundial by the desktop executable.

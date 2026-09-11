@@ -6,14 +6,30 @@ pub(crate) fn plug_choices_for_socket(
     socket_index: usize,
     mode: PlugSelectionMode,
 ) -> (Vec<PlugChoice>, bool) {
+    plug_choices_for_socket_type(catalog, item, socket_index, None, mode)
+}
+
+pub(crate) fn plug_choices_for_socket_type(
+    catalog: &Catalog,
+    item: &ItemDef,
+    socket_index: usize,
+    socket_type_override: Option<u16>,
+    mode: PlugSelectionMode,
+) -> (Vec<PlugChoice>, bool) {
     let show_types = matches!(
         mode,
         PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
     );
-    let allowed =
-        crate::investment::plug_selection::candidates_for_socket(catalog, item, socket_index, mode);
+    let allowed = crate::investment::plug_selection::candidates_for_socket_type(
+        catalog,
+        item,
+        socket_index,
+        socket_type_override,
+        mode,
+    );
     let choices = allowed
-        .into_iter()
+        .iter()
+        .copied()
         .map(|hash| PlugChoice {
             hash,
             label: catalog.plug_label(hash, true),
@@ -48,6 +64,7 @@ pub(crate) fn plug_picker_snapshot(
             |socket| socket.display_label(socket_index),
         ),
         current_hash,
+        custom_current: false,
         current_label,
         native_default,
         native_default_label: match native_default {
@@ -320,10 +337,16 @@ fn draw_plug_browser_contents(
         ui.separator();
     }
     if ui
-        .selectable_label(snapshot.current_hash.is_none(), "None")
+        .selectable_label(
+            snapshot.current_hash.is_none() && !snapshot.custom_current,
+            "None",
+        )
         .clicked()
     {
         *selection = Some(None);
+    }
+    if snapshot.custom_current {
+        ui.strong(format!("{} (Current)", snapshot.current_label));
     }
     if let Some(hash) = snapshot.current_hash {
         let current_choice = snapshot.choices.iter().find(|choice| choice.hash == hash);

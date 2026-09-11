@@ -26,6 +26,7 @@ mod preferences_page;
 mod recovery;
 mod saving;
 mod shortcuts;
+mod update;
 mod workspace_loading;
 
 mod startup;
@@ -77,6 +78,7 @@ use equipment::class_name;
 
 mod account_settings;
 
+mod account_details;
 mod account_workspace;
 use account_workspace::{AccountSourceKind, WorkspaceDocument};
 
@@ -281,6 +283,7 @@ enum ProgressionSection {
     Collections,
     Unlocks,
     Investment,
+    Seasonal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -290,7 +293,6 @@ enum ConfirmationDialog {
     ReviewSave,
     DeleteEquipment,
     Reload,
-    #[cfg(feature = "sqlite-account")]
     RestoreSqliteBackup,
     ResetDefaults,
     Exit,
@@ -363,11 +365,11 @@ struct SundialApp {
     confirmation: Option<ConfirmationDialog>,
     pending_save_action: Option<SaveAction>,
     pending_equipment_delete: Option<PendingEquipmentDelete>,
-    #[cfg(feature = "sqlite-account")]
     pending_sqlite_restore: Option<PathBuf>,
     exit_confirmed: bool,
     dirty: bool,
     undo_history: Vec<DocumentHistoryEntry>,
+    account_details: account_details::State,
     redo_history: Vec<DocumentHistoryEntry>,
     suppress_history_record: bool,
     status: String,
@@ -470,11 +472,11 @@ impl SundialApp {
             confirmation: None,
             pending_save_action: None,
             pending_equipment_delete: None,
-            #[cfg(feature = "sqlite-account")]
             pending_sqlite_restore: None,
             exit_confirmed: false,
             dirty: false,
             undo_history: Vec::new(),
+            account_details: account_details::State::default(),
             redo_history: Vec::new(),
             suppress_history_record: false,
             status: source_warning.as_ref().map_or_else(
@@ -603,7 +605,6 @@ impl SundialApp {
             account_source: account_source.label,
             account_contract: account_source.contract,
             account_detail: &account_source.detail,
-            #[cfg(feature = "sqlite-account")]
             account_database_path: &account_source.database_path,
             catalog: diagnostics::CatalogSummary {
                 cache_path: &self.manifest.cache_path,
@@ -746,6 +747,11 @@ impl SundialApp {
             return;
         };
         let update = package_authoring.update(ctx);
+        if update.open_sundial_preferences {
+            self.select_view(ViewMode::Preferences);
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+        }
         self.package_authoring_busy = update.busy;
         self.package_authoring_dirty = update.dirty;
         self.package_authoring_packages_changed |= update.packages_changed;
@@ -808,22 +814,49 @@ fn preserve_inactive_json_account_domains(defaults: &mut Value, source: &Value) 
 }
 
 fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind) {
-    let message = match source {
+    let (title, message) = match source {
         AccountSourceKind::Json => return,
-        AccountSourceKind::Sqlite => {
-            "investment.sqlite3 is the active account source. Account, character, unlock, investment and entitlement data in this JSON is inactive legacy data. Editing it changes settings.json only."
-        }
-        AccountSourceKind::Blocked => {
-            "SQLite account loading is blocked. Legacy account data in this JSON is not a fallback. Editing it will not unblock or change the active account source."
-        }
+        AccountSourceKind::Sqlite => (
+            "Account Data",
+            "As of schema v18, most account data is stored in investment.sqlite3. Some settings, including player identity and runtime configuration, are still read from settings.json.",
+        ),
+        AccountSourceKind::Blocked => (
+            "Account Database Unavailable",
+            "Sundial couldn't load investment.sqlite3. Database-backed account editing is unavailable.",
+        ),
     };
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Account Source Notice:");
-            ui.label(message);
+    let (background, border, foreground) = if ui.visuals().dark_mode {
+        (
+            egui::Color32::from_rgb(55, 40, 26),
+            egui::Color32::from_rgb(102, 72, 39),
+            egui::Color32::from_rgb(245, 215, 177),
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(255, 240, 221),
+            egui::Color32::from_rgb(220, 181, 131),
+            egui::Color32::from_rgb(104, 60, 16),
+        )
+    };
+    egui::Frame::NONE
+        .fill(background)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.visuals_mut().override_text_color = Some(foreground);
+            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.horizontal_top(|ui| {
+                ui.label(egui::RichText::new(egui_phosphor::regular::INFO).size(18.0));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.strong(title);
+                    ui.add(egui::Label::new(message).wrap());
+                });
+            });
         });
-    });
-    ui.add_space(6.0);
+    ui.add_space(8.0);
 }
 
 impl SundialApp {
@@ -911,96 +944,7 @@ impl SundialApp {
                         self.set_status("Game setting updated. Click Save to write it", false);
                     }
                 }
-                ViewMode::Progression => {
-                    self.draw_progression_character_tabs(ui);
-                    let read_only = !self.preferences.experimental_progression || self.document.account_editing_blocked().is_some();
-                    self.progression_ui.read_only = read_only;
-                    self.collections_ui.read_only = read_only;
-                    if read_only {
-                        ui.label("Browsing only. Enable Progression Editing under Preferences > Editing > Experimental to change progression state.");
-                    }
-                    ui.heading("Progression");
-                    ui.add_space(8.0);
-                    let section_changed = ui
-                        .horizontal_wrapped(|ui| {
-                            let mut changed = false;
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.progression_section,
-                                    ProgressionSection::Collections,
-                                    "Collections",
-                                )
-                                .changed();
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.progression_section,
-                                    ProgressionSection::Unlocks,
-                                    "Unlocks",
-                                )
-                                .changed();
-                            changed |= ui
-                                .selectable_value(
-                                    &mut self.progression_section,
-                                    ProgressionSection::Investment,
-                                    "Investment",
-                                )
-                                .changed();
-                            changed
-                        })
-                        .inner;
-                    if section_changed {
-                        self.progression_ui.reset_navigation();
-                        self.collections_ui.reset_navigation();
-                    }
-                    ui.separator();
-
-                    let mut progression_document = self.document.progression_view(self.selected_character);
-                    match self.progression_section {
-                        ProgressionSection::Unlocks | ProgressionSection::Investment => {
-                            let view = match self.progression_section {
-                                ProgressionSection::Unlocks => progression::View::Unlocks,
-                                ProgressionSection::Investment => progression::View::Investment,
-                                ProgressionSection::Collections => unreachable!(),
-                            };
-                            if progression::draw_content(
-                                ui,
-                                &mut progression_document,
-                                &self.manifest,
-                                self.destiny_symbol_font_error.as_deref(),
-                                &mut self.progression_ui,
-                                view,
-                            ) {
-                                if let Err(error)=self.document.apply_progression_view(self.selected_character,progression_document.clone()) {
-                                    self.set_status(error,true);
-                                    return;
-                                }
-                                self.dirty = true;
-                                self.set_status(
-                                    "Progression updated. Click Save to write it",
-                                    false,
-                                );
-                            }
-                        }
-                        ProgressionSection::Collections => {
-                            if collections_page::draw_content(
-                                ui,
-                                &mut progression_document,
-                                &self.manifest,
-                                &mut self.collections_ui,
-                            ) {
-                                if let Err(error)=self.document.apply_progression_view(self.selected_character,progression_document.clone()) {
-                                    self.set_status(error,true);
-                                    return;
-                                }
-                                self.dirty = true;
-                                self.set_status(
-                                    "Progression state updated. Click Save to write it",
-                                    false,
-                                );
-                            }
-                        }
-                    }
-                }
+                ViewMode::Progression => self.draw_progression_page(ui),
                 ViewMode::AdvancedJson => {
                     if self.json_editor_window_open {
                         ui.heading("All Settings");
@@ -1011,10 +955,7 @@ impl SundialApp {
                         }
                     } else {
                         self.sync_raw_json_if_stale();
-                        draw_json_account_source_notice(
-                            ui,
-                            self.document.source_info().kind,
-                        );
+                        draw_json_account_source_notice(ui, self.document.source_info().kind);
                         let response = json_editor::draw(
                             ui,
                             &mut self.raw_json,
@@ -1053,7 +994,7 @@ impl SundialApp {
         self.update_check.poll();
         self.poll_catalog_task();
         let available_update = match self.update_check.status() {
-            UpdateStatus::Available(version) => Some(version.clone()),
+            UpdateStatus::Available(release) => Some(release.version.clone()),
             _ => None,
         };
         if ctx.input(|input| input.viewport().close_requested()) && !self.exit_confirmed {
@@ -1122,7 +1063,6 @@ impl eframe::App for SundialApp {
         self.draw_future_schema_confirmation(ctx);
 
         self.draw_reset_defaults_confirmation(ctx);
-        #[cfg(feature = "sqlite-account")]
         self.draw_sqlite_restore_confirmation(ctx);
         self.draw_parhelion_confirmation(ctx);
         self.draw_unsafe_mode_confirmation(ctx);
@@ -1133,6 +1073,7 @@ impl eframe::App for SundialApp {
 
         self.handle_workspace_shortcuts(ctx);
         self.record_document_change(document_before_frame);
+        self.draw_update_window(ctx);
     }
 }
 
@@ -1205,6 +1146,8 @@ fn validate_for_check(document: &WorkspaceDocument) -> Result<(), String> {
 }
 
 pub(crate) fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
+    let update_startup = crate::updates::startup()
+        .map_err(|error| eframe::Error::AppCreation(Box::new(std::io::Error::other(error))))?;
     let (install, check_only, loaded_preferences) = parse_args();
     let preferences = loaded_preferences.preferences;
     let preferences_warning = loaded_preferences.warning;
@@ -1238,7 +1181,7 @@ pub(crate) fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe
             .with_title("Sundial")
             .with_app_id("io.github.kylethmpsn.Sundial")
             .with_decorations(!cfg!(target_os = "linux"))
-            .with_inner_size([1_240.0, 880.0])
+            .with_inner_size([1_240.0, 960.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
         ..Default::default()
@@ -1251,12 +1194,16 @@ pub(crate) fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe
             set_windows_taskbar_icon(cc);
             cc.egui_ctx.set_theme(preferences.color_theme.egui_theme());
             ui::configure_contrast(&cc.egui_ctx);
-            Ok(Box::new(StartupApp::new(
+            let app = StartupApp::new(
                 install,
                 preferences,
                 preferences_warning,
                 Some(package_authoring),
-            )))
+            );
+            if let Some(startup) = update_startup {
+                startup.window_created().map_err(std::io::Error::other)?;
+            }
+            Ok(Box::new(app))
         }),
     )
 }

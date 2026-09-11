@@ -23,6 +23,7 @@ mod package_conditions;
 mod presentation;
 mod records;
 mod schema;
+mod seasonal;
 mod unlocks;
 
 use conditions::*;
@@ -71,12 +72,17 @@ pub(super) use presentation::{
     scan_presentation_nodes,
 };
 pub(super) use records::{item_objective_indices, scan_record_objective_owners};
+pub(super) use seasonal::scan_seasonal;
 pub(super) use unlocks::{
     add_objective_owner, scan_unlock_flag_definitions, scan_unlock_flag_displays,
     scan_unlock_value_definitions, unlock_state_indices,
 };
 
 impl Catalog {
+    pub(crate) fn seasonal(&self) -> Option<&crate::investment::seasonal::Definition> {
+        self.seasonal.as_ref()
+    }
+
     pub(crate) fn progression_package_error(&self) -> Option<&str> {
         self.progression_package_error.as_deref()
     }

@@ -10,6 +10,7 @@ mod controls;
 
 pub(super) struct SocketRowContext<'a> {
     pub catalog: &'a InvestmentCatalog,
+    pub recipe_library: Option<&'a crate::RecipeLibrary>,
     pub recipe: &'a mut WeaponRecipe,
     pub queries: &'a mut BTreeMap<usize, String>,
     pub page: &'a mut usize,
@@ -99,6 +100,7 @@ enum RowCommand {
     Remove,
     Activate,
     EditChoice { index: usize, hash: Option<u32> },
+    MakeDefault(usize),
 }
 
 enum RowContinuation {

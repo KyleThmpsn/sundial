@@ -396,6 +396,7 @@ fn validate_preference(
     }
 }
 
+/// Actions in native action-ID order, shared by validation and persistence.
 pub const KEY_BINDING_ACTIONS: &[&str] = &[
     "fire",
     "toggle_zoom",

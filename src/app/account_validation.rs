@@ -106,6 +106,27 @@ fn collect_catalog_issues<C: AccountCatalog>(
 
     for character_index in 0..account::character_count(document) {
         let character_number = character_index + 1;
+        if let Some(native) = document.native_account() {
+            for stack in native.character_stacks(character_index) {
+                let context = format!(
+                    "character {character_number} material 0x{:08X}",
+                    stack.definition_hash
+                );
+                match catalog.inventory_metadata(u64::from(stack.definition_hash)) {
+                    Some(metadata) if metadata.is_character_material_candidate() => {
+                        validate_quantity(
+                            &context,
+                            i64::from(stack.quantity),
+                            metadata.max_stack_size,
+                            &mut issues,
+                        )
+                    }
+                    _ => issues.push(format!(
+                        "{context} is not a character material in the installed catalog"
+                    )),
+                }
+            }
+        }
         let class_type = match account::character_metadata(document, character_index) {
             Ok(metadata) => Some(metadata.class_type),
             Err(error) => {

@@ -7,8 +7,6 @@
 
 pub(super) struct ProjectileProfile {
     pub perk_index: u16,
-    pub id: &'static str,
-    pub perk: &'static str,
     pub action_tag: u32,
     pub graph_tag: u32,
     pub owner_tag: u32,
@@ -18,8 +16,6 @@ pub(super) struct ProjectileProfile {
 
 pub(super) const PROJECTILE_PROFILES: &[ProjectileProfile] = &[ProjectileProfile {
     perk_index: 1178,
-    id: "micro_missile.projectile_speed",
-    perk: "Micro-Missile",
     action_tag: 0x80BC_2BBD,
     graph_tag: 0x8152_82E1,
     owner_tag: 0x8152_82E7,

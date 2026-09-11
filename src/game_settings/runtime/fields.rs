@@ -21,6 +21,18 @@ pub(super) struct Field {
 }
 
 impl Field {
+    pub fn for_document(mut self, document: &Value) -> Self {
+        if self.path == "/complete_exotic_catalysts"
+            && document
+                .get("version")
+                .and_then(Value::as_u64)
+                .is_some_and(|version| version < 18)
+        {
+            self.path = "/state/investment/complete_exotic_catalysts";
+        }
+        self
+    }
+
     pub fn default_value(self) -> Value {
         match self.kind {
             Kind::Bool(value) => Value::Bool(value),
@@ -59,49 +71,49 @@ impl Field {
 pub(super) const FIELDS: &[Field] = &[
     Field {
         path: "/client/socket_menu_routing",
-        label: "Socket menu routing",
+        label: "Socket Menu Routing",
         group: "Presentation",
         kind: Kind::Bool(false),
         help: "Enables Sunrise's socket menu routing hook.",
     },
     Field {
         path: "/client/reveal_lore_books",
-        label: "Reveal lore books",
+        label: "Reveal Lore Books",
         group: "Presentation",
         kind: Kind::Bool(true),
-        help: "Reveals lore books in the client. Saved lore unlock flags and objective values remain separate.",
+        help: "Makes hidden lore books visible in game without completing their objectives or changing saved lore progress. Parhelion turns this off when installing packages because custom Collections badges conflict with this Sunrise feature.",
     },
     Field {
-        path: "/state/investment/complete_exotic_catalysts",
+        path: "/complete_exotic_catalysts",
         label: "Complete Exotic Catalysts",
         group: "Profile & Catalysts",
         kind: Kind::Bool(true),
-        help: "Completes released exotic weapon catalysts while Sunrise resolves item state; does not rewrite socket plugs.",
+        help: "Completes released exotic weapon catalysts. Socket plugs stay unchanged.",
     },
     Field {
         path: "/state/account/profile_setup_completed",
         label: "Profile Setup Completed",
         group: "Profile & Catalysts",
         kind: Kind::Bool(false),
-        help: "Saved completion state of the active JSON account. Turn off to revisit setup.",
+        help: "Turn off to revisit profile setup.",
     },
     Field {
         path: "/client/custom_bootflow_textures",
-        label: "Custom bootflow textures",
+        label: "Custom Bootflow Textures",
         group: "Presentation",
         kind: Kind::Bool(true),
         help: "Uses Sunrise's installed bootflow textures. Does not install or modify textures.",
     },
     Field {
         path: "/client/ui/enabled",
-        label: "In-game Sunrise menu",
+        label: "In-Game Sunrise Menu",
         group: "Presentation",
         kind: Kind::Bool(true),
         help: "Enables Sunrise's in-game menu.",
     },
     Field {
         path: "/client/ui/toggle_key",
-        label: "Menu toggle key",
+        label: "Menu Toggle Key",
         group: "Presentation",
         kind: Kind::Choice(&[
             "insert", "home", "end", "delete", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
@@ -111,70 +123,70 @@ pub(super) const FIELDS: &[Field] = &[
     },
     Field {
         path: "/client/skip_orbit_cinematic_wait",
-        label: "Skip orbit cinematic wait",
+        label: "Skip Orbit Cinematic Wait",
         group: "Presentation",
         kind: Kind::Bool(false),
         help: "Optional cinematic wait override.",
     },
     Field {
         path: "/server/gameplay/hold_launch_cinematic",
-        label: "Hold launch cinematic",
+        label: "Hold Launch Cinematic",
         group: "Presentation",
         kind: Kind::Bool(false),
         help: "Keeps launch synchronization open through loading.",
     },
     Field {
         path: "/server/activation/mission_scripting",
-        label: "Mission scripting",
+        label: "Mission Scripting",
         group: "Activities & Scripting",
         kind: Kind::Bool(false),
         help: "Runs Sunrise's mission scripting runtime. When this setting is omitted, scripting defaults to off.",
     },
     Field {
         path: "/server/activation/activity_public_membership",
-        label: "Public activity membership",
+        label: "Public Activity Membership",
         group: "Activities & Scripting",
         kind: Kind::Bool(true),
         help: "Publishes public activity membership.",
     },
     Field {
         path: "/server/activation/prevent_ownerless_channel_close",
-        label: "Keep ownerless channels open",
+        label: "Keep Ownerless Channels Open",
         group: "Activities & Scripting",
         kind: Kind::Bool(false),
         help: "Diagnostic override for ownerless activity channels.",
     },
     Field {
         path: "/state/activity/roster_key_from_identity",
-        label: "Roster key from identity",
+        label: "Roster Key from Identity",
         group: "Activities & Scripting",
         kind: Kind::Bool(false),
         help: "Uses the membership identity for the roster player key.",
     },
     Field {
         path: "/state/activity/roster_key_on_all_slots",
-        label: "Roster key on all slots",
+        label: "Roster Key on All Slots",
         group: "Activities & Scripting",
         kind: Kind::Bool(false),
         help: "Publishes participation on every relevant slot.",
     },
     Field {
         path: "/core/activity_sdk_generation/lua_declarations",
-        label: "Generate Lua declarations",
+        label: "Generate Lua Declarations",
         group: "Activities & Scripting",
         kind: Kind::Bool(true),
         help: "Writes declarations for Sunrise's Lua API when SDK generation runs. Native Bungie Script package records are not Lua bytecode.",
     },
     Field {
         path: "/client/region_private",
-        label: "Private region",
+        label: "Private Region",
         group: "Advanced Runtime",
         kind: Kind::Bool(false),
         help: "Uses private region routing.",
     },
     Field {
         path: "/client/pin_replicated_record",
-        label: "Pin replicated record",
+        label: "Pin Replicated Record",
         group: "Advanced Runtime",
         kind: Kind::Bool(true),
         help: "Keeps the replicated account record pinned.",

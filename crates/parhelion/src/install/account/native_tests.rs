@@ -52,6 +52,7 @@ fn native_account_journal_commits_recovers_and_refuses_concurrent_changes() {
         target_packages_directory: packages.clone(),
         backup_directory: backup.clone(),
         account_cleanup: Some(record.clone()),
+        client_settings: None,
         artifacts: vec![],
     };
     verify_committed(&transaction).unwrap();

@@ -232,6 +232,29 @@ fn added_socket_shapes_reject_shrinking_overflow_and_incomplete_rows_without_cha
 }
 
 #[test]
+fn missing_socket_plug_explains_custom_perk_reuse_without_accepting_missing_rows() {
+    let data = eight_socket_definition();
+    let mut columns = vec![None; 8];
+    columns[0] = Some(WeaponSocketColumnOverride {
+        choices: vec![0xD8EF_B0FD],
+        ..Default::default()
+    });
+    let error = resolve_socket_column_indices(&BTreeMap::new(), &data, &columns)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Socket 1"));
+    assert!(error.contains("0xD8EFB0FD"));
+    assert!(error.contains("Reselect an installed custom perk in the plug picker"));
+
+    let duplicate_rows = BTreeMap::from([(0xD8EF_B0FD, vec![28, 48])]);
+    let error = resolve_socket_column_indices(&duplicate_rows, &data, &columns)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("resolved to 2 item rows"));
+    assert!(!error.contains("Reselect an installed custom perk"));
+}
+
+#[test]
 fn added_socket_resolution_keeps_the_native_prefix_and_requires_typed_new_rows() {
     let data = eight_socket_definition();
     let indices = BTreeMap::from([(100, vec![28]), (101, vec![48])]);

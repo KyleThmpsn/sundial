@@ -3,7 +3,6 @@ use super::{
     fields::{Field, Kind},
     optional_value,
 };
-use eframe::egui;
 use serde_json::Value;
 
 pub(super) const FIELDS: &[Field] = &[
@@ -148,35 +147,6 @@ pub(super) const FIELDS: &[Field] = &[
         help: "Use Sunrise default client activation.",
     },
 ];
-
-pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value, json_account: bool) -> bool {
-    if !super::available(document) {
-        return false;
-    }
-    let mut changed = false;
-    for group in [
-        "Logging",
-        "External Server",
-        "Server Networking",
-        "Server Activation",
-    ] {
-        egui::CollapsingHeader::new(group).show(ui, |ui| {
-            for &field in FIELDS.iter().filter(|field| field.group == group) {
-                ui.push_id(field.path, |ui| {
-                    changed |= super::page::draw_field(ui, document, field, json_account);
-                });
-            }
-        });
-    }
-    if json_account {
-        changed |= super::entitlements::draw(ui, document);
-    }
-    changed |= super::character_page::draw(ui, document, json_account);
-    if let Err(error) = validate(document, json_account) {
-        ui.colored_label(ui.visuals().error_fg_color, error);
-    }
-    changed
-}
 
 pub(super) fn validate(document: &Value, json_account: bool) -> Result<(), String> {
     let topology = optional_value(document, "/server/gameplay/topology")?

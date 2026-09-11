@@ -141,6 +141,14 @@ fn upstream_accounts_survive_edit_save_reload_and_backup_restore() {
         let settings = directory.0.join("settings.json");
         let backups = directory.0.join("backups");
         let mut original: Value = serde_json::from_str(fixture).unwrap();
+        settings::validate_document(&original)
+            .unwrap_or_else(|error| panic!("schema {}: {error}", original["version"]));
+        assert_eq!(
+            serde_json::from_str::<Value>(&encode_settings(&original).unwrap()).unwrap(),
+            original,
+            "schema {} must round-trip before editing",
+            original["version"]
+        );
         original["future_extension"] = serde_json::json!({
             "enabled": false,
             "nullable": null,

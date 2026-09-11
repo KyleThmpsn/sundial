@@ -7,8 +7,12 @@ impl PerkEditor {
         loaded: &PrivatePerkRuntimeGraph,
         experimental: bool,
     ) {
-        ui.strong("Package Parameters");
-        ui.label("Named package fields can be edited below. Their names come from the data; cross-weapon behavior and gameplay-safe ranges are not guaranteed.");
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.strong("Package Parameters");
+            sundial::investment::draw_authoring_info_icon(ui,
+                "Package Parameters\nEdit the asset's native fields. Hover over a field for its complete path, type, and original value.");
+        });
         ui.horizontal_wrapped(|ui| {
             ui.label("Filter");
             named_control(
@@ -77,7 +81,7 @@ impl PerkEditor {
                 visible += 1;
                 ui.push_id(&field.locator, |ui| {
                     if unknown {
-                        ui.label("Experimental · Unknown Byte Range");
+                        ui.label("Unknown Byte Range");
                     }
                     draw_runtime_value_override_field(
                         ui,
@@ -85,9 +89,6 @@ impl PerkEditor {
                         &mut self.draft,
                         &mut self.value_text,
                     );
-                    if !unknown {
-                        ui.label(format!("Original: {}", original_value(&field.value)));
-                    }
                 });
             }
         }
@@ -101,20 +102,7 @@ impl PerkEditor {
                     .is_some_and(|field| field.source == WeaponRuntimeFieldSource::OpaqueNativeType)
             })
         {
-            ui.label("Saved low-level edits are preserved. Verified controls above remain editable; other byte edits require experimental controls in Preferences.");
-        }
-    }
-}
-
-fn original_value(value: &WeaponRuntimeValue) -> String {
-    match value {
-        WeaponRuntimeValue::Boolean(value) => value.to_string(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => value.to_string(),
-        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!("{:?}", bits.map(f32::from_bits)),
-        WeaponRuntimeValue::Bytes(bytes) => {
-            format!("{} bytes (Reset restores the package value)", bytes.len())
+            ui.label("Saved byte edits are preserved. Enable Technical Controls in Preferences to edit them.");
         }
     }
 }

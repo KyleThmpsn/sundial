@@ -105,6 +105,17 @@ impl WeaponIconEditor {
         }
     }
 
+    pub(crate) fn with_corner(mut self, corner: Option<&crate::presentation::Artwork>) -> Self {
+        if let Some(corner) = corner {
+            self.preview = self.preview.and_then(|mut preview| {
+                preview.authored_watermark.rgba = crate::watermark::render_custom_corner(corner, 0)
+                    .map_err(|error| error.to_string())?;
+                Ok(preview)
+            });
+        }
+        self
+    }
+
     /// Draws the modal and returns a value only when it should be dismissed.
     pub(crate) fn show(&mut self, context: &egui::Context) -> Option<WeaponIconEditorAction> {
         self.image_import.poll(&mut self.draft);

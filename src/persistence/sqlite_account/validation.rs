@@ -32,11 +32,24 @@ pub(super) fn validate(db: &Connection) -> Result<(), SqliteAccountError> {
         ),
         (
             "character_stacks",
-            "SELECT count(*) FROM (SELECT *,row_number() OVER(PARTITION BY character_slot ORDER BY position)-1 AS expected FROM character_stacks) WHERE position != expected OR position >= 32 OR definition_hash NOT BETWEEN 0 AND 4294967295 OR definition_hash = 2166136261 OR quantity NOT BETWEEN 1 AND 2147483647 OR mutation_serial NOT BETWEEN 0 AND 2147483647",
+            "SELECT count(*) FROM (
+                 SELECT *, row_number() OVER (
+                     PARTITION BY character_slot ORDER BY position
+                 ) - 1 AS expected
+                 FROM character_stacks
+             ) WHERE position != expected
+                OR position >= 32
+                OR definition_hash NOT BETWEEN 0 AND 4294967295
+                OR definition_hash = 2166136261
+                OR quantity NOT BETWEEN 1 AND 2147483647
+                OR mutation_serial NOT BETWEEN 0 AND 2147483647",
         ),
         (
             "character_stacks.definition_hash",
-            "SELECT count(*) FROM (SELECT character_slot,definition_hash FROM character_stacks GROUP BY character_slot,definition_hash HAVING count(*) > 1)",
+            "SELECT count(*) FROM (
+                 SELECT character_slot, definition_hash FROM character_stacks
+                 GROUP BY character_slot, definition_hash HAVING count(*) > 1
+             )",
         ),
     ] {
         let invalid: i64 = db

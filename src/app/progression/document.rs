@@ -88,6 +88,7 @@ pub(super) struct Progression {
 }
 
 pub(in crate::app) struct CollectionStateSnapshot {
+    pub(super) is_native: bool,
     pub(super) flags: HashSet<(u8, usize)>,
     pub(super) values: HashMap<(u8, usize), i32>,
     pub(super) flag_overrides: HashMap<usize, u8>,
@@ -243,6 +244,7 @@ pub(in crate::app) fn collection_state_snapshot(
         )
         .collect();
     let mut snapshot = CollectionStateSnapshot {
+        is_native: document.get("_native_progression").is_some(),
         flags,
         values,
         account_progressions: policy.unlocks.account_progressions,

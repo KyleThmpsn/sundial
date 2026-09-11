@@ -32,6 +32,51 @@ pub(crate) fn workbench_style(ui: &mut egui::Ui) {
     }
 }
 
+/// Keep the perk workbench close to the surrounding editor's text scale.
+pub(crate) fn perk_style(ui: &mut egui::Ui) {
+    workbench_style(ui);
+    let style = ui.style_mut();
+    for (text, minimum) in [
+        (egui::TextStyle::Body, 14.0),
+        (egui::TextStyle::Button, 14.0),
+        (egui::TextStyle::Small, 12.0),
+        (egui::TextStyle::Monospace, 12.0),
+        (egui::TextStyle::Heading, 18.0),
+    ] {
+        if let Some(font) = style.text_styles.get_mut(&text) {
+            font.size = font.size.max(minimum);
+        }
+    }
+    style.spacing.interact_size.y = style.spacing.interact_size.y.max(26.0);
+    style.spacing.button_padding = egui::vec2(7.0, 3.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+}
+
+/// A virtualized row must allocate exactly the height passed to `show_rows`.
+pub(crate) fn list_row_height(ui: &egui::Ui) -> f32 {
+    ui.spacing()
+        .interact_size
+        .y
+        .max(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y)
+}
+
+pub(crate) fn list_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+    ui.scope(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let height = list_row_height(ui);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::left_to_right(egui::Align::Center)
+                .with_main_align(egui::Align::Min)
+                .with_main_justify(true),
+            |ui| ui.add(egui::SelectableLabel::new(selected, label)),
+        )
+        .inner
+    })
+    .inner
+    .on_hover_text(label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -126,7 +126,6 @@ fn unrelated_json_edits_require_repairing_known_invalid_settings() {
     assert!(app.validation_warning_for_write(&candidate).is_err());
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     let directory = TestDirectory::new("save-sqlite-unchanged-json");

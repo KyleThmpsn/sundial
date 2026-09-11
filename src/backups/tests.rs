@@ -106,7 +106,6 @@ fn failed_backup_writer_does_not_register_an_automatic_backup() {
     );
 }
 
-#[cfg(feature = "sqlite-account")]
 #[test]
 fn sqlite_backup_can_write_and_restore_a_reserved_flat_file() {
     let directory = TestDirectory::new("flat-sqlite-backup");

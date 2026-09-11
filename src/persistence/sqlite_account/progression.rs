@@ -4,6 +4,8 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+mod edits;
+
 type UnlockKey = (i32, i32, i32, i32);
 // Sunrise's biased acquired flag is exactly 2. Other byte values are not acquired.
 const FLAG_SET: i32 = 2;
@@ -33,6 +35,51 @@ fn scope(bank: i32, character: i32) -> i32 {
     }
 }
 impl Progression {
+    pub(super) fn account_flag_is_set(&self, definition_index: u16, slot: u16) -> bool {
+        self.unlocks.get(&(-1, 0, i32::from(slot), 0)) == Some(&FLAG_SET)
+            && self
+                .family
+                .get(&(0, i32::from(definition_index)))
+                .is_none_or(|value| *value == FLAG_SET)
+    }
+
+    pub(super) fn set_account_flag(
+        &mut self,
+        definition_index: u16,
+        slot: u16,
+    ) -> Result<bool, SqliteAccountError> {
+        if usize::from(slot) >= crate::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY {
+            return Err(SqliteAccountError::invalid_data(
+                "unlocks",
+                "The account claim flag is outside Sunrise's supported bank",
+            ));
+        }
+        let changed = !self.account_flag_is_set(definition_index, slot);
+        self.unlocks.insert((-1, 0, i32::from(slot), 0), FLAG_SET);
+        // An existing family-5 override must agree with the native claim checked by Sunrise.
+        // Updating it does not consume another override row or change unrelated flags.
+        if let Some(value) = self.family.get_mut(&(0, i32::from(definition_index))) {
+            *value = FLAG_SET;
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn account_flags_changed_from(&self, before: &Self) -> bool {
+        !self
+            .unlocks
+            .iter()
+            .filter(|((owner, bank, _, _), _)| *owner == -1 && *bank == 0)
+            .eq(before
+                .unlocks
+                .iter()
+                .filter(|((owner, bank, _, _), _)| *owner == -1 && *bank == 0))
+            || !self
+                .family
+                .iter()
+                .filter(|((kind, _), _)| *kind == 0)
+                .eq(before.family.iter().filter(|((kind, _), _)| *kind == 0))
+    }
+
     pub(super) fn load(db: &Connection) -> Result<Self, SqliteAccountError> {
         let mut result = Self::default();
         let mut stmt = db
@@ -138,10 +185,14 @@ impl Progression {
         // Read-only provenance for the editor. Never serialized into the native database.
         view["_native_progression"] = json!({
             "character_slot": character,
+            "character_slots": self.character_slots,
             "unlocks": self.unlocks.iter().filter_map(|(&(owner, bank, slot, lane), &value)|
                 (owner == scope(bank, character)).then_some([bank, slot, lane, value])
             ).collect::<Vec<_>>(),
             "family": self.family.iter().map(|(&(kind, slot), &value)| [kind, slot, value]).collect::<Vec<_>>(),
+            "character_flags": self.unlocks.iter().filter_map(|(&(owner, bank, slot, lane), &value)|
+                (bank == 4 && lane == 0).then_some([owner, slot, value])
+            ).collect::<Vec<_>>(),
             "hidden_family_counts": ([0, 1].map(|kind| self.family.iter().filter(|entry| {
                 let (&(k, slot), &value) = *entry;
                 k == kind && !visible_family(k, slot, value)
@@ -199,6 +250,7 @@ impl Progression {
                     .insert((kind, integer(&row[0])?), integer(&row[1])?);
             }
         }
+        candidate.apply_artifact_seed(self, character, after)?;
         if (0..2).any(|kind| candidate.family.keys().filter(|&&(k, _)| k == kind).count() > 100) {
             return Err(SqliteAccountError::invalid_data(
                 "family5",

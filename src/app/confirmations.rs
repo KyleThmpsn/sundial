@@ -125,7 +125,6 @@ impl SundialApp {
         }
     }
 
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn draw_sqlite_restore_confirmation(&mut self, ctx: &egui::Context) {
         if self.confirmation == Some(ConfirmationDialog::RestoreSqliteBackup) {
             if let Some(backup) = self.pending_sqlite_restore.clone() {

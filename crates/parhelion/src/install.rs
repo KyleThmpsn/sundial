@@ -22,12 +22,17 @@ use backups::*;
 
 mod validation;
 use validation::*;
+mod progress;
+use progress::Observer;
+pub use progress::{InstallPhase, InstallProgress};
 mod account;
 mod identities;
+mod preparation;
+use preparation::*;
 mod replacement;
 pub use replacement::{ReplacementReview, preview_replacement};
 #[cfg(test)]
-pub(crate) use replacement::{test_review, test_review_with_sockets};
+pub(crate) use replacement::{test_review, test_review_with_slots, test_review_with_sockets};
 mod uninstall;
 pub use uninstall::{
     UninstallPlan, UninstallReport, preview_uninstall, preview_uninstall_with_account_cleanup,
@@ -419,6 +424,8 @@ struct InstallTransactionRecord {
     artifacts: Vec<InstallTransactionArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_cleanup: Option<account::AccountCleanupRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_settings: Option<account::AccountCleanupRecord>,
 }
 
 type CacheQuarantineRename = fn(&Path, &Path) -> io::Result<()>;
@@ -437,15 +444,31 @@ const DEFAULT_CACHE_INVALIDATION_OPS: CacheInvalidationOps = CacheInvalidationOp
 
 /// Verify and transactionally install one staged Parhelion package set.
 pub fn install_staged_packages(request: &InstallRequest) -> Result<InstallReport, InstallError> {
+    install_staged_packages_with_progress(request, |_| {})
+}
+
+/// Report completed operations without changing installation or recovery policy.
+pub fn install_staged_packages_with_progress(
+    request: &InstallRequest,
+    mut progress: impl FnMut(InstallProgress),
+) -> Result<InstallReport, InstallError> {
+    progress(InstallProgress::stage(InstallPhase::Checking));
     let _lock = lock_installation(&request.target_packages_directory)?;
     recover_interrupted_install_locked(&RecoveryRequest {
         target_packages_directory: request.target_packages_directory.clone(),
         backup_root: request.backup_root.clone(),
         game_running_check: request.game_running_check,
     })?;
-    install_staged_packages_inner(request, None, DEFAULT_CACHE_INVALIDATION_OPS)
+    install_with_progress(
+        request,
+        None,
+        DEFAULT_CACHE_INVALIDATION_OPS,
+        sundial::package_authoring::replace_file_from_path_atomically,
+        &mut progress,
+    )
 }
 
+#[cfg(test)]
 fn install_staged_packages_inner(
     request: &InstallRequest,
     fail_after_commits: Option<usize>,
@@ -461,16 +484,27 @@ fn install_staged_packages_inner(
 
 type PackageReplace = fn(&Path, &Path) -> Result<(), String>;
 
+#[cfg(test)]
 fn install_with_replacer(
     request: &InstallRequest,
     fail_after_commits: Option<usize>,
     cache_ops: CacheInvalidationOps,
     replace: PackageReplace,
 ) -> Result<InstallReport, InstallError> {
+    install_with_progress(request, fail_after_commits, cache_ops, replace, &mut |_| {})
+}
+
+fn install_with_progress(
+    request: &InstallRequest,
+    fail_after_commits: Option<usize>,
+    cache_ops: CacheInvalidationOps,
+    replace: PackageReplace,
+    progress: Observer<'_>,
+) -> Result<InstallReport, InstallError> {
     let _staged_run_lease =
         crate::workflow::staging_retention::lease_for_read(&request.staged_run_directory)
             .map_err(InstallError::validation)?;
-    let validated = validate_request(request)?;
+    let validated = validation::validate_request_with_progress(request, progress)?;
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))
     })?;
@@ -481,10 +515,23 @@ fn install_with_replacer(
         ));
     }
 
-    let originals = match backup_originals(&validated, &backup_directory) {
-        Ok(originals) => originals,
-        Err(message) => return Err(InstallError::after_backup(message, &backup_directory)),
-    };
+    progress(InstallProgress::stage(InstallPhase::BackingUp));
+    let package_backups = validated.artifacts.len() + validated.obsolete_artifacts.len();
+    let backup_operations = package_backups + 3;
+    let originals =
+        match backup_originals_with_progress(&validated, &backup_directory, &mut |mut event| {
+            event.total = backup_operations;
+            progress(event);
+        }) {
+            Ok(originals) => originals,
+            Err(message) => return Err(InstallError::after_backup(message, &backup_directory)),
+        };
+    progress(InstallProgress::item(
+        InstallPhase::BackingUp,
+        "Sunrise build-data cache",
+        package_backups,
+        backup_operations,
+    ));
     let original_sunrise_cache =
         match backup_sunrise_cache(&validated.sunrise_build_cache, &backup_directory) {
             Ok(original) => original,
@@ -492,6 +539,12 @@ fn install_with_replacer(
                 return Err(InstallError::after_backup(message, &backup_directory));
             }
         };
+    progress(InstallProgress::item(
+        InstallPhase::BackingUp,
+        "Client package-header caches",
+        package_backups + 1,
+        backup_operations,
+    ));
     let original_package_header_caches =
         match backup_package_header_caches(&validated.package_header_caches, &backup_directory) {
             Ok(original) => original,
@@ -499,16 +552,30 @@ fn install_with_replacer(
                 return Err(InstallError::after_backup(message, &backup_directory));
             }
         };
+    progress(InstallProgress::item(
+        InstallPhase::BackingUp,
+        "Recipe snapshots",
+        package_backups + 2,
+        backup_operations,
+    ));
     let recipe_backup_directory = match backup_recipe_snapshots(&validated, &backup_directory) {
         Ok(directory) => directory,
         Err(message) => {
             return Err(InstallError::after_backup(message, &backup_directory));
         }
     };
-    let prepared = match prepare_temporary_files(&validated) {
+    progress(InstallProgress::item(
+        InstallPhase::BackingUp,
+        "Backup Complete",
+        backup_operations,
+        backup_operations,
+    ));
+    progress(InstallProgress::stage(InstallPhase::Preparing));
+    let prepared = match prepare_temporary_files_with_progress(&validated, None, progress) {
         Ok(prepared) => prepared,
         Err(message) => return Err(InstallError::after_backup(message, &backup_directory)),
     };
+    progress(InstallProgress::stage(InstallPhase::Rechecking));
     if let Err(message) = verify_targets_unchanged(&originals) {
         cleanup_prepared_files(&prepared);
         return Err(InstallError::after_backup(message, &backup_directory));
@@ -569,6 +636,26 @@ fn install_with_replacer(
             }
         }
     }
+    if let Some(settings) = validated
+        .replacement_guard
+        .as_ref()
+        .and_then(ReplacementReview::client_settings)
+    {
+        match account::prepare_settings(
+            settings,
+            &validated.target_packages_directory,
+            &backup_directory,
+        ) {
+            Ok(record) => transaction.client_settings = Some(record),
+            Err(error) => {
+                cleanup_prepared_files(&prepared);
+                return Err(InstallError::after_backup(
+                    error.to_string(),
+                    &backup_directory,
+                ));
+            }
+        }
+    }
     if let Err(error) = write_install_transaction(&journal_path, &transaction) {
         cleanup_prepared_files(&prepared);
         return Err(InstallError::after_backup(error.message, &backup_directory));
@@ -603,6 +690,7 @@ fn install_with_replacer(
         },
         prepared,
         transaction,
+        progress,
     )
 }
 
@@ -637,145 +725,6 @@ struct ValidatedManifest {
     artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
-}
-
-fn prepare_temporary_files(validated: &ValidatedRun) -> Result<Vec<PreparedArtifact>, String> {
-    prepare_temporary_files_inner(validated, None)
-}
-
-fn prepare_temporary_files_inner(
-    validated: &ValidatedRun,
-    fail_before_allocation: Option<usize>,
-) -> Result<Vec<PreparedArtifact>, String> {
-    let mut prepared = Vec::with_capacity(validated.artifacts.len());
-    for (index, artifact) in validated.artifacts.iter().enumerate() {
-        let profile = authored_package_for_file_name(&artifact.file_name).ok_or_else(|| {
-            format!(
-                "Internal error: no authored package profile for {}",
-                artifact.file_name
-            )
-        })?;
-        let allocated = if fail_before_allocation == Some(index) {
-            Err(format!(
-                "Injected target temporary-file allocation failure at artifact {index}"
-            ))
-        } else {
-            create_target_temporary_file(&validated.target_packages_directory, "install", index)
-        };
-        let (temporary_path, mut temporary_file) = match allocated {
-            Ok(allocated) => allocated,
-            Err(error) => {
-                cleanup_prepared_files(&prepared);
-                return Err(error);
-            }
-        };
-        let staged_path = validated.staged_run_directory.join(&artifact.file_name);
-        let copied = match copy_into_open_file(&staged_path, &mut temporary_file) {
-            Ok(copied) => copied,
-            Err(error) => {
-                drop(temporary_file);
-                remove_file_if_present(&temporary_path);
-                cleanup_prepared_files(&prepared);
-                return Err(format!(
-                    "Could not prepare {} for installation: {error}",
-                    artifact.file_name
-                ));
-            }
-        };
-        drop(temporary_file);
-        if copied.byte_length != artifact.byte_length || copied.sha256 != artifact.sha256 {
-            remove_file_if_present(&temporary_path);
-            cleanup_prepared_files(&prepared);
-            return Err(format!(
-                "Staged artifact {} changed after manifest verification",
-                artifact.file_name
-            ));
-        }
-        if let Err(error) = validate_authored_package_file(
-            &temporary_path,
-            profile,
-            &validated.target_packages_directory,
-        ) {
-            remove_file_if_present(&temporary_path);
-            cleanup_prepared_files(&prepared);
-            return Err(format!(
-                "Prepared artifact {} failed package validation before commit: {}",
-                artifact.file_name, error.message
-            ));
-        }
-        prepared.push(PreparedArtifact {
-            remove_target: false,
-            manifest: artifact.clone(),
-            target_path: validated
-                .target_packages_directory
-                .join(&artifact.file_name),
-            temporary_path,
-        });
-    }
-    for artifact in &validated.obsolete_artifacts {
-        prepared.push(PreparedArtifact {
-            remove_target: true,
-            manifest: artifact.clone(),
-            target_path: validated
-                .target_packages_directory
-                .join(&artifact.file_name),
-            // Removal needs no payload, but its unique name keeps journal cleanup uniform.
-            temporary_path: validated
-                .target_packages_directory
-                .join(format!(".parhelion-install-retire-{}.tmp", unique_token())),
-        });
-    }
-    Ok(prepared)
-}
-
-fn verify_targets_unchanged(originals: &[OriginalArtifact]) -> Result<(), String> {
-    for original in originals {
-        match (
-            &original.digest,
-            fs::symlink_metadata(&original.target_path),
-        ) {
-            (None, Err(error)) if error.kind() == io::ErrorKind::NotFound => {}
-            (None, Err(error)) => {
-                return Err(format!(
-                    "Could not recheck target package {}: {error}",
-                    original.target_path.display()
-                ));
-            }
-            (None, Ok(_)) => {
-                return Err(format!(
-                    "Target package {} appeared after preflight",
-                    original.target_path.display()
-                ));
-            }
-            (Some(_), Err(error)) => {
-                return Err(format!(
-                    "Target package {} disappeared after backup: {error}",
-                    original.target_path.display()
-                ));
-            }
-            (Some(expected), Ok(metadata)) => {
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(format!(
-                        "Target package {} changed type after backup",
-                        original.target_path.display()
-                    ));
-                }
-                let current = digest_file(&original.target_path).map_err(|error| {
-                    format!(
-                        "Could not recheck target package {}: {error}",
-                        original.target_path.display()
-                    )
-                })?;
-                if &current != expected {
-                    return Err(format!(
-                        "Target package {} changed after backup",
-                        original.target_path.display()
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -833,8 +782,10 @@ fn commit_and_verify(
     context: CommitContext<'_>,
     prepared: Vec<PreparedArtifact>,
     mut transaction: InstallTransactionRecord,
+    progress: Observer<'_>,
 ) -> Result<InstallReport, InstallError> {
     let commit_result = (|| {
+        progress(InstallProgress::stage(InstallPhase::UpdatingAccount));
         if let (Some(cleanup), Some(record)) = (
             context
                 .validated
@@ -851,8 +802,30 @@ fn commit_and_verify(
             )
             .map_err(|error| error.to_string())?;
         }
-        commit_prepared_files(&prepared, context.fail_after_commits, context.replace)?;
-        verify_installed_files(&prepared)?;
+        if let (Some(settings), Some(record)) = (
+            context
+                .validated
+                .replacement_guard
+                .as_ref()
+                .and_then(ReplacementReview::client_settings),
+            &transaction.client_settings,
+        ) {
+            account::commit_settings(
+                settings,
+                record,
+                &context.validated.target_packages_directory,
+                context.backup_directory,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        commit_prepared_files_with_progress(
+            &prepared,
+            context.fail_after_commits,
+            context.replace,
+            progress,
+        )?;
+        verify_installed_files(&prepared, progress)?;
+        progress(InstallProgress::stage(InstallPhase::RefreshingCaches));
         let sunrise_cache =
             invalidate_sunrise_cache(context.original_sunrise_cache, context.cache_ops)?;
         let package_header_caches = invalidate_package_header_caches(
@@ -865,6 +838,7 @@ fn commit_and_verify(
     let (invalidated_sunrise_cache, invalidated_package_header_caches) = match commit_result {
         Ok(caches) => caches,
         Err(message) => {
+            progress(InstallProgress::stage(InstallPhase::RollingBack));
             cleanup_prepared_files(&prepared);
             // A replacement may return an error after rename (for example directory
             // fsync on Linux). Reconcile every target, not just successful calls.
@@ -886,6 +860,7 @@ fn commit_and_verify(
     // Once finalization starts, a journal write error may mean the terminal
     // record was renamed but not synced. Do not then roll packages back beneath
     // a possibly committed journal. Keep the backup and let recovery reconcile it.
+    progress(InstallProgress::stage(InstallPhase::Finalizing));
     transaction.state = InstallTransactionState::Committed;
     if let Err(error) = write_install_transaction(context.journal_path, &transaction) {
         cleanup_prepared_files(&prepared);
@@ -895,6 +870,7 @@ fn commit_and_verify(
         ));
     }
 
+    progress(InstallProgress::stage(InstallPhase::SyncingCollections));
     let game_root = context.validated.target_packages_directory.parent();
     let profile_sync = if context.validated.authored_unlocks.is_empty() {
         None
@@ -914,6 +890,7 @@ fn commit_and_verify(
         invalidated_package_header_caches,
         profile_sync,
     );
+    progress(InstallProgress::stage(InstallPhase::CleaningUp));
     cleanup_prepared_files(&prepared);
     remove_terminal_install_transaction(context.journal_path);
     if let Err(error) = mark_backup_complete(&transaction) {
@@ -928,6 +905,7 @@ fn commit_and_verify(
             Err(error) => report.backup_prune_warning = Some(error),
         }
     }
+    progress(InstallProgress::stage(InstallPhase::Complete));
     Ok(report)
 }
 
@@ -943,12 +921,28 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+#[cfg(test)]
 fn commit_prepared_files(
     prepared: &[PreparedArtifact],
     fail_after_commits: Option<usize>,
     replace: PackageReplace,
 ) -> Result<(), String> {
+    commit_prepared_files_with_progress(prepared, fail_after_commits, replace, &mut |_| {})
+}
+
+fn commit_prepared_files_with_progress(
+    prepared: &[PreparedArtifact],
+    fail_after_commits: Option<usize>,
+    replace: PackageReplace,
+    progress: Observer<'_>,
+) -> Result<(), String> {
     for (index, artifact) in prepared.iter().enumerate() {
+        progress(InstallProgress::item(
+            InstallPhase::Installing,
+            &artifact.manifest.file_name,
+            index,
+            prepared.len(),
+        ));
         if artifact.remove_target {
             verify_target_matches_installed(artifact)?;
             fs::remove_file(&artifact.target_path).map_err(|error| {
@@ -966,6 +960,12 @@ fn commit_prepared_files(
             })?;
         }
         let committed = index + 1;
+        progress(InstallProgress::item(
+            InstallPhase::Installing,
+            &artifact.manifest.file_name,
+            committed,
+            prepared.len(),
+        ));
         if fail_after_commits == Some(committed) {
             return Err(format!(
                 "Injected installation failure after {committed} committed artifact(s)"
@@ -975,8 +975,17 @@ fn commit_prepared_files(
     Ok(())
 }
 
-fn verify_installed_files(prepared: &[PreparedArtifact]) -> Result<(), String> {
-    for artifact in prepared {
+fn verify_installed_files(
+    prepared: &[PreparedArtifact],
+    progress: Observer<'_>,
+) -> Result<(), String> {
+    for (index, artifact) in prepared.iter().enumerate() {
+        progress(InstallProgress::item(
+            InstallPhase::Verifying,
+            &artifact.manifest.file_name,
+            index,
+            prepared.len(),
+        ));
         if artifact.remove_target {
             match fs::symlink_metadata(&artifact.target_path) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -1003,6 +1012,12 @@ fn verify_installed_files(prepared: &[PreparedArtifact]) -> Result<(), String> {
             ));
         }
     }
+    progress(InstallProgress {
+        phase: InstallPhase::Verifying,
+        current_artifact: None,
+        completed: prepared.len(),
+        total: prepared.len(),
+    });
     Ok(())
 }
 

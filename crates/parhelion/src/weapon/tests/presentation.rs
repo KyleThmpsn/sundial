@@ -165,6 +165,13 @@ fn translation_art_and_dye_edits_preserve_the_gear_art_selector() {
         weapon_render_dye_rows(&target).unwrap(),
         weapon_render_dye_rows(&source).unwrap()
     );
+    validate_weapon_translation_markers(&target).unwrap();
+    for offset in [TRANSLATION_ART_DESCRIPTOR_OFFSET, 40, 56] {
+        let (_, header, _, _) = array_at(&target, TRANSLATION_ROOT + offset).unwrap();
+        let mut unmarked = target.clone();
+        write_u32(&mut unmarked, header - 4, 0).unwrap();
+        assert!(validate_weapon_translation_markers(&unmarked).is_err());
+    }
 
     let before = target.clone();
     set_weapon_pattern_index(&mut target, 0x89AB).unwrap();
@@ -326,17 +333,25 @@ fn cross_slot_classification_preserves_appearance_type_and_authored_bucket() {
 }
 
 #[test]
-fn item_string_classification_rejects_slot_and_type_key_mismatches() {
-    let mut payload = item_string_classification_fixture(WeaponInventorySlot::Energy, 0xC0E9_5045);
+fn item_string_classification_preserves_distinct_stock_type_keys() {
+    let mut payload = item_string_classification_fixture(WeaponInventorySlot::Energy, 0x0D51_B658);
     assert!(item_string_client_classification(&payload, WeaponInventorySlot::Kinetic).is_err());
 
     write_u32(
         &mut payload,
         ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET + 8,
-        0x6312_A690,
+        0x3EB0_2F1A,
     )
     .unwrap();
-    assert!(item_string_client_classification(&payload, WeaponInventorySlot::Energy).is_err());
+    let before = item_string_client_classification(&payload, WeaponInventorySlot::Energy).unwrap();
+    set_item_string_inventory_slot(
+        &mut payload,
+        WeaponInventorySlot::Energy,
+        WeaponInventorySlot::Kinetic,
+    )
+    .unwrap();
+    let after = item_string_client_classification(&payload, WeaponInventorySlot::Kinetic).unwrap();
+    assert_eq!(&after[4..], &before[4..]);
 }
 
 #[test]

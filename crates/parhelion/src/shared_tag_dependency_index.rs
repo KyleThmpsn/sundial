@@ -263,6 +263,15 @@ fn indexed_dependencies(groups: &BTreeMap<u16, Group>) -> BTreeSet<(u16, u16)> {
     entries
 }
 
+/// Reads validated native package and entry indices without narrowing package IDs.
+pub(crate) fn dependency_entries(
+    payload: &[u8],
+    companion: TagHash,
+    owner: TagHash,
+) -> AuthoringResult<BTreeSet<(u16, u16)>> {
+    Ok(indexed_dependencies(&parse(payload, companion, owner)?))
+}
+
 /// Copies validated native dependency groups without forcing their package IDs
 /// through the narrower authored-tag encoding window.
 pub(crate) fn enroll_inherited_dependencies(

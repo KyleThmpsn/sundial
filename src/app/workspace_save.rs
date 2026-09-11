@@ -9,12 +9,10 @@ use super::{
     account_workspace::WorkspaceDocument,
     settings::{SaveJsonError, SaveJsonResult, save_json},
 };
-#[cfg(feature = "sqlite-account")]
 use crate::persistence::sqlite_account::SqliteSaveReceipt;
 
 pub(super) struct WorkspaceSaveReceipt {
     pub json: Option<SaveJsonResult>,
-    #[cfg(feature = "sqlite-account")]
     pub sqlite: Option<SqliteSaveReceipt>,
 }
 
@@ -113,7 +111,6 @@ pub(super) fn save_changed_sources_with_json(
         settings_path,
     };
 
-    #[cfg(feature = "sqlite-account")]
     let receipt = coordinate_source_saves(
         &mut context,
         json_changed,
@@ -129,26 +126,8 @@ pub(super) fn save_changed_sources_with_json(
         },
     )?;
 
-    #[cfg(not(feature = "sqlite-account"))]
-    let receipt = {
-        debug_assert!(!account_changed);
-        let receipt = coordinate_source_saves(
-            &mut context,
-            json_changed,
-            false,
-            |_context| -> Result<(), String> {
-                unreachable!("SQLite saves are disabled in this build")
-            },
-            |context| save_context_json(context, save_json),
-            |_context, _receipt| unreachable!("there is no SQLite write to roll back"),
-        )?;
-        let _ = receipt.sqlite;
-        receipt
-    };
-
     Ok(WorkspaceSaveReceipt {
         json: receipt.json,
-        #[cfg(feature = "sqlite-account")]
         sqlite: receipt.sqlite,
     })
 }

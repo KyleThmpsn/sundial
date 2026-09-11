@@ -37,6 +37,7 @@ use super::{
     AbilityOptions, ItemArtArrangement, ItemDef, ItemPackageMetadata, ItemRarity,
     ItemRenderOverride, ItemStatDefinition, ItemWeaponInventorySlot, SocketDef,
     abilities::{AbilityDisplayData, build_subclass_choices},
+    descriptions::mod_description,
     inventory::{InventoryBucketDescriptor, item_inventory_metadata},
     investment::{
         item_investment_stats, item_stat_group_index, masterwork_label, stat_allocation_labels,
@@ -82,6 +83,7 @@ pub(in crate::catalog) struct ItemScanContext<'a> {
     pub item_stat_definitions: &'a [ItemStatDefinition],
     pub stat_names: &'a [String],
     pub sandbox_perk_catalog: Option<&'a [bool]>,
+    pub perk_descriptions: &'a HashMap<u16, String>,
     pub trait_definition_count: usize,
     pub ability_displays: &'a HashMap<u16, AbilityDisplayData>,
     pub collectible_item_paths: &'a HashMap<usize, Vec<Vec<String>>>,
@@ -278,6 +280,7 @@ pub(in crate::catalog) fn scan_items(
         item_stat_definitions,
         stat_names,
         sandbox_perk_catalog,
+        perk_descriptions,
         trait_definition_count,
         ability_displays,
         collectible_item_paths,
@@ -398,6 +401,17 @@ pub(in crate::catalog) fn scan_items(
                 plug_category_items: &mut plug_category_items,
                 malformed_investment_stats: &mut malformed_investment_stats,
             },
+        );
+        // Resolve effects before reading item strings, which may be absent for mods.
+        // A nonempty native item description below takes precedence over this fallback.
+        descriptions.extend(
+            mod_description(
+                &item,
+                item_package_metadata.get(&hash),
+                metadata,
+                perk_descriptions,
+            )
+            .map(|description| (hash, description)),
         );
         let objective_indices = item_objective_indices(&item, objectives.len());
         let objective_paths = collectible_item_paths

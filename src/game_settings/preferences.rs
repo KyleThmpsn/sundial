@@ -120,13 +120,13 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &Map<String, Value>) ->
         .striped(true)
         .show(ui, |ui| {
             let mut changed = CommandBatch::default();
-            changed |= choice(ui, values, "button_layout", "Button layout", BUTTON_LAYOUTS);
-            changed |= choice(ui, values, "movement_mode", "Stick layout", STICK_LAYOUTS);
+            changed |= choice(ui, values, "button_layout", "Button Layout", BUTTON_LAYOUTS);
+            changed |= choice(ui, values, "movement_mode", "Stick Layout", STICK_LAYOUTS);
             changed |= offset_slider(
                 ui,
                 values,
                 "controller_look_sensitivity",
-                "Controller look sensitivity",
+                "Controller Look Sensitivity",
                 0,
                 9,
                 1,
@@ -135,32 +135,32 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &Map<String, Value>) ->
                 ui,
                 values,
                 "controller_invert_vertical",
-                "Invert controller vertical look",
+                "Invert Controller Vertical Look",
             );
             changed |= boolean(
                 ui,
                 values,
                 "controller_auto_look_centering",
-                "Controller auto-look centering",
+                "Controller Auto-Look Centering",
             );
-            changed |= boolean(ui, values, "controller_vibration", "Controller vibration");
+            changed |= boolean(ui, values, "controller_vibration", "Controller Vibration");
             changed |= boolean(
                 ui,
                 values,
                 "controller_swap_shoulders",
-                "Swap controller shoulder buttons",
+                "Swap Controller Shoulder Buttons",
             );
             changed |= boolean(
                 ui,
                 values,
                 "controller_invert_horizontal",
-                "Invert controller horizontal look",
+                "Invert Controller Horizontal Look",
             );
             changed |= integer_slider(
                 ui,
                 values,
                 "mouse_look_sensitivity",
-                "Mouse look sensitivity",
+                "Mouse Look Sensitivity",
                 1,
                 100,
             );
@@ -168,21 +168,21 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &Map<String, Value>) ->
                 ui,
                 values,
                 "mouse_invert_vertical",
-                "Invert mouse vertical look",
+                "Invert Mouse Vertical Look",
             );
             changed |= boolean(
                 ui,
                 values,
                 "mouse_invert_horizontal",
-                "Invert mouse horizontal look",
+                "Invert Mouse Horizontal Look",
             );
             changed |= boolean(
                 ui,
                 values,
                 "unidentified_toggle",
-                "Unidentified control toggle",
+                "Unidentified Control Toggle",
             );
-            changed |= boolean(ui, values, "mouse_aim_smoothing", "Mouse aim smoothing");
+            changed |= boolean(ui, values, "mouse_aim_smoothing", "Mouse Aim Smoothing");
             changed |= float_slider(
                 ui,
                 values,
@@ -196,7 +196,7 @@ pub(super) fn draw_controls(ui: &mut egui::Ui, settings: &Map<String, Value>) ->
                 ui,
                 values,
                 "double_press_delay",
-                "Double-press delay",
+                "Double-Press Delay",
                 DOUBLE_PRESS_DELAYS,
             );
             changed
@@ -222,36 +222,36 @@ pub(super) fn draw_audio(ui: &mut egui::Ui, settings: &Map<String, Value>) -> Co
                 ui,
                 values,
                 "voice_output_mode",
-                "Voice output mode",
+                "Voice Output Mode",
                 VOICE_OUTPUT_MODES,
             );
             changed |= choice(
                 ui,
                 values,
                 "team_voice_channel",
-                "Team voice channel",
+                "Team Voice Channel",
                 TEAM_VOICE_MODES,
             );
             changed |= choice(
                 ui,
                 values,
                 "reserved_mode",
-                "Unidentified audio state",
+                "Unidentified Audio State",
                 RESERVED_AUDIO_STATES,
             );
-            fixed(ui, values, "migration_version", "Game volume state");
-            changed |= integer_slider(ui, values, "chat_volume", "Voice chat volume", 0, 8);
-            changed |= boolean(ui, values, "mute_when_unfocused", "Mute when unfocused");
+            fixed(ui, values, "migration_version", "Game Volume State");
+            changed |= integer_slider(ui, values, "chat_volume", "Voice Chat Volume", 0, 8);
+            changed |= boolean(ui, values, "mute_when_unfocused", "Mute when Unfocused");
             changed |= integer_slider(
                 ui,
                 values,
                 "sound_effects_volume",
-                "Sound effects volume",
+                "Sound Effects Volume",
                 0,
                 10,
             );
-            changed |= integer_slider(ui, values, "dialogue_volume", "Dialogue volume", 0, 10);
-            changed |= integer_slider(ui, values, "music_volume", "Music volume", 0, 10);
+            changed |= integer_slider(ui, values, "dialogue_volume", "Dialogue Volume", 0, 10);
+            changed |= integer_slider(ui, values, "music_volume", "Music Volume", 0, 10);
             changed
         })
         .inner
@@ -267,7 +267,7 @@ pub(super) fn draw_display(
         return CommandBatch::default();
     };
     ui.heading("Display");
-    ui.label("Brightness and display overlays. Renderer calibration is shown but kept at Sunrise's required values.");
+    ui.label("Brightness and display overlays.");
     ui.add_space(8.0);
     egui::Grid::new("game_display_grid")
         .num_columns(2)
@@ -277,7 +277,7 @@ pub(super) fn draw_display(
             let mut changed = CommandBatch::default();
             changed |= integer_slider(ui, values, "brightness", "Brightness", 0, 6);
             changed |= boolean(ui, values, "show_fps", "Show FPS");
-            changed |= choice(ui, values, "hdr_mode", "HDR mode", HDR_MODES);
+            changed |= choice(ui, values, "hdr_mode", "HDR Mode", HDR_MODES);
             if show_presence_gated_preference(values, VERTICAL_SYNC_INTERVAL_KEY) {
                 let refresh_rate_hz = display_refresh_rate_hz();
                 let intervals = vertical_sync_intervals(refresh_rate_hz);
@@ -286,9 +286,9 @@ pub(super) fn draw_display(
                     values,
                     VERTICAL_SYNC_INTERVAL_KEY,
                     &refresh_rate_hz.map_or_else(
-                        || "Vertical sync".to_owned(),
+                        || "Vertical Sync".to_owned(),
                         |refresh_rate_hz| {
-                            format!("Vertical sync ({refresh_rate_hz} Hz primary display)")
+                            format!("Vertical Sync ({refresh_rate_hz} Hz Primary Display)")
                         },
                     ),
                     &intervals,
@@ -299,7 +299,7 @@ pub(super) fn draw_display(
                     ui,
                     values,
                     FIELD_OF_VIEW_KEY,
-                    "Field of view",
+                    "Field of View",
                     FIELD_OF_VIEW_MINIMUM,
                     if extended_fov {
                         FIELD_OF_VIEW_MAXIMUM
@@ -308,12 +308,12 @@ pub(super) fn draw_display(
                     },
                 );
             }
-            fixed(ui, values, "calibration_primary", "Renderer calibration");
+            fixed(ui, values, "calibration_primary", "Renderer Calibration");
             fixed(
                 ui,
                 values,
                 "calibration_alpha",
-                "Renderer calibration alpha",
+                "Renderer Calibration Alpha",
             );
             changed
         })
@@ -338,41 +338,41 @@ pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &Map<String, Value>) -
                 ui,
                 values,
                 "subtitles_mode",
-                "Subtitles mode",
+                "Subtitles Mode",
                 SUBTITLE_MODES,
             );
             changed |= choice(
                 ui,
                 values,
                 "colorblind_mode",
-                "Colorblind mode",
+                "Colorblind Mode",
                 COLORBLIND_MODES,
             );
-            changed |= choice(ui, values, "helmet_mode", "Helmet mode", HELMET_MODES);
-            changed |= choice(ui, values, "hud_opacity", "HUD opacity", HUD_OPACITY);
-            changed |= boolean(ui, values, "display_hints", "Display hints");
+            changed |= choice(ui, values, "helmet_mode", "Helmet Mode", HELMET_MODES);
+            changed |= choice(ui, values, "hud_opacity", "HUD Opacity", HUD_OPACITY);
+            changed |= boolean(ui, values, "display_hints", "Display Hints");
             changed |= choice(
                 ui,
                 values,
                 "background_opacity",
-                "Background opacity",
+                "Background Opacity",
                 BACKGROUND_OPACITY,
             );
             changed |= choice(
                 ui,
                 values,
                 "reticle_location",
-                "Reticle location",
+                "Reticle Location",
                 RETICLE_LOCATIONS,
             );
-            changed |= choice(ui, values, "reticle_color", "Reticle color", RETICLE_COLORS);
-            changed |= integer_slider(ui, values, "text_size", "Text size", 0, 4);
-            changed |= integer_slider(ui, values, "text_color", "Text color", 0, 3);
+            changed |= choice(ui, values, "reticle_color", "Reticle Color", RETICLE_COLORS);
+            changed |= integer_slider(ui, values, "text_size", "Text Size", 0, 4);
+            changed |= integer_slider(ui, values, "text_color", "Text Color", 0, 3);
             changed |= integer_slider(
                 ui,
                 values,
                 "text_background_style",
-                "Text background style",
+                "Text Background Style",
                 0,
                 3,
             );
@@ -380,16 +380,16 @@ pub(super) fn draw_interface(ui: &mut egui::Ui, settings: &Map<String, Value>) -
                 ui,
                 values,
                 "text_background_opacity",
-                "Text background opacity",
+                "Text Background Opacity",
                 0,
                 4,
             );
-            fixed(ui, values, "reserved_text_mode", "Reserved text mode");
+            fixed(ui, values, "reserved_text_mode", "Reserved Text Mode");
             fixed(
                 ui,
                 values,
                 "subtitle_options_entry",
-                "Subtitle options entry",
+                "Subtitle Options Entry",
             );
             changed
         })
@@ -410,56 +410,56 @@ pub(super) fn draw_social(ui: &mut egui::Ui, settings: &Map<String, Value>) -> C
         .striped(true)
         .show(ui, |ui| {
             let mut changed = CommandBatch::default();
-            changed |= boolean(ui, values, "prefer_good_connection", "Matchmaking search");
+            changed |= boolean(ui, values, "prefer_good_connection", "Matchmaking Search");
             changed |= choice(
                 ui,
                 values,
                 "text_chat_mode",
-                "Text chat mode",
+                "Text Chat Mode",
                 TEXT_CHAT_MODES,
             );
-            changed |= boolean(ui, values, "show_real_names", "Show real names");
+            changed |= boolean(ui, values, "show_real_names", "Show Real Names");
             changed |= boolean(
                 ui,
                 values,
                 "clan_invite_notifications",
-                "Clan invite notifications",
+                "Clan Invite Notifications",
             );
-            changed |= boolean(ui, values, "profanity_filter", "Profanity filter");
-            changed |= boolean(ui, values, "voice_chat_enabled", "Voice chat enabled");
+            changed |= boolean(ui, values, "profanity_filter", "Profanity Filter");
+            changed |= boolean(ui, values, "voice_chat_enabled", "Voice Chat Enabled");
             changed |= choice(
                 ui,
                 values,
                 "whisper_chat_mode",
-                "Whisper chat mode",
+                "Whisper Chat Mode",
                 WHISPER_CHAT_MODES,
             );
             changed |= choice(
                 ui,
                 values,
                 "team_chat_join_mode",
-                "Team chat join mode",
+                "Team Chat Join Mode",
                 MANUAL_AUTOMATIC,
             );
             changed |= choice(
                 ui,
                 values,
                 "local_chat_join_mode",
-                "Local chat join mode",
+                "Local Chat Join Mode",
                 MANUAL_AUTOMATIC,
             );
             changed |= choice(
                 ui,
                 values,
                 "clan_chat_join_mode",
-                "Clan chat join mode",
+                "Clan Chat Join Mode",
                 MANUAL_AUTOMATIC,
             );
             changed |= choice(
                 ui,
                 values,
                 "chat_auto_hide_mode",
-                "Chat auto-hide mode",
+                "Chat Auto-Hide Mode",
                 AUTO_HIDE_MODES,
             );
             changed

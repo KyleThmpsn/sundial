@@ -103,11 +103,7 @@ impl SundialApp {
                             type_name: &definition.type_name,
                         },
                     );
-                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
-                        ui,
-                        &self.manifest,
-                        Some(u64::from(snapshot.definition_hash)),
-                        Some(DefinitionInspectionContext {
+                    let inspection_context = DefinitionInspectionContext {
                             source: format!(
                                 "Character {} Inventory · Item {}",
                                 snapshot.location.character_index + 1,
@@ -128,7 +124,12 @@ impl SundialApp {
                                     .map_or(0, |item| item.default_plugs.len()),
                                 ItemPlugs::Authored(plugs) => plugs.len(),
                             }),
-                        }),
+                        };
+                    let header_response = item_editor::draw_catalog_item_header_with_trailing(
+                        ui,
+                        &self.manifest,
+                        Some(u64::from(snapshot.definition_hash)),
+                        Some(inspection_context.clone()),
                         ItemHeader {
                             label: None,
                             soid: Some(&soid_text),
@@ -140,17 +141,16 @@ impl SundialApp {
                         },
                         |_| {},
                     );
-                    if self.document.supports_v13_account() {
-                        header_response.context_menu(|ui| {
+                    item_editor::draw_context_menu(ui, &header_response, Some((u64::from(snapshot.definition_hash), inspection_context)), |ui| {
                             ui.add_enabled_ui(editable, |ui| {
                                 if let Some(flags) =
-                                    item_editor::draw_masterwork_flag(ui, snapshot.flags, true)
+                                    item_editor::draw_state_flags(ui, snapshot.flags, self.document.supports_v13_account())
                                 {
                                     requests.actions.push(InventoryItemAction::SetFlags(flags));
                                 }
+                                self.draw_item_seen(ui, snapshot.instance_soid);
                             });
                         });
-                    }
                     self.draw_inventory_item_actions(
                         ui,
                         InventoryItemActionContext {
@@ -502,12 +502,11 @@ impl SundialApp {
                         })
                         .inner;
                     if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
-                        let mut plugs = current_plugs.clone();
-                        while plugs.len() <= socket_index {
-                            plugs.push(None);
-                        }
-                        plugs[socket_index] = hash.and_then(|hash| u32::try_from(hash).ok());
-                        requested.push(InventoryItemAction::SetPlugs(ItemPlugs::Authored(plugs)));
+                        requested.push(InventoryItemAction::set_plug(
+                            &current_plugs,
+                            socket_index,
+                            hash,
+                        ));
                     }
                     if searchable {
                         self.plug_searches.insert(query_key, query);

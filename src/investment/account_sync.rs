@@ -4,6 +4,10 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
 };
+pub(crate) mod placement;
+pub use placement::{
+    AuthoredItemMove, AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct AuthoredCollectionUnlock {
@@ -24,6 +28,7 @@ pub struct AuthoredAccountCleanup {
     pub removed_reward_rules: usize,
     pub cleared_unlocks: usize,
     pub resized_items: std::collections::BTreeMap<u32, usize>,
+    pub slot_moves: Vec<AuthoredItemMove>,
 }
 
 /// Verified native socket layouts for a retained definition in a replacement generation.
@@ -52,16 +57,36 @@ pub fn preview_authored_account_replacement(
     unlocks: &[AuthoredCollectionUnlock],
     socket_changes: &[AuthoredSocketChange],
 ) -> Result<AuthoredAccountCleanup, String> {
-    authoring_bridge::preview_account_replacement(install, item_hashes, unlocks, socket_changes)
+    preview_authored_account_replacement_with_slots(
+        install,
+        item_hashes,
+        unlocks,
+        socket_changes,
+        None,
+    )
+}
+
+/// Includes native slot changes and verified incoming inventory capacities in the same review.
+pub fn preview_authored_account_replacement_with_slots(
+    install: &Path,
+    item_hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    socket_changes: &[AuthoredSocketChange],
+    slots: Option<&AuthoredSlotReplacement>,
+) -> Result<AuthoredAccountCleanup, String> {
+    authoring_bridge::preview_account_replacement(
+        install,
+        item_hashes,
+        unlocks,
+        socket_changes,
+        slots,
+    )
 }
 
 /// Checks that package transactions use the active account source.
 pub fn validate_authored_cleanup_backend(path: &Path) -> Result<(), String> {
     if is_database(path) {
-        #[cfg(feature = "sqlite-account")]
         return Ok(());
-        #[cfg(not(feature = "sqlite-account"))]
-        return Err("This build does not include SQLite account support".into());
     }
     if crate::persistence::investment_path(path)
         .try_exists()
@@ -81,7 +106,6 @@ fn is_database(path: &Path) -> bool {
 /// Returns journal bytes. SQLite uses a complete logical snapshot including uncheckpointed WAL data.
 pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {
     validate_authored_cleanup_backend(path)?;
-    #[cfg(feature = "sqlite-account")]
     if is_database(path) {
         return crate::persistence::sqlite_account::package::read(path);
     }
@@ -94,7 +118,6 @@ pub fn replace_authored_account_source(
     updated: &[u8],
 ) -> Result<(), String> {
     validate_authored_cleanup_backend(path)?;
-    #[cfg(feature = "sqlite-account")]
     if is_database(path) {
         return crate::persistence::sqlite_account::package::replace(path, expected, updated);
     }

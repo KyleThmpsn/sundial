@@ -36,6 +36,26 @@ pub(in crate::app) enum EquippedPlugValue {
     Malformed(String),
 }
 
+impl EquippedItemPlugs {
+    /// Preserves malformed plug values for the read-only editor display.
+    pub(in crate::app) fn display_value(&self) -> Option<Value> {
+        match self {
+            Self::NativeDefaults => Some(Value::Null),
+            Self::Authored(plugs) => Some(Value::Array(
+                plugs
+                    .iter()
+                    .map(|plug| match plug {
+                        EquippedPlugValue::Empty => Value::Null,
+                        EquippedPlugValue::Hash(hash) => Value::from(*hash),
+                        EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
+                    })
+                    .collect(),
+            )),
+            Self::Missing | Self::Malformed(_) => None,
+        }
+    }
+}
+
 pub(in crate::app) struct EquipmentSlotCard<'a> {
     pub id_scope: &'static str,
     pub slot: &'static str,

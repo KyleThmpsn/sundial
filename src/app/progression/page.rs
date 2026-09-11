@@ -28,8 +28,6 @@ pub(in crate::app) fn draw_content(
         ui.add_space(4.0);
     }
 
-    super::native::draw(ui, document, catalog, view, &mut state.native_query);
-    super::browser::draw(ui, document, catalog, state);
     let cached = state
         .cached_progression
         .take()
@@ -147,6 +145,11 @@ pub(super) fn draw_unlocks(
             .width(220.0)
             .show_ui(ui, |ui| {
                 for table in UnlockTable::ALL {
+                    if table == UnlockTable::StoredValues
+                        && document.get("_native_progression").is_none()
+                    {
+                        continue;
+                    }
                     table_changed |= ui
                         .selectable_value(&mut state.unlock_table, table, table.label())
                         .changed();
@@ -159,7 +162,7 @@ pub(super) fn draw_unlocks(
         }
         ui.add_space(8.0);
         draw_filter(ui, &mut state.query);
-        if state.unlock_table != UnlockTable::UnreplicatedProgressions
+        if state.unlock_table.field_name().is_some()
             && !state.unlock_table.is_progression()
             && ui
                 .add_enabled(!state.read_only, egui::Button::new("+ Add"))
@@ -301,6 +304,14 @@ pub(super) fn draw_unlocks(
         ),
         UnlockTable::UnreplicatedProgressions => {
             draw_unreplicated_progressions(ui, catalog, &query, state);
+            false
+        }
+        UnlockTable::FlagDefinitions | UnlockTable::ValueDefinitions => {
+            super::browser::draw(ui, document, catalog, state);
+            false
+        }
+        UnlockTable::StoredValues => {
+            super::native::draw(ui, document, catalog, &query);
             false
         }
     };

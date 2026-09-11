@@ -78,6 +78,23 @@ pub(crate) fn set_array_count(
     write_u64(data, header, count)
 }
 
+pub(crate) fn bounded_relative_target(
+    data: &[u8],
+    field: usize,
+    description: &str,
+) -> AuthoringResult<usize> {
+    let relative = read_i64(data, field)?;
+    let target = field.checked_add_signed(relative as isize).ok_or_else(|| {
+        crate::error::input(format!("{description} relative reference overflowed"))
+    })?;
+    if target >= data.len() {
+        return Err(crate::error::input(format!(
+            "{description} relative reference points outside its payload"
+        )));
+    }
+    Ok(target)
+}
+
 pub(crate) fn relative_target(data: &[u8], pointer: usize) -> AuthoringResult<usize> {
     sundial::package_authoring::native_payload::relative_offset(
         pointer,

@@ -2,8 +2,9 @@
 //!
 //! Every stock `0x80804A53` icon definition is immediately followed by a type-8
 //! `0x80809EF9` record. That companion contains the complete transitive icon-resource closure,
-//! grouped by package id. The parser and writer below intentionally accept only the canonical
-//! layout reproduced byte-for-byte by stock payloads with one, three, and four package groups.
+//! grouped by package id. The shared dependency-index parser validates both native bitmap
+//! and sparse entry lists by rebuilding their original layout byte-for-byte. Authored
+//! companions use sparse lists after checking the complete icon-resource closure.
 //! The same envelope also roots non-icon type-16 resources, so the canonical writer is exposed
 //! independently from the stricter icon-donor reader.
 
@@ -16,17 +17,14 @@ use crate::{
     AuthoringResult,
     error::{invalid, validation},
     format::SHARED_TAG_COMPANION_CLASS,
-    tag_payload::{
-        read_u16, read_u32, read_u64, relative_target as payload_relative_target, write_i64,
-        write_u32, write_u64,
-    },
+    shared_tag_dependency_index::dependency_entries,
+    tag_payload::{read_u64, write_i64, write_u32, write_u64},
 };
 
 const ARRAY_MARKER: u32 = 0x8080_9FBD;
 const PACKAGE_GROUP_CLASS: u64 = 0x8080_9EFB;
 const ENTRY_INDEX_CLASS: u64 = 0x8080_000A;
 const FIXED_PREFIX_SIZE: usize = 0x50;
-const GROUP_ROW_SIZE: usize = 0x28;
 const GROUP_ROWS_OFFSET: usize = 0x50;
 const MAX_PACKAGE_GROUPS: usize = 4_096;
 
@@ -185,127 +183,24 @@ fn parse_canonical_payload(
     container_tag: TagHash,
 ) -> AuthoringResult<SharedTagDependencies> {
     validate_fixed_prefix(payload)?;
-    if read_u64(payload, 0x00)? != payload.len() as u64
-        || read_u32(payload, 0x08)? != u32::from(companion_tag)
-        || read_u32(payload, 0x0C)? != u32::from(container_tag)
-    {
-        return Err(invalid(format!(
-            "Icon companion {companion_tag} has inconsistent size, self tag, or owner tag"
-        )));
-    }
-
-    let group_count = usize_from_u64(read_u64(payload, 0x10)?, "package-group count")?;
-    if group_count == 0 || group_count > MAX_PACKAGE_GROUPS {
-        return Err(invalid(format!(
-            "Icon companion {companion_tag} has invalid package-group count {group_count}"
-        )));
-    }
-    let root = relative_target(payload, 0x18, "icon companion package-group array")?;
-    if root < 4
-        || read_u32(payload, root - 4)? != ARRAY_MARKER
-        || usize_from_u64(read_u64(payload, root)?, "repeated package-group count")? != group_count
-        || read_u64(payload, root + 8)? != PACKAGE_GROUP_CLASS
-        || root + 0x10 != GROUP_ROWS_OFFSET
-    {
-        return Err(invalid(format!(
-            "Icon companion {companion_tag} has a non-stock package-group array"
-        )));
-    }
-    let rows_end = GROUP_ROWS_OFFSET
-        .checked_add(
-            group_count
-                .checked_mul(GROUP_ROW_SIZE)
-                .ok_or_else(|| invalid("Icon companion group table overflowed"))?,
-        )
-        .ok_or_else(|| invalid("Icon companion group table overflowed"))?;
-    if rows_end > payload.len() {
-        return Err(invalid(format!(
-            "Icon companion {companion_tag} package-group rows exceed its payload"
-        )));
-    }
-
-    let mut dependencies = BTreeSet::new();
-    let mut previous_package = None;
-    for group_index in 0..group_count {
-        let row = GROUP_ROWS_OFFSET + group_index * GROUP_ROW_SIZE;
-        let package_raw = read_u64(payload, row)?;
-        let package_id = u16::try_from(package_raw).map_err(|_| {
-            invalid(format!(
-                "Icon companion {companion_tag} group {group_index} has invalid package id {package_raw}"
-            ))
-        })?;
-        if previous_package.is_some_and(|previous| package_id <= previous) {
-            return Err(invalid(format!(
-                "Icon companion {companion_tag} package groups are not strictly sorted"
-            )));
-        }
-        previous_package = Some(package_id);
-        if payload[row + 8..row + 0x18].iter().any(|byte| *byte != 0) {
-            return Err(invalid(format!(
-                "Icon companion {companion_tag} group {group_index} has nonzero reserved bytes"
-            )));
-        }
-        let entry_count = usize_from_u64(read_u64(payload, row + 0x18)?, "group entry count")?;
-        if entry_count == 0 {
-            return Err(invalid(format!(
-                "Icon companion {companion_tag} group {group_index} is empty"
-            )));
-        }
-        let nested = relative_target(
-            payload,
-            row + 0x20,
-            "icon companion package entry-index array",
-        )?;
-        let entry_bytes = entry_count
-            .checked_mul(2)
-            .ok_or_else(|| invalid("Icon companion entry-index array overflowed"))?;
-        if nested < 4
-            || read_u32(payload, nested - 4)? != ARRAY_MARKER
-            || usize_from_u64(read_u64(payload, nested)?, "repeated group entry count")?
-                != entry_count
-            || read_u64(payload, nested + 8)? != ENTRY_INDEX_CLASS
-            || nested
-                .checked_add(0x10)
-                .and_then(|start| start.checked_add(entry_bytes))
-                .is_none_or(|end| end > payload.len())
+    let entries = dependency_entries(payload, companion_tag, container_tag)
+        .map_err(|error| error.context(format!("Icon Companion: {companion_tag}")))?;
+    let mut dependencies = SharedTagDependencies::new();
+    for (package_id, entry_index) in entries {
+        let tag = TagHash::new(package_id, entry_index);
+        if !is_valid_package_tag(tag)
+            || tag.pkg_id() != package_id
+            || tag.entry_index() != entry_index
+            || !dependencies.insert(u32::from(tag))
         {
             return Err(invalid(format!(
-                "Icon companion {companion_tag} group {group_index} has a non-stock entry-index array"
+                "Icon companion {companion_tag} contains malformed or duplicate entry {entry_index} in package 0x{package_id:04X}"
             )));
         }
-        let entries = nested + 0x10;
-        let mut previous_index = None;
-        for entry_offset in 0..entry_count {
-            let entry_index = read_u16(payload, entries + entry_offset * 2)?;
-            if previous_index.is_some_and(|previous| entry_index <= previous) {
-                return Err(invalid(format!(
-                    "Icon companion {companion_tag} group {group_index} entry indices are not strictly sorted"
-                )));
-            }
-            previous_index = Some(entry_index);
-            let tag = TagHash::new(package_id, entry_index);
-            if !is_valid_package_tag(tag)
-                || tag.pkg_id() != package_id
-                || tag.entry_index() != entry_index
-                || !dependencies.insert(u32::from(tag))
-            {
-                return Err(invalid(format!(
-                    "Icon companion {companion_tag} group {group_index} contains malformed or duplicate entry {entry_index}"
-                )));
-            }
-        }
     }
-
-    let groups = grouped_dependencies(&dependencies)?;
-    let canonical = encode_canonical_payload(payload, companion_tag, container_tag, &groups)?;
-    if canonical != payload {
-        let first_difference = canonical
-            .iter()
-            .zip(payload)
-            .position(|(left, right)| left != right)
-            .unwrap_or_else(|| canonical.len().min(payload.len()));
+    if grouped_dependencies(&dependencies)?.len() as u64 != read_u64(payload, 0x10)? {
         return Err(invalid(format!(
-            "Icon companion {companion_tag} is not canonical at byte 0x{first_difference:X}"
+            "Icon companion {companion_tag} contains an empty package group"
         )));
     }
     Ok(dependencies)
@@ -427,27 +322,12 @@ fn encode_canonical_payload(
     Ok(payload)
 }
 
-fn relative_target(payload: &[u8], field: usize, description: &str) -> AuthoringResult<usize> {
-    let target = payload_relative_target(payload, field)
-        .map_err(|error| invalid(format!("{description}: {error}")))?;
-    if target >= payload.len() {
-        return Err(invalid(format!(
-            "{description} relative pointer exits its payload"
-        )));
-    }
-    Ok(target)
-}
-
 fn align_up(value: usize, alignment: usize) -> AuthoringResult<usize> {
     let mask = alignment - 1;
     value
         .checked_add(mask)
         .map(|aligned| aligned & !mask)
         .ok_or_else(|| invalid("Icon companion alignment overflowed"))
-}
-
-fn usize_from_u64(value: u64, description: &str) -> AuthoringResult<usize> {
-    usize::try_from(value).map_err(|_| invalid(format!("{description} exceeds this platform")))
 }
 
 fn push_u16(data: &mut Vec<u8>, value: u16) {

@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
 
-#[cfg(feature = "sqlite-account")]
 use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
-#[cfg(feature = "sqlite-account")]
 use sundial_account::{
     AccountSettingKey, AccountSettingValue, DismantleReward, ItemInstance, ProfileItem,
 };
 
-#[cfg(feature = "sqlite-account")]
 use crate::persistence::sqlite_account::SqliteAccountDocument;
 
 pub(super) fn account_members_except_settings(
@@ -23,13 +20,19 @@ pub(super) fn account_members_except_settings(
         .collect()
 }
 
-#[cfg(feature = "sqlite-account")]
 pub(super) fn sqlite_change_summaries(
     before: &SqliteAccountDocument,
     after: &SqliteAccountDocument,
     limit: usize,
 ) -> Vec<String> {
     let mut changes = Vec::new();
+    summarize_native_value(
+        "inventory_state",
+        &before.inventory_state_summary(),
+        &after.inventory_state_summary(),
+        limit,
+        &mut changes,
+    );
     summarize_profile_items(before, after, limit, &mut changes);
     summarize_dismantle_rewards(before, after, limit, &mut changes);
     summarize_characters(before, after, limit, &mut changes);
@@ -58,7 +61,6 @@ pub(super) fn sqlite_change_summaries(
     changes
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_native_value(
     path: &str,
     before: &Value,
@@ -88,7 +90,6 @@ fn summarize_native_value(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_profile_items(
     before: &SqliteAccountDocument,
     after: &SqliteAccountDocument,
@@ -123,7 +124,6 @@ fn summarize_profile_items(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_profile_item(
     path: &str,
     before: Option<&ProfileItem>,
@@ -170,7 +170,6 @@ fn summarize_profile_item(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_dismantle_rewards(
     before: &SqliteAccountDocument,
     after: &SqliteAccountDocument,
@@ -221,7 +220,6 @@ fn summarize_dismantle_rewards(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn dismantle_reward_label(reward: &DismantleReward) -> String {
     format!(
         "hash {} ×{} · rarities {:?} · class {:?} · masterworked {:?}",
@@ -233,7 +231,6 @@ fn dismantle_reward_label(reward: &DismantleReward) -> String {
     )
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_characters(
     before: &SqliteAccountDocument,
     after: &SqliteAccountDocument,
@@ -305,7 +302,6 @@ fn summarize_characters(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_items(
     path: &str,
     before: &[ItemInstance],
@@ -337,7 +333,6 @@ fn summarize_items(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_item(
     path: &str,
     before: Option<&ItemInstance>,
@@ -407,7 +402,6 @@ fn summarize_item(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn summarize_account_settings(
     before: &SqliteAccountDocument,
     after: &SqliteAccountDocument,
@@ -438,7 +432,6 @@ fn summarize_account_settings(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn account_setting_key_label(key: &AccountSettingKey) -> String {
     match key {
         AccountSettingKey::Preference { group, name } => {
@@ -453,7 +446,6 @@ fn account_setting_key_label(key: &AccountSettingKey) -> String {
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn account_setting_value_label(value: Option<&AccountSettingValue>) -> String {
     match value {
         Some(AccountSettingValue::Boolean(value)) => value.to_string(),
@@ -466,7 +458,6 @@ fn account_setting_value_label(value: Option<&AccountSettingValue>) -> String {
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn push_field_change<T: PartialEq + std::fmt::Display>(
     changes: &mut Vec<String>,
     limit: usize,
@@ -479,7 +470,6 @@ fn push_field_change<T: PartialEq + std::fmt::Display>(
     }
 }
 
-#[cfg(feature = "sqlite-account")]
 fn push_summary(changes: &mut Vec<String>, limit: usize, summary: String) {
     if changes.len() < limit {
         changes.push(summary);

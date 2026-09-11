@@ -6,12 +6,10 @@ use super::settings::{
     create_adjacent_backup, load_installed_sunrise_defaults, save_json,
     validate_workspace_document, verify_workspace_source_unchanged,
 };
-#[cfg(feature = "sqlite-account")]
 use super::{ConfirmationDialog, platform, settings::backups_path};
 use super::{SundialApp, preserve_inactive_json_account_domains};
 
 impl SundialApp {
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn request_sqlite_backup_restore(&mut self) {
         let mut dialog = rfd::FileDialog::new()
             .set_title("Select a Sundial investment.sqlite3 backup")
@@ -34,7 +32,6 @@ impl SundialApp {
         }
     }
 
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn restore_selected_sqlite_backup(&mut self) {
         let Some(backup) = self.pending_sqlite_restore.take() else {
             return;

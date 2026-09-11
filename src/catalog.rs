@@ -16,6 +16,7 @@ mod cache;
 mod collections;
 mod icons;
 mod items;
+pub(crate) use items::weapon_bucket_capacities;
 pub(crate) mod package;
 mod package_access;
 mod progression;
@@ -30,6 +31,7 @@ pub(crate) use collections::{
     MaterialRequirementSetDef,
 };
 use icons::IconRuntime;
+pub(crate) use icons::scan_item_icon_containers;
 use items::PowerCapDefinition;
 #[cfg(test)]
 pub(crate) use items::SocketDef;
@@ -55,7 +57,8 @@ use progression::unlock_state_indices;
 pub(crate) use progression::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
-    ProgressionFactionDefinition, ProgressionScope, UnlockDefinition, UnlockWriter,
+    ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope, UnlockDefinition,
+    UnlockWriter,
 };
 use scan::scan_packages;
 
@@ -172,6 +175,7 @@ pub(crate) struct Catalog {
     material_requirement_sets: Vec<MaterialRequirementSetDef>,
     item_material_requirement_set_indices: HashMap<u64, ItemMaterialRequirementSetIndices>,
     progression_definitions: Vec<ProgressionDefinition>,
+    seasonal: Option<crate::investment::seasonal::Definition>,
     progression_package_error: Option<String>,
     unlock_flag_state_indices: HashMap<(u8, u16), usize>,
     unlock_value_state_indices: HashMap<(u8, u16), usize>,
@@ -186,6 +190,7 @@ pub(crate) struct Catalog {
     socket_and_gear_type_options: HashMap<String, HashMap<u16, Vec<u64>>>,
     gear_type_options: HashMap<GearKind, Vec<u64>>,
     cosmetic_socket_pools: HashSet<u32>,
+    cosmetic_socket_types: HashSet<u16>,
     all_plug_options: Vec<u64>,
     plug_hashes: HashSet<u64>,
 }
@@ -518,6 +523,7 @@ impl Catalog {
             material_requirement_sets,
             item_material_requirement_set_indices,
             progression_definitions,
+            seasonal,
             progression_package_error,
             mut plug_pools,
         } = contents;
@@ -528,6 +534,12 @@ impl Catalog {
             build_socket_type_options(&items, &plug_pools, &names);
         let (gear_type_options, cosmetic_socket_pools) =
             build_gear_type_options(&items, &plug_pools, &names);
+        let cosmetic_socket_types = items
+            .iter()
+            .flat_map(|item| &item.sockets)
+            .filter(|socket| cosmetic_socket_pools.contains(&socket.pool))
+            .map(|socket| socket.socket_type)
+            .collect();
         let mut all_plug_options = plug_pools.iter().flatten().copied().collect();
         sort_plug_options(&mut all_plug_options, &names);
         let plug_hashes = all_plug_options
@@ -605,6 +617,7 @@ impl Catalog {
             material_requirement_sets,
             item_material_requirement_set_indices,
             progression_definitions,
+            seasonal,
             progression_package_error,
             unlock_flag_state_indices,
             unlock_value_state_indices,
@@ -619,6 +632,7 @@ impl Catalog {
             socket_and_gear_type_options,
             gear_type_options,
             cosmetic_socket_pools,
+            cosmetic_socket_types,
             all_plug_options,
             plug_hashes,
         }

@@ -173,6 +173,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
         CatalogContents {
             items: Vec::new(),
             names: HashMap::new(),
+            seasonal: None,
             type_names: HashMap::new(),
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
@@ -471,6 +472,7 @@ fn inventory_apis_resolve_profile_only_items_and_keep_character_items_safe() {
     let catalog = Catalog::finish(
         CatalogContents {
             items: vec![character, foreign_subclass, foreign_helmet],
+            seasonal: None,
             names,
             type_names,
             package_item_names: HashMap::new(),
@@ -538,6 +540,7 @@ fn equipment_browse_and_search_return_every_compatible_item() {
     let catalog = Catalog::finish(
         CatalogContents {
             items,
+            seasonal: None,
             names: HashMap::new(),
             type_names: HashMap::new(),
             package_item_names: HashMap::new(),
@@ -711,6 +714,33 @@ fn shared_plug_selection_respects_each_scope_and_rejects_missing_sockets() {
             "{mode:?}"
         );
     }
+    use crate::investment::plug_selection::candidates_for_socket_type;
+    for mode in PlugSelectionMode::ALL {
+        assert_eq!(
+            candidates_for_socket_type(&catalog, &item, 0, Some(100), mode).as_ref(),
+            candidates_for_socket(&catalog, &item, 0, mode),
+        );
+    }
+    catalog.socket_type_options.insert(200, vec![2]);
+    catalog
+        .socket_and_gear_type_options
+        .get_mut("Sidearm")
+        .unwrap()
+        .insert(200, vec![1]);
+    for index in [0, 1] {
+        for (mode, expected) in [
+            (PlugSelectionMode::Supported, vec![]),
+            (PlugSelectionMode::SocketAndGearType, vec![1]),
+            (PlugSelectionMode::MatchingSocketType, vec![2]),
+            (PlugSelectionMode::GearType, vec![2, 3]),
+            (PlugSelectionMode::AnyPlug, vec![2, 3, 1, 4]),
+        ] {
+            assert_eq!(
+                candidates_for_socket_type(&catalog, &item, index, Some(200), mode).as_ref(),
+                expected
+            );
+        }
+    }
 }
 
 fn plug_selection_catalog() -> Catalog {
@@ -723,6 +753,7 @@ fn plug_selection_catalog() -> Catalog {
         CatalogContents {
             items: Vec::new(),
             names,
+            seasonal: None,
             type_names: HashMap::new(),
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
@@ -980,4 +1011,36 @@ fn installed_power_cap_table_survives_catalog_cache_roundtrip() {
             metadata.power_cap.map(i64::from)
         );
     }
+}
+
+#[test]
+fn overridden_cosmetic_sockets_restore_only_their_socket_pool() {
+    let item = ItemDef {
+        hash: 10,
+        name: "Example Weapon".into(),
+        type_name: "Sidearm".into(),
+        bucket_hash: 1_498_876_634,
+        class_type: 3,
+        default_plugs: vec![],
+        sockets: vec![
+            SocketDef {
+                socket_type: 746,
+                allowed: vec![1],
+                ..Default::default()
+            },
+            SocketDef {
+                socket_type: 100,
+                allowed: vec![2],
+                ..Default::default()
+            },
+        ],
+        abilities: AbilityOptions::default(),
+    };
+    let catalog = Catalog::for_test(vec![item.clone()], HashMap::new());
+    assert_eq!(catalog.gear_type_options_for_type(&item, 100), vec![2]);
+    let cosmetic = catalog.gear_type_options_for_type(&item, 746);
+    assert_eq!(cosmetic.len(), 2);
+    assert!(cosmetic.contains(&1));
+    assert!(cosmetic.contains(&2));
+    assert_eq!(catalog.gear_type_options_for_type(&item, 999), vec![2]);
 }

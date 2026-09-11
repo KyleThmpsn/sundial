@@ -8,6 +8,10 @@ use std::{
 use tiger_pkg::{DestinyVersion, GameVersion};
 use tiger_pkg::{PackageManager, TagHash};
 
+pub(crate) mod index_cache;
+pub(crate) mod snapshot;
+pub mod tft;
+
 const MIN_RUNTIME_PACKAGE_ID: u16 = 0x0100;
 const MAX_RUNTIME_PACKAGE_ID: u16 = 0x0CFF;
 

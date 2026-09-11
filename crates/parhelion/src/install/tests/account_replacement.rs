@@ -1,5 +1,63 @@
 use super::*;
 
+#[test]
+fn slot_replacement_moves_or_deletes_with_package_commit_and_rolls_back_on_failure() {
+    use sundial::investment::{AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement};
+    for capacity in [1, 2] {
+        for fail in [false, true] {
+            let fixture = Fixture::new();
+            let (path, original, _) = account_fixture(&fixture);
+            let slots = AuthoredSlotReplacement {
+                changes: vec![AuthoredSlotChange {
+                    definition_hash: 100,
+                    previous_bucket: 0,
+                    incoming_bucket: 1,
+                }],
+                incoming_buckets: BTreeMap::from([(100, 1), (200, 1)]),
+                weapon_capacities: [10, capacity, 10],
+            };
+            let review = crate::install::test_review_with_slots(
+                &fixture.target,
+                BTreeSet::new(),
+                vec![],
+                Some(slots),
+            );
+            assert!(review.changes_account());
+            assert_eq!(review.removes_account_data(), capacity == 1);
+            let proposal = review.account_cleanup().unwrap();
+            assert_eq!(
+                proposal.slot_moves[0].outcome,
+                if capacity == 1 {
+                    AuthoredMoveOutcome::DeletedInventoryFull
+                } else {
+                    AuthoredMoveOutcome::MovedToInventory
+                }
+            );
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let expected = proposal.cleaned_bytes.clone();
+            let mut request = fixture.request();
+            request.confirmed_replacement = Some(review);
+            let result = install_staged_packages_inner(
+                &request,
+                fail.then_some(1),
+                DEFAULT_CACHE_INVALIDATION_OPS,
+            );
+            if fail {
+                let error = result.unwrap_err();
+                assert!(error.rollback.as_ref().unwrap().succeeded(), "{error}");
+                assert_eq!(fs::read(&path).unwrap(), original);
+            } else {
+                let report = result.unwrap();
+                assert_eq!(fs::read(&path).unwrap(), expected);
+                assert_eq!(
+                    fs::read(report.backup_directory.join("account-settings.json")).unwrap(),
+                    original
+                );
+            }
+        }
+    }
+}
+
 fn socket_fixture(
     fixture: &Fixture,
     previous: usize,

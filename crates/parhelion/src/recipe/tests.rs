@@ -93,6 +93,7 @@ fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
 fn socket_plug_variants_round_trip_and_compile() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.private-perk").unwrap();
     recipe.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantRecipe {
+        replace_effects: false,
         investment_stats: vec![WeaponStatOverride {
             definition_index: 13,
             value: -5,
@@ -105,6 +106,8 @@ fn socket_plug_variants_round_trip_and_compile() {
         description: Some("A private intrinsic description.".to_owned()),
         additional_sandbox_perks: vec![405],
         sandbox_perks: vec![WeaponSandboxPerkRuntimeRecipe {
+            program: None,
+            projectiles: Vec::new(),
             source_perk_index: 1178,
             activation: None,
             runtime_values: vec![private_perk_runtime_value()],
@@ -151,6 +154,7 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.invalid-private-perk").unwrap();
     recipe.overrides.socket_plug_variants = vec![
         WeaponSocketPlugVariantRecipe {
+            replace_effects: false,
             investment_stats: Vec::new(),
             socket_index: 4,
             choice_index: 0,
@@ -160,6 +164,8 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
             description: None,
             additional_sandbox_perks: Vec::new(),
             sandbox_perks: vec![WeaponSandboxPerkRuntimeRecipe {
+                program: None,
+                projectiles: Vec::new(),
                 source_perk_index: 1178,
                 activation: None,
                 runtime_values: vec![private_perk_runtime_value()],
@@ -167,6 +173,7 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
             }],
         },
         WeaponSocketPlugVariantRecipe {
+            replace_effects: false,
             investment_stats: Vec::new(),
             socket_index: 4,
             choice_index: 0,
@@ -176,6 +183,8 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
             description: None,
             additional_sandbox_perks: Vec::new(),
             sandbox_perks: vec![WeaponSandboxPerkRuntimeRecipe {
+                program: None,
+                projectiles: Vec::new(),
                 source_perk_index: 416,
                 activation: None,
                 runtime_values: vec![private_perk_runtime_value()],
@@ -340,6 +349,45 @@ fn new_donor_recipe_inherits_definition_by_default() {
     assert_eq!(
         recipe.collection_placement,
         RecipeCollectionPlacement::SunriseBadge
+    );
+}
+
+#[test]
+fn changing_base_keeps_collection_story_and_independent_artwork() {
+    let mut recipe = WeaponRecipe::every_end();
+    recipe.overrides.collection_destination = Some(crate::collection::Destination {
+        ammo: crate::collection::Ammo::Special,
+        family: crate::collection::Family::Sidearms,
+    });
+    recipe.overrides.exclude_from_sunrise_badge = true;
+    recipe.overrides.badge = Some(crate::presentation::Badge {
+        name: "Travelers".into(),
+        ..Default::default()
+    });
+    recipe.overrides.lore = Some("A story to keep.".into());
+    let art = crate::presentation::Artwork::from_png(include_bytes!(
+        "../../../../assets/parhelion/watermark/sunrise-watermark-0-96x96.png"
+    ))
+    .unwrap();
+    recipe.overrides.corner_icon = Some(art);
+    let before = recipe.clone();
+    recipe.set_donor(ARC_LOGIC_DONOR_HASH, "Arc Logic");
+    assert_eq!(
+        recipe.overrides.collection_destination,
+        before.overrides.collection_destination
+    );
+    assert_eq!(recipe.overrides.badge, before.overrides.badge);
+    assert_eq!(recipe.overrides.corner_icon, before.overrides.corner_icon);
+    assert_eq!(recipe.overrides.lore, before.overrides.lore);
+    assert!(recipe.overrides.exclude_from_sunrise_badge);
+    assert_eq!(recipe.overrides.icon_edit, before.overrides.icon_edit);
+    assert_eq!(recipe.overrides.hud_icon, before.overrides.hud_icon);
+    assert!(recipe.overrides.socket_columns.is_empty());
+    assert!(recipe.overrides.socket_plug_variants.is_empty());
+    assert!(recipe.overrides.runtime_values.is_empty());
+    assert_eq!(
+        WeaponRecipe::from_json_str(&recipe.to_json_pretty().unwrap()).unwrap(),
+        recipe
     );
 }
 
