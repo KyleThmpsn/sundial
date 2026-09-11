@@ -9,6 +9,7 @@ use tiger_pkg::{PackageManager, TagHash};
 
 use super::index_cache;
 use crate::package_payload::{i64_at, relative_offset, u64_at};
+mod shards;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentPath {
@@ -182,6 +183,12 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
 
 static CACHE: index_cache::Cache<Index> = index_cache::Cache::new();
 
+/// Opening a single effect must not trigger installation-wide name discovery.
+/// A missing full index is reported separately from missing native references.
+pub fn cached_only(packages: &Path) -> Result<Option<Arc<Index>>, String> {
+    index_cache::cached_only(packages, "native-names", "tft-v1", &CACHE)
+}
+
 /// Cache only names and evidence. Compilation always resolves live package tags.
 pub fn cached(
     packages: &Path,
@@ -193,8 +200,10 @@ pub fn cached(
         "native-names",
         "tft-v1",
         &CACHE,
-        || Ok(inspect(manager, progress)),
-        |index| index.errors.is_empty(),
+        || shards::inspect(packages, manager, progress),
+        // Read errors remain visible in the index. They must not force an
+        // otherwise identical installation to repeat the entire scan on launch.
+        |_| true,
     )
 }
 

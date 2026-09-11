@@ -8,7 +8,9 @@ mod validation;
 pub(super) use super::preferences::store::{load_preferences, preferences_path};
 #[cfg(test)]
 pub(super) use crate::package_runtime::normalize_sunrise_version;
-pub(super) use defaults::{detect_sunrise_version, load_installed_sunrise_defaults};
+pub(super) use defaults::{
+    detect_sunrise_version, load_installed_account_defaults, load_installed_sunrise_defaults,
+};
 #[cfg(test)]
 pub(super) use encoding::settings_size_limit_for_schema;
 pub(super) use encoding::{encode_settings, prepare_settings};

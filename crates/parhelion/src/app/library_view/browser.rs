@@ -73,8 +73,11 @@ impl PackageAuthoringApp {
         action: &mut Option<LibraryAction>,
     ) -> usize {
         let query = self.library_query.trim().to_lowercase();
-        let mut shown =
-            matching_library_entries(&self.recipe_entries, &self.donor_summaries, &query);
+        let mut shown = self.library_state.matching_entries(
+            &self.recipe_entries,
+            &self.donor_summaries,
+            &query,
+        );
         self.library_state
             .sort_entries(&mut shown, &self.donor_summaries);
         if let Some(selected) = &mut self.library_state.export_selection {

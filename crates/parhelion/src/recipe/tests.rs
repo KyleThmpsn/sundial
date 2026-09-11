@@ -877,3 +877,34 @@ fn duplicate_locale_and_conflicting_stat_removal_are_rejected() {
     recipe.overrides.removed_investment_stats.push(15);
     assert!(recipe.validate().is_err());
 }
+#[test]
+fn custom_choices_sharing_a_template_round_trip_while_duplicate_definitions_are_rejected() {
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.custom-choice-round-trip").unwrap();
+    let mut perk = crate::perk::PerkRecipe::new();
+    perk.name = "Private Choice".into();
+    perk.description = "A private alternative to the stock template.".into();
+    perk.effects.push(crate::perk::PerkRecipe::effect(405));
+    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
+        socket_type: Some(92),
+        choices: vec![perk.template_plug.clone(); 2],
+        ..Default::default()
+    })];
+    assert!(
+        recipe.validate().is_err(),
+        "Stock duplicates remain invalid"
+    );
+    recipe.overrides.socket_plug_variants = vec![perk.at_socket(0, 1)];
+    let saved = recipe.to_json_pretty().unwrap();
+    assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
+    recipe
+        .overrides
+        .socket_plug_variants
+        .push(perk.at_socket(0, 0));
+    assert!(
+        recipe.validate().is_err(),
+        "Identical private perks remain duplicates"
+    );
+    recipe.overrides.socket_plug_variants[1].name = Some("Different Private Choice".into());
+    let saved = recipe.to_json_pretty().unwrap();
+    assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
+}

@@ -20,6 +20,8 @@ use decode::*;
 
 mod compatibility;
 pub use compatibility::{WeaponRuntimeResourceShape, load_weapon_runtime_resource_shape};
+mod transfer;
+pub use transfer::runtime_fields_share_semantics;
 
 use crate::package_payload::{i64_at as read_i64, u32_at as read_u32, u64_at as read_u64};
 

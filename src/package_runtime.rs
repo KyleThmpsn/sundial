@@ -9,6 +9,7 @@ use tiger_pkg::{DestinyVersion, GameVersion};
 use tiger_pkg::{PackageManager, TagHash};
 
 pub(crate) mod index_cache;
+pub(crate) mod installation;
 pub(crate) mod snapshot;
 pub mod tft;
 
@@ -28,7 +29,12 @@ const PACKAGE_AUTHORING_RUNTIME_MARKERS: [(&[u8], &str); 3] = [
 ];
 
 pub(crate) fn sunrise_module_path(install: &Path) -> PathBuf {
-    install.join("bin").join("x64").join("steam_api64.dll")
+    let root = install.join("steam_api64.dll");
+    if root.is_file() {
+        root
+    } else {
+        install.join("bin").join("x64").join("steam_api64.dll")
+    }
 }
 
 pub(crate) fn installed_sunrise_module_version(install: &Path) -> Option<String> {

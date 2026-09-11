@@ -844,7 +844,7 @@ impl PackageAuthoringApp {
                 plug_selection_mode,
                 show_plug_safety_warnings,
                 show_technical_socket_rows,
-                private_perk_socket,
+                perk_request,
                 log,
                 ..
             } = self;
@@ -861,7 +861,7 @@ impl PackageAuthoringApp {
                         show_plug_safety_warnings: *show_plug_safety_warnings,
                         show_experimental_options,
                         show_technical_rows: show_technical_socket_rows,
-                        private_perk_socket,
+                        perk_request,
                         donor,
                         log,
                     },
@@ -890,7 +890,7 @@ impl PackageAuthoringApp {
                         .clicked() {
                         self.recipe.overrides.socket_columns.clear();
                         self.recipe.overrides.socket_plug_variants.clear();
-                        self.private_perk_socket = None;
+                        self.perk_request = None;
                         self.plug_queries.clear();
                         ui.close_menu();
                     }

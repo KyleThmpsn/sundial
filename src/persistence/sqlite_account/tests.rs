@@ -11,6 +11,15 @@ use sundial_account::{
 mod package;
 mod safety;
 
+pub(crate) fn default_resources() -> super::AccountDefaults {
+    super::AccountDefaults {
+        schema: super::contract::SCHEMA.to_owned(),
+        rows: include_str!("fixtures/investment_defaults.sql").to_owned(),
+        settings_schema: super::contract::SETTINGS_SCHEMA.to_owned(),
+        settings_rows: include_str!("fixtures/account_settings_defaults.sql").to_owned(),
+    }
+}
+
 pub(crate) fn create_fixture(path: &Path, inventory_flags: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let db = Connection::open(path).unwrap();

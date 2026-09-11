@@ -1078,6 +1078,38 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_allocates_a_fresh_copy_and_preserves_recipe_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+        let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
+            "Library Copy Fixture",
+            0x1234_5678,
+            "Fixture Donor",
+        )
+        .unwrap();
+        recipe.flavor = "A copied story.".into();
+        recipe.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
+        let original_path = library.save_new(&recipe).unwrap();
+
+        let collision = WeaponRecipe::new_named_weapon_for_donor(
+            "Library Copy Fixture Copy",
+            0x1234_5678,
+            "Fixture Donor",
+        )
+        .unwrap();
+        library.save_new(&collision).unwrap();
+
+        let copy_path = library.duplicate(&recipe).unwrap();
+        let copy = WeaponRecipe::load_json(&copy_path).unwrap();
+        assert_eq!(copy.name, "Library Copy Fixture Copy 2");
+        assert_ne!(copy.namespace, recipe.namespace);
+        assert_eq!(copy.donor, recipe.donor);
+        assert_eq!(copy.overrides, recipe.overrides);
+        assert_eq!(copy.flavor, recipe.flavor);
+        assert_eq!(WeaponRecipe::load_json(original_path).unwrap(), recipe);
+    }
+
+    #[test]
     fn save_existing_is_confined_to_library_root() {
         let directory = tempfile::tempdir().unwrap();
         let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();

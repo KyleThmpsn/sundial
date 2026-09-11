@@ -8,6 +8,7 @@ mod sources;
 #[cfg(test)]
 mod tests;
 use custom_runtime::*;
+pub(crate) use custom_runtime::{preflight_runtime_edits, runtime_hud_key};
 mod localization;
 use localization::*;
 mod socket_columns;
@@ -22,6 +23,7 @@ use raw_payload::*;
 
 mod validation;
 pub(crate) use validation::validate_catalog_with_progress;
+pub(crate) use validation::validate_socket_plug_variant_shapes;
 #[cfg(test)]
 pub(crate) use validation::validate_weapon_clone_specs_against_catalog;
 use validation::*;

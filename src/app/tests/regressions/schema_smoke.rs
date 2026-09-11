@@ -314,7 +314,12 @@ fn preferences_preserve_data_and_keep_actions_visible() {
     }
 }
 
-fn capture_preferences(ctx: &egui::Context, output: egui::FullOutput, name: &str, width: f32) {
+pub(super) fn capture_preferences(
+    ctx: &egui::Context,
+    output: egui::FullOutput,
+    name: &str,
+    width: f32,
+) {
     let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR").map(PathBuf::from) else {
         return;
     };

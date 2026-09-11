@@ -31,11 +31,11 @@ pub(crate) fn preview_account_replacement(
 ) -> Result<AuthoredAccountCleanup, String> {
     let preferences = crate::app::settings::load_preferences().preferences;
     let settings_path = super::authored_unlock_settings_path(install, &preferences)?;
+    let original_bytes = std::fs::read(&settings_path).map_err(|e| e.to_string())?;
+    let original: Value = crate::package_authoring::read_json(original_bytes.as_slice())
+        .map_err(|e| e.to_string())?;
     let database_path = crate::persistence::investment_path(&settings_path);
-    if database_path
-        .try_exists()
-        .map_err(|error| error.to_string())?
-    {
+    if crate::game_settings::requires_sqlite_account(&original) {
         return crate::persistence::sqlite_account::package::preview_replacement(
             &database_path,
             hashes,
@@ -45,9 +45,6 @@ pub(crate) fn preview_account_replacement(
         );
     }
     crate::investment::validate_authored_cleanup_backend(&settings_path)?;
-    let original_bytes = std::fs::read(&settings_path).map_err(|e| e.to_string())?;
-    let original: Value = crate::package_authoring::read_json(original_bytes.as_slice())
-        .map_err(|e| e.to_string())?;
     let (mut cleaned, removed_items, cleared_plugs, cleared_unlocks, removed_reward_rules) =
         clean(&original, hashes, unlocks)?;
     let slot_moves = placement::relocate(&mut cleaned, hashes, slots)?;

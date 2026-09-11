@@ -23,6 +23,84 @@ pub struct Entry {
     pub perk_indices: Vec<u16>,
 }
 
+impl Entry {
+    /// A direct native identity, followed by explicitly qualified usage context.
+    /// A parent's filename must never be presented as this projectile's own name.
+    pub fn label(&self) -> String {
+        self.label_with_perks(|_| None)
+    }
+
+    pub fn label_with_perks(&self, mut perk_name: impl FnMut(u16) -> Option<String>) -> String {
+        if let Some(path) = self
+            .native_paths
+            .iter()
+            .find(|path| !path.trim().is_empty())
+        {
+            return tft::asset_label(path);
+        }
+        if let Some(name) = self
+            .native_name
+            .as_ref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name.clone();
+        }
+        let contexts = self
+            .contexts
+            .iter()
+            .filter(|context| !context.path.trim().is_empty())
+            .map(|context| tft::asset_label(&context.path))
+            .collect::<BTreeSet<_>>();
+        if let Some(first) = contexts.first() {
+            let more = if contexts.len() > 1 {
+                format!(" (+{})", contexts.len() - 1)
+            } else {
+                String::new()
+            };
+            return format!("{} · Referenced by {first}{more}", self.kind.label());
+        }
+        let perks = self
+            .perk_indices
+            .iter()
+            .map(|&index| {
+                perk_name(index)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| format!("Effect {index}"))
+            })
+            .collect::<BTreeSet<_>>();
+        if let Some(first) = perks.first() {
+            let more = if perks.len() > 1 {
+                format!(" (+{})", perks.len() - 1)
+            } else {
+                String::new()
+            };
+            return format!("{} · Used by {first}{more}", self.kind.label());
+        }
+        format!("Unidentified {}", self.kind.label())
+    }
+
+    pub fn label_rank(&self) -> u8 {
+        if self.native_paths.iter().any(|path| !path.trim().is_empty())
+            || self
+                .native_name
+                .as_ref()
+                .is_some_and(|name| !name.trim().is_empty())
+        {
+            0
+        } else if self
+            .contexts
+            .iter()
+            .any(|context| !context.path.trim().is_empty())
+        {
+            1
+        } else if !self.perk_indices.is_empty() {
+            2
+        } else {
+            3
+        }
+    }
+}
+
 /// A named parent resource contains this projectile tag. It describes usage,
 /// not the projectile's identity or a guarantee about a native execution path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,7 +170,13 @@ pub fn inspect(
                 continue;
             }
         };
-        let owners = owners(&payload)?;
+        let owners = match owners(&payload) {
+            Ok(owners) => owners,
+            Err(error) => {
+                catalog.errors.push(format!("{tag}: {error}"));
+                continue;
+            }
+        };
         catalog.entries.push(Entry {
             graph: tag.0,
             kind,
@@ -172,6 +256,11 @@ pub fn cached(packages: &Path, manager: &PackageManager) -> Result<Arc<Catalog>,
             let names = tft::cached(packages, manager, |_, _| {})?;
             inspect(manager, &dependencies, &names)
         },
-        |catalog| catalog.errors.is_empty(),
+        // Preserve incomplete-discovery warnings along with usable results.
+        // Compiling a selected effect still reads and validates its live tags.
+        |_| true,
     )
 }
+
+#[cfg(test)]
+mod tests;

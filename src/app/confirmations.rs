@@ -1,5 +1,6 @@
 //! Confirmation dialogs for explicit user actions.
 mod parhelion;
+mod recovery;
 use super::account_workspace::AccountSourceKind;
 use super::change_review::collect_change_summaries;
 use super::preferences::{PlugSelectionMode, SettingsLayout};
@@ -100,7 +101,8 @@ impl SundialApp {
                     }
                 });
                 ui.add_space(6.0);
-                ui.label("Your current file will be preserved as settings.json.bak and as a timestamped Sundial backup. Any unsaved changes will be discarded.");
+                ui.label("Your current file will be preserved as settings.json.bak and as a timestamped Sundial backup. Unsaved settings.json changes will be discarded.");
+                recovery::draw_parhelion_reset_note(ui, account_source == AccountSourceKind::Json);
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(self.settings_path.display().to_string())

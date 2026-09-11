@@ -27,7 +27,7 @@ pub(crate) fn build_presented_watermark_plan(
     let mut result: Option<WatermarkPlan> = None;
     let mut mapped = vec![TagHash(0); requests.len()];
     for (artwork, members) in groups {
-        let base = checked_ordinal(
+        let base = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             result.as_ref().map_or(0, |plan| plan.new_tags.len()),
             "custom corner artwork",
@@ -102,6 +102,16 @@ fn apply_artwork(
     Ok(())
 }
 
+pub(crate) fn preview(artwork: &Artwork) -> AuthoringResult<image::RgbaImage> {
+    let (width, height) = TEXTURE_DIMENSIONS[0];
+    image::RgbaImage::from_raw(
+        width * OUTPUT_TEXTURE_SCALE,
+        height * OUTPUT_TEXTURE_SCALE,
+        render(artwork, 0)?,
+    )
+    .ok_or_else(|| invalid("Watermark preview has unexpected dimensions"))
+}
+
 pub(crate) fn render(artwork: &Artwork, index: usize) -> AuthoringResult<Vec<u8>> {
     let scale = OUTPUT_TEXTURE_SCALE;
     let source = image::load_from_memory(AUTHORED_TEXTURE_PNGS[index])
@@ -145,8 +155,7 @@ pub(crate) fn render(artwork: &Artwork, index: usize) -> AuthoringResult<Vec<u8>
         (plate, bounds, if index < 2 { [255; 3] } else { [0; 3] })
     };
     plate = upscale_texture(width, height, plate.into_raw())?;
-    let mut glyph = crate::icon_edit::fit_rgba_image(
-        artwork.pixels(),
+    let mut glyph = artwork.render(
         (bounds.2 - bounds.0 + 1) * scale,
         (bounds.3 - bounds.1 + 1) * scale,
     );
@@ -171,6 +180,32 @@ pub(crate) fn render(artwork: &Artwork, index: usize) -> AuthoringResult<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cropped_and_positioned_watermarks_change_every_native_lane() {
+        let source = image::RgbaImage::from_fn(80, 40, |x, y| {
+            image::Rgba([200, 40, 90, if x > 20 && y < 30 { 255 } else { 0 }])
+        });
+        let original = Artwork::from_source(source).unwrap();
+        let edited = original
+            .with_composition(crate::presentation::composition::Composition {
+                crop: [2000, 0, 8000, 8000],
+                scale: 70,
+                offset: [15, -10],
+                ..Default::default()
+            })
+            .unwrap();
+        for index in 0..TEXTURE_DIMENSIONS.len() {
+            assert_ne!(
+                render(&original, index).unwrap(),
+                render(&edited, index).unwrap()
+            );
+        }
+        assert_eq!(
+            preview(&edited).unwrap().into_raw(),
+            render(&edited, 0).unwrap()
+        );
+    }
 
     #[test]
     fn custom_corner_silhouettes_preserve_the_native_palette_and_plate_edges() {

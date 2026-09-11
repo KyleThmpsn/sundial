@@ -114,6 +114,7 @@ impl PackageAuthoringApp {
                         match *result {
                             Ok(catalog) => {
                                 self.donor_summaries = catalog.weapon_donors();
+                                self.library_state.refresh_donors(&self.donor_summaries);
                                 self.sandbox_perk_choices = catalog
                                     .weapon_sandbox_perk_choices_from(
                                         crate::package_profile::is_stock_item_definition,
@@ -331,6 +332,8 @@ impl PackageAuthoringApp {
         };
         let (sender, receiver) = mpsc::channel();
         let started = Instant::now();
+        self.build_invalidated = false;
+        self.observed_recipe.clone_from(&self.recipe);
         self.build_started = Some(started);
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
@@ -430,7 +433,14 @@ impl PackageAuthoringApp {
                         "Build complete: {}",
                         report.run_directory.display()
                     )));
-                    self.latest_build = Some(Ok(report));
+                    self.latest_build = Some(if std::mem::take(&mut self.build_invalidated) {
+                        let error = "Recipes or build options changed while this build was running. Build & Stage again before installing.".to_owned();
+                        self.build_activity.push(elapsed, error.clone());
+                        self.log.push(LogEntry::error(&error));
+                        Err(error)
+                    } else {
+                        Ok(report)
+                    });
                     self.build_started = None;
                     self.build_receiver = None;
                     return;

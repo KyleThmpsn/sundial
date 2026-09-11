@@ -1,4 +1,5 @@
 mod entry;
+mod navigation;
 use super::attachment::{Change, Target};
 use super::*;
 use crate::app::custom_perks::editor::tests::{editor, fixture};

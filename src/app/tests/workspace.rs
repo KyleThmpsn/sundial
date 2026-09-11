@@ -125,7 +125,7 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     );
     let compatible_document = WorkspaceDocument::load(
         serde_json::json!({
-            "version": 8,
+            "version": 18,
             "state": {"account": "stale", "characters": "stale"}
         }),
         &compatible_settings,
@@ -141,7 +141,7 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     )
     .unwrap();
     let blocked_document =
-        WorkspaceDocument::load(serde_json::json!({"version": 8}), &blocked_settings);
+        WorkspaceDocument::load(serde_json::json!({"version": 18}), &blocked_settings);
     assert!(
         validate_for_check(&blocked_document)
             .unwrap_err()

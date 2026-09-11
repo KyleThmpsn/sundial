@@ -5,7 +5,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod groups;
 mod owner;
+pub use groups::coupled_weapon_component_bindings;
 
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG: u32 = 0x80EC_3F60;
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS: u32 = 0x8080_9780;
@@ -462,6 +464,21 @@ pub fn graft_weapon_component_bindings(
         }
     }
 
+    // Plan event endpoints against the original entity. Applying one owner first must not
+    // change the evidence used to match another owner's incoming or outgoing connections.
+    let mut event_updates = BTreeMap::new();
+    for (&target_owner_tag, plan) in &planned {
+        for (offset, bytes) in
+            owner::graft_event_updates(target, plan.donor, target_owner_tag, plan.donor_owner_tag)?
+        {
+            if event_updates
+                .insert(offset, bytes)
+                .is_some_and(|previous| previous != bytes)
+            {
+                return Err("Runtime component donors disagree about an event connection".into());
+            }
+        }
+    }
     let original_component_count = native_array(target, ENTITY_COMPONENTS_DESCRIPTOR)?.count;
     let mut authored = target.clone();
     for (target_owner_tag, plan) in planned {
@@ -472,6 +489,9 @@ pub fn graft_weapon_component_bindings(
             plan.donor_owner_tag,
             plan.requested_binding_hash,
         )?;
+    }
+    for (offset, bytes) in event_updates {
+        authored[offset..offset + bytes.len()].copy_from_slice(&bytes);
     }
     validate_weapon_entity(&authored)?;
     if native_array(&authored, ENTITY_COMPONENTS_DESCRIPTOR)?.count != original_component_count {
@@ -870,6 +890,7 @@ pub fn validate_weapon_entity(entity: &[u8]) -> Result<(), String> {
     let descriptors = native_array(entity, ENTITY_RESOURCE_DESCRIPTORS_DESCRIPTOR)?;
     validate_entity_arrays(entity, components, definitions, resource_map, descriptors)?;
     weapon_component_binding_hashes(entity)?;
+    owner::validate_events(entity)?;
     Ok(())
 }
 

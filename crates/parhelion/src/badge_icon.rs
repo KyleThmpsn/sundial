@@ -17,7 +17,7 @@ use crate::{
         is_stock_straight_rgba8_texture_header,
     },
     shared_tag_memory::{
-        IconDefinitionCompanion, build_icon_companion_payload, dependency_set,
+        IconDefinitionCompanion, build_shared_tag_companion_payload, dependency_set,
         read_and_validate_icon_companion,
     },
     tag_payload::{read_u32, write_u32},
@@ -119,9 +119,8 @@ pub(crate) fn build_icon_plan(
     artwork: Option<&crate::presentation::Artwork>,
 ) -> AuthoringResult<BadgeIconPlan> {
     let donor = read_and_validate_donor(manager)?;
-    let source = artwork.map_or_else(decode_source, |artwork| Ok(artwork.pixels().clone()))?;
-    let low_data = render_card(&source, &donor.low_data, LOW_WIDTH, LOW_HEIGHT)?;
-    let high_data = render_card(&source, &donor.high_data, HIGH_WIDTH, HIGH_HEIGHT)?;
+    let low_data = render_artwork(artwork, &donor.low_data, LOW_WIDTH, LOW_HEIGHT)?;
+    let high_data = render_artwork(artwork, &donor.high_data, HIGH_WIDTH, HIGH_HEIGHT)?;
     validate_pixel_buffer(
         &low_data,
         &donor.low_data,
@@ -154,7 +153,7 @@ pub(crate) fn build_icon_plan(
         tags.container,
         tags.companion,
     ]);
-    let companion = build_icon_companion_payload(
+    let companion = build_shared_tag_companion_payload(
         &donor.companion.template_payload,
         tags.companion,
         tags.container,
@@ -460,6 +459,51 @@ fn render_card(
         *target = composite_onto_opaque(*pixel, *target);
     }
 
+    finish_card(card, donor, width, height)
+}
+
+fn render_artwork(
+    artwork: Option<&crate::presentation::Artwork>,
+    donor: &[u8],
+    width: u32,
+    height: u32,
+) -> AuthoringResult<Vec<u8>> {
+    if let Some(artwork) = artwork.filter(|a| a.composition().is_some()) {
+        if donor.len() != (width * height * 4) as usize {
+            return Err(invalid("Badge mask has unexpected dimensions"));
+        }
+        return finish_card(artwork.render(width, height), donor, width, height);
+    }
+    let source = artwork.map_or_else(decode_source, |a| Ok(a.pixels().clone()))?;
+    render_card(&source, donor, width, height)
+}
+
+pub(crate) fn preview_mask(manager: &PackageManager) -> AuthoringResult<Vec<u8>> {
+    Ok(read_and_validate_donor(manager)?.high_data)
+}
+
+pub(crate) fn preview(
+    artwork: Option<&crate::presentation::Artwork>,
+    mask: Option<&[u8]>,
+) -> AuthoringResult<RgbaImage> {
+    let fallback;
+    let mask = if let Some(mask) = mask {
+        mask
+    } else {
+        fallback = vec![255; HIGH_DATA_SIZE];
+        &fallback
+    };
+    let pixels = render_artwork(artwork, mask, HIGH_WIDTH, HIGH_HEIGHT)?;
+    RgbaImage::from_raw(HIGH_WIDTH, HIGH_HEIGHT, pixels)
+        .ok_or_else(|| invalid("Badge preview has unexpected dimensions"))
+}
+
+fn finish_card(
+    mut card: RgbaImage,
+    donor: &[u8],
+    width: u32,
+    height: u32,
+) -> AuthoringResult<Vec<u8>> {
     // Reproduce the Lunar card's shallow top bevel. Looking a few pixels inward isolates the
     // donor's edge highlight from its artwork, and following each column's first visible pixel
     // naturally carries that depth around both rounded upper corners.
@@ -497,7 +541,7 @@ fn donor_pixel(data: &[u8], width: u32, x: u32, y: u32) -> &[u8] {
     &data[offset..offset + 4]
 }
 
-fn card_background(_x: u32, y: u32, _width: u32, height: u32) -> Rgba<u8> {
+pub(crate) fn card_background(_x: u32, y: u32, _width: u32, height: u32) -> Rgba<u8> {
     const MIX_ONE: u32 = u16::MAX as u32;
     let last_y = height.saturating_sub(1).max(1);
     let vertical_mix = y.min(last_y) * MIX_ONE / last_y;
@@ -949,13 +993,21 @@ mod tests {
         )
         .expect("only the layer's two host tags should change");
         let container_layer_tag_range = ICON_PRIMARY_LAYER_OFFSET..ICON_PRIMARY_LAYER_OFFSET + 4;
+        let container_fingerprint_range = 0x10..0x14;
         validate_only_patched_ranges(
             donor_container,
             &plan.new_tags[5].payload,
-            std::slice::from_ref(&container_layer_tag_range),
+            &[container_layer_tag_range, container_fingerprint_range],
             "test container",
         )
-        .expect("only the container's layer host tag should change");
+        .expect("only the container's layer host tag and content fingerprint should change");
+        assert_eq!(
+            read_u32(&plan.new_tags[5].payload, 0x10).expect("content fingerprint should decode"),
+            crate::watermark::private_icon_fingerprint(
+                &plan.new_tags[5].payload,
+                &plan.new_tags[2].payload,
+            )
+        );
         assert_eq!(
             read_u32(&plan.new_tags[4].payload, LOW_HEADER_TAG_OFFSET)
                 .expect("low layer link should decode"),
@@ -980,7 +1032,7 @@ mod tests {
             u32::from(TagHash::new(0x0197, 1007))
         );
         assert_eq!(
-            crate::shared_tag_memory::validate_icon_companion_payload(
+            crate::shared_tag_memory::validate_shared_tag_companion_payload(
                 &plan.new_tags[6].payload,
                 plan.tags.companion,
                 plan.tags.container,
@@ -992,6 +1044,75 @@ mod tests {
             plan.reference_overrides,
             reciprocal_reference_overrides(plan.ordinals)
         );
+    }
+
+    #[test]
+    #[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+    fn edited_badge_preview_matches_emitted_pixels_and_custom_backgrounds() {
+        use crate::presentation::{
+            Artwork,
+            composition::{Background, Composition, Fit},
+        };
+        let packages = std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap();
+        let manager =
+            sundial::package_authoring::open_shadowkeep_package_manager(Path::new(&packages))
+                .unwrap();
+        let donor = read_and_validate_donor(&manager).unwrap();
+        let source = RgbaImage::from_pixel(160, 90, Rgba([235, 60, 25, 255]));
+        for (background, scale) in [
+            (
+                Background::Solid {
+                    color: [15, 75, 110],
+                },
+                50,
+            ),
+            (
+                Background::Gradient {
+                    start: [10, 25, 30],
+                    end: [120, 190, 200],
+                    angle: 90,
+                },
+                50,
+            ),
+            (Background::Sunrise, 100),
+        ] {
+            let artwork = Artwork::from_source(source.clone())
+                .unwrap()
+                .with_composition(Composition {
+                    fit: Fit::Cover,
+                    background,
+                    scale,
+                    ..Default::default()
+                })
+                .unwrap();
+            let saved = serde_json::to_string(&artwork).unwrap();
+            let artwork: Artwork = serde_json::from_str(&saved).unwrap();
+            let plan = build_icon_plan(&manager, 0x0aa0, 0, 0, Some(&artwork)).unwrap();
+            let preview = preview(Some(&artwork), Some(&donor.high_data)).unwrap();
+            assert_eq!(plan.new_tags[2].payload, preview.as_raw().as_slice());
+            assert_eq!(
+                plan.new_tags[0].payload,
+                render_artwork(Some(&artwork), &donor.low_data, LOW_WIDTH, LOW_HEIGHT).unwrap()
+            );
+            assert!(
+                preview
+                    .pixels()
+                    .zip(donor.high_data.chunks_exact(4))
+                    .all(|(a, b)| a[3] == b[3])
+            );
+            if scale == 100 {
+                assert_eq!(
+                    preview.get_pixel(2, 100).0,
+                    [235, 60, 25, 255],
+                    "Fill must cover the purple side margins"
+                );
+            } else {
+                assert_ne!(
+                    preview.get_pixel(2, 100).0,
+                    card_background(2, 100, HIGH_WIDTH, HIGH_HEIGHT).0
+                );
+            }
+        }
     }
 
     #[test]

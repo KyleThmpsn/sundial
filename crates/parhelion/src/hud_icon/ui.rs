@@ -3,6 +3,8 @@ use super::{
     image::{HEIGHT, WIDTH},
 };
 mod preview;
+#[cfg(test)]
+mod tests;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -26,7 +28,9 @@ impl Editor {
         draft: &mut Option<HudImage>,
         appearance: Appearance<'_>,
     ) {
-        if let Some(rx) = &self.pending {
+        if ui.is_enabled()
+            && let Some(rx) = &self.pending
+        {
             let result = match rx.try_recv() {
                 Ok(value) => Some(value),
                 Err(TryRecvError::Empty) => None,

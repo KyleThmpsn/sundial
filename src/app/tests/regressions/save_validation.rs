@@ -135,6 +135,7 @@ fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     );
     let mut app = app(directory.0.clone());
     let mut original = defaults();
+    original["version"] = json!(18);
     original["core"]["logging"]["debugger_sink"] = json!("invalid");
     app.document = WorkspaceDocument::load(original, &app.settings_path);
     assert!(!app.document.uses_json_account());

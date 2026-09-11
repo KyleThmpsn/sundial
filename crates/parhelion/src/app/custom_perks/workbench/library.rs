@@ -32,19 +32,29 @@ impl Workbench {
         }
     }
 
-    fn refresh_library(&mut self) {
+    pub(super) fn refresh_library(&mut self) {
+        let warnings = self.scan_library();
+        if !warnings.is_empty() {
+            self.error = Some(warnings.join("\n"));
+        }
+    }
+
+    /// A failed refresh must not offer stale saved versions as current library entries.
+    pub(super) fn scan_library(&mut self) -> Vec<String> {
         self.authored_templates = None;
+        self.entries.clear();
         let Some(library) = &self.library else {
-            return;
+            return vec![
+                "My Perks is unavailable. Workbench drafts and weapon recipes are still available."
+                    .into(),
+            ];
         };
         match library.scan() {
             Ok(scan) => {
                 self.entries = scan.entries;
-                if !scan.errors.is_empty() {
-                    self.error = Some(scan.errors.join("\n"));
-                }
+                scan.errors
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => vec![error],
         }
     }
 
@@ -78,10 +88,11 @@ impl Workbench {
             .iter()
             .position(|existing| existing.recipe.id == document.recipe.id)
         {
-            self.selected = index;
+            self.select_document(index);
         } else {
-            self.selected = self.documents.len();
+            let index = self.documents.len();
             self.documents.push(document);
+            self.select_document(index);
             self.persist_drafts();
         }
     }
@@ -96,6 +107,7 @@ impl Workbench {
         crate::app::style::named_control(response, "Search My Perks");
         let query = self.query.trim().to_lowercase();
         let mut picked = None;
+        let mut selected = None;
         egui::ScrollArea::vertical()
             .id_salt("perk-library")
             .max_height((ui.available_height() - 66.0).max(80.0))
@@ -121,10 +133,7 @@ impl Workbench {
                         visible += 1;
                         if crate::app::style::list_row(ui, self.selected == index, &label).clicked()
                         {
-                            self.selected = index;
-                            self.page = Page::Effects;
-                            self.message = None;
-                            self.message_path = None;
+                            selected = Some(index);
                         }
                     }
                     let unloaded = self.entries.iter().filter(|entry| {
@@ -150,6 +159,12 @@ impl Workbench {
                     ui.weak("No matching perks.");
                 }
             });
+        if let Some(index) = selected {
+            self.select_document(index);
+            self.page = Page::Effects;
+            self.message = None;
+            self.message_path = None;
+        }
         if let Some(document) = picked {
             self.add_document(document);
         }
@@ -187,7 +202,7 @@ impl Workbench {
                 if copy {
                     self.documents
                         .push(Document::new(entry.recipe, Some(entry.baseline)));
-                    self.selected = self.documents.len() - 1;
+                    self.select_document(self.documents.len() - 1);
                 } else {
                     self.documents[self.selected].baseline = Some(entry.baseline);
                     self.documents[self.selected].origin = Some(recipe.clone());

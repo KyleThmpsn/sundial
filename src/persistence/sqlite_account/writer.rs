@@ -177,7 +177,7 @@ fn compatible_backup_revision(backup: &Path) -> Result<SourceRevision, SqliteAcc
     }
 }
 
-fn create_integrity_checked_snapshot(
+pub(super) fn create_integrity_checked_snapshot(
     source_path: &Path,
     backup: &Path,
 ) -> Result<(), SqliteAccountError> {
@@ -291,7 +291,7 @@ fn finish_backup_attempt(
     }
 }
 
-fn indexed_backup(
+pub(super) fn indexed_backup(
     source: &Path,
     prefix: &str,
     automatic: bool,

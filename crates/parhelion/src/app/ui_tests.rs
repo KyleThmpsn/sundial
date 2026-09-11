@@ -4,6 +4,7 @@ use super::*;
 mod added_sockets;
 mod authoring_safety;
 pub(super) mod build_flow;
+mod operation_lock;
 mod runtime_layout;
 mod socket_account_updates;
 
@@ -1067,11 +1068,14 @@ fn collection_capacity_separates_excluded_draft_from_selected_build() {
 fn replacing_recipe_closes_private_window_and_returns_to_weapon_page() {
     let mut app = PackageAuthoringApp {
         workbench_page: WorkbenchPage::Appearance,
-        private_perk_socket: Some(4),
+        perk_request: Some(custom_perks::workbench::Request::EditChoice {
+            socket: 4,
+            choice: 0,
+        }),
         ..Default::default()
     };
     app.clear_dependent_picker_queries();
-    assert!(app.private_perk_socket.is_none());
+    assert!(app.perk_request.is_none());
     assert_eq!(app.workbench_page, WorkbenchPage::Weapon);
 }
 
@@ -1748,6 +1752,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
     let mut app = PackageAuthoringApp::default();
     let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
     app.donor_summaries = catalog.weapon_donors();
+    app.library_state.refresh_donors(&app.donor_summaries);
     app.sandbox_perk_choices = catalog.weapon_sandbox_perk_choices();
     app.catalog = Some(catalog);
     app.packages = packages;
@@ -2040,7 +2045,10 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
 
 fn assert_private_window_survives_tab_changes(app: &mut PackageAuthoringApp) {
     let before = app.recipe.clone();
-    app.private_perk_socket = Some(0);
+    app.perk_request = Some(custom_perks::workbench::Request::EditChoice {
+        socket: 0,
+        choice: 0,
+    });
     for page in WorkbenchPage::ALL {
         app.workbench_page = page;
         let (output, _) = render(1320.0, |ui| app.draw_perk_workbench(ui.ctx()));
@@ -2056,7 +2064,7 @@ fn assert_private_window_survives_tab_changes(app: &mut PackageAuthoringApp) {
             "opening a private window must be read-only"
         );
     }
-    app.private_perk_socket = None;
+    app.perk_request = None;
     app.workbench_page = WorkbenchPage::Weapon;
 }
 

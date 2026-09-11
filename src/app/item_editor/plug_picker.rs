@@ -219,6 +219,7 @@ pub(crate) fn draw_plug_picker(
                         searchable,
                         false,
                         &mut selection,
+                        |_| false,
                     );
                 },
             );
@@ -265,6 +266,22 @@ pub(crate) fn draw_plug_icon_picker(
     height: PickerHeight,
     anchor: &egui::Response,
 ) -> Option<ItemEditorAction> {
+    draw_plug_icon_picker_with_footer(ui, catalog, scope, query, snapshot, height, anchor, |_| {
+        false
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_plug_icon_picker_with_footer(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    snapshot: &PlugPickerSnapshot,
+    height: PickerHeight,
+    anchor: &egui::Response,
+    footer: impl FnOnce(&mut egui::Ui) -> bool,
+) -> Option<ItemEditorAction> {
     let searchable = snapshot.choices.len() > 12;
     if !searchable {
         query.clear();
@@ -280,6 +297,7 @@ pub(crate) fn draw_plug_icon_picker(
     let popup_width = 520.0_f32.min((screen.width() - 24.0).max(320.0));
     let row_height = ui.spacing().interact_size.y;
     let mut selection = None::<Option<u64>>;
+    let mut footer_clicked = false;
     let picker_style = ui.style().clone();
     egui::popup::popup_above_or_below_widget(
         ui,
@@ -289,7 +307,8 @@ pub(crate) fn draw_plug_icon_picker(
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
             ui.set_style(picker_style);
-            draw_plug_browser_contents(
+            ui.set_min_width(popup_width);
+            footer_clicked = draw_plug_browser_contents(
                 ui,
                 catalog,
                 query,
@@ -300,10 +319,11 @@ pub(crate) fn draw_plug_icon_picker(
                 searchable,
                 true,
                 &mut selection,
+                footer,
             );
         },
     );
-    if selection.is_some() {
+    if selection.is_some() || footer_clicked {
         ui.memory_mut(egui::Memory::close_popup);
     }
     selection.map(|hash| ItemEditorAction::SetPlug {
@@ -324,7 +344,8 @@ fn draw_plug_browser_contents(
     searchable: bool,
     show_native_reset: bool,
     selection: &mut Option<Option<u64>>,
-) {
+    footer: impl FnOnce(&mut egui::Ui) -> bool,
+) -> bool {
     ui.set_min_width(popup_width);
     if searchable {
         let search = ui.add(
@@ -449,6 +470,7 @@ fn draw_plug_browser_contents(
             });
     }
 
+    let footer_clicked = footer(ui);
     let reset_enabled = show_native_reset
         && snapshot
             .native_default
@@ -457,17 +479,18 @@ fn draw_plug_browser_contents(
         ui.separator();
         let label = match snapshot.native_default {
             Some(NativePlugDefault::Plug(hash)) => format!(
-                "Reset to native default: {}",
+                "Reset to Native Default: {}",
                 snapshot
                     .native_default_label
                     .as_deref()
                     .map_or_else(|| format_hash_hex(hash), str::to_owned)
             ),
-            Some(NativePlugDefault::Empty) => "Reset to native default: None".to_owned(),
+            Some(NativePlugDefault::Empty) => "Reset to Native Default: None".to_owned(),
             None => String::new(),
         };
         if ui.button(label).clicked() {
             *selection = snapshot.native_default.map(NativePlugDefault::value);
         }
     }
+    footer_clicked
 }

@@ -12,9 +12,24 @@ mod forms;
 mod library;
 pub(super) mod pickers;
 mod program;
+mod selection;
 mod templates;
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum Request {
+    EditChoice { socket: usize, choice: usize },
+    SelectChoice { socket: usize, choice: usize },
+}
+
+impl Request {
+    pub(in crate::app) fn socket(self) -> usize {
+        match self {
+            Self::EditChoice { socket, .. } | Self::SelectChoice { socket, .. } => socket,
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Document {
@@ -96,6 +111,7 @@ pub(in crate::app) struct Workbench {
     message: Option<String>,
     message_path: Option<PathBuf>,
     error: Option<String>,
+    picker: Option<selection::Picker>,
 }
 
 fn draw_experimental_banner(ui: &mut egui::Ui) {
@@ -124,6 +140,16 @@ fn draw_experimental_banner(ui: &mut egui::Ui) {
 }
 
 impl Workbench {
+    fn perk_issue(&self, recipe: &PerkRecipe) -> Option<String> {
+        recipe.validate().err().or_else(|| {
+            recipe.effects.iter().find_map(|effect| {
+                self.discovery
+                    .perk_issue(effect.source_perk_index)
+                    .map(str::to_owned)
+            })
+        })
+    }
+
     pub(in crate::app) fn open_assets(&mut self) {
         self.discovery.open = true;
     }
@@ -142,6 +168,18 @@ impl Workbench {
 
     pub(in crate::app) fn editing(&self) -> bool {
         self.open && self.editor.is_some()
+    }
+
+    /// Parameter editors belong to one document, including while their window is closed.
+    fn select_document(&mut self, index: usize) {
+        if self.selected == index {
+            return;
+        }
+        self.capture_effect_draft();
+        self.retire_editor();
+        self.editing_effect = None;
+        self.editing_program_action = None;
+        self.selected = index;
     }
 
     fn discard_changes(&mut self) {

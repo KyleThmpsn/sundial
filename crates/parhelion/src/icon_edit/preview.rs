@@ -31,6 +31,36 @@ pub(super) struct LoadedIconPreview {
     pub(super) warnings: Vec<String>,
 }
 
+/// Decoded context retained by the watermark editor, without open package handles.
+pub(crate) struct WatermarkPreview {
+    icon: LoadedIconPreview,
+    edit: WeaponIconEdit,
+}
+
+impl WatermarkPreview {
+    pub(crate) fn load(
+        packages: &Path,
+        container: TagHash,
+        rarity: crate::AuthoredWeaponRarity,
+        edit: WeaponIconEdit,
+    ) -> Result<Self, String> {
+        let manager = open_shadowkeep_package_manager(packages)?;
+        Ok(Self {
+            icon: load_icon_preview(&manager, container, rarity)?,
+            edit,
+        })
+    }
+
+    pub(crate) fn render(
+        &mut self,
+        artwork: &crate::presentation::Artwork,
+    ) -> Result<egui::ColorImage, String> {
+        self.icon.authored_watermark.rgba = crate::watermark::render_custom_corner(artwork, 0)
+            .map_err(|error| error.to_string())?;
+        self.icon.render(&self.edit)
+    }
+}
+
 impl LoadedIconPreview {
     pub(super) fn source_primary(&self, edit: &WeaponIconEdit) -> DecodedIconImage {
         let mut primary = self.primary.clone();

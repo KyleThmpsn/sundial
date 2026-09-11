@@ -6,7 +6,7 @@ use super::background_tasks::{CatalogTask, CatalogTaskEvent, CatalogTaskKind, Pe
 use super::persistence_compatibility::PersistenceCompatibility;
 use super::preferences::{SettingsLayout, SettingsPathResolution};
 use super::settings::{
-    catalog_path, detect_sunrise_version, load_workspace_json, missing_settings_message,
+    catalog_path, load_workspace_json, missing_settings_message,
     resolve_settings_path, validate_workspace_document,
 };
 use super::{
@@ -90,6 +90,8 @@ impl SundialApp {
         self.workspace_refresh_pending = false;
         if document != self.persisted_document {
             self.install_reloaded_document(document, true);
+        } else {
+            self.refresh_runtime_inspection();
         }
     }
 
@@ -144,7 +146,7 @@ impl SundialApp {
     }
 
     pub(super) fn refresh_sunrise_version(&mut self) {
-        self.sunrise_version = detect_sunrise_version(&self.install_path);
+        self.refresh_runtime_inspection();
     }
 
     pub(super) fn clear_picker_state(&mut self) {

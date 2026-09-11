@@ -190,6 +190,7 @@ impl PackageAuthoringApp {
                     && !self.has_background_work()
                     && !self.perk_workbench.editing()
                     && self.icon_editor.is_none()
+                    && !self.presentation_editor.editing()
                     && !self.build_status_open,
                 egui::Button::new("Uninstall Custom Packages…"),
             )

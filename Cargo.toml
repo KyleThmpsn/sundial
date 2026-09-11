@@ -66,6 +66,7 @@ time = { version = "=0.3.47", features = ["formatting"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
 winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 
 [target.'cfg(windows)'.dependencies]

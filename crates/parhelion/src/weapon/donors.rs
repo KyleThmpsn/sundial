@@ -1,43 +1,74 @@
+use super::sources::ProjectSources;
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn resolve_icon_donor(
-    manager: &PackageManager,
-    reference: &WeaponIconDonorReference,
-    item_table: &[u8],
-    item_rows: usize,
-    item_count: usize,
-    item_strings: &[u8],
-    string_rows: usize,
-    item_icons: &[u8],
-) -> AuthoringResult<ResolvedIconDonor> {
-    let item_index = find_u32_row_key(
-        item_table,
-        item_rows,
-        item_count,
-        ITEM_ROW_SIZE,
-        reference.item_hash,
-    )?
-    .ok_or_else(|| {
-        invalid(format!(
-            "Icon donor item 0x{:08X} is missing",
-            reference.item_hash
-        ))
-    })?;
-    let string_row = string_rows + item_index * ITEM_ROW_SIZE;
-    if read_u32(item_strings, string_row)? != reference.item_hash {
-        return Err(invalid(
-            "Icon donor item and item-string rows are not aligned",
-        ));
+pub(super) struct DonorItem {
+    pub(super) item_index: usize,
+    pub(super) definition_tag: TagHash,
+    pub(super) string_tag: TagHash,
+}
+
+pub(super) fn resolve_donor_item(
+    sources: &ProjectSources,
+    item_hash: u32,
+    context: &str,
+) -> AuthoringResult<DonorItem> {
+    let item_index = sources
+        .stock_item_rows_by_hash
+        .get(&item_hash)
+        .and_then(|rows| rows.first())
+        .copied()
+        .ok_or_else(|| invalid(format!("{context} item 0x{item_hash:08X} is missing")))?;
+    let string_row = sources.string_rows + item_index * ITEM_ROW_SIZE;
+    if read_u32(&sources.stock_item_strings, string_row)? != item_hash {
+        return Err(invalid(format!(
+            "{context} item and item-string rows are not aligned"
+        )));
     }
-    let string_tag = TagHash(read_u32(item_strings, string_row + 16)?);
-    if let Some(expected_name) = &reference.expected_name {
-        let actual_name = resolve_item_name(manager, string_tag).map_err(invalid)?;
-        if expected_name != &actual_name {
-            return Err(invalid(format!(
-                "Icon donor item resolves to {actual_name:?}, not {expected_name:?}"
-            )));
-        }
+    Ok(DonorItem {
+        item_index,
+        definition_tag: TagHash(read_u32(
+            &sources.stock_item_table,
+            sources.item_rows + item_index * ITEM_ROW_SIZE + 16,
+        )?),
+        string_tag: TagHash(read_u32(&sources.stock_item_strings, string_row + 16)?),
+    })
+}
+
+pub(super) fn validate_donor_name(
+    sources: &ProjectSources,
+    string_tag: TagHash,
+    expected_name: Option<&str>,
+    context: &str,
+) -> AuthoringResult<()> {
+    let actual_name = resolve_item_name(&sources.manager, string_tag).map_err(invalid)?;
+    if let Some(expected_name) = expected_name
+        && expected_name != actual_name
+    {
+        return Err(invalid(format!(
+            "{context} item resolves to {actual_name:?}, not {expected_name:?}"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn resolve_icon_donor(
+    sources: &ProjectSources,
+    reference: &WeaponIconDonorReference,
+) -> AuthoringResult<ResolvedIconDonor> {
+    let manager = &sources.manager;
+    let item_icons = &sources.stock_item_icons;
+    let DonorItem {
+        item_index,
+        string_tag,
+        ..
+    } = resolve_donor_item(sources, reference.item_hash, "Icon donor")?;
+    if reference.expected_name.is_some() {
+        validate_donor_name(
+            sources,
+            string_tag,
+            reference.expected_name.as_deref(),
+            "Icon donor",
+        )?;
     }
     let strings = read_tag(manager, string_tag, "icon donor item-string")?;
     let icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
@@ -51,47 +82,23 @@ pub(super) fn resolve_icon_donor(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_render_gear_donor(
-    manager: &PackageManager,
+    sources: &ProjectSources,
     reference: &WeaponRenderGearDonorReference,
-    item_table: &[u8],
-    item_rows: usize,
-    item_count: usize,
-    item_strings: &[u8],
-    string_rows: usize,
 ) -> AuthoringResult<ResolvedRenderGearDonor> {
-    let item_index = find_u32_row_key(
-        item_table,
-        item_rows,
-        item_count,
-        ITEM_ROW_SIZE,
-        reference.item_hash,
-    )?
-    .ok_or_else(|| {
-        invalid(format!(
-            "Render-gear donor item 0x{:08X} is missing",
-            reference.item_hash
-        ))
-    })?;
-    let string_row = string_rows + item_index * ITEM_ROW_SIZE;
-    if read_u32(item_strings, string_row)? != reference.item_hash {
-        return Err(invalid(
-            "Render-gear donor item and item-string rows are not aligned",
-        ));
-    }
-    let definition_tag = TagHash(read_u32(
-        item_table,
-        item_rows + item_index * ITEM_ROW_SIZE + 16,
-    )?);
-    let string_tag = TagHash(read_u32(item_strings, string_row + 16)?);
-    if let Some(expected_name) = &reference.expected_name {
-        let actual_name = resolve_item_name(manager, string_tag).map_err(invalid)?;
-        if expected_name != &actual_name {
-            return Err(invalid(format!(
-                "Render-gear donor item resolves to {actual_name:?}, not {expected_name:?}"
-            )));
-        }
+    let manager = &sources.manager;
+    let DonorItem {
+        definition_tag,
+        string_tag,
+        ..
+    } = resolve_donor_item(sources, reference.item_hash, "Render-gear donor")?;
+    if reference.expected_name.is_some() {
+        validate_donor_name(
+            sources,
+            string_tag,
+            reference.expected_name.as_deref(),
+            "Render-gear donor",
+        )?;
     }
     let definition = read_tag(manager, definition_tag, "render-gear donor weapon")?;
     weapon_translation_topology(&definition)?;
@@ -99,54 +106,28 @@ pub(super) fn resolve_render_gear_donor(
     Ok(ResolvedRenderGearDonor { definition })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_presentation_donor(
-    manager: &PackageManager,
+    sources: &ProjectSources,
     reference: &WeaponPresentationDonorReference,
-    item_table: &[u8],
-    item_rows: usize,
-    item_count: usize,
-    item_strings: &[u8],
-    string_rows: usize,
-    collectibles: &[u8],
-    collectible_rows: usize,
-    collectible_count: usize,
-    collectible_displays: &[u8],
-    presentation_nodes: &[u8],
-    item_icons: &[u8],
 ) -> AuthoringResult<ResolvedPresentationDonor> {
-    let item_index = find_u32_row_key(
-        item_table,
-        item_rows,
-        item_count,
-        ITEM_ROW_SIZE,
-        reference.item_hash,
-    )?
-    .ok_or_else(|| {
-        invalid(format!(
-            "Geometry donor item 0x{:08X} is missing",
-            reference.item_hash
-        ))
-    })?;
-    let string_row = string_rows + item_index * ITEM_ROW_SIZE;
-    if read_u32(item_strings, string_row)? != reference.item_hash {
-        return Err(invalid(
-            "Geometry donor item and item-string rows are not aligned",
-        ));
-    }
-    let definition_tag = TagHash(read_u32(
-        item_table,
-        item_rows + item_index * ITEM_ROW_SIZE + 16,
-    )?);
-    let string_tag = TagHash(read_u32(item_strings, string_row + 16)?);
-    let actual_name = resolve_item_name(manager, string_tag).map_err(invalid)?;
-    if let Some(expected_name) = &reference.expected_name
-        && expected_name != &actual_name
-    {
-        return Err(invalid(format!(
-            "Geometry donor item resolves to {actual_name:?}, not {expected_name:?}"
-        )));
-    }
+    let manager = &sources.manager;
+    let collectibles = &sources.stock_collectibles;
+    let collectible_rows = sources.collectible_rows;
+    let collectible_count = sources.stock_collectible_count;
+    let collectible_displays = &sources.stock_collectible_displays;
+    let presentation_nodes = &sources.stock_nodes;
+    let item_icons = &sources.stock_item_icons;
+    let DonorItem {
+        item_index,
+        definition_tag,
+        string_tag,
+    } = resolve_donor_item(sources, reference.item_hash, "Geometry donor")?;
+    validate_donor_name(
+        sources,
+        string_tag,
+        reference.expected_name.as_deref(),
+        "Geometry donor",
+    )?;
     let item_index_u16 = u16::try_from(item_index)
         .map_err(|_| invalid("Geometry donor item index does not fit 16 bits"))?;
     let donor_collectibles = (0..collectible_count)
@@ -204,50 +185,26 @@ pub(super) fn resolve_presentation_donor(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_runtime_component_donor(
-    manager: &PackageManager,
+    sources: &ProjectSources,
     reference: &WeaponRuntimeComponentDonorReference,
-    item_table: &[u8],
-    item_rows: usize,
-    item_count: usize,
-    item_strings: &[u8],
-    string_rows: usize,
-    sandbox_patterns: &[u8],
 ) -> AuthoringResult<ResolvedRuntimeComponentDonor> {
-    let item_index = find_u32_row_key(
-        item_table,
-        item_rows,
-        item_count,
-        ITEM_ROW_SIZE,
-        reference.item_hash,
-    )?
-    .ok_or_else(|| {
-        invalid(format!(
-            "Runtime component 0x{:08X} donor item 0x{:08X} is missing",
-            reference.binding_hash, reference.item_hash
-        ))
-    })?;
-    let string_row = string_rows + item_index * ITEM_ROW_SIZE;
-    if read_u32(item_strings, string_row)? != reference.item_hash {
-        return Err(invalid(
-            "Runtime-component donor item and item-string rows are not aligned",
-        ));
+    let manager = &sources.manager;
+    let sandbox_patterns = &sources.stock_sandbox_patterns;
+    let context = format!("Runtime component 0x{:08X} donor", reference.binding_hash);
+    let DonorItem {
+        definition_tag,
+        string_tag,
+        ..
+    } = resolve_donor_item(sources, reference.item_hash, &context)?;
+    if reference.expected_name.is_some() {
+        validate_donor_name(
+            sources,
+            string_tag,
+            reference.expected_name.as_deref(),
+            &context,
+        )?;
     }
-    if let Some(expected_name) = &reference.expected_name {
-        let string_tag = TagHash(read_u32(item_strings, string_row + 16)?);
-        let actual_name = resolve_item_name(manager, string_tag).map_err(invalid)?;
-        if expected_name != &actual_name {
-            return Err(invalid(format!(
-                "Runtime component 0x{:08X} donor item resolves to {actual_name:?}, not {expected_name:?}",
-                reference.binding_hash
-            )));
-        }
-    }
-    let definition_tag = TagHash(read_u32(
-        item_table,
-        item_rows + item_index * ITEM_ROW_SIZE + 16,
-    )?);
     let definition = read_tag(manager, definition_tag, "runtime-component donor weapon")?;
     let pattern_index = weapon_pattern_index(&definition)?.ok_or_else(|| {
         invalid(format!(
@@ -283,19 +240,18 @@ pub(super) fn sandbox_pattern_source_at(
     ResolvedSandboxPatternSource::try_from(pattern)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_added_damage_carrier_source(
-    manager: &PackageManager,
-    sandbox_patterns: &[u8],
-    entity_assignments: &[u8],
-    item_table: &[u8],
-    item_rows: usize,
-    item_count: usize,
+    sources: &ProjectSources,
     runtime_source: Option<ResolvedSandboxPatternSource>,
     gameplay_definition: &[u8],
     target_slot: WeaponInventorySlot,
     presentation_definition: Option<&[u8]>,
 ) -> AuthoringResult<Option<ResolvedDamageCarrierSource>> {
+    let manager = &sources.manager;
+    let sandbox_patterns = &sources.stock_sandbox_patterns;
+    let entity_assignments = &sources.stock_entity_assignments;
+    let item_table = &sources.stock_item_table;
+    let item_rows = sources.item_rows;
     if target_slot == WeaponInventorySlot::Kinetic {
         return Ok(None);
     }
@@ -326,13 +282,10 @@ pub(super) fn resolve_added_damage_carrier_source(
                 {
                     continue;
                 }
-                let Some(item_index) = find_u32_row_key(
-                    item_table,
-                    item_rows,
-                    item_count,
-                    ITEM_ROW_SIZE,
-                    pattern.item_hash,
-                )?
+                let Some(&item_index) = sources
+                    .stock_item_rows_by_hash
+                    .get(&pattern.item_hash)
+                    .and_then(|rows| rows.first())
                 else {
                     continue;
                 };

@@ -16,18 +16,7 @@ pub(super) fn asset_choices(catalog: &projectile::catalog::Catalog) -> Vec<Asset
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let name = entry
-                .native_paths
-                .first()
-                .map(|path| sundial::package_authoring::tft::asset_label(path))
-                .or_else(|| entry.native_name.clone())
-                .unwrap_or_else(|| {
-                    format!(
-                        "Unidentified {} · 0x{:08X}",
-                        entry.kind.label(),
-                        entry.graph
-                    )
-                });
+            let name = entry.label();
             let detail = format!(
                 "{} · {} · 0x{:08X}",
                 entry.kind.label(),
@@ -55,7 +44,7 @@ pub(super) fn asset_choices(catalog: &projectile::catalog::Catalog) -> Vec<Asset
         .collect::<Vec<_>>();
     rows.sort_by_cached_key(|row| {
         (
-            catalog.entries[row.index].native_paths.is_empty(),
+            catalog.entries[row.index].label_rank(),
             row.name.to_lowercase(),
             row.index,
         )

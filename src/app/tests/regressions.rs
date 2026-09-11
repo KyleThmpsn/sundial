@@ -2,9 +2,12 @@
 mod account_smoke;
 mod character_fields;
 mod confirmation_layout;
+mod dawn;
 mod loadout_safety;
 mod parhelion_confirmation;
 mod progression_access;
+mod recovery;
+mod runtime_selection;
 mod save_validation;
 mod schema_smoke;
 mod shortcuts;
@@ -17,6 +20,7 @@ fn app(install_path: PathBuf) -> SundialApp {
     let json = serde_json::json!({"version": 8, "state": {"characters": []}});
     let document = WorkspaceDocument::json_only(json.clone());
     SundialApp {
+        runtime_choice: runtime_installation::RuntimeChoice::inspect(&install_path),
         account_details: Default::default(),
         settings_path: install_path.join("settings.json"),
         settings_layout: SettingsLayout::GameRoot,
@@ -64,6 +68,7 @@ fn app(install_path: PathBuf) -> SundialApp {
         pending_save_action: None,
         pending_equipment_delete: None,
         pending_sqlite_restore: None,
+        pending_sqlite_reset: None,
         exit_confirmed: false,
         dirty: false,
         undo_history: Vec::new(),

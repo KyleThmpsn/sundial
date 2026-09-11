@@ -617,6 +617,22 @@ pub fn validate_socket_column_overrides_with_socket_types(
     socket_types: &[Option<u16>],
     supported_plug_sets: &[SupportedPlugSet],
 ) -> Vec<AuthoringDiagnostic> {
+    validate_socket_column_overrides_with_labels(
+        donor,
+        overrides,
+        socket_types,
+        supported_plug_sets,
+        &|hash| format!("0x{hash:08X}"),
+    )
+}
+
+pub(crate) fn validate_socket_column_overrides_with_labels(
+    donor: &WeaponDonor,
+    overrides: &[Option<Vec<u32>>],
+    socket_types: &[Option<u16>],
+    supported_plug_sets: &[SupportedPlugSet],
+    plug_label: &dyn Fn(u32) -> String,
+) -> Vec<AuthoringDiagnostic> {
     let mut diagnostics = Vec::new();
     if overrides.is_empty() {
         return diagnostics;
@@ -657,6 +673,7 @@ pub fn validate_socket_column_overrides_with_socket_types(
             socket_types.get(socket_index).copied().flatten(),
             plug_sets.get(&socket_index).copied(),
             &mut diagnostics,
+            plug_label,
         );
     }
     diagnostics
@@ -715,6 +732,7 @@ fn validate_socket_column(
     socket_type_override: Option<u16>,
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
+    plug_label: &dyn Fn(u32) -> String,
 ) {
     let field = AuthoringField::SocketColumn { socket_index };
     let socket = donor.sockets.get(socket_index);
@@ -776,7 +794,7 @@ fn validate_socket_column(
             ),
         });
     }
-    validate_socket_choice_values(socket_index, choices, supported, diagnostics);
+    validate_socket_choice_values(socket_index, choices, supported, diagnostics, plug_label);
 }
 
 fn validate_socket_choice_values(
@@ -784,6 +802,7 @@ fn validate_socket_choice_values(
     choices: &[u32],
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
+    plug_label: &dyn Fn(u32) -> String,
 ) {
     let field = AuthoringField::SocketColumn { socket_index };
     let mut seen = BTreeSet::new();
@@ -826,7 +845,7 @@ fn validate_socket_choice_values(
             field,
             code: AuthoringDiagnosticCode::UnsupportedPlug,
             message: format!(
-                "Plug 0x{hash:08X} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game."
+                "Plug {} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game.", plug_label(hash)
             ),
         });
     }

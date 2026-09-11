@@ -107,41 +107,14 @@ pub(super) fn author_entities(
                 .collect::<Vec<_>>();
             graft_weapon_component_bindings(&mut pattern_entity, &component_grafts)
                 .map_err(invalid)?;
-            let mut runtime_resource_patches =
-                donor.weapon.overrides.runtime_resource_patches.clone();
-            if let Some(key) = hud_key {
-                runtime_resource_patches.extend(crate::hud_icon::runtime::patches(
-                    manager,
-                    &pattern_entity,
-                    key,
-                )?);
-            }
-            if let Some(ammo) = donor.weapon.overrides.ammo_type {
-                runtime_resource_patches.extend(crate::weapon_ammo::patches(
-                    manager,
-                    &pattern_entity,
-                    ammo,
-                )?);
-            }
-            append_patched_runtime_resource_owners(
+            author_runtime_edits(
                 manager,
                 &mut pattern_entity,
-                &donor.weapon.overrides.runtime_values,
-                &runtime_resource_patches,
+                &donor.weapon.overrides,
+                hud_key,
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
             )?;
-            apply_raw_payload_target(
-                &mut pattern_entity,
-                WeaponRawPayloadTarget::RuntimeWeaponEntity,
-                &donor.weapon.overrides.raw_payload_patches,
-            )?;
-            validate_raw_payload_target(
-                &pattern_entity,
-                WeaponRawPayloadTarget::RuntimeWeaponEntity,
-                &donor.weapon.overrides.raw_payload_patches,
-            )?;
-            validate_weapon_entity(&pattern_entity).map_err(invalid)?;
             let authored_entity_tag = weapon_runtime_tag_allocator.assigned_tag(
                 weapon_runtime_new_tags.len(),
                 "Authored runtime weapon entity",
@@ -173,28 +146,34 @@ fn resolved_hud_key(
     assignments: &[u8],
     donor: &resolve::ResolvedWeapon,
 ) -> AuthoringResult<Option<u32>> {
-    if donor.weapon.overrides.hud_icon.is_some() {
-        return Ok(Some(donor.weapon.identity.type_hash));
-    }
-    let Some(appearance) = donor.gear_art_pattern_source else {
-        return Ok(None);
-    };
     let content_graft = donor.runtime_component_donors.iter().any(|component| {
-        component.binding_hash == 0x5F0DD954 && component.pattern_item_hash != appearance.item_hash
+        component.binding_hash == 0x5F0DD954
+            && Some(component.pattern_item_hash)
+                != donor.gear_art_pattern_source.map(|source| source.item_hash)
     });
-    if donor.runtime_pattern_source == Some(appearance) && !content_graft {
-        // The unchanged content component already selects the appearance's native HUD key.
-        return Ok(None);
-    }
-    let (_, entity) = resolve_runtime_weapon_entity(
+    runtime_hud_key(
         manager,
-        patterns,
-        assignments,
-        appearance.item_hash,
-        "appearance donor HUD content",
-    )?;
-    crate::hud_icon::runtime::inherited_key(manager, &entity, appearance.weapon_content_group_hash)
-        .map(Some)
+        donor
+            .weapon
+            .overrides
+            .hud_icon
+            .as_ref()
+            .map(|_| donor.weapon.identity.type_hash),
+        donor.runtime_pattern_source == donor.gear_art_pattern_source && !content_graft,
+        || {
+            let Some(appearance) = donor.gear_art_pattern_source else {
+                return Ok(None);
+            };
+            let (_, entity) = resolve_runtime_weapon_entity(
+                manager,
+                patterns,
+                assignments,
+                appearance.item_hash,
+                "appearance donor HUD content",
+            )?;
+            Ok(Some((entity, appearance.weapon_content_group_hash)))
+        },
+    )
 }
 
 #[cfg(test)]

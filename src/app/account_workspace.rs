@@ -171,15 +171,15 @@ impl WorkspaceDocument {
 
     pub(super) fn load(mut json: Value, settings_path: &Path) -> Self {
         let database_path = crate::persistence::investment_path(settings_path);
-        let account = match sqlite_persistence::load_document(&database_path) {
-            Ok(SqliteAccountDocumentLoad::Missing)
-                if crate::game_settings::schema_version(&json).is_some_and(|version| version >= 18) =>
-            {
+        let account = if !requires_sqlite(&json) {
+            AccountDocument::Json
+        } else {
+            match sqlite_persistence::load_document(&database_path) {
+            Ok(SqliteAccountDocumentLoad::Missing) => {
                 AccountDocument::Blocked(
                     "Settings v18 requires data/investment.sqlite3. Start Sunrise to initialize it, then reload.".into(),
                 )
             }
-            Ok(SqliteAccountDocumentLoad::Missing) => AccountDocument::Json,
             Ok(SqliteAccountDocumentLoad::Empty) => AccountDocument::Blocked(
                 "The Sunrise database is empty or uninitialized. Start Sunrise to initialize it, then reload.".into(),
             ),
@@ -190,6 +190,7 @@ impl WorkspaceDocument {
             Err(error) => AccountDocument::Blocked(format!(
                 "Sundial could not safely read investment.sqlite3: {error}"
             )),
+        }
         };
 
         if matches!(account, AccountDocument::Json) {
@@ -314,10 +315,10 @@ impl WorkspaceDocument {
     }
 
     pub(super) fn verify_account_source_unchanged(&self) -> Result<(), String> {
-        if matches!(self.account, AccountDocument::Json)
-            && self.database_path.try_exists().map_err(|e| e.to_string())?
-        {
-            return Err("investment.sqlite3 became authoritative after this workspace loaded. Reload before saving".into());
+        if self.uses_json_account() == requires_sqlite(&self.json) {
+            return Err(
+                "The settings schema changed its account source. Reload before saving".into(),
+            );
         }
 
         Ok(())
@@ -357,6 +358,10 @@ impl WorkspaceDocument {
             current.adopt_revision_from(source);
         }
     }
+}
+
+pub(super) fn requires_sqlite(json: &Value) -> bool {
+    crate::game_settings::requires_sqlite_account(json)
 }
 
 impl Deref for WorkspaceDocument {

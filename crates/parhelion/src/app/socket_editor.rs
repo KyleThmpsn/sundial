@@ -157,7 +157,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         show_plug_safety_warnings,
         show_experimental_options,
         show_technical_rows,
-        private_perk_socket,
+        perk_request,
         donor,
         log,
     } = context;
@@ -243,7 +243,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
                     && socket_index + 1 == effective_donor.sockets.len(),
                 show_experimental_options,
                 show_technical_row: &mut *show_technical_rows,
-                private_perk_socket,
+                perk_request,
                 log,
             },
         );
@@ -343,11 +343,12 @@ pub(super) fn draw_socket_override_diagnostics(
                     })
                     .collect::<Vec<_>>();
                 let mut compatibility_warnings = Vec::new();
-                for diagnostic in validate_socket_column_overrides_with_socket_types(
+                for diagnostic in crate::capabilities::validate_socket_column_overrides_with_labels(
                     donor,
                     &parsed,
                     &socket_types,
                     &sets,
+                    &|hash| catalog.plug_label(hash, true),
                 ) {
                     if diagnostic.code == AuthoringDiagnosticCode::DisabledSocketOverride
                         && matches!(

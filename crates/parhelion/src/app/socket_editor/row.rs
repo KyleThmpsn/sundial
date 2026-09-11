@@ -21,7 +21,7 @@ pub(super) struct SocketRowContext<'a> {
     pub can_remove_added: bool,
     pub show_experimental_options: bool,
     pub show_technical_row: &'a mut bool,
-    pub private_perk_socket: &'a mut Option<usize>,
+    pub perk_request: &'a mut Option<crate::app::custom_perks::workbench::Request>,
     pub log: &'a mut ActivityLog,
 }
 
@@ -101,6 +101,7 @@ enum RowCommand {
     Activate,
     EditChoice { index: usize, hash: Option<u32> },
     MakeDefault(usize),
+    EditPerk(usize),
 }
 
 enum RowContinuation {

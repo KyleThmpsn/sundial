@@ -167,11 +167,11 @@ pub mod weapon_entity {
         WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
-        graft_weapon_component_binding, graft_weapon_component_bindings,
-        retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
-        sandbox_pattern_identity, sandbox_pattern_identity_at, validate_weapon_entity,
-        weapon_component_binding, weapon_component_binding_hashes, weapon_component_bindings,
-        weapon_entity_assignment,
+        coupled_weapon_component_bindings, graft_weapon_component_binding,
+        graft_weapon_component_bindings, retarget_weapon_component_owner,
+        retarget_weapon_component_owner_payload, sandbox_pattern_identity,
+        sandbox_pattern_identity_at, validate_weapon_entity, weapon_component_binding,
+        weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
     };
 }
 
@@ -187,6 +187,7 @@ pub mod weapon_runtime {
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph,
         load_weapon_runtime_graph_for_entity, load_weapon_runtime_graph_with_manager,
         load_weapon_runtime_resource_shape, resolve_weapon_runtime_field,
+        runtime_fields_share_semantics,
     };
 }
 

@@ -1,4 +1,5 @@
 //! Explicit workspace reset and backup-recovery actions.
+mod defaults;
 use crate::app::account_workspace as account;
 
 use super::save_support::settings_save_note;
@@ -107,7 +108,7 @@ impl SundialApp {
                 return;
             }
         };
-        if !self.document.uses_json_account() {
+        if account::requires_sqlite(&default_document) {
             preserve_inactive_json_account_domains(
                 &mut default_document,
                 self.persisted_document.json(),
@@ -132,9 +133,10 @@ impl SundialApp {
             Ok(result) => {
                 let size_note = settings_save_note(&result);
                 let (retention_note, retention_failed) = self.apply_backup_retention();
-                self.document.replace_json(default_document.clone());
+                self.document =
+                    account::WorkspaceDocument::load(default_document, &self.settings_path);
                 self.progression_ui.invalidate_document();
-                self.persisted_document.replace_json(default_document);
+                self.persisted_document = self.document.clone();
                 self.refresh_sunrise_version();
                 self.source_warning = validate_workspace_document(&self.document).err();
                 self.class_armor_defaults = account::class_armor_default_characters(&self.document);

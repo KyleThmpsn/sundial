@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> Vec<u8> {
+pub(super) fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 240];
     let path = b"content\\sandbox\\projectiles\\test.pattern.tft\0";
     bytes[128..128 + path.len()].copy_from_slice(path);

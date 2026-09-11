@@ -18,17 +18,21 @@ fn load_entity_parameters(packages: &Path, entity: u32) -> Result<PrivatePerkRun
         .read_tag(tiger_pkg::TagHash(entity))
         .map_err(|error| error.to_string())?;
     let graph = load_weapon_runtime_graph_for_entity(&manager, 0, 0, entity, &payload)?;
-    let names = sundial::package_authoring::tft::cached(packages, &manager, |_, _| {})?;
+    let names = sundial::package_authoring::tft::cached_only(packages)?;
     Ok(PrivatePerkRuntimeGraph {
         action_tag: 0,
         action_payload: Vec::new(),
         graphs: vec![(entity, graph)],
-        warnings: Vec::new(),
+        warnings: match names.as_ref() {
+            None => vec!["Asset references have not been indexed for these packages yet. Open asset discovery to build the index. Effect properties are available now.".into()],
+            Some(names) if !names.errors.is_empty() => vec![format!("{} resources could not be read. Asset references may be incomplete.", names.errors.len())],
+            Some(_) => Vec::new(),
+        },
         projectile_slots: Vec::new(),
         projectile_catalog: Arc::default(),
         native_assets: names
-            .references
             .iter()
+            .flat_map(|names| &names.references)
             .filter(|reference| reference.target == entity || reference.source == entity)
             .cloned()
             .collect(),
@@ -59,10 +63,10 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
     } else {
         projectile::catalog::cached(packages, &manager)?
     };
-    let names = sundial::package_authoring::tft::cached(packages, &manager, |_, _| {})?;
+    let names = sundial::package_authoring::tft::cached_only(packages)?;
     let native_assets = names
-        .references
         .iter()
+        .flat_map(|names| &names.references)
         .filter(|reference| {
             reference.source == action.action_tag.0
                 || reference.target == action.action_tag.0
@@ -74,7 +78,11 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         action_tag: action.action_tag.0,
         action_payload: action.action_payload,
         graphs: Vec::new(),
-        warnings: Vec::new(),
+        warnings: match names.as_ref() {
+            None => vec!["Asset references have not been indexed for these packages yet. Open asset discovery to build the index. Effect properties are available now.".into()],
+            Some(names) if !names.errors.is_empty() => vec![format!("{} resources could not be read. Asset references may be incomplete.", names.errors.len())],
+            Some(_) => Vec::new(),
+        },
         projectile_slots,
         projectile_catalog,
         native_assets,
@@ -250,7 +258,11 @@ impl PerkEditor {
                 ui.spinner();
                 ui.label("Loading Effect…");
             });
-            ui.small("The first scan can take a few minutes. Results are cached for later use.");
+            ui.small(if self.entity_source.is_some() {
+                "Reading the selected effect and any cached asset references."
+            } else {
+                "Loading effect data. Unchanged package scans are reused when available."
+            });
         } else if let Some(error) = self.error.clone() {
             ui.colored_label(ui.visuals().error_fg_color, error);
             if ui.button("Retry").clicked() {

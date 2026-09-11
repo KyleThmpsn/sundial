@@ -88,11 +88,49 @@ fn app() -> PackageAuthoringApp {
         rejected: false,
         selected: None,
         error: None,
+        reset_unsupported: false,
+        reviewing: None,
     });
     app.runtime_donors
         .reports
         .insert(BINDING, (key, Arc::new(report())));
+    seed_reviews(&mut app);
     app
+}
+
+fn seed_reviews(app: &mut PackageAuthoringApp) {
+    let report = Arc::clone(&app.runtime_donors.reports[&BINDING].1);
+    for (&hash, assessment) in &report.candidates {
+        let donor = app
+            .donor_summaries
+            .iter()
+            .find(|donor| donor.hash == hash)
+            .unwrap();
+        let mut after = app.recipe.clone();
+        for &binding in &assessment.affected_bindings {
+            after.set_runtime_component_donor(binding, Some(reference(hash, &donor.name)));
+        }
+        let plan = crate::runtime::swap::Preview {
+            before: app.recipe.clone(),
+            after,
+            binding_hash: BINDING,
+            donor_hash: hash,
+            group: assessment.affected_bindings.clone(),
+            kept: 0,
+            transferred: vec![],
+            resets: vec![],
+            error: None,
+        };
+        app.runtime_donors.reviews.insert(
+            (BINDING, hash),
+            Arc::new(Review {
+                recipe: app.recipe.clone(),
+                binding_hash: BINDING,
+                donor_hash: hash,
+                result: Ok(plan),
+            }),
+        );
+    }
 }
 
 fn reference(hash: u32, name: &str) -> WeaponDonorReference {
@@ -158,8 +196,8 @@ fn label_rect(output: &egui::FullOutput, label: &str) -> egui::Rect {
         .unwrap_or_else(|| panic!("Missing rendered label: {label}. Rendered labels: {labels:#?}"))
 }
 
-fn candidate_label(name: &str, status: DonorCompatibility) -> String {
-    format!("{name} · Sidearm · {}", status_label(status))
+fn candidate_label(name: &str, _status: DonorCompatibility) -> String {
+    name.to_owned()
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos2) {
@@ -212,7 +250,11 @@ fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
         let before = app.recipe.clone();
         let output = settle(&ctx, &mut app, viewport);
         let labels = rendered_labels(&output);
-        assert!(labels.iter().any(|(text, _)| text.contains("2 lower risk")));
+        assert!(labels.iter().any(|(text, _)| text.contains("2 Lower Risk")));
+        assert!(
+            !labels.iter().any(|(text, _)| text.contains("Unchecked")),
+            "status slop must not be rendered"
+        );
         assert!(
             !labels
                 .iter()
@@ -243,6 +285,17 @@ fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
         assert!(
             screen.contains_rect(second),
             "candidate outside {viewport:?}: {second:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text.contains("Sidearm · 0x00000021"))
+        );
+        crate::app::ui_tests::build_flow::capture(
+            &ctx,
+            output,
+            &format!("runtime-donor-list-{}", viewport.x as u32),
+            viewport.x,
         );
         assert_eq!(app.recipe, before);
         assert!(
@@ -327,6 +380,16 @@ fn enabling_all_statuses_keeps_lower_risk_matches_first_without_mutating_the_rec
     ];
     let positions = labels.map(|label| label_rect(&output, &label).top());
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(
+        rendered_labels(&output)
+            .iter()
+            .any(|(text, _)| text.contains("Sidearm · 0x00000030"))
+    );
+    assert!(
+        !rendered_labels(&output)
+            .iter()
+            .any(|(text, _)| text.contains("Unchecked"))
+    );
     assert_eq!(app.recipe, before);
 }
 
@@ -357,7 +420,7 @@ fn choosing_a_candidate_only_applies_after_the_apply_button() {
     assert!(
         rendered_labels(&output)
             .iter()
-            .any(|(text, _)| text == "This selection affects the complete shared owner:")
+            .any(|(text, _)| text == "Changes Together")
     );
     click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
     assert_eq!(
@@ -367,6 +430,180 @@ fn choosing_a_candidate_only_applies_after_the_apply_button() {
     assert!(app.runtime_donors.picker.is_none());
     assert!(app.runtime_donors.reports.is_empty());
     assert!(app.runtime_graph.is_none());
+    assert_eq!(
+        app.recipe
+            .runtime_component_donor(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY),
+        Some(&reference(SAFE_Z, "Z Safe Donor"))
+    );
+    assert_eq!(app.runtime_donors.last_change.as_ref().unwrap().0, before);
+}
+
+#[test]
+fn unsupported_settings_require_the_listed_reset_choice_before_applying() {
+    let ctx = egui::Context::default();
+    let mut app = app();
+    app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
+    let review = Arc::make_mut(
+        app.runtime_donors
+            .reviews
+            .get_mut(&(BINDING, SAFE_Z))
+            .unwrap(),
+    );
+    review
+        .result
+        .as_mut()
+        .unwrap()
+        .resets
+        .push("Customized Reload Setting".into());
+    let before = app.recipe.clone();
+    let output = settle(&ctx, &mut app, VIEWPORT);
+    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
+    assert_eq!(app.recipe, before);
+    let output = settle(&ctx, &mut app, VIEWPORT);
+    click(
+        &ctx,
+        &mut app,
+        label_rect(&output, "Reset Listed Edits").center(),
+    );
+    assert!(
+        app.runtime_donors
+            .picker
+            .as_ref()
+            .unwrap()
+            .reset_unsupported
+    );
+    let output = settle(&ctx, &mut app, VIEWPORT);
+    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
+    assert_eq!(
+        app.recipe.runtime_component_donor(BINDING),
+        Some(&reference(SAFE_Z, "Z Safe Donor"))
+    );
+}
+
+#[test]
+fn a_settings_check_is_required_and_stale_recipe_snapshots_cannot_apply() {
+    let mut app = app();
+    app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
+    let picker = app.runtime_donors.picker.as_ref().unwrap();
+    let review = app.runtime_donors.reviews[&(BINDING, SAFE_Z)].as_ref();
+    assert!(preview::can_apply(Some(review), &app.recipe, picker));
+    assert!(!preview::can_apply(None, &app.recipe, picker));
+    let mut edited = app.recipe.clone();
+    edited.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
+    assert!(!preview::can_apply(Some(review), &edited, picker));
+    let mut other = app.recipe.clone();
+    other.name.push_str("Changed while checking");
+    assert!(!preview::can_apply(Some(review), &other, picker));
+}
+
+#[test]
+fn a_compiler_conflict_blocks_apply_even_when_resets_are_accepted() {
+    let mut app = app();
+    let picker = app.runtime_donors.picker.as_mut().unwrap();
+    picker.selected = Some(SAFE_Z);
+    picker.reset_unsupported = true;
+    let review = Arc::make_mut(
+        app.runtime_donors
+            .reviews
+            .get_mut(&(BINDING, SAFE_Z))
+            .unwrap(),
+    );
+    review.result.as_mut().unwrap().error = Some("Saved edits overlap".into());
+    assert!(!preview::can_apply(Some(review), &app.recipe, picker));
+}
+
+#[test]
+fn group_settings_review_keeps_the_apply_button_visible() {
+    for viewport in [
+        egui::vec2(480.0, 640.0),
+        egui::vec2(900.0, 760.0),
+        egui::vec2(930.0, 480.0),
+    ] {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
+        let review = Arc::make_mut(
+            app.runtime_donors
+                .reviews
+                .get_mut(&(BINDING, SAFE_Z))
+                .unwrap(),
+        );
+        let plan = review.result.as_mut().unwrap();
+        plan.kept = 4;
+        plan.transferred = vec!["Reload Duration".into()];
+        plan.resets = vec![
+            "Binary component patch at 0x28".into(),
+            "Unsupported Magazine Setting".into(),
+        ];
+        let output = settle(&ctx, &mut app, viewport);
+        let button = label_rect(&output, "Apply Donor");
+        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(button));
+        crate::app::ui_tests::build_flow::capture(
+            &ctx,
+            output,
+            &format!("runtime-donor-review-{}", viewport.x as u32),
+            viewport.x,
+        );
+    }
+}
+
+#[test]
+fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
+    for edited_after in [false, true] {
+        let mut app = app();
+        let before = app.recipe.clone();
+        let after = app.runtime_donors.reviews[&(BINDING, SAFE_Z)]
+            .result
+            .as_ref()
+            .unwrap()
+            .after
+            .clone();
+        app.recipe = after.clone();
+        app.runtime_donors.last_change = Some((before.clone(), after));
+        if edited_after {
+            app.recipe.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
+        }
+        let current = app.recipe.clone();
+        let ctx = egui::Context::default();
+        let mut output = egui::FullOutput::default();
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, VIEWPORT)),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.draw_runtime_donor_undo(ui));
+                },
+            )
+        };
+        for _ in 0..3 {
+            output = draw(vec![]);
+        }
+        if edited_after {
+            assert!(
+                !rendered_labels(&output)
+                    .iter()
+                    .any(|(label, _)| label == "Undo Donor Change")
+            );
+        } else {
+            let position = label_rect(&output, "Undo Donor Change").center();
+            for pressed in [true, false] {
+                draw(vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+        }
+        assert_eq!(app.recipe, if edited_after { current } else { before });
+        assert!(app.runtime_donors.last_change.is_none());
+    }
 }
 
 #[test]
@@ -418,6 +655,7 @@ fn rejected_donor_stays_unapplyable_even_with_both_visibility_options_enabled() 
 #[test]
 fn a_stale_report_cannot_apply_after_the_runtime_baseline_changes() {
     let ctx = egui::Context::default();
+    ctx.enable_accesskit();
     let mut app = app();
     app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
     let output = settle(&ctx, &mut app, VIEWPORT);
@@ -436,11 +674,16 @@ fn a_stale_report_cannot_apply_after_the_runtime_baseline_changes() {
     );
     assert!(!app.runtime_donors.busy());
     let output = settle(&ctx, &mut app, VIEWPORT);
-    assert!(
-        !rendered_labels(&output)
-            .iter()
-            .any(|(text, _)| text == "Apply Donor")
-    );
+    let tree = output
+        .platform_output
+        .accesskit_update
+        .expect("stale review should expose the disabled Apply Donor control");
+    let apply = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Apply Donor"))
+        .expect("Apply Donor must remain discoverable when disabled");
+    assert!(apply.1.is_disabled(), "stale Apply Donor must be disabled");
 }
 
 struct WorkerGate {
@@ -621,6 +864,44 @@ fn shared_owner_graph() -> WeaponRuntimeGraph {
 }
 
 #[test]
+fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding() {
+    let mut app = app();
+    for binding in [BINDING, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY] {
+        app.recipe
+            .set_runtime_component_donor(binding, Some(reference(SAFE_Z, "Z Safe Donor")));
+    }
+    app.runtime_graph = Some((
+        app.runtime_graph_key().unwrap(),
+        Arc::new(shared_owner_graph()),
+    ));
+    assert_eq!(
+        app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+        vec!["Effective: Z Safe Donor"]
+    );
+    let mut report = report();
+    report.current_sources.insert(
+        BINDING,
+        [BINDING, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY]
+            .into_iter()
+            .map(
+                |via| crate::runtime::compatibility::EffectiveComponentSource {
+                    donor_item_hash: SAFE_Z,
+                    via_binding_hash: Some(via),
+                },
+            )
+            .collect(),
+    );
+    app.runtime_donors.reports.insert(
+        BINDING,
+        (app.runtime_graph_key().unwrap(), Arc::new(report)),
+    );
+    assert_eq!(
+        app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+        vec!["Effective: Z Safe Donor"]
+    );
+}
+
+#[test]
 fn unknown_runtime_rows_do_not_clear_an_applied_gameplay_donor() {
     let mut app = app();
     let baseline_hash = app.runtime_component_baseline_hash();
@@ -638,6 +919,7 @@ fn unknown_runtime_rows_do_not_clear_an_applied_gameplay_donor() {
                 affected_bindings: vec![BINDING],
             },
         );
+    seed_reviews(&mut app);
     let ctx = egui::Context::default();
     let output = settle(&ctx, &mut app, VIEWPORT);
     click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
@@ -811,7 +1093,7 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
                 .iter()
                 .any(|(text, _)| text.contains("Synthetic incompatible owner"))
         );
-        assert!(labels.iter().any(|(text, _)| text == "Follow Baseline"));
+        assert!(labels.iter().any(|(text, _)| text == "Remove Saved Choice"));
         assert!(labels.iter().any(|(text, _)| text == "Review Donors…"));
         assert_eq!(app.recipe, before);
         assert!(!app.runtime_donors.busy());

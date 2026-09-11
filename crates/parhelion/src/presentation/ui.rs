@@ -1,14 +1,57 @@
 use super::{Artwork, Badge};
 mod lore;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use super::editor::{self, Kind};
 
 #[derive(Default)]
 pub(crate) struct Editor {
     badge: ImageEditor,
     corner: ImageEditor,
     lore: lore::Preview,
+    artwork: Option<editor::Editor>,
 }
 impl Editor {
+    pub(crate) fn editing(&self) -> bool {
+        self.artwork.is_some()
+    }
+
+    pub(crate) fn show(
+        &mut self,
+        ctx: &egui::Context,
+        draft: &mut crate::WeaponRecipeOverrides,
+        packages: &std::path::Path,
+        icon: Option<(
+            tiger_pkg::TagHash,
+            crate::AuthoredWeaponRarity,
+            crate::WeaponIconEdit,
+        )>,
+    ) -> bool {
+        let Some(editor) = &mut self.artwork else {
+            return false;
+        };
+        editor.load_context(ctx, packages, icon);
+        let kind = editor.kind;
+        match editor.show(ctx) {
+            Some(editor::Action::Apply(artwork)) => {
+                let target = match kind {
+                    Kind::Badge => draft.badge.as_mut().map(|badge| &mut badge.icon),
+                    Kind::Watermark => Some(&mut draft.corner_icon),
+                };
+                let mut changed = false;
+                if let Some(target) = target {
+                    changed = target.as_ref() != Some(&artwork);
+                    *target = Some(artwork);
+                }
+                self.artwork = None;
+                changed
+            }
+            Some(editor::Action::Cancel) => {
+                self.artwork = None;
+                false
+            }
+            None => false,
+        }
+    }
+
     pub(crate) fn draw_badge(
         &mut self,
         ui: &mut egui::Ui,
@@ -58,16 +101,15 @@ impl Editor {
                     .desired_rows(2)
                     .desired_width(f32::INFINITY),
             );
-            self.badge.draw(
+            if self.badge.draw(
                 ui,
                 &mut badge.icon,
-                &format!(
-                    "Badge Artwork ({} × {} px)",
-                    super::artwork::WIDTH,
-                    super::artwork::HEIGHT
-                ),
+                "Badge Artwork",
+                Kind::Badge,
                 "Use Sunrise Artwork",
-            );
+            ) {
+                self.artwork = Some(editor::Editor::new(Kind::Badge, badge.icon.clone()));
+            }
         }
     }
 
@@ -76,12 +118,18 @@ impl Editor {
         ui: &mut egui::Ui,
         draft: &mut crate::WeaponRecipeOverrides,
     ) {
-        self.corner.draw(
+        if self.corner.draw(
             ui,
             &mut draft.corner_icon,
             "Release Watermark",
+            Kind::Watermark,
             "Use Sunrise Watermark",
-        );
+        ) {
+            self.artwork = Some(editor::Editor::new(
+                Kind::Watermark,
+                draft.corner_icon.clone(),
+            ));
+        }
         ui.weak("Release watermarks use the image silhouette. A transparent PNG works best.");
     }
 
@@ -119,102 +167,76 @@ impl Editor {
 
 #[derive(Default)]
 struct ImageEditor {
-    pending: Option<Receiver<Result<Option<Artwork>, String>>>,
-    preview: Option<(Artwork, egui::TextureHandle)>,
+    preview: Option<(Option<Artwork>, egui::TextureHandle)>,
     error: Option<String>,
 }
 impl ImageEditor {
-    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut Option<Artwork>, label: &str, reset: &str) {
+    fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        draft: &mut Option<Artwork>,
+        label: &str,
+        kind: Kind,
+        reset: &str,
+    ) -> bool {
         ui.push_id(label, |ui| {
-            if let Some(rx) = &self.pending {
-                let result = match rx.try_recv() {
-                    Ok(value) => Some(value),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => {
-                        Some(Err("Image import stopped unexpectedly.".into()))
+            if self
+                .preview
+                .as_ref()
+                .is_none_or(|(cached, _)| cached != draft)
+            {
+                let rendered = match kind {
+                    Kind::Badge => crate::badge_icon::preview(draft.as_ref(), None)
+                        .map(|image| editor::color_image(&image))
+                        .map_err(|e| e.to_string()),
+                    Kind::Watermark => match draft.as_ref() {
+                        Some(artwork) => crate::watermark::render_custom_corner_preview(artwork)
+                            .map(|image| editor::color_image(&image)),
+                        None => crate::watermark::render_output_texture(0)
+                            .map(|image| editor::color_image(&image)),
                     }
+                    .map_err(|e| e.to_string()),
                 };
-                if let Some(result) = result {
-                    self.pending = None;
-                    match result {
-                        Ok(Some(image)) => {
-                            *draft = Some(image);
-                            self.error = None;
-                        }
-                        Ok(None) => {}
-                        Err(error) => self.error = Some(error),
+                match rendered {
+                    Ok(image) => {
+                        self.preview = Some((
+                            draft.clone(),
+                            ui.ctx()
+                                .load_texture(label, image, egui::TextureOptions::LINEAR),
+                        ));
+                        self.error = None;
                     }
+                    Err(error) => self.error = Some(error),
                 }
-            }
-            if let Some(image) = draft.as_ref() {
-                if self
-                    .preview
-                    .as_ref()
-                    .is_none_or(|(cached, _)| cached != image)
-                {
-                    self.preview = Some((
-                        image.clone(),
-                        ui.ctx().load_texture(
-                            label,
-                            egui::ColorImage::from_rgba_unmultiplied(
-                                [
-                                    super::artwork::WIDTH as usize,
-                                    super::artwork::HEIGHT as usize,
-                                ],
-                                image.rgba(),
-                            ),
-                            egui::TextureOptions::LINEAR,
-                        ),
-                    ));
-                }
-            } else {
-                self.preview = None;
             }
             ui.horizontal_top(|ui| {
                 if let Some((_, texture)) = &self.preview {
-                    ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(56.0, 56.0)));
+                    let size = match kind {
+                        Kind::Badge => egui::vec2(110.0, 67.0),
+                        Kind::Watermark => egui::vec2(64.0, 64.0),
+                    };
+                    ui.add(egui::Image::new(texture).fit_to_exact_size(size));
                 }
                 ui.vertical(|ui| {
                     ui.strong(label);
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .add_enabled(self.pending.is_none(), egui::Button::new("Import PNG…"))
-                            .clicked()
-                        {
-                            let (tx, rx) = mpsc::channel();
-                            self.pending = Some(rx);
-                            let ctx = ui.ctx().clone();
-                            std::thread::spawn(move || {
-                                let result = rfd::FileDialog::new()
-                                    .set_title("Import Artwork")
-                                    .add_filter("PNG Image", &["png"])
-                                    .pick_file()
-                                    .map(|path| Artwork::from_path(&path))
-                                    .transpose();
-                                let _ = tx.send(result);
-                                ctx.request_repaint();
-                            });
-                        }
-                        if ui
-                            .add_enabled(
-                                self.pending.is_none() && draft.is_some(),
-                                egui::Button::new(reset),
-                            )
-                            .clicked()
-                        {
-                            *draft = None;
-                            self.preview = None;
-                            self.error = None;
-                        }
-                        if self.pending.is_some() {
-                            ui.spinner();
-                        }
-                    });
+                    let edit = ui.button("Edit Artwork…").clicked();
+                    if ui
+                        .add_enabled(draft.is_some(), egui::Button::new(reset))
+                        .clicked()
+                    {
+                        *draft = None;
+                        self.preview = None;
+                        self.error = None;
+                    }
                     if let Some(error) = &self.error {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
-                });
-            });
-        });
+                    edit
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
     }
 }

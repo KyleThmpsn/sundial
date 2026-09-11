@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn invalidated_build_does_not_become_installable_when_its_worker_finishes() {
+    let mut app = PackageAuthoringApp::default();
+    let (sender, receiver) = mpsc::channel();
+    app.build_receiver = Some(receiver);
+    app.recipe.flavor = "An edit after the build snapshot".into();
+    app.synchronize_recipe_dirty();
+    sender
+        .send(BuildWorkerEvent::Finished {
+            result: Ok(BuildReport {
+                weapons: vec![],
+                run_directory: "older-staged-run".into(),
+                manifest_path: "older-staged-run/manifest.json".into(),
+                artifacts: vec![],
+                selection_fingerprint: "older-selection".into(),
+                staged_recipe_paths: vec![],
+            }),
+            elapsed: Duration::from_secs(1),
+        })
+        .unwrap();
+    app.poll_build();
+    assert!(app.build_receiver.is_none());
+    assert!(
+        app.latest_build
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err()
+            .contains("changed")
+    );
+    assert!(app.replacement_review.is_none());
+}
+
+#[test]
 fn build_saves_current_edits_before_snapshot_without_changing_selection() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();

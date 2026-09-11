@@ -1,5 +1,7 @@
 //! Optional authored set membership, release watermark artwork and weapon lore.
 mod artwork;
+pub(crate) mod composition;
+mod editor;
 pub use artwork::Artwork;
 pub(crate) mod ui;
 

@@ -25,7 +25,10 @@ impl UninstallUi {
 
 impl PackageAuthoringApp {
     pub(super) fn start_uninstall_review(&mut self, recover: bool) {
-        if self.has_background_work() || self.perk_workbench.editing() || self.icon_editor.is_some()
+        if self.has_background_work()
+            || self.perk_workbench.editing()
+            || self.icon_editor.is_some()
+            || self.presentation_editor.editing()
         {
             return;
         }

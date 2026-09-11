@@ -216,7 +216,44 @@ impl SundialApp {
         &self,
         candidate: &WorkspaceDocument,
     ) -> Result<Option<String>, String> {
-        let warning = validate_workspace_document(candidate).err();
+        // Recheck the DLL and its own script before both raw-JSON application and saving.
+        // Cached UI detection must not authorize a write after an external runtime change.
+        let runtime =
+            crate::package_runtime::installation::RuntimeInspection::inspect(&self.install_path);
+        let previous = self
+            .runtime_choice
+            .inspection
+            .for_settings(&self.settings_path);
+        let current = runtime.for_settings(&self.settings_path);
+        if previous.is_some()
+            && (current.is_none_or(|copy| copy.dll_hash.is_none())
+                || previous.and_then(|copy| copy.dll_hash.as_ref())
+                    != current.and_then(|copy| copy.dll_hash.as_ref()))
+        {
+            return Err("The detected runtime DLL changed or became unreadable. Recheck Runtime Copies in Installation preferences before applying or saving changes.".into());
+        }
+        self.validation_warning_for_runtime(candidate, &runtime)
+    }
+
+    pub(super) fn validation_warning_for_runtime(
+        &self,
+        candidate: &WorkspaceDocument,
+        runtime: &crate::package_runtime::installation::RuntimeInspection,
+    ) -> Result<Option<String>, String> {
+        if let Some(problem) = runtime
+            .for_settings(&self.settings_path)
+            .and_then(|copy| copy.persistence_problem(candidate.json()))
+        {
+            return Err(problem);
+        }
+        let warning = validate_workspace_document(candidate)
+            .and_then(|_| {
+                runtime
+                    .for_settings(&self.settings_path)
+                    .and_then(|copy| copy.dawn_runtime.as_ref())
+                    .map_or(Ok(()), |dawn| dawn.validate(candidate.json()))
+            })
+            .err();
         // An unchanged JSON source may accompany a SQLite-only save. Once JSON is
         // edited, require valid known settings: first-error equality cannot prove
         // that another invalid field was not introduced later in validation.

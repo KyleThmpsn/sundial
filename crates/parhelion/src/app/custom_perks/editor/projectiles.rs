@@ -1,13 +1,8 @@
 use super::*;
 
 impl PerkEditor {
-    pub(super) fn projectile_label(source: &projectile::catalog::Entry) -> String {
-        source
-            .native_paths
-            .first()
-            .map(|path| sundial::package_authoring::tft::asset_label(path))
-            .or_else(|| source.native_name.clone())
-            .unwrap_or_else(|| format!("Unidentified {}", source.kind.label()))
+    pub(super) fn projectile_label(&self, source: &projectile::catalog::Entry) -> String {
+        source.label_with_perks(|index| self.projectile_labels.get(&index).cloned())
     }
 
     /// Carry mapped properties by meaning. Native field offsets are asset-specific.
@@ -111,7 +106,7 @@ impl PerkEditor {
                 .iter()
                 .find(|choice| choice.graph == tag);
             let label = current
-                .map(Self::projectile_label)
+                .map(|source| self.projectile_label(source))
                 .unwrap_or_else(|| format!("Missing Effect · 0x{tag:08X}"));
             let mut query_text = std::mem::take(&mut self.projectile_query);
             let picked = super::super::workbench::pickers::popup(
@@ -135,7 +130,7 @@ impl PerkEditor {
                         .entries
                         .iter()
                         .find(|entry| entry.graph == source)
-                        .map(Self::projectile_label)
+                        .map(|source| self.projectile_label(source))
                         .unwrap_or_else(|| format!("0x{source:08X}"));
                     if sundial::investment::draw_asset_choice_row(
                         ui,
@@ -159,7 +154,7 @@ impl PerkEditor {
                                 || (filter == 2 && choice.kind == projectile::Kind::Emitter)
                         })
                         .filter_map(|choice| {
-                            let label = Self::projectile_label(choice);
+                            let label = self.projectile_label(choice);
                             let paths = choice.native_paths.join("\n");
                             let contexts = choice
                                 .contexts
@@ -187,11 +182,7 @@ impl PerkEditor {
                         })
                         .collect::<Vec<_>>();
                     choices.sort_by_cached_key(|(choice, label, _, _, _)| {
-                        (
-                            choice.native_paths.is_empty() && choice.native_name.is_none(),
-                            label.clone(),
-                            choice.graph,
-                        )
+                        (choice.label_rank(), label.clone(), choice.graph)
                     });
                     super::super::workbench::pickers::results(
                         ui,

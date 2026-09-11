@@ -152,25 +152,6 @@ impl LibraryIcons {
     }
 }
 
-fn matching_library_entries<'a>(
-    entries: &'a [RecipeLibraryEntry],
-    donors: &[WeaponDonorSummary],
-    query: &str,
-) -> Vec<(&'a RecipeLibraryEntry, String)> {
-    let mut donors_by_hash = BTreeMap::new();
-    for donor in donors {
-        donors_by_hash.entry(donor.hash).or_insert(donor);
-    }
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let donor = donors_by_hash.get(&entry.donor_hash).copied();
-            let details = library_entry_details(entry, donor);
-            library_entry_matches(entry, &details, query).then_some((entry, details))
-        })
-        .collect()
-}
-
 fn library_entry_type<'a>(
     entry: &'a RecipeLibraryEntry,
     donor: Option<&'a WeaponDonorSummary>,
@@ -234,9 +215,10 @@ fn draw_library_row(
         let current = inclusion.unwrap_or(state.current);
         let mut checkbox_changed = false;
         let mut checkbox_focus = false;
-        let row_height =
-            (ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Small) + 10.0)
-                .max(52.0);
+        let body_size = egui::TextStyle::Body.resolve(ui.style()).size;
+        let name_size = (body_size + 2.0).max(16.0);
+        let detail_size = body_size.max(14.0);
+        let row_height = (name_size + detail_size + 24.0).max(64.0);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
@@ -308,15 +290,17 @@ fn draw_library_row(
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(&entry.name).strong())
-                                .truncate()
-                                .selectable(false),
+                            egui::Label::new(
+                                egui::RichText::new(&entry.name).size(name_size).strong(),
+                            )
+                            .truncate()
+                            .selectable(false),
                         )
                     },
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if inclusion.is_none() {
-                        let menu = ui.menu_button("⋯", |ui| {
+                        let menu = ui.menu_button(egui::RichText::new("...").size(16.0), |ui| {
                             menu_action = actions::entry_menu(ui, entry, state.can_restore);
                         });
                         named_control(menu.response, format!("Recipe Actions for {}", entry.name))
@@ -355,7 +339,7 @@ fn draw_library_row(
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(details)
-                        .small()
+                        .size(detail_size)
                         .color(ui.visuals().text_color().gamma_multiply(0.8)),
                 )
                 .truncate()
@@ -623,8 +607,11 @@ impl PackageAuthoringApp {
                     search.request_focus();
                 }
                 let query = self.build_selection_query.trim().to_lowercase();
-                let shown =
-                    matching_library_entries(&self.recipe_entries, &self.donor_summaries, &query);
+                let shown = self.library_state.matching_entries(
+                    &self.recipe_entries,
+                    &self.donor_summaries,
+                    &query,
+                );
                 ui.horizontal_wrapped(|ui| {
                     let all_selected = shown.iter().all(|(entry, _)| draft.contains(&entry.path));
                     let any_selected = shown.iter().any(|(entry, _)| draft.contains(&entry.path));

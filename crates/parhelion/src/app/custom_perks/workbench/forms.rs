@@ -15,6 +15,7 @@ impl Workbench {
                 .desired_width(f32::INFINITY)
                 .hint_text("Describe what the perk does."),
         );
+        ui.small("Leave the description blank to use the template perk’s description.");
         ui.add_space(12.0);
         ui.strong("Stat Bonuses")
             .on_hover_text("Applies while the perk is equipped.");

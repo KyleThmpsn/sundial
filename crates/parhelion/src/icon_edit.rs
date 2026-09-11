@@ -20,7 +20,8 @@ pub use imported::ImportedIcon;
 pub(crate) use imported::decode as decode_image;
 pub(crate) use imported::fit as fit_rgba_image;
 pub(crate) use preview::{
-    render_texture_preview, render_weapon_icon_preview, render_weapon_icon_preview_from_manager,
+    WatermarkPreview, render_texture_preview, render_weapon_icon_preview,
+    render_weapon_icon_preview_from_manager,
 };
 
 use serde::{Deserialize, Serialize};

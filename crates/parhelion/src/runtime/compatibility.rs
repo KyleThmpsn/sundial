@@ -13,7 +13,8 @@ use sundial::{
             WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
             WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
             WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
-            WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, graft_weapon_component_bindings,
+            WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding,
+            coupled_weapon_component_bindings, graft_weapon_component_bindings,
             weapon_component_binding_hashes, weapon_component_bindings,
         },
         weapon_runtime::{
@@ -141,10 +142,10 @@ pub(crate) fn assess_component_donors(
     let mut cache = ScanCache::new(&manager);
     let baseline = cache.entity(key.pattern_index, key.fallback_item_hash)?;
     let baseline_bindings = collect_bindings(&baseline.payload)?;
-    let affected = affected_bindings(&baseline_bindings, binding_hash)?;
+    let affected = coupled_weapon_component_bindings(&baseline.payload, binding_hash)?;
     let baseline_summary = baseline_summary(donors, key, &baseline);
     let baseline_hash = baseline_summary.map_or(baseline.item_hash, |summary| summary.hash);
-    let current = requested_donors(&mut cache, key, None);
+    let current = requested_donors(&mut cache, key, &[]);
     let (current_sources, current_error) = match current.and_then(|requested| {
         compose(&baseline, &requested)?;
         effective_sources(
@@ -157,7 +158,7 @@ pub(crate) fn assess_component_donors(
         Ok(sources) => (sources, None),
         Err(error) => (BTreeMap::new(), Some(error)),
     };
-    let retained = requested_donors(&mut cache, key, Some(binding_hash));
+    let retained = requested_donors(&mut cache, key, &affected);
     let mut candidates = BTreeMap::new();
     for donor in donors {
         let assessment = match &retained {
@@ -168,7 +169,6 @@ pub(crate) fn assess_component_donors(
                 baseline_summary,
                 baseline_hash,
                 retained,
-                binding_hash,
                 donor,
                 donors,
                 &affected,
@@ -195,11 +195,11 @@ pub(crate) fn assess_component_donors(
 fn requested_donors(
     cache: &mut ScanCache<'_>,
     key: &RuntimeGraphKey,
-    excluded_binding: Option<u32>,
+    excluded_bindings: &[u32],
 ) -> Result<Vec<RequestedDonor>, String> {
     key.component_donors
         .iter()
-        .filter(|(binding, _, _)| Some(*binding) != excluded_binding)
+        .filter(|(binding, _, _)| !excluded_bindings.contains(binding))
         .map(|&(binding_hash, pattern, item_hash)| {
             Ok(RequestedDonor {
                 binding_hash,
@@ -217,6 +217,7 @@ fn collect_bindings(entity: &[u8]) -> Result<Bindings, String> {
         .collect()
 }
 
+#[cfg(test)]
 fn affected_bindings(bindings: &Bindings, selected: u32) -> Result<Vec<u32>, String> {
     let owners = bindings
         .get(&selected)
@@ -332,7 +333,6 @@ fn assess_candidate(
     baseline_summary: Option<&WeaponDonorSummary>,
     baseline_hash: u32,
     retained: &[RequestedDonor],
-    binding_hash: u32,
     donor: &WeaponDonorSummary,
     donors: &[WeaponDonorSummary],
     affected: &[u32],
@@ -350,11 +350,11 @@ fn assess_candidate(
         }
     };
     let mut requested = retained.to_vec();
-    requested.push(RequestedDonor {
+    requested.extend(affected.iter().map(|&binding_hash| RequestedDonor {
         binding_hash,
         item_hash: donor.hash,
-        source,
-    });
+        source: Arc::clone(&source),
+    }));
     let authored = match compose(baseline, &requested) {
         Ok(authored) => authored,
         Err(error) => return incompatible(error, affected),

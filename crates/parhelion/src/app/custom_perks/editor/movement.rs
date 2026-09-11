@@ -44,7 +44,7 @@ impl PerkEditor {
                     .entries
                     .iter()
                     .find(|entry| entry.graph == tag)
-                    .map(Self::projectile_label)
+                    .map(|entry| self.projectile_label(entry))
                     .unwrap_or_else(|| format!("Projectile 0x{tag:08X}"));
                 ui.add_space(4.0);
                 ui.label(label);

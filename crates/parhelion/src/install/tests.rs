@@ -690,8 +690,8 @@ fn interrupted_uninstall_restores_account_and_packages_without_overwriting_newer
     }
     let settings = fixture._temporary.path().join("settings.json");
     let backup = record.backup_directory.join("account-settings.json");
-    fs::write(&backup, b"original account").unwrap();
-    fs::write(&settings, b"cleaned account").unwrap();
+    fs::write(&backup, br#"{"version":8,"value":"original account"}"#).unwrap();
+    fs::write(&settings, br#"{"version":8,"value":"cleaned account"}"#).unwrap();
     record.account_cleanup = Some(
         serde_json::from_value(json!({
             "relative_path": "settings.json",
@@ -704,16 +704,26 @@ fn interrupted_uninstall_restores_account_and_packages_without_overwriting_newer
         .unwrap();
     let removed = fixture.target.join(&record.artifacts[0].file_name);
     fs::remove_file(&removed).unwrap();
-    fs::write(&settings, b"external account edit").unwrap();
+    fs::write(
+        &settings,
+        br#"{"version":8,"value":"external account edit"}"#,
+    )
+    .unwrap();
     assert!(recover_interrupted_install(&fixture.recovery_request()).is_err());
     assert!(
         !removed.exists(),
         "must reconcile the account before restoring packages"
     );
-    assert_eq!(fs::read(&settings).unwrap(), b"external account edit");
-    fs::write(&settings, b"cleaned account").unwrap();
+    assert_eq!(
+        fs::read(&settings).unwrap(),
+        br#"{"version":8,"value":"external account edit"}"#
+    );
+    fs::write(&settings, br#"{"version":8,"value":"cleaned account"}"#).unwrap();
     recover_interrupted_install(&fixture.recovery_request()).unwrap();
-    assert_eq!(fs::read(&settings).unwrap(), b"original account");
+    assert_eq!(
+        fs::read(&settings).unwrap(),
+        br#"{"version":8,"value":"original account"}"#
+    );
     for (name, bytes) in fixture.staged_bytes {
         assert_eq!(fs::read(fixture.target.join(name)).unwrap(), bytes);
     }

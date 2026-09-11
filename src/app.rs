@@ -24,6 +24,7 @@ mod history;
 mod json_workspace;
 mod preferences_page;
 mod recovery;
+mod runtime_installation;
 mod saving;
 mod shortcuts;
 mod update;
@@ -294,6 +295,7 @@ enum ConfirmationDialog {
     DeleteEquipment,
     Reload,
     RestoreSqliteBackup,
+    ResetSqliteDefaults,
     ResetDefaults,
     Exit,
 }
@@ -320,6 +322,7 @@ struct PendingFutureSchemaLoad {
 }
 
 struct SundialApp {
+    runtime_choice: runtime_installation::RuntimeChoice,
     settings_path: PathBuf,
     settings_layout: SettingsLayout,
     install_path: PathBuf,
@@ -366,6 +369,7 @@ struct SundialApp {
     pending_save_action: Option<SaveAction>,
     pending_equipment_delete: Option<PendingEquipmentDelete>,
     pending_sqlite_restore: Option<PathBuf>,
+    pending_sqlite_reset: Option<crate::persistence::sqlite_account::ResetPlan>,
     exit_confirmed: bool,
     dirty: bool,
     undo_history: Vec<DocumentHistoryEntry>,
@@ -427,6 +431,7 @@ impl SundialApp {
         preferences.normalize_for_runtime();
         let default_plug_selection_mode = preferences.default_plug_selection_mode;
         let mut app = Self {
+            runtime_choice: runtime_installation::RuntimeChoice::inspect(&install_path),
             settings_path,
             settings_layout,
             install_path,
@@ -473,6 +478,7 @@ impl SundialApp {
             pending_save_action: None,
             pending_equipment_delete: None,
             pending_sqlite_restore: None,
+            pending_sqlite_reset: None,
             exit_confirmed: false,
             dirty: false,
             undo_history: Vec::new(),
@@ -905,6 +911,9 @@ impl SundialApp {
                 ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
                 ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
+                    let dawn = self.runtime_choice.inspection.copies.iter_mut()
+                        .find(|copy| copy.settings_path == self.settings_path)
+                        .and_then(|copy| copy.dawn_runtime.as_mut());
                     let account_settings = account::account_settings_map(&self.document);
                     let bindings_editable = account::named_key_bindings_editable(&self.document);
                     let json_account = self.document.uses_json_account();
@@ -917,6 +926,7 @@ impl SundialApp {
                             bindings_editable,
                             json_account,
                             extended_fov: self.preferences.experimental_extended_fov,
+                            dawn,
                             tab: &mut self.game_settings_tab,
                             key_bindings: &mut self.key_binding_ui,
                         },
@@ -1063,6 +1073,8 @@ impl eframe::App for SundialApp {
         self.draw_future_schema_confirmation(ctx);
 
         self.draw_reset_defaults_confirmation(ctx);
+        self.draw_runtime_choice(ctx);
+        self.draw_sqlite_reset_confirmation(ctx);
         self.draw_sqlite_restore_confirmation(ctx);
         self.draw_parhelion_confirmation(ctx);
         self.draw_unsafe_mode_confirmation(ctx);
@@ -1117,6 +1129,9 @@ fn check_install(selection: InstallSelection) -> Result<String, String> {
     };
     let app = SundialApp::new(settings_path, settings_layout, install_path)?;
     validate_for_check(&app.document)?;
+    if let Some(warning) = app.validation_warning_for_write(&app.document)? {
+        return Err(warning);
+    }
     let prepared = prepare_settings(&app.document)?;
     let size_note = if prepared.compacted {
         " (compacted from Sunrise's readable layout)".to_owned()

@@ -113,15 +113,6 @@ pub(crate) fn read_and_validate_icon_companion(
     })
 }
 
-pub(crate) fn build_icon_companion_payload(
-    template_payload: &[u8],
-    companion_tag: TagHash,
-    container_tag: TagHash,
-    dependencies: &SharedTagDependencies,
-) -> AuthoringResult<Vec<u8>> {
-    build_shared_tag_companion_payload(template_payload, companion_tag, container_tag, dependencies)
-}
-
 pub(crate) fn build_shared_tag_companion_payload(
     template_payload: &[u8],
     companion_tag: TagHash,
@@ -166,15 +157,6 @@ pub(crate) fn validate_shared_tag_companion_payload(
     owner_tag: TagHash,
 ) -> AuthoringResult<SharedTagDependencies> {
     parse_canonical_payload(payload, companion_tag, owner_tag)
-}
-
-#[cfg(test)]
-pub(crate) fn validate_icon_companion_payload(
-    payload: &[u8],
-    companion_tag: TagHash,
-    container_tag: TagHash,
-) -> AuthoringResult<SharedTagDependencies> {
-    validate_shared_tag_companion_payload(payload, companion_tag, container_tag)
 }
 
 fn parse_canonical_payload(
@@ -376,7 +358,7 @@ mod tests {
                 .expect("stock companion should parse canonically");
             assert!(companion.dependencies.contains(&u32::from(container_tag)));
             assert!(companion.dependencies.contains(&u32::from(companion.tag)));
-            let rebuilt = build_icon_companion_payload(
+            let rebuilt = build_shared_tag_companion_payload(
                 &companion.template_payload,
                 companion.tag,
                 container_tag,

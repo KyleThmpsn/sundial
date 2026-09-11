@@ -37,8 +37,11 @@ pub(super) fn apply(
                 true
             };
             if removed {
-                if *context.private_perk_socket == Some(context.socket_index) {
-                    *context.private_perk_socket = None;
+                if context
+                    .perk_request
+                    .is_some_and(|request| request.socket() == context.socket_index)
+                {
+                    *context.perk_request = None;
                 }
                 context.queries.clear();
                 *context.page = 0;
@@ -46,6 +49,14 @@ pub(super) fn apply(
             RowContinuation::Finished
         }
         Some(RowCommand::EditChoice { index, hash }) => edit_choice(context, choices, index, hash),
+        Some(RowCommand::EditPerk(choice)) => {
+            *context.perk_request =
+                Some(crate::app::custom_perks::workbench::Request::EditChoice {
+                    socket: context.socket_index,
+                    choice,
+                });
+            RowContinuation::Finished
+        }
         Some(RowCommand::MakeDefault(index)) => {
             match super::super::make_choice_default(
                 context.recipe,

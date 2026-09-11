@@ -16,6 +16,43 @@ struct Saved<T> {
     index: T,
 }
 
+/// Reuse existing evidence without starting or waiting for a full discovery scan.
+pub(crate) fn cached_only<T: Serialize + DeserializeOwned>(
+    packages: &Path,
+    directory: &str,
+    version: &str,
+    memory: &Cache<T>,
+) -> Result<Option<Arc<T>>, String> {
+    let Ok(mut memory) = memory.get_or_init(|| Mutex::new(None)).try_lock() else {
+        return Ok(None);
+    };
+    let snapshot = Snapshot::read(packages)?;
+    if let Some((stored, index)) = memory.as_ref()
+        && *stored == snapshot
+    {
+        return Ok(Some(Arc::clone(index)));
+    }
+    let Some(root) = crate::paths::cache_dir() else {
+        return Ok(None);
+    };
+    let path = root
+        .join(directory)
+        .join(format!("{version}-{}.json", snapshot.key()?));
+    let saved = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Saved<T>>(&bytes).ok())
+        .filter(|saved| saved.snapshot == snapshot);
+    let Some(saved) = saved else {
+        return Ok(None);
+    };
+    if Snapshot::read(packages)? != snapshot {
+        return Ok(None);
+    }
+    let index = Arc::new(saved.index);
+    *memory = Some((snapshot, Arc::clone(&index)));
+    Ok(Some(index))
+}
+
 /// Serialize concurrent readers so opening two editors cannot start duplicate scans.
 pub(crate) fn cached<T: Serialize + DeserializeOwned>(
     packages: &Path,
@@ -88,4 +125,62 @@ fn write<T: Serialize>(path: &Path, snapshot: &Snapshot, index: &T) -> Result<()
     .map_err(|error| error.to_string())?;
     temporary.persist(path).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct PartialIndex {
+        entries: Vec<u32>,
+        errors: Vec<String>,
+    }
+
+    #[test]
+    fn partial_results_survive_restart_and_package_changes_invalidate_them() {
+        let packages = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let directory = storage.path().to_str().unwrap();
+        std::fs::write(packages.path().join("test.pkg"), b"original").unwrap();
+        let memory = Cache::new();
+        let first = cached(
+            packages.path(),
+            directory,
+            "test",
+            &memory,
+            || {
+                Ok(PartialIndex {
+                    entries: vec![7],
+                    errors: vec!["Unreadable asset".into()],
+                })
+            },
+            |_| true,
+        )
+        .unwrap();
+        let restarted = Cache::new();
+        let next = cached(
+            packages.path(),
+            directory,
+            "test",
+            &restarted,
+            || -> Result<PartialIndex, String> { panic!("must reuse disk cache") },
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(first, next);
+        let locked = restarted.get().unwrap().lock().unwrap();
+        assert!(
+            cached_only(packages.path(), directory, "test", &restarted)
+                .unwrap()
+                .is_none()
+        );
+        drop(locked);
+        std::fs::write(packages.path().join("test.pkg"), b"updated package").unwrap();
+        assert!(
+            cached_only(packages.path(), directory, "test", &restarted)
+                .unwrap()
+                .is_none()
+        );
+    }
 }

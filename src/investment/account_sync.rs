@@ -86,12 +86,23 @@ pub fn preview_authored_account_replacement_with_slots(
 /// Checks that package transactions use the active account source.
 pub fn validate_authored_cleanup_backend(path: &Path) -> Result<(), String> {
     if is_database(path) {
+        let settings = path
+            .parent()
+            .and_then(Path::parent)
+            .map(|directory| directory.join("settings.json"));
+        if let Some(settings) = settings.filter(|settings| settings.is_file()) {
+            let bytes = std::fs::read(settings).map_err(|e| e.to_string())?;
+            let document =
+                crate::package_authoring::read_json(&bytes[..]).map_err(|e| e.to_string())?;
+            if !crate::game_settings::requires_sqlite_account(&document) {
+                return Err("The settings schema uses JSON account data. Reload the package operation before updating it".into());
+            }
+        }
         return Ok(());
     }
-    if crate::persistence::investment_path(path)
-        .try_exists()
-        .map_err(|error| error.to_string())?
-    {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let document = crate::package_authoring::read_json(&bytes[..]).map_err(|e| e.to_string())?;
+    if crate::game_settings::requires_sqlite_account(&document) {
         return Err(
             "The active account uses SQLite. Reload the package operation before updating it"
                 .into(),

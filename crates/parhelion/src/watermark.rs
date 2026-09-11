@@ -8,6 +8,7 @@
 mod custom;
 mod placement;
 pub(crate) use custom::build_presented_watermark_plan;
+pub(crate) use custom::preview as render_custom_corner_preview;
 pub(crate) use custom::render as render_custom_corner;
 
 use image::ImageFormat;
@@ -39,7 +40,7 @@ use crate::{
         is_stock_straight_rgba8_texture_header,
     },
     shared_tag_memory::{
-        IconDefinitionCompanion, SharedTagDependencies, build_icon_companion_payload,
+        IconDefinitionCompanion, SharedTagDependencies, build_shared_tag_companion_payload,
         read_and_validate_icon_companion,
     },
     tag_payload::{
@@ -240,12 +241,12 @@ fn build_watermark_plan_with_context(
     let mut reference_overrides = Vec::with_capacity(TEXTURE_DIMENSIONS.len() * 2);
     let mut pairs = Vec::with_capacity(TEXTURE_DIMENSIONS.len());
     for (texture_index, (width, height)) in TEXTURE_DIMENSIONS.into_iter().enumerate() {
-        let data_ordinal = checked_ordinal(
+        let data_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             texture_index * TAGS_PER_TEXTURE,
             "watermark texture data",
         )?;
-        let header_ordinal = checked_ordinal(
+        let header_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             texture_index * TAGS_PER_TEXTURE + 1,
             "watermark texture header",
@@ -296,7 +297,7 @@ fn build_watermark_plan_with_context(
         .try_into()
         .map_err(|_| validation("Watermark texture-pair count did not converge"))?;
 
-    let watermark_layer_ordinal = checked_ordinal(
+    let watermark_layer_ordinal = AppendedTagAllocator::checked_ordinal(
         appended_ordinal_base,
         TEXTURE_DIMENSIONS.len() * TAGS_PER_TEXTURE,
         "watermark layer",
@@ -344,7 +345,7 @@ fn build_watermark_plan_with_context(
             continue;
         }
         (|| -> AuthoringResult<()> {
-            let edit_ordinal_base = checked_ordinal(
+            let edit_ordinal_base = AppendedTagAllocator::checked_ordinal(
                 appended_ordinal_base,
                 new_tags.len(),
                 "edited primary-image graph",
@@ -396,13 +397,13 @@ fn build_watermark_plan_with_context(
                 })
                 .and_then(|(_, graph)| graph.as_ref());
             let local_ordinal = new_tags.len();
-            let ordinal = checked_ordinal(
+            let ordinal = AppendedTagAllocator::checked_ordinal(
                 appended_ordinal_base,
                 local_ordinal,
                 "watermarked icon container",
             )?;
             let tag = assigned_tag(destination_package_id, current_entry_count, ordinal)?;
-            let companion_ordinal = checked_ordinal(
+            let companion_ordinal = AppendedTagAllocator::checked_ordinal(
                 appended_ordinal_base,
                 local_ordinal + 1,
                 "watermarked icon companion",
@@ -462,7 +463,7 @@ fn build_watermark_plan_with_context(
             dependencies.insert(u32::from(watermark_layer_tag));
             dependencies.insert(u32::from(tag));
             dependencies.insert(u32::from(companion_tag));
-            let companion = build_icon_companion_payload(
+            let companion = build_shared_tag_companion_payload(
                 &donor_companion.template_payload,
                 companion_tag,
                 tag,
@@ -1217,10 +1218,6 @@ pub(crate) fn private_icon_fingerprint(container: &[u8], visual_revision: &[u8])
     digest.update(visual_revision);
     let bytes = digest.finalize();
     u32::from_le_bytes(bytes[..4].try_into().expect("SHA-1 prefix"))
-}
-
-fn checked_ordinal(base: usize, local: usize, description: &str) -> AuthoringResult<usize> {
-    AppendedTagAllocator::checked_ordinal(base, local, description)
 }
 
 fn assigned_tag(

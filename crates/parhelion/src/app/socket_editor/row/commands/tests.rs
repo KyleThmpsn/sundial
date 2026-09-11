@@ -70,7 +70,7 @@ fn native_normal_picker_imports_frame_builds_and_can_restore_stock_perk() {
         can_remove_added: false,
         show_experimental_options: false,
         show_technical_row: &mut technical,
-        private_perk_socket: &mut private_socket,
+        perk_request: &mut private_socket,
         log: &mut log,
     };
     let choices = RowChoices::read(&mut context).unwrap();

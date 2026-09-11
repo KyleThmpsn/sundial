@@ -70,7 +70,7 @@ use crate::{
     apply_combat_profile_action, authored_inventory_slot,
     presentation_donor_candidate_is_compatible, recipe_combat_profile_action,
     reconcile_presentation_donor, selected_presentation_donor_is_compatible,
-    validate_socket_column_overrides_with_socket_types, weapon_authoring_capabilities,
+    weapon_authoring_capabilities,
 };
 
 const WINDOW_TITLE: &str = "Parhelion";
@@ -119,12 +119,12 @@ const PRIMARY_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
 const ADDITIONAL_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
     RuntimeComponentControl {
         binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
-        label: "Weapon stat translator",
+        label: "Weapon Stat Translator",
         tooltip: "A coupled, family-specific runtime translator, not a projectile-speed control. Cross-family replacements can freeze the game even when package validation succeeds. Preserve the weapon's translator for private projectile edits.",
     },
     RuntimeComponentControl {
         binding_hash: WEAPON_CONTROLLER_COMPONENT_KEY,
-        label: "Weapon controller",
+        label: "Weapon Controller",
         tooltip: "The native weapon binding. It is broader than trigger or barrel and may affect several runtime behaviors at once.",
     },
     RuntimeComponentControl {
@@ -134,7 +134,7 @@ const ADDITIONAL_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
     },
     RuntimeComponentControl {
         binding_hash: WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
-        label: "Trigger charge",
+        label: "Trigger Charge",
         tooltip: "The optional native trigger-charge binding. Both the gameplay donor and selected component donor must define it.",
     },
 ];
@@ -370,6 +370,7 @@ struct PackageAuthoringApp {
     staging: String,
     ignore_installed: bool,
     build_receiver: Option<Receiver<BuildWorkerEvent>>,
+    build_invalidated: bool,
     build_progress: Option<TimedBuildProgress>,
     build_activity: build_status::Activity,
     install_status: build_status::InstallStatus,
@@ -427,7 +428,7 @@ struct PackageAuthoringApp {
     open_sundial_preferences: bool,
     show_internal_stats: bool,
     show_technical_socket_rows: bool,
-    private_perk_socket: Option<usize>,
+    perk_request: Option<custom_perks::workbench::Request>,
     icon_editor: Option<WeaponIconEditor>,
     hud_icon_editor: crate::hud_icon::ui::Editor,
     presentation_editor: crate::presentation::ui::Editor,
@@ -480,6 +481,7 @@ impl Default for PackageAuthoringApp {
             staging: default_staging_root().display().to_string(),
             ignore_installed: true,
             build_receiver: None,
+            build_invalidated: false,
             build_progress: None,
             build_activity: build_status::Activity::default(),
             install_status: build_status::InstallStatus::default(),
@@ -537,7 +539,7 @@ impl Default for PackageAuthoringApp {
             open_sundial_preferences: false,
             show_internal_stats: false,
             show_technical_socket_rows: false,
-            private_perk_socket: None,
+            perk_request: None,
             icon_editor: None,
             hud_icon_editor: crate::hud_icon::ui::Editor::default(),
             presentation_editor: crate::presentation::ui::Editor::default(),
@@ -634,6 +636,7 @@ impl PackageAuthoringApp {
         self.draw_runtime_donor_browser(ctx);
         self.draw_runtime_dependencies(ctx);
         self.draw_icon_editor(ctx);
+        self.draw_artwork_editor(ctx);
         self.draw_preferences_window(ctx);
         self.draw_activity_log_window(ctx);
         self.draw_discard_confirmation(ctx);
@@ -713,6 +716,7 @@ impl PackageAuthoringApp {
         self.dye_colors = donor_view::DyeColors::default();
         self.catalog = None;
         self.donor_summaries.clear();
+        self.library_state.refresh_donors(&self.donor_summaries);
         self.sandbox_perk_choices.clear();
         self.trait_choices.clear();
         self.plug_queries.clear();
@@ -729,7 +733,7 @@ impl PackageAuthoringApp {
         self.runtime_donors.invalidate();
         self.invalid_weapon_name = None;
         self.clear_presentation_picker_queries();
-        self.private_perk_socket = None;
+        self.perk_request = None;
         self.runtime_bindings_open = false;
         self.workbench_page = WorkbenchPage::Weapon;
         self.presentation_donor_query.clear();
@@ -754,6 +758,9 @@ impl PackageAuthoringApp {
     }
 
     fn draw_icon_editor(&mut self, ctx: &egui::Context) {
+        if self.build_receiver.is_some() || self.install_receiver.is_some() {
+            return;
+        }
         let action = self
             .icon_editor
             .as_mut()
@@ -769,6 +776,38 @@ impl PackageAuthoringApp {
             }
             Some(WeaponIconEditorAction::Cancel) => self.icon_editor = None,
             None => {}
+        }
+    }
+
+    fn draw_artwork_editor(&mut self, ctx: &egui::Context) {
+        if !self.presentation_editor.editing()
+            || self.build_receiver.is_some()
+            || self.install_receiver.is_some()
+        {
+            return;
+        }
+        let icon = (|| {
+            let donor = self
+                .recipe
+                .icon_donor
+                .as_ref()
+                .or(self.recipe.presentation_donor.as_ref())
+                .unwrap_or(&self.recipe.donor);
+            let hash = donor.item_hash.parse_u32().ok()?;
+            let tag = self.catalog.as_ref()?.weapon_icon_container(hash)?;
+            Some((
+                TagHash(tag),
+                self.authored_icon_rarity()?,
+                self.recipe.overrides.icon_edit.clone(),
+            ))
+        })();
+        if self
+            .presentation_editor
+            .show(ctx, &mut self.recipe.overrides, &self.packages, icon)
+        {
+            self.recipe_dirty = true;
+            self.authored_icon_preview = None;
+            self.invalidate_results();
         }
     }
 
@@ -1080,7 +1119,7 @@ impl PackageAuthoringApp {
                     "Creating a new recipe will discard this recipe's unsaved changes."
                 }
                 PendingRecipeAction::Open(_) => {
-                    "Opening another recipe will discard this recipe's unsaved changes."
+                    "Opening the saved recipe will discard this recipe's unsaved changes."
                 }
                 PendingRecipeAction::Import => {
                     "Importing a recipe will discard this recipe's unsaved changes."
@@ -1466,7 +1505,7 @@ struct SocketPickerContext<'a> {
     show_plug_safety_warnings: bool,
     show_experimental_options: bool,
     show_technical_rows: &'a mut bool,
-    private_perk_socket: &'a mut Option<usize>,
+    perk_request: &'a mut Option<crate::app::custom_perks::workbench::Request>,
     donor: &'a WeaponDonor,
     log: &'a mut ActivityLog,
 }

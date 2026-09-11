@@ -137,6 +137,18 @@ pub struct PlugChoicePickerButton<'a> {
     pub width: u16,
 }
 
+/// Named selection context and trigger presentation for an authored socket choice.
+#[derive(Clone, Copy, Debug)]
+pub struct PlugChoicePickerOptions<'a> {
+    pub donor_hash: u32,
+    pub socket_index: usize,
+    pub socket_type_override: Option<u16>,
+    pub choice_index: usize,
+    pub current_hash: Option<u32>,
+    pub button: PlugChoicePickerButton<'a>,
+    pub mode: PlugSelectionMode,
+}
+
 /// Width of the native Sundial Reset control used by an authoring socket row.
 pub const AUTHORING_SOCKET_RESET_WIDTH: f32 = authoring_bridge::AUTHORING_SOCKET_RESET_WIDTH;
 
@@ -252,20 +264,21 @@ impl InvestmentCatalog {
     ///
     /// `choice_index` is part of the persistent egui identity, so multiple ordered choices for
     /// one socket can keep independent popups and search state. The caller controls only compact
-    /// trigger content; compatibility filtering and picker rows remain shared with Sundial.
-    #[allow(clippy::too_many_arguments)]
+    /// trigger content and an optional footer. Return true from the footer when its action
+    /// should close the popup. Compatibility filtering and picker rows remain shared with Sundial.
     pub fn draw_supported_plug_choice_picker(
         &self,
         ui: &mut egui::Ui,
-        donor_hash: u32,
-        socket_index: usize,
-        socket_type_override: Option<u16>,
-        choice_index: usize,
-        current_hash: Option<u32>,
         query: &mut String,
-        button: PlugChoicePickerButton<'_>,
-        mode: PlugSelectionMode,
+        options: PlugChoicePickerOptions<'_>,
+        footer: impl FnOnce(&mut egui::Ui) -> bool,
     ) -> Result<Option<PlugSelection>, String> {
+        let PlugChoicePickerOptions {
+            donor_hash,
+            socket_index,
+            socket_type_override,
+            ..
+        } = options;
         let item = self
             .catalog
             .item(u64::from(donor_hash))
@@ -282,16 +295,9 @@ impl InvestmentCatalog {
             ui,
             &self.catalog,
             item,
-            socket_index,
-            socket_type_override,
-            choice_index,
-            current_hash.map(u64::from),
             query,
-            button.text,
-            button.icon_hash.map(u64::from),
-            button.tooltip,
-            f32::from(button.width),
-            mode,
+            options,
+            footer,
         );
         match action {
             Some((socket_index, hash)) => Ok(Some(PlugSelection {

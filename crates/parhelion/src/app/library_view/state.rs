@@ -1,6 +1,9 @@
 use super::*;
 use std::time::SystemTime;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum SortOrder {
     #[default]
@@ -37,6 +40,7 @@ pub(crate) struct LibraryState {
     pub(super) errors: Vec<String>,
     pub(super) job: Option<thread::JoinHandle<TransferResult>>,
     modified: BTreeMap<PathBuf, SystemTime>,
+    donor_indices: BTreeMap<u32, usize>,
 }
 
 impl Drop for LibraryState {
@@ -48,6 +52,39 @@ impl Drop for LibraryState {
 }
 
 impl LibraryState {
+    pub(crate) fn refresh_donors(&mut self, donors: &[WeaponDonorSummary]) {
+        self.donor_indices.clear();
+        for (index, donor) in donors.iter().enumerate() {
+            self.donor_indices.entry(donor.hash).or_insert(index);
+        }
+    }
+
+    fn donor<'a>(
+        &self,
+        donors: &'a [WeaponDonorSummary],
+        hash: u32,
+    ) -> Option<&'a WeaponDonorSummary> {
+        self.donor_indices
+            .get(&hash)
+            .and_then(|index| donors.get(*index))
+            .filter(|donor| donor.hash == hash)
+    }
+
+    pub(super) fn matching_entries<'a>(
+        &self,
+        entries: &'a [RecipeLibraryEntry],
+        donors: &[WeaponDonorSummary],
+        query: &str,
+    ) -> Vec<(&'a RecipeLibraryEntry, String)> {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let details = library_entry_details(entry, self.donor(donors, entry.donor_hash));
+                library_entry_matches(entry, &details, query).then_some((entry, details))
+            })
+            .collect()
+    }
+
     pub(crate) fn busy(&self) -> bool {
         self.job.is_some()
     }
@@ -72,16 +109,9 @@ impl LibraryState {
         entries: &mut [(&RecipeLibraryEntry, String)],
         donors: &[WeaponDonorSummary],
     ) {
-        let mut donors_by_hash = BTreeMap::new();
-        if self.sort == SortOrder::WeaponType {
-            for donor in donors {
-                donors_by_hash.entry(donor.hash).or_insert(donor);
-            }
-        }
         entries.sort_by_cached_key(|(entry, _)| {
             let group = if self.sort == SortOrder::WeaponType {
-                library_entry_type(entry, donors_by_hash.get(&entry.donor_hash).copied())
-                    .to_lowercase()
+                library_entry_type(entry, self.donor(donors, entry.donor_hash)).to_lowercase()
             } else {
                 String::new()
             };

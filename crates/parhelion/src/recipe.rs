@@ -1,7 +1,9 @@
 //! Versioned, human-editable donor-clone weapon recipes for Parhelion.
 
+mod copy;
+mod variant;
+
 use std::{
-    collections::BTreeSet,
     fmt, fs, io,
     path::{Path, PathBuf},
     str::FromStr,
@@ -969,11 +971,8 @@ impl WeaponRecipeOverrides {
                                 "Socket {socket_index} cannot contain plug hash zero"
                             )));
                         }
-                        if choices.iter().copied().collect::<BTreeSet<_>>().len() != choices.len() {
-                            return Err(RecipeError::Validation(format!(
-                                "Socket {socket_index} cannot contain the same plug more than once"
-                            )));
-                        }
+                        // The compiler validates duplicates using each choice's private
+                        // definition. Different custom perks may share a stock template.
                         Ok(WeaponSocketColumnOverride {
                             choices,
                             socket_type: column.socket_type,
@@ -1073,65 +1072,7 @@ impl WeaponRecipeOverrides {
                 .socket_plug_variants
                 .iter()
                 .enumerate()
-                .map(|(variant_index, variant)| {
-                    Ok(WeaponSocketPlugVariantOverride {
-                        replace_effects: variant.replace_effects,
-                        investment_stats: variant.investment_stats.iter()
-                            .map(|stat| (stat.definition_index, stat.value)).collect(),
-                        socket_index: variant.socket_index,
-                        choice_index: variant.choice_index,
-                        source_plug_hash: parse_recipe_hash(
-                            &format!("socket-plug variant {variant_index} source plug"),
-                            &variant.source_plug_hash,
-                        )?,
-                        name: variant.name.clone(),
-                        description: variant.description.clone(),
-                        additional_sandbox_perks: variant.additional_sandbox_perks.clone(),
-                        classification_donor_hash: variant.classification_donor_hash.as_ref()
-                            .map(|hash| parse_recipe_hash(
-                                &format!("socket-plug variant {variant_index} classification source"), hash))
-                            .transpose()?,
-                        sandbox_perks: variant
-                            .sandbox_perks
-                            .iter()
-                            .enumerate()
-                            .map(|(perk_index, perk)| {
-                                Ok(WeaponSandboxPerkRuntimeOverride {
-                                    program: perk.program.clone(),
-                                    source_perk_index: perk.source_perk_index,
-                                    projectiles: perk.projectiles.clone(),
-                                    activation: perk.activation,
-                                    runtime_values: perk.runtime_values.clone(),
-                                    action_float_values: perk
-                                        .action_float_values
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(value_index, value)| {
-                                            Ok(WeaponSandboxPerkActionFloatOverride {
-                                                node_type_handle: parse_recipe_hash(
-                                                    &format!(
-                                                        "socket-plug variant {variant_index} perk {perk_index} action float {value_index} node type"
-                                                    ),
-                                                    &value.node_type_handle,
-                                                )?,
-                                                node_occurrence: value.node_occurrence,
-                                                value_pointer_offset: value.value_pointer_offset,
-                                                value_type_handle: parse_recipe_hash(
-                                                    &format!(
-                                                        "socket-plug variant {variant_index} perk {perk_index} action float {value_index} value type"
-                                                    ),
-                                                    &value.value_type_handle,
-                                                )?,
-                                                expected_bits: value.expected_bits,
-                                                value_bits: value.value_bits,
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>, RecipeError>>()?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, RecipeError>>()?,
-                    })
-                })
+                .map(|(index, variant)| variant.to_compiler(index))
                 .collect::<Result<Vec<_>, RecipeError>>()?,
             runtime_values: self.runtime_values.clone(),
             runtime_resource_patches: self

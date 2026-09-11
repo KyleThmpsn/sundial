@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) struct AuthoredTemplate {
-    weapon: String,
-    variant: WeaponSocketPlugVariantRecipe,
+    pub(super) weapon: String,
+    pub(super) variant: WeaponSocketPlugVariantRecipe,
 }
 
 impl Workbench {
@@ -11,34 +11,11 @@ impl Workbench {
         library: Option<&RecipeLibrary>,
         draft: &WeaponRecipe,
     ) {
-        let mut recipes = vec![draft.clone()];
-        if let Some(library) = library {
-            match library.scan() {
-                Ok(scan) => {
-                    for entry in scan.entries {
-                        match WeaponRecipe::load_json(&entry.path) {
-                            Ok(recipe) => recipes.push(recipe),
-                            Err(error) => self.error = Some(error.to_string()),
-                        }
-                    }
-                }
-                Err(error) => self.error = Some(error),
-            }
-        }
-        let mut templates: Vec<AuthoredTemplate> = Vec::new();
-        for recipe in recipes {
-            for mut variant in recipe.overrides.socket_plug_variants {
-                variant.socket_index = 0;
-                variant.choice_index = 0;
-                if !templates.iter().any(|template| template.variant == variant) {
-                    templates.push(AuthoredTemplate {
-                        weapon: recipe.name.clone(),
-                        variant,
-                    });
-                }
-            }
-        }
+        let (templates, warnings) = load(library, draft);
         self.authored_templates = Some(templates);
+        if !warnings.is_empty() {
+            self.error = Some(warnings.join("\n"));
+        }
     }
 
     pub(super) fn draw_templates(&mut self, ui: &mut egui::Ui, catalog: &InvestmentCatalog) {
@@ -210,4 +187,41 @@ pub(super) fn from_variant(
         }
     }
     recipe
+}
+
+/// Source loading returns its own diagnostics so callers can display them in context.
+pub(super) fn load(
+    library: Option<&RecipeLibrary>,
+    draft: &WeaponRecipe,
+) -> (Vec<AuthoredTemplate>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut recipes = vec![draft.clone()];
+    if let Some(library) = library {
+        match library.scan() {
+            Ok(scan) => {
+                warnings.extend(scan.errors);
+                for entry in scan.entries {
+                    match WeaponRecipe::load_json(&entry.path) {
+                        Ok(recipe) => recipes.push(recipe),
+                        Err(error) => warnings.push(error.to_string()),
+                    }
+                }
+            }
+            Err(error) => warnings.push(error),
+        }
+    }
+    let mut templates: Vec<AuthoredTemplate> = Vec::new();
+    for recipe in recipes {
+        for mut variant in recipe.overrides.socket_plug_variants {
+            variant.socket_index = 0;
+            variant.choice_index = 0;
+            if !templates.iter().any(|template| template.variant == variant) {
+                templates.push(AuthoredTemplate {
+                    weapon: recipe.name.clone(),
+                    variant,
+                });
+            }
+        }
+    }
+    (templates, warnings)
 }

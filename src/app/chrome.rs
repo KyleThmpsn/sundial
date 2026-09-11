@@ -71,6 +71,7 @@ impl SundialApp {
             });
         });
 
+        self.draw_runtime_banner(ctx);
         if self.persistence_compatibility.detected() {
             egui::TopBottomPanel::top("persistence_compatibility_warning").show(ctx, |ui| {
                 egui::Frame::NONE

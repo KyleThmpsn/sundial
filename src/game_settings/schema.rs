@@ -44,6 +44,10 @@ pub(crate) fn schema_version(document: &Value) -> Option<u64> {
     document.get("version").and_then(Value::as_u64)
 }
 
+pub(crate) fn requires_sqlite_account(document: &Value) -> bool {
+    schema_version(document).is_some_and(|version| version >= 18)
+}
+
 pub(crate) fn future_schema_version(document: &Value) -> Option<u64> {
     schema_version(document).filter(|version| *version > MAX_SUPPORTED_SCHEMA)
 }

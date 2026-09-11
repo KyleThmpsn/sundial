@@ -2,7 +2,15 @@
 use super::*;
 
 pub(in super::super) fn restore(path: &Path, expected: &[u8], backup: &Path) -> Result<(), String> {
-    let after: Snapshot = serde_json::from_slice(&read(backup)?).map_err(err)?;
+    restore_snapshot(path, expected, &read(backup)?)
+}
+
+pub(in super::super) fn restore_snapshot(
+    path: &Path,
+    expected: &[u8],
+    updated: &[u8],
+) -> Result<(), String> {
+    let after: Snapshot = serde_json::from_slice(updated).map_err(err)?;
     let mut db = open(path, true)?;
     // All rows and their schema are restored together. Foreign keys are verified before commit.
     db.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA synchronous=FULL;")

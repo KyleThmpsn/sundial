@@ -358,11 +358,11 @@ mod tests {
         fs::create_dir(&backup).unwrap();
         let packages = fs::canonicalize(packages).unwrap();
         let path = directory.path().join("settings.json");
-        fs::write(&path, b"original").unwrap();
+        fs::write(&path, br#"{"version":8,"value":"original"}"#).unwrap();
         let proposal = AuthoredAccountCleanup {
             settings_path: path.clone(),
-            original_bytes: b"original".to_vec(),
-            cleaned_bytes: b"cleaned".to_vec(),
+            original_bytes: br#"{"version":8,"value":"original"}"#.to_vec(),
+            cleaned_bytes: br#"{"version":8,"value":"cleaned"}"#.to_vec(),
             removed_items: BTreeMap::new(),
             resized_items: BTreeMap::new(),
             slot_moves: vec![],
@@ -371,13 +371,22 @@ mod tests {
             removed_reward_rules: 0,
         };
         let record = prepare(&proposal, &packages, &backup).unwrap();
-        assert_eq!(fs::read(backup.join(BACKUP_NAME)).unwrap(), b"original");
-        fs::write(&path, b"concurrent edit").unwrap();
+        assert_eq!(
+            fs::read(backup.join(BACKUP_NAME)).unwrap(),
+            br#"{"version":8,"value":"original"}"#
+        );
+        fs::write(&path, br#"{"version":8,"value":"concurrent edit"}"#).unwrap();
         assert!(commit(&proposal, &record, &packages, &backup).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"concurrent edit");
-        fs::write(&path, b"original").unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"version":8,"value":"concurrent edit"}"#
+        );
+        fs::write(&path, br#"{"version":8,"value":"original"}"#).unwrap();
         commit(&proposal, &record, &packages, &backup).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"cleaned");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"version":8,"value":"cleaned"}"#
+        );
         let mut invalid = record;
         invalid.relative_path = PathBuf::from("../unrelated.json");
         assert!(target_path(&invalid, &packages).is_err());

@@ -654,6 +654,7 @@ impl PackageAuthoringApp {
                 "A selection replaces the complete shared owner partition for that resource, including every alias and any other component binding owned by the same partition. Unselected owners remain byte-identical to the baseline. Cross-family components can depend on different runtime data, so test new combinations in-game even when the native graph validates.",
             ),
         );
+        self.draw_runtime_donor_undo(ui);
         ui.colored_label(
             ui.visuals().warn_fg_color,
             "Mixing component donors is highly experimental and has a high risk of crashes. Use with caution.",

@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 mod recovery;
-pub(super) use recovery::restore;
+pub(super) use recovery::{restore, restore_snapshot};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Cell {
     Null,
@@ -144,7 +144,7 @@ fn open(path: &Path, write: bool) -> Result<Connection, String> {
     db.execute_batch("PRAGMA foreign_keys=ON;").map_err(err)?;
     Ok(db)
 }
-fn validate(db: &Connection) -> Result<(), String> {
+pub(super) fn validate(db: &Connection) -> Result<(), String> {
     match reader::load_connection(db).map_err(err)? {
         SqliteAccountLoad::Loaded(_) => {
             super::progression::Progression::load(db).map_err(err)?;

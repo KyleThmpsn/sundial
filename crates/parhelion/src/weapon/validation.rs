@@ -460,7 +460,7 @@ pub(super) fn validate_socket_column_programs(
     }
 }
 
-pub(super) fn validate_socket_plug_variant_shapes(
+pub(crate) fn validate_socket_plug_variant_shapes(
     variants: &[WeaponSocketPlugVariantOverride],
 ) -> AuthoringResult<()> {
     let mut positions = BTreeSet::new();

@@ -102,4 +102,16 @@ fn automatic_cleanup_respects_the_selected_account_backend_build() {
     )
     .unwrap();
     assert!(crate::investment::validate_authored_cleanup_backend(&settings).is_err());
+    for version in [6, 8, 17] {
+        std::fs::write(&settings, format!("{{\"version\":{version}}}")).unwrap();
+        assert!(crate::investment::validate_authored_cleanup_backend(&settings).is_ok());
+        assert!(
+            crate::investment::validate_authored_cleanup_backend(
+                &directory.0.join("data/investment.sqlite3")
+            )
+            .is_err()
+        );
+    }
+    std::fs::write(&settings, br#"{"version":18}"#).unwrap();
+    assert!(crate::investment::validate_authored_cleanup_backend(&settings).is_err());
 }

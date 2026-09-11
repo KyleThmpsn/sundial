@@ -24,7 +24,7 @@ use super::{
         ItemFilter, ItemFilterScope, ItemHeader, NativePlugDefault, PickerHeight,
         SOCKET_PICKER_RESET_WIDTH, catalog_button, catalog_item_tooltip,
         draw_definition_picker_with_open_request_and_item_filter, draw_item_filter_bar,
-        draw_item_header_with_trailing_at_icon_size, draw_plug_icon_picker,
+        draw_item_header_with_trailing_at_icon_size, draw_plug_icon_picker_with_footer,
         draw_socket_picker_label, draw_socket_picker_reset, muted_item_header_fill,
         plug_picker_snapshot, socket_picker_label_width,
     },
@@ -398,11 +398,7 @@ fn synchronize_authored_collection_unlocks_at(
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
     let original = super::settings::load_workspace_json(settings_path)?;
     let database_path = crate::persistence::investment_path(settings_path);
-    if database_path
-        .try_exists()
-        .map_err(|error| error.to_string())?
-        || crate::game_settings::schema_version(&original).is_some_and(|v| v >= 18)
-    {
+    if crate::game_settings::requires_sqlite_account(&original) {
         {
             use crate::persistence::sqlite_account::{self, SqliteAccountDocumentLoad};
             let mut document =
@@ -545,22 +541,28 @@ pub(crate) fn configure_fonts(
     super::preferences::configure_destiny_symbol_fonts(ctx, install)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_supported_plug_choice_picker(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     item: &ItemDef,
-    socket_index: usize,
-    socket_type_override: Option<u16>,
-    choice_index: usize,
-    current_hash: Option<u64>,
     query: &mut String,
-    button_text: &str,
-    button_icon_hash: Option<u64>,
-    button_tooltip: Option<&str>,
-    button_width: f32,
-    mode: PlugSelectionMode,
+    options: crate::investment::PlugChoicePickerOptions<'_>,
+    footer: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> Option<(usize, Option<u64>)> {
+    let crate::investment::PlugChoicePickerOptions {
+        socket_index,
+        socket_type_override,
+        choice_index,
+        current_hash,
+        button,
+        mode,
+        ..
+    } = options;
+    let current_hash = current_hash.map(u64::from);
+    let button_text = button.text;
+    let button_icon_hash = button.icon_hash.map(u64::from);
+    let button_tooltip = button.tooltip;
+    let button_width = f32::from(button.width);
     let mut snapshot = plug_picker_snapshot_for_mode(
         catalog,
         item,
@@ -608,7 +610,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
             catalog_item_tooltip(anchor, catalog, hash)
         })
     };
-    match draw_plug_icon_picker(
+    match draw_plug_icon_picker_with_footer(
         ui,
         catalog,
         (
@@ -624,6 +626,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
             max: 420.0,
         },
         &anchor,
+        footer,
     ) {
         Some(ItemEditorAction::SetPlug { socket_index, hash }) => Some((socket_index, hash)),
         Some(_) | None => None,
@@ -682,7 +685,12 @@ fn plug_picker_snapshot_for_mode(
         current_label,
         custom_current: false,
         native_default,
-        native_default_label: None,
+        native_default_label: native_default.and_then(|default| match default {
+            super::item_editor::NativePlugDefault::Plug(hash) => {
+                Some(catalog.plug_label(hash, true))
+            }
+            super::item_editor::NativePlugDefault::Empty => None,
+        }),
         choices,
         show_types,
     }
@@ -791,15 +799,36 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
-        let directory = TestDirectory::new("authored-unlock-sqlite");
+    fn legacy_unlock_sync_ignores_an_existing_database() {
+        let directory = TestDirectory::new("authored-unlock-legacy-with-database");
         let settings = directory.0.join("settings.json");
-        let database = directory.0.join("data").join("investment.sqlite3");
+        let database = directory.0.join("data/investment.sqlite3");
         fs::write(
             &settings,
             serde_json::to_vec(&unlock_settings_for_test()).unwrap(),
         )
         .unwrap();
+        crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+        let original_database = fs::read(&database).unwrap();
+        let (saved_path, _, changed) = synchronize_authored_collection_unlocks_at(
+            &settings,
+            &[(200, 1, 42)],
+            save_unlock_test_settings(&directory),
+        )
+        .unwrap();
+        assert_eq!(saved_path, settings);
+        assert_eq!(changed, 1);
+        assert_eq!(fs::read(&database).unwrap(), original_database);
+    }
+
+    #[test]
+    fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
+        let directory = TestDirectory::new("authored-unlock-sqlite");
+        let settings = directory.0.join("settings.json");
+        let database = directory.0.join("data").join("investment.sqlite3");
+        let mut defaults = unlock_settings_for_test();
+        defaults["version"] = json!(18);
+        fs::write(&settings, serde_json::to_vec(&defaults).unwrap()).unwrap();
         crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
         let json_before = fs::read(&settings).unwrap();
 

@@ -1,8 +1,5 @@
 //! Reusable custom-perk documents, independent of any weapon or socket.
-use std::{
-    collections::BTreeSet,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -94,48 +91,12 @@ impl PerkRecipe {
 
     pub fn validate(&self) -> Result<(), String> {
         self.validate_draft()?;
-        if self.name.trim().is_empty()
-            || self.name.contains('\0')
-            || self.description.contains('\0')
-        {
-            return Err("Enter a perk name without null characters".into());
-        }
-        self.template_plug
-            .parse_u32()
-            .map_err(|error| error.to_string())?;
-        if let Some(hash) = &self.classification {
-            hash.parse_u32().map_err(|error| error.to_string())?;
-        }
-        let mut effects = BTreeSet::new();
-        for effect in &self.effects {
-            if let Some(program) = &effect.program {
-                program.validate_structure()?;
-                if !effect.runtime_values.is_empty()
-                    || !effect.action_float_values.is_empty()
-                    || !effect.projectiles.is_empty()
-                    || effect.activation.is_some()
-                {
-                    return Err(
-                        "A custom effect program cannot carry stock action overrides.".into(),
-                    );
-                }
-            }
-            if !effects.insert(effect.source_perk_index) {
-                return Err("The perk contains the same effect more than once".into());
-            }
-        }
-        let mut stats = BTreeSet::new();
-        if self.stats.len() > 16 || self.stats.iter().any(|stat| stat.definition_index > 255) {
+        if self.stats.len() > 16 {
             return Err("Choose up to 16 supported stat bonuses".into());
         }
-        if self
-            .stats
-            .iter()
-            .any(|stat| !stats.insert(stat.definition_index))
-        {
-            return Err("The perk contains the same stat bonus more than once".into());
-        }
-        Ok(())
+        self.at_socket(0, 0)
+            .validate()
+            .map_err(|error| error.to_string())
     }
 
     /// Attachment takes a copy. Subsequent library edits do not mutate weapons.
@@ -147,7 +108,7 @@ impl PerkRecipe {
             choice_index,
             source_plug_hash: self.template_plug.clone(),
             name: Some(self.name.clone()),
-            description: Some(self.description.clone()),
+            description: (!self.description.trim().is_empty()).then(|| self.description.clone()),
             classification_donor_hash: self.classification.clone(),
             investment_stats: self.stats.clone(),
             additional_sandbox_perks: Vec::new(),

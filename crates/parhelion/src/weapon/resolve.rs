@@ -61,12 +61,10 @@ pub(super) fn resolve_project_weapons_with_progress(
     let stock_sandbox_patterns = &sources.stock_sandbox_patterns;
     let stock_item_icons = &sources.stock_item_icons;
     let stock_collectibles = &sources.stock_collectibles;
-    let stock_collectible_displays = &sources.stock_collectible_displays;
     let stock_objectives = &sources.stock_objectives;
     let stock_nodes = &sources.stock_nodes;
     let stock_pools = &sources.stock_pools;
     let stock_unlocks = &sources.stock_unlocks;
-    let stock_entity_assignments = &sources.stock_entity_assignments;
     let stock_item_count = sources.stock_item_count;
     let item_rows = sources.item_rows;
     let stock_item_rows_by_hash = &sources.stock_item_rows_by_hash;
@@ -118,42 +116,9 @@ pub(super) fn resolve_project_weapons_with_progress(
                 identity.unlock_hash
             )));
         }
-        let donor_item_index = find_u32_row_key(
-            stock_item_table,
-            item_rows,
-            stock_item_count,
-            ITEM_ROW_SIZE,
-            weapon.donor_item_hash,
-        )?
-        .ok_or_else(|| {
-            invalid(format!(
-                "Donor item 0x{:08X} is missing",
-                weapon.donor_item_hash
-            ))
-        })?;
-        if read_u32(
-            stock_item_strings,
-            string_rows + donor_item_index * ITEM_ROW_SIZE,
-        )? != weapon.donor_item_hash
-        {
-            return Err(invalid("Donor item and item-string rows are not aligned"));
-        }
-        let definition_tag = TagHash(read_u32(
-            stock_item_table,
-            item_rows + donor_item_index * ITEM_ROW_SIZE + 16,
-        )?);
-        let string_tag = TagHash(read_u32(
-            stock_item_strings,
-            string_rows + donor_item_index * ITEM_ROW_SIZE + 16,
-        )?);
-        let donor_name = resolve_item_name(manager, string_tag).map_err(invalid)?;
-        if let Some(expected) = &weapon.expected_donor_name
-            && expected != &donor_name
-        {
-            return Err(invalid(format!(
-                "Donor item resolves to {donor_name:?}, not {expected:?}"
-            )));
-        }
+        let DonorItem { item_index: donor_item_index, definition_tag, string_tag } =
+            resolve_donor_item(sources, weapon.donor_item_hash, "Donor")?;
+        validate_donor_name(sources, string_tag, weapon.expected_donor_name.as_deref(), "Donor")?;
         let donor_item_index_u16 = u16::try_from(donor_item_index)
             .map_err(|_| invalid("Donor item index does not fit 16 bits"))?;
         let donor_collectibles = (0..stock_collectible_count)
@@ -258,23 +223,7 @@ pub(super) fn resolve_project_weapons_with_progress(
         let presentation_donor = weapon
             .presentation_donor
             .as_ref()
-            .map(|reference| {
-                resolve_presentation_donor(
-                    manager,
-                    reference,
-                    stock_item_table,
-                    item_rows,
-                    stock_item_count,
-                    stock_item_strings,
-                    string_rows,
-                    stock_collectibles,
-                    collectible_rows,
-                    stock_collectible_count,
-                    stock_collectible_displays,
-                    stock_nodes,
-                    stock_item_icons,
-                )
-            })
+            .map(|reference| resolve_presentation_donor(sources, reference))
             .transpose()?;
         let damage_carrier_source = if weapon_damage_carrier(&definition)?.family().is_none()
             && weapon
@@ -283,12 +232,7 @@ pub(super) fn resolve_project_weapons_with_progress(
                 .is_some_and(|damage| damage != ModernDamageType::Kinetic)
         {
             resolve_added_damage_carrier_source(
-                manager,
-                stock_sandbox_patterns,
-                stock_entity_assignments,
-                stock_item_table,
-                item_rows,
-                stock_item_count,
+                sources,
                 runtime_pattern_source,
                 &definition,
                 // Kinetic-slot elements use the same proven carrier source as Energy conversion.
@@ -340,49 +284,17 @@ pub(super) fn resolve_project_weapons_with_progress(
         let icon_donor = weapon
             .icon_donor
             .as_ref()
-            .map(|reference| {
-                resolve_icon_donor(
-                    manager,
-                    reference,
-                    stock_item_table,
-                    item_rows,
-                    stock_item_count,
-                    stock_item_strings,
-                    string_rows,
-                    stock_item_icons,
-                )
-            })
+            .map(|reference| resolve_icon_donor(sources, reference))
             .transpose()?;
         let render_gear_donor = weapon
             .render_gear_donor
             .as_ref()
-            .map(|reference| {
-                resolve_render_gear_donor(
-                    manager,
-                    reference,
-                    stock_item_table,
-                    item_rows,
-                    stock_item_count,
-                    stock_item_strings,
-                    string_rows,
-                )
-            })
+            .map(|reference| resolve_render_gear_donor(sources, reference))
             .transpose()?;
         let runtime_component_donors = weapon
             .runtime_component_donors
             .iter()
-            .map(|reference| {
-                resolve_runtime_component_donor(
-                    manager,
-                    reference,
-                    stock_item_table,
-                    item_rows,
-                    stock_item_count,
-                    stock_item_strings,
-                    string_rows,
-                    stock_sandbox_patterns,
-                )
-            })
+            .map(|reference| resolve_runtime_component_donor(sources, reference))
             .collect::<AuthoringResult<Vec<_>>>()?;
         if let Some(presentation) = &presentation_donor {
             // Family is checked against the catalog, and the native translation group above

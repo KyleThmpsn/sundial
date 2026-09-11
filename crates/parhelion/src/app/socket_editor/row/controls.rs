@@ -4,6 +4,7 @@ use super::super::{
     named_control, socket_choice_columns,
 };
 use super::{RowChoices, RowCommand, SocketRowContext};
+use sundial::investment::PlugChoicePickerOptions;
 
 pub(super) fn draw_disabled(
     ui: &mut egui::Ui,
@@ -83,6 +84,7 @@ pub(super) fn draw_active(
     let mut selected_type = socket_type_override;
     let mut selection = None;
     let mut options_command = None;
+    let mut custom_choice = None;
     ui.horizontal_top(|ui| {
         let spacing = ui.spacing().item_spacing.x;
         let available_width = ui.available_width();
@@ -134,19 +136,28 @@ pub(super) fn draw_active(
             let choice_index = current_len;
             match catalog.draw_supported_plug_choice_picker(
                 ui,
-                donor.summary.hash,
-                socket.index,
-                socket_type_override,
-                choice_index,
-                None,
                 context.queries.entry(choice_index).or_default(),
-                PlugChoicePickerButton {
-                    text: add_label,
-                    icon_hash: None,
-                    tooltip: None,
-                    width: add_width as u16,
+                PlugChoicePickerOptions {
+                    donor_hash: donor.summary.hash,
+                    socket_index: socket.index,
+                    socket_type_override,
+                    choice_index,
+                    current_hash: None,
+                    mode: plug_selection_mode,
+                    button: PlugChoicePickerButton {
+                        text: add_label,
+                        icon_hash: None,
+                        tooltip: None,
+                        width: add_width as u16,
+                    },
                 },
-                plug_selection_mode,
+                |ui| {
+                    let clicked = draw_custom_perk_action(ui);
+                    if clicked {
+                        custom_choice = Some(choice_index);
+                    }
+                    clicked
+                },
             ) {
                 Ok(Some(chosen)) => {
                     selection = Some(RowCommand::EditChoice {
@@ -162,6 +173,12 @@ pub(super) fn draw_active(
         }
         options_command = draw_options(ui, context, choices);
     });
+    if let Some(choice) = custom_choice {
+        *context.perk_request = Some(crate::app::custom_perks::workbench::Request::SelectChoice {
+            socket: socket_index,
+            choice,
+        });
+    }
     if selected_type != socket_type_override {
         Some(RowCommand::ChangeRole(selected_type))
     } else if options_command.is_some() {
@@ -230,19 +247,32 @@ fn draw_choice(
             };
             match catalog.draw_supported_plug_choice_picker(
                 ui,
-                donor.summary.hash,
-                socket.index,
-                socket_type_override,
-                choice_index,
-                variant.is_none().then_some(hash),
                 context.queries.entry(choice_index).or_default(),
-                PlugChoicePickerButton {
-                    tooltip: tooltip.as_deref(),
-                    text: &button_label,
-                    icon_hash: Some(hash),
-                    width: picker_width,
+                PlugChoicePickerOptions {
+                    donor_hash: donor.summary.hash,
+                    socket_index: socket.index,
+                    socket_type_override,
+                    choice_index,
+                    current_hash: variant.is_none().then_some(hash),
+                    mode: plug_selection_mode,
+                    button: PlugChoicePickerButton {
+                        tooltip: tooltip.as_deref(),
+                        text: &button_label,
+                        icon_hash: Some(hash),
+                        width: picker_width,
+                    },
                 },
-                plug_selection_mode,
+                |ui| {
+                    let clicked = draw_custom_perk_action(ui);
+                    if clicked {
+                        *context.perk_request =
+                            Some(crate::app::custom_perks::workbench::Request::SelectChoice {
+                                socket: socket.index,
+                                choice: choice_index,
+                            });
+                    }
+                    clicked
+                },
             ) {
                 Ok(Some(chosen)) => {
                     selection = Some(RowCommand::EditChoice {
@@ -274,6 +304,14 @@ fn draw_choice(
     choice_menu(ui, &tile.response, choice_index).or(selection)
 }
 
+fn draw_custom_perk_action(ui: &mut egui::Ui) -> bool {
+    let clicked = ui.button("Use Custom Perk…")
+        .on_hover_text("Choose a saved custom perk or create one for this choice. Installation is not required.")
+        .clicked();
+    ui.separator();
+    clicked
+}
+
 fn choice_menu(
     ui: &mut egui::Ui,
     response: &egui::Response,
@@ -300,6 +338,13 @@ fn choice_menu(
         }
     }
     menu.show(response, |ui| {
+        if ui.button("Open in Custom Perk Workbench").clicked() {
+            selection = Some(RowCommand::EditPerk(choice_index));
+            ui.close_menu();
+        }
+        if removable {
+            ui.separator();
+        }
         if removable && ui.button("Make Default").clicked() {
             selection = Some(RowCommand::MakeDefault(choice_index));
             ui.close_menu();
@@ -360,14 +405,14 @@ fn draw_options(
     let is_overridden = choices.is_overridden;
     let is_added = context.is_added;
     let can_remove_added = context.can_remove_added;
-    let private_perk_socket = &mut *context.private_perk_socket;
+    let perk_request = &mut *context.perk_request;
     let mut command = None;
     ui.push_id(("socket-options", socket_index), |ui| {
     let response = ui.menu_button("…", |ui| {
         if ui.button("Custom Perks…")
             .on_hover_text("Create or edit a private perk, tune mapped parameters, or reuse a saved custom perk in this socket.")
             .clicked() {
-            *private_perk_socket = Some(socket_index);
+            *perk_request = Some(crate::app::custom_perks::workbench::Request::EditChoice { socket: socket_index, choice: 0 });
             ui.close_menu();
         }
         ui.separator();

@@ -133,6 +133,9 @@ fn slot_replacement_selects_json_or_sqlite_at_runtime_without_touching_inactive_
     };
     let directory = crate::test_support::TestDirectory::new("slot-replacement-backends");
     let settings = directory.0.join("settings.json");
+    let database = crate::persistence::investment_path(&settings);
+    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    let inactive_database = std::fs::read(&database).unwrap();
     let original = serde_json::to_vec(&document(8)).unwrap();
     std::fs::write(&settings, &original).unwrap();
     let slots = replacement(3);
@@ -149,11 +152,10 @@ fn slot_replacement_selects_json_or_sqlite_at_runtime_without_touching_inactive_
     assert_eq!(std::fs::read(&settings).unwrap(), original);
     replace_authored_account_source(&settings, &json.original_bytes, &json.cleaned_bytes).unwrap();
     assert_eq!(std::fs::read(&settings).unwrap(), json.cleaned_bytes);
+    assert_eq!(std::fs::read(&database).unwrap(), inactive_database);
 
     let inactive = br#"{"version":18,"state":{"characters":"inactive"},"unknown":true}"#;
     std::fs::write(&settings, inactive).unwrap();
-    let database = crate::persistence::investment_path(&settings);
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
     let mut slots = replacement(3);
     slots.incoming_buckets.insert(200, 16);
     slots.incoming_buckets.insert(300, 1);

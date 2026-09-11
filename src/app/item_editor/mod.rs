@@ -40,10 +40,10 @@ pub(crate) use model::{
 use numeric::{authored_item_level, effective_power_input_max, item_power_input_max};
 pub(crate) use numeric::{displayed_item_power, draw_level_and_quantity, new_inventory_item_level};
 pub(crate) use plug_picker::{
-    SOCKET_PICKER_RESET_WIDTH, draw_plug_icon_picker, draw_plug_picker, draw_socket_picker_label,
-    draw_socket_picker_reset, measured_button_width, plug_choices_for_socket,
-    plug_choices_for_socket_type, plug_picker_snapshot, socket_picker_label_width,
-    socket_picker_reset_width,
+    SOCKET_PICKER_RESET_WIDTH, draw_plug_icon_picker, draw_plug_icon_picker_with_footer,
+    draw_plug_picker, draw_socket_picker_label, draw_socket_picker_reset, measured_button_width,
+    plug_choices_for_socket, plug_choices_for_socket_type, plug_picker_snapshot,
+    socket_picker_label_width, socket_picker_reset_width,
 };
 
 pub(crate) use catalog_picker::{

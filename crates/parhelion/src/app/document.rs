@@ -172,6 +172,8 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn invalidate_results(&mut self) {
+        // A worker owns an earlier snapshot and can still finish after an edit.
+        self.build_invalidated |= self.build_receiver.is_some();
         self.build_progress = None;
         self.build_activity = build_status::Activity::default();
         if self.install_receiver.is_none() {
@@ -256,40 +258,26 @@ impl PackageAuthoringApp {
             self.log.push(LogEntry::error(error));
             return false;
         }
-        let mut copy = self.recipe.clone();
-        for suffix in 1..=10_000 {
-            let name = if suffix == 1 {
-                format!("{} Copy", self.recipe.name)
-            } else {
-                format!("{} Copy {suffix}", self.recipe.name)
-            };
-            if let Err(error) = copy.rename_authored_item(&name) {
-                self.log.push(LogEntry::error(format!(
-                    "Could not duplicate recipe: {error}"
-                )));
+        let copy = match self.recipe.unused_copy(
+            self.recipe_entries
+                .iter()
+                .map(|entry| entry.namespace.as_str()),
+        ) {
+            Ok(copy) => copy,
+            Err(error) => {
+                self.log.push(LogEntry::error(error));
                 return false;
             }
-            if self
-                .recipe_entries
-                .iter()
-                .any(|entry| entry.namespace == copy.namespace)
-            {
-                continue;
-            }
-            self.recipe = copy;
-            self.recipe_baseline = self.recipe.clone();
-            self.recipe_path = None;
-            self.recipe_requires_initial_save = true;
-            self.recipe_dirty = true;
-            self.clear_dependent_picker_queries();
-            self.scroll_recipe_to_top = true;
-            self.invalidate_results();
-            return true;
-        }
-        self.log.push(LogEntry::error(
-            "Could not allocate an unused recipe copy identity",
-        ));
-        false
+        };
+        self.recipe = copy;
+        self.recipe_baseline = self.recipe.clone();
+        self.recipe_path = None;
+        self.recipe_requires_initial_save = true;
+        self.recipe_dirty = true;
+        self.clear_dependent_picker_queries();
+        self.scroll_recipe_to_top = true;
+        self.invalidate_results();
+        true
     }
 
     pub(super) fn start_new_recipe(&mut self) -> bool {

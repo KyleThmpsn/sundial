@@ -1,6 +1,85 @@
 //! Native custom runtime operations with independent validation.
 use super::*;
 
+/// Resolve both build and preview HUD behavior through the same decision path.
+pub(crate) fn runtime_hud_key(
+    manager: &PackageManager,
+    custom_key: Option<u32>,
+    unchanged_content: bool,
+    appearance: impl FnOnce() -> AuthoringResult<Option<(Vec<u8>, u32)>>,
+) -> AuthoringResult<Option<u32>> {
+    if let Some(key) = custom_key {
+        return Ok(Some(key));
+    }
+    if unchanged_content {
+        return Ok(None);
+    }
+    let Some((entity, content_group)) = appearance()? else {
+        return Ok(None);
+    };
+    crate::hud_icon::runtime::inherited_key(manager, &entity, content_group).map(Some)
+}
+
+/// Exercise the compiler's runtime mutation in memory. No package or account is written.
+pub(crate) fn preflight_runtime_edits(
+    manager: &PackageManager,
+    entity: &[u8],
+    overrides: &WeaponCloneOverrides,
+    hud_key: Option<u32>,
+) -> AuthoringResult<()> {
+    let start = manager
+        .lookup
+        .tag32_entries_by_pkg
+        .get(&HOST_PACKAGE_ID)
+        .ok_or_else(|| invalid("The runtime host package is unavailable"))?
+        .len();
+    let allocator = AppendedTagAllocator::new(HOST_PACKAGE_ID, start);
+    author_runtime_edits(
+        manager,
+        &mut entity.to_vec(),
+        overrides,
+        hud_key,
+        allocator,
+        &mut Vec::new(),
+    )
+}
+
+pub(super) fn author_runtime_edits(
+    manager: &PackageManager,
+    entity: &mut [u8],
+    overrides: &WeaponCloneOverrides,
+    hud_key: Option<u32>,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<()> {
+    let mut patches = overrides.runtime_resource_patches.clone();
+    if let Some(key) = hud_key {
+        patches.extend(crate::hud_icon::runtime::patches(manager, entity, key)?);
+    }
+    if let Some(ammo) = overrides.ammo_type {
+        patches.extend(crate::weapon_ammo::patches(manager, entity, ammo)?);
+    }
+    append_patched_runtime_resource_owners(
+        manager,
+        entity,
+        &overrides.runtime_values,
+        &patches,
+        allocator,
+        tags,
+    )?;
+    apply_raw_payload_target(
+        entity,
+        WeaponRawPayloadTarget::RuntimeWeaponEntity,
+        &overrides.raw_payload_patches,
+    )?;
+    validate_raw_payload_target(
+        entity,
+        WeaponRawPayloadTarget::RuntimeWeaponEntity,
+        &overrides.raw_payload_patches,
+    )?;
+    validate_weapon_entity(entity).map_err(invalid)
+}
+
 pub(super) fn resolve_runtime_weapon_entity(
     manager: &PackageManager,
     sandbox_patterns: &[u8],

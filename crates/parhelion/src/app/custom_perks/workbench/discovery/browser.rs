@@ -99,12 +99,11 @@ impl Discovery {
                             }
                     })
                     .map(|(index, entry)| {
-                        let name = entry
-                            .native_paths
-                            .first()
-                            .map(|path| tft::asset_label(path))
-                            .or_else(|| entry.native_name.clone())
-                            .unwrap_or_else(|| format!("Unidentified {}", entry.kind.label()));
+                        let name = entry.label_with_perks(|index| {
+                            labels
+                                .get(&usize::from(index))
+                                .map(|name| (*name).to_owned())
+                        });
                         (
                             index,
                             format!("{name} · 0x{:08X}", entry.graph),

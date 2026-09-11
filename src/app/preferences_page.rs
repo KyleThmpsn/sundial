@@ -482,6 +482,7 @@ impl SundialApp {
         if ui.button("Choose Installation…").clicked() {
             self.choose_install(ctx);
         }
+        self.draw_runtime_preferences(ui);
         ui.add_space(8.0);
         egui::Grid::new("preferences_sunrise_grid")
             .num_columns(2)
@@ -531,6 +532,8 @@ impl SundialApp {
             )
             .color(super::ui::secondary_text_color(ui)),
         );
+        ui.add_space(12.0);
+        self.draw_recovery_preferences(ui);
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Catalog");
         ui.label(format!(
@@ -672,6 +675,11 @@ impl SundialApp {
         ui.label("When enabled, older automatic backups are removed after saving.");
 
         ui.add_space(12.0);
+        self.draw_recovery_preferences(ui);
+        preferences_changed
+    }
+
+    fn draw_recovery_preferences(&mut self, ui: &mut egui::Ui) {
         super::ui::section_heading(ui, "Recovery");
         let account_source = self.document.source_info();
         ui.label("Sunrise Settings");
@@ -683,10 +691,16 @@ impl SundialApp {
         {
             self.confirmation = Some(ConfirmationDialog::ResetDefaults);
         }
-        {
+        if account_source.kind != AccountSourceKind::Json {
             ui.add_space(8.0);
             ui.label("Sunrise Account Database");
             preference_path(ui, &account_source.database_path);
+            if ui.button("Reset Account Database…")
+                .on_hover_text("Reset characters, inventory, progression, and account preferences to the defaults bundled with this installed Sunrise version. A full recovery backup is created first")
+                .clicked()
+            {
+                self.request_sqlite_defaults_reset();
+            }
             if matches!(account_source.kind, AccountSourceKind::Sqlite | AccountSourceKind::Blocked)
                 && ui.button("Restore Backup…")
                     .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
@@ -710,8 +724,6 @@ impl SundialApp {
                 Err(error) => self.set_status(error, true),
             }
         }
-
-        preferences_changed
     }
 }
 
