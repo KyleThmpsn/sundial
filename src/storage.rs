@@ -123,7 +123,7 @@ fn replacement_temporary_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -152,7 +152,7 @@ fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)?;
     let parent = destination.parent().ok_or_else(|| {
         io::Error::new(

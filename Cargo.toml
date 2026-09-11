@@ -28,7 +28,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 
 [workspace.lints.clippy]
 cognitive_complexity = "deny"
@@ -43,24 +43,23 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints]
 workspace = true
 
-[features]
-default = []
-# Retired Sunrise PR 88 prototype, retained for development and regression tests.
-# Do not enable in distributed builds; the eventual upstream contract must be re-audited.
-sqlite-account = ["dep:rusqlite"]
-
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui_commonmark = { version = "0.20.0", default-features = false }
 egui-phosphor = "0.9.0"
 directories = "6.0.0"
 fs2 = "0.4.3"
+flate2 = "1.1.9"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10.9"
+tempfile = "3.20.0"
+tar = { version = "0.4.46", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 sundial-account = { path = "crates/sundial-account" }
 rfd = "0.15.4"
-rusqlite = { version = "0.37.0", features = ["backup", "bundled"], optional = true }
+rusqlite = { version = "0.37.0", features = ["backup", "bundled"] }
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
 # Keep timestamp formatting compatible with our Rust 1.88 minimum.
 time = { version = "=0.3.47", features = ["formatting"] }

@@ -1,5 +1,8 @@
 use super::*;
 
+mod recipe;
+pub(crate) use recipe::RestoreRecipe;
+
 /// A read-only preview. Confirmation is rejected if any target changes meanwhile.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RestoreDefaults {

@@ -109,9 +109,10 @@ pub(crate) fn render_weapon_icon_preview(
     container_tag: TagHash,
     rarity: crate::AuthoredWeaponRarity,
     edit: &WeaponIconEdit,
+    corner: Option<&crate::presentation::Artwork>,
 ) -> Result<egui::ColorImage, String> {
     let manager = open_shadowkeep_package_manager(package_directory)?;
-    render_weapon_icon_preview_from_manager(&manager, container_tag, rarity, edit)
+    render_weapon_icon_preview_from_manager(&manager, container_tag, rarity, edit, corner)
 }
 
 pub(crate) fn render_weapon_icon_preview_from_manager(
@@ -119,8 +120,14 @@ pub(crate) fn render_weapon_icon_preview_from_manager(
     container_tag: TagHash,
     rarity: crate::AuthoredWeaponRarity,
     edit: &WeaponIconEdit,
+    corner: Option<&crate::presentation::Artwork>,
 ) -> Result<egui::ColorImage, String> {
-    load_icon_preview(manager, container_tag, rarity)?.render(edit)
+    let mut preview = load_icon_preview(manager, container_tag, rarity)?;
+    if let Some(corner) = corner {
+        preview.authored_watermark.rgba =
+            crate::watermark::render_custom_corner(corner, 0).map_err(|error| error.to_string())?;
+    }
+    preview.render(edit)
 }
 
 /// Decodes a texture without inventory backgrounds or watermarks.

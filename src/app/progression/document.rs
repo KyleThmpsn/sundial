@@ -88,6 +88,7 @@ pub(super) struct Progression {
 }
 
 pub(in crate::app) struct CollectionStateSnapshot {
+    pub(super) is_native: bool,
     pub(super) flags: HashSet<(u8, usize)>,
     pub(super) values: HashMap<(u8, usize), i32>,
     pub(super) flag_overrides: HashMap<usize, u8>,
@@ -242,7 +243,8 @@ pub(in crate::app) fn collection_state_snapshot(
                 .map(|row| ((CHARACTER_OBJECTIVE_BANK, row.index), row.value)),
         )
         .collect();
-    Some(CollectionStateSnapshot {
+    let mut snapshot = CollectionStateSnapshot {
+        is_native: document.get("_native_progression").is_some(),
         flags,
         values,
         account_progressions: policy.unlocks.account_progressions,
@@ -259,7 +261,36 @@ pub(in crate::app) fn collection_state_snapshot(
             .iter()
             .map(|row| (row.definition_index, row.value))
             .collect(),
-    })
+    };
+    // The bounded editor omits raw native overrides. They still affect native readers.
+    for row in document["_native_progression"]["family"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let Some(index) = row[1]
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+        else {
+            continue;
+        };
+        match row[0].as_u64() {
+            Some(0) => {
+                if let Some(value) = row[2].as_u64().and_then(|value| u8::try_from(value).ok())
+                    && (index > FAMILY5_FLAG_SLOT_MAXIMUM || value > FAMILY5_FLAG_VALUE_MAXIMUM)
+                {
+                    snapshot.flag_overrides.entry(index).or_insert(value);
+                }
+            }
+            Some(1) if index > FAMILY5_VALUE_SLOT_MAXIMUM => {
+                if let Some(value) = row[2].as_i64().and_then(|value| i32::try_from(value).ok()) {
+                    snapshot.value_overrides.entry(index).or_insert(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(snapshot)
 }
 
 pub(in crate::app) fn collection_flag_state_text(
@@ -284,12 +315,23 @@ pub(in crate::app) fn validate(document: &Value) -> Result<(), String> {
 
 pub(super) fn parse(document: &Value) -> Result<Progression, String> {
     Ok(Progression {
-        unlocks: parse_unlocks(document.pointer("/state/unlocks"))?,
+        unlocks: parse_document_unlocks(document)?,
         investment: parse_investment(document.pointer("/state/investment"))?,
     })
 }
 
 pub(super) fn parse_unlocks(value: Option<&Value>) -> Result<UnlockPolicy, String> {
+    parse_unlocks_with_policy(value, false)
+}
+
+pub(super) fn parse_document_unlocks(document: &Value) -> Result<UnlockPolicy, String> {
+    if document.get("_native_progression").is_none() {
+        return parse_unlocks(document.pointer("/state/unlocks"));
+    }
+    parse_unlocks_with_policy(document.pointer("/state/unlocks"), true)
+}
+
+fn parse_unlocks_with_policy(value: Option<&Value>, native: bool) -> Result<UnlockPolicy, String> {
     let Some(object) = optional_object(value, "state.unlocks")? else {
         return Ok(UnlockPolicy::default());
     };
@@ -303,6 +345,7 @@ pub(super) fn parse_unlocks(value: Option<&Value>) -> Result<UnlockPolicy, Strin
         if let Some((_, expected)) = RESERVED_CHARACTER_OBJECTIVE_VALUES
             .iter()
             .find(|(index, _)| *index == row.index)
+            && !native
             && row.value != *expected
         {
             return Err(format!(

@@ -452,6 +452,12 @@ impl WeaponTables {
             &donor.weapon.overrides.raw_payload_patches,
         )?;
         let parents = sunrise_badge_collectible_parents(donor.weapon_page);
+        let collection_parent = [donor.weapon_page];
+        let parents = if donor.weapon.overrides.exclude_from_sunrise_badge {
+            &collection_parent[..]
+        } else {
+            &parents[..]
+        };
         self.collectibles = append_collectible(
             std::mem::take(&mut self.collectibles),
             donor.donor_collectible_index,
@@ -463,7 +469,7 @@ impl WeaponTables {
                     authored_index: unlock_definition_index,
                 },
                 material_set_index: collection_material_set,
-                presentation_parents: &parents,
+                presentation_parents: parents,
                 require_donor_parent_subset: false,
             },
         )?;
@@ -609,7 +615,7 @@ impl WeaponTables {
             authored_icon_index,
             LOCALIZATION_DONOR_TABLE_INDEX as u32,
             collection_material_set,
-            &parents,
+            parents,
             donor
                 .weapon
                 .text

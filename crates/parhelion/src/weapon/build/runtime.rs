@@ -3,17 +3,26 @@ use super::*;
 mod plan;
 pub(super) use plan::{Payloads, author};
 
+pub(super) struct EntitySources<'a> {
+    pub sandbox_patterns: &'a [u8],
+    pub entity_assignments: &'a [u8],
+}
+
 pub(super) fn author_entities(
     manager: &PackageManager,
-    stock_sandbox_patterns: &[u8],
-    stock_entity_assignments: &[u8],
+    stock: EntitySources<'_>,
     resolved: &[resolve::ResolvedWeapon],
     weapon_runtime_tag_allocator: AppendedTagAllocator,
     entity_assignments: &mut Vec<u8>,
     weapon_runtime_new_tags: &mut Vec<NewTagSpec>,
+    progress: &mut Progress<'_>,
 ) -> AuthoringResult<Vec<Option<u32>>> {
+    let stock_sandbox_patterns = stock.sandbox_patterns;
+    let stock_entity_assignments = stock.entity_assignments;
     let mut authored_pattern_global_ids = Vec::with_capacity(resolved.len());
     for donor in resolved {
+        let operation = format!("Compiling Runtime for {}", donor.weapon.text.name);
+        progress.start(&operation);
         let authored_pattern_global_id = (|| -> AuthoringResult<Option<u32>> {
             let authored_pattern_source = donor
                 .runtime_pattern_source
@@ -151,13 +160,9 @@ pub(super) fn author_entities(
             });
             Ok(Some(donor.weapon.identity.pattern_global_id_hash))
         })()
-        .map_err(|error| {
-            error.context(format!(
-                "Weapon {:?} ({})",
-                donor.weapon.text.name, donor.weapon.namespace
-            ))
-        })?;
+        .map_err(|error| error.context(donor.weapon.error_context()))?;
         authored_pattern_global_ids.push(authored_pattern_global_id);
+        progress.finish(&operation);
     }
     Ok(authored_pattern_global_ids)
 }
@@ -247,12 +252,15 @@ mod tests {
         let mut tags = vec![];
         author_entities(
             &sources.manager,
-            &sources.stock_sandbox_patterns,
-            &sources.stock_entity_assignments,
+            EntitySources {
+                sandbox_patterns: &sources.stock_sandbox_patterns,
+                entity_assignments: &sources.stock_entity_assignments,
+            },
             &donors,
             allocator,
             &mut assignments,
             &mut tags,
+            &mut Progress::new(donors.len(), &mut |_, _, _, _| {}),
         )
         .unwrap();
         let entity = &tags.last().unwrap().payload;

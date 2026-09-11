@@ -10,6 +10,11 @@ publish = false
 autobins = false
 autoexamples = false
 
+[features]
+default = []
+# Long-term community work is opt-in and excluded from normal app builds.
+community-recipes = ["dep:ureq"]
+
 [lints]
 workspace = true
 
@@ -23,9 +28,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.140"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
-sundial = { path = "../..", default-features = false }
+sundial = { path = "../.." }
 tempfile = "3.20.0"
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8.9"
+
+[dev-dependencies]
+rusqlite = { version = "0.37.0", features = ["bundled"] }

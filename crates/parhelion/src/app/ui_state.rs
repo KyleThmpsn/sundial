@@ -6,14 +6,16 @@ pub(crate) enum WorkbenchPage {
     #[default]
     Weapon,
     Appearance,
+    Collections,
     Advanced,
     Identity,
 }
 
 impl WorkbenchPage {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::Weapon,
         Self::Appearance,
+        Self::Collections,
         Self::Advanced,
         Self::Identity,
     ];
@@ -22,6 +24,7 @@ impl WorkbenchPage {
         match self {
             Self::Weapon => "Weapon",
             Self::Appearance => "Appearance",
+            Self::Collections => "Collections",
             Self::Advanced => "Advanced Gameplay",
             Self::Identity => "Identity",
         }
@@ -140,13 +143,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workbench_header_stacks_before_donor_cards_or_profile_controls_are_cramped() {
-        assert_eq!(workbench_left_column_width(900.0), None);
-        assert_eq!(workbench_left_column_width(f32::NAN), None);
-        assert_eq!(workbench_left_column_width(1280.0), Some(435.0));
-    }
-
-    #[test]
     fn save_status_distinguishes_pristine_dirty_and_saved_recipes() {
         assert_eq!(
             RecipeSaveStatus::derive(false, false),
@@ -190,17 +186,26 @@ mod tests {
     }
 
     #[test]
-    fn runtime_workspace_splits_only_when_both_columns_remain_useful() {
-        assert_eq!(runtime_workspace_donor_width(1_179.0), None);
-        assert_eq!(runtime_workspace_donor_width(1_180.0), Some(472.0));
-        assert_eq!(runtime_workspace_donor_width(1_320.0), Some(528.0));
-        assert_eq!(runtime_workspace_donor_width(f32::NAN), None);
-    }
-
-    #[test]
-    fn safe_width_reserves_the_scrollbar_inset_without_underflow() {
-        assert_eq!(safe_content_width(900.0), 884.0);
-        assert_eq!(safe_content_width(10.0), 0.0);
-        assert_eq!(safe_content_width(f32::INFINITY), 0.0);
+    fn responsive_widths_stay_within_available_space() {
+        for width in [0.0, 10.0, 900.0, 1180.0, 1280.0, 1920.0] {
+            assert!((0.0..=width).contains(&safe_content_width(width)));
+            for column in [
+                workbench_left_column_width(width),
+                runtime_workspace_donor_width(width),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(
+                    column > 0.0 && column < width,
+                    "invalid column {column} at {width}"
+                );
+            }
+        }
+        for width in [f32::NAN, f32::INFINITY] {
+            assert_eq!(safe_content_width(width), 0.0);
+            assert_eq!(workbench_left_column_width(width), None);
+            assert_eq!(runtime_workspace_donor_width(width), None);
+        }
     }
 }

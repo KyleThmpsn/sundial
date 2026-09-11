@@ -8,7 +8,15 @@ const MAX_ENTITLEMENTS: usize = 128;
 const MAX_NAME_BYTES: usize = 31;
 const OWNERSHIP: &[&str] = &["none", "handle", "application"];
 
-pub(super) fn validate(document: &Value) -> Result<(), String> {
+pub(crate) fn validate(document: &Value) -> Result<(), String> {
+    validate_rows(document, false)
+}
+
+pub(crate) fn validate_native(document: &Value) -> Result<(), String> {
+    validate_rows(document, true)
+}
+
+fn validate_rows(document: &Value, native: bool) -> Result<(), String> {
     let Some(value) = optional_value(document, PATH)? else {
         return Ok(());
     };
@@ -26,9 +34,9 @@ pub(super) fn validate(document: &Value) -> Result<(), String> {
         let owned = row.get("owned").and_then(Value::as_str).unwrap_or("none");
         if name.is_empty()
             || name.len() > MAX_NAME_BYTES
-            || !name
-                .bytes()
-                .all(|byte| (32..=126).contains(&byte) && byte != b'\\' && byte != b'"')
+            || !name.bytes().all(|byte| {
+                (32..=126).contains(&byte) && (native || (byte != b'\\' && byte != b'"'))
+            })
             || !names.insert(name)
         {
             return Err(format!(
@@ -52,14 +60,10 @@ pub(super) fn validate(document: &Value) -> Result<(), String> {
 }
 
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
-    egui::CollapsingHeader::new("Server Entitlements")
-        .show(ui, |ui| draw_table(ui, document))
-        .body_returned
-        .unwrap_or(false)
-}
-
-fn draw_table(ui: &mut egui::Ui, document: &mut Value) -> bool {
-    ui.label("Ownership may use a manifest handle or a numeric application ID. Save validates the complete table.");
+    ui.horizontal(|ui| {
+        ui.strong("Server Entitlements");
+        crate::ui_help::info(ui, "Ownership may use a manifest handle or a numeric application ID. Save validates the complete table.");
+    });
     match optional_value(document, PATH) {
         Err(error) => {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -67,7 +71,7 @@ fn draw_table(ui: &mut egui::Ui, document: &mut Value) -> bool {
         }
         Ok(None) => {
             ui.label("Using Sunrise's bundled entitlements.");
-            if ui.button("Customize bundled entitlements").clicked() {
+            if ui.button("Customize Bundled Entitlements").clicked() {
                 let defaults = serde_json::from_str(include_str!("entitlements.json"))
                     .expect("bundled entitlements");
                 return write_value(document, PATH, defaults).is_ok();
@@ -107,7 +111,7 @@ fn draw_table(ui: &mut egui::Ui, document: &mut Value) -> bool {
     if ui
         .add_enabled(
             rows.len() < MAX_ENTITLEMENTS,
-            egui::Button::new("Add entitlement"),
+            egui::Button::new("Add Entitlement"),
         )
         .clicked()
     {

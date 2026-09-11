@@ -2,7 +2,7 @@
 
 <img src="assets/sundial-alt.png" alt="Sundial logo" width="160">
 
-Sundial is a character, inventory, and settings editor for [Project Sunrise](https://github.com/stanuwu/Sunrise). It edits `settings.json` and reads items from your installed Destiny 2 packages. No game assets are bundled.
+Sundial is a character, inventory, and settings editor for [Project Sunrise](https://github.com/stanuwu/Sunrise). It edits Sunrise accounts and `settings.json`, and reads items from your installed Destiny 2 packages. No game assets are bundled.
 
 - Edit characters, equipment, subclasses, and inventories.
 - Search weapons, armor, cosmetics, and perks.
@@ -14,10 +14,12 @@ Sundial is a character, inventory, and settings editor for [Project Sunrise](htt
 ## Compatibility
 
 - Destiny 2 Shadowkeep build `86657.20.08.23`
-- Project Sunrise (up to settings schema v16)
+- Project Sunrise (up to settings schema v18, including Sunrise 0.4.0 persistent accounts with SQLite schema v2)
 - Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
 Newer settings schemas may be opened with a warning, but future compatibility is not guaranteed.
+
+As of schema v18, most account data is stored in `data/investment.sqlite3`. Some settings, including player identity and runtime configuration, are still read from `settings.json`. Sundial uses the active account format automatically. Legacy JSON accounts remain supported.
 
 ## Getting started
 
@@ -41,7 +43,7 @@ See the [Parhelion README](crates/parhelion/README.md) for more about the author
 
 ## Backups and local files
 
-Sundial backs up settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & recovery**.
+Sundial backs up account data and settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & recovery**.
 
 | Data | Windows | Linux |
 | --- | --- | --- |

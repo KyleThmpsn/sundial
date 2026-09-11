@@ -76,7 +76,7 @@ pub(crate) const EQUIPMENT_SLOTS: &[EquipmentSlotContract] = &[
     ("finisher", "Finisher", 3_683_254_069),
 ];
 
-/// Complete metadata; use equipment_slots_for_schema for JSON and the legacy slice for SQLite.
+/// Complete metadata in SQLite native slot order. Use equipment_slots_for_schema for JSON.
 pub(crate) const ALL_EQUIPMENT_SLOTS: &[EquipmentSlotContract] = &all_equipment_slots();
 
 const fn all_equipment_slots() -> [EquipmentSlotContract; 17] {
@@ -95,20 +95,6 @@ pub(crate) const fn equipment_slots_for_schema(version: u64) -> &'static [Equipm
     } else {
         EQUIPMENT_SLOTS
     }
-}
-
-#[cfg(any(feature = "sqlite-account", test))]
-pub(crate) const EQUIPMENT_SLOT_KEYS: [&str; EQUIPMENT_SLOTS.len()] = equipment_slot_keys();
-
-#[cfg(any(feature = "sqlite-account", test))]
-const fn equipment_slot_keys() -> [&'static str; EQUIPMENT_SLOTS.len()] {
-    let mut keys = [""; EQUIPMENT_SLOTS.len()];
-    let mut index = 0;
-    while index < EQUIPMENT_SLOTS.len() {
-        keys[index] = EQUIPMENT_SLOTS[index].0;
-        index += 1;
-    }
-    keys
 }
 
 pub(crate) fn is_known_equipment_slot(slot: &str, version: u64) -> bool {
@@ -135,16 +121,5 @@ mod tests {
             // Artifacts were already valid stored inventory before their new equipment slot.
             assert!(inventory_bucket_available(49, supports_v13(version)));
         }
-    }
-
-    #[test]
-    fn equipment_slot_keys_follow_the_ui_contract() {
-        assert_eq!(
-            EQUIPMENT_SLOT_KEYS.as_slice(),
-            EQUIPMENT_SLOTS
-                .iter()
-                .map(|(slot, _, _)| *slot)
-                .collect::<Vec<_>>()
-        );
     }
 }

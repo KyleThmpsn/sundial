@@ -10,11 +10,13 @@ pub(crate) use unlocks::{
 };
 
 mod conditions;
+pub(crate) mod presentation;
 use conditions::*;
 pub(crate) use conditions::{
     classify_sunrise_count_pools, numeric_program_layout, numeric_program_stack_depth,
     patch_project_acquired_count_programs, patch_project_collection_objectives,
-    shared_numeric_instruction_template, validate_shared_expression_table,
+    presentation_ancestor_nodes, shared_numeric_instruction_template,
+    validate_shared_expression_table,
 };
 
 mod collectibles;
@@ -205,10 +207,16 @@ struct AcquiredCountPoolLink {
     direct_additive_flag: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SunriseAcquiredPoolSelection {
     selected: BTreeSet<usize>,
     excluded_badge: BTreeSet<usize>,
+}
+
+impl SunriseAcquiredPoolSelection {
+    pub(crate) fn is_direct(&self) -> bool {
+        self.selected.is_empty() && self.excluded_badge.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]

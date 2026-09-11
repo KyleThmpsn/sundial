@@ -22,7 +22,12 @@ fn completed_backup_owner(path: &Path) -> Option<PathBuf> {
     }
     let record = read_install_transaction(&marker).ok()?;
     // Account-removing installs are recovery sets, not disposable automatic snapshots.
-    if record.account_cleanup.is_some() {
+    if record.account_cleanup.is_some()
+        || record
+            .client_settings
+            .as_ref()
+            .is_some_and(account::AccountCleanupRecord::changes_source)
+    {
         return None;
     }
     if record.state == InstallTransactionState::Pending
@@ -34,21 +39,44 @@ fn completed_backup_owner(path: &Path) -> Option<PathBuf> {
     Some(record.target_packages_directory)
 }
 
+#[cfg(test)]
 pub(super) fn backup_originals(
     validated: &ValidatedRun,
     backup_directory: &Path,
 ) -> Result<Vec<OriginalArtifact>, String> {
+    backup_originals_with_progress(validated, backup_directory, &mut |_| {})
+}
+
+pub(super) fn backup_originals_with_progress(
+    validated: &ValidatedRun,
+    backup_directory: &Path,
+    progress: Observer<'_>,
+) -> Result<Vec<OriginalArtifact>, String> {
     let mut originals = Vec::with_capacity(validated.artifacts.len());
-    for artifact in validated
+    for (index, artifact) in validated
         .artifacts
         .iter()
         .chain(&validated.obsolete_artifacts)
+        .enumerate()
     {
+        let total = validated.artifacts.len() + validated.obsolete_artifacts.len();
+        progress(InstallProgress::item(
+            InstallPhase::BackingUp,
+            &artifact.file_name,
+            index,
+            total,
+        ));
         let target_path = validated
             .target_packages_directory
             .join(&artifact.file_name);
         let original = backup_one_original(&artifact.file_name, &target_path, backup_directory)?;
         originals.push(original);
+        progress(InstallProgress::item(
+            InstallPhase::BackingUp,
+            &artifact.file_name,
+            index + 1,
+            total,
+        ));
     }
     Ok(originals)
 }

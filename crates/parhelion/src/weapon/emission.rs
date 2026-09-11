@@ -1,7 +1,9 @@
 //! Consume a completed payload plan and emit its verified package artifacts.
 use super::*;
+mod packages;
 
 pub(super) struct PackageEmission {
+    pub(super) lore: Option<lore::Plan>,
     pub(super) hud_table: Option<ReplacementSpec>,
     pub(super) item_table_tag: TagHash,
     pub(super) item_hash_index_table_tag: TagHash,
@@ -70,8 +72,10 @@ pub(super) struct PackageEmission {
 pub(super) fn emit_packages(
     package_directory: &Path,
     emission: PackageEmission,
+    progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let PackageEmission {
+        lore,
         hud_table,
         item_table_tag,
         item_hash_index_table_tag,
@@ -136,6 +140,14 @@ pub(super) fn emit_packages(
         runtime_dependencies,
         host_new_tags,
     } = emission;
+    // One dependency check, six required overlays, and the packages present in this plan.
+    progress.payloads(
+        7 + asset_packages.packages.len()
+            + usize::from(!private_perk_runtime_new_tags.is_empty())
+            + usize::from(runtime_dependencies.is_some())
+            + usize::from(hud_table.is_some()),
+    );
+    progress.start("Checking Asset Dependencies");
     asset_packages.validate()?;
     let loading_manager =
         sundial::package_authoring::open_shadowkeep_package_manager(package_directory)
@@ -164,8 +176,12 @@ pub(super) fn emit_packages(
     drop(loading_manager);
     // Validate the completed map after every authoring pass, not only the stock source.
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
-    let host = build_extended_overlay_with_references(
-        package_directory,
+    progress.finish("Checking Asset Dependencies");
+    let mut packages = packages::Packages {
+        directory: package_directory,
+        progress,
+    };
+    let host = packages.overlay(
         HOST_PACKAGE_ID,
         &[
             ReplacementSpec {
@@ -193,15 +209,7 @@ pub(super) fn emit_packages(
     }
     let mut assets = Vec::new();
     for package in &asset_packages.packages {
-        let profile = crate::package_profile::authored_package(package.id)
-            .ok_or_else(|| invalid("An authored asset package has no registered profile"))?;
-        let artifact = build_standalone_package_with_references(
-            package_directory,
-            package.id,
-            profile.file_name,
-            &package.tags,
-            &package.references,
-        )?;
+        let artifact = packages.standalone(package)?;
         if artifact.plan.original_entry_count != 0
             || artifact.plan.final_entry_count != package.tags.len()
             || artifact.plan.appended_tags.len() != package.tags.len()
@@ -215,11 +223,11 @@ pub(super) fn emit_packages(
     let private_perk_runtime = if private_perk_runtime_new_tags.is_empty() {
         None
     } else {
-        Some(build_extended_overlay(
-            package_directory,
+        Some(packages.overlay(
             PRIVATE_PERK_RUNTIME_PACKAGE_ID,
             &[],
             &private_perk_runtime_new_tags,
+            &[],
         )?)
     };
     let expected_private_perk_runtime_count = private_perk_runtime_append_start
@@ -240,30 +248,29 @@ pub(super) fn emit_packages(
             ));
         }
     }
-    let runtime_entities = build_extended_overlay(
-        package_directory,
+    let runtime_entities = packages.overlay(
         entity_assignment_tag.pkg_id(),
         &[ReplacementSpec {
             tag: entity_assignment_tag,
             payload: entity_assignments,
         }],
         &[],
+        &[],
     )?;
     let runtime_dependency_overlay = runtime_dependencies
         .map(|payload| {
-            build_extended_overlay(
-                package_directory,
+            packages.overlay(
                 RUNTIME_DEPENDENCY_COMPANION.pkg_id(),
                 &[ReplacementSpec {
                     tag: RUNTIME_DEPENDENCY_COMPANION,
                     payload,
                 }],
                 &[],
+                &[],
             )
         })
         .transpose()?;
-    let investment = build_extended_overlay(
-        package_directory,
+    let investment = packages.overlay(
         item_table_tag.pkg_id(),
         &[
             ReplacementSpec {
@@ -279,6 +286,7 @@ pub(super) fn emit_packages(
                 payload: collectible_displays,
             },
         ],
+        &[],
         &[],
     )?;
     let mut string_replacements = vec![
@@ -315,10 +323,23 @@ pub(super) fn emit_packages(
             payload: finished_sandbox_perks,
         });
     }
-    let strings = build_extended_overlay(
-        package_directory,
+    let lore_definition = if let Some(lore) = lore {
+        if lore.strings.tag.pkg_id() != item_string_table_tag.pkg_id()
+            || lore.definitions.tag.pkg_id() != unlock_table_tag.pkg_id()
+        {
+            return Err(invalid(
+                "Lore tables moved outside their audited package owners",
+            ));
+        }
+        string_replacements.push(lore.strings);
+        Some(lore.definitions)
+    } else {
+        None
+    };
+    let strings = packages.overlay(
         item_string_table_tag.pkg_id(),
         &string_replacements,
+        &[],
         &[],
     )?;
     let mut localization_replacements = vec![ReplacementSpec {
@@ -331,10 +352,10 @@ pub(super) fn emit_packages(
             payload: locale.payload,
         }
     }));
-    let localized = build_extended_overlay(
-        package_directory,
+    let localized = packages.overlay(
         localized_index_tag.pkg_id(),
         &localization_replacements,
+        &[],
         &[],
     )?;
     let mut unlock_replacements = vec![
@@ -383,12 +404,10 @@ pub(super) fn emit_packages(
             payload: sandbox_perk_indices,
         });
     }
-    let unlock = build_extended_overlay(
-        package_directory,
-        unlock_table_tag.pkg_id(),
-        &unlock_replacements,
-        &[],
-    )?;
+    if let Some(lore) = lore_definition {
+        unlock_replacements.push(lore);
+    }
+    let unlock = packages.overlay(unlock_table_tag.pkg_id(), &unlock_replacements, &[], &[])?;
     for artifact in [
         &runtime_entities,
         &investment,
@@ -407,14 +426,7 @@ pub(super) fn emit_packages(
     }
 
     let hud_overlay = hud_table
-        .map(|replacement| {
-            build_extended_overlay(
-                package_directory,
-                replacement.tag.pkg_id(),
-                &[replacement],
-                &[],
-            )
-        })
+        .map(|replacement| packages.overlay(replacement.tag.pkg_id(), &[replacement], &[], &[]))
         .transpose()?;
     let mut artifacts = assets;
     artifacts.extend(hud_overlay);

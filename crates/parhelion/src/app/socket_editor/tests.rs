@@ -50,6 +50,7 @@ fn donor() -> WeaponDonor {
 
 fn variant(socket_index: u16) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
+        replace_effects: false,
         socket_index,
         choice_index: 0,
         source_plug_hash: HexHash::new(20),
@@ -60,6 +61,98 @@ fn variant(socket_index: u16) -> WeaponSocketPlugVariantRecipe {
         additional_sandbox_perks: vec![],
         sandbox_perks: vec![],
     }
+}
+
+#[test]
+fn perk_bank_projects_defaults_alternatives_and_private_additions() {
+    let mut donor = donor();
+    donor.base_sandbox_perks = vec![1, 2, 3, 4, 5];
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.bank-test",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    set_recipe_socket_column(&mut recipe, 3, 0, &[], vec![20, 21], None);
+    let mut private = variant(0);
+    private.additional_sandbox_perks = vec![100, 101];
+    recipe.overrides.socket_plug_variants.push(private);
+    let lookup = |hash| match hash {
+        20 => vec![90],
+        21 => vec![91, 92, 93, 94, 95],
+        _ => vec![80, 81, 82, 83],
+    };
+    let bank = crate::weapon::perk_bank::project(&recipe, &donor, lookup);
+    assert_eq!(bank.default_count, 15);
+    assert_eq!(bank.maximum_count, 16);
+    assert!(bank.omitted.is_empty());
+    assert!(append_socket(&mut recipe, donor.sockets.len(), 92));
+    set_recipe_socket_column(&mut recipe, 4, 3, &[], vec![22], None);
+    let bank = crate::weapon::perk_bank::project(&recipe, &donor, lookup);
+    assert_eq!(bank.default_count, 19);
+    assert_eq!(bank.maximum_count, 20);
+    assert_eq!(
+        bank.omitted,
+        [
+            "Socket 4 effect 81",
+            "Socket 4 effect 82",
+            "Socket 4 effect 83"
+        ]
+    );
+    remove_base_socket(&mut recipe, 4, 3);
+    recipe.overrides.base_sandbox_perks = Some(vec![u16::MAX, 1]);
+    let bank = crate::weapon::perk_bank::project(&recipe, &donor, lookup);
+    assert_eq!(bank.default_count, 12);
+    assert_eq!(bank.maximum_count, 13);
+}
+
+#[test]
+fn perk_bank_applies_fixed_damage_before_projection() {
+    let donor = donor();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.bank-damage",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    let project = |recipe: &WeaponRecipe| {
+        crate::weapon::perk_bank::project(recipe, &donor, |_| vec![1, 2, 3, 4])
+    };
+    assert_eq!(project(&recipe).default_count, 12);
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Solar);
+    assert_eq!(project(&recipe).default_count, 13);
+    recipe.overrides.base_sandbox_perks = Some(vec![449, 10, 11, 12, 13]);
+    assert_eq!(project(&recipe).default_count, 16);
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Kinetic);
+    assert_eq!(project(&recipe).default_count, 16);
+    recipe.overrides.base_sandbox_perks = Some(vec![449, 10, 11, 12]);
+    assert_eq!(project(&recipe).default_count, 15);
+}
+
+#[test]
+fn wave_advisory_tracks_selectable_effects_and_disabled_sockets() {
+    let donor = donor();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.wave-advisory",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    let lookup = |hash| if hash == 21 { vec![1778] } else { vec![90] };
+    let project = |recipe: &WeaponRecipe| crate::weapon::perk_bank::project(recipe, &donor, lookup);
+    assert!(!project(&recipe).wave_frame);
+    set_recipe_socket_column(&mut recipe, 3, 0, &[], vec![20, 21], None);
+    assert!(project(&recipe).wave_frame);
+    remove_base_socket(&mut recipe, 3, 0);
+    assert!(!project(&recipe).wave_frame);
+    set_recipe_socket_column(&mut recipe, 3, 0, &[], vec![20], None);
+    set_socket_role(&mut recipe, &donor, 0, Some(92));
+    let mut private = variant(0);
+    private.additional_sandbox_perks = vec![1778];
+    recipe.overrides.socket_plug_variants.push(private);
+    assert!(project(&recipe).wave_frame);
+    recipe.overrides.socket_plug_variants[0].additional_sandbox_perks = vec![91, 92, 93, 1778];
+    assert!(!project(&recipe).wave_frame);
 }
 
 #[test]
@@ -99,6 +192,80 @@ fn appended_socket_survives_original_row_edits_and_recipe_reload() {
         Some(92)
     );
     assert_eq!(donor.sockets.len(), 3);
+}
+
+#[test]
+fn making_a_choice_default_moves_conditions_weights_and_private_data_together() {
+    let donor = donor();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.choice-order",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20, 21, 22], None);
+    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
+    column.choice_weight_bits = vec![1.0_f32.to_bits(), 2.0_f32.to_bits(), 3.0_f32.to_bits()];
+    column.choice_conditions = (0..3)
+        .map(|operand| {
+            vec![WeaponNumericInstructionRecipe {
+                opcode: 11,
+                operand,
+            }]
+        })
+        .collect();
+    recipe.overrides.socket_plug_variants = (0..3)
+        .map(|index| {
+            let source = WeaponRecipe::from_json_str(include_str!(
+                "../../../recipes/redacted.parhelion.json"
+            ))
+            .unwrap();
+            let mut private = source.overrides.socket_plug_variants[0].clone();
+            private.choice_index = index;
+            private.source_plug_hash = HexHash::new(20 + u32::from(index));
+            private.name = Some(format!("Private {index}"));
+            private
+        })
+        .collect();
+    let before = recipe.clone();
+    make_choice_default(&mut recipe, donor.sockets.len(), 0, &[10], 2).unwrap();
+    let column = recipe.overrides.socket_columns[0].as_ref().unwrap();
+    assert_eq!(column.choices, vec![22.into(), 20.into(), 21.into()]);
+    assert_eq!(
+        column.choice_weight_bits,
+        vec![3.0_f32.to_bits(), 1.0_f32.to_bits(), 2.0_f32.to_bits()]
+    );
+    assert_eq!(
+        column
+            .choice_conditions
+            .iter()
+            .map(|program| program[0].operand)
+            .collect::<Vec<_>>(),
+        vec![2, 0, 1]
+    );
+    for (index, private) in recipe.overrides.socket_plug_variants.iter().enumerate() {
+        let mut expected = before.overrides.socket_plug_variants[index].clone();
+        expected.choice_index = if index == 2 { 0 } else { index as u16 + 1 };
+        assert_eq!(*private, expected);
+    }
+    let reloaded = WeaponRecipe::from_json_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
+    assert_eq!(reloaded, recipe);
+    let before_invalid = recipe.clone();
+    assert!(make_choice_default(&mut recipe, 3, 0, &[10], 30).is_err());
+    assert_eq!(recipe, before_invalid);
+}
+
+#[test]
+fn making_a_choice_default_rejects_misaligned_metadata_without_mutation() {
+    let mut recipe = PackageAuthoringApp::default().recipe;
+    set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20, 21], None);
+    recipe.overrides.socket_columns[0]
+        .as_mut()
+        .unwrap()
+        .choice_conditions = vec![vec![]];
+    let before = recipe.clone();
+    assert!(make_choice_default(&mut recipe, 3, 0, &[10], 1).is_err());
+    assert_eq!(recipe, before);
 }
 
 #[test]
@@ -159,6 +326,8 @@ fn removing_base_socket_preserves_neighbor_columns_and_private_perks() {
         variant
             .sandbox_perks
             .push(crate::recipe::WeaponSandboxPerkRuntimeRecipe {
+                program: None,
+                projectiles: Vec::new(),
                 source_perk_index: 1,
                 activation: None,
                 runtime_values: Vec::new(),

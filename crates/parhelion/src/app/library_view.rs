@@ -1,6 +1,29 @@
 //! Library navigation and transactional build selection are intentionally separate.
 use super::*;
 
+mod actions;
+mod browser;
+mod restore;
+mod sharing;
+mod state;
+use actions::{EntryAction, LibraryAction};
+pub(crate) use state::LibraryState;
+use state::SortOrder;
+
+struct LibraryRowResponse {
+    activated: bool,
+    action: Option<EntryAction>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LibraryRowState {
+    current: bool,
+    inclusion: Option<bool>,
+    highlighted: bool,
+    reveal: bool,
+    can_restore: bool,
+}
+
 type LibraryIconResult = (
     PathBuf,
     AuthoredIconPreviewKey,
@@ -12,6 +35,7 @@ pub(super) struct LibraryIcons {
     previews: BTreeMap<PathBuf, AuthoredIconPreview>,
     receiver: Option<Receiver<LibraryIconResult>>,
     worker: Option<thread::JoinHandle<()>>,
+    pending: BTreeMap<PathBuf, AuthoredIconPreviewKey>,
 }
 
 impl Drop for LibraryIcons {
@@ -42,6 +66,7 @@ impl LibraryIcons {
         }
         if let Some(receiver) = &self.receiver {
             while let Ok((path, key, result)) = receiver.try_recv() {
+                self.pending.remove(&path);
                 let preview = match result {
                     Ok(image) => AuthoredIconPreview::Ready {
                         texture: ctx.load_texture(
@@ -58,16 +83,27 @@ impl LibraryIcons {
         }
         if finished {
             self.receiver = None;
+            for (path, key) in std::mem::take(&mut self.pending) {
+                self.previews.insert(
+                    path,
+                    AuthoredIconPreview::Failed {
+                        key,
+                        error: "Library icon loading stopped unexpectedly".into(),
+                    },
+                );
+            }
         }
         if self.worker.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
             return;
         }
-        self.previews
-            .retain(|path, _| entries.iter().any(|entry| &entry.path == path));
+        let paths: BTreeSet<_> = entries.iter().map(|entry| &entry.path).collect();
+        self.previews.retain(|path, _| paths.contains(path));
         let missing: Vec<_> = entries
             .iter()
             .filter_map(|entry| {
                 let key = AuthoredIconPreviewKey {
+                    corner_icon: entry.corner_icon.clone(),
                     item_hash: entry.icon_hash,
                     container_tag: catalog.weapon_icon_container(entry.icon_hash)?,
                     rarity: effective_icon_rarity(
@@ -93,6 +129,7 @@ impl LibraryIcons {
         let ctx = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
+        self.pending = missing.iter().cloned().collect();
         self.worker = Some(thread::spawn(move || {
             let manager = open_shadowkeep_package_manager(&packages);
             for (path, key) in missing {
@@ -102,6 +139,7 @@ impl LibraryIcons {
                         TagHash(key.container_tag),
                         key.rarity,
                         &key.edit,
+                        key.corner_icon.as_ref(),
                     )
                 });
                 if sender.send((path, key, result)).is_err() {
@@ -114,12 +152,38 @@ impl LibraryIcons {
     }
 }
 
-fn library_entry_details(entry: &RecipeLibraryEntry, donor: Option<&WeaponDonorSummary>) -> String {
-    let type_name = entry
+fn matching_library_entries<'a>(
+    entries: &'a [RecipeLibraryEntry],
+    donors: &[WeaponDonorSummary],
+    query: &str,
+) -> Vec<(&'a RecipeLibraryEntry, String)> {
+    let mut donors_by_hash = BTreeMap::new();
+    for donor in donors {
+        donors_by_hash.entry(donor.hash).or_insert(donor);
+    }
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let donor = donors_by_hash.get(&entry.donor_hash).copied();
+            let details = library_entry_details(entry, donor);
+            library_entry_matches(entry, &details, query).then_some((entry, details))
+        })
+        .collect()
+}
+
+fn library_entry_type<'a>(
+    entry: &'a RecipeLibraryEntry,
+    donor: Option<&'a WeaponDonorSummary>,
+) -> &'a str {
+    entry
         .type_name
         .as_deref()
         .or_else(|| donor.map(|donor| donor.type_name.as_str()))
-        .unwrap_or("Weapon");
+        .unwrap_or("Weapon")
+}
+
+fn library_entry_details(entry: &RecipeLibraryEntry, donor: Option<&WeaponDonorSummary>) -> String {
+    let type_name = library_entry_type(entry, donor);
     let rarity = entry
         .rarity
         .map(|value| format!("{value:?}"))
@@ -162,15 +226,21 @@ fn draw_library_row(
     icons: &LibraryIcons,
     entry: &RecipeLibraryEntry,
     details: &str,
-    current: bool,
-    inclusion: Option<bool>,
-) -> bool {
+    state: LibraryRowState,
+) -> LibraryRowResponse {
     ui.push_id(&entry.path, |ui| {
-        let current = inclusion.unwrap_or(current);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let inclusion = state.inclusion;
+        let current = inclusion.unwrap_or(state.current);
         let mut checkbox_changed = false;
         let mut checkbox_focus = false;
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 64.0), egui::Sense::hover());
+        let row_height =
+            (ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Small) + 10.0)
+                .max(52.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), row_height),
+            egui::Sense::hover(),
+        );
         let response = ui.interact(
             rect,
             ui.make_persistent_id("weapon-row"),
@@ -183,14 +253,18 @@ fn draw_library_row(
         let visuals = ui.style().interact_selectable(&response, current);
         let fill = if current {
             ui.visuals().selection.bg_fill
+        } else if state.highlighted {
+            ui.visuals().selection.bg_fill.gamma_multiply(0.35)
         } else if response.hovered() || response.has_focus() {
             visuals.weak_bg_fill
         } else {
             ui.visuals().faint_bg_color
         };
         ui.painter().rect_filled(rect, visuals.corner_radius, fill);
-        let icon_rect =
-            egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(48.0, 48.0));
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 6.0, rect.center().y - 22.0),
+            egui::vec2(44.0, 44.0),
+        );
         match icons.previews.get(&entry.path) {
             Some(AuthoredIconPreview::Ready { texture, key })
                 if key.edit == entry.icon_edit
@@ -213,14 +287,22 @@ fn draw_library_row(
             }
         }
         let text_rect = egui::Rect::from_min_max(
-            rect.min + egui::vec2(68.0, 8.0),
-            rect.max - egui::vec2(8.0, 6.0),
+            rect.min + egui::vec2(58.0, 4.0),
+            rect.max - egui::vec2(8.0, 4.0),
         );
+        let mut menu_action = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
             ui.horizontal(|ui| {
+                let trailing_width = 34.0
+                    + if entry.bundled { 54.0 } else { 0.0 }
+                    + if inclusion.is_none() && (current || state.highlighted) {
+                        40.0
+                    } else {
+                        0.0
+                    };
                 ui.allocate_ui_with_layout(
                     egui::vec2(
-                        (ui.available_width() - 76.0).max(40.0),
+                        (ui.available_width() - trailing_width).max(40.0),
                         ui.spacing().interact_size.y,
                     ),
                     egui::Layout::left_to_right(egui::Align::Center),
@@ -233,6 +315,13 @@ fn draw_library_row(
                     },
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if inclusion.is_none() {
+                        let menu = ui.menu_button("⋯", |ui| {
+                            menu_action = actions::entry_menu(ui, entry, state.can_restore);
+                        });
+                        named_control(menu.response, format!("Recipe Actions for {}", entry.name))
+                            .on_hover_text("Recipe actions");
+                    }
                     if let Some(mut included) = inclusion {
                         let checkbox = ui.checkbox(&mut included, "");
                         checkbox.widget_info(|| {
@@ -240,7 +329,7 @@ fn draw_library_row(
                                 egui::WidgetType::Checkbox,
                                 ui.is_enabled(),
                                 included,
-                                format!("Include {} in this build · {details}", entry.name),
+                                format!("Select {} · {details}", entry.name),
                             )
                         });
                         checkbox_changed = checkbox.changed();
@@ -250,6 +339,10 @@ fn draw_library_row(
                         }
                     } else if current {
                         ui.add(egui::Label::new("Open").selectable(false));
+                    } else if state.highlighted {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("New").small()).selectable(false),
+                        );
                     }
                     if entry.bundled {
                         ui.add(
@@ -262,6 +355,7 @@ fn draw_library_row(
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(details)
+                        .small()
                         .color(ui.visuals().text_color().gamma_multiply(0.8)),
                 )
                 .truncate()
@@ -280,6 +374,9 @@ fn draw_library_row(
         if response.gained_focus() {
             response.scroll_to_me(None);
         }
+        if state.reveal {
+            response.scroll_to_me(Some(egui::Align::Center));
+        }
         response.widget_info(|| {
             egui::WidgetInfo::selected(
                 egui::WidgetType::SelectableLabel,
@@ -289,15 +386,26 @@ fn draw_library_row(
             )
         });
         let action = if inclusion.is_some() {
-            "Toggle inclusion in this build"
+            "Toggle selection"
         } else {
             "Open recipe to edit"
         };
+        if inclusion.is_none() {
+            response.context_menu(|ui| {
+                menu_action = actions::entry_menu(ui, entry, state.can_restore);
+            });
+        }
         let clicked = response
-            .on_hover_text(format!("{}\n{details}\n{action}", entry.namespace))
+            .on_hover_ui(|ui| {
+                sundial::investment::tooltip_title(ui, &entry.namespace);
+                ui.label(details);
+                ui.label(action);
+            })
             .clicked();
-        ui.add_space(4.0);
-        clicked || checkbox_changed
+        LibraryRowResponse {
+            activated: clicked || checkbox_changed,
+            action: menu_action,
+        }
     })
     .inner
 }
@@ -345,8 +453,58 @@ impl PackageAuthoringApp {
         self.library_open = false;
     }
 
-    fn draw_library_controls(&mut self, ui: &mut egui::Ui, busy: bool) -> bool {
+    fn draw_library_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        busy: bool,
+        action: &mut Option<LibraryAction>,
+    ) -> bool {
+        let busy = busy || self.library_state.export_selection.is_some();
         ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    !busy && self.recipe_library.is_some(),
+                    egui::Button::new("Import…"),
+                )
+                .clicked()
+            {
+                *action = Some(LibraryAction::Import);
+            }
+            ui.add_enabled_ui(!busy && self.recipe_library.is_some(), |ui| {
+                ui.menu_button("Export", |ui| {
+                    if ui
+                        .add_enabled(
+                            self.invalid_weapon_name.is_none(),
+                            egui::Button::new("Open Recipe…"),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(LibraryAction::ExportOpen);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.recipe_entries.is_empty(),
+                            egui::Button::new("Choose Recipes…"),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(LibraryAction::ChooseExport);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.recipe_entries.is_empty(),
+                            egui::Button::new("All Recipes…"),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(LibraryAction::ExportAll);
+                        ui.close_menu();
+                    }
+                });
+            });
+            ui.separator();
             if ui
                 .add_enabled(!busy, egui::Button::new("Refresh").small())
                 .clicked()
@@ -405,11 +563,18 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_library_windows(&mut self, ctx: &egui::Context) {
+        self.poll_library_transfer();
+        if self.library_state.busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         // Escape abandons an uncommitted selection before closing library navigation.
         if (self.build_selection_draft.is_some() || self.library_open)
+            && self.library_state.restore.is_none()
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            if self.build_selection_draft.is_some() {
+            if self.library_state.export_selection.is_some() && !self.library_state.busy() {
+                self.library_state.export_selection = None;
+            } else if self.build_selection_draft.is_some() {
                 self.build_selection_draft = None;
             } else {
                 self.library_open = false;
@@ -428,82 +593,8 @@ impl PackageAuthoringApp {
                 &self.recipe_entries,
             );
         }
-        let mut open = self.library_open;
-        let mut selected = None;
-        egui::Window::new("Recipe Library")
-            .open(&mut open)
-            .default_width(620.0)
-            .default_height(720.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                workbench_style(ui);
-                if self.draw_library_controls(ui, busy) {
-                    return;
-                }
-                let search = named_control(
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.library_query)
-                            .hint_text("Search name, weapon type, element or ammo…")
-                            .desired_width(f32::INFINITY),
-                    ),
-                    "Search recipes",
-                );
-                if std::mem::take(&mut self.recipe_search_focus_pending) {
-                    search.request_focus();
-                }
-                ui.separator();
-                let query = self.library_query.trim().to_lowercase();
-                let mut matches = 0;
-                egui::ScrollArea::vertical()
-                    .id_salt("recipe-library-results")
-                    .max_height((ui.available_height() - 45.0).max(120.0))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for entry in &self.recipe_entries {
-                            let donor = self
-                                .donor_summaries
-                                .iter()
-                                .find(|donor| donor.hash == entry.donor_hash);
-                            let details = library_entry_details(entry, donor);
-                            if !library_entry_matches(entry, &details, &query) {
-                                continue;
-                            }
-                            matches += 1;
-                            let current = self.recipe_path.as_ref() == Some(&entry.path);
-                            if ui
-                                .add_enabled_ui(!busy, |ui| {
-                                    draw_library_row(
-                                        ui,
-                                        &self.library_icons,
-                                        entry,
-                                        &details,
-                                        current,
-                                        None,
-                                    )
-                                })
-                                .inner
-                            {
-                                selected = Some(entry.path.clone());
-                            }
-                        }
-                    });
-                if matches == 0 {
-                    ui.label("No matching recipes. Try a different search.");
-                }
-                ui.separator();
-                let noun = if matches == 1 { "recipe" } else { "recipes" };
-                ui.weak(format!(
-                    "{matches} {noun} · Opening a recipe keeps your build selection unchanged."
-                ));
-            });
-        self.library_open = open;
-        if !open {
-            self.restore_defaults_preview = None;
-        }
-        if let Some(path) = selected {
-            self.library_open = false;
-            self.request_recipe_action(PendingRecipeAction::Open(path));
-        }
+        self.draw_library_browser(ctx, busy);
+        self.draw_recipe_restore(ctx, busy);
 
         let Some(mut draft) = self.build_selection_draft.take() else {
             return;
@@ -532,30 +623,21 @@ impl PackageAuthoringApp {
                     search.request_focus();
                 }
                 let query = self.build_selection_query.trim().to_lowercase();
-                let shown: Vec<_> = self
-                    .recipe_entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let donor = self
-                            .donor_summaries
-                            .iter()
-                            .find(|donor| donor.hash == entry.donor_hash);
-                        let details = library_entry_details(entry, donor);
-                        library_entry_matches(entry, &details, &query).then_some((entry, details))
-                    })
-                    .collect();
+                let shown =
+                    matching_library_entries(&self.recipe_entries, &self.donor_summaries, &query);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("{} selected · {} shown", draft.len(), shown.len()));
                     let all_selected = shown.iter().all(|(entry, _)| draft.contains(&entry.path));
                     let any_selected = shown.iter().any(|(entry, _)| draft.contains(&entry.path));
                     if ui
-                        .add_enabled(!all_selected, egui::Button::new("Select Shown"))
+                        .add_enabled(!all_selected, egui::Button::new("Select All"))
+                        .on_hover_text("Select all recipes shown by this search.")
                         .clicked()
                     {
                         draft.extend(shown.iter().map(|(entry, _)| entry.path.clone()));
                     }
                     if ui
-                        .add_enabled(any_selected, egui::Button::new("Clear Shown"))
+                        .add_enabled(any_selected, egui::Button::new("Clear All"))
+                        .on_hover_text("Clear all recipes shown by this search.")
                         .clicked()
                     {
                         for (entry, _) in &shown {
@@ -576,9 +658,13 @@ impl PackageAuthoringApp {
                                 &self.library_icons,
                                 entry,
                                 details,
-                                false,
-                                Some(included),
-                            ) {
+                                LibraryRowState {
+                                    inclusion: Some(included),
+                                    ..Default::default()
+                                },
+                            )
+                            .activated
+                            {
                                 if included {
                                     draft.remove(&entry.path);
                                 } else {
@@ -590,6 +676,15 @@ impl PackageAuthoringApp {
                             ui.label("No matching recipes. Try a different search.");
                         }
                     });
+                let footer_height = ui.spacing().interact_size.y
+                    + ui.spacing().item_spacing.y * 2.0
+                    + 1.0
+                    + if self.build_selection_error.is_some() {
+                        ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y
+                    } else {
+                        0.0
+                    };
+                ui.add_space((ui.available_height() - footer_height).max(0.0));
                 ui.separator();
                 if let Some(error) = &self.build_selection_error {
                     ui.colored_label(ui.visuals().error_fg_color, error);
@@ -599,6 +694,9 @@ impl PackageAuthoringApp {
                         .add_enabled(!busy, egui::Button::new("Apply Selection"))
                         .clicked();
                     cancel = ui.button("Cancel").clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.weak(format!("{} selected · {} shown", draft.len(), shown.len()));
+                    });
                 });
             });
         if apply {

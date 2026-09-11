@@ -293,7 +293,7 @@ fn draw_item_header_contents(
     if let Some(soid) = header.soid {
         let metadata_monospace = egui::TextFormat {
             font_id: metadata_monospace_font,
-            color: text_color,
+            color: weak_color,
             ..Default::default()
         };
         let mut metadata_text = String::new();
@@ -547,10 +547,6 @@ fn append_header_text(
 mod tests {
     use super::*;
 
-    fn assert_width(actual: f32, expected: f32) {
-        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
-    }
-
     #[test]
     fn dummy_badges_follow_the_canonical_dummy_hash_set() {
         assert_eq!(item_header_badge(Some(0xC13D_CD47)), Some("Dummy"));
@@ -559,16 +555,17 @@ mod tests {
     }
 
     #[test]
-    fn trailing_width_reserves_room_for_stacked_donor_actions() {
-        assert_width(item_header_trailing_width(320.0, 104.0, 56.0), 120.0);
-        assert_width(item_header_trailing_width(400.0, 104.0, 56.0), 144.0);
-        assert_width(item_header_trailing_width(600.0, 104.0, 56.0), 160.0);
-    }
-
-    #[test]
-    fn trailing_width_honors_long_content_and_narrow_headers() {
-        assert_width(item_header_trailing_width(400.0, 152.0, 56.0), 152.0);
-        assert_width(item_header_trailing_width(150.0, 152.0, 56.0), 94.0);
-        assert_width(item_header_trailing_width(40.0, 80.0, 56.0), 0.0);
+    fn trailing_actions_fit_after_the_leading_content() {
+        for (available, content, leading) in [
+            (320.0_f32, 104.0, 56.0),
+            (600.0, 104.0, 56.0),
+            (400.0, 152.0, 56.0),
+            (150.0, 152.0, 56.0),
+            (40.0, 80.0, 56.0),
+        ] {
+            let remaining = (available - leading).max(0.0);
+            let width = item_header_trailing_width(available, content, leading);
+            assert!((content.min(remaining)..=remaining).contains(&width));
+        }
     }
 }

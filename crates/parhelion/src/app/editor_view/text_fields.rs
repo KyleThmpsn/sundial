@@ -1,5 +1,72 @@
 use crate::{WeaponLocaleTextRecipe, WeaponRecipe};
 
+// Localization-header payloads follow PackageLanguage order, excluding None.
+pub(super) const LANGUAGES: [&str; 13] = [
+    "English",
+    "French",
+    "Italian",
+    "German",
+    "Spanish (Spain)",
+    "Japanese",
+    "Portuguese (Brazil)",
+    "Russian",
+    "Polish",
+    "Chinese (Simplified)",
+    "Chinese (Traditional)",
+    "Spanish (Latin America)",
+    "Korean",
+];
+pub(super) fn language(index: u8) -> &'static str {
+    LANGUAGES
+        .get(usize::from(index))
+        .copied()
+        .unwrap_or("Unknown Language")
+}
+
+#[derive(Clone, Copy, Hash)]
+pub(super) enum TextSection {
+    Weapon,
+    Collections,
+}
+
+impl TextSection {
+    pub(super) fn includes(self, field: usize) -> bool {
+        let collections = matches!(field, 2 | 4 | 5 | 7);
+        matches!(self, Self::Collections) == collections
+    }
+
+    pub(super) fn clear_label(self) -> &'static str {
+        match self {
+            Self::Weapon => "Clear Weapon Translations",
+            Self::Collections => "Clear Collections Translations",
+        }
+    }
+}
+
+pub(super) fn clear_locale(recipe: &mut WeaponRecipe, index: usize, section: TextSection) {
+    let locale = &mut recipe.locale_overrides[index];
+    let fields = [
+        &mut locale.name,
+        &mut locale.flavor,
+        &mut locale.source,
+        &mut locale.type_name,
+        &mut locale.collection_name,
+        &mut locale.collection_description,
+        &mut locale.inventory_hint,
+        &mut locale.collection_requirement,
+    ];
+    let mut empty = true;
+    for (field, value) in fields.into_iter().enumerate() {
+        if section.includes(field) {
+            *value = None;
+        }
+        empty &= value.is_none();
+    }
+    if empty {
+        recipe.locale_overrides.remove(index);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum OptionalText {
     TypeName,
@@ -35,6 +102,31 @@ pub(super) fn set(recipe: &mut WeaponRecipe, field: OptionalText, value: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_one_tab_keeps_translations_from_the_other_tab() {
+        let mut recipe = WeaponRecipe::every_end();
+        recipe.locale_overrides = vec![WeaponLocaleTextRecipe {
+            locale_index: 2,
+            name: Some("Weapon translation".into()),
+            source: Some("Source translation".into()),
+            collection_name: Some("Collections translation".into()),
+            ..Default::default()
+        }];
+        clear_locale(&mut recipe, 0, TextSection::Weapon);
+        assert_eq!(recipe.locale_overrides.len(), 1);
+        assert!(recipe.locale_overrides[0].name.is_none());
+        assert_eq!(
+            recipe.locale_overrides[0].source.as_deref(),
+            Some("Source translation")
+        );
+        assert_eq!(
+            recipe.locale_overrides[0].collection_name.as_deref(),
+            Some("Collections translation")
+        );
+        clear_locale(&mut recipe, 0, TextSection::Collections);
+        assert!(recipe.locale_overrides.is_empty());
+    }
 
     #[test]
     fn disabling_optional_text_clears_only_its_translations_and_remains_valid() {

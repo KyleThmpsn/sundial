@@ -1,12 +1,8 @@
-#[cfg(test)]
-use std::path::Path;
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroU64,
 };
 
-#[cfg(test)]
-use rusqlite::OpenFlags;
 use rusqlite::{Connection, OptionalExtension};
 use sundial_account::{
     Character, CharacterAbilities, CharacterCapabilities, CharacterMetadata, CharacterState,
@@ -18,9 +14,9 @@ use sundial_account::{
 use super::{
     SqliteAccountError, SqliteAccountIncompatibility, SqliteAccountLoad, SqliteAccountSnapshot,
     contract::{
-        ACCOUNT_FORMAT_VERSION, CHARACTER_CAPACITY, CHARACTER_ITEM_CAPACITY,
-        DISMANTLE_REWARD_CAPACITY, EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION,
-        PLUG_CAPACITY, PROFILE_ITEM_CAPACITY, SCHEMA_VERSION, SETTINGS_PAYLOAD_VERSION, TABLES,
+        APPLICATION_ID, CHARACTER_CAPACITY, CHARACTER_ITEM_CAPACITY, DISMANTLE_REWARD_CAPACITY,
+        EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION, PLUG_CAPACITY,
+        PROFILE_ITEM_CAPACITY, SCHEMA, SCHEMA_VERSION, SETTINGS_SCHEMA,
     },
     settings,
 };
@@ -32,26 +28,6 @@ const DEFAULT_ABILITIES: CharacterAbilities = CharacterAbilities {
     melee: 11,
     class_ability: 2,
 };
-
-#[cfg(test)]
-pub(super) fn load(path: &Path) -> Result<SqliteAccountLoad, SqliteAccountError> {
-    if !path.try_exists().map_err(SqliteAccountError::FileSystem)? {
-        return Ok(SqliteAccountLoad::Missing);
-    }
-    if std::fs::metadata(path)
-        .map_err(SqliteAccountError::FileSystem)?
-        .len()
-        == 0
-    {
-        return Ok(SqliteAccountLoad::Empty);
-    }
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| SqliteAccountError::sqlite("open", error))?;
-    load_connection(&connection)
-}
 
 pub(super) fn load_connection(
     connection: &Connection,
@@ -76,79 +52,32 @@ pub(super) fn load_connection(
         )));
     }
     validate_schema(connection)?;
+    super::validation::validate(connection)?;
 
-    let Some(root) = load_root(connection)? else {
-        ensure_child_tables_empty(connection)?;
-        return Ok(SqliteAccountLoad::Empty);
-    };
-    if root.format_version > ACCOUNT_FORMAT_VERSION {
-        return Ok(SqliteAccountLoad::Incompatible(
-            SqliteAccountIncompatibility::AccountFormat {
-                found: root.format_version,
-                supported: ACCOUNT_FORMAT_VERSION,
-            },
-        ));
-    }
-    if root.format_version != ACCOUNT_FORMAT_VERSION {
-        return Err(SqliteAccountError::invalid_data(
-            "account_state.format_version",
-            format!(
-                "expected account format {ACCOUNT_FORMAT_VERSION}, found {}",
-                root.format_version
-            ),
-        ));
-    }
-    let payload_version = settings::payload_version(&root.settings_payload)?;
-    if payload_version > SETTINGS_PAYLOAD_VERSION {
-        return Ok(SqliteAccountLoad::Incompatible(
-            SqliteAccountIncompatibility::SettingsPayload {
-                found: payload_version,
-                supported: SETTINGS_PAYLOAD_VERSION,
-            },
-        ));
-    }
-    if payload_version != SETTINGS_PAYLOAD_VERSION {
-        return Err(SqliteAccountError::invalid_data(
-            "account_state.settings_payload.version",
-            format!(
-                "expected settings payload {SETTINGS_PAYLOAD_VERSION}, found {payload_version}"
-            ),
-        ));
-    }
-
-    let primary_soid = u64_from_sql(root.primary_soid);
-    if primary_soid == 0 {
-        if root.dismantle_reward_count != 0
-            || root.profile_item_count != 0
-            || root.character_count != 0
-        {
-            return Err(SqliteAccountError::invalid_data(
-                "account_state",
-                "an empty account cannot declare child rows",
-            ));
-        }
-        settings::decode(&root.settings_payload, false)?;
-        ensure_child_tables_empty(connection)?;
-        return Ok(SqliteAccountLoad::Empty);
-    }
-    if primary_soid & (1_u64 << 63) == 0 {
-        return Err(SqliteAccountError::invalid_data(
-            "account_state.primary_soid",
-            "nonempty accounts require a signed-negative SOID with bit 63 set",
-        ));
-    }
+    let primary_soid: i64 = connection
+        .query_row("SELECT soid FROM account WHERE id=1", [], |row| row.get(0))
+        .map_err(|error| SqliteAccountError::sqlite("read account from", error))?;
+    let primary_soid = u64_from_sql(primary_soid);
+    let settings = settings::load(connection)?;
     let primary_soid = InstanceSoid::try_from_u64(primary_soid).ok_or_else(|| {
         SqliteAccountError::invalid_data("account_state.primary_soid", "SOID must be nonzero")
     })?;
-    let settings = settings::decode(&root.settings_payload, true)?;
+
     let mut entity_ids = EntityIdAllocator::default();
-    let (profile_items, mut reserved_soids) =
-        load_profile_items(connection, root.profile_item_count, &mut entity_ids)?;
+    let (profile_items, mut reserved_soids) = load_profile_items(
+        connection,
+        table_count(connection, "profile_items")?,
+        &mut entity_ids,
+    )?;
     reserved_soids.insert(0, primary_soid);
-    let rewards = load_dismantle_rewards(connection, root.dismantle_reward_count, &mut entity_ids)?;
+    let rewards = load_dismantle_rewards(
+        connection,
+        table_count(connection, "dismantle_rewards")?,
+        &mut entity_ids,
+    )?;
     let characters = load_characters(
         connection,
-        root.character_count,
+        table_count(connection, "characters")?,
         &mut entity_ids,
         &reserved_soids,
     )?;
@@ -187,160 +116,94 @@ fn database_is_uninitialized(connection: &Connection) -> Result<bool, SqliteAcco
 }
 
 pub(super) fn validate_schema(connection: &Connection) -> Result<(), SqliteAccountError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT name, type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' \
-             AND type IN ('table', 'view', 'trigger') ORDER BY name;",
-        )
-        .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-    let mut objects = BTreeMap::new();
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("inspect", error))?
-    {
-        let name: String = row
-            .get(0)
-            .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-        let object_type: String = row
-            .get(1)
-            .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-        objects.insert(name, object_type);
-    }
-    let expected_names = TABLES
-        .iter()
-        .map(|(name, _)| (*name).to_owned())
-        .collect::<BTreeSet<_>>();
-    let actual_names = objects.keys().cloned().collect::<BTreeSet<_>>();
-    if actual_names != expected_names {
+    let application: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(|error| SqliteAccountError::sqlite("read application identifier from", error))?;
+    if application != APPLICATION_ID {
         return Err(SqliteAccountError::InvalidSchema(format!(
-            "expected tables {expected_names:?}, found {actual_names:?}"
+            "expected Sunrise application ID {APPLICATION_ID}, found {application}"
         )));
     }
-    if let Some((name, object_type)) = objects
-        .iter()
-        .find(|(_, object_type)| object_type.as_str() != "table")
-    {
-        return Err(SqliteAccountError::InvalidSchema(format!(
-            "{name} must be a table, found {object_type}"
-        )));
-    }
-
-    for (table, expected_columns) in TABLES {
-        let sql = format!("PRAGMA table_info({table});");
-        let mut statement = connection
-            .prepare(&sql)
+    // Compare required columns against the shipped schema. Additional columns and tables are
+    // retained. Triggers and substituted views are rejected before any account edits are enabled.
+    let reference = Connection::open_in_memory()
+        .map_err(|error| SqliteAccountError::sqlite("validate contract for", error))?;
+    reference
+        .execute_batch(SCHEMA)
+        .and_then(|()| reference.execute_batch(SETTINGS_SCHEMA))
+        .map_err(|error| SqliteAccountError::sqlite("validate contract for", error))?;
+    let mut names = reference
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .map_err(|error| SqliteAccountError::sqlite("inspect contract for", error))?;
+    let tables = names
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| SqliteAccountError::sqlite("inspect contract for", error))?;
+    for table in tables {
+        let table =
+            table.map_err(|error| SqliteAccountError::sqlite("inspect contract for", error))?;
+        let kind: Option<String> = connection
+            .query_row(
+                "SELECT type FROM sqlite_schema WHERE name=?",
+                [&table],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-        let mut rows = statement
-            .query([])
-            .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
-        let mut found = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .map_err(|error| SqliteAccountError::sqlite("inspect", error))?
-        {
-            found.push((
-                row.get::<_, String>(1)
-                    .map_err(|error| SqliteAccountError::sqlite("inspect", error))?,
-                row.get::<_, String>(2)
-                    .map_err(|error| SqliteAccountError::sqlite("inspect", error))?,
-                row.get::<_, i64>(3)
-                    .map_err(|error| SqliteAccountError::sqlite("inspect", error))?
-                    != 0,
-                row.get::<_, i64>(5)
-                    .map_err(|error| SqliteAccountError::sqlite("inspect", error))?,
-            ));
-        }
-        if found.len() != expected_columns.len() {
+        if kind.as_deref() != Some("table") {
             return Err(SqliteAccountError::InvalidSchema(format!(
-                "table {table} has {} columns; expected {}",
-                found.len(),
-                expected_columns.len()
+                "missing Sunrise table {table}"
             )));
         }
-        for (index, (actual, expected)) in found.iter().zip(expected_columns).enumerate() {
-            let expected_tuple = (
-                expected.name,
-                expected.declared_type,
-                expected.not_null,
-                expected.primary_key_position,
-            );
-            if (actual.0.as_str(), actual.1.as_str(), actual.2, actual.3) != expected_tuple {
+        let expected = columns(&reference, &table)?;
+        let actual = columns(connection, &table)?;
+        for (name, contract) in expected {
+            if actual.get(&name) != Some(&contract) {
                 return Err(SqliteAccountError::InvalidSchema(format!(
-                    "table {table} column {index} is {actual:?}; expected {expected_tuple:?}"
+                    "incompatible column {table}.{name}"
                 )));
             }
         }
     }
-    Ok(())
-}
-
-struct RootRow {
-    format_version: i64,
-    primary_soid: i64,
-    dismantle_reward_count: usize,
-    profile_item_count: usize,
-    character_count: usize,
-    settings_payload: Vec<u8>,
-}
-
-fn load_root(connection: &Connection) -> Result<Option<RootRow>, SqliteAccountError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT singleton, format_version, primary_soid, dismantle_reward_count, \
-             profile_item_count, character_count, settings_payload FROM account_state \
-             ORDER BY singleton;",
+    let triggers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='trigger'",
+            [],
+            |row| row.get(0),
         )
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?;
-    let Some(row) = rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?
-    else {
-        return Ok(None);
-    };
-    let singleton = row_i64(row, 0, "account_state.singleton")?;
-    if singleton != 1 {
-        return Err(SqliteAccountError::invalid_data(
-            "account_state.singleton",
-            format!("expected 1, found {singleton}"),
+        .map_err(|error| SqliteAccountError::sqlite("inspect", error))?;
+    if triggers != 0 {
+        return Err(SqliteAccountError::InvalidSchema(
+            "unexpected database triggers".into(),
         ));
     }
-    let root = RootRow {
-        format_version: row_i64(row, 1, "account_state.format_version")?,
-        primary_soid: row_i64(row, 2, "account_state.primary_soid")?,
-        dismantle_reward_count: row_count(
-            row,
-            3,
-            DISMANTLE_REWARD_CAPACITY,
-            "account_state.dismantle_reward_count",
-        )?,
-        profile_item_count: row_count(
-            row,
-            4,
-            PROFILE_ITEM_CAPACITY,
-            "account_state.profile_item_count",
-        )?,
-        character_count: row_count(row, 5, CHARACTER_CAPACITY, "account_state.character_count")?,
-        settings_payload: row
-            .get(6)
-            .map_err(|error| SqliteAccountError::sqlite("read", error))?,
-    };
-    if rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?
-        .is_some()
-    {
-        return Err(SqliteAccountError::invalid_data(
-            "account_state",
-            "expected exactly one singleton row",
-        ));
-    }
-    Ok(Some(root))
+    validate_foreign_keys(connection)
+}
+
+fn columns(
+    connection: &Connection,
+    table: &str,
+) -> Result<BTreeMap<String, (String, bool, i64)>, SqliteAccountError> {
+    let mut statement = connection
+        .prepare("SELECT name, type, [notnull], pk FROM pragma_table_info(?)")
+        .map_err(|error| SqliteAccountError::sqlite("inspect columns of", error))?;
+    let rows = statement
+        .query_map([table], |row| {
+            Ok((
+                row.get(0)?,
+                (row.get(1)?, row.get::<_, i64>(2)? != 0, row.get(3)?),
+            ))
+        })
+        .map_err(|error| SqliteAccountError::sqlite("inspect columns of", error))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|error| SqliteAccountError::sqlite("inspect columns of", error))
+}
+
+fn table_count(connection: &Connection, table: &str) -> Result<usize, SqliteAccountError> {
+    connection
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| SqliteAccountError::sqlite("count rows in", error))
 }
 
 fn load_profile_items(
@@ -351,7 +214,7 @@ fn load_profile_items(
     let mut statement = connection
         .prepare(
             "SELECT position, instance_soid, definition_hash, quantity, mutation_serial \
-             FROM profile_items WHERE account_id = 1 ORDER BY position;",
+             FROM profile_items ORDER BY position;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read", error))?;
     let mut rows = statement
@@ -412,7 +275,7 @@ fn load_dismantle_rewards(
     let mut statement = connection
         .prepare(
             "SELECT position, definition_hash, quantity, tier_mask, class_mask, masterwork \
-             FROM dismantle_rewards WHERE account_id = 1 ORDER BY position;",
+             FROM dismantle_rewards ORDER BY position;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read", error))?;
     let mut rows = statement
@@ -517,10 +380,10 @@ fn load_characters(
 ) -> Result<CharacterState, SqliteAccountError> {
     let mut statement = connection
         .prepare(
-            "SELECT position, soid, selected, race, gender, character_class, level, accepted, \
+            "SELECT slot, soid, 0, race, gender, class, level, 1, \
              preview_available, appearance_value, last_orbited_destination, content_bypass, \
-             acquired_subclass_ability_mask, inventory_count, next_inventory_serial \
-             FROM characters WHERE account_id = 1 ORDER BY position;",
+             acquired_subclass_mask, (SELECT count(*) FROM items WHERE character_slot=characters.slot AND location=1), next_inventory_serial \
+             FROM characters ORDER BY slot;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read", error))?;
     let mut rows = statement
@@ -634,7 +497,7 @@ fn load_characters(
             inventory_capacity: Some(CHARACTER_ITEM_CAPACITY),
             enforce_loaded_inventory_capacity: true,
             max_item_plugs: PLUG_CAPACITY,
-            item_flag_mask: u32::MAX,
+            item_flag_mask: 7,
             enforce_unique_instance_soids: true,
         },
         reserved_soids.to_vec(),
@@ -652,11 +515,10 @@ fn load_items(
 ) -> Result<(), SqliteAccountError> {
     let mut statement = connection
         .prepare(
-            "SELECT location, position, instance_soid, definition_hash, item_level, quantity, \
-             mutation_serial, flags, socket_policy, plug_count, movement_ability_entry, \
-             grenade_ability_entry, super_ability_entry, melee_ability_entry, \
-             class_ability_entry FROM character_items WHERE account_id = 1 \
-             AND character_position = ? ORDER BY location, position;",
+            "SELECT location, position, instance_soid, definition_hash, level, quantity, \
+             mutation_serial, flags, socket_policy, plug_count, movement_ability, \
+             grenade_ability, super_ability, melee_ability, \
+             class_ability FROM items WHERE character_slot = (SELECT slot FROM characters ORDER BY slot LIMIT 1 OFFSET ?) ORDER BY location, position;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read", error))?;
     let character_position_sql =
@@ -697,7 +559,7 @@ fn load_items(
             return Err(SqliteAccountError::invalid_data(
                 "character_items.position",
                 format!(
-                    "inventory positions must be contiguous; expected {}, found {position}",
+                    "inventory positions must be contiguous. Expected {}, found {position}",
                     character.inventory.len()
                 ),
             ));
@@ -741,11 +603,11 @@ fn load_items(
         let socket_policy = row_u8(row, 8, &format!("{item_path}.socket_policy"))?;
         let plug_count = row_count(row, 9, PLUG_CAPACITY, &format!("{item_path}.plug_count"))?;
         let abilities = CharacterAbilities {
-            movement: row_u8(row, 10, &format!("{item_path}.movement_ability_entry"))?,
-            grenade: row_u8(row, 11, &format!("{item_path}.grenade_ability_entry"))?,
-            super_ability: row_u8(row, 12, &format!("{item_path}.super_ability_entry"))?,
-            melee: row_u8(row, 13, &format!("{item_path}.melee_ability_entry"))?,
-            class_ability: row_u8(row, 14, &format!("{item_path}.class_ability_entry"))?,
+            movement: row_u8(row, 10, &format!("{item_path}.movement_ability"))?,
+            grenade: row_u8(row, 11, &format!("{item_path}.grenade_ability"))?,
+            super_ability: row_u8(row, 12, &format!("{item_path}.super_ability"))?,
+            melee: row_u8(row, 13, &format!("{item_path}.melee_ability"))?,
+            class_ability: row_u8(row, 14, &format!("{item_path}.class_ability"))?,
         };
         let plugs = load_plugs(
             connection,
@@ -819,44 +681,30 @@ fn load_plugs(
     item_position: usize,
     expected_count: usize,
 ) -> Result<Vec<Option<DefinitionHash>>, SqliteAccountError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT plug_position, definition_hash FROM item_plugs WHERE account_id = 1 \
-             AND character_position = ? AND location = ? AND item_position = ? \
-             ORDER BY plug_position;",
-        )
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?;
-    let parameters = [
-        sql_index(character_position, "item_plugs.character_position")?,
-        location,
-        sql_index(item_position, "item_plugs.item_position")?,
-    ];
+    let mut statement = connection.prepare("SELECT lane, plug_hash FROM sockets WHERE instance_soid = (SELECT instance_soid FROM items WHERE character_slot=(SELECT slot FROM characters ORDER BY slot LIMIT 1 OFFSET ?) AND location=? AND position=?) ORDER BY lane")
+        .map_err(|error| SqliteAccountError::sqlite("read sockets from", error))?;
     let mut rows = statement
-        .query(parameters)
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?;
-    let mut plugs = Vec::with_capacity(expected_count);
+        .query(rusqlite::params![
+            character_position,
+            location,
+            item_position
+        ])
+        .map_err(|error| SqliteAccountError::sqlite("read sockets from", error))?;
+    let mut plugs = vec![None; expected_count];
     while let Some(row) = rows
         .next()
-        .map_err(|error| SqliteAccountError::sqlite("read", error))?
+        .map_err(|error| SqliteAccountError::sqlite("read sockets from", error))?
     {
-        let index = plugs.len();
-        require_position(row, 0, index, PLUG_CAPACITY, "item_plugs")?;
-        if index >= expected_count {
-            return Err(count_mismatch("item_plugs", expected_count, index + 1));
-        }
-        let hash = row
-            .get::<_, Option<i64>>(1)
-            .map_err(|error| SqliteAccountError::sqlite("read", error))?
-            .map(|value| {
-                let hash = u32_from_i64(value, "item_plugs.definition_hash")?;
-                require_definition_hash(hash, "item_plugs")?;
-                Ok::<DefinitionHash, SqliteAccountError>(DefinitionHash::new(hash))
-            })
-            .transpose()?;
-        plugs.push(hash);
-    }
-    if plugs.len() != expected_count {
-        return Err(count_mismatch("item_plugs", expected_count, plugs.len()));
+        let lane = row_count(row, 0, PLUG_CAPACITY, "sockets.lane")?;
+        let hash = row_u32(row, 1, "sockets.plug_hash")?;
+        require_definition_hash(hash, "sockets.plug_hash")?;
+        let value = plugs.get_mut(lane).ok_or_else(|| {
+            SqliteAccountError::invalid_data(
+                "sockets.lane",
+                "socket lane exceeds authored plug count",
+            )
+        })?;
+        *value = Some(DefinitionHash::new(hash));
     }
     Ok(plugs)
 }
@@ -873,28 +721,6 @@ fn validate_foreign_keys(connection: &Connection) -> Result<(), SqliteAccountErr
             table,
             format!("row {row_id} violates a foreign key"),
         ));
-    }
-    Ok(())
-}
-
-fn ensure_child_tables_empty(connection: &Connection) -> Result<(), SqliteAccountError> {
-    for table in [
-        "dismantle_rewards",
-        "profile_items",
-        "characters",
-        "character_items",
-        "item_plugs",
-    ] {
-        let sql = format!("SELECT COUNT(*) FROM {table};");
-        let count: i64 = connection
-            .query_row(&sql, [], |row| row.get(0))
-            .map_err(|error| SqliteAccountError::sqlite("read", error))?;
-        if count != 0 {
-            return Err(SqliteAccountError::invalid_data(
-                table,
-                format!("expected no rows without an account root, found {count}"),
-            ));
-        }
     }
     Ok(())
 }

@@ -130,6 +130,16 @@ impl InventoryMetadata {
             && matches!(self.authored_row_capacity(), Some(size) if size > 0)
     }
 
+    pub(crate) const fn is_character_material_candidate(self) -> bool {
+        self.is_character_inventory_candidate()
+            && matches!(self.stackability, ItemStackability::Stackable)
+    }
+
+    pub(crate) const fn is_instanced_character_candidate(self) -> bool {
+        self.is_character_inventory_candidate()
+            && matches!(self.stackability, ItemStackability::Instanced)
+    }
+
     /// Human-facing name for the installed Shadowkeep bucket represented by this metadata.
     pub(crate) fn bucket_label(self) -> String {
         inventory_bucket_name(self.scope, self.native_bucket_id).map_or_else(
@@ -196,6 +206,21 @@ pub(in crate::catalog) struct InventoryBucketDescriptor {
 }
 
 impl Catalog {
+    pub(crate) fn character_material_candidates(
+        &self,
+        text: &str,
+    ) -> impl Iterator<Item = InventoryDefinition<'_>> + '_ {
+        let query = text.trim().to_lowercase();
+        self.inventory_hashes
+            .iter()
+            .filter_map(|hash| self.inventory_definition(*hash))
+            .filter(move |definition| {
+                definition.metadata.is_character_material_candidate()
+                    && (query.is_empty()
+                        || definition.name.to_lowercase().contains(&query)
+                        || format!("{:08x}", definition.hash).contains(&query))
+            })
+    }
     pub(crate) fn character_inventory_candidate_buckets(
         &self,
         class_type: u64,
@@ -281,6 +306,22 @@ impl Catalog {
                     )
             })
     }
+}
+
+pub(crate) fn weapon_bucket_capacities(
+    manager: &PackageManager,
+    root: &[u8],
+) -> Result<[usize; 3], String> {
+    let descriptors = scan_inventory_bucket_descriptors(manager, root)?;
+    let mut capacities = [0; 3];
+    for (bucket, capacity) in capacities.iter_mut().enumerate() {
+        let descriptor = descriptors
+            .get(&(bucket as u8))
+            .filter(|descriptor| descriptor.scope == InventoryScope::Character)
+            .ok_or("A native weapon inventory bucket is missing or has an unsupported scope")?;
+        *capacity = usize::from(descriptor.capacity);
+    }
+    Ok(capacities)
 }
 
 pub(in crate::catalog) fn scan_inventory_bucket_descriptors(

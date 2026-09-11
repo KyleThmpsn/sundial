@@ -96,7 +96,7 @@ impl SundialApp {
                         "This replaces the entire settings.json with the default bundled in your installed Project Sunrise version."
                     }
                     AccountSourceKind::Sqlite | AccountSourceKind::Blocked => {
-                        "This restores bundled settings.json defaults while preserving its inactive legacy /state/account and /state/characters data. It does not change state.sqlite3."
+                        "This restores bundled settings.json defaults while preserving its inactive legacy /state/account and /state/characters data. It does not change investment.sqlite3."
                     }
                 });
                 ui.add_space(6.0);
@@ -125,7 +125,6 @@ impl SundialApp {
         }
     }
 
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn draw_sqlite_restore_confirmation(&mut self, ctx: &egui::Context) {
         if self.confirmation == Some(ConfirmationDialog::RestoreSqliteBackup) {
             if let Some(backup) = self.pending_sqlite_restore.clone() {
@@ -136,7 +135,7 @@ impl SundialApp {
                         ui.set_width(560.0);
                         ui.heading("Restore this account database backup?");
                         ui.add_space(6.0);
-                        ui.label("Sundial will replace state.sqlite3 with the selected compatible backup. Before replacement, it creates and integrity-checks a recovery snapshot of the current database.");
+                        ui.label("Sundial will replace investment.sqlite3 with the selected compatible backup. Before replacement, it creates and integrity-checks a recovery snapshot of the current database.");
                         ui.add_space(6.0);
                         ui.label("Destiny 2 must be closed. Any unsaved Sundial changes will be discarded after the restored workspace reloads. settings.json is not changed or synchronized.");
                         ui.add_space(8.0);
@@ -196,7 +195,7 @@ impl SundialApp {
                         "If an account edit prevents loading, use Preferences > Saving & Recovery to restore a verified account database backup. The current database is backed up first."
                     }
                     AccountSourceKind::Blocked => {
-                        "Account editing is currently blocked, so Sundial will not write the incompatible state.sqlite3."
+                        "Account editing is currently blocked, so Sundial will not write the incompatible investment.sqlite3."
                     }
                 });
                 ui.add_space(12.0);
@@ -238,7 +237,7 @@ impl SundialApp {
                 .document
                 .account_change_summaries(&self.persisted_document, CHANGE_REVIEW_LIMIT + 1);
             if self.document.account_changed_from(&self.persisted_document) && changes.is_empty() {
-                changes.push("state.sqlite3: account data changed".to_owned());
+                changes.push("investment.sqlite3: account data changed".to_owned());
             }
             if changes.len() <= CHANGE_REVIEW_LIMIT {
                 changes.extend(collect_change_summaries(
@@ -267,8 +266,8 @@ impl SundialApp {
                     self.document.json_changed_from(&self.persisted_document),
                     self.document.account_changed_from(&self.persisted_document),
                 ) {
-                    (true, true) => "settings.json and state.sqlite3",
-                    (false, true) => "state.sqlite3",
+                    (true, true) => "settings.json and investment.sqlite3",
+                    (false, true) => "investment.sqlite3",
                     _ => "settings.json",
                 };
                 ui.label(if truncated {

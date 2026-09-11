@@ -1,5 +1,7 @@
 //! Named and numeric key-binding models, pickers, labels, and validation primitives.
 
+mod codes;
+
 use eframe::egui;
 use serde_json::{Map, Value};
 use sundial_account::{
@@ -116,16 +118,16 @@ pub(super) const ACTIONS: &[(&str, &str)] = &[
     ("ui_open_start_menu_records_tab", "Character menu: Records"),
     (
         "ui_open_start_menu_collections_tab",
-        "Character menu: Collections",
+        "Character Menu: Collections",
     ),
     ("ui_open_start_menu_clan_tab", "Character menu: Clan"),
     (
         "ui_open_start_menu_inventory_tab",
-        "Character menu: Inventory",
+        "Character Menu: Inventory",
     ),
     (
         "ui_open_start_menu_settings_tab",
-        "Character menu: Settings",
+        "Character Menu: Settings",
     ),
     ("ui_open_exit_dialog_confirm", "Confirm exit dialog"),
     ("ui_abort_activity", "Abort activity"),
@@ -146,19 +148,23 @@ pub(super) fn draw_key_bindings(
     settings: &Map<String, Value>,
     state: &mut KeyBindingUiState,
     editable: bool,
+    numeric: bool,
 ) -> CommandBatch {
     let mut changed = CommandBatch::default();
-    ui.heading("Key Bindings");
-    if editable {
-        ui.label(binding_help(show_presence_gated_preference(
-            settings,
-            KEY_BINDING_SOURCE_KEY,
-        )));
-    } else {
-        ui.label(
-            "This settings schema does not use editable named bindings. These values are read-only.",
+    ui.horizontal(|ui| {
+        ui.heading("Key Bindings");
+        crate::ui_help::info(
+            ui,
+            if numeric || editable {
+                binding_help(show_presence_gated_preference(
+                    settings,
+                    KEY_BINDING_SOURCE_KEY,
+                ))
+            } else {
+                "These bindings are read-only for this settings schema."
+            },
         );
-    }
+    });
     ui.add_space(8.0);
     if show_presence_gated_preference(settings, KEY_BINDING_SOURCE_KEY) {
         egui::Grid::new("game_key_binding_source_grid")
@@ -175,7 +181,7 @@ pub(super) fn draw_key_bindings(
                 );
             });
         ui.label(
-            "Account uses the bindings in this settings.json. Computer leaves bindings under Destiny's control in cvars.xml.",
+            "Account uses the bindings in the active account source. Computer leaves bindings under Destiny's control in cvars.xml.",
         );
         if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
             ui.colored_label(
@@ -222,10 +228,17 @@ pub(super) fn draw_key_bindings(
                     ui.end_row();
                     continue;
                 };
-                if editable {
-                    changed |= binding_picker(ui, state, key, "primary", binding.get("primary"));
+                if numeric || editable {
                     changed |=
-                        binding_picker(ui, state, key, "secondary", binding.get("secondary"));
+                        binding_picker(ui, state, key, "primary", binding.get("primary"), numeric);
+                    changed |= binding_picker(
+                        ui,
+                        state,
+                        key,
+                        "secondary",
+                        binding.get("secondary"),
+                        numeric,
+                    );
                 } else {
                     binding_label(ui, binding.get("primary"));
                     binding_label(ui, binding.get("secondary"));
@@ -246,12 +259,22 @@ pub(super) fn binding_picker(
     action: &str,
     half: &str,
     value: Option<&Value>,
+    numeric: bool,
 ) -> Option<AccountSettingsCommand> {
-    let Some(value) = value else {
+    let Some(original) = value else {
         ui.colored_label(ui.visuals().error_fg_color, "Missing");
         return None;
     };
 
+    let decoded = if numeric {
+        original
+            .as_u64()
+            .and_then(codes::input_name)
+            .map(Value::String)
+    } else {
+        None
+    };
+    let value = decoded.as_ref().unwrap_or(original);
     let (label, valid) = binding_value_label(value);
     let label = if valid {
         egui::RichText::new(label)
@@ -311,7 +334,11 @@ pub(super) fn binding_picker(
                     ui.separator();
 
                     let mut visible = 0usize;
-                    for &key in NAMED_INPUTS {
+                    for &key in if numeric {
+                        &NAMED_INPUTS[..codes::INPUT_COUNT]
+                    } else {
+                        NAMED_INPUTS
+                    } {
                         let display = display_input_name(key);
                         if !needle.is_empty()
                             && !key.to_lowercase().contains(&needle)
@@ -343,12 +370,15 @@ pub(super) fn binding_picker(
     );
 
     let selection = selection?;
-    let replacement = selection
-        .as_deref()
-        .map_or(AccountSettingValue::Unassigned, AccountSettingValue::text);
+    let replacement = match selection.as_deref() {
+        None => AccountSettingValue::Unassigned,
+        Some(input) if numeric => AccountSettingValue::InputCode(codes::input_code(input)?),
+        Some(input) => AccountSettingValue::text(input),
+    };
     let unchanged = match &replacement {
-        AccountSettingValue::Unassigned => value.is_null(),
-        AccountSettingValue::Text(input) => value.as_str() == Some(input),
+        AccountSettingValue::Unassigned => original.is_null(),
+        AccountSettingValue::Text(input) => original.as_str() == Some(input),
+        AccountSettingValue::InputCode(code) => original.as_u64() == Some(u64::from(*code)),
         _ => false,
     };
     ui.memory_mut(egui::Memory::close_popup);
@@ -373,9 +403,15 @@ pub(super) fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
     if value.is_null() {
         ui.label(egui::RichText::new("Unassigned").weak());
     } else if let Some(code) = value.as_u64() {
-        ui.add_enabled(false, egui::Label::new(code.to_string()));
+        ui.add_enabled(
+            false,
+            egui::Label::new(codes::input_name(code).map_or_else(
+                || format!("Unknown Input ({code})"),
+                |name| display_input_name(&name),
+            )),
+        );
     } else if let Some(name) = value.as_str() {
-        ui.add_enabled(false, egui::Label::new(name));
+        ui.add_enabled(false, egui::Label::new(display_input_name(name)));
     } else {
         ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
     }

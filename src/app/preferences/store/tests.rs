@@ -136,3 +136,73 @@ fn unreadable_preferences_warn_and_are_not_replaced() {
     assert!(save_preferences(&current, &Preferences::default()).is_err());
     assert!(current.is_dir());
 }
+
+#[test]
+fn plug_default_migration_runs_once_and_preserves_other_preferences() {
+    use crate::app::preferences::PlugSelectionMode;
+    for old_mode in [
+        "supported",
+        "matching_socket_type",
+        "gear_type",
+        "any_plug",
+        "socket_and_gear_type",
+    ] {
+        let directory = TestDirectory::new("plug-default-migration");
+        let path = directory.0.join("preferences.json");
+        let original = serde_json::json!({
+            "default_plug_selection_mode": old_mode,
+            "really_unsafe_warning_acknowledged": true,
+            "experimental_extended_fov": true,
+            "future_option": {"keep": [1, 2, 3]}
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let loaded = load_from_paths(Some(&path), None);
+        assert!(loaded.warning.is_none());
+        assert_eq!(
+            loaded.preferences.default_plug_selection_mode,
+            PlugSelectionMode::SocketAndGearType
+        );
+        assert!(loaded.preferences.experimental_extended_fov);
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["plug_defaults_version"], 1);
+        assert_eq!(stored["future_option"], original["future_option"]);
+        for mode in PlugSelectionMode::ALL {
+            let mut preferences = loaded.preferences.clone();
+            preferences.default_plug_selection_mode = mode;
+            save_preferences(&path, &preferences).unwrap();
+            assert_eq!(
+                load_from_paths(Some(&path), None)
+                    .preferences
+                    .default_plug_selection_mode,
+                mode
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_plug_migration_is_saved_to_current_preferences() {
+    use crate::app::preferences::PlugSelectionMode;
+    let directory = TestDirectory::new("legacy-plug-migration");
+    let legacy = directory.0.join("paths.json");
+    let current = directory.0.join("config/preferences.json");
+    let original =
+        br#"{"default_plug_selection_mode":"supported","install":"legacy","future_option":42}"#;
+    fs::write(&legacy, original).unwrap();
+    let loaded = load_from_paths(Some(&current), Some(&legacy));
+    assert!(loaded.warning.is_none());
+    assert_eq!(
+        loaded.preferences.default_plug_selection_mode,
+        PlugSelectionMode::SocketAndGearType
+    );
+    assert_eq!(fs::read(&legacy).unwrap(), original);
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&current).unwrap()).unwrap();
+    assert_eq!(stored["future_option"], 42);
+    assert_eq!(
+        read_preferences(&current)
+            .unwrap()
+            .unwrap()
+            .plug_defaults_version,
+        1
+    );
+}

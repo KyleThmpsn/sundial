@@ -9,11 +9,21 @@ use crate::catalog::{
 impl CollectionStateSnapshot {
     pub(in crate::app) fn evaluated_flag(&self, index: usize, catalog: &Catalog) -> Option<bool> {
         let definition = catalog.unlock_flag_definition(index)?;
+        if self.is_native
+            && let Some(season) = catalog.seasonal()
+            && let Some(entry) = season.mod_for_flag(index)
+        {
+            // Seasonal seed imports set overrides, strips the rest, and uses character ownership.
+            return Some(self.artifact_mask(season, true) & entry.bit() != 0);
+        }
         // The native item-context reader bypasses the buffered value for kind 5.
         if definition.bank() == 5 {
             return None;
         }
         let authored = self.flag_overrides.get(&index).copied();
+        if authored.is_some_and(|value| value > 2) {
+            return None;
+        }
         if let Some(value @ (1 | 2)) = authored {
             return Some(value == 2);
         }
@@ -55,6 +65,14 @@ impl CollectionStateSnapshot {
             return None;
         }
         let definition = catalog.unlock_value_definition(index)?;
+        if self.is_native && super::seasonal::is_derived_value(index) {
+            let season = catalog.seasonal()?;
+            let experience = self.seasonal_experience(season).ok()?;
+            return experience
+                .values(self.artifact_mask(season, true).count_ones())
+                .into_iter()
+                .find_map(|(slot, value)| (slot == index).then_some(value));
+        }
         if definition.bank() == 4 {
             return None;
         }
@@ -121,10 +139,23 @@ impl CollectionStateSnapshot {
             ProgressionScope::Character => &self.character_progressions,
             ProgressionScope::Unreplicated => return None,
         };
-        let progress = rows
+        let mut progress = rows
             .iter()
             .find(|row| row.definition_index == usize::from(definition.definition_index))
             .map_or(0, |row| row.lanes[0]);
+        if self.is_native && (38..=41).contains(&definition.definition_index) {
+            use crate::investment::seasonal as rules;
+            let total = self.seasonal_xp();
+            if total < 0 {
+                return None;
+            }
+            progress = match usize::from(definition.definition_index) {
+                rules::PASS_PROGRESSION => total.min(rules::PASS_XP_CAP),
+                rules::HUD_PROGRESSION if total < rules::PASS_XP_CAP => total % rules::XP_PER_RANK,
+                rules::HUD_PROGRESSION => total - rules::PASS_XP_CAP,
+                _ => total,
+            };
+        }
         rank_for_progress(definition, progress)
     }
 }

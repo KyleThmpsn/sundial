@@ -121,87 +121,6 @@ fn exact_goal_can_be_shared_across_multiple_armor_pieces() {
 }
 
 #[test]
-fn impossible_goal_returns_and_applies_the_closest_plan() {
-    let input = input(
-        vec![socket(
-            0,
-            10,
-            vec![choice(10, [0; 6]), choice(11, [0, 0, 16, 0, 0, 0])],
-        )],
-        [0, 0, 80, 0, 0, 0],
-    );
-
-    let solution = solve(&input, [0, 0, 100, 0, 0, 0]);
-
-    assert!(!solution.exact);
-    assert_eq!(solution.projected_totals[2], 96);
-    assert_eq!(solution.shortfalls[2], 4);
-    assert_eq!(solution.assignments.len(), 1);
-}
-
-#[test]
-fn zero_targets_are_ignored_and_current_choices_win_ties() {
-    let input = input(
-        vec![socket(
-            0,
-            10,
-            vec![
-                choice(10, [0, 0, 10, 0, 0, 0]),
-                choice(11, [50, 0, 0, 0, 0, 0]),
-            ],
-        )],
-        [50, 50, 90, 50, 50, 50],
-    );
-
-    let solution = solve(&input, [0, 0, 100, 0, 0, 0]);
-
-    assert!(solution.exact);
-    assert!(solution.assignments.is_empty());
-}
-
-#[test]
-fn goals_are_minimums_and_already_met_stats_do_not_trigger_changes() {
-    let input = input(
-        vec![socket(
-            0,
-            10,
-            vec![
-                choice(10, [0, 0, 18, 0, 0, 0]),
-                choice(11, [0, 0, 10, 0, 0, 0]),
-            ],
-        )],
-        [0; 6],
-    );
-
-    let solution = solve(&input, [0, 0, 10, 0, 0, 0]);
-
-    assert!(solution.exact);
-    assert_eq!(solution.projected_totals[2], 18);
-    assert!(solution.assignments.is_empty());
-}
-
-#[test]
-fn multi_goal_solver_minimizes_total_shortfall_before_the_largest_gap() {
-    let input = input(
-        vec![socket(
-            0,
-            10,
-            vec![
-                choice(10, [0, 0, 0, 0, 0, 0]),
-                choice(11, [20, 0, 2, 0, 0, 0]),
-                choice(12, [10, 0, 10, 0, 0, 0]),
-            ],
-        )],
-        [70, 0, 70, 0, 0, 0],
-    );
-
-    let solution = solve(&input, [90, 0, 90, 0, 0, 0]);
-
-    assert_eq!(solution.projected_totals, [90, 0, 72, 0, 0, 0]);
-    assert_eq!(solution.shortfalls, [0, 0, 18, 0, 0, 0]);
-}
-
-#[test]
 fn useful_stat_range_is_clamped_to_the_real_cap() {
     assert_eq!(
         capped_totals([-1, 0, 50, 100, 101, i32::MAX]),
@@ -219,28 +138,6 @@ fn solver_state_keys_cap_goals_and_compare_other_stats_separately() {
         solver_key([10, 20, 130, 40, 150, 60], [0, 0, 100, 0, 100, 0]),
         [0, 0, 100, 0, 100, 0]
     );
-}
-
-#[test]
-fn solver_removes_points_above_the_cap_when_an_exact_option_exists() {
-    let input = input(
-        vec![socket(
-            0,
-            10,
-            vec![
-                choice(10, [0, 0, 10, 0, 0, 0]),
-                choice(11, [0, 0, 5, 0, 0, 0]),
-            ],
-        )],
-        [0, 0, 95, 0, 0, 0],
-    );
-
-    let solution = solve(&input, [0, 0, 100, 0, 0, 0]);
-
-    assert!(solution.exact);
-    assert_eq!(solution.projected_totals[2], 100);
-    assert_eq!(solution.assignments.len(), 1);
-    assert_eq!(solution.assignments[0].selected, Some(11));
 }
 
 #[test]
@@ -385,4 +282,90 @@ fn optimizer_never_selects_two_exotic_armor_pieces() {
             .count(),
         1
     );
+}
+
+#[test]
+fn socket_solver_balances_targets_shortfalls_and_unnecessary_changes() {
+    struct Case {
+        name: &'static str,
+        fixed: [i32; 6],
+        target: [u16; 6],
+        choices: Vec<SocketChoice>,
+        totals: [u16; 6],
+        shortfalls: [u16; 6],
+        selected: Option<u64>,
+    }
+    for case in [
+        Case {
+            name: "closest attainable goal",
+            fixed: [0, 0, 80, 0, 0, 0],
+            target: [0, 0, 100, 0, 0, 0],
+            choices: vec![choice(10, [0; 6]), choice(11, [0, 0, 16, 0, 0, 0])],
+            totals: [0, 0, 96, 0, 0, 0],
+            shortfalls: [0, 0, 4, 0, 0, 0],
+            selected: Some(11),
+        },
+        Case {
+            name: "zero targets do not displace current choices",
+            fixed: [50, 50, 90, 50, 50, 50],
+            target: [0, 0, 100, 0, 0, 0],
+            choices: vec![
+                choice(10, [0, 0, 10, 0, 0, 0]),
+                choice(11, [50, 0, 0, 0, 0, 0]),
+            ],
+            totals: [50, 50, 100, 50, 50, 50],
+            shortfalls: [0; 6],
+            selected: None,
+        },
+        Case {
+            name: "already met minimum",
+            fixed: [0; 6],
+            target: [0, 0, 10, 0, 0, 0],
+            choices: vec![
+                choice(10, [0, 0, 18, 0, 0, 0]),
+                choice(11, [0, 0, 10, 0, 0, 0]),
+            ],
+            totals: [0, 0, 18, 0, 0, 0],
+            shortfalls: [0; 6],
+            selected: None,
+        },
+        Case {
+            name: "total shortfall takes priority over largest gap",
+            fixed: [70, 0, 70, 0, 0, 0],
+            target: [90, 0, 90, 0, 0, 0],
+            choices: vec![
+                choice(10, [0; 6]),
+                choice(11, [20, 0, 2, 0, 0, 0]),
+                choice(12, [10, 0, 10, 0, 0, 0]),
+            ],
+            totals: [90, 0, 72, 0, 0, 0],
+            shortfalls: [0, 0, 18, 0, 0, 0],
+            selected: Some(11),
+        },
+        Case {
+            name: "remove wasted points above cap",
+            fixed: [0, 0, 95, 0, 0, 0],
+            target: [0, 0, 100, 0, 0, 0],
+            choices: vec![
+                choice(10, [0, 0, 10, 0, 0, 0]),
+                choice(11, [0, 0, 5, 0, 0, 0]),
+            ],
+            totals: [0, 0, 100, 0, 0, 0],
+            shortfalls: [0; 6],
+            selected: Some(11),
+        },
+    ] {
+        let input = input(vec![socket(0, 10, case.choices)], case.fixed);
+        let solution = solve(&input, case.target);
+        assert_eq!(solution.projected_totals, case.totals, "{}", case.name);
+        assert_eq!(solution.shortfalls, case.shortfalls, "{}", case.name);
+        assert_eq!(solution.exact, case.shortfalls == [0; 6], "{}", case.name);
+        let assignments: Vec<_> = solution
+            .assignments
+            .iter()
+            .map(|row| row.selected)
+            .collect();
+        let expected: Vec<_> = case.selected.map(Some).into_iter().collect();
+        assert_eq!(assignments, expected, "{}", case.name);
+    }
 }

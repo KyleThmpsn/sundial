@@ -29,9 +29,31 @@ pub(super) struct ResolvedWeapon {
     pub(super) has_authored_shader: bool,
 }
 
+#[cfg(test)]
 pub(super) fn resolve_project_weapons(
     sources: &ProjectSources,
     weapons: &[WeaponCloneSpec],
+) -> AuthoringResult<Vec<ResolvedWeapon>> {
+    let placements = placements::Plan::new(sources, weapons)?;
+    resolve_project_weapons_with_placements(sources, weapons, &placements)
+}
+
+#[cfg(test)]
+pub(super) fn resolve_project_weapons_with_placements(
+    sources: &ProjectSources,
+    weapons: &[WeaponCloneSpec],
+    placements: &placements::Plan,
+) -> AuthoringResult<Vec<ResolvedWeapon>> {
+    let mut report = |_: build::Phase, _: &str, _: usize, _: usize| {};
+    let mut progress = build::Progress::new(weapons.len(), &mut report);
+    resolve_project_weapons_with_progress(sources, weapons, placements, &mut progress)
+}
+
+pub(super) fn resolve_project_weapons_with_progress(
+    sources: &ProjectSources,
+    weapons: &[WeaponCloneSpec],
+    placements: &placements::Plan,
+    progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<Vec<ResolvedWeapon>> {
     let manager = &sources.manager;
     let stock_item_table = &sources.stock_item_table;
@@ -55,6 +77,8 @@ pub(super) fn resolve_project_weapons(
     let unlock_rows = sources.unlock_rows;
     let mut resolved = Vec::with_capacity(weapons.len());
     for weapon in weapons {
+        let operation = format!("Resolving {}", weapon.text.name);
+        progress.start(&operation);
         let resolved_weapon = (|| -> AuthoringResult<ResolvedWeapon> {
             let identity = weapon.identity;
         if contains_u32_row_key(
@@ -199,6 +223,12 @@ pub(super) fn resolve_project_weapons(
         // Use a real child of the target page as the placement/count exemplar, never move
         // a gameplay donor's count terms into an unrelated hierarchy.
         let authored_rarity = weapon.overrides.rarity.unwrap_or(weapon_rarity(&definition)?);
+        let (collection_donor_index, weapon_page, source_acquired_flag, count_selection) = if let Some(page) = weapon.overrides.collection_destination
+            .filter(|_| authored_rarity != AuthoredWeaponRarity::Exotic)
+            .and_then(|destination| placements.pages.get(&destination)) {
+            let flag = collection_unlock_index(stock_collectibles, collectible_rows + page.donor * COLLECTIBLE_ROW_SIZE)?;
+            (page.donor, page.index, u16::try_from(flag).map_err(|_| invalid("Collections acquired flag exceeds capacity"))?, SunriseAcquiredPoolSelection::default())
+        } else {
         let collection_candidates = resolve_weapon_collection_donor(
             manager, stock_item_table, item_rows, stock_item_count,
             stock_item_strings, string_rows, stock_collectibles, collectible_rows,
@@ -222,8 +252,9 @@ pub(super) fn resolve_project_weapons(
                 Err(error) => { placement_error = Some(error); None }
             }
         });
-        let (collection_donor_index, weapon_page, source_acquired_flag, count_selection) = placement
-            .ok_or_else(|| placement_error.unwrap_or_else(|| invalid("No compatible Collections placement exemplar")))?;
+        placement
+            .ok_or_else(|| placement_error.unwrap_or_else(|| invalid("No compatible Collections placement exemplar")))?
+        };
         let presentation_donor = weapon
             .presentation_donor
             .as_ref()
@@ -439,12 +470,10 @@ pub(super) fn resolve_project_weapons(
             })
         })()
         .map_err(|error| {
-            error.context(format!(
-                "Weapon {:?} ({})",
-                weapon.text.name, weapon.namespace
-            ))
+            error.context(weapon.error_context())
         })?;
         resolved.push(resolved_weapon);
+        progress.finish(&operation);
     }
 
     Ok(resolved)

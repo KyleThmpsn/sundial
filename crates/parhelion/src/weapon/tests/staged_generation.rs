@@ -153,13 +153,14 @@ fn real_default_weapon_generation_preserves_native_chains() {
     if let Some(path) = std::env::var_os("PARHELION_PRIVATE_SPEED_RECIPE") {
         recipes.push(crate::WeaponRecipe::load_json(path).unwrap());
     }
-    let expected_private_actions = recipes
+    let expected_private_uses = recipes
         .iter()
         .flat_map(|recipe| &recipe.overrides.socket_plug_variants)
         .flat_map(|variant| &variant.sandbox_perks)
         .filter(|perk| !perk.runtime_values.is_empty() || !perk.action_float_values.is_empty())
         .count();
-    let mut private_actions = BTreeSet::new();
+    let mut private_actions = BTreeMap::new();
+    let mut private_uses = 0;
     for recipe in recipes {
         let spec = recipe.to_spec().unwrap();
         eprintln!("Checking {} ({:08X})", recipe.name, spec.identity.item_hash);
@@ -452,7 +453,15 @@ fn real_default_weapon_generation_preserves_native_chains() {
                         // Both current edited plugs use the independently verified Micro-Missile
                         // owner/graph/action layout. Infer its allocation from the installed action.
                         assert_eq!(source_perk, 1178);
-                        assert!(private_actions.insert(installed.action_tag));
+                        if let Some(previous) =
+                            private_actions.insert(installed.action_tag, edit.clone())
+                        {
+                            assert_eq!(
+                                previous, *edit,
+                                "Only identical edits may share a private action"
+                            );
+                        }
+                        private_uses += 1;
                         assert_eq!(
                             installed.action_tag.pkg_id(),
                             PRIVATE_PERK_RUNTIME_PACKAGE_ID
@@ -465,9 +474,13 @@ fn real_default_weapon_generation_preserves_native_chains() {
                         let expected = clone_private_sandbox_perk_runtime(
                             &manager,
                             &stock,
-                            &edit.runtime_values,
-                            &edit.action_float_values,
-                            edit.activation,
+                            custom_runtime::PrivateRuntimeEdits {
+                                program: edit.program.as_ref(),
+                                values: &edit.runtime_values,
+                                action_float_values: &edit.action_float_values,
+                                projectiles: &edit.projectiles,
+                                activation: edit.activation,
+                            },
                             allocator,
                             &mut tags,
                         )
@@ -535,7 +548,8 @@ fn real_default_weapon_generation_preserves_native_chains() {
             }
         }
     }
-    assert_eq!(private_actions.len(), expected_private_actions);
+    assert_eq!(private_uses, expected_private_uses);
+    assert_eq!(private_actions.is_empty(), expected_private_uses == 0);
     let (stock_missile, stock_strings) = load(0xDD5C_B37A);
     assert_eq!(
         weapon_sandbox_perks(&stock_missile).unwrap(),

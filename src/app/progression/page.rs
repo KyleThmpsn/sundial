@@ -145,6 +145,11 @@ pub(super) fn draw_unlocks(
             .width(220.0)
             .show_ui(ui, |ui| {
                 for table in UnlockTable::ALL {
+                    if table == UnlockTable::StoredValues
+                        && document.get("_native_progression").is_none()
+                    {
+                        continue;
+                    }
                     table_changed |= ui
                         .selectable_value(&mut state.unlock_table, table, table.label())
                         .changed();
@@ -157,7 +162,7 @@ pub(super) fn draw_unlocks(
         }
         ui.add_space(8.0);
         draw_filter(ui, &mut state.query);
-        if state.unlock_table != UnlockTable::UnreplicatedProgressions
+        if state.unlock_table.field_name().is_some()
             && !state.unlock_table.is_progression()
             && ui
                 .add_enabled(!state.read_only, egui::Button::new("+ Add"))
@@ -301,6 +306,14 @@ pub(super) fn draw_unlocks(
             draw_unreplicated_progressions(ui, catalog, &query, state);
             false
         }
+        UnlockTable::FlagDefinitions | UnlockTable::ValueDefinitions => {
+            super::browser::draw(ui, document, catalog, state);
+            false
+        }
+        UnlockTable::StoredValues => {
+            super::native::draw(ui, document, catalog, &query);
+            false
+        }
     };
     changed |= undo_progression_requested && undo_progression_change(document, state);
     changed |= draw_add_unlock_window(ui.ctx(), document, unlocks, catalog, state);
@@ -320,7 +333,8 @@ pub(super) fn draw_investment(
         InvestmentTable::FlagOverrides => investment.flag_overrides.len(),
         InvestmentTable::ValueOverrides => investment.value_overrides.len(),
     };
-    let can_add = !state.read_only && row_count < FAMILY5_OVERRIDE_CAPACITY;
+    let hidden_count = super::native::hidden_count(document, state.investment_table);
+    let can_add = !state.read_only && row_count + hidden_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
         ui.label(egui::RichText::new("Table").strong());
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
@@ -344,7 +358,7 @@ pub(super) fn draw_investment(
             add.on_disabled_hover_text(if state.read_only {
                 "Enable Progression Editing in Preferences to change state"
             } else {
-                "100-row settings limit"
+                "100-row native limit, including preserved rows"
             })
         };
         if add.clicked() {
@@ -384,6 +398,12 @@ pub(super) fn draw_investment(
     }
     ui.add_space(4.0);
     ui.label(state.investment_table.explanation());
+    let capacity = format!("{} / 100 Overrides", row_count + hidden_count);
+    ui.label(if hidden_count == 0 {
+        capacity
+    } else {
+        format!("{capacity} · {hidden_count} Preserved Native Rows")
+    });
     ui.add_space(4.0);
     let query = state.query.clone();
 

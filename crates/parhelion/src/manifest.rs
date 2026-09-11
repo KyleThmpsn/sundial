@@ -406,9 +406,14 @@ fn validate_package_tag(owner: &str, label: &str, tag: ManifestHash) -> Result<(
 pub(crate) fn recipe_selection_fingerprint(recipes: &[WeaponRecipe]) -> Result<String, String> {
     let mut digest = Sha256::new();
     for recipe in recipes {
-        let encoded = recipe
-            .to_json_pretty()
-            .map_err(|error| format!("Could not normalize recipe: {error}"))?;
+        let encoded = recipe.to_json_pretty().map_err(|error| {
+            format!(
+                "Recipe: {:?} ({})\nItem: {}\nCould not normalize recipe: {error}",
+                recipe.name,
+                recipe.namespace,
+                recipe.identity.item_hash.as_str()
+            )
+        })?;
         digest.update(encoded.len().to_le_bytes());
         digest.update(encoded.as_bytes());
     }

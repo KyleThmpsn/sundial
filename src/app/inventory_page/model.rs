@@ -20,6 +20,7 @@ pub(super) enum ProfileInventorySection {
     #[default]
     SharedItems,
     DismantleRewards,
+    PendingRewards,
 }
 
 #[derive(Clone)]

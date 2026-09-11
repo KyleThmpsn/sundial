@@ -14,6 +14,7 @@ pub const FIELD_OF_VIEW_MAXIMUM: u64 = 155;
 pub struct AccountSettingsCapabilities {
     pub writable: bool,
     pub named_key_bindings_writable: bool,
+    pub numeric_key_bindings_writable: bool,
     pub extended_field_of_view: bool,
 }
 
@@ -149,7 +150,7 @@ pub enum AccountSettingValue {
     Unsigned(u64),
     Decimal(FiniteF64),
     Text(Box<str>),
-    /// Numeric input code used by SQLite payloads after Sunrise resolves authored names.
+    /// Numeric input code stored by Sunrise, with at most one modifier flag.
     InputCode(u16),
     Unassigned,
 }
@@ -220,6 +221,7 @@ impl AccountSettingsState {
                 }
                 if matches!(key, AccountSettingKey::KeyBinding { .. })
                     && !capabilities.named_key_bindings_writable
+                    && !capabilities.numeric_key_bindings_writable
                 {
                     return Err(AccountError::KeyBindingsReadOnly);
                 }
@@ -228,7 +230,19 @@ impl AccountSettingsState {
                 {
                     return Err(AccountError::InvalidAccountSettingValue);
                 }
-                validate_setting(&key, &value)?;
+                if matches!(key, AccountSettingKey::KeyBinding { .. })
+                    && capabilities.numeric_key_bindings_writable
+                {
+                    if !matches!(
+                        value,
+                        AccountSettingValue::InputCode(_) | AccountSettingValue::Unassigned
+                    ) {
+                        return Err(AccountError::InvalidAccountSettingValue);
+                    }
+                    validate_loaded_setting(&key, &value)?;
+                } else {
+                    validate_setting(&key, &value)?;
+                }
                 self.values.insert(key, value);
             }
         }
@@ -257,11 +271,15 @@ fn validate_loaded_setting(
     value: &AccountSettingValue,
 ) -> AccountResult<()> {
     match (key, value) {
-        (AccountSettingKey::KeyBinding { action, .. }, AccountSettingValue::InputCode(_)) => {
-            if is_supported_key_binding_action(action) {
+        (AccountSettingKey::KeyBinding { action, .. }, AccountSettingValue::InputCode(code)) => {
+            if !is_supported_key_binding_action(action) {
+                return Err(AccountError::UnknownAccountSetting);
+            }
+            // Sunrise key_bindings.h: inputs 0..=0x73 with at most one native modifier.
+            if code & 0x00ff <= 0x73 && matches!(code & 0xff00, 0 | 0x100 | 0x200 | 0x400) {
                 Ok(())
             } else {
-                Err(AccountError::UnknownAccountSetting)
+                Err(AccountError::InvalidAccountSettingValue)
             }
         }
         _ => validate_setting(key, value),
@@ -378,6 +396,7 @@ fn validate_preference(
     }
 }
 
+/// Actions in native action-ID order, shared by validation and persistence.
 pub const KEY_BINDING_ACTIONS: &[&str] = &[
     "fire",
     "toggle_zoom",
@@ -612,6 +631,7 @@ mod tests {
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: true,
+            numeric_key_bindings_writable: false,
             extended_field_of_view: true,
         }
     }
@@ -710,6 +730,7 @@ mod tests {
 
         let read_only = AccountSettingsCapabilities {
             named_key_bindings_writable: false,
+            numeric_key_bindings_writable: false,
             ..capabilities()
         };
         assert_eq!(
@@ -749,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_bindings_are_load_only_and_still_validate_actions() {
+    fn named_binding_capability_rejects_numeric_writes_and_unknown_actions() {
         let key = AccountSettingKey::key_binding("fire", KeyBindingSlot::Primary);
         let mut state = AccountSettingsState::try_new(
             capabilities(),
@@ -778,5 +799,51 @@ mod tests {
             ),
             Err(AccountError::UnknownAccountSetting)
         );
+    }
+
+    #[test]
+    fn numeric_bindings_reject_the_sentinel_and_combined_modifiers_atomically() {
+        let capabilities = AccountSettingsCapabilities {
+            named_key_bindings_writable: false,
+            numeric_key_bindings_writable: true,
+            ..capabilities()
+        };
+        let key = AccountSettingKey::key_binding("fire", KeyBindingSlot::Primary);
+        let mut state = AccountSettingsState::try_new(
+            capabilities,
+            BTreeMap::from([(key.clone(), AccountSettingValue::Unassigned)]),
+        )
+        .unwrap();
+        for code in [0, 0x73, 0x100, 0x173, 0x200, 0x273, 0x400, 0x473] {
+            state
+                .apply_all(
+                    capabilities,
+                    [AccountSettingsCommand::Set {
+                        key: key.clone(),
+                        value: AccountSettingValue::InputCode(code),
+                    }],
+                )
+                .unwrap();
+        }
+        for code in [0x74, 0x174, 0x274, 0x474, 0x300, 0x500, 0x600, 0xffff] {
+            let before = state.clone();
+            assert_eq!(
+                state.apply_all(
+                    capabilities,
+                    [
+                        AccountSettingsCommand::Set {
+                            key: key.clone(),
+                            value: AccountSettingValue::Unassigned
+                        },
+                        AccountSettingsCommand::Set {
+                            key: key.clone(),
+                            value: AccountSettingValue::InputCode(code)
+                        },
+                    ]
+                ),
+                Err(AccountError::InvalidAccountSettingValue)
+            );
+            assert_eq!(state, before);
+        }
     }
 }

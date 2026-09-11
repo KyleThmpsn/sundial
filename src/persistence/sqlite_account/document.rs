@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod inventory;
+
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use sundial_account::{
     AccountSettingsCapabilities, AccountSettingsState, CharacterAbilities, CharacterCapabilities,
@@ -13,9 +15,8 @@ use sundial_account::{
 use super::{
     SqliteAccountError, SqliteAccountIncompatibility, SqliteAccountLoad, SqliteAccountSnapshot,
     contract::{
-        ACCOUNT_FORMAT_VERSION, CHARACTER_ITEM_CAPACITY, DISMANTLE_REWARD_CAPACITY,
-        EQUIPMENT_SLOTS, PLUG_CAPACITY, PROFILE_ITEM_CAPACITY, SCHEMA_VERSION,
-        SETTINGS_PAYLOAD_VERSION,
+        CHARACTER_ITEM_CAPACITY, DISMANTLE_REWARD_CAPACITY, EQUIPMENT_SLOTS, PLUG_CAPACITY,
+        PROFILE_ITEM_CAPACITY,
     },
     reader,
 };
@@ -41,14 +42,6 @@ struct ProfilePersistence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CharacterPersistence {
-    selected: bool,
-    level: u8,
-    accepted: bool,
-    preview_available: bool,
-    appearance_bits: u32,
-    last_orbited_destination: u32,
-    content_bypass: bool,
-    acquired_subclass_ability_mask: u64,
     next_inventory_serial: u32,
 }
 
@@ -60,6 +53,11 @@ struct ItemPersistence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SqliteAccountDocument {
+    inventory_state: super::inventory_state::InventoryState,
+    progression: super::progression::Progression,
+    entitlements: serde_json::Value,
+    runtime: serde_json::Value,
+    preserved_rows: BTreeMap<String, Vec<super::writer::NativeRow>>,
     path: PathBuf,
     revision: SourceRevision,
     primary_soid: InstanceSoid,
@@ -70,6 +68,8 @@ pub(crate) struct SqliteAccountDocument {
     character_persistence: BTreeMap<EntityId, CharacterPersistence>,
     item_persistence: BTreeMap<EntityId, ItemPersistence>,
     pending_item_abilities: BTreeMap<EntityId, CharacterAbilities>,
+    profile_positions: BTreeMap<EntityId, usize>,
+    reward_positions: BTreeMap<EntityId, usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,24 +81,101 @@ pub(crate) enum SqliteAccountDocumentLoad {
 }
 
 impl SqliteAccountDocument {
+    pub(super) fn preserved_rows(&self, table: &str) -> &[super::writer::NativeRow] {
+        self.preserved_rows.get(table).map_or(&[], Vec::as_slice)
+    }
+    pub(super) fn capture_preserved_rows(
+        &mut self,
+        db: &Connection,
+    ) -> Result<(), SqliteAccountError> {
+        self.preserved_rows = load_preserved_rows(db)?;
+        Ok(())
+    }
+
+    pub(crate) fn runtime(&self) -> &serde_json::Value {
+        &self.runtime
+    }
+    pub(crate) fn set_runtime(&mut self, value: serde_json::Value) {
+        self.runtime = value;
+    }
+    pub(super) fn save_runtime(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        super::runtime::save(db, &self.runtime)
+    }
+
+    pub(super) fn validate_native_edits(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        super::runtime::validate(&self.runtime)?;
+        let mut view = serde_json::json!({"state": self.runtime});
+        if self.entitlements != super::entitlements::load(db)? {
+            view["server"] = serde_json::json!({"entitlements": self.entitlements});
+        }
+        crate::game_settings::runtime::validate_native_details(&view)
+            .map_err(|error| SqliteAccountError::invalid_data("runtime", error))
+    }
+
+    pub(crate) fn entitlements(&self) -> &serde_json::Value {
+        &self.entitlements
+    }
+    pub(crate) fn set_entitlements(&mut self, value: serde_json::Value) {
+        self.entitlements = value;
+    }
+    pub(super) fn save_entitlements(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        super::entitlements::save(db, &self.entitlements, self.preserved_rows("entitlements"))
+    }
+
+    pub(crate) fn progression_view(&self, index: usize) -> serde_json::Value {
+        self.progression.view(index)
+    }
+    pub(crate) fn account_flag_is_set(&self, definition_index: u16, slot: u16) -> bool {
+        self.progression.account_flag_is_set(definition_index, slot)
+    }
+    pub(crate) fn set_account_flag(
+        &mut self,
+        definition_index: u16,
+        slot: u16,
+    ) -> Result<bool, SqliteAccountError> {
+        self.progression.set_account_flag(definition_index, slot)
+    }
+    pub(crate) fn account_flags_changed_from(&self, before: &Self) -> bool {
+        self.progression
+            .account_flags_changed_from(&before.progression)
+    }
+    pub(crate) fn apply_progression_view(
+        &mut self,
+        index: usize,
+        value: &serde_json::Value,
+    ) -> Result<(), SqliteAccountError> {
+        self.progression.apply(index, value)
+    }
+    pub(super) fn save_progression(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        self.progression.save(db)
+    }
+
+    pub(super) fn original_profile_position(&self, id: EntityId) -> Option<usize> {
+        self.profile_positions.get(&id).copied()
+    }
+    pub(super) fn original_reward_position(&self, id: EntityId) -> Option<usize> {
+        self.reward_positions.get(&id).copied()
+    }
+    pub(super) fn refresh_positions(&mut self) {
+        self.inventory_state.refresh_positions();
+        self.profile_positions = self
+            .profile
+            .profile_items()
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (item.id, i))
+            .collect();
+        self.reward_positions = self
+            .profile
+            .dismantle_rewards()
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (item.id, i))
+            .collect();
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.path
-    }
-
-    pub(crate) const fn schema_version(&self) -> i64 {
-        SCHEMA_VERSION
-    }
-
-    pub(crate) const fn account_format_version(&self) -> i64 {
-        ACCOUNT_FORMAT_VERSION
-    }
-
-    pub(crate) const fn settings_payload_version(&self) -> u32 {
-        SETTINGS_PAYLOAD_VERSION
-    }
-
-    pub(crate) const fn primary_soid(&self) -> InstanceSoid {
-        self.primary_soid
     }
 
     pub(crate) const fn profile(&self) -> &ProfileState {
@@ -125,7 +202,7 @@ impl SqliteAccountDocument {
         &mut self.settings
     }
 
-    /// Returns the PR-88 ability selection persisted with one exact item instance.
+    /// Returns the Sunrise ability selection persisted with one exact item instance.
     pub(crate) fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
         self.pending_item_abilities.get(&id).copied().or_else(|| {
             self.item_persistence
@@ -134,7 +211,7 @@ impl SqliteAccountDocument {
         })
     }
 
-    /// Keeps the PR-88 item sidecar aligned with edits made through character metadata.
+    /// Keeps the Sunrise item sidecar aligned with edits made through character metadata.
     ///
     /// New items retain their selections before their persistence serial is assigned at Save.
     pub(crate) fn set_persisted_item_abilities(
@@ -170,7 +247,7 @@ impl SqliteAccountDocument {
             inventory_capacity: Some(CHARACTER_ITEM_CAPACITY),
             enforce_loaded_inventory_capacity: true,
             max_item_plugs: PLUG_CAPACITY,
-            item_flag_mask: u32::MAX,
+            item_flag_mask: 7,
             enforce_unique_instance_soids: true,
         }
     }
@@ -179,7 +256,8 @@ impl SqliteAccountDocument {
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: false,
-            extended_field_of_view: false,
+            numeric_key_bindings_writable: true,
+            extended_field_of_view: true,
         }
     }
 
@@ -323,25 +401,13 @@ impl SqliteAccountDocument {
         Ok((value.instance_soid, value.mutation_serial))
     }
 
-    #[allow(clippy::type_complexity)]
-    pub(super) fn character_persistence(
-        &self,
-        id: EntityId,
-    ) -> Result<(bool, u8, bool, bool, f32, u32, bool, u64, u32), SqliteAccountError> {
-        let value = self.character_persistence.get(&id).ok_or_else(|| {
-            SqliteAccountError::invalid_data("characters", "persistence metadata is missing")
-        })?;
-        Ok((
-            value.selected,
-            value.level,
-            value.accepted,
-            value.preview_available,
-            f32::from_bits(value.appearance_bits),
-            value.last_orbited_destination,
-            value.content_bypass,
-            value.acquired_subclass_ability_mask,
-            value.next_inventory_serial,
-        ))
+    pub(super) fn next_inventory_serial(&self, id: EntityId) -> Result<u32, SqliteAccountError> {
+        self.character_persistence
+            .get(&id)
+            .map(|p| p.next_inventory_serial)
+            .ok_or_else(|| {
+                SqliteAccountError::invalid_data("characters", "missing persistence metadata")
+            })
     }
 
     pub(super) fn item_persistence(
@@ -394,8 +460,6 @@ fn load_in_transaction(
     connection: &Connection,
 ) -> Result<SqliteAccountDocumentLoad, SqliteAccountError> {
     let snapshot = match reader::load_connection(connection)? {
-        #[cfg(test)]
-        SqliteAccountLoad::Missing => return Ok(SqliteAccountDocumentLoad::Missing),
         SqliteAccountLoad::Empty => return Ok(SqliteAccountDocumentLoad::Empty),
         SqliteAccountLoad::Incompatible(reason) => {
             return Ok(SqliteAccountDocumentLoad::Incompatible(reason));
@@ -407,9 +471,28 @@ fn load_in_transaction(
         load_persistence(connection, &snapshot)?;
     Ok(SqliteAccountDocumentLoad::Loaded(Box::new(
         SqliteAccountDocument {
+            inventory_state: super::inventory_state::InventoryState::load(connection)?,
+            progression: super::progression::Progression::load(connection)?,
+            entitlements: super::entitlements::load(connection)?,
+            runtime: super::runtime::load(connection)?,
+            preserved_rows: load_preserved_rows(connection)?,
             path: path.to_path_buf(),
             revision,
             primary_soid: snapshot.primary_soid,
+            profile_positions: snapshot
+                .profile
+                .profile_items()
+                .iter()
+                .enumerate()
+                .map(|(i, item)| (item.id, i))
+                .collect(),
+            reward_positions: snapshot
+                .profile
+                .dismantle_rewards()
+                .iter()
+                .enumerate()
+                .map(|(i, item)| (item.id, i))
+                .collect(),
             profile: snapshot.profile,
             characters: snapshot.characters,
             settings: snapshot.settings,
@@ -437,7 +520,7 @@ fn load_persistence(
     let mut statement = connection
         .prepare(
             "SELECT position, instance_soid, mutation_serial FROM profile_items \
-             WHERE account_id = 1 ORDER BY position;",
+             ORDER BY position;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read profile metadata from", error))?;
     let mut rows = statement
@@ -476,9 +559,7 @@ fn load_persistence(
     let mut character_persistence = BTreeMap::new();
     let mut statement = connection
         .prepare(
-            "SELECT position, selected, level, accepted, preview_available, appearance_value, \
-             last_orbited_destination, content_bypass, acquired_subclass_ability_mask, \
-             next_inventory_serial FROM characters WHERE account_id = 1 ORDER BY position;",
+            "SELECT row_number() OVER (ORDER BY slot)-1, next_inventory_serial FROM characters ORDER BY slot;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?;
     let mut rows = statement
@@ -501,35 +582,10 @@ fn load_persistence(
                     "metadata position does not identify a loaded character",
                 )
             })?;
-        let appearance: f64 = row
-            .get(5)
-            .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?;
         character_persistence.insert(
             character.id,
             CharacterPersistence {
-                selected: row.get::<_, i64>(1).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })? != 0,
-                level: row.get(2).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })?,
-                accepted: row.get::<_, i64>(3).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })? != 0,
-                preview_available: row.get::<_, i64>(4).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })? != 0,
-                appearance_bits: (appearance as f32).to_bits(),
-                last_orbited_destination: row.get(6).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })?,
-                content_bypass: row.get::<_, i64>(7).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })? != 0,
-                acquired_subclass_ability_mask: row.get::<_, i64>(8).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })? as u64,
-                next_inventory_serial: row.get(9).map_err(|error| {
+                next_inventory_serial: row.get(1).map_err(|error| {
                     SqliteAccountError::sqlite("read character metadata from", error)
                 })?,
             },
@@ -539,10 +595,9 @@ fn load_persistence(
     let mut item_persistence = BTreeMap::new();
     let mut statement = connection
         .prepare(
-            "SELECT character_position, location, position, mutation_serial, \
-             movement_ability_entry, grenade_ability_entry, super_ability_entry, \
-             melee_ability_entry, class_ability_entry FROM character_items \
-             WHERE account_id = 1 ORDER BY character_position, location, position;",
+            "SELECT (SELECT count(*) FROM characters WHERE slot < items.character_slot), location, position, mutation_serial, \
+             movement_ability, grenade_ability, super_ability, \
+             melee_ability, class_ability FROM items ORDER BY character_slot, location, position;",
         )
         .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
     let mut rows = statement
@@ -624,22 +679,26 @@ pub(super) fn database_revision(
         .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?;
     let mut hash = REVISION_OFFSET;
     feed(&mut hash, &schema_version.to_le_bytes());
-    for (table, order) in [
-        ("account_state", "singleton"),
-        ("dismantle_rewards", "account_id, position"),
-        ("profile_items", "account_id, position"),
-        ("characters", "account_id, position"),
-        (
-            "character_items",
-            "account_id, character_position, location, position",
-        ),
-        (
-            "item_plugs",
-            "account_id, character_position, location, item_position, plug_position",
-        ),
-    ] {
+    let mut names = connection
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+        .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?;
+    let mut tables = names
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?;
+    tables.push("sqlite_schema".into());
+    for table in tables {
         feed(&mut hash, table.as_bytes());
-        let sql = format!("SELECT * FROM {table} ORDER BY {order};");
+        let escaped = table.replace('"', "\"\"");
+        let probe = connection
+            .prepare(&format!("SELECT * FROM \"{escaped}\""))
+            .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?;
+        let order = (1..=probe.column_count())
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT * FROM \"{escaped}\" ORDER BY {order}");
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| SqliteAccountError::sqlite("read revision from", error))?;
@@ -692,4 +751,20 @@ fn feed(hash: &mut u64, bytes: &[u8]) {
         *hash ^= u64::from(*byte);
         *hash = hash.wrapping_mul(REVISION_PRIME);
     }
+}
+
+fn load_preserved_rows(
+    db: &Connection,
+) -> Result<BTreeMap<String, Vec<super::writer::NativeRow>>, SqliteAccountError> {
+    [
+        "items",
+        "sockets",
+        "profile_items",
+        "dismantle_rewards",
+        "entitlements",
+        "character_stacks",
+    ]
+    .into_iter()
+    .map(|table| Ok((table.into(), super::writer::rows(db, table)?)))
+    .collect()
 }

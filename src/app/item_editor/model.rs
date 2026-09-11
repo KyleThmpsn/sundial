@@ -121,6 +121,8 @@ pub(crate) struct PlugPickerSnapshot {
     pub socket_index: usize,
     pub socket_label: String,
     pub current_hash: Option<u64>,
+    /// The current authored choice has no stock item identity in this picker.
+    pub custom_current: bool,
     pub current_label: String,
     pub native_default: Option<NativePlugDefault>,
     pub native_default_label: Option<String>,

@@ -6,15 +6,13 @@ use super::settings::{
     create_adjacent_backup, load_installed_sunrise_defaults, save_json,
     validate_workspace_document, verify_workspace_source_unchanged,
 };
-#[cfg(feature = "sqlite-account")]
 use super::{ConfirmationDialog, platform, settings::backups_path};
 use super::{SundialApp, preserve_inactive_json_account_domains};
 
 impl SundialApp {
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn request_sqlite_backup_restore(&mut self) {
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Select a Sundial state.sqlite3 backup")
+            .set_title("Select a Sundial investment.sqlite3 backup")
             .add_filter("SQLite database", &["sqlite3"]);
         if let Some(path) = backups_path() {
             dialog = dialog.set_directory(path);
@@ -34,7 +32,6 @@ impl SundialApp {
         }
     }
 
-    #[cfg(feature = "sqlite-account")]
     pub(super) fn restore_selected_sqlite_backup(&mut self) {
         let Some(backup) = self.pending_sqlite_restore.take() else {
             return;
@@ -42,7 +39,7 @@ impl SundialApp {
         match platform::destiny_is_running() {
             Ok(true) => {
                 self.set_status(
-                    "Not restored: close Destiny 2 before replacing state.sqlite3, then try again",
+                    "Not restored: close Destiny 2 before replacing investment.sqlite3, then try again",
                     true,
                 );
                 return;
@@ -64,7 +61,7 @@ impl SundialApp {
                         });
                     self.set_status(
                         format!(
-                            "Restored state.sqlite3 from {}. The replaced database is preserved at {}.{warning}",
+                            "Restored investment.sqlite3 from {}. The replaced database is preserved at {}.{warning}",
                             backup.display(),
                             safety_backup.display()
                         ),
@@ -74,7 +71,7 @@ impl SundialApp {
                     let reload_error = self.status.clone();
                     self.set_status(
                         format!(
-                            "Restored state.sqlite3 from {}, but Sundial could not reload the workspace: {reload_error}. The replaced database is preserved at {}",
+                            "Restored investment.sqlite3 from {}, but Sundial could not reload the workspace: {reload_error}. The replaced database is preserved at {}",
                             backup.display(),
                             safety_backup.display()
                         ),

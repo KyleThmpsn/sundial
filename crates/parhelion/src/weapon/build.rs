@@ -3,10 +3,16 @@ mod assets;
 mod collections;
 mod custom_plugs;
 mod definition;
+mod progress;
 mod runtime;
 mod tables;
 
 use super::*;
+pub(crate) use progress::Phase;
+pub(super) use progress::Progress;
+
+// Shared compilation work plus donor resolution, runtime authoring, and definitions per weapon.
+const SHARED_OPERATIONS: usize = 12;
 
 pub(super) fn canonical_project_weapons(
     project: &WeaponProjectSpec,
@@ -26,7 +32,7 @@ pub(super) fn canonical_project_weapons(
     let mut localized_hashes = BTreeSet::new();
     let mut weapons = project.weapons.clone();
     for weapon in &weapons {
-        let weapon_label = format!("Weapon {:?} ({})", weapon.text.name, weapon.namespace);
+        let weapon_label = weapon.error_context();
         weapon
             .validate()
             .map_err(|error| error.context(weapon_label.clone()))?;
@@ -77,6 +83,17 @@ pub(super) fn canonical_project_weapons(
             }
         }
     }
+    let badge_count = weapons
+        .iter()
+        .filter_map(|weapon| weapon.overrides.badge.as_ref().map(|badge| &badge.name))
+        .collect::<BTreeSet<_>>()
+        .len();
+    if badge_count > crate::presentation::MAX_CUSTOM_BADGES {
+        return Err(invalid(
+            "A build can contain at most 24 custom badges within Sunrise’s presentation node capacity",
+        ));
+    }
+    project_authored_localized_values(&weapons, &[], 0)?;
     weapons.sort_by(|left, right| {
         (
             left.namespace.as_bytes(),
@@ -115,29 +132,68 @@ pub fn build_weapon_project(
 ///
 /// Workflow uses this entry only after validating the project against the live install, because
 /// its package input can be a filtered temporary view that deliberately omits authored overlays.
+#[cfg(test)]
 pub(crate) fn build_weapon_project_after_catalog_validation(
     package_directory: &Path,
     project: &WeaponProjectSpec,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
-    let weapons = canonical_project_weapons(project)?;
-    build_weapon_project_canonical(package_directory, &weapons)
+    compile_with_progress(package_directory, project, &mut |_, _, _, _| {})
+}
+
+/// Compiles catalog-validated recipes and reports real shared and per-weapon operations.
+pub(crate) fn compile_with_progress(
+    package_directory: &Path,
+    project: &WeaponProjectSpec,
+    report: &mut dyn FnMut(Phase, &str, usize, usize),
+) -> AuthoringResult<NewWeaponProjectBundle> {
+    let mut progress = Progress::new(SHARED_OPERATIONS + 1 + 3 * project.weapons.len(), report);
+    let weapons = progress.step("Validating Recipe Identities", || {
+        canonical_project_weapons(project)
+    })?;
+    compile_canonical(package_directory, &weapons, &mut progress)
 }
 
 /// Keep allocation, table mutation, and final package validation in their native order.
+#[cfg(test)]
 pub(super) fn build_weapon_project_canonical(
     package_directory: &Path,
     weapons: &[WeaponCloneSpec],
 ) -> AuthoringResult<NewWeaponProjectBundle> {
-    let mut sources = sources::load_project_sources(package_directory)?;
-    let resolved = resolve::resolve_project_weapons(&sources, weapons)?;
-    let templates = PerkTemplates::read(&sources)?;
-    let custom_plugs = custom_plugs::plan(&sources, &resolved, &templates.strings)?;
-    let assets = assets::plan(
-        &sources.manager,
-        &resolved,
-        weapons.len(),
-        custom_plugs.len(),
+    let mut report = |_: Phase, _: &str, _: usize, _: usize| {};
+    let mut progress = Progress::new(SHARED_OPERATIONS + 3 * weapons.len(), &mut report);
+    compile_canonical(package_directory, weapons, &mut progress)
+}
+
+fn compile_canonical(
+    package_directory: &Path,
+    weapons: &[WeaponCloneSpec],
+    progress: &mut Progress<'_>,
+) -> AuthoringResult<NewWeaponProjectBundle> {
+    let mut sources = progress.step("Loading Source Tables", || {
+        sources::load_project_sources(package_directory)
+    })?;
+    let collection_plan = progress.step("Planning Collections", || {
+        placements::Plan::new(&sources, weapons)
+            .map_err(|error| error.context("Collections destination planning"))
+    })?;
+    let resolved = resolve::resolve_project_weapons_with_progress(
+        &sources,
+        weapons,
+        &collection_plan,
+        progress,
     )?;
+    let templates = progress.step("Reading Perk Templates", || PerkTemplates::read(&sources))?;
+    let custom_plugs = progress.step("Planning Private Perks", || {
+        custom_plugs::plan(&sources, &resolved, &templates.strings)
+    })?;
+    let assets = progress.step("Planning Artwork", || {
+        assets::plan(
+            &sources.manager,
+            &resolved,
+            weapons.len(),
+            custom_plugs.len(),
+        )
+    })?;
     let (runtime, custom_payloads) = runtime::author(
         package_directory,
         &mut sources,
@@ -145,15 +201,21 @@ pub(super) fn build_weapon_project_canonical(
         &custom_plugs,
         &templates,
         assets.weapon_runtime_start,
+        progress,
     )?;
-    let icons = assets::author_icon_rows(&sources.stock_item_icons, &resolved, &assets)?;
-    let localization = author_project_localized_strings(
-        &sources.manager,
-        std::mem::take(&mut sources.localized_index),
-        weapons,
-        &custom_plugs,
-    )?;
-    validate_authored_localization_values(&localization, weapons, &custom_plugs)?;
+    let icons = progress.step("Compiling Icons", || {
+        assets::author_icon_rows(&sources.stock_item_icons, &resolved, &assets)
+    })?;
+    let localization = progress.step("Compiling Text", || {
+        let localization = author_project_localized_strings(
+            &sources.manager,
+            std::mem::take(&mut sources.localized_index),
+            weapons,
+            &custom_plugs,
+        )?;
+        validate_authored_localization_values(&localization, weapons, &custom_plugs)?;
+        Ok(localization)
+    })?;
 
     let mut tables = tables::WeaponTables::take_stock(&mut sources, resolved.len());
     let context = tables::WeaponBuildContext {
@@ -168,23 +230,42 @@ pub(super) fn build_weapon_project_canonical(
         sandbox_pattern_layout: tables::SANDBOX_PATTERN_LAYOUT,
         authored_pattern_global_ids: &runtime.pattern_global_ids,
     };
-    tables.author_weapons(&context, &resolved)?;
-    tables.append_custom_plugs(
-        &custom_plugs,
-        sources.stock_item_count,
-        weapons.len(),
-        tables::METADATA_LAYOUT,
-    )?;
+    tables.author_weapons(&context, &resolved, progress)?;
+    progress.step("Adding Private Perk Definitions", || {
+        tables.append_custom_plugs(
+            &custom_plugs,
+            sources.stock_item_count,
+            weapons.len(),
+            tables::METADATA_LAYOUT,
+        )
+    })?;
     tables.definitions.extend(custom_payloads.definitions);
     tables.authored_strings.extend(custom_payloads.strings);
 
-    let collections = collections::author(
-        &mut sources,
-        &tables.project_rows,
-        icons.badge_index,
-        weapons.len(),
-    )?;
+    let collections = progress.step("Building Collections", || {
+        collections::author(
+            &mut sources,
+            &collection_plan,
+            &tables.project_rows,
+            icons.badge_index,
+            weapons,
+            &icons.custom_badges,
+            &mut tables.collectibles,
+        )
+        .map_err(|error| error.context("Collections authoring"))
+    })?;
+    let lore = progress.step("Building Lore", || {
+        lore::author(
+            &sources.manager,
+            &sources.globals_data,
+            weapons,
+            &mut tables.definitions,
+            &mut tables.collectibles,
+            &tables.project_rows,
+        )
+    })?;
     let output = assembly::Output {
+        lore,
         assets,
         icons,
         runtime,
@@ -193,8 +274,10 @@ pub(super) fn build_weapon_project_canonical(
         localization,
         has_custom_plugs: !custom_plugs.is_empty(),
     };
-    let emission = assembly::prepare(sources, output)?;
-    emission::emit_packages(package_directory, emission)
+    let emission = progress.step("Linking Package Data", || {
+        assembly::prepare(sources, output)
+    })?;
+    emission::emit_packages(package_directory, emission, progress)
 }
 
 struct PerkTemplates {

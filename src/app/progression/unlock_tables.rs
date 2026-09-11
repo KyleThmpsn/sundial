@@ -420,7 +420,8 @@ pub(super) fn draw_objective_values(
                                     );
                                     let row = leaf.row;
                                     let mut value = row.value;
-                                    let reserved = id == "character_object_objective_values"
+                                    let reserved = document.get("_native_progression").is_none()
+                                        && id == "character_object_objective_values"
                                         && RESERVED_CHARACTER_OBJECTIVE_VALUES
                                             .iter()
                                             .any(|(index, _)| *index == row.index);
@@ -482,6 +483,9 @@ pub(super) fn draw_progression_values(
     document: &mut Value,
 ) -> bool {
     let query = query.trim().to_lowercase();
+    if scope == ProgressionScope::Account && document.get("_native_progression").is_some() {
+        ui.label("Use Seasonal to update linked seasonal XP and artifact counters. Sunrise rebuilds seasonal rows 38 through 41 from row 38, lane 0.");
+    }
     let mut filtered = progression_display_rows(rows, catalog.progression_definitions(), scope)
         .into_iter()
         .filter(|row| {

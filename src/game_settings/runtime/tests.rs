@@ -30,6 +30,7 @@ fn all_runtime_controls_enforce_the_schema_boundary_and_preserve_unrelated_data(
         for version in [6, 8, 15, 16] {
             let mut document = json!({"version":version,"unknown":{"keep":[1,2]}});
             let original = document.clone();
+            let field = field.for_document(&document);
             let result = set_field(&mut document, field.path, value.clone(), true);
             if version < 16 {
                 assert!(result.is_err(), "{}", field.path);

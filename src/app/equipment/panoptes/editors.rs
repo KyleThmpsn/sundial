@@ -24,8 +24,7 @@ use crate::{
 
 use super::{layout, widgets};
 use crate::app::equipment::{
-    EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue, displayed_plugs,
-    equipment_definition_choices, native_plug_default,
+    EquippedItemSnapshot, displayed_plugs, equipment_definition_choices, native_plug_default,
 };
 
 pub(super) struct EquippedEditor<'a> {
@@ -83,20 +82,7 @@ impl SundialApp {
         let current_level = snapshot.and_then(|item| item.level);
         let current_hash_display_text =
             snapshot.map_or_else(|| "<empty>".to_owned(), |item| item.definition_text.clone());
-        let authored_plugs = snapshot.and_then(|item| match &item.plugs {
-            EquippedItemPlugs::NativeDefaults => Some(Value::Null),
-            EquippedItemPlugs::Authored(plugs) => Some(Value::Array(
-                plugs
-                    .iter()
-                    .map(|plug| match plug {
-                        EquippedPlugValue::Empty => Value::Null,
-                        EquippedPlugValue::Hash(hash) => Value::from(*hash),
-                        EquippedPlugValue::Malformed(value) => Value::String(value.clone()),
-                    })
-                    .collect(),
-            )),
-            EquippedItemPlugs::Missing | EquippedItemPlugs::Malformed(_) => None,
-        });
+        let authored_plugs = snapshot.and_then(|item| item.plugs.display_value());
         let current =
             current_hash.and_then(|hash| self.manifest.item_handle_for_bucket(hash, bucket_hash));
         let definition_valid = is_empty
@@ -123,13 +109,16 @@ impl SundialApp {
                 },
             )
         });
-        let default_plugs_equipped = current.as_ref().is_some_and(|item| {
-            let (plugs, native_defaults) =
-                displayed_plugs(authored_plugs.as_ref(), &item.default_plugs);
-            native_defaults && (!item.sockets.is_empty() || !plugs.is_empty())
-        });
         let mut level_change = None;
         let mut flags_change = None;
+        let mut seen_change = None;
+        let seen = snapshot
+            .and_then(|item| item.instance_soid)
+            .and_then(|soid| {
+                self.document
+                    .native_account()
+                    .and_then(|account| account.item_seen(soid))
+            });
 
         ui.push_id(("panoptes-equipped-editor", character_index, slot), |ui| {
             let header_response = widgets::draw_compact_item_header(
@@ -156,7 +145,6 @@ impl SundialApp {
                         plugs: authored_plugs.clone(),
                     },
                     hash_display_text,
-                    default_plugs_equipped,
                     valid,
                     invalid_message: if definition_valid {
                         "invalid equipped item"
@@ -200,11 +188,12 @@ impl SundialApp {
                 },
                 |ui| {
                     ui.add_enabled_ui(guided_editable && !is_empty, |ui| {
-                        flags_change = item_editor::draw_masterwork_flag(
+                        flags_change = item_editor::draw_state_flags(
                             ui,
                             snapshot.and_then(|item| item.flags),
                             self.document.supports_v13_account(),
                         );
+                        seen_change = item_editor::draw_seen_flag(ui, seen);
                     });
                 },
             );
@@ -214,6 +203,12 @@ impl SundialApp {
             {
                 ui.colored_label(ui.visuals().error_fg_color, snapshot.issues.join(" · "))
                     .on_hover_text(format!("Authored item: {}", snapshot.raw_item_text));
+            }
+
+            if let Some(seen) = seen_change
+                && let Some(soid) = snapshot.and_then(|item| item.instance_soid)
+            {
+                self.set_item_seen(soid, seen);
             }
 
             let picker_key = format!("panoptes-equipment:{character_index}:{slot}");
@@ -349,14 +344,15 @@ impl SundialApp {
                 },
             )
         });
-        let default_plugs_equipped = current.as_ref().is_some_and(|item| {
-            let (plugs, native_defaults) = displayed_inventory_plugs(snapshot, item);
-            native_defaults && (!item.sockets.is_empty() || !plugs.is_empty())
-        });
         let editable = context.editable();
         let mut requested = Vec::new();
         let mut equip_requested = false;
         let mut flags_change = None;
+        let mut seen_change = None;
+        let seen = self
+            .document
+            .native_account()
+            .and_then(|account| account.item_seen(snapshot.instance_soid));
 
         ui.push_id(("panoptes-stored-editor", ui_identity), |ui| {
             let header_response = widgets::draw_compact_item_header(
@@ -388,7 +384,6 @@ impl SundialApp {
                         }),
                     },
                     hash_display_text: Some(&hash_display_text),
-                    default_plugs_equipped,
                     valid,
                     invalid_message: "invalid for slot/class",
                 },
@@ -429,16 +424,20 @@ impl SundialApp {
                 },
                 |ui| {
                     ui.add_enabled_ui(editable, |ui| {
-                        flags_change = item_editor::draw_masterwork_flag(
+                        flags_change = item_editor::draw_state_flags(
                             ui,
                             snapshot.flags,
                             self.document.supports_v13_account(),
                         );
+                        seen_change = item_editor::draw_seen_flag(ui, seen);
                     });
                 },
             );
             if let Some(flags) = flags_change {
                 requested.push(InventoryItemAction::SetFlags(flags));
+            }
+            if let Some(seen) = seen_change {
+                self.set_item_seen(snapshot.instance_soid, seen);
             }
 
             let picker_key = inventory_item_state_key(ui_identity);
@@ -747,12 +746,11 @@ impl SundialApp {
                 })
                 .inner;
             if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
-                let mut plugs = current_plugs.clone();
-                while plugs.len() <= socket_index {
-                    plugs.push(None);
-                }
-                plugs[socket_index] = hash.and_then(|hash| u32::try_from(hash).ok());
-                requested.push(InventoryItemAction::SetPlugs(ItemPlugs::Authored(plugs)));
+                requested.push(InventoryItemAction::set_plug(
+                    &current_plugs,
+                    socket_index,
+                    hash,
+                ));
             }
             if searchable {
                 self.plug_searches.insert(query_key, query);

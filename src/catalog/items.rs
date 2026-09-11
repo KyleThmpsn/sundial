@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 mod abilities;
 mod ammo;
 mod damage;
+mod descriptions;
 mod inventory;
+pub(crate) use inventory::weapon_bucket_capacities;
 mod investment;
 mod perks;
 mod quality;
@@ -19,6 +21,7 @@ pub(in crate::catalog) use ammo::item_weapon_ammo_type;
 pub(crate) use damage::is_weapon_bucket;
 pub(crate) use damage::{ItemDamageProfile, ItemDamageType, ItemWeaponInventorySlot};
 pub(in crate::catalog) use damage::{item_damage_profile, resolve_default_plug_damage_profile};
+pub(in crate::catalog) use descriptions::scan_perk_descriptions;
 #[cfg(test)]
 pub(crate) use inventory::ItemStackability;
 pub(in crate::catalog) use inventory::scan_inventory_bucket_descriptors;

@@ -18,10 +18,13 @@ pub(super) enum UnlockTable {
     AccountProgressions,
     CharacterProgressions,
     UnreplicatedProgressions,
+    FlagDefinitions,
+    ValueDefinitions,
+    StoredValues,
 }
 
 impl UnlockTable {
-    pub(super) const ALL: [Self; 9] = [
+    pub(super) const ALL: [Self; 12] = [
         Self::AccountFlagRuns,
         Self::ProfileFlagRuns,
         Self::CharacterFlags,
@@ -31,6 +34,9 @@ impl UnlockTable {
         Self::AccountProgressions,
         Self::CharacterProgressions,
         Self::UnreplicatedProgressions,
+        Self::FlagDefinitions,
+        Self::ValueDefinitions,
+        Self::StoredValues,
     ];
 
     pub(super) const fn label(self) -> &'static str {
@@ -44,6 +50,9 @@ impl UnlockTable {
             Self::AccountProgressions => "Account Progressions",
             Self::CharacterProgressions => "Character Progressions",
             Self::UnreplicatedProgressions => "Unreplicated Progressions",
+            Self::FlagDefinitions => "All Flag Definitions",
+            Self::ValueDefinitions => "All Value Definitions",
+            Self::StoredValues => "All Stored Values",
         }
     }
 
@@ -57,7 +66,10 @@ impl UnlockTable {
             Self::CharacterObjectObjectiveValues => Some("character_objective_values"),
             Self::AccountProgressions => Some("account_progressions"),
             Self::CharacterProgressions => Some("character_progressions"),
-            Self::UnreplicatedProgressions => None,
+            Self::UnreplicatedProgressions
+            | Self::FlagDefinitions
+            | Self::ValueDefinitions
+            | Self::StoredValues => None,
         }
     }
 
@@ -108,6 +120,7 @@ impl InvestmentTable {
 #[derive(Debug, Default)]
 pub(in crate::app) struct UiState {
     pub(in crate::app) read_only: bool,
+    pub(super) seasonal: seasonal::UiState,
     pub(super) unlock_table: UnlockTable,
     pub(super) investment_table: InvestmentTable,
     pub(super) query: String,
@@ -189,6 +202,7 @@ impl UiState {
     }
 
     pub(in crate::app) fn invalidate_document(&mut self) {
+        self.seasonal.invalidate();
         self.cached_progression = None;
         self.progression_baselines.clear();
         self.last_progression_change = None;

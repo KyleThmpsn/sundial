@@ -11,7 +11,7 @@ use super::{
     UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 106;
+pub(super) const CACHE_SCHEMA: u32 = 110;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -61,6 +61,7 @@ pub(super) struct CatalogContents {
     pub(super) item_material_requirement_set_indices:
         HashMap<u64, ItemMaterialRequirementSetIndices>,
     pub(super) progression_definitions: Vec<ProgressionDefinition>,
+    pub(super) seasonal: Option<crate::investment::seasonal::Definition>,
     #[serde(default)]
     pub(super) progression_package_error: Option<String>,
     pub(super) plug_pools: Vec<Vec<u64>>,

@@ -5,8 +5,6 @@ use sundial_account::AccountError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SqliteAccountIncompatibility {
     Schema { found: i64, supported: i64 },
-    AccountFormat { found: i64, supported: i64 },
-    SettingsPayload { found: u32, supported: u32 },
 }
 
 #[derive(Debug)]
@@ -47,14 +45,6 @@ impl fmt::Display for SqliteAccountIncompatibility {
                 formatter,
                 "SQLite schema {found} is newer than supported schema {supported}"
             ),
-            Self::AccountFormat { found, supported } => write!(
-                formatter,
-                "SQLite account format {found} is newer than supported format {supported}"
-            ),
-            Self::SettingsPayload { found, supported } => write!(
-                formatter,
-                "SQLite settings payload {found} is newer than supported payload {supported}"
-            ),
         }
     }
 }
@@ -70,7 +60,7 @@ impl fmt::Display for SqliteAccountError {
                 )
             }
             Self::InvalidSchema(message) => {
-                write!(formatter, "invalid PR-88 SQLite schema: {message}")
+                write!(formatter, "invalid Sunrise SQLite schema: {message}")
             }
             Self::InvalidData { location, message } => {
                 write!(
@@ -83,7 +73,7 @@ impl fmt::Display for SqliteAccountError {
                 formatter.write_str("no in-session SQLite account entity IDs remain")
             }
             Self::SourceChanged => formatter.write_str(
-                "state.sqlite3 changed outside Sundial after it was loaded; reload before saving",
+                "investment.sqlite3 changed outside Sundial after it was loaded. Reload before saving",
             ),
             Self::Backup(message) => formatter.write_str(message),
         }

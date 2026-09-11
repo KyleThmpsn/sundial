@@ -31,6 +31,7 @@ impl UninstallPlan {
                 cleaned_bytes: vec![],
                 removed_items: BTreeMap::from([(100, 2)]),
                 resized_items: BTreeMap::new(),
+                slot_moves: vec![],
                 cleared_plugs: 1,
                 cleared_unlocks: 3,
                 removed_reward_rules: 0,
@@ -295,6 +296,7 @@ fn removal_record(plan: &UninstallPlan, backup: &Path) -> InstallTransactionReco
             })
             .collect(),
         account_cleanup: None,
+        client_settings: None,
     }
 }
 

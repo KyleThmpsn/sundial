@@ -5,7 +5,9 @@ use sundial::package_authoring::{
     investment_schema::*, open_shadowkeep_package_manager, resolve_live_named_tag,
 };
 use tiger_pkg::TagHash;
+mod placement;
 mod sockets;
+pub(super) use placement::slot_replacement;
 pub(super) use sockets::generation_socket_defaults;
 
 pub(super) fn installed_identities(

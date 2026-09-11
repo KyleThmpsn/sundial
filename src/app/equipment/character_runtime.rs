@@ -9,7 +9,10 @@ use eframe::egui;
 
 impl SundialApp {
     pub(super) fn draw_character_runtime(&mut self, ui: &mut egui::Ui, index: usize) {
-        if !self.preferences.experimental_activity_state || !self.document.supports_v13_account() {
+        if !self.document.uses_json_account()
+            || !self.preferences.experimental_activity_state
+            || !self.document.supports_v13_account()
+        {
             return;
         }
         let Some(character) = self

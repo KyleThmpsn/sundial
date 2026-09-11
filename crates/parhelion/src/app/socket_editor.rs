@@ -1,5 +1,7 @@
 //! Focused socket editor controls; recipe mutation occurs on user actions.
 use super::*;
+use crate::recipe::RecipeDamageType;
+use sundial::investment::WeaponDamageType;
 
 mod row;
 use row::{SocketRowContext, draw_socket_picker_row};
@@ -147,6 +149,7 @@ fn draw_add_socket(
 pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContext<'_>) {
     let SocketPickerContext {
         catalog,
+        recipe_library,
         recipe,
         queries,
         pages,
@@ -160,6 +163,31 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
     } = context;
     ui.add_space(3.0);
     draw_socket_override_diagnostics(ui, catalog, recipe, donor, show_plug_safety_warnings);
+    let bank = crate::weapon::perk_bank::project(recipe, donor, |hash| {
+        catalog.item_sandbox_perk_indices(hash)
+    });
+    ui.label(format!(
+        "Replicated Effect Bank: {} / 16",
+        bank.default_count
+    ));
+    let solar = recipe.overrides.modern_damage_type.map_or(
+        donor.summary.damage_type == Some(WeaponDamageType::Solar),
+        |damage| damage == RecipeDamageType::Solar,
+    );
+    if bank.wave_frame && !solar {
+        ui.colored_label(ui.visuals().warn_fg_color,
+            "Wave Frame compatibility: native Wave spawning was verified with Solar damage on Mountaintop and Truthteller. The matched Arc Mountaintop controls spawned projectiles without Waves. Use Solar as the baseline for this effect. Other damage types remain unverified.");
+    }
+    if bank.default_count > 16 {
+        ui.colored_label(ui.visuals().warn_fg_color, format!(
+            "{} exceeds Sunrise's replicated effect capacity with the default plugs. Omitted from that path: {}. Authored effects are preserved.",
+            recipe.name, bank.omitted.join(", ")
+        ));
+    } else if bank.maximum_count > 16 {
+        ui.colored_label(ui.visuals().warn_fg_color, format!(
+            "Some selectable plug combinations use up to {} replicated effects and exceed Sunrise's 16-entry bank. Later socket effects may be omitted from that path.", bank.maximum_count
+        ));
+    }
     if !recipe.overrides.socket_columns.is_empty()
         && recipe.overrides.socket_columns.len() < donor.sockets.len()
     {
@@ -203,6 +231,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
             ui,
             SocketRowContext {
                 catalog,
+                recipe_library,
                 recipe,
                 queries: &mut queries[socket_index],
                 page: &mut pages[socket_index],
@@ -481,7 +510,10 @@ pub(super) fn draw_socket_role_label(
                         ui.selectable_value(role, Some(choice.socket_type), &choice.label);
                     }
                 }
-            }).response.on_hover_text(format!("{label}\nChange this socket's native role, for example Trait to Intrinsic. Existing custom perks retain their saved display type."));
+            }).response.on_hover_ui(|ui| {
+                sundial::investment::tooltip_title(ui, label);
+                ui.label("Change this socket's native role, for example Trait to Intrinsic. Existing custom perks retain their saved display type.");
+            });
     });
 }
 
@@ -989,6 +1021,63 @@ pub(super) fn set_recipe_socket_column(
         recipe.overrides.socket_columns.clear();
     }
     reconcile_socket_plug_variants(recipe, socket_index, &choices, removed_choice);
+}
+
+pub(super) fn make_choice_default(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+    choice_index: usize,
+) -> Result<(), String> {
+    let mut choices = recipe_socket_choices(recipe, socket_index, inherited)?;
+    if choice_index >= choices.len() {
+        return Err("The selected choice no longer exists. Reopen the socket picker.".into());
+    }
+    if choice_index == 0 {
+        return Ok(());
+    }
+    let mut column = recipe
+        .overrides
+        .socket_columns
+        .get(socket_index)
+        .and_then(Option::as_ref)
+        .cloned()
+        .unwrap_or_default();
+    if (!column.choice_weight_bits.is_empty() && column.choice_weight_bits.len() != choices.len())
+        || (!column.choice_conditions.is_empty() && column.choice_conditions.len() != choices.len())
+    {
+        return Err("The socket's weights or conditions do not match its choices. Correct them before changing the default.".into());
+    }
+    let selected = choices.remove(choice_index);
+    choices.insert(0, selected);
+    if !column.choice_weight_bits.is_empty() {
+        let selected = column.choice_weight_bits.remove(choice_index);
+        column.choice_weight_bits.insert(0, selected);
+    }
+    if !column.choice_conditions.is_empty() {
+        let selected = column.choice_conditions.remove(choice_index);
+        column.choice_conditions.insert(0, selected);
+    }
+    recipe.overrides.socket_columns.resize_with(
+        socket_count
+            .max(recipe.overrides.socket_columns.len())
+            .max(socket_index + 1),
+        || None,
+    );
+    recipe.overrides.socket_columns[socket_index] = Some(column);
+    for variant in &mut recipe.overrides.socket_plug_variants {
+        if usize::from(variant.socket_index) == socket_index {
+            let index = usize::from(variant.choice_index);
+            if index == choice_index {
+                variant.choice_index = 0;
+            } else if index < choice_index {
+                variant.choice_index += 1;
+            }
+        }
+    }
+    set_recipe_socket_column(recipe, socket_count, socket_index, inherited, choices, None);
+    Ok(())
 }
 
 pub(super) fn inherited_socket_choices(

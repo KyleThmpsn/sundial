@@ -5,12 +5,14 @@ use super::{
     icons::scan_item_icon_containers,
     items::{
         ItemScan, ItemScanContext, item_power_cap, scan_ability_displays,
-        scan_inventory_bucket_descriptors, scan_items, scan_power_cap_definitions,
-        scan_sandbox_perk_catalog, scan_stat_definitions, scan_stat_groups,
+        scan_inventory_bucket_descriptors, scan_items, scan_perk_descriptions,
+        scan_power_cap_definitions, scan_sandbox_perk_catalog, scan_stat_definitions,
+        scan_stat_groups,
     },
     progression::{
         attach_progression_references, expand_shared_condition_contexts,
-        scan_package_condition_contexts, scan_progression_definitions, sort_progression_contexts,
+        scan_package_condition_contexts, scan_progression_definitions, scan_seasonal,
+        sort_progression_contexts,
     },
 };
 use crate::{
@@ -80,8 +82,13 @@ pub(super) fn scan_packages(
         .iter()
         .map(|definition| definition.name.clone())
         .collect::<Vec<_>>();
-    let sandbox_perk_catalog = scan_sandbox_perk_catalog(manager, globals_data)?;
+    let sandbox_perk_catalog = scan_sandbox_perk_catalog(manager, root, globals_data)?;
     let mut progression = progression::read(&sources, &mut localized_cache, report);
+    let perk_descriptions = retain_progression_scan(
+        "Perk descriptions",
+        scan_perk_descriptions(manager, globals_data, localized_tags, &mut localized_cache),
+        &mut progression.errors,
+    );
     let inventory_buckets = scan_inventory_bucket_descriptors(manager, root)?;
     let tables = sources::ItemTables::read(&sources)?;
     let progression_definitions = retain_progression_scan(
@@ -121,6 +128,7 @@ pub(super) fn scan_packages(
             item_stat_definitions: &item_stat_definitions,
             stat_names: &stat_names,
             sandbox_perk_catalog: Some(&sandbox_perk_catalog),
+            perk_descriptions: &perk_descriptions,
             trait_definition_count: progression.trait_definitions.len(),
             ability_displays: &ability_displays,
             collectible_item_paths: &progression.collectible_item_paths,
@@ -163,6 +171,20 @@ pub(super) fn scan_packages(
         &mut progression.errors,
     );
 
+    let seasonal = retain_progression_scan(
+        "Seasonal progression",
+        scan_seasonal(
+            manager,
+            &tables.hashes,
+            &tables.definition_tags,
+            &collectibles,
+            &progression.unlock_flag_definitions,
+            &progression.unlock_value_definitions,
+            &progression_definitions,
+        )
+        .map(Some),
+        &mut progression.errors,
+    );
     item_scan.diagnostics.append_to(&mut progression.errors);
     let progression_package_error =
         (!progression.errors.is_empty()).then(|| progression.errors.join("\n"));
@@ -197,6 +219,7 @@ pub(super) fn scan_packages(
         material_requirement_sets,
         item_material_requirement_set_indices: item_scan.item_material_requirement_set_indices,
         progression_definitions,
+        seasonal,
         progression_package_error,
         plug_pools: Vec::new(),
     })

@@ -14,14 +14,9 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
-[features]
-default = []
-# Retired PR88 prototype for development only; never enable in release packages.
-sqlite-account = ["sundial/sqlite-account"]
-
 [dependencies]
 parhelion = { path = "../parhelion" }
-sundial = { path = "../..", default-features = false }
+sundial = { path = "../.." }
 
 [build-dependencies]
 winresource = "0.1.31"

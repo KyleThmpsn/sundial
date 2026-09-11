@@ -4,6 +4,21 @@ use crate::app::authoring_bridge;
 use eframe::egui;
 use std::{hash::Hash, path::Path};
 
+/// Shared tooltip title typography for Sundial and Parhelion.
+pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
+    crate::ui_help::tooltip_title(ui, title)
+}
+
+/// Native asset choices use the same row layout as investment choices.
+pub fn draw_asset_choice_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    detail: &str,
+    selected: bool,
+) -> egui::Response {
+    authoring_bridge::draw_asset_choice_row(ui, name, detail, selected)
+}
+
 /// Consistent loading and build progress appearance across both applications.
 pub fn progress_bar(fraction: f32) -> egui::ProgressBar {
     egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).corner_radius(egui::CornerRadius::same(3))
@@ -134,6 +149,14 @@ pub fn authoring_button_width(ui: &egui::Ui, label: &str) -> f32 {
     authoring_bridge::authoring_button_width(ui, label)
 }
 
+/// Fixed height shared with the native icon and description picker row.
+pub fn authoring_choice_row_height(ui: &egui::Ui) -> f32 {
+    (ui.text_style_height(&egui::TextStyle::Button)
+        + ui.text_style_height(&egui::TextStyle::Body)
+        + 13.0)
+        .max(48.0)
+}
+
 /// Returns the responsive right-aligned label width used by Sundial's plug rows.
 #[must_use]
 pub fn authoring_socket_label_width(available_width: f32) -> f32 {
@@ -206,6 +229,25 @@ pub fn configure_authoring_fonts(
 }
 
 impl InvestmentCatalog {
+    /// Reuses the same icon, description, focus and tooltip renderer as Sundial's plug browser.
+    pub fn draw_authoring_choice_row(
+        &self,
+        ui: &mut egui::Ui,
+        hash: Option<u32>,
+        name: &str,
+        description: Option<&str>,
+        selected: bool,
+    ) -> egui::Response {
+        authoring_bridge::draw_authoring_choice_row(
+            ui,
+            &self.catalog,
+            hash,
+            name,
+            description,
+            selected,
+        )
+    }
+
     /// Renders a compact trigger anchored to Sundial's native compatible-plug browser.
     ///
     /// `choice_index` is part of the persistent egui identity, so multiple ordered choices for

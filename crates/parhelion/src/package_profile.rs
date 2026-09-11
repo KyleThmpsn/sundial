@@ -11,6 +11,11 @@ pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
 pub(crate) const COLLECTION_PACKAGE_ID: u16 = 0x058C;
 pub(crate) const HOST_PACKAGE_ID: u16 = 0x0914;
 pub(crate) const HOST_EXPECTED_ENTRY_COUNT: usize = 5_452;
+
+pub(crate) fn is_stock_item_definition(tag: u32) -> bool {
+    let tag = tiger_pkg::TagHash(tag);
+    tag.pkg_id() != HOST_PACKAGE_ID || usize::from(tag.entry_index()) < HOST_EXPECTED_ENTRY_COUNT
+}
 pub(crate) const ACCOUNT_UNLOCK_BANK: u8 = sundial::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_BANK;
 pub(crate) const LOCALIZATION_DONOR_TABLE_INDEX: usize = 2_927;
 

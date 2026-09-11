@@ -11,6 +11,11 @@ permissions:
 jobs:
   validate-version:
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     outputs:
       version: ${{ steps.version.outputs.version }}
 
@@ -24,12 +29,29 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
           test -n "$version"
-          grep -Fxq "# Sundial v$version" RELEASE_NOTES.md
+          [[ "$(head -n 1 RELEASE_NOTES.md)" == "Sundial v$version "* ]]
           if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
             printf 'Tag %s does not match Cargo version %s.\n' "$GITHUB_REF_NAME" "$version" >&2
             exit 1
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require Quality For This Commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          commit=$(git rev-parse HEAD)
+          run_id=$(gh run list --workflow quality.yml --commit "$commit" --limit 20 \
+            --json databaseId,event \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          if [[ -z "$run_id" ]]; then
+            echo "No Quality run exists for $commit. Run Quality on this ref, then rerun Release." >&2
+            exit 1
+          fi
+          gh run watch "$run_id" --exit-status --interval 30
+          result=$(gh run view "$run_id" --json headSha,conclusion --jq '.headSha + " " + .conclusion')
+          test "$result" = "$commit success"
 
   windows:
     needs: validate-version
@@ -42,46 +64,19 @@ jobs:
       - name: Install Rust 1.88
         shell: pwsh
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
-
-      - name: Install dependency auditor
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint workspace
-        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Test workspace
-        run: cargo test --release --workspace --all-targets --all-features --locked
-
-      - name: Lint JSON-only account build
-        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
-
-      - name: Test JSON-only account build
-        run: cargo test --release --workspace --all-targets --no-default-features --locked
-
-      - name: Check Rust documentation
-        shell: pwsh
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
-
-      - name: Audit dependencies
-        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
 
       - name: Build Sundial
         run: cargo build --release --locked -p sundial-suite
 
       - name: Generate dependency notices
         shell: pwsh
-        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
+        run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
 
       - name: Package release
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
+        run: ./packaging/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -100,7 +95,7 @@ jobs:
 
       - name: Install Rust 1.88
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
 
       - name: Install build tools
@@ -115,48 +110,17 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxkbcommon-dev \
-            libxrandr-dev \
-            desktop-file-utils \
-            python3-gi
-
-      - name: Test Linux desktop installation
-        run: sh packaging/linux/tests/install.sh
-
-      - name: Install dependency auditor
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint workspace
-        run: cargo clippy --release --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Test workspace
-        run: cargo test --release --workspace --all-targets --all-features --locked
-
-      - name: Lint JSON-only account build
-        run: cargo clippy --release --workspace --all-targets --no-default-features --locked -- -D warnings
-
-      - name: Test JSON-only account build
-        run: cargo test --release --workspace --all-targets --no-default-features --locked
-
-      - name: Check Rust documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --release --workspace --all-features --no-deps --locked --lib
-
-      - name: Audit dependencies
-        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+            libxrandr-dev
 
       - name: Build Sundial
         run: cargo build --release --locked -p sundial-suite
 
       - name: Generate dependency notices
         shell: pwsh
-        run: ./scripts/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
+        run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
 
       - name: Package release
-        run: bash ./scripts/package-linux.sh "${{ needs.validate-version.outputs.version }}"
+        run: bash ./packaging/package-linux.sh "${{ needs.validate-version.outputs.version }}"
 
       - name: Verify compatibility baseline
         run: |
@@ -214,10 +178,64 @@ jobs:
           mapfile -t expected < <(printf '%s\n' "${expected[@]}" | sort)
           diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}")
           cd dist
-          sha256sum --check --strict "Sundial-v$version-windows-x86_64.zip.sha256"
-          sha256sum --check --strict "Sundial-v$version-linux-x86_64.tar.gz.sha256"
+          tr -d '\r' < "Sundial-v$version-windows-x86_64.zip.sha256" | sha256sum --check --strict
+          tr -d '\r' < "Sundial-v$version-linux-x86_64.tar.gz.sha256" | sha256sum --check --strict
 
-      - name: Publish GitHub release
+      - name: Prepare standalone Windows executable
+        shell: bash
+        run: |
+          version="${{ needs.validate-version.outputs.version }}"
+          unzip -p "dist/Sundial-v$version-windows-x86_64.zip" \
+            "Sundial-v$version-windows-x86_64/sundial.exe" > dist/sundial.exe
+          test -s dist/sundial.exe
+
+      - name: Create Draft Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/sundial.exe \
+            "dist/Sundial-$GITHUB_REF_NAME-windows-x86_64.zip" \
+            "dist/Sundial-$GITHUB_REF_NAME-linux-x86_64.tar.gz" \
+            --draft --verify-tag --notes-file RELEASE_NOTES.md --title "Sundial $GITHUB_REF_NAME"
+
+      - name: Verify In-App Update Assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          metadata="$RUNNER_TEMP/sundial-release.json"
+          release_id=$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq '.databaseId')
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$metadata"
+          python3 - "$metadata" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          release = json.loads(Path(sys.argv[1]).read_text())
+          tag = os.environ["GITHUB_REF_NAME"]
+          if (release["tag_name"] != tag or release["draft"] is not True
+                  or release["prerelease"] is not False or not (release["body"] or "").strip()):
+              sys.exit("Expected a stable draft with matching release notes and tag")
+          for platform in ("windows-x86_64.zip", "linux-x86_64.tar.gz"):
+              name = f"Sundial-{tag}-{platform}"
+              archive = Path("dist") / name
+              size = archive.stat().st_size
+              expected = {
+                  "state": "uploaded",
+                  "size": size,
+                  "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+              }
+              assets = [asset for asset in release["assets"] if asset["name"] == name]
+              if (not 0 < size <= 256 * 1024 * 1024 or len(assets) != 1
+                      or any(assets[0].get(key) != value for key, value in expected.items())):
+                  sys.exit(f"Release asset does not meet the updater contract: {name}")
+              print(f"Verified {name}")
+          PY
+
+      - name: Publish Verified Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

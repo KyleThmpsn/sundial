@@ -63,7 +63,9 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         ui.selectable_value(tab, Tab::Interface, "Interface");
         ui.selectable_value(tab, Tab::Social, "Social");
         ui.selectable_value(tab, Tab::KeyBindings, "Key Bindings")
-            .on_hover_text(if bindings_editable {
+            .on_hover_text(if !json_account {
+                "Edit the numeric input codes stored in the active account database."
+            } else if bindings_editable {
                 "Edit named key bindings used by supported Sunrise schemas."
             } else {
                 "Key bindings are shown read-only for the active account source or settings schema."
@@ -75,10 +77,15 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
     ui.separator();
 
     egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
             Tab::Sunrise => PageEdits {
-                json_changed: super::runtime::draw(ui, json_document, json_account),
+                json_changed: super::runtime::draw(
+                    ui,
+                    json_document,
+                    json_account || account_settings.is_ok(),
+                ),
                 account_commands: Vec::new(),
             },
             Tab::Player => PageEdits {
@@ -91,13 +98,13 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
                 draw_display(
                     ui,
                     settings,
-                    extended_fov && runtime_available && json_account,
+                    extended_fov && (runtime_available || !json_account),
                 )
             }),
             Tab::Interface => draw_account_settings(ui, account_settings, draw_interface),
             Tab::Social => draw_account_settings(ui, account_settings, draw_social),
             Tab::KeyBindings => draw_account_settings(ui, account_settings, |ui, settings| {
-                draw_key_bindings(ui, settings, key_bindings, bindings_editable)
+                draw_key_bindings(ui, settings, key_bindings, bindings_editable, !json_account)
             }),
         })
         .inner
@@ -136,20 +143,27 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         );
     });
     ui.add_space(8.0);
-    ui.strong("Player Name");
-
     let mut changed = false;
-    match document.pointer("/steam/user/persona_name") {
+    ui.vertical(|ui| {
+        ui.set_width(ui.available_width().min(360.0));
+        ui.horizontal(|ui| {
+            ui.strong("Player Name");
+            crate::ui_help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
+            if let Some(current) = document.pointer("/steam/user/persona_name").and_then(Value::as_str) {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{}/63", current.len())).weak());
+                });
+            }
+        });
+        match document.pointer("/steam/user/persona_name") {
         Some(value) => {
             if let Some(current) = value.as_str() {
                 let mut edited = current.to_owned();
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut edited)
-                        .desired_width(360.0)
+                        .desired_width(f32::INFINITY)
                         .char_limit(63),
                 );
-                ui.label(egui::RichText::new(format!("{}/63", edited.len())).weak());
-                ui.label("Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
                 if response.changed() {
                     changed |= set_player_name(document, &edited);
                 }
@@ -166,7 +180,8 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
                 "This settings.json has no steam.user.persona_name field.",
             );
         }
-    }
+        }
+    });
 
     if document.pointer("/steam/language").is_some() {
         ui.add_space(14.0);

@@ -1,5 +1,8 @@
 mod custom_runtime;
 mod emission;
+mod lore;
+pub(crate) mod perk_bank;
+mod placements;
 mod resolve;
 mod sources;
 #[cfg(test)]
@@ -11,12 +14,15 @@ mod socket_columns;
 use socket_columns::*;
 mod item_fields;
 use item_fields::*;
+pub(crate) use item_fields::{weapon_equipment_slot, weapon_inventory_slot};
 mod table_rows;
 use table_rows::*;
 mod raw_payload;
 use raw_payload::*;
 
 mod validation;
+pub(crate) use validation::validate_catalog_with_progress;
+#[cfg(test)]
 pub(crate) use validation::validate_weapon_clone_specs_against_catalog;
 use validation::*;
 
@@ -24,9 +30,11 @@ mod donors;
 use donors::*;
 
 mod build;
+#[cfg(test)]
 pub(crate) use build::build_weapon_project_after_catalog_validation;
 #[cfg(test)]
 use build::canonical_project_weapons;
+pub(crate) use build::{Phase as CompilePhase, compile_with_progress};
 
 #[cfg(test)]
 pub use build::build_weapon_project;
@@ -193,9 +201,7 @@ use crate::{
     SUNRISE_BADGE_DESCRIPTION, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME,
     SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement,
     SunriseProjectMetadata, SupportedPlugSet, WeaponIconRequest, append_badge_icon_row,
-    author_sunrise_badge_graph, build_badge_icon_plan, build_extended_overlay,
-    build_extended_overlay_with_references, build_standalone_package_with_references,
-    build_watermark_plan, item_icon_row_with_container, patch_badges_root_objective,
+    author_sunrise_badge_graph, build_badge_icon_plan, item_icon_row_with_container,
     sunrise_badge_collectible_parents, validate_socket_column_overrides_with_socket_types,
     validate_stat_overrides,
 };
@@ -626,6 +632,11 @@ impl WeaponInventorySlot {
 /// and embedded choices.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WeaponCloneOverrides {
+    pub collection_destination: Option<crate::collection::Destination>,
+    pub exclude_from_sunrise_badge: bool,
+    pub badge: Option<crate::presentation::Badge>,
+    pub corner_icon: Option<crate::presentation::Artwork>,
+    pub lore: Option<String>,
     pub icon_edit: crate::WeaponIconEdit,
     pub hud_icon: Option<crate::hud_icon::HudImage>,
     pub investment_stats: Vec<(u16, i32)>,
@@ -823,6 +834,8 @@ pub struct WeaponSocketColumnOverride {
 /// carried by the source plug continue to reference their stock rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponSandboxPerkRuntimeOverride {
+    pub program: Option<sundial::package_authoring::sandbox_perk::program::Program>,
+    pub projectiles: Vec<sundial::package_authoring::sandbox_perk::projectile::Selection>,
     pub source_perk_index: u16,
     pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
     pub runtime_values: Vec<WeaponRuntimeValueOverride>,
@@ -848,6 +861,7 @@ pub struct WeaponSandboxPerkActionFloatOverride {
 /// One socket choice replaced with a private clone of its stock plug item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponSocketPlugVariantOverride {
+    pub replace_effects: bool,
     /// Replaces the cloned plug's contribution for each selected native stat row.
     pub investment_stats: Vec<(u16, i32)>,
     pub socket_index: u16,
@@ -861,6 +875,15 @@ pub struct WeaponSocketPlugVariantOverride {
     pub description: Option<String>,
     pub additional_sandbox_perks: Vec<u16>,
     pub sandbox_perks: Vec<WeaponSandboxPerkRuntimeOverride>,
+}
+
+impl WeaponSocketPlugVariantOverride {
+    fn same_definition(&self, other: &Self) -> bool {
+        let mut other = other.clone();
+        other.socket_index = self.socket_index;
+        other.choice_index = self.choice_index;
+        *self == other
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -924,6 +947,32 @@ pub struct WeaponCloneSpec {
 }
 
 impl WeaponCloneSpec {
+    pub(super) fn error_context(&self) -> String {
+        let donor = self
+            .expected_donor_name
+            .as_deref()
+            .unwrap_or("Unnamed Item");
+        format!(
+            "Recipe: {:?} ({})\nItem: 0x{:08X}\nGameplay Donor: {donor:?} (0x{:08X})",
+            self.text.name, self.namespace, self.identity.item_hash, self.donor_item_hash
+        )
+    }
+
+    pub(super) fn icon_error_context(&self) -> String {
+        let (hash, name) = if let Some(donor) = &self.icon_donor {
+            (donor.item_hash, donor.expected_name.as_deref())
+        } else if let Some(donor) = &self.presentation_donor {
+            (donor.item_hash, donor.expected_name.as_deref())
+        } else {
+            (self.donor_item_hash, self.expected_donor_name.as_deref())
+        };
+        format!(
+            "{}\nIcon Donor: {:?} (0x{hash:08X})",
+            self.error_context(),
+            name.unwrap_or("Unnamed Item")
+        )
+    }
+
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
         validate_weapon_donor_references(self)?;
@@ -933,7 +982,10 @@ impl WeaponCloneSpec {
         validate_base_perks_and_traits(&self.overrides)?;
         validate_native_scalar_overrides(&self.overrides)?;
         validate_presentation_overrides(&self.overrides)?;
-        validate_socket_column_shapes(&self.overrides.socket_columns)?;
+        validate_socket_column_shapes(
+            &self.overrides.socket_columns,
+            &self.overrides.socket_plug_variants,
+        )?;
         validate_socket_plug_variant_shapes(&self.overrides.socket_plug_variants)?;
         validate_runtime_value_override_shapes(&self.overrides.runtime_values)?;
         validate_runtime_resource_patch_shapes(&self.overrides.runtime_resource_patches)?;
@@ -996,7 +1048,16 @@ struct AuthoredLocalization {
 }
 
 impl NewWeaponProjectBundle {
+    #[cfg(test)]
     pub fn write_new(&self, directory: &Path) -> AuthoringResult<Vec<PathBuf>> {
+        self.write_new_with_progress(directory, &mut |_, _, _| {})
+    }
+
+    pub(crate) fn write_new_with_progress(
+        &self,
+        directory: &Path,
+        report: &mut dyn FnMut(&str, usize, usize),
+    ) -> AuthoringResult<Vec<PathBuf>> {
         fs::create_dir_all(directory).map_err(|error| {
             AuthoringError::io("create weapon-project staging directory", directory, error)
         })?;
@@ -1011,7 +1072,17 @@ impl NewWeaponProjectBundle {
         }
         self.artifacts
             .iter()
-            .map(|artifact| artifact.write_new(directory))
+            .enumerate()
+            .map(|(index, artifact)| {
+                report(&artifact.plan.output_file_name, index, self.artifacts.len());
+                let path = artifact.write_new(directory)?;
+                report(
+                    &artifact.plan.output_file_name,
+                    index + 1,
+                    self.artifacts.len(),
+                );
+                Ok(path)
+            })
             .collect::<AuthoringResult<Vec<_>>>()
     }
 }
@@ -1046,6 +1117,8 @@ struct ResolvedRuntimeComponentDonor {
 
 #[derive(Clone)]
 struct ResolvedPrivateSandboxPerk {
+    program: Option<sundial::package_authoring::sandbox_perk::program::Program>,
+    projectiles: Vec<sundial::package_authoring::sandbox_perk::projectile::Selection>,
     source_index: usize,
     activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
     hidden: bool,
@@ -1058,10 +1131,9 @@ struct ResolvedPrivateSandboxPerk {
 
 #[derive(Clone)]
 struct ResolvedCustomPlug {
+    replace_effects: bool,
     investment_stats: Vec<(u16, i32)>,
-    weapon_ordinal: usize,
-    socket_index: usize,
-    choice_index: usize,
+    uses: Vec<CustomPlugUse>,
     source_item_hash: u32,
     source_item_index: usize,
     source_definition_tag: TagHash,
@@ -1082,6 +1154,13 @@ struct ResolvedCustomPlug {
     classification_item_index: Option<usize>,
     classification_perk_index: Option<usize>,
     sandbox_perks: Vec<ResolvedPrivateSandboxPerk>,
+}
+
+#[derive(Clone, Copy)]
+struct CustomPlugUse {
+    weapon_ordinal: usize,
+    socket_index: usize,
+    choice_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1143,6 +1222,28 @@ fn globals_child_tag(data: &[u8], slot: usize) -> AuthoringResult<TagHash> {
 
 /// Sunrise's cached stat rows per definition, not the native array capacity.
 pub(crate) const SUNRISE_STAT_CONTRIBUTION_CAPACITY: usize = 16;
+
+/// An independent perk's stat list is complete, so removing a row in the
+/// workbench must also remove the presentation template's contribution.
+fn replace_custom_plug_stats(data: &mut Vec<u8>, values: &[(u16, i32)]) -> AuthoringResult<()> {
+    if values.len() > SUNRISE_STAT_CONTRIBUTION_CAPACITY {
+        return Err(invalid("A custom perk supports up to 16 stat bonuses"));
+    }
+    let resource = relative_target(data, ITEM_INVESTMENT_STAT_POINTER_OFFSET)?;
+    let mut removed = if read_u64(data, resource)? == 0 && read_i64(data, resource + 8)? == 0 {
+        Vec::new()
+    } else {
+        let (count, _, rows, class) = array_at(data, resource)?;
+        if class != ITEM_INVESTMENT_STAT_ROW_CLASS || count > 256 {
+            return Err(invalid("The perk template has an invalid stat array"));
+        }
+        (0..count)
+            .map(|index| read_u8(data, rows + index * ITEM_INVESTMENT_STAT_ROW_SIZE).map(u16::from))
+            .collect::<AuthoringResult<Vec<_>>>()?
+    };
+    removed.retain(|index| !values.iter().any(|(selected, _)| selected == index));
+    set_weapon_stats(data, values, &removed)
+}
 
 /// Apply sparse stat edits without changing the source or accepting cache-truncated rows.
 fn apply_custom_plug_stats(data: &mut Vec<u8>, overrides: &[(u16, i32)]) -> AuthoringResult<()> {

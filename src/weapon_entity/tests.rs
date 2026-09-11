@@ -318,6 +318,78 @@ fn component_owner_payload_retarget_rejects_malformed_absolute_target() {
 }
 
 #[test]
+fn owner_retarget_includes_both_event_endpoints_and_is_atomic() {
+    const OLD: u32 = 0x8111_0001;
+    const NEW: u32 = 0x8123_0001;
+    let mut entity = two_resource_weapon_entity();
+    entity.resize(0x1F8, 0);
+    write_u64(&mut entity, 0, 0x1F8).unwrap();
+    write_array_descriptor(&mut entity, 0x20, 0x1A0, 1, 0x8080_9BC9);
+    for offset in [0x1B8, 0x1D8] {
+        write_u32(&mut entity, offset, OLD).unwrap();
+        write_u32(&mut entity, offset + 4, 0x8080_9789).unwrap();
+        write_u64(&mut entity, offset + 8, 0x2280).unwrap();
+    }
+    write_u32(&mut entity, 0x1F0, OLD).unwrap();
+    let original = entity.clone();
+    assert_eq!(
+        retarget_weapon_component_owner(&mut entity, OLD, NEW),
+        Ok(5)
+    );
+    for offset in [0x1B8, 0x1D8] {
+        assert_eq!(read_u32(&entity, offset), Ok(NEW));
+        assert_eq!(read_u64(&entity, offset + 8), Ok(0x2280));
+    }
+    assert_eq!(read_u32(&entity, 0x1F0), Ok(OLD));
+    for (offset, value) in [(0x1A8, 0x8080_000B), (0x1DC, 0)] {
+        let mut malformed = original.clone();
+        write_u32(&mut malformed, offset, value).unwrap();
+        let before = malformed.clone();
+        assert!(retarget_weapon_component_owner(&mut malformed, OLD, NEW).is_err());
+        assert_eq!(malformed, before);
+    }
+    let mut truncated = original;
+    truncated.truncate(0x1F0);
+    write_u64(&mut truncated, 0, 0x1F0).unwrap();
+    let before = truncated.clone();
+    assert!(retarget_weapon_component_owner(&mut truncated, OLD, NEW).is_err());
+    assert_eq!(truncated, before);
+}
+
+#[test]
+fn owner_retarget_follows_nested_reciprocal_objects_without_rewriting_collisions() {
+    const OLD: u32 = 0x8111_0001;
+    const NEW: u32 = 0x8123_0001;
+    let entity = two_resource_weapon_entity();
+    let mut owner = vec![0; 0x200];
+    write_u64(&mut owner, 0, 0x200).unwrap();
+    for (offset, class, target) in [
+        (0x80, 0x8080_2001, 0x100),
+        (0x100, 0x8080_1001, 0x80),
+        (0x120, 0x8080_9789, 0x160),
+        (0x160, 0x8080_9788, 0x120),
+        (0x180, 0x8080_9789, 0xFFFF_FFF8),
+        (0x1A0, 0x8080_9789, 0x100),
+        (0x1C0, 0x1111_1111, 0x1E0),
+        (0x1E0, 0x8080_9788, 0x1C0),
+    ] {
+        write_u32(&mut owner, offset, OLD).unwrap();
+        write_u32(&mut owner, offset + 4, class).unwrap();
+        write_u64(&mut owner, offset + 8, target).unwrap();
+    }
+    let original = owner.clone();
+    assert_eq!(
+        retarget_weapon_component_owner_payload(&mut owner, &entity, OLD, NEW),
+        Ok(4)
+    );
+    for offset in [0x80, 0x100, 0x120, 0x160] {
+        assert_eq!(read_u32(&owner, offset), Ok(NEW));
+        owner[offset..offset + 4].copy_from_slice(&original[offset..offset + 4]);
+    }
+    assert_eq!(owner, original, "only proven object references may change");
+}
+
+#[test]
 fn component_graft_transplants_complete_donor_alias_closure() {
     const SELECTED: u32 = 0xAAAA_0001;
     const ALIAS: u32 = 0xBBBB_0002;

@@ -549,6 +549,29 @@ fn draw_hash_progression_definition(
         draw_hash_progression_persistence_summary(ui, document, index, definition);
     }
 
+    if let Some(help) = crate::app::progression::seasonal::progression_help(index)
+        && document.is_some_and(|document| document.get("_native_progression").is_some())
+    {
+        ui.label(help);
+        if let Some(snapshot) = document.and_then(collection_state_snapshot)
+            && let Some(season) = catalog.seasonal()
+            && let Ok(experience) = snapshot.seasonal_experience(season)
+        {
+            ui.label(format!(
+                "After Sunrise Refresh: Rank {} · +{} Artifact Power · {} Artifact Points",
+                experience.rank, experience.power_bonus, experience.points_earned
+            ));
+            if let Some((_, total)) = experience
+                .lanes()
+                .into_iter()
+                .find(|(slot, _)| *slot == index)
+            {
+                ui.label(format!("Lane 0 After Refresh: {total}"));
+            }
+        }
+        ui.add_space(8.0);
+    }
+
     if !definition.factions.is_empty() {
         egui::CollapsingHeader::new(format!("Factions ({})", definition.factions.len()))
             .id_salt(("hash_progression_factions", index))
@@ -641,45 +664,7 @@ fn draw_hash_progression_definition(
             .id_salt(("hash_progression_reward_items", index))
             .default_open(false)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt(("hash_progression_reward_rows_scroll", index))
-                    .max_height(320.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        egui::Grid::new(("hash_progression_reward_rows", index))
-                            .num_columns(4)
-                            .striped(true)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                ui.strong("Level");
-                                ui.strong("Item");
-                                ui.strong("Hash");
-                                ui.strong("Quantity");
-                                ui.end_row();
-                                for reward in &definition.reward_items {
-                                    ui.monospace(reward.rewarded_at_progression_level.to_string());
-                                    if let Some(name) = catalog.package_item_name(reward.item_hash)
-                                    {
-                                        draw_named_catalog_hash_link(
-                                            ui,
-                                            catalog,
-                                            reward.item_hash,
-                                            name,
-                                        );
-                                    } else {
-                                        ui.label(egui::RichText::new("-").weak());
-                                    }
-                                    draw_catalog_hash_link(
-                                        ui,
-                                        catalog,
-                                        reward.item_hash,
-                                        format_hash_hex(reward.item_hash),
-                                    );
-                                    ui.monospace(reward.quantity.to_string());
-                                    ui.end_row();
-                                }
-                            });
-                    });
+                crate::app::progression::seasonal::rewards::draw(ui, catalog, document, definition);
             });
     }
 }

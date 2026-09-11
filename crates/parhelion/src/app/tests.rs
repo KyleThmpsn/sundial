@@ -52,6 +52,10 @@ fn investment_stat(definition_index: u16, value: i32) -> WeaponInvestmentStat {
 fn default_app_is_idle_and_waits_for_the_host_package_path() {
     let app = PackageAuthoringApp::default();
 
+    assert!(app.recipe_library.is_none());
+    assert!(app.recipe_entries.is_empty());
+    assert!(app.enabled_recipe_paths.is_empty());
+    assert!(!app.recipe_dirty);
     assert!(app.build_receiver.is_none());
     assert!(app.build_progress.is_none());
     assert!(app.latest_build.is_none());

@@ -130,19 +130,28 @@ impl ExtendedOverlayArtifact {
 ///
 /// This is crate-internal on purpose. Product authoring paths must own the investment/resource
 /// graph that makes each appended tag reachable.
+#[cfg(test)]
 pub(crate) fn build_extended_overlay(
     package_directory: &Path,
     package_id: u16,
     replacements: &[ReplacementSpec],
     new_tags: &[NewTagSpec],
 ) -> AuthoringResult<ExtendedOverlayArtifact> {
-    build_extended_overlay_impl(package_directory, package_id, replacements, new_tags, &[])
+    build_extended_overlay_with_progress(
+        package_directory,
+        package_id,
+        replacements,
+        new_tags,
+        &[],
+        &mut |_| {},
+    )
 }
 
 /// Builds an extended overlay while overriding selected appended-entry references.
 ///
 /// Unspecified entry prefixes are preserved byte-for-byte. Each appended ordinal may be
 /// overridden at most once.
+#[cfg(test)]
 pub(crate) fn build_extended_overlay_with_references(
     package_directory: &Path,
     package_id: u16,
@@ -150,12 +159,13 @@ pub(crate) fn build_extended_overlay_with_references(
     new_tags: &[NewTagSpec],
     reference_overrides: &[NewTagReferenceOverride],
 ) -> AuthoringResult<ExtendedOverlayArtifact> {
-    build_extended_overlay_impl(
+    build_extended_overlay_with_progress(
         package_directory,
         package_id,
         replacements,
         new_tags,
         reference_overrides,
+        &mut |_| {},
     )
 }
 
@@ -176,6 +186,7 @@ pub(crate) fn extended_overlay_append_start(
 /// Unlike an overlay, this package owns its complete directory and every physical payload block.
 /// It is intended for resource graphs whose runtime handles must be allocated from a fresh package
 /// datum table rather than appended to a stock patch chain.
+#[cfg(test)]
 pub(crate) fn build_standalone_package_with_references(
     package_directory: &Path,
     package_id: u16,
@@ -183,6 +194,25 @@ pub(crate) fn build_standalone_package_with_references(
     new_tags: &[NewTagSpec],
     reference_overrides: &[NewTagReferenceOverride],
 ) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_standalone_package_with_progress(
+        package_directory,
+        package_id,
+        output_file_name,
+        new_tags,
+        reference_overrides,
+        &mut |_| {},
+    )
+}
+
+pub(crate) fn build_standalone_package_with_progress(
+    package_directory: &Path,
+    package_id: u16,
+    output_file_name: &str,
+    new_tags: &[NewTagSpec],
+    reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    progress("Checking Package Identity");
     if new_tags.is_empty() {
         return Err(AuthoringError::InvalidInput(
             "A standalone package needs at least one authored tag".into(),
@@ -221,6 +251,7 @@ pub(crate) fn build_standalone_package_with_references(
     }
 
     let reference_modes = resolve_reference_modes(new_tags.len(), reference_overrides)?;
+    progress("Preparing Entries");
     let metadata =
         resolve_appended_metadata(package_directory, package_id, 0, new_tags, &reference_modes)?;
     let shared_tag_enrollments =
@@ -248,6 +279,7 @@ pub(crate) fn build_standalone_package_with_references(
 
     let block_encoder = PackageBlockEncoder::open_for_packages(package_directory)?;
     let tag_allocator = AppendedTagAllocator::new(package_id, 0);
+    progress("Encoding Blocks");
     let written_blocks = packed::visit_blocks(
         new_tags.iter().map(|tag| tag.payload.as_slice()),
         |index, chunk| {
@@ -281,6 +313,7 @@ pub(crate) fn build_standalone_package_with_references(
             file_size: spec.payload.len(),
         });
     }
+    progress("Finalizing Package Tables");
     layout.update_package_tables_hash(&mut artifact)?;
     append_opaque_trailer(&mut artifact, &opaque_trailer)?;
     layout.set_file_size(&mut artifact)?;
@@ -300,6 +333,7 @@ pub(crate) fn build_standalone_package_with_references(
         ));
     }
 
+    progress("Validating Payloads");
     let virtual_path = package_directory.join(output_file_name);
     let virtual_path_text = virtual_path.to_str().ok_or_else(|| {
         AuthoringError::InvalidInput("The standalone package path is not valid Unicode".into())
@@ -408,13 +442,15 @@ fn ensure_package_id_unused(package_directory: &Path, package_id: u16) -> Author
     Ok(())
 }
 
-fn build_extended_overlay_impl(
+pub(crate) fn build_extended_overlay_with_progress(
     package_directory: &Path,
     package_id: u16,
     replacements: &[ReplacementSpec],
     new_tags: &[NewTagSpec],
     reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
 ) -> AuthoringResult<ExtendedOverlayArtifact> {
+    progress("Reading Source Package");
     if replacements.is_empty() && new_tags.is_empty() {
         return Err(AuthoringError::InvalidInput(
             "An extended overlay needs at least one replacement or new tag".into(),
@@ -475,6 +511,7 @@ fn build_extended_overlay_impl(
             new_tags.len()
         )));
     }
+    progress("Preparing Entries");
     let appended_metadata = resolve_appended_metadata(
         package_directory,
         package_id,
@@ -576,6 +613,7 @@ fn build_extended_overlay_impl(
 
     let mut next_block = layout.block_count;
     let mut block_count_index = 0;
+    progress("Encoding Blocks");
     for spec in replacements {
         write_payload(
             &mut artifact,
@@ -624,6 +662,7 @@ fn build_extended_overlay_impl(
             "Extended overlay block allocation did not converge",
         ));
     }
+    progress("Finalizing Package Tables");
     layout.update_package_tables_hash(&mut artifact)?;
     append_opaque_trailer(&mut artifact, &opaque_trailer)?;
     layout.set_file_size(&mut artifact)?;
@@ -647,6 +686,7 @@ fn build_extended_overlay_impl(
         &shared_tag_enrollments,
     )?;
 
+    progress("Validating Payloads");
     let output_path = package_directory.join(&output_file_name);
     let output_path_text = output_path.to_str().ok_or_else(|| {
         AuthoringError::InvalidInput("The output package path is not valid Unicode".into())

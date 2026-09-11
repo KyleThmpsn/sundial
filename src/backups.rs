@@ -10,7 +10,17 @@ use std::{
 };
 
 pub(crate) fn root() -> Option<PathBuf> {
-    paths::data_dir().map(|path| path.join("backups"))
+    #[cfg(test)]
+    {
+        thread_local! {
+            static DIRECTORY: crate::test_support::TestDirectory = crate::test_support::TestDirectory::new("backup-root");
+        }
+        Some(DIRECTORY.with(|directory| directory.0.clone()))
+    }
+    #[cfg(not(test))]
+    {
+        paths::data_dir().map(|path| path.join("backups"))
+    }
 }
 
 /// Legacy files directly under the backup root have no reliable source identity and are

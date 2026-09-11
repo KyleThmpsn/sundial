@@ -25,7 +25,8 @@ impl UninstallUi {
 
 impl PackageAuthoringApp {
     pub(super) fn start_uninstall_review(&mut self, recover: bool) {
-        if self.has_background_work() || self.perk_editor.is_some() || self.icon_editor.is_some() {
+        if self.has_background_work() || self.perk_workbench.editing() || self.icon_editor.is_some()
+        {
             return;
         }
         let packages = self.packages.clone();

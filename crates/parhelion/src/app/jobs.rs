@@ -114,7 +114,10 @@ impl PackageAuthoringApp {
                         match *result {
                             Ok(catalog) => {
                                 self.donor_summaries = catalog.weapon_donors();
-                                self.sandbox_perk_choices = catalog.weapon_sandbox_perk_choices();
+                                self.sandbox_perk_choices = catalog
+                                    .weapon_sandbox_perk_choices_from(
+                                        crate::package_profile::is_stock_item_definition,
+                                    );
                                 self.trait_choices = catalog.weapon_trait_choices();
                                 let supported = self
                                     .donor_summaries
@@ -329,6 +332,8 @@ impl PackageAuthoringApp {
         let (sender, receiver) = mpsc::channel();
         let started = Instant::now();
         self.build_started = Some(started);
+        self.build_activity = build_status::Activity::default();
+        self.install_status = build_status::InstallStatus::default();
         thread::spawn(move || {
             let result = build_and_stage_snapshot_with_progress(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
@@ -342,9 +347,9 @@ impl PackageAuthoringApp {
         });
         self.build_progress = Some(TimedBuildProgress {
             phase: BuildPhase::InspectingSource,
-            current_artifact: None,
+            current_artifact: Some("Checking Recipes".to_owned()),
             completed: 0,
-            total: 3,
+            total: 2,
             elapsed: Duration::ZERO,
         });
         self.latest_build = None;
@@ -382,6 +387,32 @@ impl PackageAuthoringApp {
             };
             match event {
                 BuildWorkerEvent::Progress(progress) => {
+                    let message = build_status::progress_message(
+                        progress.phase.label(),
+                        progress.current_artifact.as_deref(),
+                        progress.completed,
+                        progress.total,
+                    );
+                    let changed = self.build_progress.as_ref().is_none_or(|previous| {
+                        previous.phase != progress.phase
+                            || previous.current_artifact != progress.current_artifact
+                            || previous.completed != progress.completed
+                            || previous.total != progress.total
+                    });
+                    if changed {
+                        let same_operation = self.build_progress.as_ref().is_some_and(|previous| {
+                            previous.phase == progress.phase
+                                && previous.current_artifact == progress.current_artifact
+                                && previous.total == progress.total
+                                && previous.completed <= progress.completed
+                        });
+                        if same_operation {
+                            self.build_activity.update_last(progress.elapsed, message);
+                        } else {
+                            self.build_activity.push(progress.elapsed, message.clone());
+                            self.log.push(LogEntry::info(message));
+                        }
+                    }
                     self.build_progress = Some(progress);
                 }
                 BuildWorkerEvent::Finished {
@@ -411,6 +442,8 @@ impl PackageAuthoringApp {
                     if let Some(progress) = &mut self.build_progress {
                         progress.elapsed = elapsed;
                     }
+                    self.build_activity
+                        .push(elapsed, format!("Build failed: {error}"));
                     self.log
                         .push(LogEntry::error(format!("Build failed: {error}")));
                     self.latest_build = Some(Err(error));
@@ -452,7 +485,11 @@ impl PackageAuthoringApp {
             ));
             return;
         }
-        if self.runtime_graph_job.is_some() || self.runtime_donors.busy() {
+        if self.runtime_graph_job.is_some()
+            || self.runtime_donors.busy()
+            || self.runtime_dependencies.busy()
+            || self.perk_workbench.busy()
+        {
             self.log.push(LogEntry::error(
                 "Installation is waiting for the runtime-data scan to finish",
             ));
@@ -477,6 +514,13 @@ impl PackageAuthoringApp {
         self.catalog_progress = None;
         self.catalog_load_requested = true;
         let (sender, receiver) = mpsc::channel();
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let started = Instant::now();
+        self.install_status = build_status::InstallStatus {
+            receiver: Some(progress_receiver),
+            started: Some(started),
+            ..Default::default()
+        };
         thread::spawn(move || {
             let mut request =
                 InstallRequest::new(staged_run_directory, target_packages_directory, backup_root);
@@ -484,7 +528,10 @@ impl PackageAuthoringApp {
             request.package_backup_retention = package_backup_retention;
             request.backup_recipe_snapshots = backup_recipe_snapshots;
             request.confirmed_replacement = Some(confirmed_replacement);
-            let result = install_staged_packages(&request).map_err(|error| error.to_string());
+            let result = install_staged_packages_with_progress(&request, |progress| {
+                let _ = progress_sender.send((progress, started.elapsed()));
+            })
+            .map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
         self.latest_install = None;
@@ -497,6 +544,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn poll_install(&mut self) {
+        self.install_status.poll(&mut self.log);
         let Some(receiver) = &self.install_receiver else {
             return;
         };
@@ -606,6 +654,14 @@ impl PackageAuthoringApp {
             }
         }
         if finished {
+            self.install_status.poll(&mut self.log);
+            self.install_status.finish();
+            if let Some(Err(error)) = &self.latest_install {
+                self.install_status.activity.push(
+                    self.install_status.elapsed,
+                    format!("Installation failed: {error}"),
+                );
+            }
             if installed {
                 self.packages_changed = true;
                 self.catalog_force_rebuild = true;

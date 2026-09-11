@@ -112,6 +112,7 @@ pub(super) fn set_investment_override(
     let Ok(policy) = parse_investment(document.pointer("/state/investment")) else {
         return false;
     };
+    let hidden_count = super::native::hidden_count(document, table);
     match table {
         InvestmentTable::FlagOverrides => {
             if definition_index > FAMILY5_FLAG_SLOT_MAXIMUM
@@ -130,7 +131,7 @@ pub(super) fn set_investment_override(
                 }
                 row.value = value as u8;
             } else {
-                if rows.len() >= FAMILY5_OVERRIDE_CAPACITY {
+                if rows.len() + hidden_count >= FAMILY5_OVERRIDE_CAPACITY {
                     return false;
                 }
                 rows.push(FlagOverride {
@@ -162,7 +163,7 @@ pub(super) fn set_investment_override(
                 }
                 row.value = value;
             } else {
-                if rows.len() >= FAMILY5_OVERRIDE_CAPACITY {
+                if rows.len() + hidden_count >= FAMILY5_OVERRIDE_CAPACITY {
                     return false;
                 }
                 rows.push(ValueOverride {
@@ -267,7 +268,7 @@ pub(super) fn set_progression_value(
     if definition_index >= PROGRESSION_DEFINITION_CAPACITY {
         return false;
     }
-    let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
+    let Ok(current) = parse_document_unlocks(document) else {
         return false;
     };
     let mut values = match id {
@@ -316,7 +317,7 @@ pub(super) fn remove_progression_value(
     let Some(key) = progression_table_key(id) else {
         return false;
     };
-    let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
+    let Ok(current) = parse_document_unlocks(document) else {
         return false;
     };
     let mut values = match id {
@@ -353,7 +354,7 @@ pub(super) fn set_unlock_flag(document: &mut Value, id: &str, slot: usize, set: 
     if slot >= capacity {
         return false;
     }
-    let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
+    let Ok(current) = parse_document_unlocks(document) else {
         return false;
     };
     let mut slots = match id {
@@ -464,14 +465,15 @@ pub(super) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, valu
     if slot >= capacity {
         return false;
     }
-    if id == "character_object_objective_values"
+    if document.get("_native_progression").is_none()
+        && id == "character_object_objective_values"
         && RESERVED_CHARACTER_OBJECTIVE_VALUES
             .iter()
             .any(|(reserved, expected)| *reserved == slot && *expected != value)
     {
         return false;
     }
-    let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
+    let Ok(current) = parse_document_unlocks(document) else {
         return false;
     };
     let mut values = match id {
@@ -539,14 +541,15 @@ pub(super) fn remove_unlock_value(document: &mut Value, id: &str, slot: usize) -
     let Some((key, _)) = value_table_key(id) else {
         return false;
     };
-    if id == "character_object_objective_values"
+    if document.get("_native_progression").is_none()
+        && id == "character_object_objective_values"
         && RESERVED_CHARACTER_OBJECTIVE_VALUES
             .iter()
             .any(|(reserved, _)| *reserved == slot)
     {
         return false;
     }
-    let Ok(current) = parse_unlocks(document.pointer("/state/unlocks")) else {
+    let Ok(current) = parse_document_unlocks(document) else {
         return false;
     };
     let mut values = match id {

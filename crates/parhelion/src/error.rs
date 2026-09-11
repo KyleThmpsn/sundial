@@ -38,6 +38,9 @@ impl AuthoringError {
 impl fmt::Display for AuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Context { context, source } if formatter.alternate() => {
+                write!(formatter, "{context}\n{source:#}")
+            }
             Self::Context { context, source } => write!(formatter, "{context}: {source}"),
             Self::Io {
                 operation,

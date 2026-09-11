@@ -38,6 +38,7 @@ pub(super) fn synthetic_weapon_identity_fields(
     write_u64(&mut data, TRANSLATION_ROOT, 1).unwrap();
     write_relative_pointer(&mut data, TRANSLATION_ROOT + 8, ART_HEADER).unwrap();
     write_u64(&mut data, ART_HEADER, 1).unwrap();
+    write_u32(&mut data, ART_HEADER - 4, 0x8080_9FBD).unwrap();
     write_u32(&mut data, ART_HEADER + 8, TRANSLATION_ART_ROW_CLASS).unwrap();
     write_u16(&mut data, ART_ROWS + TRANSLATION_ART_VARIANT_OFFSET, 0x1234).unwrap();
     write_u16(

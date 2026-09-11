@@ -16,23 +16,18 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
         ui.heading(
             egui::RichText::new("Build Validated").color(style::success_color(ui.visuals())),
         );
-        ui.strong(format!(
-            "{} packages staged for installation",
-            build.artifacts.len()
-        ));
+        draw_summary(
+            ui,
+            build.weapons.len(),
+            build.artifacts.len(),
+            "Ready For Review",
+        );
         ui.add_space(6.0);
-        egui::Grid::new("build_weapon_names")
-            .num_columns(2)
-            .spacing([24.0, 5.0])
+        egui::CollapsingHeader::new("Included Weapons")
+            .default_open(build.weapons.len() <= 6)
             .show(ui, |ui| {
-                for (index, weapon) in build.weapons.iter().enumerate() {
-                    ui.label(&weapon.name);
-                    if index % 2 == 1 {
-                        ui.end_row();
-                    }
-                }
-                if build.weapons.len() % 2 == 1 {
-                    ui.end_row();
+                for weapon in &build.weapons {
+                    ui.add(egui::Label::new(&weapon.name).wrap());
                 }
             });
         ui.add_space(8.0);
@@ -42,6 +37,24 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
             .id_salt("build_package_details")
             .show(ui, |ui| draw_build_details(ui, build));
     });
+}
+
+pub(super) fn draw_summary(ui: &mut egui::Ui, weapons: usize, packages: usize, status: &str) {
+    egui::Frame::group(ui.style())
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(format!(
+                    "{weapons} {}",
+                    if weapons == 1 { "Weapon" } else { "Weapons" }
+                ));
+                ui.weak("·");
+                ui.strong(format!("{packages} Verified Packages"));
+                ui.weak("·");
+                ui.label(status);
+            });
+        });
 }
 
 pub(super) fn draw_build_details(ui: &mut egui::Ui, build: &BuildReport) {
@@ -59,6 +72,7 @@ pub(super) fn draw_build_details(ui: &mut egui::Ui, build: &BuildReport) {
     );
     path_row(ui, "Manifest", &build.manifest_path);
     ui.label("Selection Fingerprint").on_hover_ui(|ui| {
+        sundial::investment::tooltip_title(ui, "Selection Fingerprint");
         ui.monospace(&build.selection_fingerprint);
         if ui.button("Copy Fingerprint").clicked() {
             ui.ctx().copy_text(build.selection_fingerprint.clone());
@@ -80,7 +94,7 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
-pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) -> bool {
+pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
     ui.heading(egui::RichText::new("Packages Installed").color(style::success_color(ui.visuals())));
     ui.strong(format!(
         "{} verified packages installed",
@@ -93,9 +107,14 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) -> 
     }
     match &report.profile_sync {
         Some(Ok(sync)) => {
+            let noun = if sync.total_unlocks == 1 {
+                "weapon"
+            } else {
+                "weapons"
+            };
             ui.label(format!(
-                "Collections updated: {} unlocks available, {} newly acquired.",
-                sync.total_unlocks, sync.newly_set_unlocks
+                "Collections updated: {} {noun} available.",
+                sync.total_unlocks
             ));
         }
         Some(Err(error)) => {
@@ -109,13 +128,6 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) -> 
     if let Some(warning) = &report.backup_prune_warning {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
-    ui.add_space(6.0);
-    ui.label(if report.cleaned_account.is_some() {
-        "The account and package backup is protected from automatic cleanup."
-    } else {
-        "A backup was saved before installation."
-    });
-    let open_backup = ui.button("Open Backup Folder").clicked();
     ui.add_space(6.0);
     egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
         path_row(ui, "Installed To", &report.target_packages_directory);
@@ -157,7 +169,6 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) -> 
             }),
         );
     });
-    open_backup
 }
 
 /// Display normalization only. Keep canonical paths for file operations.
@@ -176,6 +187,7 @@ pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &Path) {
         ui.strong(label);
         ui.add(egui::Label::new(&display).truncate())
             .on_hover_ui(|ui| {
+                sundial::investment::tooltip_title(ui, label);
                 ui.label(&display);
                 if ui.button("Copy Path").clicked() {
                     ui.ctx().copy_text(display.clone());
@@ -199,7 +211,7 @@ pub(super) fn draw_artifact_grid<'a>(
             ui.end_row();
             for (file_name, byte_length, sha256) in artifacts {
                 ui.monospace(file_name).on_hover_ui(|ui| {
-                    ui.strong("SHA-256");
+                    sundial::investment::tooltip_title(ui, "SHA-256");
                     ui.monospace(sha256);
                     if ui.button("Copy SHA-256").clicked() {
                         ui.ctx().copy_text(sha256.to_owned());

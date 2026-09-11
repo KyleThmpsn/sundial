@@ -1,0 +1,124 @@
+{
+  "version": 18,
+  "core": {
+    "logging": {
+      "debugger_sink": true,
+      "file_sink": false,
+      "levels": {
+        "core": "warn",
+        "client": "warn",
+        "state": "warn",
+        "server": "warn",
+        "middleware": "warn"
+      }
+    },
+    "activity_sdk_generation": {
+      "lua_declarations": true
+    }
+  },
+  "steam": {
+    "language": "english",
+    "user": {
+      "persona_name": "Player"
+    }
+  },
+  "client": {
+    "ui": {
+      "enabled": true,
+      "toggle_key": "insert"
+    },
+    "external_server": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "config_url": "https://127.0.0.1/config/",
+      "config_guid": "d2legacy-0000-0000-0000-000000000001"
+    },
+    "custom_bootflow_textures": true,
+    "socket_menu_routing": false,
+    "reveal_lore_books": true,
+    "region_private": false,
+    "pin_replicated_record": true
+  },
+  "server": {
+    "bap_port": 30974,
+    "gameplay": {
+      "topology": "embedded",
+      "bind_address": "127.0.0.1",
+      "advertised_address": "127.0.0.1",
+      "transport_address": "127.0.0.1",
+      "port": 30976,
+      "server_reserve_count": 256,
+      "client_join_grant_count": 8192
+    },
+    "activation": {
+      "default_client_activation": true,
+      "activity_public_membership": true,
+      "prevent_ownerless_channel_close": false,
+      "mission_scripting": true
+    }
+  },
+  "state": {
+    "activity": {
+      "roster_key_from_identity": false,
+      "default_destination": {
+        "reason": -1,
+        "source_activity_index": -1,
+        "activity_index": 20,
+        "package_name": "city_tower_social_d2",
+        "bubble_count": 8,
+        "stateful_bubble_mask": "0xCF",
+        "initial_slice_set": 48,
+        "spawn_set_hash": "0x811C9DC5"
+      },
+      "arrival_overrides": [
+        {
+          "package_name": "mission_ember",
+          "bubble": 6,
+          "slice_set": 49,
+          "spawn_set_hash": "0x2EA8FB98"
+        },
+        {
+          "package_name": "raid_envy_v310",
+          "bubble": 7
+        },
+        {
+          "package_name": "raid_gluttony_0",
+          "bubble": 2,
+          "slice_set": 17,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_gluttony_1",
+          "bubble": 2,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_gluttony_2",
+          "bubble": 2,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_gluttony_3",
+          "bubble": 2,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_gluttony_4",
+          "bubble": 2,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_gluttony_5",
+          "bubble": 2,
+          "spawn_set_hash": "0x8029E4B4"
+        },
+        {
+          "package_name": "raid_sunset",
+          "bubble": 1,
+          "spawn_set_hash": "0xBC6A3A37"
+        }
+      ]
+    }
+  },
+  "complete_exotic_catalysts": true
+}

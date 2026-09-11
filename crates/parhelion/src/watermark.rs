@@ -5,7 +5,10 @@
 //! season/expansion overlay layer. This module authors that layer once and then clones only the
 //! requested donor containers, selecting the authored rarity background and Sunrise watermark.
 
+mod custom;
 mod placement;
+pub(crate) use custom::build_presented_watermark_plan;
+pub(crate) use custom::render as render_custom_corner;
 
 use image::ImageFormat;
 use sha1::{Digest, Sha1};
@@ -39,7 +42,9 @@ use crate::{
         IconDefinitionCompanion, SharedTagDependencies, build_icon_companion_payload,
         read_and_validate_icon_companion,
     },
-    tag_payload::{read_i64, read_u32, read_u64, write_u32},
+    tag_payload::{
+        bounded_relative_target as relative_target, read_i64, read_u32, read_u64, write_u32,
+    },
 };
 
 const AUTHORED_TEXTURE_PNGS: [&[u8]; 6] = [
@@ -198,12 +203,31 @@ impl WatermarkPlan {
 /// `current_entry_count` is the destination package's entry count before the append operation.
 /// `appended_ordinal_base` is the number of tags placed before this plan in the same `new_tags`
 /// slice. Containers are deduplicated only when donor, image edit, and authored rarity are identical.
+#[cfg(test)]
 pub fn build_watermark_plan(
     manager: &PackageManager,
     destination_package_id: u16,
     current_entry_count: usize,
     appended_ordinal_base: usize,
     icon_requests: &[WeaponIconRequest],
+) -> AuthoringResult<WatermarkPlan> {
+    build_watermark_plan_with_context(
+        manager,
+        destination_package_id,
+        current_entry_count,
+        appended_ordinal_base,
+        icon_requests,
+        &|index| format!("Icon Donor: {}", icon_requests[index].donor_container_tag),
+    )
+}
+
+fn build_watermark_plan_with_context(
+    manager: &PackageManager,
+    destination_package_id: u16,
+    current_entry_count: usize,
+    appended_ordinal_base: usize,
+    icon_requests: &[WeaponIconRequest],
+    request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
     if icon_requests.is_empty() {
         return Err(invalid(
@@ -305,8 +329,11 @@ pub fn build_watermark_plan(
     });
 
     let mut edit_graphs = Vec::new();
-    for request in icon_requests.iter().cloned() {
-        request.icon_edit.validate()?;
+    for (request_index, request) in icon_requests.iter().cloned().enumerate() {
+        request
+            .icon_edit
+            .validate()
+            .map_err(|error| error.context(request_context(request_index)))?;
         if edit_graphs
             .iter()
             .any(|(existing, _): &(WeaponIconRequest, _)| {
@@ -316,27 +343,31 @@ pub fn build_watermark_plan(
         {
             continue;
         }
-        let edit_ordinal_base = checked_ordinal(
-            appended_ordinal_base,
-            new_tags.len(),
-            "edited primary-image graph",
-        )?;
-        let graph = build_weapon_icon_edit_plan(
-            manager,
-            destination_package_id,
-            current_entry_count,
-            edit_ordinal_base,
-            request.donor_container_tag,
-            &request.icon_edit,
-        )?;
-        let resolved = graph.map(|graph| {
-            let primary_layer_tag = graph.primary_layer_tag;
-            let dependencies = graph.dependencies;
-            reference_overrides.extend(graph.reference_overrides);
-            new_tags.extend(graph.new_tags);
-            (primary_layer_tag, dependencies)
-        });
-        edit_graphs.push((request, resolved));
+        (|| -> AuthoringResult<()> {
+            let edit_ordinal_base = checked_ordinal(
+                appended_ordinal_base,
+                new_tags.len(),
+                "edited primary-image graph",
+            )?;
+            let graph = build_weapon_icon_edit_plan(
+                manager,
+                destination_package_id,
+                current_entry_count,
+                edit_ordinal_base,
+                request.donor_container_tag,
+                &request.icon_edit,
+            )?;
+            let resolved = graph.map(|graph| {
+                let primary_layer_tag = graph.primary_layer_tag;
+                let dependencies = graph.dependencies;
+                reference_overrides.extend(graph.reference_overrides);
+                new_tags.extend(graph.new_tags);
+                (primary_layer_tag, dependencies)
+            });
+            edit_graphs.push((request, resolved));
+            Ok(())
+        })()
+        .map_err(|error| error.context(request_context(request_index)))?;
     }
 
     let mut visual_revision = Sha1::new();
@@ -346,7 +377,7 @@ pub fn build_watermark_plan(
     let visual_revision = visual_revision.finalize();
     let mut icon_containers: Vec<WatermarkedIconContainer> = Vec::new();
     let mut request_container_tags = Vec::with_capacity(icon_requests.len());
-    for request in icon_requests.iter().cloned() {
+    for (request_index, request) in icon_requests.iter().cloned().enumerate() {
         if let Some(existing) = icon_containers.iter().find(|container| {
             container.donor_container_tag == request.donor_container_tag
                 && container.icon_edit == request.icon_edit
@@ -355,109 +386,113 @@ pub fn build_watermark_plan(
             request_container_tags.push(existing.tag);
             continue;
         }
-        let donor_container_tag = request.donor_container_tag;
-        let edit_graph = edit_graphs
-            .iter()
-            .find(|(candidate, _)| {
-                candidate.donor_container_tag == request.donor_container_tag
-                    && candidate.icon_edit == request.icon_edit
-            })
-            .and_then(|(_, graph)| graph.as_ref());
-        let local_ordinal = new_tags.len();
-        let ordinal = checked_ordinal(
-            appended_ordinal_base,
-            local_ordinal,
-            "watermarked icon container",
-        )?;
-        let tag = assigned_tag(destination_package_id, current_entry_count, ordinal)?;
-        let companion_ordinal = checked_ordinal(
-            appended_ordinal_base,
-            local_ordinal + 1,
-            "watermarked icon companion",
-        )?;
-        let companion_tag = assigned_tag(
-            destination_package_id,
-            current_entry_count,
-            companion_ordinal,
-        )?;
-        let (donor_container, donor_companion) =
-            read_and_validate_icon_container(manager, donor_container_tag)?;
-        let mut container = donor_container.clone();
-        let mut patched_offsets = vec![
-            ICON_CONTENT_FINGERPRINT_OFFSET,
-            ICON_WATERMARK_LAYER_OFFSET,
-            ICON_RARITY_BACKGROUND_LAYER_OFFSET,
-        ];
-        write_tag(
-            &mut container,
-            ICON_RARITY_BACKGROUND_LAYER_OFFSET,
-            request.rarity.icon_background_layer(),
-        )?;
-        if let Some((primary_layer_tag, _)) = edit_graph {
+        (|| -> AuthoringResult<()> {
+            let donor_container_tag = request.donor_container_tag;
+            let edit_graph = edit_graphs
+                .iter()
+                .find(|(candidate, _)| {
+                    candidate.donor_container_tag == request.donor_container_tag
+                        && candidate.icon_edit == request.icon_edit
+                })
+                .and_then(|(_, graph)| graph.as_ref());
+            let local_ordinal = new_tags.len();
+            let ordinal = checked_ordinal(
+                appended_ordinal_base,
+                local_ordinal,
+                "watermarked icon container",
+            )?;
+            let tag = assigned_tag(destination_package_id, current_entry_count, ordinal)?;
+            let companion_ordinal = checked_ordinal(
+                appended_ordinal_base,
+                local_ordinal + 1,
+                "watermarked icon companion",
+            )?;
+            let companion_tag = assigned_tag(
+                destination_package_id,
+                current_entry_count,
+                companion_ordinal,
+            )?;
+            let (donor_container, donor_companion) =
+                read_and_validate_icon_container(manager, donor_container_tag)?;
+            let mut container = donor_container.clone();
+            let mut patched_offsets = vec![
+                ICON_CONTENT_FINGERPRINT_OFFSET,
+                ICON_WATERMARK_LAYER_OFFSET,
+                ICON_RARITY_BACKGROUND_LAYER_OFFSET,
+            ];
             write_tag(
                 &mut container,
-                ICON_PRIMARY_LAYER_OFFSET,
-                *primary_layer_tag,
+                ICON_RARITY_BACKGROUND_LAYER_OFFSET,
+                request.rarity.icon_background_layer(),
             )?;
-            patched_offsets.push(ICON_PRIMARY_LAYER_OFFSET);
-        }
-        write_tag(
-            &mut container,
-            ICON_WATERMARK_LAYER_OFFSET,
-            watermark_layer_tag,
-        )?;
-        let fingerprint = private_icon_fingerprint(&container, visual_revision.as_slice());
-        write_u32(&mut container, ICON_CONTENT_FINGERPRINT_OFFSET, fingerprint)?;
-        validate_only_patched_fields(
-            &donor_container,
-            &container,
-            &patched_offsets,
-            "icon container",
-        )?;
-        let mut dependencies = collect_unchanged_container_dependencies(
-            manager,
-            donor_container_tag,
-            &container,
-            edit_graph.is_some(),
-        )?;
-        if let Some((_, primary_dependencies)) = edit_graph {
-            dependencies.extend(primary_dependencies.iter().copied());
-        }
-        for pair in &texture_pairs {
-            dependencies.insert(u32::from(pair.data_tag));
-            dependencies.insert(u32::from(pair.header_tag));
-        }
-        dependencies.insert(u32::from(watermark_layer_tag));
-        dependencies.insert(u32::from(tag));
-        dependencies.insert(u32::from(companion_tag));
-        let companion = build_icon_companion_payload(
-            &donor_companion.template_payload,
-            companion_tag,
-            tag,
-            &dependencies,
-        )?;
-        new_tags.push(NewTagSpec {
-            template_tag: donor_container_tag,
-            payload: container,
-            storage: NewTagStorageMode::InheritTemplate,
-        });
-        new_tags.push(NewTagSpec {
-            template_tag: donor_companion.tag,
-            payload: companion,
-            storage: NewTagStorageMode::InheritTemplate,
-        });
-        icon_containers.push(WatermarkedIconContainer {
-            donor_container_tag,
-            donor_companion_tag: donor_companion.tag,
-            icon_edit: request.icon_edit,
-            rarity: request.rarity,
-            authored_primary_layer_tag: edit_graph.map(|(tag, _)| *tag),
-            ordinal,
-            tag,
-            companion_ordinal,
-            companion_tag,
-        });
-        request_container_tags.push(tag);
+            if let Some((primary_layer_tag, _)) = edit_graph {
+                write_tag(
+                    &mut container,
+                    ICON_PRIMARY_LAYER_OFFSET,
+                    *primary_layer_tag,
+                )?;
+                patched_offsets.push(ICON_PRIMARY_LAYER_OFFSET);
+            }
+            write_tag(
+                &mut container,
+                ICON_WATERMARK_LAYER_OFFSET,
+                watermark_layer_tag,
+            )?;
+            let fingerprint = private_icon_fingerprint(&container, visual_revision.as_slice());
+            write_u32(&mut container, ICON_CONTENT_FINGERPRINT_OFFSET, fingerprint)?;
+            validate_only_patched_fields(
+                &donor_container,
+                &container,
+                &patched_offsets,
+                "icon container",
+            )?;
+            let mut dependencies = collect_unchanged_container_dependencies(
+                manager,
+                donor_container_tag,
+                &container,
+                edit_graph.is_some(),
+            )?;
+            if let Some((_, primary_dependencies)) = edit_graph {
+                dependencies.extend(primary_dependencies.iter().copied());
+            }
+            for pair in &texture_pairs {
+                dependencies.insert(u32::from(pair.data_tag));
+                dependencies.insert(u32::from(pair.header_tag));
+            }
+            dependencies.insert(u32::from(watermark_layer_tag));
+            dependencies.insert(u32::from(tag));
+            dependencies.insert(u32::from(companion_tag));
+            let companion = build_icon_companion_payload(
+                &donor_companion.template_payload,
+                companion_tag,
+                tag,
+                &dependencies,
+            )?;
+            new_tags.push(NewTagSpec {
+                template_tag: donor_container_tag,
+                payload: container,
+                storage: NewTagStorageMode::InheritTemplate,
+            });
+            new_tags.push(NewTagSpec {
+                template_tag: donor_companion.tag,
+                payload: companion,
+                storage: NewTagStorageMode::InheritTemplate,
+            });
+            icon_containers.push(WatermarkedIconContainer {
+                donor_container_tag,
+                donor_companion_tag: donor_companion.tag,
+                icon_edit: request.icon_edit,
+                rarity: request.rarity,
+                authored_primary_layer_tag: edit_graph.map(|(tag, _)| *tag),
+                ordinal,
+                tag,
+                companion_ordinal,
+                companion_tag,
+            });
+            request_container_tags.push(tag);
+            Ok(())
+        })()
+        .map_err(|error| error.context(request_context(request_index)))?;
     }
 
     validate_plan(WatermarkPlanValidation {
@@ -904,19 +939,6 @@ fn validate_optional_resource_reference<T>(
     })
 }
 
-fn relative_target(data: &[u8], field: usize, description: &str) -> AuthoringResult<usize> {
-    let relative = read_i64(data, field)?;
-    let target = field
-        .checked_add_signed(relative as isize)
-        .ok_or_else(|| invalid(format!("{description} relative reference overflowed")))?;
-    if target >= data.len() {
-        return Err(invalid(format!(
-            "{description} relative reference points outside its payload"
-        )));
-    }
-    Ok(target)
-}
-
 fn read_typed_tag(
     manager: &PackageManager,
     tag: TagHash,
@@ -1188,7 +1210,7 @@ fn alpha_bounds(alpha: &[u8], width: u32) -> Option<(u32, u32, u32, u32)> {
     bounds
 }
 
-fn private_icon_fingerprint(container: &[u8], visual_revision: &[u8]) -> u32 {
+pub(crate) fn private_icon_fingerprint(container: &[u8], visual_revision: &[u8]) -> u32 {
     let mut digest = Sha1::new();
     digest.update(b"parhelion.icon-composition.v1");
     digest.update(&container[ICON_CONTENT_FINGERPRINT_OFFSET + 4..]);

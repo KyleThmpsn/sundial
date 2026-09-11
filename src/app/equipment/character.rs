@@ -2,6 +2,12 @@ use crate::app::account_workspace as account;
 
 use super::*;
 
+const IDENTITY_LABEL_WIDTH: f32 = 42.0;
+const SUBCLASS_LABEL_WIDTH: f32 = 80.0;
+const ABILITY_LABEL_WIDTH: f32 = 120.0;
+const FIELD_COLUMN_GAP: f32 = 18.0;
+const FIELD_ROW_GAP: f32 = 8.0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CharacterEditorValues {
     race: u64,
@@ -18,32 +24,31 @@ impl CharacterEditorValues {
     fn metadata_updates(
         self,
         include_abilities: bool,
-    ) -> Vec<sundial_account::CharacterMetadataUpdate> {
+    ) -> Result<Vec<sundial_account::CharacterMetadataUpdate>, String> {
+        let field = |value, name| {
+            u8::try_from(value).map_err(|_| {
+                format!("The stored {name} value is out of range. Choose a supported value before applying character changes.")
+            })
+        };
         let mut updates = vec![
             sundial_account::CharacterMetadataUpdate::SetAppearanceAndClass {
-                race: u8::try_from(self.race).expect("character race selectors contain u8 values"),
-                gender: u8::try_from(self.gender)
-                    .expect("character gender selectors contain u8 values"),
-                class_type: u8::try_from(self.class_type)
-                    .expect("character class selectors contain u8 values"),
+                race: field(self.race, "race")?,
+                gender: field(self.gender, "gender")?,
+                class_type: field(self.class_type, "class")?,
             },
         ];
         if include_abilities {
             updates.push(sundial_account::CharacterMetadataUpdate::SetAbilities(
                 sundial_account::CharacterAbilities {
-                    movement: u8::try_from(self.movement)
-                        .expect("movement selectors contain u8 values"),
-                    grenade: u8::try_from(self.grenade)
-                        .expect("grenade selectors contain u8 values"),
-                    super_ability: u8::try_from(self.super_ability)
-                        .expect("super selectors contain u8 values"),
-                    melee: u8::try_from(self.melee).expect("melee selectors contain u8 values"),
-                    class_ability: u8::try_from(self.class_ability)
-                        .expect("class ability selectors contain u8 values"),
+                    movement: field(self.movement, "movement ability")?,
+                    grenade: field(self.grenade, "grenade ability")?,
+                    super_ability: field(self.super_ability, "super ability")?,
+                    melee: field(self.melee, "melee ability")?,
+                    class_ability: field(self.class_ability, "class ability")?,
                 },
             ));
         }
-        updates
+        Ok(updates)
     }
 }
 
@@ -54,6 +59,7 @@ struct CharacterFieldUiContext<'a> {
     abilities_editable: bool,
     all_subclasses: &'a [Arc<ItemDef>],
     allow_cross_class_subclasses: bool,
+    ability_unlocks_available: bool,
 }
 
 struct CharacterFieldUiState {
@@ -64,6 +70,7 @@ struct CharacterFieldUiState {
     attunement_index: usize,
     subclasses: Vec<Arc<ItemDef>>,
     selected_subclass: Option<Arc<ItemDef>>,
+    ability_unlocks_requested: bool,
 }
 
 impl CharacterFieldUiState {
@@ -90,15 +97,24 @@ fn draw_character_field_groups(
     ui: &mut egui::Ui,
     context: CharacterFieldUiContext<'_>,
     state: &mut CharacterFieldUiState,
+    draw_identity_details: &mut impl FnMut(&mut egui::Ui, f32),
 ) {
     let (group_columns, group_widths) = character_field_group_layout(ui.available_width());
-    let subclass_selector_width = (group_widths[1] - 98.0).clamp(140.0, 260.0);
-    let ability_selector_width = (group_widths[2] - 138.0).clamp(140.0, 260.0);
+    let subclass_selector_width =
+        (group_widths[1] - SUBCLASS_LABEL_WIDTH - FIELD_COLUMN_GAP).clamp(140.0, 260.0);
+    let ability_selector_width =
+        (group_widths[2] - ABILITY_LABEL_WIDTH - FIELD_COLUMN_GAP).clamp(140.0, 260.0);
     egui::Grid::new(("character_field_groups", context.index))
         .num_columns(group_columns)
         .spacing([18.0, 12.0])
         .show(ui, |ui| {
-            draw_character_identity_group(ui, group_widths[0], &context, state);
+            draw_character_identity_group(
+                ui,
+                group_widths[0],
+                &context,
+                state,
+                draw_identity_details,
+            );
             if group_columns == 1 {
                 ui.end_row();
             }
@@ -130,16 +146,15 @@ fn draw_character_identity_group(
     width: f32,
     context: &CharacterFieldUiContext<'_>,
     state: &mut CharacterFieldUiState,
+    draw_identity_details: &mut impl FnMut(&mut egui::Ui, f32),
 ) {
     ui.vertical(|ui| {
         ui.set_width(width);
-        ui.strong("Identity");
-        ui.add_space(3.0);
         egui::Grid::new(("character_identity_fields", context.index))
             .num_columns(2)
-            .spacing([18.0, 8.0])
+            .spacing([FIELD_COLUMN_GAP, FIELD_ROW_GAP])
             .show(ui, |ui| {
-                ui.label("Class");
+                crate::app::ui::field_label(ui, "Class", IDENTITY_LABEL_WIDTH);
                 state.selection_requested |= combo_u64(
                     ui,
                     "class",
@@ -171,7 +186,7 @@ fn draw_character_identity_group(
                 }
                 ui.end_row();
 
-                ui.label("Race");
+                crate::app::ui::field_label(ui, "Race", IDENTITY_LABEL_WIDTH);
                 state.selection_requested |= combo_u64(
                     ui,
                     "race",
@@ -180,7 +195,7 @@ fn draw_character_identity_group(
                 );
                 ui.end_row();
 
-                ui.label("Gender");
+                crate::app::ui::field_label(ui, "Gender", IDENTITY_LABEL_WIDTH);
                 state.selection_requested |= combo_u64(
                     ui,
                     "gender",
@@ -188,6 +203,7 @@ fn draw_character_identity_group(
                     &[(0, "Male"), (1, "Female")],
                 );
                 ui.end_row();
+                draw_identity_details(ui, IDENTITY_LABEL_WIDTH);
             });
     });
 }
@@ -201,13 +217,11 @@ fn draw_character_subclass_group(
 ) {
     ui.vertical(|ui| {
         ui.set_width(width);
-        ui.strong("Subclass");
-        ui.add_space(3.0);
         egui::Grid::new(("character_subclass_fields", context.index))
             .num_columns(2)
-            .spacing([18.0, 5.0])
+            .spacing([FIELD_COLUMN_GAP, FIELD_ROW_GAP])
             .show(ui, |ui| {
-                ui.label("Subclass");
+                crate::app::ui::field_label(ui, "Subclass", SUBCLASS_LABEL_WIDTH);
                 let selected_name = state
                     .current_subclass_hash
                     .and_then(|hash| state.subclasses.iter().find(|item| item.hash == hash))
@@ -239,7 +253,7 @@ fn draw_character_subclass_group(
                 if !context.abilities_editable {
                     return;
                 }
-                ui.label("Attunement");
+                crate::app::ui::field_label(ui, "Attunement", SUBCLASS_LABEL_WIDTH);
                 let previous_attunement = state.attunement_index;
                 let mut attunement_requested = false;
                 let selected_attunement = state
@@ -279,6 +293,12 @@ fn draw_character_subclass_group(
                     ui.end_row();
                 }
 
+                if context.ability_unlocks_available {
+                    ui.label("");
+                    state.ability_unlocks_requested |= ui.small_button("Ability Unlocks").clicked();
+                    ui.end_row();
+                }
+
                 if let Some(attunement) = state.abilities.attunements.get(state.attunement_index) {
                     let current_pair_is_valid = attunement.melee.entry == state.values.melee
                         && attunement
@@ -309,43 +329,40 @@ fn draw_character_ability_group(
     if !context.abilities_editable {
         ui.vertical(|ui| {
             ui.set_width(width);
-            ui.horizontal(|ui| {
-                ui.strong("Abilities");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Choose abilities and attunement in game.");
                 crate::ui_help::info(ui, "Saved ability and attunement selections are not applied when the character loads with this settings format.");
             });
-            ui.label("Choose abilities and attunement in game.");
         });
         return;
     }
     ui.vertical(|ui| {
         ui.set_width(width);
-        ui.strong("Abilities");
-        ui.add_space(3.0);
         egui::Grid::new(("character_ability_fields", context.index))
             .num_columns(2)
-            .spacing([18.0, 8.0])
+            .spacing([FIELD_COLUMN_GAP, FIELD_ROW_GAP])
             .show(ui, |ui| {
                 for (label, id, value, choices) in [
                     (
-                        "Movement ability",
+                        "Movement Ability",
                         "movement_ability",
                         &mut state.values.movement,
                         &state.abilities.movement,
                     ),
                     (
-                        "Grenade ability",
+                        "Grenade Ability",
                         "grenade_ability",
                         &mut state.values.grenade,
                         &state.abilities.grenade,
                     ),
                 ] {
-                    ui.label(label);
+                    crate::app::ui::field_label(ui, label, ABILITY_LABEL_WIDTH);
                     state.selection_requested |=
                         ability_combo(ui, id, value, choices, selector_width);
                     ui.end_row();
                 }
                 if let Some(attunement) = state.abilities.attunements.get(state.attunement_index) {
-                    ui.label("Super ability");
+                    crate::app::ui::field_label(ui, "Super Ability", ABILITY_LABEL_WIDTH);
                     ui.label(
                         attunement
                             .super_abilities
@@ -353,31 +370,31 @@ fn draw_character_ability_group(
                             .map_or("Unknown super", |choice| choice.name.as_str()),
                     );
                     ui.end_row();
-                    ui.label("Melee ability");
+                    crate::app::ui::field_label(ui, "Melee Ability", ABILITY_LABEL_WIDTH);
                     ui.label(&attunement.melee.name);
                     ui.end_row();
                 } else {
                     for (label, id, value, choices) in [
                         (
-                            "Super ability",
+                            "Super Ability",
                             "super_ability",
                             &mut state.values.super_ability,
                             &state.abilities.super_ability,
                         ),
                         (
-                            "Melee ability",
+                            "Melee Ability",
                             "melee_ability",
                             &mut state.values.melee,
                             &state.abilities.melee,
                         ),
                     ] {
-                        ui.label(label);
+                        crate::app::ui::field_label(ui, label, ABILITY_LABEL_WIDTH);
                         state.selection_requested |=
                             ability_combo(ui, id, value, choices, selector_width);
                         ui.end_row();
                     }
                 }
-                ui.label("Class ability").on_hover_text(
+                crate::app::ui::field_label(ui, "Class Ability", ABILITY_LABEL_WIDTH).on_hover_text(
                     "Dodge, Barricade, and Rift remain independent choices. Attunement perks may modify their behavior.",
                 );
                 state.selection_requested |= ability_combo(
@@ -478,7 +495,8 @@ impl SundialApp {
             melee,
             class_ability,
         };
-        let abilities_editable = !self.document.supports_v13_account();
+        let abilities_editable =
+            !self.document.uses_json_account() || !self.document.supports_v13_account();
         let display_values_need_materialization = self.document.uses_json_account()
             && [
                 ("race", original_values.race),
@@ -551,7 +569,6 @@ impl SundialApp {
             })
             .or_else(|| stored_warning.flatten());
 
-        ui.heading(format!("Character {}", index + 1));
         ui.label(egui::RichText::new(soid).monospace().weak());
         if abilities_editable && let Some(warning) = ability_warning {
             ui.add_space(6.0);
@@ -579,6 +596,7 @@ impl SundialApp {
             attunement_index,
             subclasses,
             selected_subclass,
+            ability_unlocks_requested: false,
         };
         ui.add_space(8.0);
         draw_character_field_groups(
@@ -590,8 +608,12 @@ impl SundialApp {
                 abilities_editable,
                 all_subclasses: &all_subclasses,
                 allow_cross_class_subclasses,
+                ability_unlocks_available: self.document.native_account().is_some(),
             },
             &mut field_state,
+            &mut |ui, label_width| {
+                self.draw_native_character_identity(ui, index, editable, label_width);
+            },
         );
 
         ui.add_enabled_ui(editable, |ui| self.draw_character_runtime(ui, index));
@@ -599,6 +621,7 @@ impl SundialApp {
         // A disabled egui scope still executes this function. Keep document writes behind
         // both the edit gate and an explicit selection change.
         if !editable {
+            self.draw_ability_unlocks_window(ui, index, false);
             return;
         }
 
@@ -611,6 +634,10 @@ impl SundialApp {
             allow_cross_class_subclasses,
             field_state.selection_requested && display_values_need_materialization,
         );
+        if field_state.ability_unlocks_requested {
+            self.open_ability_unlocks(index);
+        }
+        self.draw_ability_unlocks_window(ui, index, editable);
     }
 
     fn apply_character_editor_changes(
@@ -630,8 +657,16 @@ impl SundialApp {
             .then(|| self.class_armor_defaults.get(&edited.class_type).copied())
             .flatten();
         let mut candidate = self.document.clone();
-        let metadata_updates =
-            edited.metadata_updates(!selecting_subclass && !candidate.supports_v13_account());
+        let metadata_updates = match edited.metadata_updates(
+            !selecting_subclass
+                && (!candidate.uses_json_account() || !candidate.supports_v13_account()),
+        ) {
+            Ok(updates) => updates,
+            Err(error) => {
+                self.set_status(error, true);
+                return;
+            }
+        };
         if let Err(error) =
             account::apply_character_updates(&mut candidate, index, metadata_updates)
         {

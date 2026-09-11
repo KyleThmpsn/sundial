@@ -3,6 +3,41 @@ use super::*;
 mod expansion;
 
 #[test]
+fn socket_shape_distinguishes_private_variants_from_their_stock_source() {
+    let mut spec = crate::WeaponRecipe::from_json_str(include_str!(
+        "../../../recipes/redacted.parhelion.json"
+    ))
+    .unwrap()
+    .to_spec()
+    .unwrap();
+    let source = spec.overrides.socket_plug_variants[0].source_plug_hash;
+    spec.overrides.socket_columns[0].as_mut().unwrap().choices = vec![source, source];
+    validate_socket_column_shapes(
+        &spec.overrides.socket_columns,
+        &spec.overrides.socket_plug_variants,
+    )
+    .unwrap();
+    let mut alternative = spec.overrides.socket_plug_variants[0].clone();
+    alternative.choice_index = 1;
+    spec.overrides.socket_plug_variants.push(alternative);
+    assert!(
+        validate_socket_column_shapes(
+            &spec.overrides.socket_columns,
+            &spec.overrides.socket_plug_variants
+        )
+        .is_err()
+    );
+    spec.overrides.socket_plug_variants[1].name = Some("Different Frame".into());
+    validate_socket_column_shapes(
+        &spec.overrides.socket_columns,
+        &spec.overrides.socket_plug_variants,
+    )
+    .unwrap();
+    spec.overrides.socket_plug_variants.clear();
+    assert!(validate_socket_column_shapes(&spec.overrides.socket_columns, &[]).is_err());
+}
+
+#[test]
 fn first_appended_socket_and_condition_have_native_relocation_markers() {
     let mut data = synthetic_socket_definition();
     // Previous payload content is not required to end with an array marker.
@@ -249,10 +284,10 @@ fn removed_socket_rejects_leftover_choices_and_selection_metadata() {
         socket_type: Some(u16::MAX),
         ..Default::default()
     };
-    validate_socket_column_shapes(&[Some(column.clone())]).unwrap();
+    validate_socket_column_shapes(&[Some(column.clone())], &[]).unwrap();
     column.reusable_plug_set_index = Some(3);
-    assert!(validate_socket_column_shapes(&[Some(column.clone())]).is_err());
+    assert!(validate_socket_column_shapes(&[Some(column.clone())], &[]).is_err());
     column.reusable_plug_set_index = None;
     column.choices.push(20);
-    assert!(validate_socket_column_shapes(&[Some(column)]).is_err());
+    assert!(validate_socket_column_shapes(&[Some(column)], &[]).is_err());
 }

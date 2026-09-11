@@ -534,7 +534,7 @@ pub(in crate::app) fn equip_inventory_item(
     let mut candidate = document.clone();
     let replaced_item = account::swap_inventory_item_with_equipment(&mut candidate, location, slot)
         .map_err(|error| error.to_string())?;
-    if slot == "subclass" && !candidate.supports_v13_account() {
+    if slot == "subclass" && (!candidate.uses_json_account() || !candidate.supports_v13_account()) {
         if let Some(abilities) = persisted_subclass_abilities
             .filter(|abilities| subclass_abilities_are_supported(item, *abilities))
         {
@@ -600,7 +600,7 @@ fn set_default_subclass_abilities(
     class_type: u64,
     item: &ItemDef,
 ) -> Result<(), String> {
-    if document.supports_v13_account() {
+    if document.uses_json_account() && document.supports_v13_account() {
         return Ok(());
     }
     let defaults = default_ability_values(

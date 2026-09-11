@@ -48,6 +48,7 @@ struct IconWorker {
 struct IconLoadRequest {
     hash: u64,
     container: u32,
+    native_size: bool,
 }
 
 struct IconLoadResult {
@@ -103,6 +104,20 @@ impl Catalog {
         runtime.texture(context, &self.install_path, cache_key, container)
     }
 
+    /// Preserves the primary layer's dimensions for artwork such as portrait badges.
+    pub(crate) fn icon_texture_with_native_size(
+        &self,
+        context: &eframe::egui::Context,
+        cache_key: u64,
+        container: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture_with_size(context, &self.install_path, cache_key, container, true)
+    }
+
     /// Loads the icon authored on an installed investment-stat definition.
     pub(crate) fn armor_stat_icon_texture(
         &self,
@@ -131,7 +146,7 @@ impl Catalog {
     }
 }
 
-pub(super) fn scan_item_icon_containers(
+pub(crate) fn scan_item_icon_containers(
     manager: &PackageManager,
     globals: &[u8],
 ) -> Result<Vec<Option<u32>>, String> {
@@ -200,6 +215,17 @@ impl IconRuntime {
         hash: u64,
         container: u32,
     ) -> Option<eframe::egui::TextureHandle> {
+        self.texture_with_size(context, install_path, hash, container, false)
+    }
+
+    fn texture_with_size(
+        &mut self,
+        context: &eframe::egui::Context,
+        install_path: &Path,
+        hash: u64,
+        container: u32,
+        native_size: bool,
+    ) -> Option<eframe::egui::TextureHandle> {
         self.install_completed(context);
         self.access_counter = self.access_counter.wrapping_add(1);
         let access = self.access_counter;
@@ -235,7 +261,11 @@ impl IconRuntime {
                 }
             }
         }
-        let request = IconLoadRequest { hash, container };
+        let request = IconLoadRequest {
+            hash,
+            container,
+            native_size,
+        };
         let queued = self
             .worker
             .as_ref()
@@ -401,7 +431,9 @@ fn run_icon_worker(
         .map_err(|error| format!("Could not open the installed packages: {error}"));
     while let Ok(request) = requests.recv() {
         let loaded = match &manager {
-            Ok(manager) => load_catalog_icon(manager, TagHash(request.container)),
+            Ok(manager) => {
+                load_catalog_icon(manager, TagHash(request.container), request.native_size)
+            }
             Err(error) => Err(error.clone()),
         };
         if results
@@ -436,6 +468,7 @@ struct LoadedCatalogIcon {
 fn load_catalog_icon(
     manager: &PackageManager,
     container_tag: TagHash,
+    native_size: bool,
 ) -> Result<LoadedCatalogIcon, String> {
     let container = manager
         .read_tag(container_tag)
@@ -457,6 +490,11 @@ fn load_catalog_icon(
     );
     let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_LAYER_OFFSET)?
         .ok_or("Item icon has no primary texture")?;
+    let size = if native_size {
+        primary.size
+    } else {
+        [CATALOG_ICON_SIZE; 2]
+    };
     let overlay = load_optional_catalog_icon_layer(
         manager,
         &container,
@@ -465,10 +503,11 @@ fn load_catalog_icon(
         &mut warnings,
     );
     Ok(LoadedCatalogIcon {
-        image: composite_catalog_icon(
+        image: composite_catalog_icon_at_size(
             [background, Some(primary), background_overlay, overlay]
                 .into_iter()
                 .flatten(),
+            size,
         ),
         warnings,
     })
@@ -552,22 +591,30 @@ fn load_catalog_icon_layer_at(
     decode_catalog_texture(&header, &data).map(Some)
 }
 
+#[cfg(test)]
 fn composite_catalog_icon(
     layers: impl IntoIterator<Item = eframe::egui::ColorImage>,
 ) -> eframe::egui::ColorImage {
-    let mut rgba = vec![0_u8; CATALOG_ICON_SIZE * CATALOG_ICON_SIZE * 4];
+    composite_catalog_icon_at_size(layers, [CATALOG_ICON_SIZE; 2])
+}
+
+fn composite_catalog_icon_at_size(
+    layers: impl IntoIterator<Item = eframe::egui::ColorImage>,
+    [width, height]: [usize; 2],
+) -> eframe::egui::ColorImage {
+    let mut rgba = vec![0_u8; width * height * 4];
     for layer in layers {
         let [source_width, source_height] = layer.size;
         if source_width == 0 || source_height == 0 {
             continue;
         }
-        for y in 0..CATALOG_ICON_SIZE {
-            let source_y = y * source_height / CATALOG_ICON_SIZE;
-            for x in 0..CATALOG_ICON_SIZE {
-                let source_x = x * source_width / CATALOG_ICON_SIZE;
+        for y in 0..height {
+            let source_y = y * source_height / height;
+            for x in 0..width {
+                let source_x = x * source_width / width;
                 let source =
                     layer.pixels[source_y * source_width + source_x].to_srgba_unmultiplied();
-                let destination_offset = (y * CATALOG_ICON_SIZE + x) * 4;
+                let destination_offset = (y * width + x) * 4;
                 blend_rgba_pixel(
                     &mut rgba[destination_offset..destination_offset + 4],
                     source,
@@ -575,7 +622,7 @@ fn composite_catalog_icon(
             }
         }
     }
-    eframe::egui::ColorImage::from_rgba_unmultiplied([CATALOG_ICON_SIZE, CATALOG_ICON_SIZE], &rgba)
+    eframe::egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba)
 }
 
 fn decode_catalog_texture(header: &[u8], data: &[u8]) -> Result<eframe::egui::ColorImage, String> {

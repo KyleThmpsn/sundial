@@ -349,7 +349,7 @@ pub(super) fn progression_definitions_from_data(
                     )?,
                     item_hash,
                     quantity: i32_at(table, reward_row + PROGRESSION_REWARD_QUANTITY_OFFSET)?,
-                    claim_flag: native_unlock_slot(u16_at(table, reward_row + 20)?),
+                    claim_flag: reward_claim_flag(u32_at(table, reward_row + 20)?)?,
                 });
             }
         }
@@ -376,4 +376,11 @@ pub(super) fn progression_definitions_from_data(
 
 fn native_unlock_slot(slot: u16) -> Option<u16> {
     (slot != u16::MAX).then_some(slot)
+}
+
+fn reward_claim_flag(slot: u32) -> Result<Option<u16>, String> {
+    let slot = u16::try_from(slot)
+        .map_err(|_| "Progression reward claim flag exceeds its native range")?;
+    // Sunrise reads the full word and reserves zero for a reward without a claim flag.
+    Ok((slot != 0).then_some(slot))
 }

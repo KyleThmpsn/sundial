@@ -277,7 +277,7 @@ pub(crate) fn validate_shared_expression_table(
     Ok((rows, parallel_end))
 }
 
-pub(super) fn presentation_ancestor_nodes(
+pub(crate) fn presentation_ancestor_nodes(
     nodes: &[u8],
     starts: &[u16],
 ) -> AuthoringResult<BTreeSet<usize>> {

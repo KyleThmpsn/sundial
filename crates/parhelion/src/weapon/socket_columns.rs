@@ -51,6 +51,12 @@ pub(super) fn resolve_socket_column_indices(
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let [index] = matches else {
+                if matches.is_empty() {
+                    return Err(invalid(format!(
+                        "Socket {} choice plug 0x{hash:08X} is missing from the build source. Reselect an installed custom perk in the plug picker to include its recipe data. If its source recipe is missing, import that recipe first. Otherwise, select a plug available in the build source.",
+                        lane + 1,
+                    )));
+                }
                 return Err(invalid(format!(
                     "Socket column {lane} plug 0x{hash:08X} resolved to {} item rows",
                     matches.len()

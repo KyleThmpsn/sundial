@@ -10,6 +10,8 @@ pub fn native_array_at(
         .checked_add(8)
         .ok_or("Package array pointer overflowed")?;
     let header = relative_offset(descriptor, 8, i64_at(data, pointer)?)?;
+    // Even an empty array owns a complete 16-byte header before its row data.
+    bytes_at::<16>(data, header)?;
     if u64_at(data, header)? != count_raw {
         return Err("Package array count mismatch".into());
     }

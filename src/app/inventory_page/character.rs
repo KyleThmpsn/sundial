@@ -90,6 +90,19 @@ impl SundialApp {
             draw_schema_notice(ui, mode, InventoryPageKind::Character);
         }
         ui.add_space(4.0);
+        if self.document.native_account().is_some() {
+            let id = ui.make_persistent_id("character-inventory-material-tab");
+            let mut materials = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut materials, false, "Items");
+                ui.selectable_value(&mut materials, true, "Materials");
+            });
+            ui.data_mut(|data| data.insert_temp(id, materials));
+            if materials {
+                self.draw_character_materials(ui);
+                return;
+            }
+        }
         self.draw_character_inventory_section(ui, mode, editable, equipment_editable);
     }
 

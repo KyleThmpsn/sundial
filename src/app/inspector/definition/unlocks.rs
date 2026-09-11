@@ -133,6 +133,16 @@ fn draw_hash_unlock_definition(
             );
             draw_unlock_state(ui, index, definition, editor.snapshot, value_definition);
             if let Some(snapshot) = editor.snapshot {
+                if snapshot.is_native() && !value_definition {
+                    hash_detail_field(
+                        ui,
+                        "Native Bank State",
+                        snapshot
+                            .native_flag(definition)
+                            .map_or("Unavailable", |set| if set { "Set (2)" } else { "Not Set" }),
+                        true,
+                    );
+                }
                 let evaluated = if value_definition {
                     snapshot
                         .evaluated_value(index, catalog)
@@ -144,7 +154,18 @@ fn draw_hash_unlock_definition(
                 };
                 hash_detail_field(
                     ui,
-                    "Evaluated State",
+                    if snapshot.is_native()
+                        && (crate::app::progression::seasonal::is_derived_value(index)
+                            && value_definition
+                            || !value_definition
+                                && catalog
+                                    .seasonal()
+                                    .is_some_and(|season| season.mod_for_flag(index).is_some()))
+                    {
+                        "After Sunrise Refresh"
+                    } else {
+                        "Evaluated State"
+                    },
                     evaluated.unwrap_or_else(|| "Unresolved".into()),
                     true,
                 );
@@ -152,6 +173,7 @@ fn draw_hash_unlock_definition(
             if editor.progression_editable {
                 draw_unlock_state_editor(
                     ui,
+                    catalog,
                     index,
                     definition,
                     editor.snapshot,
@@ -160,11 +182,34 @@ fn draw_hash_unlock_definition(
                 );
             }
         });
+    if editor
+        .snapshot
+        .is_some_and(CollectionStateSnapshot::is_native)
+    {
+        if value_definition && crate::app::progression::seasonal::is_derived_value(index) {
+            ui.label("Sunrise rebuilds this value from seasonal XP and character artifact ownership. Use Seasonal to change its inputs.");
+        } else if !value_definition
+            && let Some(entry) = catalog
+                .seasonal()
+                .and_then(|season| season.mod_for_flag(index))
+        {
+            ui.label(format!(
+                "Artifact Mod · Column {} · Sale Row {} · Character Flag Slot {}",
+                entry.column() + 1,
+                entry.sale_index,
+                entry.character_slot
+            ));
+            draw_catalog_hash_link(ui, catalog, entry.item_hash, "Artifact Mod");
+            draw_catalog_hash_link(ui, catalog, entry.collectible_hash, "Collectible");
+            ui.label("Ownership is loaded automatically, including saved artifact overrides. Edits preserve the other characters' effective ownership and update the selected character's points.");
+        }
+    }
     draw_hash_unlock_readers(ui, catalog, definition_kind, index, definition);
 }
 
 fn draw_unlock_state_editor(
     ui: &mut egui::Ui,
+    catalog: &Catalog,
     index: usize,
     definition: &UnlockDefinition,
     snapshot: Option<&CollectionStateSnapshot>,
@@ -175,7 +220,39 @@ fn draw_unlock_state_editor(
         return;
     };
     ui.label(metadata_label_text(ui, "Edit Availability"));
-    if !unlock_state_editable(definition, value_definition) {
+    if snapshot.is_native()
+        && value_definition
+        && crate::app::progression::seasonal::is_derived_value(index)
+    {
+        ui.weak("Use Seasonal XP or Artifact Mods");
+    } else if snapshot.is_native()
+        && !value_definition
+        && let Some(season) = catalog.seasonal()
+        && let Some(entry) = season.mod_for_flag(index)
+    {
+        let owned = snapshot.artifact_mask(season, true) & entry.bit() != 0;
+        let available = snapshot.seasonal_experience(season).and_then(|experience| {
+            season.unlock(
+                snapshot.artifact_mask(season, true),
+                entry.sale_index,
+                experience.points_earned,
+            )
+        });
+        let enabled = owned || available.is_ok();
+        let response = ui.add_enabled(
+            enabled,
+            egui::Button::new(if owned { "Remove Mod" } else { "Unlock Mod" }).small(),
+        );
+        if response.clicked() {
+            action.progression_edit = Some(InspectorProgressionEdit::Flag {
+                definition_index: index,
+                set: !owned,
+            });
+        }
+        if !owned && let Err(error) = available {
+            response.on_hover_text(error);
+        }
+    } else if !unlock_state_editable(definition, value_definition) {
         ui.label(egui::RichText::new("Read Only").weak())
             .on_hover_text("This definition uses a storage bank Sundial does not write");
     } else if value_definition {

@@ -42,6 +42,7 @@ impl JsonAccountSettingsAdapter {
         let capabilities = AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: source_schema_version >= 3,
+            numeric_key_bindings_writable: false,
             extended_field_of_view: source_schema_version >= 16,
         };
         let settings = account_settings(document)?;
@@ -361,6 +362,7 @@ fn default_value(key: &AccountSettingKey) -> JsonAccountSettingsResult<AccountSe
         AccountSettingsCapabilities {
             writable: true,
             named_key_bindings_writable: true,
+            numeric_key_bindings_writable: false,
             extended_field_of_view: true,
         },
         one,

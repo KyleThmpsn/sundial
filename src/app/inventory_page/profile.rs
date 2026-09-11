@@ -48,6 +48,11 @@ impl SundialApp {
         if section == ProfileInventorySection::DismantleRewards && !dismantle_rewards_available {
             section = ProfileInventorySection::SharedItems;
         }
+        if section == ProfileInventorySection::PendingRewards
+            && self.document.native_account().is_none()
+        {
+            section = ProfileInventorySection::SharedItems;
+        }
 
         ui.horizontal(|ui| {
             ui.heading("Profile Inventory");
@@ -70,6 +75,13 @@ impl SundialApp {
                     ProfileInventorySection::DismantleRewards,
                     "Dismantle Rewards",
                 );
+                if self.document.native_account().is_some() {
+                    ui.selectable_value(
+                        &mut section,
+                        ProfileInventorySection::PendingRewards,
+                        "Pending Rewards",
+                    );
+                }
             });
             ui.add_space(4.0);
         }
@@ -84,6 +96,7 @@ impl SundialApp {
                 ProfileInventorySection::DismantleRewards => {
                     self.draw_dismantle_reward_section(ui, mode);
                 }
+                ProfileInventorySection::PendingRewards => self.draw_pending_rewards(ui),
             });
     }
 
@@ -272,22 +285,23 @@ impl SundialApp {
                             type_name: &definition.type_name,
                         },
                     );
+                    let inspection_context = DefinitionInspectionContext {
+                        source: format!(
+                            "Dismantle Reward Policy Â· Row {}",
+                            snapshot.location.index + 1
+                        ),
+                        instance_id: None,
+                        authored_level: None,
+                        flags: None,
+                        plug_count: None,
+                        plugs: None,
+                        quantity: Some(i64::from(snapshot.quantity)),
+                    };
                     let header_response = item_editor::draw_catalog_item_header_with_trailing(
                         ui,
                         &self.manifest,
                         Some(u64::from(snapshot.definition_hash)),
-                        Some(DefinitionInspectionContext {
-                            source: format!(
-                                "Dismantle Reward Policy Â· Row {}",
-                                snapshot.location.index + 1
-                            ),
-                            instance_id: None,
-                            authored_level: None,
-                            flags: None,
-                            plug_count: None,
-                            plugs: None,
-                            quantity: Some(i64::from(snapshot.quantity)),
-                        }),
+                        Some(inspection_context.clone()),
                         ItemHeader {
                             label: None,
                             soid: None,
@@ -752,22 +766,23 @@ impl SundialApp {
                             type_name: &definition.type_name,
                         },
                     );
+                    let inspection_context = DefinitionInspectionContext {
+                        source: format!(
+                            "Profile Inventory Â· Item {}",
+                            snapshot.location.index + 1
+                        ),
+                        instance_id: None,
+                        authored_level: None,
+                        flags: None,
+                        plug_count: None,
+                        plugs: None,
+                        quantity: Some(i64::from(snapshot.quantity)),
+                    };
                     let header_response = item_editor::draw_catalog_item_header_with_trailing(
                         ui,
                         &self.manifest,
                         Some(u64::from(snapshot.definition_hash)),
-                        Some(DefinitionInspectionContext {
-                            source: format!(
-                                "Profile Inventory Â· Item {}",
-                                snapshot.location.index + 1
-                            ),
-                            instance_id: None,
-                            authored_level: None,
-                            flags: None,
-                            plug_count: None,
-                            plugs: None,
-                            quantity: Some(i64::from(snapshot.quantity)),
-                        }),
+                        Some(inspection_context.clone()),
                         ItemHeader {
                             label: None,
                             soid: None,
@@ -778,6 +793,16 @@ impl SundialApp {
                             invalid_message: "not a profile-scoped stackable definition",
                         },
                         |_| {},
+                    );
+                    item_editor::draw_context_menu(
+                        ui,
+                        &header_response,
+                        Some((u64::from(snapshot.definition_hash), inspection_context)),
+                        |ui| {
+                            ui.add_enabled_ui(editable, |ui| {
+                                self.draw_profile_item_seen(ui, snapshot.location.index);
+                            });
+                        },
                     );
                     ui.add_enabled_ui(editable, |ui| {
                         ui.horizontal(|ui| {

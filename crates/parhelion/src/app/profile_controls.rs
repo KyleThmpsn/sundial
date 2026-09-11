@@ -164,7 +164,11 @@ pub(super) fn draw_optional_locale_text_field(
     multiline: bool,
 ) {
     let mut enabled = value.is_some();
-    if ui.checkbox(&mut enabled, label).changed() {
+    if ui
+        .checkbox(&mut enabled, label)
+        .on_hover_text("Translate this field.")
+        .changed()
+    {
         *value = enabled.then(|| fallback.to_owned());
     }
     if let Some(value) = value {
@@ -177,7 +181,11 @@ pub(super) fn draw_optional_locale_text_field(
         } else {
             ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
         }
+    } else {
+        ui.add(egui::Label::new(egui::RichText::new(fallback).weak()).truncate())
+            .on_hover_text(fallback);
     }
+    ui.add_space(4.0);
 }
 
 pub(super) fn draw_combat_profile_diagnostics(

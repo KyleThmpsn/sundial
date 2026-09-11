@@ -171,6 +171,26 @@ pub(in crate::app) fn collectible_acquisition_edit_available(
     catalog: &Catalog,
     desired: bool,
 ) -> bool {
+    if snapshot.is_native()
+        && let Some(season) = catalog.seasonal()
+        && let Some(entry) = season
+            .mods
+            .iter()
+            .find(|entry| entry.collectible_hash == definition.hash)
+    {
+        return !desired
+            || snapshot
+                .seasonal_experience(season)
+                .is_ok_and(|experience| {
+                    season
+                        .unlock(
+                            snapshot.artifact_mask(season, true),
+                            entry.sale_index,
+                            experience.points_earned,
+                        )
+                        .is_ok()
+                });
+    }
     collection_state_edits(definition, snapshot, catalog, desired).is_some()
 }
 
@@ -181,6 +201,24 @@ pub(in crate::app) fn set_collectible_acquisition_state(
     catalog: &Catalog,
     desired: bool,
 ) -> Result<(), String> {
+    if snapshot.is_native()
+        && let Some(entry) = catalog.seasonal().and_then(|season| {
+            season
+                .mods
+                .iter()
+                .find(|entry| entry.collectible_hash == definition.hash)
+        })
+    {
+        crate::app::progression::seasonal::apply(
+            document,
+            catalog,
+            crate::app::progression::seasonal::Edit::Mod {
+                sale_index: entry.sale_index,
+                owned: desired,
+            },
+        )?;
+        return Ok(());
+    }
     let edits =
         collection_state_edits(definition, snapshot, catalog, desired).ok_or_else(|| {
             "No supported edit was found within Sundial's bounded acquisition search".to_owned()

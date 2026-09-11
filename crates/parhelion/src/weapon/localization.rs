@@ -156,6 +156,34 @@ pub(super) fn project_authored_localized_values<'a>(
         (SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_DESCRIPTION),
         (SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NAME),
     ]);
+    let mut badges = BTreeMap::new();
+    for weapon in weapons {
+        if let Some(lore) = &weapon.overrides.lore {
+            custom_values.push((
+                crate::presentation::text_hash(&weapon.namespace, "lore"),
+                lore,
+            ));
+        }
+        if let Some(badge) = &weapon.overrides.badge {
+            if let Some(previous) = badges.insert(badge.name.as_str(), badge) {
+                if previous != badge {
+                    return Err(invalid(format!(
+                        "Badge {:?} has conflicting descriptions or artwork. Use the same badge settings for every member.",
+                        badge.name
+                    )));
+                }
+            } else {
+                custom_values.push((
+                    crate::presentation::text_hash(&badge.name, "badge-name"),
+                    &badge.name,
+                ));
+                custom_values.push((
+                    crate::presentation::text_hash(&badge.name, "badge-description"),
+                    &badge.description,
+                ));
+            }
+        }
+    }
     custom_values.sort_unstable_by_key(|value| value.0);
     if custom_values
         .iter()
@@ -252,12 +280,17 @@ pub(super) fn rewrite_localized_data(
     let encoded_custom = custom_values
         .iter()
         .map(|(_, value)| {
-            let encoded = encode_localized_value(value, custom_shift)?;
+            // A donor's character shift can exclude paragraph breaks or part of Unicode.
+            // Native parts carry their own shift, so use plain UTF-8 for those new values.
+            let (encoded, shift) = match encode_localized_value(value, custom_shift) {
+                Ok(encoded) => (encoded, custom_shift),
+                Err(_) => (encode_localized_value(value, 0)?, 0),
+            };
             let encoded_length = u16::try_from(encoded.len())
                 .map_err(|_| invalid("Localized byte length does not fit 16 bits"))?;
             let character_count = u16::try_from(value.chars().count())
                 .map_err(|_| invalid("Localized character count does not fit 16 bits"))?;
-            Ok((encoded, encoded_length, character_count))
+            Ok((encoded, encoded_length, character_count, shift))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
     let custom_count = encoded_custom.len();
@@ -309,7 +342,7 @@ pub(super) fn rewrite_localized_data(
             .ok_or_else(|| invalid("Localization donor byte payload is truncated"))?,
     );
     let mut custom_starts = Vec::with_capacity(custom_count);
-    for (encoded, _, _) in &encoded_custom {
+    for (encoded, _, _, _) in &encoded_custom {
         custom_starts.push(data.len());
         data.extend_from_slice(encoded);
     }
@@ -415,14 +448,14 @@ pub(super) fn rewrite_localized_data(
             custom_part_template,
         )?;
     }
-    for (index, ((_, encoded_length, character_count), start)) in
+    for (index, ((_, encoded_length, character_count, shift), start)) in
         encoded_custom.iter().zip(custom_starts).enumerate()
     {
         let part = custom_parts + index * LOCALIZATION_PART_ROW_SIZE;
         write_relative_pointer(&mut data, part + 8, start)?;
         write_u16(&mut data, part + 0x14, *encoded_length)?;
         write_u16(&mut data, part + 0x16, *character_count)?;
-        write_u16(&mut data, part + 0x18, custom_shift)?;
+        write_u16(&mut data, part + 0x18, *shift)?;
     }
     for index in 0..custom_count {
         let combo = custom_combos + index * LOCALIZATION_COMBO_ROW_SIZE;

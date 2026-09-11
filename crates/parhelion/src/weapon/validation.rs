@@ -32,6 +32,15 @@ pub(super) fn validate_numeric_instructions(
 }
 
 pub(super) fn validate_weapon_donor_references(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
+    if let Some(badge) = &spec.overrides.badge {
+        badge.validate().map_err(invalid)?;
+    }
+    if let Some(lore) = &spec.overrides.lore {
+        crate::presentation::validate_text(lore, 16384, "Lore").map_err(invalid)?;
+        if lore.trim().is_empty() {
+            return Err(invalid("Enter lore text or turn off custom lore."));
+        }
+    }
     spec.identity.validate_for_donor(spec.donor_item_hash)?;
     if matches!(spec.donor_item_hash, 0 | FNV1_EMPTY_HASH) {
         return Err(invalid(
@@ -309,12 +318,13 @@ pub(super) fn validate_presentation_overrides(
 
 pub(super) fn validate_socket_column_shapes(
     columns: &[Option<WeaponSocketColumnOverride>],
+    variants: &[WeaponSocketPlugVariantOverride],
 ) -> AuthoringResult<()> {
     for (lane, column) in columns.iter().enumerate() {
         let Some(column) = column else {
             continue;
         };
-        validate_socket_column_choices(lane, column)?;
+        validate_socket_column_choices(lane, column, variants)?;
         validate_socket_column_weights(lane, column)?;
         validate_socket_column_programs(lane, column)?;
     }
@@ -324,6 +334,7 @@ pub(super) fn validate_socket_column_shapes(
 pub(super) fn validate_socket_column_choices(
     lane: usize,
     column: &WeaponSocketColumnOverride,
+    variants: &[WeaponSocketPlugVariantOverride],
 ) -> AuthoringResult<()> {
     if column.socket_type == Some(u16::MAX) && column.choices.is_empty() {
         if !column.choice_weight_bits.is_empty()
@@ -343,18 +354,32 @@ pub(super) fn validate_socket_column_choices(
             "Authored socket column {lane} must contain between one and {MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES} choices"
         )));
     }
-    let mut choices = BTreeSet::new();
-    for &hash in &column.choices {
+    let mut choices = BTreeMap::<u32, Vec<usize>>::new();
+    let variant_at = |choice| {
+        variants.iter().find(|variant| {
+            usize::from(variant.socket_index) == lane && usize::from(variant.choice_index) == choice
+        })
+    };
+    for (choice, &hash) in column.choices.iter().enumerate() {
         if hash == 0 {
             return Err(invalid(format!(
                 "Authored socket column {lane} contains plug hash zero"
             )));
         }
-        if !choices.insert(hash) {
+        let previous = choices.entry(hash).or_default();
+        if previous
+            .iter()
+            .any(|&other| match (variant_at(other), variant_at(choice)) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.same_definition(right),
+                _ => false,
+            })
+        {
             return Err(invalid(format!(
                 "Authored socket column {lane} contains duplicate plug 0x{hash:08X}"
             )));
         }
+        previous.push(choice);
     }
     if column.socket_type == Some(u16::MAX) {
         return Err(invalid(format!(
@@ -487,13 +512,28 @@ pub(super) fn validate_socket_plug_variant_shapes(
                 "Socket-plug variant {variant_index} has a reserved classification source hash"
             )));
         }
-        if variant.sandbox_perks.is_empty() {
+        if variant.sandbox_perks.is_empty() && !variant.replace_effects {
             return Err(invalid(format!(
                 "Socket-plug variant {variant_index} does not select a finished sandbox perk"
             )));
         }
         let mut perk_indices = BTreeSet::new();
         for perk in &variant.sandbox_perks {
+            if let Some(program) = &perk.program {
+                program.validate().map_err(invalid)?;
+                if perk.activation.is_some()
+                    || !perk.runtime_values.is_empty()
+                    || !perk.action_float_values.is_empty()
+                    || !perk.projectiles.is_empty()
+                {
+                    return Err(invalid(
+                        "A custom effect program cannot also contain stock action overrides.",
+                    ));
+                }
+                for action in &program.actions {
+                    validate_runtime_value_override_shapes(&action.asset().values)?;
+                }
+            }
             if perk.activation.is_some()
                 && !sundial::package_authoring::sandbox_perk::activation::supports_activation(
                     perk.source_perk_index,
@@ -509,6 +549,18 @@ pub(super) fn validate_socket_plug_variant_shapes(
                     "Socket-plug variant {variant_index} selects finished sandbox-perk {} more than once",
                     perk.source_perk_index
                 )));
+            }
+            let mut projectile_sources = BTreeSet::new();
+            for projectile in &perk.projectiles {
+                if !projectile_sources.insert(projectile.source_graph)
+                    || [projectile.source_graph, projectile.donor_graph]
+                        .iter()
+                        .any(|tag| matches!(*tag, 0 | u32::MAX))
+                {
+                    return Err(invalid(
+                        "Projectile selections must have unique source graphs and valid donor identities",
+                    ));
+                }
             }
             if !perk.runtime_values.is_empty() {
                 validate_runtime_value_override_shapes(&perk.runtime_values).map_err(|error| {
@@ -721,9 +773,18 @@ pub(super) fn raw_patch_range(
 /// Structural recipe/spec validation remains with the public compiler wrappers. Loading Sundial's
 /// catalog is skipped when no spec selects a presentation donor or changes a catalog-validated
 /// stat, perk, trait, socket, translation selector, plug metadata field or raw payload range.
+#[cfg(test)]
 pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
     install_directory: &Path,
     specs: impl IntoIterator<Item = &'a WeaponCloneSpec>,
+) -> AuthoringResult<()> {
+    validate_catalog_with_progress(install_directory, specs, &mut |_, _, _, _| {})
+}
+
+pub(crate) fn validate_catalog_with_progress<'a>(
+    install_directory: &Path,
+    specs: impl IntoIterator<Item = &'a WeaponCloneSpec>,
+    progress: &mut dyn FnMut(bool, &str, usize, usize),
 ) -> AuthoringResult<()> {
     let specs = specs
         .into_iter()
@@ -747,11 +808,13 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
         return Ok(());
     }
 
-    let catalog = InvestmentCatalog::load(install_directory, false, |_| {})
-        .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
+    let catalog = InvestmentCatalog::load(install_directory, false, |event| {
+        progress(true, event.message, event.completed, event.total);
+    })
+    .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
     let installed_donors = catalog.weapon_donors();
     let installed_sandbox_perks = catalog
-        .weapon_sandbox_perk_choices()
+        .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)
         .into_iter()
         .map(|choice| choice.perk_index)
         .collect::<BTreeSet<_>>();
@@ -763,7 +826,10 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
     let reusable_plug_set_count = catalog.reusable_plug_set_count();
     let socket_entry_list_count = catalog.socket_entry_list_count();
 
-    for spec in specs {
+    let total = specs.len();
+    for (index, spec) in specs.into_iter().enumerate() {
+        progress(false, &spec.text.name, index, total);
+        (|| -> AuthoringResult<()> {
         if let Some(reference) = &spec.presentation_donor {
             let gameplay = installed_donors
                 .iter()
@@ -884,6 +950,14 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
         for variant in &spec.overrides.socket_plug_variants {
             let source_stats = catalog.item_stat_contributions(variant.source_plug_hash);
             for &(index, _) in &variant.investment_stats {
+                if variant.replace_effects
+                    && catalog
+                        .perk_stat_choices()
+                        .iter()
+                        .any(|stat| stat.definition_index == index)
+                {
+                    continue;
+                }
                 if !source_stats
                     .iter()
                     .chain(&donor.investment_stats)
@@ -968,6 +1042,9 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
                 spec.text.name, spec.namespace
             )));
         }
+        Ok(())
+        })().map_err(|error| error.context(spec.error_context()))?;
+        progress(false, &spec.text.name, index + 1, total);
     }
     Ok(())
 }
@@ -1019,6 +1096,7 @@ pub(super) fn validate_authored_payloads(
     spec: &WeaponCloneSpec,
 ) -> AuthoringResult<()> {
     validate_item_root_holder_bounds(definition)?;
+    validate_weapon_translation_markers(definition)?;
     let authored_version = weapon_version_array(definition)?;
     if matching_u32_offsets(definition, spec.donor_item_hash).is_empty()
         && matching_u32_offsets(definition, spec.identity.item_hash)
@@ -1224,9 +1302,6 @@ pub(super) fn validate_authored_localization_values(
     let (hash_count, _, hash_rows, hash_class) = array_at(&localization.merged_header, 8)?;
     let mut expected_hashes = LOCALIZATION_DONOR_STRING_HASHES.to_vec();
     expected_hashes.extend(custom_values.iter().map(|(hash, _)| *hash));
-    let actual_hashes = (0..hash_count)
-        .map(|index| read_u32(&localization.merged_header, hash_rows + index * 4))
-        .collect::<AuthoringResult<Vec<_>>>()?;
     if hash_count != merged_count
         || hash_class != LOCALIZATION_HEADER_HASH_CLASS
         || hash_rows
@@ -1237,11 +1312,18 @@ pub(super) fn validate_authored_localization_values(
             )
             .ok_or_else(|| validation("Localized hash row range overflowed"))?
             != localization.merged_header.len()
-        || actual_hashes != expected_hashes
         || localization.locale_data.len() != LOCALIZATION_LOCALE_COUNT
     {
         return Err(validation(
             "Authored localization header did not preserve the donor hashes and append the expected authored hashes",
+        ));
+    }
+    let actual_hashes = (0..hash_count)
+        .map(|index| read_u32(&localization.merged_header, hash_rows + index * 4))
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    if actual_hashes != expected_hashes {
+        return Err(validation(
+            "Authored localization hashes do not match the expected donor and authored hashes",
         ));
     }
 
@@ -1256,6 +1338,9 @@ pub(super) fn validate_authored_localization_values(
             array_at(&locale.payload, LOCALIZATION_BYTE_DESCRIPTOR_OFFSET)?;
         let (combo_count, _, _, combo_class) =
             array_at(&locale.payload, LOCALIZATION_COMBO_DESCRIPTOR_OFFSET)?;
+        let localized_bytes = bytes
+            .checked_add(byte_count)
+            .and_then(|end| locale.payload.get(bytes..end));
         if read_u32(&localization.merged_header, header_tag_offset)? != locale.donor_tag.0
             || part_count != merged_count
             || part_class != LOCALIZATION_PART_CLASS
@@ -1263,7 +1348,7 @@ pub(super) fn validate_authored_localization_values(
             || aux_class != LOCALIZATION_AUX_CLASS
             || byte_count == 0
             || byte_class != LOCALIZATION_BYTE_CLASS
-            || locale.payload.get(bytes + byte_count - 1) != Some(&0)
+            || localized_bytes.and_then(|bytes| bytes.last()) != Some(&0)
             || combo_count != merged_count
             || combo_class != LOCALIZATION_COMBO_CLASS
             || locale_values

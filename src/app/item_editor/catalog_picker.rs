@@ -34,6 +34,14 @@ pub(crate) fn draw_catalog_picker_row(
     catalog: &Catalog,
     row: CatalogPickerRow<'_>,
 ) -> egui::Response {
+    draw_picker_row(ui, Some(catalog), row)
+}
+
+pub(crate) fn draw_picker_row(
+    ui: &mut egui::Ui,
+    catalog: Option<&Catalog>,
+    row: CatalogPickerRow<'_>,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row.row_height),
         egui::Sense::click(),
@@ -57,6 +65,13 @@ pub(crate) fn draw_catalog_picker_row(
     }
 
     let visuals = ui.style().interact_selectable(&response, row.selected);
+    let text_color = if ui.is_enabled() {
+        ui.visuals()
+            .override_text_color
+            .unwrap_or(visuals.text_color())
+    } else {
+        visuals.text_color()
+    };
     if row.selected || response.hovered() || response.has_focus() {
         ui.painter().rect(
             rect,
@@ -73,7 +88,7 @@ pub(crate) fn draw_catalog_picker_row(
         egui::pos2(rect.left() + PADDING, rect.center().y - icon_size / 2.0),
         egui::vec2(icon_size, icon_size),
     );
-    if let Some(texture) = catalog.icon_texture(ui.ctx(), row.hash) {
+    if let Some(texture) = catalog.and_then(|catalog| catalog.icon_texture(ui.ctx(), row.hash)) {
         ui.painter()
             .rect_filled(icon_rect, 0.0, crate::app::ui::package_icon_backdrop(ui));
         ui.painter().image(
@@ -92,35 +107,26 @@ pub(crate) fn draw_catalog_picker_row(
         ui,
         row.primary,
         primary_font,
-        visuals.text_color(),
+        text_color,
         text_width,
         row.primary_max_rows,
     );
-    let secondary_galley = row.secondary.map(|secondary| {
-        single_line_galley(
-            ui,
-            secondary,
-            secondary_font,
-            visuals.text_color(),
-            text_width,
-        )
-    });
+    let secondary_galley = row
+        .secondary
+        .map(|secondary| single_line_galley(ui, secondary, secondary_font, text_color, text_width));
     let content_height = primary_galley.size().y
         + secondary_galley
             .as_ref()
             .map_or(0.0, |galley| 1.0 + galley.size().y);
     let mut text_top = rect.center().y - content_height / 2.0;
-    ui.painter().galley(
-        egui::pos2(text_left, text_top),
-        primary_galley,
-        visuals.text_color(),
-    );
+    ui.painter()
+        .galley(egui::pos2(text_left, text_top), primary_galley, text_color);
     if let Some(secondary_galley) = secondary_galley {
         text_top += content_height - secondary_galley.size().y;
         ui.painter().galley(
             egui::pos2(text_left, text_top),
             secondary_galley,
-            visuals.text_color(),
+            text_color,
         );
     }
     response
@@ -193,7 +199,7 @@ pub(crate) fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bo
         || catalog.icon_diagnostic(hash).is_some()
 }
 
-fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
+pub(crate) fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
     let name = catalog.display_name(hash);
     let type_name = catalog
         .plug_type_name(hash)
@@ -212,7 +218,7 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(name) = name {
-                    ui.label(crate::app::ui::destiny_text(ui, name).strong());
+                    crate::ui_help::tooltip_title(ui, name);
                 }
                 ui.horizontal_wrapped(|ui| {
                     if let Some(type_name) = type_name {
@@ -226,6 +232,9 @@ fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
                             .weak(),
                     );
                 });
+                if let Some((cost, label)) = catalog.mod_energy_cost(hash) {
+                    ui.label(format!("{label}: {cost}"));
+                }
             });
             if let Some(description) = description {
                 ui.separator();

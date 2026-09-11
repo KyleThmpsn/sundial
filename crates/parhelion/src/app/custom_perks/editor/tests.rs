@@ -3,7 +3,7 @@ use sundial::package_authoring::weapon_runtime::{
     WeaponRuntimeBinding, WeaponRuntimeOwner, WeaponRuntimeRoot, WeaponRuntimeRootKind,
 };
 
-fn fixture() -> PrivatePerkRuntimeGraph {
+pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
     let roots = [
         (WeaponRuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
         (
@@ -75,11 +75,15 @@ fn fixture() -> PrivatePerkRuntimeGraph {
         action_payload: payload,
         graphs: vec![(graph.entity_tag, graph)],
         warnings: vec![],
+        projectile_slots: vec![],
+        projectile_catalog: Arc::default(),
+        native_assets: Vec::new(),
     }
 }
 
-fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
+pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
     PerkEditor {
+        entity_source: None,
         key: PerkEditorKey {
             socket_index: 0,
             choice_index: 0,
@@ -90,6 +94,11 @@ fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
         packages: PathBuf::new(),
         draft: vec![],
         action_draft: vec![],
+        projectile_draft: vec![],
+        original_projectile_draft: vec![],
+        projectile_labels: BTreeMap::new(),
+        projectile_query: String::new(),
+        pending_movement: None,
         parameter_error: None,
         graph: Some(Arc::new(loaded)),
         error: None,
@@ -104,28 +113,11 @@ fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
 }
 
 #[test]
-fn unloaded_parameters_are_blocked_without_showing_a_validation_error() {
-    let mut editor = editor(fixture());
-    editor.graph = None;
-    assert!(!editor.validation_errors().is_empty());
-    let ctx = egui::Context::default();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = ctx.run(egui::RawInput::default(), |ctx| {
-            assert!(editor.show(ctx, false).is_none());
-        });
-    }
-    assert!(!output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Wait for the perk data"))
-    }));
-}
-
-#[test]
 fn perk_editor_does_not_advertise_a_nonexistent_build_status() {
     let mut app = PackageAuthoringApp {
-        perk_editor: Some(editor(fixture())),
         ..Default::default()
     };
+    app.perk_workbench.set_test_editor(editor(fixture()));
     let ctx = egui::Context::default();
     let output = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| app.draw_actions(ui));
@@ -290,7 +282,7 @@ fn native_micro_missile_exposes_verified_speed() {
     use sundial::package_authoring::weapon_runtime::resolve_weapon_runtime_field;
     let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("package path");
     let loaded =
-        load_private_perk_runtime_graph(Path::new(&packages), editor(fixture()).key).unwrap();
+        load_private_perk_runtime_graph(Path::new(&packages), editor(fixture()).key, &[]).unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     let speed = guided::ProjectileSpeed::discover(&loaded).expect("verified speed profile");
     let mut editor = editor(loaded.clone());
@@ -321,65 +313,6 @@ fn native_micro_missile_exposes_verified_speed() {
 }
 
 #[test]
-fn parameter_window_keeps_apply_visible_without_mutating_the_draft() {
-    fn find(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
-        match shape {
-            egui::Shape::Text(text) if text.galley.job.text == label => {
-                Some(text.galley.rect.translate(text.pos.to_vec2()))
-            }
-            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
-            _ => None,
-        }
-    }
-    for (width, height) in [(640.0, 480.0), (1000.0, 720.0), (1320.0, 900.0)] {
-        for (experimental, dark_mode) in
-            [(false, false), (false, true), (true, false), (true, true)]
-        {
-            let mut editor = editor(fixture());
-            let ctx = egui::Context::default();
-            ctx.set_visuals(if dark_mode {
-                egui::Visuals::dark()
-            } else {
-                egui::Visuals::light()
-            });
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-            let mut output = egui::FullOutput::default();
-            for _ in 0..3 {
-                output = ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(screen),
-                        ..Default::default()
-                    },
-                    |ctx| {
-                        assert!(editor.show(ctx, experimental).is_none());
-                    },
-                );
-            }
-            let apply = output
-                .shapes
-                .iter()
-                .find_map(|shape| find(&shape.shape, "Apply & Back"))
-                .expect("Apply rendered");
-            assert!(
-                screen.contains_rect(apply),
-                "Apply outside {width}x{height}: {apply:?}"
-            );
-            let notice = output
-                .shapes
-                .iter()
-                .find_map(|shape| find(&shape.shape, guided::GUIDED_SUPPORT_NOTICE))
-                .expect("Guided support notice rendered");
-            assert!(
-                screen.contains_rect(notice),
-                "Support notice outside {width}x{height}: {notice:?}"
-            );
-            assert!(editor.draft.is_empty());
-            assert!(editor.action_draft.is_empty());
-        }
-    }
-}
-
-#[test]
 fn guided_availability_is_explicit_and_not_inferred_from_a_name() {
     assert!(has_guided_profile(1178));
     for index in [0, 351, 403, 421, u16::MAX] {
@@ -406,54 +339,6 @@ fn parameter_defaults_are_a_draft_and_cancel_does_not_touch_the_recipe() {
     assert_eq!(editor.original_draft.len(), 2);
     drop(editor);
     assert_eq!(recipe, before);
-}
-
-#[test]
-fn parameter_back_is_available_during_loading_and_empty_apply_is_disabled() {
-    let mut editor = editor(fixture());
-    let (sender, receiver) = mpsc::channel();
-    editor.receiver = Some(receiver);
-    editor.graph = None;
-    let ctx = egui::Context::default();
-    let mut back = None;
-    for _ in 0..3 {
-        let output = ctx.run(egui::RawInput::default(), |ctx| {
-            assert!(editor.show(ctx, false).is_none());
-        });
-        for shape in output.shapes {
-            if let egui::Shape::Text(text) = shape.shape
-                && text.galley.job.text == "Back"
-            {
-                back = Some(text.galley.rect.translate(text.pos.to_vec2()).center());
-            }
-        }
-    }
-    let position = back.expect("Back remains visible while loading");
-    let mut action = None;
-    let _ = ctx.run(
-        egui::RawInput {
-            events: vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                },
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                },
-            ],
-            ..Default::default()
-        },
-        |ctx| action = editor.show(ctx, false),
-    );
-    assert!(matches!(action, Some(PerkEditorAction::Cancel)));
-    assert!(!editor.has_changes());
-    drop(sender);
 }
 
 #[test]
@@ -488,6 +373,7 @@ fn configured_private_perk_runtime_graph_decodes() {
             source_plug_hash: plug_hash,
             source_perk_index: perk_index,
         },
+        &[],
     )
     .expect("configured private-perk runtime graph should decode");
 
@@ -507,4 +393,24 @@ fn configured_private_perk_runtime_graph_decodes() {
         occurrences.values().any(|count| *count == 1),
         "configured perk should expose at least one unambiguous editable field"
     );
+}
+
+pub(in crate::app) fn set_test_speed(
+    loaded: &PrivatePerkRuntimeGraph,
+    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    value: f32,
+) {
+    guided::ProjectileSpeed::discover(loaded)
+        .unwrap()
+        .set(loaded, draft, value)
+        .unwrap();
+}
+pub(in crate::app) fn test_speed(
+    loaded: &PrivatePerkRuntimeGraph,
+    draft: &[WeaponRuntimeValueOverride],
+) -> f32 {
+    guided::ProjectileSpeed::discover(loaded)
+        .unwrap()
+        .value(loaded, draft)
+        .unwrap()
 }

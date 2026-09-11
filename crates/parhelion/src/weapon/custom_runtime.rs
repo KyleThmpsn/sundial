@@ -47,6 +47,24 @@ pub(super) fn append_patched_runtime_resource_owners(
     runtime_tag_allocator: AppendedTagAllocator,
     runtime_new_tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
+    if values
+        .iter()
+        .any(|value| matches!(value.locator.root_schema, 0x8080_3B73 | 0x8080_388F))
+        && sundial::package_authoring::sandbox_perk::projectile::kind(entity)
+            .map_err(invalid)?
+            .is_some()
+    {
+        let graph =
+            sundial::package_authoring::weapon_runtime::load_weapon_runtime_graph_for_entity(
+                manager, 0, 0, 0, entity,
+            )
+            .map_err(invalid)?;
+        for parameter in
+            sundial::package_authoring::sandbox_perk::projectile::parameters::discover(&graph)
+        {
+            parameter.value(values).map_err(invalid)?;
+        }
+    }
     let mut patches_by_owner = BTreeMap::<u32, Vec<ResolvedRuntimeResourcePatch>>::new();
     let mut graph_clones = Vec::<(u32, Vec<WeaponRuntimeValueOverride>, TagHash)>::new();
     for (value_index, value) in values.iter().enumerate() {
@@ -177,13 +195,6 @@ pub(super) fn append_patched_runtime_resource_owners(
             "Authored runtime component owner",
             "runtime component owner",
         )?;
-        retarget_weapon_component_owner_payload(
-            &mut owner_payload,
-            entity,
-            owner_tag.0,
-            authored_owner_tag.0,
-        )
-        .map_err(invalid)?;
         for patch in &owner_patches {
             let owner_len = owner_payload.len();
             let target = owner_payload
@@ -200,6 +211,15 @@ pub(super) fn append_patched_runtime_resource_owners(
                 })?;
             target.copy_from_slice(&patch.bytes);
         }
+        // Byte-range edits can include native references. Retarget the final payload
+        // so copying source bytes cannot restore a link to the stock owner.
+        retarget_weapon_component_owner_payload(
+            &mut owner_payload,
+            entity,
+            owner_tag.0,
+            authored_owner_tag.0,
+        )
+        .map_err(invalid)?;
         retarget_weapon_component_owner(entity, owner_tag.0, authored_owner_tag.0)
             .map_err(invalid)?;
         runtime_new_tags.push(NewTagSpec {
@@ -519,17 +539,53 @@ pub(super) fn build_private_perk_residency_chain(
     ])
 }
 
+#[derive(Default)]
+pub(super) struct PrivateRuntimeEdits<'a> {
+    pub program: Option<&'a sundial::package_authoring::sandbox_perk::program::Program>,
+    pub values: &'a [WeaponRuntimeValueOverride],
+    pub action_float_values: &'a [WeaponSandboxPerkActionFloatOverride],
+    pub projectiles: &'a [sundial::package_authoring::sandbox_perk::projectile::Selection],
+    pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
+}
+
 pub(super) fn clone_private_sandbox_perk_runtime(
     manager: &PackageManager,
     runtime_action: &SandboxPerkRuntimeAction,
-    values: &[WeaponRuntimeValueOverride],
-    action_float_values: &[WeaponSandboxPerkActionFloatOverride],
-    activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
+    edits: PrivateRuntimeEdits<'_>,
     runtime_tag_allocator: AppendedTagAllocator,
     runtime_new_tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
+    let PrivateRuntimeEdits {
+        program,
+        values,
+        action_float_values,
+        projectiles,
+        activation,
+    } = edits;
+    if let Some(program) = program {
+        if !values.is_empty()
+            || !action_float_values.is_empty()
+            || !projectiles.is_empty()
+            || activation.is_some()
+        {
+            return Err(invalid(
+                "A custom effect program cannot also carry stock action overrides.",
+            ));
+        }
+        return append_private_program_runtime(
+            manager,
+            runtime_action.action_tag,
+            program,
+            runtime_tag_allocator,
+            runtime_new_tags,
+        );
+    }
     let source_runtime_tag = runtime_action.action_tag;
-    if values.is_empty() && action_float_values.is_empty() && activation.is_none() {
+    if values.is_empty()
+        && action_float_values.is_empty()
+        && activation.is_none()
+        && projectiles.is_empty()
+    {
         return Ok(source_runtime_tag);
     }
     let mut action = if let Some(activation) = activation {
@@ -567,7 +623,12 @@ pub(super) fn clone_private_sandbox_perk_runtime(
         }
         write_u32(&mut action, offset, value.value_bits)?;
     }
-    let graphs = &runtime_action.graphs;
+    let graphs = sundial::package_authoring::sandbox_perk::projectile::resolve(
+        manager,
+        runtime_action,
+        projectiles,
+    )
+    .map_err(invalid)?;
     if graphs.is_empty() && !values.is_empty() {
         return Err(invalid(format!(
             "Sandbox-perk runtime action {source_runtime_tag} has no directly referenced runtime graphs"
@@ -600,8 +661,13 @@ pub(super) fn clone_private_sandbox_perk_runtime(
         values_by_graph[*graph_index].push(value.clone());
     }
 
-    for (graph, graph_values) in graphs.iter().zip(values_by_graph) {
-        if graph_values.is_empty() {
+    for ((source, graph), graph_values) in runtime_action
+        .graphs
+        .iter()
+        .zip(&graphs)
+        .zip(values_by_graph)
+    {
+        if graph_values.is_empty() && source.tag == graph.tag {
             continue;
         }
         let mut authored_graph = graph.payload.clone();
@@ -619,7 +685,7 @@ pub(super) fn clone_private_sandbox_perk_runtime(
             "sandbox-perk graph",
         )?;
         for &offset in &graph.action_offsets {
-            if read_u32(&action, offset)? != graph.tag.0 {
+            if read_u32(&action, offset)? != source.tag.0 {
                 return Err(validation(
                     "Sandbox-perk runtime action graph reference moved while authoring",
                 ));
@@ -657,4 +723,44 @@ pub(super) fn clone_private_sandbox_perk_runtime(
     });
     runtime_new_tags.extend(residency_chain);
     Ok(authored_action_tag)
+}
+
+fn append_private_program_runtime(
+    manager: &PackageManager,
+    action_template: TagHash,
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<TagHash> {
+    let mut compiled = sundial::package_authoring::sandbox_perk::program::compile(manager, program)
+        .map_err(invalid)?;
+    for (action, offset) in program.actions.iter().zip(compiled.graph_offsets) {
+        let asset = action.asset();
+        if asset.values.is_empty() {
+            continue;
+        }
+        let graph = append_private_referenced_graph(
+            manager,
+            TagHash(asset.graph),
+            &asset.values,
+            allocator,
+            tags,
+        )?;
+        write_u32(&mut compiled.payload, offset, graph.0)?;
+    }
+    let action =
+        allocator.assigned_tag(tags.len(), "Custom effect action", "custom effect action")?;
+    let residency = build_private_perk_residency_chain(
+        manager,
+        allocator,
+        AppendedTagAllocator::checked_ordinal(tags.len(), 1, "Custom effect residency")?,
+        action,
+    )?;
+    tags.push(NewTagSpec {
+        template_tag: action_template,
+        payload: compiled.payload,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
+    tags.extend(residency);
+    Ok(action)
 }

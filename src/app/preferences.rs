@@ -120,6 +120,8 @@ pub(super) struct InstallSelection {
 #[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Preferences {
     #[serde(default)]
+    pub(super) plug_defaults_version: u32,
+    #[serde(default)]
     pub(super) install: Option<PathBuf>,
     #[serde(default)]
     pub(super) settings_layout: Option<String>,
@@ -238,6 +240,23 @@ pub(super) fn configure_destiny_symbol_fonts(
             style.text_styles.remove(&heading_style);
         });
     }
+    let tooltip_family = egui::FontFamily::Name("Sundial Tooltip Title".into());
+    let mut tooltip_fonts = fonts.families[&destiny_text_font_family()].clone();
+    if let Ok(bytes) = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Medium.otf")) {
+        let name = "sundial-tooltip-medium".to_owned();
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        tooltip_fonts.insert(0, name);
+    }
+    fonts.families.insert(tooltip_family.clone(), tooltip_fonts);
+    ctx.all_styles_mut(|style| {
+        let size = egui::TextStyle::Body.resolve(style).size + 2.0;
+        style.text_styles.insert(
+            crate::ui_help::tooltip_title_style(),
+            egui::FontId::new(size, tooltip_family.clone()),
+        );
+    });
     ctx.set_fonts(fonts);
     if errors.is_empty() {
         Ok(())
@@ -249,6 +268,7 @@ pub(super) fn configure_destiny_symbol_fonts(
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            plug_defaults_version: 1,
             install: None,
             settings_layout: None,
             really_unsafe_warning_acknowledged: false,

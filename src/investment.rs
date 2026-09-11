@@ -8,22 +8,33 @@ use std::{
 pub(crate) mod plug_selection;
 pub use plug_selection::PlugSelectionMode;
 
-mod account_sync;
+pub(crate) mod account_sync;
+mod client_settings;
+pub use client_settings::{AuthoredClientSettings, preview_authored_client_settings};
 mod controls;
 mod definitions;
+mod lore;
+pub(crate) mod titles;
+pub use lore::{LoreEntry, load_item_lore};
+mod perk_patterns;
+pub(crate) mod seasonal;
 pub use account_sync::{
-    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredProfileSyncReport,
-    AuthoredSocketChange, preview_authored_account_cleanup, preview_authored_account_replacement,
-    synchronize_authored_collection_unlocks, validate_authored_cleanup_backend,
+    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredItemMove, AuthoredMoveOutcome,
+    AuthoredProfileSyncReport, AuthoredSlotChange, AuthoredSlotReplacement, AuthoredSocketChange,
+    preview_authored_account_cleanup, preview_authored_account_replacement,
+    preview_authored_account_replacement_with_slots, read_authored_account_source,
+    replace_authored_account_source, synchronize_authored_collection_unlocks,
+    validate_authored_cleanup_backend,
 };
 pub use controls::{
     AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton, PlugSelection,
     WeaponDonorPickerAction, WeaponDonorPickerClearChoice, WeaponDonorPickerOptions,
-    authoring_button_width, authoring_socket_label_width, authoring_socket_reset_width,
-    configure_authoring_fonts, default_plug_selection_mode, draw_authoring_info_icon,
-    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
-    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning, progress_bar,
-    show_plug_safety_warnings,
+    authoring_button_width, authoring_choice_row_height, authoring_socket_label_width,
+    authoring_socket_reset_width, configure_authoring_fonts, default_plug_selection_mode,
+    draw_asset_choice_row, draw_authoring_info_icon, draw_authoring_socket_label,
+    draw_authoring_socket_reset, draw_authoring_toolbar, draw_catalog_loading_view,
+    draw_plug_safety_selector, draw_plug_safety_warning, progress_bar, show_plug_safety_warnings,
+    tooltip_title,
 };
 pub use definitions::{
     PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
@@ -31,6 +42,7 @@ pub use definitions::{
     WeaponInventorySlot, WeaponInvestmentStat, WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket,
     WeaponSocketTypeChoice, WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
 };
+pub use perk_patterns::PerkPatternUse;
 
 use crate::{
     catalog::{Catalog, ItemWeaponInventorySlot, is_authorable_weapon_item},
@@ -137,6 +149,14 @@ impl InvestmentCatalog {
         self.catalog.plug_label(u64::from(hash), include_hash)
     }
 
+    /// Native definition identity for authoring clients that need to distinguish generated plugs.
+    #[must_use]
+    pub fn item_definition_tag(&self, hash: u32) -> Option<u32> {
+        self.catalog
+            .item_package_metadata(u64::from(hash))
+            .map(|metadata| metadata.definition_tag)
+    }
+
     /// Returns every native cap-table row from the loaded installation, including
     /// duplicate values and large limits. Legacy "version group" fields hold table indices.
     #[must_use]
@@ -211,6 +231,15 @@ impl InvestmentCatalog {
     /// item is display metadata only; recipes store and author the finished numeric index.
     #[must_use]
     pub fn weapon_sandbox_perk_choices(&self) -> Vec<WeaponSandboxPerkChoice> {
+        self.weapon_sandbox_perk_choices_from(|_| true)
+    }
+
+    /// Lists effect sources from accepted native item-definition tags. Authoring clients can
+    /// exclude generated items whose private effect indices are absent from their build source.
+    pub fn weapon_sandbox_perk_choices_from(
+        &self,
+        include_definition: impl Fn(u32) -> bool,
+    ) -> Vec<WeaponSandboxPerkChoice> {
         let mut choices = BTreeMap::new();
         // Perk plugs are not inventory items. Scanning only `items` hides effects
         // such as Outlaw and Rampage from the custom-perk effect selector.
@@ -228,6 +257,9 @@ impl InvestmentCatalog {
             let Some(metadata) = self.catalog.item_package_metadata(item_hash) else {
                 continue;
             };
+            if !include_definition(metadata.definition_tag) {
+                continue;
+            }
             for perk in &metadata.sandbox_perks {
                 let name = self
                     .catalog
@@ -267,6 +299,55 @@ impl InvestmentCatalog {
             }
         }
         choices.into_values().collect()
+    }
+
+    /// Every named plug remains available as a starting point, including aliases and stat-only plugs.
+    /// This list must not be reduced to one representative per runtime effect.
+    #[must_use]
+    pub fn perk_template_choices_from(
+        &self,
+        include_definition: impl Fn(u32) -> bool,
+    ) -> Vec<WeaponSandboxPerkChoice> {
+        let mut choices = self
+            .catalog
+            .all_plug_options()
+            .iter()
+            .filter_map(|&item_hash| {
+                let hash = u32::try_from(item_hash).ok()?;
+                let metadata = self.catalog.item_package_metadata(item_hash)?;
+                if !include_definition(metadata.definition_tag) {
+                    return None;
+                }
+                let name = self
+                    .catalog
+                    .display_name(item_hash)
+                    .or_else(|| self.catalog.package_item_name(item_hash))?;
+                if name.trim().is_empty() {
+                    return None;
+                }
+                Some(WeaponSandboxPerkChoice {
+                    perk_index: metadata
+                        .sandbox_perks
+                        .first()
+                        .map_or(0, |perk| perk.perk_index),
+                    representative_hash: hash,
+                    representative_name: name.to_owned(),
+                    representative_type_name: self
+                        .catalog
+                        .plug_type_name(item_hash)
+                        .or_else(|| self.catalog.package_item_type_name(item_hash))
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+            })
+            .collect::<Vec<_>>();
+        choices.sort_by_cached_key(|choice| {
+            (
+                choice.representative_name.to_lowercase(),
+                choice.representative_hash,
+            )
+        });
+        choices
     }
 
     /// Lists every installed trait definition, including definitions not currently referenced by
@@ -439,6 +520,25 @@ impl InvestmentCatalog {
             .flat_map(|metadata| &metadata.investment_stats)
             .map(|stat| self.weapon_investment_stat(None, stat.definition_index, stat.value))
             .collect()
+    }
+
+    /// Native stat definitions for independent perk authoring, without a weapon context.
+    #[must_use]
+    pub fn perk_stat_choices(&self) -> Vec<WeaponInvestmentStat> {
+        (0..self.catalog.item_stat_definition_count().min(256))
+            .filter_map(|index| u16::try_from(index).ok())
+            .map(|index| self.weapon_investment_stat(None, index, 0))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn is_plug(&self, hash: u32) -> bool {
+        self.catalog.contains_plug(u64::from(hash))
+    }
+
+    #[must_use]
+    pub fn perk_description(&self, hash: u32) -> Option<&str> {
+        self.catalog.description(u64::from(hash))
     }
 
     fn weapon_investment_stat(

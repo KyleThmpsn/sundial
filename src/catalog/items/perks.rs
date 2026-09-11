@@ -4,13 +4,16 @@ use tiger_pkg::{PackageManager, TagHash};
 use crate::{
     investment_schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET,
-        ITEM_SANDBOX_PERK_ROW_CLASS, ITEM_SANDBOX_PERK_ROW_SIZE, investment_globals_table_tag,
+        ITEM_SANDBOX_PERK_ROW_CLASS, ITEM_SANDBOX_PERK_ROW_SIZE,
+        ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT, investment_globals_table_tag,
+        investment_root_table_tag,
     },
-    package_payload::{array_at, i64_at, relative_offset, u16_at},
+    package_payload::{array_at, u16_at},
     package_runtime::is_valid_package_tag,
     sandbox_perk::{
         FINISHED_SANDBOX_PERK_CATALOG_CLASS, FINISHED_SANDBOX_PERK_ROW_CLASS,
-        FINISHED_SANDBOX_PERK_ROW_SIZE,
+        SANDBOX_PERK_INDEX_CATALOG_CLASS, SANDBOX_PERK_INDEX_ROW_CLASS,
+        SANDBOX_PERK_INDEX_ROW_SIZE,
     },
 };
 
@@ -27,11 +30,14 @@ pub(crate) struct ItemSandboxPerk {
     pub perk_index: u16,
 }
 
-/// Reads the native liveness bit for every row in the finished sandbox-perk
-/// catalog. Item definitions carry indices into this table, but the client
-/// emits an index only when the referenced row's active byte is nonzero.
+/// Reads liveness from the root's eight-byte perk metadata rows. The native
+/// registry's vtable slot 0x6C8 resolves root slot 106, then checks row +6.
+/// The matching globals slot 71 supplies presentation and runtime identities,
+/// not the active flag. Its row +6 is part of a runtime key and its pointed
+/// record +6 is part of a localized name hash.
 pub(in crate::catalog) fn scan_sandbox_perk_catalog(
     manager: &PackageManager,
+    root: &[u8],
     globals: &[u8],
 ) -> Result<Vec<bool>, String> {
     let tag = investment_globals_table_tag(globals, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT)
@@ -54,24 +60,47 @@ pub(in crate::catalog) fn scan_sandbox_perk_catalog(
     let table = manager
         .read_tag(tag)
         .map_err(|error| format!("Could not read the sandbox-perk catalog: {error}"))?;
-    validated_sandbox_perk_catalog(&table).ok_or_else(|| {
+    let (finished_count, _, finished_class) = array_at(&table, 8)?;
+    if finished_class != FINISHED_SANDBOX_PERK_ROW_CLASS {
+        return Err("Finished sandbox-perk catalog has an invalid row class".into());
+    }
+    let tag = TagHash(investment_root_table_tag(
+        root,
+        ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT,
+    )?);
+    let entry = manager
+        .get_entry(tag)
+        .ok_or_else(|| format!("Sandbox-perk metadata tag {tag} is not registered"))?;
+    if entry.reference != SANDBOX_PERK_INDEX_CATALOG_CLASS {
+        return Err(format!(
+            "Sandbox-perk metadata tag {tag} has an invalid class"
+        ));
+    }
+    let metadata = manager
+        .read_tag(tag)
+        .map_err(|error| format!("Could not read sandbox-perk metadata: {error}"))?;
+    let active = validated_sandbox_perk_catalog(&metadata).ok_or_else(|| {
         format!(
-            "Sandbox-perk catalog has fewer than {SANDBOX_PERK_CATALOG_STOCK_COUNT} rows or an invalid native row layout"
+            "Sandbox-perk metadata has fewer than {SANDBOX_PERK_CATALOG_STOCK_COUNT} rows or an invalid native row layout"
         )
-    })
+    })?;
+    if active.len() != finished_count {
+        return Err("Sandbox-perk metadata and finished catalog counts disagree".into());
+    }
+    Ok(active)
 }
 
 fn validated_sandbox_perk_catalog(table: &[u8]) -> Option<Vec<bool>> {
     let (count, rows, class) = array_at(table, 8).ok()?;
-    if count < SANDBOX_PERK_CATALOG_STOCK_COUNT || class != FINISHED_SANDBOX_PERK_ROW_CLASS {
+    if count < SANDBOX_PERK_CATALOG_STOCK_COUNT || class != SANDBOX_PERK_INDEX_ROW_CLASS {
         return None;
     }
+    table.get(rows..rows.checked_add(count.checked_mul(SANDBOX_PERK_INDEX_ROW_SIZE)?)?)?;
     (0..count)
         .map(|index| {
-            let row = rows.checked_add(index.checked_mul(FINISHED_SANDBOX_PERK_ROW_SIZE)?)?;
-            let record = relative_offset(row, 8, i64_at(table, row.checked_add(8)?).ok()?).ok()?;
+            let row = rows.checked_add(index.checked_mul(SANDBOX_PERK_INDEX_ROW_SIZE)?)?;
             table
-                .get(record.checked_add(SANDBOX_PERK_CATALOG_ACTIVE_OFFSET)?)
+                .get(row.checked_add(SANDBOX_PERK_CATALOG_ACTIVE_OFFSET)?)
                 .map(|active| *active != 0)
         })
         .collect()
@@ -84,6 +113,19 @@ pub(in crate::catalog) fn item_sandbox_perks(
     let Some(active_catalog_rows) = active_catalog_rows else {
         return Vec::new();
     };
+    item_perk_indices(item)
+        .into_iter()
+        .filter(|&index| {
+            active_catalog_rows
+                .get(usize::from(index))
+                .copied()
+                .unwrap_or(false)
+        })
+        .map(|perk_index| ItemSandboxPerk { perk_index })
+        .collect()
+}
+
+pub(super) fn item_perk_indices(item: &[u8]) -> Vec<u16> {
     let Some(resource) = item_investment_resource(item) else {
         return Vec::new();
     };
@@ -100,15 +142,7 @@ pub(in crate::catalog) fn item_sandbox_perks(
     (0..count)
         .filter_map(|index| {
             let row = rows.checked_add(index.checked_mul(ITEM_SANDBOX_PERK_ROW_SIZE)?)?;
-            let perk_index = u16_at(item, row).ok()?;
-            if !active_catalog_rows
-                .get(usize::from(perk_index))
-                .copied()
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            Some(ItemSandboxPerk { perk_index })
+            u16_at(item, row).ok()
         })
         .collect()
 }
@@ -170,33 +204,28 @@ mod tests {
     }
 
     #[test]
-    fn finished_catalog_requires_the_established_population_and_reads_active_rows() {
+    fn metadata_catalog_requires_complete_native_rows_and_reads_only_the_active_byte() {
         fn table_with_count(count: usize) -> Vec<u8> {
-            let records = 0x40 + count * FINISHED_SANDBOX_PERK_ROW_SIZE;
-            let mut table = vec![0_u8; records + count * 8];
+            let mut table = vec![0_u8; 0x40 + count * SANDBOX_PERK_INDEX_ROW_SIZE];
             table[8..16].copy_from_slice(&(count as u64).to_le_bytes());
             table[16..24].copy_from_slice(&0x20_i64.to_le_bytes());
             table[0x30..0x38].copy_from_slice(&(count as u64).to_le_bytes());
-            table[0x38..0x3C].copy_from_slice(&FINISHED_SANDBOX_PERK_ROW_CLASS.to_le_bytes());
-            for index in 0..count {
-                let row = 0x40 + index * FINISHED_SANDBOX_PERK_ROW_SIZE;
-                let record = records + index * 8;
-                let relative = i64::try_from(record).unwrap() - i64::try_from(row + 8).unwrap();
-                table[row + 8..row + 16].copy_from_slice(&relative.to_le_bytes());
-            }
+            table[0x38..0x3C].copy_from_slice(&SANDBOX_PERK_INDEX_ROW_CLASS.to_le_bytes());
             table
         }
 
         let mut table = table_with_count(SANDBOX_PERK_CATALOG_STOCK_COUNT);
-        let records = 0x40 + SANDBOX_PERK_CATALOG_STOCK_COUNT * FINISHED_SANDBOX_PERK_ROW_SIZE;
+        let records = 0x40;
         table[records + 449 * 8 + SANDBOX_PERK_CATALOG_ACTIVE_OFFSET] = 1;
         table[records + 450 * 8 + SANDBOX_PERK_CATALOG_ACTIVE_OFFSET] = 2;
+        table[records + 451 * 8..records + 451 * 8 + 6].fill(0xFF);
         let active =
             validated_sandbox_perk_catalog(&table).expect("finished catalog should decode");
 
         assert!(active[449]);
         assert!(active[450]);
         assert!(!active[451]);
+        assert!(validated_sandbox_perk_catalog(&table[..table.len() - 1]).is_none());
         assert!(validated_sandbox_perk_catalog(&table_with_count(979)).is_none());
         assert!(
             validated_sandbox_perk_catalog(&table_with_count(SANDBOX_PERK_CATALOG_STOCK_COUNT + 1))
@@ -213,7 +242,9 @@ mod tests {
         let globals_tag =
             package_runtime::resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
         let globals = manager.read_tag(globals_tag).unwrap();
-        let active = scan_sandbox_perk_catalog(&manager, &globals).unwrap();
+        let root_tag = investment_globals_table_tag(&globals, 0).unwrap();
+        let root = manager.read_tag(TagHash(root_tag)).unwrap();
+        let active = scan_sandbox_perk_catalog(&manager, &root, &globals).unwrap();
 
         assert!(active.len() >= SANDBOX_PERK_CATALOG_STOCK_COUNT);
         // Hydraulic Boosters, Headseeker, Outlaw, the modern elemental

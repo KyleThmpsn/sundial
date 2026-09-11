@@ -1,4 +1,12 @@
-use std::{collections::BTreeSet, mem::size_of};
+use crate::progression::presentation::*;
+mod custom;
+mod membership;
+pub(crate) use custom::append_custom_badges;
+pub(crate) use membership::set_sunrise_members;
+
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::mem::size_of;
 
 use sundial::package_authoring::{
     investment_schema::{
@@ -40,7 +48,7 @@ use crate::{
     weapon::STOCK_ITEM_ICON_COUNT,
 };
 
-const LUNAR_BADGE_ICON_ROW_INDEX: usize = 0x2F3E;
+pub(crate) const LUNAR_BADGE_ICON_ROW_INDEX: usize = 0x2F3E;
 const LUNAR_BADGE_ICON_KEY: u32 = 0xC2C1_A351;
 const SUNRISE_BADGE_ICON_KEY: u32 = 0x5355_4943;
 
@@ -67,6 +75,7 @@ const ACE_BADGE_OBJECTIVE_TEMPLATE_INDEX: usize = 6_289;
 const ACE_BADGE_OBJECTIVE_TEMPLATE_HASH: u32 = 0xE72F_FAB8;
 const SUNRISE_BADGE_OBJECTIVE_HASH: u32 = 0x5355_4F42;
 
+#[cfg(test)]
 const SUNRISE_BADGE_GROUP_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT;
 const SUNRISE_BADGE_TITAN_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT + 1;
 const SUNRISE_BADGE_HUNTER_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT + 2;
@@ -79,7 +88,31 @@ pub(crate) const SUNRISE_BADGE_NAME: &str = "Project Sunrise";
 pub(crate) const SUNRISE_BADGE_DESCRIPTION: &str =
     "Artifacts forged from a future written outside the lines.";
 const SUNRISE_CLASS_FLAG_OPERANDS: [u16; 3] = [0x108, 0xEF, 0x10F];
-const PRESENTATION_CHILD_ARRAY_SENTINEL: u32 = 0x8080_9FBD;
+
+struct Layout {
+    node_start: usize,
+    record_start: usize,
+    objective_start: usize,
+    node_hashes: [u32; 4],
+    record_hashes: [u32; 4],
+    objective_hash: u32,
+    name_hash: u32,
+    description_hash: u32,
+}
+impl Layout {
+    fn sunrise() -> Self {
+        Self {
+            node_start: STOCK_PRESENTATION_NODE_COUNT,
+            record_start: STOCK_RECORD_COUNT,
+            objective_start: STOCK_OBJECTIVE_COUNT,
+            node_hashes: SUNRISE_BADGE_NODE_HASHES,
+            record_hashes: SUNRISE_BADGE_RECORD_HASHES,
+            objective_hash: SUNRISE_BADGE_OBJECTIVE_HASH,
+            name_hash: SUNRISE_BADGE_NAME_HASH,
+            description_hash: SUNRISE_BADGE_DESCRIPTION_HASH,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SunriseProjectMetadata {
@@ -178,6 +211,13 @@ pub(crate) fn append_badge_icon_row(
 pub(crate) fn author_sunrise_badge_graph(
     input: SunriseBadgeGraphInput<'_>,
 ) -> AuthoringResult<SunriseBadgeGraph> {
+    author_graph(input, &Layout::sunrise())
+}
+
+fn author_graph(
+    input: SunriseBadgeGraphInput<'_>,
+    layout: &Layout,
+) -> AuthoringResult<SunriseBadgeGraph> {
     let SunriseBadgeGraphInput {
         stock_nodes,
         stock_node_strings,
@@ -197,32 +237,38 @@ pub(crate) fn author_sunrise_badge_graph(
         .iter()
         .map(|placement| placement.authored_unlock_index)
         .collect::<Vec<_>>();
-    let (objectives, objective_strings, objective_index) = append_sunrise_badge_objective(
+    let (objectives, objective_strings, objective_index) = append_objective(
         stock_objectives,
         stock_objective_strings,
         shared_expression_pools,
         &unlock_indices,
         localization_table_index,
+        layout,
     )?;
     let (records, record_strings) =
-        append_sunrise_badge_records(stock_records, stock_record_strings, objective_index)?;
-    let mut nodes = append_sunrise_badge_nodes(
+        append_records(stock_records, stock_record_strings, objective_index, layout)?;
+    let mut nodes = append_nodes(
         stock_nodes,
         first.weapon_page,
         first.donor_collectible_index,
         first.authored_collectible_index,
+        layout,
     )?;
     for placement in placements.iter().skip(1) {
-        append_collectible_child_to_node(
-            &mut nodes,
-            usize::from(placement.weapon_page),
-            placement.donor_collectible_index,
-            placement.authored_collectible_index,
-        )?;
+        if layout.node_start == STOCK_PRESENTATION_NODE_COUNT
+            && usize::from(placement.weapon_page) < STOCK_PRESENTATION_NODE_COUNT
+        {
+            append_collectible_child_to_node(
+                &mut nodes,
+                usize::from(placement.weapon_page),
+                placement.donor_collectible_index,
+                placement.authored_collectible_index,
+            )?;
+        }
         for leaf in [
-            SUNRISE_BADGE_TITAN_NODE_INDEX,
-            SUNRISE_BADGE_HUNTER_NODE_INDEX,
-            SUNRISE_BADGE_WARLOCK_NODE_INDEX,
+            (layout.node_start + 1),
+            (layout.node_start + 2),
+            (layout.node_start + 3),
         ] {
             append_collectible_child_to_node(
                 &mut nodes,
@@ -232,10 +278,11 @@ pub(crate) fn author_sunrise_badge_graph(
             )?;
         }
     }
-    let node_strings = append_sunrise_presentation_strings(
+    let node_strings = append_strings(
         stock_node_strings,
         localization_table_index,
         badge_icon_index,
+        layout,
     )?;
     Ok(SunriseBadgeGraph {
         nodes,
@@ -247,28 +294,29 @@ pub(crate) fn author_sunrise_badge_graph(
     })
 }
 
-/// Extends the stock badge-root objective with one Project Sunrise completion term.
+/// Extends the stock badge-root objective with an acquired-all term for each authored badge.
 ///
 /// The stock root reads its persisted account/character badge totals. Project Sunrise has no
 /// native persisted objective-value slot, so its contribution is the conjunction of every
 /// authored collection unlock: zero until the badge is complete, then one.
-pub(crate) fn patch_badges_root_objective(
+pub(crate) fn patch_badge_objectives(
     mut objectives: Vec<u8>,
     nodes: &[u8],
     shared_expression_pools: &[u8],
-    authored_unlock_indices: &[u16],
+    groups: &[Vec<u16>],
 ) -> AuthoringResult<Vec<u8>> {
-    if authored_unlock_indices.is_empty()
-        || authored_unlock_indices
+    for authored_unlock_indices in groups {
+        if authored_unlock_indices
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()
             .len()
             != authored_unlock_indices.len()
-    {
-        return Err(invalid(
-            "Badge-root completion requires distinct authored unlock flags",
-        ));
+        {
+            return Err(invalid(
+                "Badge-root completion requires distinct authored unlock flags",
+            ));
+        }
     }
 
     let (objective_count, _, objective_rows, objective_class) = array_at(&objectives, 8)?;
@@ -289,7 +337,7 @@ pub(crate) fn patch_badges_root_objective(
     let (child_count, _, _, child_class) =
         array_at(nodes, root_node + PRESENTATION_NODE_CHILD_NODES_OFFSET)?;
     if child_class != PRESENTATION_NODE_CHILD_NODE_ROW_CLASS
-        || child_count != STOCK_BADGES_ROOT_COMPLETION_VALUE as usize + 1
+        || child_count != STOCK_BADGES_ROOT_COMPLETION_VALUE as usize + groups.len()
     {
         return Err(invalid(
             "The badge root does not contain exactly one authored badge child",
@@ -331,19 +379,26 @@ pub(crate) fn patch_badges_root_objective(
         Some(u16::MAX),
     )?;
 
-    let mut instructions = Vec::with_capacity(authored_unlock_indices.len() * 2 + 1);
+    let mut instructions = Vec::new();
     instructions.push(primary.instructions[0].serialized);
-    for (position, flag) in authored_unlock_indices.iter().copied().enumerate() {
-        instructions.push(
-            flag_template
-                .with_semantics(NUMERIC_FLAG_INSTRUCTION, flag)
-                .serialized,
-        );
-        if position != 0 {
-            instructions.push(and_template.serialized);
+    for authored_unlock_indices in groups {
+        if authored_unlock_indices.is_empty() {
+            let constant =
+                shared_numeric_instruction_template(shared_expression_pools, pool_rows, 11, None)?;
+            instructions.push(constant.with_semantics(11, 1).serialized);
         }
+        for (position, flag) in authored_unlock_indices.iter().copied().enumerate() {
+            instructions.push(
+                flag_template
+                    .with_semantics(NUMERIC_FLAG_INSTRUCTION, flag)
+                    .serialized,
+            );
+            if position != 0 {
+                instructions.push(and_template.serialized);
+            }
+        }
+        instructions.push(add_template.serialized);
     }
-    instructions.push(add_template.serialized);
     let expected_tokens = instructions
         .iter()
         .map(|instruction| {
@@ -362,7 +417,7 @@ pub(crate) fn patch_badges_root_objective(
     write_i32(
         &mut objectives,
         completion,
-        STOCK_BADGES_ROOT_COMPLETION_VALUE + 1,
+        STOCK_BADGES_ROOT_COMPLETION_VALUE + groups.len() as i32,
     )?;
 
     let final_primary = numeric_program_layout(&objectives, root_objective + 0x08)?;
@@ -370,7 +425,8 @@ pub(crate) fn patch_badges_root_objective(
     if final_primary.tokens != expected_tokens
         || numeric_program_stack_depth(&final_primary.tokens)? != 1
         || final_secondary.tokens != secondary.tokens
-        || read_i32(&objectives, completion)? != STOCK_BADGES_ROOT_COMPLETION_VALUE + 1
+        || read_i32(&objectives, completion)?
+            != STOCK_BADGES_ROOT_COMPLETION_VALUE + groups.len() as i32
     {
         return Err(validation(
             "Badge-root target and current-value expression did not serialize faithfully",
@@ -417,11 +473,12 @@ struct PresentationDescriptorClone {
 }
 
 #[allow(clippy::cognitive_complexity)]
-fn append_sunrise_badge_nodes(
+fn append_nodes(
     mut nodes: Vec<u8>,
     weapon_page: u16,
     donor_collectible_index: usize,
     authored_collectible_index: usize,
+    layout: &Layout,
 ) -> AuthoringResult<Vec<u8>> {
     let (node_count, main_header, node_rows, node_class) = array_at(&nodes, 8)?;
     let rows_end = node_rows
@@ -432,14 +489,14 @@ fn append_sunrise_badge_nodes(
         )
         .ok_or_else(|| invalid("Presentation-node fixed-row range overflowed"))?;
     if node_class != PRESENTATION_NODE_DEFINITION_ROW_CLASS
-        || node_count != STOCK_PRESENTATION_NODE_COUNT
+        || node_count != layout.node_start
         || rows_end > nodes.len()
     {
         return Err(invalid(
             "Sunrise badge authoring requires the audited 924-row presentation table",
         ));
     }
-    for hash in SUNRISE_BADGE_NODE_HASHES {
+    for hash in layout.node_hashes {
         if contains_u32_at_offset(
             &nodes,
             node_rows,
@@ -518,7 +575,7 @@ fn append_sunrise_badge_nodes(
         descriptor_clones.push(clones);
     }
 
-    let fixed_shift = PRESENTATION_NODE_ROW_SIZE * SUNRISE_BADGE_NODE_HASHES.len();
+    let fixed_shift = PRESENTATION_NODE_ROW_SIZE * layout.node_hashes.len();
     nodes.splice(rows_end..rows_end, std::iter::repeat_n(0, fixed_shift));
     for index in 0..node_count {
         let row = node_rows + index * PRESENTATION_NODE_ROW_SIZE;
@@ -549,7 +606,7 @@ fn append_sunrise_badge_nodes(
         write_u32(
             &mut nodes,
             row + PRESENTATION_NODE_HASH_OFFSET,
-            SUNRISE_BADGE_NODE_HASHES[position],
+            layout.node_hashes[position],
         )?;
         write_u16(
             &mut nodes,
@@ -559,7 +616,7 @@ fn append_sunrise_badge_nodes(
         write_u16(
             &mut nodes,
             row + PRESENTATION_NODE_RECORD_INDEX_OFFSET,
-            u16::try_from(STOCK_RECORD_COUNT + position)
+            u16::try_from(layout.record_start + position)
                 .map_err(|_| invalid("Sunrise badge record index does not fit 16 bits"))?,
         )?;
     }
@@ -567,7 +624,7 @@ fn append_sunrise_badge_nodes(
         &mut nodes,
         8,
         main_header,
-        STOCK_PRESENTATION_NODE_COUNT + SUNRISE_BADGE_NODE_HASHES.len(),
+        layout.node_start + layout.node_hashes.len(),
     )?;
 
     let authored_rows = rows_end;
@@ -592,7 +649,7 @@ fn append_sunrise_badge_nodes(
         write_u16(
             &mut nodes,
             child,
-            u16::try_from(SUNRISE_BADGE_TITAN_NODE_INDEX + position)
+            u16::try_from((layout.node_start + 1) + position)
                 .map_err(|_| invalid("Sunrise class node index does not fit 16 bits"))?,
         )?;
         let (condition_count, _, tokens, condition_class) = array_at(&nodes, child + 8)?;
@@ -613,7 +670,7 @@ fn append_sunrise_badge_nodes(
         if parent_count != 1 || parent_class != PRESENTATION_NODE_INDEX_ROW_CLASS {
             return Err(invalid("Ace class leaf has an incompatible parent array"));
         }
-        write_u16(&mut nodes, parents, SUNRISE_BADGE_GROUP_NODE_INDEX as u16)?;
+        write_u16(&mut nodes, parents, layout.node_start as u16)?;
         replace_with_single_collectible_child(
             &mut nodes,
             leaf_row + PRESENTATION_NODE_COLLECTIBLES_OFFSET,
@@ -625,228 +682,40 @@ fn append_sunrise_badge_nodes(
         &mut nodes,
         BADGES_ROOT_NODE_INDEX,
         ACE_BADGE_GROUP_NODE_INDEX,
-        SUNRISE_BADGE_GROUP_NODE_INDEX,
+        layout.node_start,
     )?;
-    append_collectible_child_to_node(
-        &mut nodes,
-        usize::from(weapon_page),
-        donor_collectible_index,
-        authored_collectible_index,
-    )?;
+    if layout.node_start == STOCK_PRESENTATION_NODE_COUNT
+        && usize::from(weapon_page) < STOCK_PRESENTATION_NODE_COUNT
+    {
+        append_collectible_child_to_node(
+            &mut nodes,
+            usize::from(weapon_page),
+            donor_collectible_index,
+            authored_collectible_index,
+        )?;
+    }
     Ok(nodes)
 }
 
-fn replace_with_single_collectible_child(
-    nodes: &mut Vec<u8>,
-    descriptor: usize,
-    collectible_index: usize,
-) -> AuthoringResult<()> {
-    let (source_count, source_header, source_rows, source_class) = array_at(nodes, descriptor)?;
-    if source_count == 0 || source_class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS {
-        return Err(invalid(
-            "Badge class template has no collectible child template",
-        ));
-    }
-    let template = nodes
-        .get(source_rows..source_rows + PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
-        .ok_or_else(|| invalid("Badge collectible-child template is truncated"))?
-        .to_vec();
-    while nodes.len() % 16 != 0 {
-        nodes.push(0);
-    }
-    let header = nodes.len();
-    let header_bytes = nodes
-        .get(source_header..source_rows)
-        .ok_or_else(|| invalid("Badge collectible-child header is truncated"))?
-        .to_vec();
-    nodes.extend_from_slice(&header_bytes);
-    nodes.extend_from_slice(&template);
-    append_presentation_child_array_terminator(nodes)?;
-    write_u64(nodes, header, 1)?;
-    write_u16(
-        nodes,
-        header + 16,
-        u16::try_from(collectible_index)
-            .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
-    )?;
-    write_u64(nodes, descriptor, 1)?;
-    write_relative_pointer(nodes, descriptor + 8, header)
-}
-
-fn append_presentation_node_child(
-    nodes: &mut Vec<u8>,
-    parent_index: usize,
-    donor_child_index: usize,
-    authored_child_index: usize,
-) -> AuthoringResult<()> {
-    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
-    if parent_index >= node_count || authored_child_index >= node_count {
-        return Err(invalid(
-            "Presentation child-node append index is outside the table",
-        ));
-    }
-    let descriptor = node_rows
-        + parent_index * PRESENTATION_NODE_ROW_SIZE
-        + PRESENTATION_NODE_CHILD_NODES_OFFSET;
-    let (child_count, child_header, child_rows, child_class) = array_at(nodes, descriptor)?;
-    if child_class != PRESENTATION_NODE_CHILD_NODE_ROW_CLASS || child_count == 0 {
-        return Err(invalid(
-            "Presentation parent has no compatible child-node array",
-        ));
-    }
-    let donor_positions = (0..child_count)
-        .filter(|position| {
-            read_u16(
-                nodes,
-                child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
-            )
-            .ok()
-                == u16::try_from(donor_child_index).ok()
-        })
-        .collect::<Vec<_>>();
-    let [donor_position] = donor_positions.as_slice() else {
-        return Err(invalid(
-            "Presentation parent does not contain one donor child node",
-        ));
-    };
-    let source_rows = (0..child_count)
-        .map(|position| {
-            let row = child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE;
-            Ok(nodes[row..row + PRESENTATION_NODE_CHILD_NODE_ROW_SIZE].to_vec())
-        })
-        .collect::<AuthoringResult<Vec<_>>>()?;
-    let header_bytes = nodes
-        .get(child_header..child_rows)
-        .ok_or_else(|| invalid("Presentation child-node header is truncated"))?
-        .to_vec();
-    let mut authored = source_rows[*donor_position].clone();
-    write_u16(
-        &mut authored,
-        0,
-        u16::try_from(authored_child_index)
-            .map_err(|_| invalid("Authored presentation node index does not fit 16 bits"))?,
-    )?;
-    write_u64(&mut authored, 8, 0)?;
-    write_u64(&mut authored, 16, 0)?;
-    let mut authored_rows = Vec::with_capacity(source_rows.len() + 1);
-    authored_rows.push(authored);
-    authored_rows.extend(source_rows.iter().cloned());
-
-    while nodes.len() % 16 != 0 {
-        nodes.push(0);
-    }
-    let new_header = nodes.len();
-    nodes.extend_from_slice(&header_bytes);
-    let new_rows = nodes.len();
-    for row in &authored_rows {
-        nodes.extend_from_slice(row);
-    }
-    while (nodes.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
-        nodes.push(0);
-    }
-    nodes.extend_from_slice(&NESTED_ARRAY_TRAILER);
-    write_u64(nodes, new_header, authored_rows.len() as u64)?;
-    for (position, source_row) in source_rows.iter().enumerate() {
-        let authored_position = position + 1;
-        if read_u64(source_row, 8)? == 0 {
-            write_u64(
-                nodes,
-                new_rows + authored_position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE + 16,
-                0,
-            )?;
-            continue;
-        }
-        let source_descriptor = child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE + 8;
-        let layout = numeric_program_layout(nodes, source_descriptor)?;
-        while nodes.len() % 16 != 0 {
-            nodes.push(0);
-        }
-        let target = nodes.len();
-        let program = nodes
-            .get(layout.header..layout.segment_end)
-            .ok_or_else(|| invalid("Presentation child condition is truncated"))?
-            .to_vec();
-        nodes.extend_from_slice(&program);
-        let authored_descriptor =
-            new_rows + authored_position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE + 8;
-        write_relative_pointer(nodes, authored_descriptor + 8, target)?;
-    }
-    write_u64(nodes, descriptor, authored_rows.len() as u64)?;
-    write_relative_pointer(nodes, descriptor + 8, new_header)
-}
-
-fn append_collectible_child_to_node(
-    nodes: &mut Vec<u8>,
-    parent_index: usize,
-    donor_collectible_index: usize,
-    authored_collectible_index: usize,
-) -> AuthoringResult<()> {
-    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
-    if parent_index >= node_count {
-        return Err(invalid(
-            "Weapon-page presentation node is outside the table",
-        ));
-    }
-    let descriptor = node_rows
-        + parent_index * PRESENTATION_NODE_ROW_SIZE
-        + PRESENTATION_NODE_COLLECTIBLES_OFFSET;
-    let (count, header, rows, class) = array_at(nodes, descriptor)?;
-    if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS || count == 0 {
-        return Err(invalid(
-            "Weapon-page presentation node has no collectible children",
-        ));
-    }
-    let donor_index = u16::try_from(donor_collectible_index)
-        .map_err(|_| invalid("Donor collectible index does not fit 16 bits"))?;
-    let donor_positions = (0..count)
-        .filter(|position| {
-            read_u16(
-                nodes,
-                rows + position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
-            )
-            .ok()
-                == Some(donor_index)
-        })
-        .collect::<Vec<_>>();
-    let [donor_position] = donor_positions.as_slice() else {
-        return Err(invalid(
-            "Weapon page does not contain exactly one donor collectible",
-        ));
-    };
-    let child_end = rows
-        .checked_add(
-            count
-                .checked_mul(PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
-                .ok_or_else(|| invalid("Presentation child row size overflowed"))?,
-        )
-        .ok_or_else(|| invalid("Presentation child row range overflowed"))?;
-    validate_presentation_child_array_terminator(nodes, child_end)?;
-    let insertion = rows + (*donor_position + 1) * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
-    let donor = rows + *donor_position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
-    let mut authored = nodes[header..insertion].to_vec();
-    authored.extend_from_slice(&nodes[donor..donor + PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]);
-    authored.extend_from_slice(&nodes[insertion..child_end]);
-    append_presentation_child_array_terminator(&mut authored)?;
-    write_u64(&mut authored, 0, (count + 1) as u64)?;
-    write_u16(
-        &mut authored,
-        16 + (*donor_position + 1) * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
-        u16::try_from(authored_collectible_index)
-            .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
-    )?;
-    while nodes.len() % 16 != 0 {
-        nodes.push(0);
-    }
-    let new_header = nodes.len();
-    nodes.extend_from_slice(&authored);
-    write_u64(nodes, descriptor, (count + 1) as u64)?;
-    write_relative_pointer(nodes, descriptor + 8, new_header)
-}
-
+#[cfg(test)]
 fn append_sunrise_presentation_strings(
+    strings: Vec<u8>,
+    localization_table_index: u32,
+    badge_icon_index: u16,
+) -> AuthoringResult<Vec<u8>> {
+    append_strings(
+        strings,
+        localization_table_index,
+        badge_icon_index,
+        &Layout::sunrise(),
+    )
+}
+
+fn append_strings(
     mut strings: Vec<u8>,
     localization_table_index: u32,
     badge_icon_index: u16,
+    layout: &Layout,
 ) -> AuthoringResult<Vec<u8>> {
     let (count, header, rows, class) = array_at(&strings, 8)?;
     let rows_end = rows
@@ -857,14 +726,14 @@ fn append_sunrise_presentation_strings(
         )
         .ok_or_else(|| invalid("Presentation-string row range overflowed"))?;
     if class != PRESENTATION_NODE_STRING_ROW_CLASS
-        || count != STOCK_PRESENTATION_NODE_COUNT
+        || count != layout.node_start
         || rows_end != strings.len()
     {
         return Err(invalid(
             "Sunrise badge authoring requires the terminal 924-row presentation-string table",
         ));
     }
-    for hash in SUNRISE_BADGE_NODE_HASHES {
+    for hash in layout.node_hashes {
         if contains_u32_at_offset(
             &strings,
             rows,
@@ -891,7 +760,7 @@ fn append_sunrise_presentation_strings(
         let template = strings[source..source + PRESENTATION_NODE_STRING_ROW_SIZE].to_vec();
         strings.extend_from_slice(&template);
         let authored = rows_end + position * PRESENTATION_NODE_STRING_ROW_SIZE;
-        write_u32(&mut strings, authored, SUNRISE_BADGE_NODE_HASHES[position])?;
+        write_u32(&mut strings, authored, layout.node_hashes[position])?;
         if position == 0 {
             write_u16(
                 &mut strings,
@@ -902,13 +771,13 @@ fn append_sunrise_presentation_strings(
                 &mut strings,
                 authored + PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
                 localization_table_index,
-                SUNRISE_BADGE_NAME_HASH,
+                layout.name_hash,
             )?;
             write_localized_reference(
                 &mut strings,
                 authored + PRESENTATION_NODE_STRING_DESCRIPTION_REFERENCE_OFFSET,
                 localization_table_index,
-                SUNRISE_BADGE_DESCRIPTION_HASH,
+                layout.description_hash,
             )?;
         }
     }
@@ -916,167 +785,18 @@ fn append_sunrise_presentation_strings(
         &mut strings,
         8,
         header,
-        STOCK_PRESENTATION_NODE_COUNT + SUNRISE_BADGE_NODE_HASHES.len(),
+        layout.node_start + layout.node_hashes.len(),
     )?;
     Ok(strings)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn append_fixed_rows_without_donor_dependencies(
-    mut data: Vec<u8>,
-    expected_count: usize,
-    row_size: usize,
-    row_class: u32,
-    pointer_fields: &[usize],
-    allowed_template_pointer: Option<usize>,
-    template_indices: &[usize],
-    template_hashes: &[u32],
-    authored_hashes: &[u32],
-    hash_offset: usize,
-    description: &str,
-) -> AuthoringResult<Vec<u8>> {
-    if template_indices.len() != template_hashes.len()
-        || template_indices.len() != authored_hashes.len()
-    {
-        return Err(invalid(format!(
-            "{description} clone metadata is inconsistent"
-        )));
-    }
-    let (count, main_header, rows, class) = array_at(&data, 8)?;
-    let rows_end = rows
-        .checked_add(
-            count
-                .checked_mul(row_size)
-                .ok_or_else(|| invalid(format!("{description} fixed-row size overflowed")))?,
-        )
-        .ok_or_else(|| invalid(format!("{description} fixed-row range overflowed")))?;
-    if class != row_class || count != expected_count || rows_end > data.len() {
-        return Err(invalid(format!(
-            "Sunrise badge authoring requires the audited {expected_count}-row {description}"
-        )));
-    }
-    let mut templates = Vec::with_capacity(template_indices.len());
-    for (position, &template_index) in template_indices.iter().enumerate() {
-        if template_index >= count
-            || read_u32(&data, rows + template_index * row_size + hash_offset)?
-                != template_hashes[position]
-        {
-            return Err(invalid(format!(
-                "Sunrise badge {description} template identity changed"
-            )));
-        }
-        let row = rows + template_index * row_size;
-        for &field in pointer_fields {
-            if read_u64(&data, row + field)? != 0 && Some(field) != allowed_template_pointer {
-                return Err(invalid(format!(
-                    "Sunrise badge {description} template acquired an unexpected dependency at 0x{field:X}"
-                )));
-            }
-        }
-        templates.push(data[row..row + row_size].to_vec());
-    }
-    for &hash in authored_hashes {
-        if contains_u32_at_offset(&data, rows, count, row_size, hash_offset, hash)? {
-            return Err(invalid(format!(
-                "Sunrise badge {description} hash 0x{hash:08X} already exists"
-            )));
-        }
-    }
-
-    let fixed_shift = row_size
-        .checked_mul(templates.len())
-        .ok_or_else(|| invalid(format!("{description} fixed-row append overflowed")))?;
-    data.splice(rows_end..rows_end, std::iter::repeat_n(0, fixed_shift));
-    for index in 0..count {
-        let row = rows + index * row_size;
-        for &field in pointer_fields {
-            if read_u64(&data, row + field)? == 0 {
-                continue;
-            }
-            let target = relative_target(&data, row + field + 8)?;
-            if target < rows_end {
-                return Err(invalid(format!(
-                    "{description} nested array unexpectedly targets fixed rows"
-                )));
-            }
-            write_relative_pointer(&mut data, row + field + 8, target + fixed_shift)?;
-        }
-    }
-    for (position, template) in templates.iter().enumerate() {
-        let row = rows_end + position * row_size;
-        data[row..row + row_size].copy_from_slice(template);
-        for &field in pointer_fields {
-            data[row + field..row + field + 16].fill(0);
-        }
-        write_u32(&mut data, row + hash_offset, authored_hashes[position])?;
-    }
-    set_array_count(
-        &mut data,
-        8,
-        main_header,
-        expected_count + authored_hashes.len(),
-    )?;
-    Ok(data)
-}
-
-fn append_numeric_program(
-    data: &mut Vec<u8>,
-    descriptor: usize,
-    instructions: &[[u8; 8]],
-    description: &str,
-) -> AuthoringResult<()> {
-    if instructions.is_empty() {
-        return Err(invalid(format!("{description} cannot be empty")));
-    }
-    let tokens = instructions
-        .iter()
-        .map(|instruction| {
-            (
-                instruction[0],
-                u16::from_le_bytes([instruction[4], instruction[5]]),
-            )
-        })
-        .collect::<Vec<_>>();
-    if numeric_program_stack_depth(&tokens)? != 1 {
-        return Err(validation(format!(
-            "{description} does not reduce to one value"
-        )));
-    }
-    while data.len() % 16 != 0 {
-        data.push(0);
-    }
-    let program_header = data.len();
-    data.extend_from_slice(
-        &u64::try_from(instructions.len())
-            .map_err(|_| invalid(format!("{description} is too large")))?
-            .to_le_bytes(),
-    );
-    data.extend_from_slice(&NUMERIC_PROGRAM_ROW_CLASS.to_le_bytes());
-    data.extend_from_slice(&0_u32.to_le_bytes());
-    for instruction in instructions {
-        data.extend_from_slice(instruction);
-    }
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
-        data.push(0);
-    }
-    data.extend_from_slice(&NESTED_ARRAY_TRAILER);
-    write_u64(data, descriptor, instructions.len() as u64)?;
-    write_relative_pointer(data, descriptor + 8, program_header)?;
-    let layout = numeric_program_layout(data, descriptor)?;
-    if layout.tokens != tokens || numeric_program_stack_depth(&layout.tokens)? != 1 {
-        return Err(validation(format!(
-            "{description} did not serialize faithfully"
-        )));
-    }
-    Ok(())
-}
-
-fn append_sunrise_badge_objective(
+fn append_objective(
     objectives: Vec<u8>,
     objective_strings: Vec<u8>,
     shared_expression_pools: &[u8],
     authored_unlock_indices: &[u16],
     localization_table_index: u32,
+    layout: &Layout,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>, u16)> {
     if authored_unlock_indices.is_empty()
         || authored_unlock_indices
@@ -1092,14 +812,14 @@ fn append_sunrise_badge_objective(
     }
     let template_indices = [ACE_BADGE_OBJECTIVE_TEMPLATE_INDEX];
     let template_hashes = [ACE_BADGE_OBJECTIVE_TEMPLATE_HASH];
-    let authored_hashes = [SUNRISE_BADGE_OBJECTIVE_HASH];
+    let authored_hashes = [layout.objective_hash];
     let mut objectives = append_fixed_rows_without_donor_dependencies(
         objectives,
-        STOCK_OBJECTIVE_COUNT,
+        layout.objective_start,
         OBJECTIVE_ROW_SIZE,
         OBJECTIVE_ROW_CLASS,
         &OBJECTIVE_POINTER_FIELDS,
-        Some(0x08),
+        &[0x08],
         &template_indices,
         &template_hashes,
         &authored_hashes,
@@ -1108,11 +828,11 @@ fn append_sunrise_badge_objective(
     )?;
     let mut objective_strings = append_fixed_rows_without_donor_dependencies(
         objective_strings,
-        STOCK_OBJECTIVE_COUNT,
+        layout.objective_start,
         OBJECTIVE_STRING_ROW_SIZE,
         OBJECTIVE_STRING_ROW_CLASS,
         &[],
-        None,
+        &[],
         &template_indices,
         &template_hashes,
         &authored_hashes,
@@ -1121,8 +841,8 @@ fn append_sunrise_badge_objective(
     )?;
     let (_, _, objective_rows, _) = array_at(&objectives, 8)?;
     let (_, _, string_rows, _) = array_at(&objective_strings, 8)?;
-    let objective_row = objective_rows + STOCK_OBJECTIVE_COUNT * OBJECTIVE_ROW_SIZE;
-    let string_row = string_rows + STOCK_OBJECTIVE_COUNT * OBJECTIVE_STRING_ROW_SIZE;
+    let objective_row = objective_rows + layout.objective_start * OBJECTIVE_ROW_SIZE;
+    let string_row = string_rows + layout.objective_start * OBJECTIVE_STRING_ROW_SIZE;
     let completion = i32::try_from(authored_unlock_indices.len())
         .map_err(|_| invalid("Sunrise badge objective target does not fit i32"))?;
     write_i32(
@@ -1134,7 +854,7 @@ fn append_sunrise_badge_objective(
         &mut objective_strings,
         string_row + OBJECTIVE_STRING_PROGRESS_REFERENCE_OFFSET,
         localization_table_index,
-        SUNRISE_BADGE_NAME_HASH,
+        layout.name_hash,
     )?;
 
     let (pool_rows, _) = validate_shared_expression_table(shared_expression_pools, true)?;
@@ -1167,43 +887,25 @@ fn append_sunrise_badge_objective(
         &instructions,
         "Sunrise badge objective expression",
     )?;
-    let objective_index = u16::try_from(STOCK_OBJECTIVE_COUNT)
+    let objective_index = u16::try_from(layout.objective_start)
         .map_err(|_| invalid("Sunrise badge objective index does not fit 16 bits"))?;
     Ok((objectives, objective_strings, objective_index))
 }
 
-fn append_single_u16_array(
-    data: &mut Vec<u8>,
-    descriptor: usize,
-    row_class: u32,
-    value: u16,
-) -> AuthoringResult<()> {
-    // Sunrise reads the type marker immediately before the array header.
-    // Reserve it even when the preceding payload already ends on a boundary.
-    let header = data
-        .len()
-        .checked_add(19)
-        .map(|end| end & !15)
-        .ok_or_else(|| invalid("Record objective array alignment overflowed"))?;
-    data.resize(header - 4, 0);
-    data.extend_from_slice(&PRESENTATION_CHILD_ARRAY_SENTINEL.to_le_bytes());
-    let header = data.len();
-    data.extend_from_slice(&1_u64.to_le_bytes());
-    data.extend_from_slice(&row_class.to_le_bytes());
-    data.extend_from_slice(&0_u32.to_le_bytes());
-    data.extend_from_slice(&value.to_le_bytes());
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
-        data.push(0);
-    }
-    data.extend_from_slice(&NESTED_ARRAY_TRAILER);
-    write_u64(data, descriptor, 1)?;
-    write_relative_pointer(data, descriptor + 8, header)
-}
-
+#[cfg(test)]
 fn append_sunrise_badge_records(
     records: Vec<u8>,
     record_strings: Vec<u8>,
     objective_index: u16,
+) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
+    append_records(records, record_strings, objective_index, &Layout::sunrise())
+}
+
+fn append_records(
+    records: Vec<u8>,
+    record_strings: Vec<u8>,
+    objective_index: u16,
+    layout: &Layout,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
     let template_indices = ACE_BADGE_RECORD_INDICES
         .iter()
@@ -1212,33 +914,33 @@ fn append_sunrise_badge_records(
         .collect::<Vec<_>>();
     let mut records = append_fixed_rows_without_donor_dependencies(
         records,
-        STOCK_RECORD_COUNT,
+        layout.record_start,
         RECORD_ROW_SIZE,
         RECORD_ROW_CLASS,
         &RECORD_POINTER_FIELDS,
-        Some(RECORD_OBJECTIVE_DESCRIPTOR_OFFSET),
+        &[RECORD_OBJECTIVE_DESCRIPTOR_OFFSET],
         &template_indices,
         &ACE_BADGE_RECORD_HASHES,
-        &SUNRISE_BADGE_RECORD_HASHES,
+        &layout.record_hashes,
         RECORD_HASH_OFFSET,
         "record-definition table",
     )?;
     let record_strings = append_fixed_rows_without_donor_dependencies(
         record_strings,
-        STOCK_RECORD_COUNT,
+        layout.record_start,
         RECORD_STRING_ROW_SIZE,
         RECORD_STRING_ROW_CLASS,
         &RECORD_STRING_POINTER_FIELDS,
-        None,
+        &[],
         &template_indices,
         &ACE_BADGE_RECORD_HASHES,
-        &SUNRISE_BADGE_RECORD_HASHES,
+        &layout.record_hashes,
         0,
         "record-string table",
     )?;
     let (_, _, record_rows, _) = array_at(&records, 8)?;
-    for position in 0..SUNRISE_BADGE_RECORD_HASHES.len() {
-        let row = record_rows + (STOCK_RECORD_COUNT + position) * RECORD_ROW_SIZE;
+    for position in 0..layout.record_hashes.len() {
+        let row = record_rows + (layout.record_start + position) * RECORD_ROW_SIZE;
         append_single_u16_array(
             &mut records,
             row + RECORD_OBJECTIVE_DESCRIPTOR_OFFSET,
@@ -1246,18 +948,28 @@ fn append_sunrise_badge_records(
             objective_index,
         )?;
     }
-    validate_sunrise_badge_records(&records, &record_strings, objective_index)?;
+    validate_records(&records, &record_strings, objective_index, layout)?;
     Ok((records, record_strings))
 }
 
+#[cfg(test)]
 fn validate_sunrise_badge_records(
     records: &[u8],
     record_strings: &[u8],
     objective_index: u16,
 ) -> AuthoringResult<()> {
+    validate_records(records, record_strings, objective_index, &Layout::sunrise())
+}
+
+fn validate_records(
+    records: &[u8],
+    record_strings: &[u8],
+    objective_index: u16,
+    layout: &Layout,
+) -> AuthoringResult<()> {
     let (record_count, _, record_rows, record_class) = array_at(records, 8)?;
     let (string_count, _, string_rows, string_class) = array_at(record_strings, 8)?;
-    let expected_count = STOCK_RECORD_COUNT + SUNRISE_BADGE_RECORD_HASHES.len();
+    let expected_count = layout.record_start + layout.record_hashes.len();
     if record_count != expected_count
         || string_count != expected_count
         || record_class != RECORD_ROW_CLASS
@@ -1267,8 +979,8 @@ fn validate_sunrise_badge_records(
             "Sunrise record definitions and strings are not aligned at 2242 -> 2246",
         ));
     }
-    for (position, expected_hash) in SUNRISE_BADGE_RECORD_HASHES.iter().copied().enumerate() {
-        let target_index = STOCK_RECORD_COUNT + position;
+    for (position, expected_hash) in layout.record_hashes.iter().copied().enumerate() {
+        let target_index = layout.record_start + position;
         let target = record_rows + target_index * RECORD_ROW_SIZE;
         let string = string_rows + target_index * RECORD_STRING_ROW_SIZE;
         if read_u32(records, target + RECORD_HASH_OFFSET)? != expected_hash
@@ -1310,39 +1022,6 @@ fn validate_sunrise_badge_records(
             }
         }
     }
-    Ok(())
-}
-
-fn presentation_child_array_end(child_end: usize) -> AuthoringResult<usize> {
-    child_end
-        .checked_add(size_of::<u32>())
-        .and_then(|end| end.checked_add(15))
-        .map(|end| end & !15)
-        .ok_or_else(|| invalid("Presentation-node child trailer overflowed"))
-}
-
-fn validate_presentation_child_array_terminator(
-    data: &[u8],
-    child_end: usize,
-) -> AuthoringResult<usize> {
-    let segment_end = presentation_child_array_end(child_end)?;
-    let sentinel_start = segment_end - size_of::<u32>();
-    if data
-        .get(child_end..sentinel_start)
-        .is_none_or(|padding| padding.iter().any(|byte| *byte != 0))
-        || read_u32(data, sentinel_start)? != PRESENTATION_CHILD_ARRAY_SENTINEL
-    {
-        return Err(invalid(
-            "Presentation-node child array has an unexpected terminator",
-        ));
-    }
-    Ok(segment_end)
-}
-
-fn append_presentation_child_array_terminator(data: &mut Vec<u8>) -> AuthoringResult<()> {
-    let segment_end = presentation_child_array_end(data.len())?;
-    data.resize(segment_end - size_of::<u32>(), 0);
-    data.extend_from_slice(&PRESENTATION_CHILD_ARRAY_SENTINEL.to_le_bytes());
     Ok(())
 }
 

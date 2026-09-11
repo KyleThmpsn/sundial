@@ -2,7 +2,21 @@ use super::*;
 
 pub(super) mod decoder;
 
+#[cfg(test)]
 pub(super) fn validate_request(request: &InstallRequest) -> Result<ValidatedRun, InstallError> {
+    validate_request_with_progress(request, &mut |_| {})
+}
+
+pub(super) fn validate_request_with_progress(
+    request: &InstallRequest,
+    progress: Observer<'_>,
+) -> Result<ValidatedRun, InstallError> {
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Checking Game and Runtime",
+        0,
+        7,
+    ));
     check_game_before_validation(request)?;
 
     let staged_run_directory = canonical_directory(&request.staged_run_directory, "staging run")?;
@@ -43,17 +57,63 @@ pub(super) fn validate_request(request: &InstallRequest) -> Result<ValidatedRun,
         )));
     }
 
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Verifying Staged Packages and Recipes",
+        1,
+        7,
+    ));
     let manifest =
         validate_manifest_and_staged_files(&staged_run_directory, &target_packages_directory)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Checking Installed Package Headers",
+        2,
+        7,
+    ));
     validate_target_package_chain(&target_packages_directory)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Verifying Source Checksums",
+        3,
+        7,
+    ));
     verify_source_artifacts(&target_packages_directory, &manifest.source_artifacts)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Finding Replaced Packages",
+        4,
+        7,
+    ));
     let obsolete_artifacts =
         find_obsolete_artifacts(&target_packages_directory, &manifest.artifacts)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Checking Sunrise Cache",
+        5,
+        7,
+    ));
     let sunrise_build_cache = validate_sunrise_build_cache(&target_packages_directory)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Checking Package Caches",
+        6,
+        7,
+    ));
     let package_header_caches = validate_package_header_caches(&target_packages_directory)?;
-    let replacement_guard =
-        replacement::review_request(request, &target_packages_directory, &staged_run_directory)
-            .map_err(InstallError::validation)?;
+    progress(InstallProgress::item(
+        InstallPhase::Checking,
+        "Package Checks Complete",
+        7,
+        7,
+    ));
+    let replacement_guard = replacement::review_request(
+        request,
+        &target_packages_directory,
+        &staged_run_directory,
+        progress,
+    )
+    .map_err(InstallError::validation)?;
     Ok(ValidatedRun {
         replacement_guard,
         staged_run_directory,
