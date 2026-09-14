@@ -108,10 +108,6 @@ mod tests {
             assert_eq!(data, [10, 20, 30, 40]);
         }
         assert!(bytes_at::<4>(&[0; 4], usize::MAX).is_err());
-    }
-
-    #[test]
-    fn payload_writes_preserve_neighbors_and_accept_an_empty_end_range() {
         let mut data = [10, 20, 30, 40];
         write_bytes(&mut data, 1, &[2, 3]).unwrap();
         write_bytes(&mut data, 4, &[]).unwrap();

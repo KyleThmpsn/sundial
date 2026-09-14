@@ -39,7 +39,7 @@ pub(super) fn draw_combat_profile_control(
         label
     }).inner;
     let Some(donor) = donor else {
-        ui.add_enabled(false, egui::Button::new("Load a base weapon"));
+        ui.add_enabled(false, egui::Button::new("Load a Base Weapon"));
         return false;
     };
     let capabilities = weapon_authoring_capabilities(donor);
@@ -148,7 +148,7 @@ pub(super) fn draw_combat_profile_control(
     if !select_slot
         && capabilities.diagnostics.is_empty()
         && action.is_none_or(|action| !capabilities.supports(action))
-        && ui.button("Use base weapon").clicked()
+        && ui.button("Use Base Weapon").clicked()
     {
         apply_combat_profile_action(overrides, &donor.summary, CombatProfileAction::Preserve);
         changed = true;

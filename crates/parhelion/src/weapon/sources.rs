@@ -69,31 +69,16 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
     let globals = resolve_live_named_tag(&manager, "investment_globals", None).map_err(invalid)?;
     let globals_data = read_tag(&manager, globals, "investment globals")?;
     let root_tag = globals_child_tag(&globals_data, 0)?;
-    let root_entry = manager
-        .get_entry(root_tag)
-        .ok_or_else(|| invalid(format!("Investment root {root_tag} is not live")))?;
-    if root_entry.reference != INVESTMENT_ROOT_CLASS {
-        return Err(invalid(format!(
-            "Investment root {root_tag} has class 0x{:08X}, expected 0x{INVESTMENT_ROOT_CLASS:08X}",
-            root_entry.reference
-        )));
-    }
+    validate_source_tag(&manager, root_tag, INVESTMENT_ROOT_CLASS, "Investment root")?;
     let root = read_tag(&manager, root_tag, "investment root")?;
     let item_table_tag = root_child_tag(&root, ROOT_ITEM_DEFINITION_TABLE_SLOT)?;
     let item_hash_index_table_tag = root_child_tag(&root, ROOT_ITEM_HASH_INDEX_TABLE_SLOT)?;
-    let item_hash_index_entry = manager
-        .get_entry(item_hash_index_table_tag)
-        .ok_or_else(|| {
-            invalid(format!(
-                "Item hash-index table {item_hash_index_table_tag} is not live"
-            ))
-        })?;
-    if item_hash_index_entry.reference != ITEM_HASH_INDEX_TABLE_CLASS {
-        return Err(invalid(format!(
-            "Item hash-index table {item_hash_index_table_tag} has class 0x{:08X}, expected 0x{ITEM_HASH_INDEX_TABLE_CLASS:08X}",
-            item_hash_index_entry.reference
-        )));
-    }
+    validate_source_tag(
+        &manager,
+        item_hash_index_table_tag,
+        ITEM_HASH_INDEX_TABLE_CLASS,
+        "Item hash-index table",
+    )?;
     let item_string_table_tag = globals_child_tag(&globals_data, GLOBALS_ITEM_STRING_TABLE_SLOT)?;
     let item_metadata_table_tag =
         globals_child_tag(&globals_data, GLOBALS_ITEM_METADATA_TABLE_SLOT)?;
@@ -102,20 +87,12 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
     let finished_sandbox_perk_table_tag =
         globals_child_tag(&globals_data, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT)?;
     let sandbox_perk_index_table_tag = root_child_tag(&root, ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT)?;
-    let sandbox_perk_index_entry =
-        manager
-            .get_entry(sandbox_perk_index_table_tag)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Sandbox-perk metadata table {sandbox_perk_index_table_tag} is not live"
-                ))
-            })?;
-    if sandbox_perk_index_entry.reference != SANDBOX_PERK_INDEX_CATALOG_CLASS {
-        return Err(invalid(format!(
-            "Sandbox-perk metadata table {sandbox_perk_index_table_tag} has class 0x{:08X}, expected 0x{SANDBOX_PERK_INDEX_CATALOG_CLASS:08X}",
-            sandbox_perk_index_entry.reference
-        )));
-    }
+    validate_source_tag(
+        &manager,
+        sandbox_perk_index_table_tag,
+        SANDBOX_PERK_INDEX_CATALOG_CLASS,
+        "Sandbox-perk metadata table",
+    )?;
     let item_icon_table_tag = globals_child_tag(&globals_data, GLOBALS_ITEM_ICON_TABLE_SLOT)?;
     let item_dense_presentation_table_tag =
         globals_child_tag(&globals_data, GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT)?;
@@ -146,31 +123,19 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
     let unlock_display_tag =
         globals_child_tag(&globals_data, GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT)?;
     let entity_assignment_tag = TagHash(SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG);
-    let entity_assignment_entry = manager.get_entry(entity_assignment_tag).ok_or_else(|| {
-        invalid(format!(
-            "Sandbox-pattern entity-assignment tag {entity_assignment_tag} is not live"
-        ))
-    })?;
-    if entity_assignment_entry.reference != SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS {
-        return Err(invalid(format!(
-            "Sandbox-pattern entity-assignment tag {entity_assignment_tag} has class 0x{:08X}, expected 0x{SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS:08X}",
-            entity_assignment_entry.reference
-        )));
-    }
+    validate_source_tag(
+        &manager,
+        entity_assignment_tag,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS,
+        "Sandbox-pattern entity-assignment tag",
+    )?;
     let sandbox_perk_runtime_map_tag = TagHash(SANDBOX_PERK_RUNTIME_MAP_TAG);
-    let sandbox_perk_runtime_map_entry = manager
-        .get_entry(sandbox_perk_runtime_map_tag)
-        .ok_or_else(|| {
-            invalid(format!(
-                "Sandbox-perk runtime map {sandbox_perk_runtime_map_tag} is not live"
-            ))
-        })?;
-    if sandbox_perk_runtime_map_entry.reference != SANDBOX_PERK_RUNTIME_MAP_CLASS {
-        return Err(invalid(format!(
-            "Sandbox-perk runtime map {sandbox_perk_runtime_map_tag} has class 0x{:08X}, expected 0x{SANDBOX_PERK_RUNTIME_MAP_CLASS:08X}",
-            sandbox_perk_runtime_map_entry.reference
-        )));
-    }
+    validate_source_tag(
+        &manager,
+        sandbox_perk_runtime_map_tag,
+        SANDBOX_PERK_RUNTIME_MAP_CLASS,
+        "Sandbox-perk runtime map",
+    )?;
     if sandbox_perk_runtime_map_tag != entity_assignment_tag
         || SANDBOX_PERK_RUNTIME_MAP_CLASS != SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS
     {
@@ -416,4 +381,22 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
         stock_unlock_count,
         unlock_rows,
     })
+}
+
+fn validate_source_tag(
+    manager: &PackageManager,
+    tag: TagHash,
+    expected_class: u32,
+    label: &str,
+) -> AuthoringResult<()> {
+    let entry = manager
+        .get_entry(tag)
+        .ok_or_else(|| invalid(format!("{label} {tag} is not live")))?;
+    if entry.reference != expected_class {
+        return Err(invalid(format!(
+            "{label} {tag} has class 0x{:08X}, expected 0x{expected_class:08X}",
+            entry.reference
+        )));
+    }
+    Ok(())
 }

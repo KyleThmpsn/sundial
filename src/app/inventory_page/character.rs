@@ -3,9 +3,8 @@
 use crate::app::account_workspace as account;
 
 mod groups;
+mod invalid;
 mod item_card;
-
-use std::collections::HashMap;
 
 use eframe::egui;
 
@@ -21,8 +20,7 @@ use super::super::{
     equipment::{self, EquipmentSlotCard, EquippedItemSnapshot, class_name, native_plug_default},
     inspector::DefinitionInspectionContext,
     inventory::{
-        self, CHARACTER_INVENTORY_CAPACITY, INVENTORY_FLAG_LOCKED, InventoryItemAction,
-        InventoryItemSnapshot, ItemPlugs, NewInventoryItem, SchemaMode, set_inventory_locked_flag,
+        self, InventoryItemAction, InventoryItemSnapshot, ItemPlugs, NewInventoryItem, SchemaMode,
     },
     item_editor::{
         self, DefinitionPickerChoices, DefinitionSummary, ItemEditorAction, ItemHeader,
@@ -31,8 +29,8 @@ use super::super::{
 };
 use super::{
     buckets::{
-        add_candidate_buckets, bucket_add_tooltip, bucket_has_room, bucket_header_label,
-        bucket_header_text, bucket_key_has_room, draw_bucket_details, scope_id,
+        add_candidate_buckets, bucket_add_blocker, bucket_add_tooltip, bucket_has_room,
+        bucket_header_label, bucket_header_text, draw_bucket_details, scope_id,
     },
     definitions::{
         character_bucket_definition_choices, character_definition_choices,
@@ -57,6 +55,7 @@ use super::{
 
 struct CharacterInventorySources {
     class_type: u64,
+    metadata_error: Option<String>,
     items: Vec<InventoryItemSnapshot>,
     inventory_error: Option<String>,
     equipped_items: Vec<EquippedItemSnapshot>,
@@ -158,7 +157,7 @@ impl SundialApp {
                 || self.character_inventory_source_filter != CharacterInventorySourceFilter::All
                 || self.character_inventory_lock_filter != CharacterInventoryLockFilter::All
                 || self.character_inventory_sort != CharacterInventorySort::InventoryOrder)
-                && ui.button("Reset view").clicked()
+                && ui.button("Reset View").clicked()
             {
                 self.character_inventory_query.clear();
                 self.character_inventory_source_filter = CharacterInventorySourceFilter::All;
@@ -173,6 +172,13 @@ impl SundialApp {
         entry: &CharacterInventoryEntry,
         query: &str,
     ) -> bool {
+        // Keep repairable rows visible even when a name, source or lock filter cannot match them.
+        if entry
+            .definition_hash()
+            .is_none_or(|hash| self.manifest.inventory_definition(hash).is_none())
+        {
+            return true;
+        }
         let source_matches = match self.character_inventory_source_filter {
             CharacterInventorySourceFilter::All => true,
             CharacterInventorySourceFilter::Stored => entry.is_stored(),
@@ -211,10 +217,11 @@ impl SundialApp {
     }
 
     fn character_inventory_sources(&self, character_index: usize) -> CharacterInventorySources {
-        let class_type = account::character_metadata(&self.document, character_index)
-            .ok()
-            .map(|metadata| u64::from(metadata.class_type))
-            .unwrap_or(99);
+        let (class_type, metadata_error) =
+            match account::character_metadata(&self.document, character_index) {
+                Ok(metadata) => (u64::from(metadata.class_type), None),
+                Err(error) => (99, Some(error.to_string())),
+            };
         let (items, inventory_error) =
             match account::character_inventory(&self.document, character_index) {
                 Ok(items) => (items.unwrap_or_default(), None),
@@ -227,6 +234,7 @@ impl SundialApp {
             };
         CharacterInventorySources {
             class_type,
+            metadata_error,
             items,
             inventory_error,
             equipped_items,
@@ -283,13 +291,16 @@ impl SundialApp {
     ) {
         if !editable {
             let message = if equipment_editable {
-                "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout items remain editable."
+                "Stored character-inventory editing requires Sunrise settings schema 6. Equipped loadout items remain editable."
             } else {
-                "Stored character-inventory editing requires Sunrise settings schema 6; equipped loadout editing is also disabled for this schema."
+                "Stored character-inventory editing requires Sunrise settings schema 6. Equipped loadout editing is also disabled for this schema."
             };
             ui.label(egui::RichText::new(message).weak());
-        } else if sources.items.len() >= CHARACTER_INVENTORY_CAPACITY {
+        } else if sources.items.len() >= account::character_inventory_capacity(&self.document) {
             ui.label(egui::RichText::new("This character inventory is full.").weak());
+        }
+        if let Some(error) = &sources.metadata_error {
+            draw_inventory_source_error(ui, "Character details", error);
         }
         if let Some(error) = &sources.inventory_error {
             draw_inventory_source_error(ui, "Stored inventory", error);
@@ -322,6 +333,7 @@ impl SundialApp {
         self.draw_character_inventory_notices(ui, &sources, editable, equipment_editable);
         let CharacterInventorySources {
             class_type,
+            metadata_error,
             items,
             inventory_error,
             equipped_items,
@@ -336,7 +348,7 @@ impl SundialApp {
                 .is_none()
                 .then_some(equipped_items.as_slice()),
         );
-        if inventory_error.is_some() || equipment_error.is_some() {
+        if metadata_error.is_some() || inventory_error.is_some() || equipment_error.is_some() {
             bucket_usage.occupancy_complete = false;
         }
         if bucket_usage.unresolved_count > 0 {
@@ -369,9 +381,7 @@ impl SundialApp {
         let query = self.character_inventory_query.trim().to_ascii_lowercase();
         entries.retain(|entry| self.character_inventory_entry_matches(entry, &query));
         if filters_active {
-            ui.label(
-                egui::RichText::new(format!("Showing {} matching items", entries.len())).weak(),
-            );
+            ui.label(egui::RichText::new(format!("Showing {} items", entries.len())).weak());
         }
         let candidate_buckets = self
             .manifest
@@ -381,7 +391,7 @@ impl SundialApp {
             .filter(|metadata| {
                 crate::account_contract::inventory_bucket_available(
                     metadata.native_bucket_id,
-                    self.document.supports_v13_account(),
+                    self.document.supports_emote_collection(),
                 )
             });
         let mut groups = self.group_items_by_bucket(
@@ -394,7 +404,7 @@ impl SundialApp {
         }
         super::buckets::prepare_character_buckets(
             &mut groups,
-            self.document.supports_v13_account(),
+            self.document.supports_emote_collection(),
         );
         if self.character_inventory_sort != CharacterInventorySort::InventoryOrder {
             for group in &mut groups {
@@ -573,50 +583,41 @@ impl SundialApp {
         source_character_index: usize,
     ) -> Vec<CharacterTransferTarget> {
         (0..self.character_count())
-            .filter(|character_index| *character_index != source_character_index)
+            .filter(|index| *index != source_character_index)
             .map(|character_index| {
-                let class_type = account::character_metadata(&self.document, character_index)
-                    .ok()
-                    .map(|metadata| u64::from(metadata.class_type))
-                    .unwrap_or(99);
+                let sources = self.character_inventory_sources(character_index);
+                let class_type = sources.class_type;
                 let label = format!(
                     "Character {} · {}",
                     character_index + 1,
                     class_name(class_type)
                 );
-                if !matches!(class_type, 0..=2) {
-                    return CharacterTransferTarget {
-                        character_index,
-                        label,
-                        class_type,
-                        stored_count: None,
-                        usage: None,
-                        unavailable_reason: Some("Invalid character class".to_owned()),
-                    };
-                }
-                match account::character_inventory(&self.document, character_index) {
-                    Err(_) => CharacterTransferTarget {
-                        character_index,
-                        label,
-                        class_type,
-                        stored_count: None,
-                        usage: None,
-                        unavailable_reason: Some("Inventory could not be read".to_owned()),
-                    },
-                    Ok(items) => {
-                        let items = items.unwrap_or_default();
-                        let equipment =
-                            account::equipped_item_snapshots(&self.document, character_index);
-                        let usage = self.inventory_bucket_usage(&items, equipment.as_deref().ok());
-                        CharacterTransferTarget {
-                            character_index,
-                            label,
-                            class_type,
-                            stored_count: Some(items.len()),
-                            usage: Some(usage),
-                            unavailable_reason: None,
-                        }
-                    }
+                let unavailable_reason = sources
+                    .metadata_error
+                    .map(|error| format!("Character details could not be read: {error}"))
+                    .or_else(|| {
+                        sources
+                            .inventory_error
+                            .map(|error| format!("Stored inventory could not be read: {error}"))
+                    })
+                    .or_else(|| {
+                        sources
+                            .equipment_error
+                            .map(|error| format!("Equipped items could not be read: {error}"))
+                    })
+                    .or_else(|| {
+                        (!matches!(class_type, 0..=2)).then(|| "Invalid character class".to_owned())
+                    });
+                let available = unavailable_reason.is_none();
+                CharacterTransferTarget {
+                    character_index,
+                    label,
+                    class_type,
+                    stored_count: available.then_some(sources.items.len()),
+                    usage: available.then(|| {
+                        self.inventory_bucket_usage(&sources.items, Some(&sources.equipped_items))
+                    }),
+                    unavailable_reason,
                 }
             })
             .collect()
@@ -666,10 +667,16 @@ impl SundialApp {
                                 Some("Bucket capacity could not be verified".to_owned())
                             } else if !usage.occupancy_complete {
                                 Some("Bucket occupancy could not be verified".to_owned())
-                            } else if !bucket_has_room(&definition.metadata, usage, None, false) {
-                                Some(format!("{} is full", definition.metadata.bucket_label()))
                             } else {
-                                None
+                                bucket_add_blocker(
+                                    super::model::BucketKey {
+                                        scope: definition.metadata.scope,
+                                        native_id: definition.metadata.native_bucket_id,
+                                    },
+                                    definition.metadata.authored_row_capacity(),
+                                    usage,
+                                    &definition.metadata.bucket_label(),
+                                )
                             }
                         }
                     } else {
@@ -700,46 +707,18 @@ impl SundialApp {
         items: &[InventoryItemSnapshot],
         equipment: Option<&[EquippedItemSnapshot]>,
     ) -> BucketUsage {
-        let mut counts = HashMap::new();
-        let mut unresolved_count = 0;
-        let mut occupancy_complete = equipment.is_some();
-        if let Some(equipment) = equipment {
-            for equipped in equipment {
-                let metadata = equipped
-                    .definition_hash
-                    .and_then(|hash| self.manifest.inventory_metadata(hash));
-                match metadata {
-                    Some(metadata) if metadata.scope == InventoryScope::Character => {
-                        *counts.entry(metadata.native_bucket_id).or_default() += 1;
-                    }
-                    Some(metadata) if metadata.scope != InventoryScope::Unknown => {
-                        unresolved_count += 1;
-                        occupancy_complete = false;
-                    }
-                    Some(_) | None => unresolved_count += 1,
-                }
-            }
-        }
-
-        for item in items {
-            match self
-                .manifest
-                .inventory_metadata(u64::from(item.definition_hash))
-            {
-                Some(metadata) if metadata.scope == InventoryScope::Character => {
-                    *counts.entry(metadata.native_bucket_id).or_default() += 1;
-                }
-                Some(metadata) if metadata.scope != InventoryScope::Unknown => {
-                    unresolved_count += 1;
-                    occupancy_complete = false;
-                }
-                Some(_) | None => unresolved_count += 1,
-            }
-        }
-        BucketUsage {
-            counts,
-            unresolved_count,
-            occupancy_complete,
-        }
+        self.bucket_usage(
+            InventoryScope::Character,
+            equipment
+                .into_iter()
+                .flatten()
+                .map(|equipped| equipped.definition_hash)
+                .chain(
+                    items
+                        .iter()
+                        .map(|item| Some(u64::from(item.definition_hash))),
+                ),
+            equipment.is_some(),
+        )
     }
 }

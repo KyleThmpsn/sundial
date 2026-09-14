@@ -488,7 +488,10 @@ pub(crate) fn validate_socket_plug_variant_shapes(
         if let Some(name) = &variant.name {
             validate_localized_text("Private socket-plug name", name)?;
         }
-        if let Some(description) = &variant.description {
+        // An explicit empty string clears the donor description. None inherits it.
+        if let Some(description) = &variant.description
+            && !description.is_empty()
+        {
             validate_localized_text("Private socket-plug description", description)?;
         }
         if variant.additional_sandbox_perks.len() > 64
@@ -530,8 +533,8 @@ pub(crate) fn validate_socket_plug_variant_shapes(
                         "A custom effect program cannot also contain stock action overrides.",
                     ));
                 }
-                for action in &program.actions {
-                    validate_runtime_value_override_shapes(&action.asset().values)?;
+                for asset in program.assets() {
+                    validate_runtime_value_override_shapes(&asset.values)?;
                 }
             }
             if perk.activation.is_some()

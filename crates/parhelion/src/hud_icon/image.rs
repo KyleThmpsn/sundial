@@ -1,14 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ImageFormat, RgbaImage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{
-    fmt,
-    io::{Cursor, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{fmt, io::Cursor, path::Path, sync::Arc};
 
-const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const WIDTH: u32 = 137;
 pub(crate) const HEIGHT: u32 = 76;
 #[derive(Clone, Eq, PartialEq)]
@@ -27,19 +21,11 @@ impl fmt::Debug for HudImage {
 }
 impl HudImage {
     pub fn from_png(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_BYTES {
-            return Err("Choose a PNG no larger than 16 MiB.".into());
-        }
-        let source = crate::icon_edit::decode_image(bytes, ImageFormat::Png, 4096)?;
-        Self::normalized(crate::icon_edit::fit_rgba_image(&source, WIDTH, HEIGHT))
+        let source = crate::image_import::decode_png(bytes)?;
+        Self::normalized(crate::image_import::fit(&source, WIDTH, HEIGHT))
     }
     pub(crate) fn from_path(path: &Path) -> Result<Self, String> {
-        let mut bytes = vec![];
-        std::fs::File::open(path)
-            .map_err(|e| e.to_string())?
-            .take((MAX_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
+        let bytes = crate::image_import::read_path(path)?;
         Self::from_png(&bytes)
     }
     fn normalized(pixels: RgbaImage) -> Result<Self, String> {
@@ -80,7 +66,7 @@ impl<'de> Deserialize<'de> for HudImage {
         let bytes = STANDARD
             .decode(embedded.png_base64)
             .map_err(serde::de::Error::custom)?;
-        let pixels = crate::icon_edit::decode_image(&bytes, ImageFormat::Png, WIDTH)
+        let pixels = crate::image_import::decode(&bytes, ImageFormat::Png, WIDTH)
             .map_err(serde::de::Error::custom)?;
         if pixels.dimensions() != (WIDTH, HEIGHT) {
             return Err(serde::de::Error::custom(

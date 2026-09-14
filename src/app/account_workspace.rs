@@ -6,6 +6,7 @@
 mod change_summary;
 mod equipment_dispatch;
 mod inventory_dispatch;
+mod runtime;
 pub(super) use equipment_dispatch::*;
 pub(super) use inventory_dispatch::*;
 mod sqlite;
@@ -18,21 +19,22 @@ use std::{
 
 use serde_json::{Map, Number, Value};
 use sundial_account::{
-    AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCommand,
-    CharacterMetadata, CharacterMetadataUpdate, KeyBindingSlot,
+    AccountSettingKey, AccountSettingValue, AccountSettingsCommand, CharacterMetadata,
+    CharacterMetadataUpdate, KeyBindingSlot,
 };
 
 use change_summary::{account_members_except_settings, sqlite_change_summaries};
 
 use super::equipment::{EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue};
 use super::inventory::{
-    DismantleGearClass, DismantleRarity, DismantleRewardAction, DismantleRewardLocation,
-    DismantleRewardSnapshot, InventoryError, InventoryItemAction, InventoryItemLocation,
-    InventoryItemSnapshot, ItemPlugs, NewInventoryItem, ProfileItemAction, ProfileItemLocation,
-    ProfileItemSnapshot,
+    DismantleRewardAction, DismantleRewardLocation, DismantleRewardSnapshot, InventoryError,
+    InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, NewInventoryItem,
+    ProfileItemAction, ProfileItemLocation, ProfileItemSnapshot,
 };
 use super::{account_settings, character_metadata};
-use crate::persistence::json_account::{JsonCharacterAdapter, ensure_schema_v8_preferences};
+use crate::persistence::json_account::{
+    JsonCharacterAdapter, ensure_schema_v8_preferences, setting_group_name,
+};
 use crate::persistence::sqlite_account::{
     self as sqlite_persistence, SqliteAccountDocument, SqliteAccountDocumentLoad, SqliteSaveReceipt,
 };
@@ -80,71 +82,6 @@ impl WorkspaceDocument {
             _ => None,
         }
     }
-    pub(super) fn runtime_view(&self) -> Value {
-        if let AccountDocument::Sqlite(document) = &self.account {
-            let mut view = self.json.clone();
-            if view.get("server").is_none_or(Value::is_null) {
-                view["server"] = serde_json::json!({});
-            }
-            if view["server"].is_object() {
-                view["server"]["entitlements"] = document.entitlements().clone();
-            }
-            if view.get("state").is_none_or(Value::is_null) {
-                view["state"] = serde_json::json!({});
-            }
-            if view["state"].is_object() {
-                view["state"]["account"] = document.runtime()["account"].clone();
-                view["state"]["characters"] = document.runtime()["characters"].clone();
-            }
-            return view;
-        }
-        self.json.clone()
-    }
-    pub(super) fn apply_runtime_view(&mut self, mut view: Value) -> Result<(), String> {
-        if let AccountDocument::Sqlite(document) = &mut self.account {
-            let native = serde_json::json!({
-                "account": view["state"]["account"],
-                "characters": view["state"]["characters"],
-            });
-            if let Some(state) = view.get_mut("state").and_then(Value::as_object_mut) {
-                for key in ["account", "characters"] {
-                    match self.json.pointer(&format!("/state/{key}")) {
-                        Some(value) => {
-                            state.insert(key.into(), value.clone());
-                        }
-                        None => {
-                            state.remove(key);
-                        }
-                    }
-                }
-                if state.is_empty() && self.json.get("state").is_none() {
-                    view.as_object_mut().unwrap().remove("state");
-                }
-            }
-            document.set_runtime(native);
-            let entitlements = view
-                .pointer("/server/entitlements")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!([]));
-            if let Some(server) = view.get_mut("server").and_then(Value::as_object_mut) {
-                match self.json.pointer("/server/entitlements") {
-                    Some(value) => {
-                        server.insert("entitlements".into(), value.clone());
-                    }
-                    None => {
-                        server.remove("entitlements");
-                    }
-                }
-                if server.is_empty() && self.json.get("server").is_none() {
-                    view.as_object_mut().unwrap().remove("server");
-                }
-            }
-            document.set_entitlements(entitlements);
-        }
-        self.json = view;
-        Ok(())
-    }
-
     pub(super) fn progression_view(&self, index: usize) -> Value {
         if let AccountDocument::Sqlite(document) = &self.account {
             return document.progression_view(index);
@@ -275,6 +212,14 @@ impl WorkspaceDocument {
         Vec::new()
     }
 
+    pub(super) fn source_kind(&self) -> AccountSourceKind {
+        match self.account {
+            AccountDocument::Json => AccountSourceKind::Json,
+            AccountDocument::Sqlite(_) => AccountSourceKind::Sqlite,
+            AccountDocument::Blocked(_) => AccountSourceKind::Blocked,
+        }
+    }
+
     pub(super) fn source_info(&self) -> AccountSourceInfo {
         match &self.account {
             AccountDocument::Json => AccountSourceInfo {
@@ -317,7 +262,7 @@ impl WorkspaceDocument {
     pub(super) fn verify_account_source_unchanged(&self) -> Result<(), String> {
         if self.uses_json_account() == requires_sqlite(&self.json) {
             return Err(
-                "The settings schema changed its account source. Reload before saving".into(),
+                "The settings schema changed its account source. Reload before applying or saving changes".into(),
             );
         }
 
@@ -360,9 +305,7 @@ impl WorkspaceDocument {
     }
 }
 
-pub(super) fn requires_sqlite(json: &Value) -> bool {
-    crate::game_settings::requires_sqlite_account(json)
-}
+pub(super) use crate::game_settings::requires_sqlite_account as requires_sqlite;
 
 impl Deref for WorkspaceDocument {
     type Target = Value;
@@ -490,11 +433,8 @@ pub(super) fn named_key_bindings_editable(document: &WorkspaceDocument) -> bool 
     }
 }
 
-pub(super) fn supports_combined_dismantle_gear_class(_document: &WorkspaceDocument) -> bool {
-    if matches!(_document.account, AccountDocument::Sqlite(_)) {
-        return true;
-    }
-    false
+pub(super) fn supports_combined_dismantle_gear_class(document: &WorkspaceDocument) -> bool {
+    matches!(document.account, AccountDocument::Sqlite(_))
 }
 
 pub(super) fn can_mutate_equipment(document: &WorkspaceDocument) -> bool {
@@ -546,8 +486,8 @@ pub(super) fn character_soid(document: &WorkspaceDocument, character_index: usiz
     }
 }
 
-pub(super) fn character_inventory_capacity(_document: &WorkspaceDocument) -> usize {
-    if matches!(_document.account, AccountDocument::Sqlite(_)) {
+pub(super) fn character_inventory_capacity(document: &WorkspaceDocument) -> usize {
+    if matches!(document.account, AccountDocument::Sqlite(_)) {
         return SqliteAccountDocument::character_capabilities()
             .inventory_capacity
             .unwrap_or(super::inventory::CHARACTER_INVENTORY_CAPACITY);
@@ -665,17 +605,6 @@ fn settings_map(
         }
     }
     settings
-}
-
-const fn setting_group_name(group: AccountSettingGroup) -> Option<&'static str> {
-    match group {
-        AccountSettingGroup::Root => None,
-        AccountSettingGroup::Controls => Some("controls"),
-        AccountSettingGroup::Audio => Some("audio"),
-        AccountSettingGroup::Display => Some("display"),
-        AccountSettingGroup::Interface => Some("interface"),
-        AccountSettingGroup::Social => Some("social"),
-    }
 }
 
 fn setting_value(value: &AccountSettingValue) -> Value {

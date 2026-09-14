@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn cache_refresh_preserves_local_progression_undo_until_document_replacement() {
+    let mut state = UiState::default();
+    state.record_progression_change(
+        "character_progressions",
+        7,
+        Some([1, 2, 3]),
+        Some([4, 5, 6]),
+    );
+    state.cached_progression = Some(Err("old cached read".into()));
+    let undo = state.last_progression_change;
+    state.invalidate_cache();
+    assert!(state.cached_progression.is_none());
+    assert!(state.progression_changed("character_progressions", 7));
+    assert_eq!(state.last_progression_change, undo);
+    state.invalidate_document();
+    assert!(!state.progression_changed("character_progressions", 7));
+    assert!(state.last_progression_change.is_none());
+}
+
+#[test]
 fn flag_mutations_split_and_rejoin_runs_without_touching_unknown_fields() {
     let mut document = json!({
         "state": {

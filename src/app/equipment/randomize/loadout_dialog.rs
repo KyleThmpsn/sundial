@@ -70,12 +70,12 @@ pub(super) fn draw_loadout_confirmation(
                 });
             ui.checkbox(
                 &mut options.replace_held_inventory,
-                "Replace existing inventory items",
+                "Replace Existing Inventory Items",
             )
             .on_hover_text(
                 "Off by default. When enabled, held items in the selected sections are removed and regenerated.",
             );
-            ui.checkbox(&mut options.keep_locked_items, "Keep locked items")
+            ui.checkbox(&mut options.keep_locked_items, "Keep Locked Items")
                 .on_hover_text(
                     "Preserves locked equipped and held items while randomizing the rest.",
                 );
@@ -121,7 +121,7 @@ pub(super) fn draw_loadout_confirmation(
         ) {
             Ok(message) => {
                 open = false;
-                app.dirty = true;
+                app.record_edit("Randomized Loadout Applied");
                 app.set_status(
                     format!(
                         "{message}. Perk safety: {}. Click Save to write it",

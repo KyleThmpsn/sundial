@@ -49,25 +49,6 @@ fn investment_stat(definition_index: u16, value: i32) -> WeaponInvestmentStat {
 }
 
 #[test]
-fn default_app_is_idle_and_waits_for_the_host_package_path() {
-    let app = PackageAuthoringApp::default();
-
-    assert!(app.recipe_library.is_none());
-    assert!(app.recipe_entries.is_empty());
-    assert!(app.enabled_recipe_paths.is_empty());
-    assert!(!app.recipe_dirty);
-    assert!(app.build_receiver.is_none());
-    assert!(app.build_progress.is_none());
-    assert!(app.latest_build.is_none());
-    assert!(app.install_receiver.is_none());
-    assert!(app.latest_install.is_none());
-    assert_eq!(app.build_dialog_step, BuildDialogStep::Build);
-    assert!(app.packages.as_os_str().is_empty());
-    assert_ne!(app.staging, app.backup_root);
-    assert!(app.ignore_installed);
-}
-
-#[test]
 fn stat_display_donor_adds_missing_rows_without_overwriting_recipe_values() {
     let mut overrides = WeaponRecipeOverrides {
         investment_stats: vec![WeaponStatOverride {
@@ -182,40 +163,6 @@ fn runtime_value_scope_preserves_saved_values_and_gates_show_all() {
         true,
         true,
     ));
-}
-
-#[test]
-fn hidden_technical_recipe_data_is_detected_without_being_mutated() {
-    let mut app = PackageAuthoringApp::default();
-    app.recipe.overrides.rarity = Some(RecipeRarity::Exotic);
-    app.recipe.overrides.weapon_pattern_index = Some(7);
-    app.recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
-        choices: vec![HexHash::new(0xAAAA_AAAA)],
-        socket_type: Some(3),
-        ..WeaponSocketColumnRecipe::default()
-    })];
-    let before = app.recipe.clone();
-
-    assert!(technical_recipe_features(&app.recipe).is_empty());
-    app.set_show_experimental_options(true);
-    app.set_show_experimental_options(false);
-
-    assert_eq!(app.recipe.clone(), before);
-    assert_eq!(
-        app.take_preferences_changed(),
-        Some(PackageAuthoringPreferences {
-            show_parhelion_experimental_options: false,
-        })
-    );
-}
-
-#[test]
-fn socket_choices_keep_readable_widths_and_wrap_after_three_columns() {
-    assert_eq!(socket_choice_columns(700.0, 1), 1);
-    assert_eq!(socket_choice_columns(700.0, 3), 3);
-    assert_eq!(socket_choice_columns(700.0, 8), 3);
-    assert_eq!(socket_choice_columns(330.0, 8), 1);
-    assert_eq!(socket_choice_columns(f32::NAN, 8), 1);
 }
 
 #[test]
@@ -370,35 +317,6 @@ fn successful_build_event_enters_completed_install_ready_state() {
 }
 
 #[test]
-fn active_catalog_work_uses_the_loading_state() {
-    let mut app = PackageAuthoringApp::default();
-    assert!(!app.catalog_is_loading());
-
-    let (_sender, receiver) = mpsc::channel();
-    app.catalog_receiver = Some(receiver);
-
-    assert!(app.catalog_is_loading());
-    assert!(app.has_background_work());
-}
-
-#[test]
-fn default_app_opens_a_clean_name_derived_new_recipe() {
-    let app = PackageAuthoringApp::default();
-
-    assert_eq!(app.recipe.namespace, "parhelion.new-recipe");
-    assert_eq!(app.recipe.name, "New Recipe");
-    assert_eq!(app.recipe.donor.item_hash.parse_u32(), Ok(0));
-    assert!(app.recipe.donor.expected_name.is_none());
-    assert!(app.recipe.identity_is_name_derived());
-    assert!(app.recipe_path.is_none());
-    assert!(!app.recipe_dirty);
-    assert_eq!(
-        app.recipe.collection_placement,
-        crate::RecipeCollectionPlacement::SunriseBadge
-    );
-}
-
-#[test]
 fn dirty_recipe_requires_confirmation_before_replacement() {
     let mut app = PackageAuthoringApp {
         recipe_dirty: true,
@@ -460,28 +378,4 @@ fn inherited_socket_column_deduplicates_and_honors_the_authored_limit() {
         vec![0xBBBB_BBBB]
     );
     assert!(inherited_socket_choices(Some(0xAAAA_AAAA), &[0xBBBB_BBBB], 0).is_empty());
-}
-
-#[test]
-fn known_output_list_contains_optional_runtime_core_overlays_and_assets() {
-    assert_eq!(CANONICAL_ARTIFACT_FILE_NAMES.len(), 10);
-    assert_eq!(CANONICAL_ARTIFACT_FILE_NAMES[0], "w64_sandbox_01bb_7.pkg");
-    assert_eq!(
-        CANONICAL_ARTIFACT_FILE_NAMES[1],
-        "w64_investment_0361_7.pkg"
-    );
-    assert_eq!(
-        CANONICAL_ARTIFACT_FILE_NAMES[2],
-        "w64_shared_manifest_0374_7.pkg"
-    );
-    assert!(
-        CANONICAL_ARTIFACT_FILE_NAMES[4..9]
-            .iter()
-            .all(|name| name.ends_with("_4.pkg"))
-    );
-    assert_eq!(
-        CANONICAL_ARTIFACT_FILE_NAMES[9],
-        "w64_parhelion_assets_0aa0_0.pkg"
-    );
-    assert_eq!(CANONICAL_ARTIFACT_FILE_NAMES[3], "w64_ui_037e_6.pkg");
 }

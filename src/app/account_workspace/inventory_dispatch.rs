@@ -257,13 +257,13 @@ pub(in crate::app) fn move_equipment_item_to_inventory(
 fn require_definition(document: &WorkspaceDocument, hash: u32) -> Result<(), InventoryError> {
     if crate::account_contract::definition_available(
         u64::from(hash),
-        document.supports_v13_account(),
+        document.supports_emote_collection(),
     ) {
         Ok(())
     } else {
         Err(InventoryError::new(
             "definition_hash",
-            "The emote wheel requires a v13+ JSON account",
+            "The active account does not support the emote collection",
         ))
     }
 }

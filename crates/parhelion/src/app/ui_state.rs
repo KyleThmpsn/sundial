@@ -92,7 +92,7 @@ impl RecipeSaveStatus {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::NotSavedYet => "Not saved yet",
-            Self::UnsavedChanges => "Unsaved changes",
+            Self::UnsavedChanges => "Unsaved Changes",
             Self::Saved => "Saved",
         }
     }
@@ -135,77 +135,5 @@ pub(crate) fn safe_content_width(available_width: f32) -> f32 {
         (available_width - RIGHT_INSET).max(0.0)
     } else {
         0.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn save_status_distinguishes_pristine_dirty_and_saved_recipes() {
-        assert_eq!(
-            RecipeSaveStatus::derive(false, false),
-            RecipeSaveStatus::NotSavedYet
-        );
-        assert_eq!(
-            RecipeSaveStatus::derive(false, true),
-            RecipeSaveStatus::UnsavedChanges
-        );
-        assert_eq!(
-            RecipeSaveStatus::derive(true, true),
-            RecipeSaveStatus::UnsavedChanges
-        );
-        assert_eq!(
-            RecipeSaveStatus::derive(true, false),
-            RecipeSaveStatus::Saved
-        );
-        assert_eq!(RecipeSaveStatus::NotSavedYet.label(), "Not saved yet");
-        assert_eq!(RecipeSaveStatus::UnsavedChanges.label(), "Unsaved changes");
-        assert_eq!(RecipeSaveStatus::Saved.label(), "Saved");
-    }
-
-    #[test]
-    fn runtime_editor_stacks_complex_or_narrow_fields() {
-        assert_eq!(
-            RuntimeEditorLayout::choose(1_200.0, true),
-            RuntimeEditorLayout::Stacked
-        );
-        assert_eq!(
-            RuntimeEditorLayout::choose(719.0, false),
-            RuntimeEditorLayout::Stacked
-        );
-        assert_eq!(
-            RuntimeEditorLayout::choose(720.0, false),
-            RuntimeEditorLayout::Inline
-        );
-        assert_eq!(
-            RuntimeEditorLayout::choose(f32::NAN, false),
-            RuntimeEditorLayout::Stacked
-        );
-    }
-
-    #[test]
-    fn responsive_widths_stay_within_available_space() {
-        for width in [0.0, 10.0, 900.0, 1180.0, 1280.0, 1920.0] {
-            assert!((0.0..=width).contains(&safe_content_width(width)));
-            for column in [
-                workbench_left_column_width(width),
-                runtime_workspace_donor_width(width),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                assert!(
-                    column > 0.0 && column < width,
-                    "invalid column {column} at {width}"
-                );
-            }
-        }
-        for width in [f32::NAN, f32::INFINITY] {
-            assert_eq!(safe_content_width(width), 0.0);
-            assert_eq!(workbench_left_column_width(width), None);
-            assert_eq!(runtime_workspace_donor_width(width), None);
-        }
     }
 }

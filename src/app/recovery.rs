@@ -5,7 +5,7 @@ use crate::app::account_workspace as account;
 use super::save_support::settings_save_note;
 use super::settings::{
     create_adjacent_backup, load_installed_sunrise_defaults, save_json,
-    validate_workspace_document, verify_workspace_source_unchanged,
+    verify_workspace_source_unchanged,
 };
 use super::{ConfirmationDialog, platform, settings::backups_path};
 use super::{SundialApp, preserve_inactive_json_account_domains};
@@ -133,19 +133,10 @@ impl SundialApp {
             Ok(result) => {
                 let size_note = settings_save_note(&result);
                 let (retention_note, retention_failed) = self.apply_backup_retention();
-                self.document =
-                    account::WorkspaceDocument::load(default_document, &self.settings_path);
-                self.progression_ui.invalidate_document();
-                self.persisted_document = self.document.clone();
-                self.refresh_sunrise_version();
-                self.source_warning = validate_workspace_document(&self.document).err();
-                self.class_armor_defaults = account::class_armor_default_characters(&self.document);
-                self.selected_character = self
-                    .selected_character
-                    .min(self.character_count().saturating_sub(1));
-                self.clear_picker_state();
-                self.sync_raw_json();
-                self.dirty = self.document != self.persisted_document;
+                self.replace_loaded_document(account::WorkspaceDocument::load(
+                    default_document,
+                    &self.settings_path,
+                ));
                 self.set_status(
                     format!(
                         "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}.{retention_note}",

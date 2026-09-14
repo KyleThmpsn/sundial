@@ -4,10 +4,25 @@ use super::*;
 
 impl WorkspaceDocument {
     /// The JSON version does not upgrade the independent SQLite account contract.
-    pub(in crate::app) fn supports_v13_account(&self) -> bool {
-        self.source_info().kind == AccountSourceKind::Sqlite
+    pub(in crate::app) fn supports_emote_collection(&self) -> bool {
+        self.source_kind() == AccountSourceKind::Sqlite
             || (self.uses_json_account()
-                && crate::app::inventory::schema_mode(self.json()).supports_v13())
+                && crate::app::inventory::schema_mode(self.json()).supports_emote_collection())
+    }
+
+    pub(in crate::app) fn supports_masterwork_flags(&self) -> bool {
+        match self.source_kind() {
+            AccountSourceKind::Json => {
+                crate::app::inventory::schema_mode(self.json()).supports_masterwork_flags()
+            }
+            AccountSourceKind::Sqlite => true,
+            AccountSourceKind::Blocked => false,
+        }
+    }
+
+    pub(in crate::app) fn uses_subclass_plug_abilities(&self) -> bool {
+        self.uses_json_account()
+            && crate::app::inventory::schema_mode(self.json()).uses_subclass_plug_abilities()
     }
 
     pub(in crate::app) fn equipment_slots(
@@ -54,9 +69,9 @@ pub(in crate::app) fn equip_definition(
     }
     if !crate::account_contract::definition_available(
         definition_hash,
-        document.supports_v13_account(),
+        document.supports_emote_collection(),
     ) {
-        return Err("The emote wheel requires a v13+ JSON account".into());
+        return Err("The active account does not support the emote collection".into());
     }
     match &mut document.account {
         AccountDocument::Json => crate::app::equipment::equip_definition(

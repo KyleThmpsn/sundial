@@ -107,7 +107,7 @@ fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
         assert!(output.pixels().any(|pixel| pixel[3] == 0));
         assert!(output.pixels().any(|pixel| pixel[3] >= 200));
         let source = decode_authored_texture(index, width, height).unwrap();
-        let reduced = crate::icon_edit::fit_rgba_image(&output, width, height);
+        let reduced = crate::image_import::fit(&output, width, height);
         // Resampling may soften an edge slightly, but must not replace or reposition the
         // mark. Compare premultiplied channels so invisible RGB does not skew the check.
         let error: f64 = source

@@ -460,7 +460,7 @@ impl WeaponTables {
         };
         self.collectibles = append_collectible(
             std::mem::take(&mut self.collectibles),
-            donor.donor_collectible_index,
+            donor.collectible_template_index,
             AuthoredCollectibleSpec {
                 collectible_hash: identity.collectible_hash,
                 item_index,
@@ -497,7 +497,7 @@ impl WeaponTables {
         }
         self.collectible_displays = append_collectible_display(
             std::mem::take(&mut self.collectible_displays),
-            donor.donor_collectible_index,
+            donor.collectible_display_template_index,
             collectible_identity,
             authored_icon_index,
             LOCALIZATION_DONOR_TABLE_INDEX as u32,

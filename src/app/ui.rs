@@ -64,20 +64,57 @@ pub(super) fn destiny_text_font_family() -> egui::FontFamily {
 
 pub(super) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
     let mut font_id = egui::TextStyle::Body.resolve(ui.style());
-    font_id.family = destiny_text_font_family();
+    let family = destiny_text_font_family();
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        font_id.family = family;
+    }
     egui::RichText::new(text.into()).font(font_id)
 }
 
 pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::NONE
-        .fill(ui.visuals().faint_bg_color)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(add_contents).inner
-        })
-        .inner
+    ui.horizontal_wrapped(add_contents).inner
+}
+
+pub(super) fn edit_modal<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    let available = ui.ctx().available_rect().size();
+    let height = (available.y - 80.0).max(160.0);
+    let response = egui::Modal::new(id.into()).show(ui.ctx(), |ui| {
+        ui.set_width((available.x - 48.0).clamp(240.0, 560.0));
+        // A preparation message can be much shorter than the subsequent review.
+        // Let the scroll viewport grow beyond the area's previous frame size.
+        ui.set_max_height(height);
+        egui::ScrollArea::vertical()
+            .id_salt((id, "content"))
+            .max_height(height)
+            .show(ui, add_contents)
+            .inner
+    });
+    let close = response.should_close();
+    (response.inner, close)
+}
+
+pub(super) fn hierarchy_selection_cell<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    depth: usize,
+    add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
+) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, TABLE_CELL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let indent = depth as f32 * HIERARCHY_INDENT;
+            ui.add_space(indent);
+            add_contents(ui, (width - indent - 24.0).max(0.0))
+        },
+    )
+    .inner
 }
 
 pub(super) fn sortable_header_cell(
@@ -201,7 +238,7 @@ pub(super) fn hierarchy_branch_cell(
                     Glyph::ChevronRight
                 },
             );
-            ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
+            ui.add(egui::Label::new(destiny_text(ui, label).strong()).truncate());
         },
     );
     let response = cell.response.interact(if interactive {

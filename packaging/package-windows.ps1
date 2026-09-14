@@ -20,12 +20,18 @@ function Resolve-RepositoryPath {
 }
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $manifest = Get-Content -LiteralPath (Join-Path $repoDirectory "Cargo.toml") -Raw
-    $versionMatch = [regex]::Match($manifest, '(?m)^version = "([^"]+)"')
-    if (-not $versionMatch.Success) {
-        throw "Could not read the Sundial version from Cargo.toml"
+    $metadataJson = cargo metadata --no-deps --format-version 1 --locked --manifest-path (Join-Path $repoDirectory "Cargo.toml")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not read Cargo workspace metadata"
     }
-    $Version = $versionMatch.Groups[1].Value
+    $metadata = $metadataJson | ConvertFrom-Json
+    $packages = @($metadata.packages | Where-Object {
+        $_.name -eq "sundial" -and $metadata.workspace_members -contains $_.id
+    })
+    if ($packages.Count -ne 1) {
+        throw "Expected exactly one Sundial workspace package"
+    }
+    $Version = $packages[0].version
 }
 $Version = $Version -replace '^v', ''
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {

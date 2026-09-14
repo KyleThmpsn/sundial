@@ -23,11 +23,22 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+
       - name: Validate release version
         id: version
         shell: bash
         run: |
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          metadata=$(cargo metadata --no-deps --format-version 1 --locked)
+          version=$(printf '%s\n' "$metadata" | python3 -c '
+          import json, sys
+          metadata = json.load(sys.stdin)
+          package, = [p for p in metadata["packages"] if p["name"] == "sundial" and p["id"] in metadata["workspace_members"]]
+          sys.stdout.write(package["version"])
+          ')
           test -n "$version"
           [[ "$(head -n 1 RELEASE_NOTES.md)" == "Sundial v$version "* ]]
           if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then

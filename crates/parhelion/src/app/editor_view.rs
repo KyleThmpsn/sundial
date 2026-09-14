@@ -151,7 +151,7 @@ impl PackageAuthoringApp {
             ui.weak("Turning off optional text also removes its translations.");
             let mut custom_type = self.recipe.type_name.is_some();
             if ui
-                .checkbox(&mut custom_type, "Custom item-type label")
+                .checkbox(&mut custom_type, "Custom Item-Type Label")
                 .on_hover_text(
                     "Writes the independent item-type localization reference at item-string offset 0x90. Disable this to preserve the gameplay donor's label.",
                 )
@@ -177,7 +177,7 @@ impl PackageAuthoringApp {
             ui.separator();
             let mut inventory_hint = self.recipe.inventory_hint.is_some();
             if ui
-                .checkbox(&mut inventory_hint, "Inventory acquisition hint")
+                .checkbox(&mut inventory_hint, "Inventory Acquisition Hint")
                 .on_hover_text(
                     "Optional inventory tooltip acquisition text, separate from Collections Source. This is display text only: authored weapons can be reacquired from Collections.",
                 )
@@ -821,6 +821,8 @@ impl PackageAuthoringApp {
                 || !self.recipe.overrides.socket_plug_variants.is_empty();
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Perks & Sockets");
+                draw_authoring_info_icon(ui,
+                    "The first choice starts equipped. Right-click an extra choice to make it the default. Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
                 if ui
                     .button("Use Custom Perk…")
                     .on_hover_text("Add a saved custom perk to this weapon.")
@@ -830,8 +832,6 @@ impl PackageAuthoringApp {
                 }
                 self.draw_socket_options(ui, has_authored_columns);
             });
-            ui.label("First choice starts equipped. Right-click an extra choice to make it default.")
-                .on_hover_text("Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
             }

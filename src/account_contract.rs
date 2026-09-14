@@ -8,28 +8,35 @@ pub(crate) const DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 5;
 pub(crate) const FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION: u64 = 8;
 /// Account layout additions introduced in schema 13 and retained by later schemas.
 /// Current runtime configuration controls use their separate schema 16 gate.
-pub(crate) const RUNTIME_FEATURES_SCHEMA_VERSION: u64 = 13;
+pub(crate) const EXTENDED_EQUIPMENT_SCHEMA_VERSION: u64 = 13;
 pub(crate) const EMOTE_COLLECTION_DEFINITION_HASH: u64 = 3_183_180_185;
 pub(crate) const EMOTE_COLLECTION_NATIVE_BUCKET: u8 = 12;
 
-pub(crate) const fn inventory_bucket_available(native_id: u8, v13_account: bool) -> bool {
-    native_id != EMOTE_COLLECTION_NATIVE_BUCKET || v13_account
+pub(crate) const fn inventory_bucket_available(
+    native_id: u8,
+    supports_emote_collection: bool,
+) -> bool {
+    native_id != EMOTE_COLLECTION_NATIVE_BUCKET || supports_emote_collection
 }
 
 pub(crate) const EMOTE_BUCKET_HASH: u64 = 2_401_704_334;
 
-pub(crate) const fn definition_available(hash: u64, v13_account: bool) -> bool {
-    hash != EMOTE_COLLECTION_DEFINITION_HASH || v13_account
+pub(crate) const fn definition_available(hash: u64, supports_emote_collection: bool) -> bool {
+    hash != EMOTE_COLLECTION_DEFINITION_HASH || supports_emote_collection
 }
 
 pub(crate) const INVENTORY_FLAG_MASTERWORK: u8 = 4;
 
-pub(crate) const fn supports_v13(schema_version: u64) -> bool {
-    schema_version >= RUNTIME_FEATURES_SCHEMA_VERSION
+pub(crate) const fn supports_emote_collection(schema_version: u64) -> bool {
+    schema_version >= EXTENDED_EQUIPMENT_SCHEMA_VERSION
+}
+
+pub(crate) const fn uses_subclass_plug_abilities(schema_version: u64) -> bool {
+    schema_version >= EXTENDED_EQUIPMENT_SCHEMA_VERSION
 }
 
 pub(crate) const fn item_flag_mask(schema_version: u64) -> u8 {
-    if supports_v13(schema_version) {
+    if schema_version >= EXTENDED_EQUIPMENT_SCHEMA_VERSION {
         INVENTORY_FLAG_MASK | INVENTORY_FLAG_MASTERWORK
     } else {
         INVENTORY_FLAG_MASK
@@ -65,12 +72,12 @@ pub(crate) const EQUIPMENT_SLOTS: &[EquipmentSlotContract] = &[
     ("gauntlets", "Gauntlets", 3_551_918_588),
     ("chest", "Chest", 14_239_492),
     ("legs", "Legs", 20_886_954),
-    ("class_item", "Class item", 1_585_787_867),
+    ("class_item", "Class Item", 1_585_787_867),
     ("ghost", "Ghost", 4_023_194_814),
     ("vehicle", "Vehicle", 2_025_709_351),
     ("ship", "Ship", 284_967_655),
     ("subclass", "Subclass", 3_284_755_031),
-    ("clan_banner", "Clan banner", 4_292_445_962),
+    ("clan_banner", "Clan Banner", 4_292_445_962),
     ("emblem", "Emblem", 4_274_335_291),
     ("emote", "Emote", 2_401_704_334),
     ("finisher", "Finisher", 3_683_254_069),
@@ -90,7 +97,7 @@ const fn all_equipment_slots() -> [EquipmentSlotContract; 17] {
 }
 
 pub(crate) const fn equipment_slots_for_schema(version: u64) -> &'static [EquipmentSlotContract] {
-    if supports_v13(version) {
+    if version >= EXTENDED_EQUIPMENT_SCHEMA_VERSION {
         ALL_EQUIPMENT_SLOTS
     } else {
         EQUIPMENT_SLOTS
@@ -103,6 +110,26 @@ pub(crate) fn is_known_equipment_slot(slot: &str, version: u64) -> bool {
         .any(|(known_slot, _, _)| *known_slot == slot)
 }
 
+pub(crate) const WEAPON_SLOTS: &[&str] = &["kinetic", "energy", "heavy"];
+
+/// One-based unlock-map bank backed by the Shadowkeep account object's primary flag region.
+pub const SHADOWKEEP_ACCOUNT_FLAG_BANK: u8 = 1;
+/// Start of the Shadowkeep account object's primary unlock-flag byte region.
+pub const SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET: usize = 29_740;
+/// Start of the next account-object region after the primary unlock-flag bytes.
+pub const SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET: usize = 42_040;
+/// Stock rows mapped into the primary account unlock-flag region.
+pub const SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS: usize = 11_923;
+/// Complete byte capacity available before the following account-object region begins.
+///
+/// Authored flag-map rows may claim the stock padding after
+/// [`SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS`], but must never cross this boundary.
+pub const SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY: usize =
+    SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET - SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET;
+/// Number of primary account unlock-flag rows available to authored extensions.
+pub const SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY: usize =
+    SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY - SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,15 +138,21 @@ mod tests {
     fn new_emote_collection_controls_do_not_leak_into_legacy_accounts() {
         for version in [6, 8, 12, 13, 14] {
             assert_eq!(
-                inventory_bucket_available(12, supports_v13(version)),
+                inventory_bucket_available(12, supports_emote_collection(version)),
                 version >= 13
             );
             assert_eq!(
-                definition_available(EMOTE_COLLECTION_DEFINITION_HASH, supports_v13(version)),
+                definition_available(
+                    EMOTE_COLLECTION_DEFINITION_HASH,
+                    supports_emote_collection(version)
+                ),
                 version >= 13
             );
             // Artifacts were already valid stored inventory before their new equipment slot.
-            assert!(inventory_bucket_available(49, supports_v13(version)));
+            assert!(inventory_bucket_available(
+                49,
+                supports_emote_collection(version)
+            ));
         }
     }
 }

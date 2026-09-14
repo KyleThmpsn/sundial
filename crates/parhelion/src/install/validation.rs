@@ -21,7 +21,7 @@ pub(super) fn validate_request_with_progress(
 
     let staged_run_directory = canonical_directory(&request.staged_run_directory, "staging run")?;
     let target_packages_directory =
-        canonical_directory(&request.target_packages_directory, "target packages")?;
+        canonical_packages_directory(&request.target_packages_directory)?;
     if path_is_within(&target_packages_directory, &staged_run_directory)
         || path_is_within(&staged_run_directory, &target_packages_directory)
     {
@@ -36,7 +36,7 @@ pub(super) fn validate_request_with_progress(
         .map_err(InstallError::validation)?;
     (request.runtime_feature_check)(&target_packages_directory).map_err(|error| {
         InstallError::validation(format!(
-            "The selected Project Sunrise runtime does not advertise the hooks required by Parhelion: {error}"
+            "The selected runtime cannot install Parhelion packages: {error}"
         ))
     })?;
 
@@ -178,6 +178,10 @@ pub(super) fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, I
         )));
     }
     Ok(canonical)
+}
+
+pub(super) fn canonical_packages_directory(path: &Path) -> Result<PathBuf, InstallError> {
+    sundial::package_authoring::resolve_packages_directory(path).map_err(InstallError::validation)
 }
 
 pub(super) fn validate_manifest_and_staged_files(

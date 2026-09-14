@@ -130,7 +130,7 @@ impl PerkEditor {
             });
         }
         if !experimental {
-            ui.label("Enable experimental controls in Preferences to change action scalars. Saved edits are preserved and can be reset here.");
+            ui.small("Turn on Experimental Features in Preferences to change action scalars. Saved edits stay and can be reset here.");
         }
     }
 }

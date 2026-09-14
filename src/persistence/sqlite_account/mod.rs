@@ -6,28 +6,34 @@
 //! verified SQLite-native backup.
 
 mod contract;
+pub(crate) mod conversion;
 mod defaults;
 mod document;
 mod entitlements;
 mod error;
 mod inventory_state;
 pub(crate) mod package;
+mod positions;
 mod progression;
 mod reader;
 mod runtime;
 mod settings;
+pub(crate) mod snapshot;
 mod validation;
 mod writer;
-
-use std::path::Path;
 
 use sundial_account::{AccountSettingsState, CharacterState, InstanceSoid, ProfileState};
 
 pub(crate) use defaults::{AccountDefaults, ResetPlan};
-pub(crate) use document::{SqliteAccountDocument, SqliteAccountDocumentLoad};
+pub(crate) use document::{
+    SqliteAccountDocument, SqliteAccountDocumentLoad, load as load_document,
+};
 pub(crate) use error::{SqliteAccountError, SqliteAccountIncompatibility};
 pub(crate) use inventory_state::{CharacterStack, PendingReward};
-pub(crate) use writer::{SqliteRestoreReceipt, SqliteSaveReceipt};
+pub(crate) use writer::{
+    SqliteRestoreReceipt, SqliteSaveReceipt, restore_backup_safely, rollback_save,
+    save as save_document, validate_backup,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SqliteAccountSnapshot {
@@ -42,34 +48,6 @@ pub(crate) enum SqliteAccountLoad {
     Empty,
     Incompatible(SqliteAccountIncompatibility),
     Loaded(SqliteAccountSnapshot),
-}
-
-pub(crate) fn load_document(path: &Path) -> Result<SqliteAccountDocumentLoad, SqliteAccountError> {
-    document::load(path)
-}
-
-pub(crate) fn save_document(
-    document: &mut SqliteAccountDocument,
-) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    writer::save(document)
-}
-
-pub(crate) fn rollback_save(
-    path: &Path,
-    receipt: &SqliteSaveReceipt,
-) -> Result<(), SqliteAccountError> {
-    writer::rollback_save(path, receipt)
-}
-
-pub(crate) fn validate_backup(backup: &Path) -> Result<(), SqliteAccountError> {
-    writer::validate_backup(backup)
-}
-
-pub(crate) fn restore_backup_safely(
-    path: &Path,
-    backup: &Path,
-) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    writer::restore_backup_safely(path, backup)
 }
 
 #[cfg(test)]

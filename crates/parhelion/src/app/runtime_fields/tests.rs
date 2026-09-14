@@ -3,6 +3,7 @@ use super::*;
 fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
     WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: 0xB176_70ED,
             resource_index: 0,
             root: sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::ComponentDefinition,
@@ -19,6 +20,7 @@ fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRunti
         value,
         source: WeaponRuntimeFieldSource::GeneratedSchema,
         generated_kind: None,
+        name_inferred: false,
     }
 }
 
@@ -134,6 +136,37 @@ fn finite_decimal_display_round_trips_without_rounding_small_values_to_zero() {
             text(&output)
         );
         assert_eq!(expected.parse::<f32>().unwrap().to_bits(), bits);
+    }
+}
+
+#[test]
+fn double_precision_fields_preserve_exact_bits_on_passive_render() {
+    for bits in [
+        0,
+        1,
+        0x8000_0000_0000_0000,
+        0x3FF0_0000_0000_0001,
+        0x7FF0_0000_0000_0000,
+        0x7FF8_0000_0000_1234,
+    ] {
+        let field = field(
+            WeaponRuntimeValueKind::Float64,
+            WeaponRuntimeValue::Float64Bits(bits),
+        );
+        let ctx = egui::Context::default();
+        let mut drafts = BTreeMap::new();
+        let mut saved = Vec::new();
+        for _ in 0..2 {
+            let output = frame(&ctx, Vec::new(), |ui| {
+                draw_runtime_value_override_field(ui, &field, &mut saved, &mut drafts)
+            });
+            assert!(!text(&output).contains("Invalid 64-bit float"));
+            assert!(saved.is_empty());
+            assert_eq!(
+                drafts[&(field.locator.clone(), 0)],
+                format!("0x{bits:016X}")
+            );
+        }
     }
 }
 

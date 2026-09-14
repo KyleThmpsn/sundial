@@ -5,13 +5,15 @@ mod context_menu;
 mod definition_picker;
 mod filters;
 mod flags;
-pub(crate) use context_menu::draw_context_menu;
+pub(crate) use context_menu::{draw_context_menu, draw_header_lock};
 pub(crate) use flags::{draw_seen_flag, draw_state_flags};
 mod header;
 mod layout;
 mod model;
 mod numeric;
 mod plug_picker;
+mod plug_section;
+pub(crate) use plug_section::PlugSection;
 
 #[cfg(test)]
 mod tests;
@@ -19,7 +21,7 @@ mod tests;
 pub(crate) use super::components::{draw_lock_button, draw_trash_button, draw_unlock_button};
 pub(crate) use catalog_picker::{
     catalog_item_tooltip, catalog_item_tooltip_available, catalog_item_tooltip_immediate,
-    draw_catalog_item_tooltip,
+    draw_catalog_item_tooltip, draw_item_tooltip,
 };
 pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request, draw_definition_picker_with_open_request_and_footer,
@@ -27,7 +29,7 @@ pub(crate) use definition_picker::{
 };
 pub(crate) use filters::{ItemFilter, ItemFilterScope, draw_item_filter_bar};
 pub(crate) use header::{
-    draw_catalog_item_header_with_trailing, draw_item_badge,
+    draw_catalog_item_header_with_trailing, draw_item_badge, draw_item_card,
     draw_item_header_with_trailing_at_icon_size, muted_item_header_fill,
 };
 pub(crate) use layout::{draw_responsive_item_cards, draw_virtualized_responsive_item_cards};
@@ -50,8 +52,6 @@ pub(crate) use catalog_picker::{
     CatalogPickerRow, catalog_button, draw_catalog_picker_row, draw_picker_row,
 };
 use catalog_picker::{picker_secondary_text, single_line_text};
-#[cfg(test)]
-use layout::responsive_item_card_layout;
 use layout::{picker_list_height, popup_direction, spaced_picker_list_height};
 
 use std::hash::Hash;

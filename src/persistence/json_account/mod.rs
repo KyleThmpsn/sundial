@@ -2,8 +2,10 @@
 
 mod account_settings;
 mod character;
-pub(crate) mod character_runtime;
+pub(crate) mod character_preferences;
+pub(crate) mod equipment;
 mod error;
+pub(crate) mod inventory;
 mod migrations;
 mod profile;
 
@@ -12,7 +14,7 @@ use std::num::NonZeroU64;
 use serde_json::Value;
 use sundial_account::EntityId;
 
-pub(crate) use account_settings::JsonAccountSettingsAdapter;
+pub(crate) use account_settings::{JsonAccountSettingsAdapter, group_name as setting_group_name};
 pub(crate) use character::JsonCharacterAdapter;
 pub(crate) use error::JsonAccountError;
 pub(crate) use migrations::ensure_schema_v8_preferences;

@@ -581,19 +581,13 @@ mod tests {
     }
 
     #[test]
-    fn complete_shared_model_validates_the_emitted_profile() {
-        let manifest: ManifestDocument = serde_json::from_value(valid_manifest_json()).unwrap();
-        manifest.validate().unwrap();
-
-        let mut wrong_profile = manifest;
+    fn manifest_rejects_reserved_identity_hashes_and_incomplete_icon_sets() {
+        let mut reserved: ManifestDocument = serde_json::from_value(valid_manifest_json()).unwrap();
+        reserved.validate().unwrap();
+        let mut wrong_profile = reserved.clone();
         wrong_profile.project.sunrise.badge_icon_tag =
             wrong_profile.project.sunrise.watermark_layer_tag;
         assert!(wrong_profile.validate().is_err());
-    }
-
-    #[test]
-    fn manifest_rejects_reserved_identity_hashes_and_incomplete_icon_sets() {
-        let mut reserved: ManifestDocument = serde_json::from_value(valid_manifest_json()).unwrap();
         reserved.project.sunrise.badge_name_hash = ManifestHash::new(FNV1_EMPTY_HASH);
         assert!(reserved.validate().unwrap_err().contains("reserved"));
 

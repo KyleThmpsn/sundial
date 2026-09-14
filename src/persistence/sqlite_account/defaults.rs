@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::{SqliteAccountError, SqliteRestoreReceipt, package, reader, writer};
+use super::{SqliteAccountError, SqliteRestoreReceipt, reader, snapshot, writer};
 
 pub(crate) struct AccountDefaults {
     pub(crate) schema: String,
@@ -43,8 +43,8 @@ impl ResetPlan {
                 SqliteAccountError::sqlite("initialize installed defaults for", error)
             })?;
         }
-        package::validate(&transaction).map_err(SqliteAccountError::Backup)?;
-        let after = package::capture(&transaction).map_err(SqliteAccountError::Backup)?;
+        super::validation::connection(&transaction).map_err(SqliteAccountError::Backup)?;
+        let after = snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
 
         let mut current = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| {
@@ -66,7 +66,7 @@ impl ResetPlan {
             )));
         }
         reader::validate_schema(&current)?;
-        let before = package::capture(&current).map_err(SqliteAccountError::Backup)?;
+        let before = snapshot::capture(&current).map_err(SqliteAccountError::Backup)?;
         Ok(Self {
             path: path.to_path_buf(),
             before,
@@ -86,7 +86,7 @@ impl ResetPlan {
         self,
         backup: Option<PathBuf>,
     ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-        if package::capture_path(&self.path).map_err(SqliteAccountError::Backup)? != self.before {
+        if snapshot::capture_path(&self.path).map_err(SqliteAccountError::Backup)? != self.before {
             return Err(SqliteAccountError::SourceChanged);
         }
         let safety_backup = if let Some(backup) = backup {
@@ -97,11 +97,12 @@ impl ResetPlan {
                 writer::create_integrity_checked_snapshot(&self.path, backup)
             })?
         };
-        if package::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)? != self.before
+        if snapshot::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?
+            != self.before
         {
             return Err(SqliteAccountError::SourceChanged);
         }
-        package::restore_snapshot(&self.path, &self.before, &self.after).map_err(|error| {
+        snapshot::restore_snapshot(&self.path, &self.before, &self.after).map_err(|error| {
             SqliteAccountError::Backup(format!(
                 "Account defaults were not restored: {error}. The recovery snapshot is at {}",
                 safety_backup.display()

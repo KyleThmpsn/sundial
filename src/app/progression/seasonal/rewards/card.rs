@@ -43,7 +43,9 @@ impl Status {
     fn help(self) -> &'static str {
         match self {
             Self::Claimed => "This reward is marked as claimed in the account.",
-            Self::Reached => "The required rank has been reached. Claim this reward in Sunrise.",
+            Self::Reached => {
+                "The required rank has been reached. Claim this reward to add it to Pending Rewards."
+            }
             Self::Locked => "Increase seasonal XP to reach this reward's rank.",
             Self::Unknown => "The saved claim state could not be read for this reward.",
         }
@@ -282,7 +284,7 @@ pub(super) fn draw_details(
     snapshot: Option<&CollectionStateSnapshot>,
     reward: Reward<'_>,
 ) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    ui.scope(|ui| {
         ui.horizontal_top(|ui| {
             let (icon, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
             draw_icon(ui, catalog, reward.definition.item_hash, icon, false);

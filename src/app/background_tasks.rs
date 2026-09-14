@@ -21,7 +21,7 @@ pub(super) enum CatalogTaskKind {
 impl CatalogTaskKind {
     pub(super) const fn title(&self) -> &'static str {
         match self {
-            Self::LoadInstall(_) => "Loading Shadowkeep installation",
+            Self::LoadInstall(_) => "Loading Sunrise Install",
             Self::Rebuild => "Rebuilding local catalog",
         }
     }

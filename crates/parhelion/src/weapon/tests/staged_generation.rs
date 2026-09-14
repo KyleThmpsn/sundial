@@ -578,6 +578,12 @@ fn real_collection_routing_uses_rarity_and_target_slot() {
     )
     .unwrap();
     let root = read_tag(&manager, TagHash(read_u32(&globals, 16).unwrap()), "root").unwrap();
+    let sandbox_patterns = read_tag(
+        &manager,
+        globals_child_tag(&globals, GLOBALS_SANDBOX_PATTERN_TABLE_SLOT).unwrap(),
+        "patterns",
+    )
+    .unwrap();
     let items = read_tag(
         &manager,
         root_child_tag(&root, ROOT_ITEM_DEFINITION_TABLE_SLOT).unwrap(),
@@ -654,7 +660,8 @@ fn real_collection_routing_uses_rarity_and_target_slot() {
             &collectibles,
             collectible_rows,
             collectible_count,
-            donor,
+            &sandbox_patterns,
+            Some(donor),
             &definition,
             &item_strings,
             rarity,

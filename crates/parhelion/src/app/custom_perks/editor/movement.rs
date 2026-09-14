@@ -21,14 +21,48 @@ pub(super) fn mapped(loaded: &PrivatePerkRuntimeGraph) -> Vec<(u32, Parameter)> 
 }
 
 impl PerkEditor {
+    /// Draws every mapped projectile property. Used for an independently opened entity and
+    /// for an action with no readable summary to place the properties on.
     pub(super) fn draw_movement(&mut self, ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph) {
         let parameters = mapped(loaded);
-        ui.add_space(8.0);
-        ui.strong("Projectile Properties");
         if parameters.is_empty() {
-            ui.label("This asset has no mapped movement properties yet.");
             return;
         }
+        ui.add_space(8.0);
+        ui.strong("Projectile Properties");
+        self.draw_parameter_grids(ui, loaded, parameters);
+    }
+
+    /// Draws the mapped properties of the graphs listed, for placement on an effect block.
+    /// Returns whether anything was drawn.
+    pub(super) fn draw_movement_for(
+        &mut self,
+        ui: &mut egui::Ui,
+        loaded: &PrivatePerkRuntimeGraph,
+        graphs: &[u32],
+    ) -> bool {
+        let parameters = mapped(loaded)
+            .into_iter()
+            .filter(|(tag, _)| graphs.contains(tag))
+            .collect::<Vec<_>>();
+        if parameters.is_empty() {
+            return false;
+        }
+        ui.label(
+            egui::RichText::new("Projectile Properties")
+                .small()
+                .strong(),
+        );
+        self.draw_parameter_grids(ui, loaded, parameters);
+        true
+    }
+
+    fn draw_parameter_grids(
+        &mut self,
+        ui: &mut egui::Ui,
+        loaded: &PrivatePerkRuntimeGraph,
+        parameters: Vec<(u32, Parameter)>,
+    ) {
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         for (tag, parameter) in parameters {
             groups

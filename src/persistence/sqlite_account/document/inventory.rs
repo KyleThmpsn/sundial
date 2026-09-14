@@ -1,4 +1,4 @@
-use super::super::{CharacterStack, PendingReward, inventory_state::invalid, package::Cell};
+use super::super::{CharacterStack, PendingReward, inventory_state::invalid, snapshot::Cell};
 use super::*;
 
 impl SqliteAccountDocument {
@@ -242,8 +242,11 @@ impl SqliteAccountDocument {
         &self,
         db: &rusqlite::Transaction<'_>,
     ) -> Result<(), SqliteAccountError> {
-        self.inventory_state
-            .save(db, self.preserved_rows("character_stacks"))
+        self.inventory_state.save(
+            db,
+            self.preserved_rows("character_stacks"),
+            self.preserved_rows("pending_rewards"),
+        )
     }
 
     pub(crate) fn inventory_state_summary(&self) -> serde_json::Value {

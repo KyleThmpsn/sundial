@@ -124,6 +124,7 @@ fn late_external_write_is_preserved_before_replacement() {
         result
             .err()
             .unwrap()
+            .to_ascii_lowercase()
             .contains("current contents were preserved")
     );
     assert_eq!(fs::read(&path).unwrap(), external);
@@ -149,6 +150,7 @@ fn verification_conflict_preserves_the_newer_save_and_original_backup() {
         result
             .err()
             .unwrap()
+            .to_ascii_lowercase()
             .contains("current contents were preserved")
     );
     assert_eq!(fs::read(&path).unwrap(), external);

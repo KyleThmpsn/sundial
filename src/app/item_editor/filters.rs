@@ -14,11 +14,14 @@ pub(crate) struct ItemFilter {
     pub(crate) damage_type: Option<ItemDamageType>,
     pub(crate) ammo_type: Option<ItemWeaponAmmoType>,
     pub(crate) rarity: Option<ItemRarity>,
+    /// Authoring picker option. Ordinary Sundial pickers use their existing dummy preference.
+    pub(crate) include_dummy_weapons: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ItemFilterScope {
     Weapon,
+    WeaponDonor,
     Armor,
 }
 
@@ -36,11 +39,31 @@ impl ItemFilterScope {
 }
 
 impl ItemFilter {
+    pub(crate) fn matches_inventory(
+        &self,
+        catalog: &Catalog,
+        definition: crate::catalog::InventoryDefinition<'_>,
+    ) -> bool {
+        if let Some(item) = definition.item {
+            return self.matches(catalog, item);
+        }
+        self.weapon_type.is_none()
+            && self.damage_type.is_none()
+            && self.ammo_type.is_none()
+            && self.rarity.is_none_or(|rarity| {
+                catalog
+                    .item_package_metadata(definition.hash)
+                    .map_or(ItemRarity::Unknown, |metadata| metadata.rarity)
+                    == rarity
+            })
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.weapon_type.is_some()
             || self.damage_type.is_some()
             || self.ammo_type.is_some()
             || self.rarity.is_some()
+            || self.include_dummy_weapons
     }
 
     pub(crate) fn matches(&self, catalog: &Catalog, item: &ItemDef) -> bool {
@@ -105,7 +128,7 @@ pub(crate) fn draw_item_filter_bar(
     let filter_style = ui.style().clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if scope == ItemFilterScope::Weapon {
+        if matches!(scope, ItemFilterScope::Weapon | ItemFilterScope::WeaponDonor) {
             draw_filter_group(ui, "Weapon type", |ui| {
                 egui::ComboBox::from_id_salt((id_salt.clone(), "weapon-type"))
                     .selected_text(format!(
@@ -207,11 +230,18 @@ pub(crate) fn draw_item_filter_bar(
                 })
                 .response
         });
+        if scope == ItemFilterScope::WeaponDonor {
+            option_clicked |= ui
+                .checkbox(&mut filter.include_dummy_weapons, "Include Dummy Weapons")
+                .on_hover_text("Show weapons classified as dummy items by Sundial. Some lack the data needed for weapon authoring.")
+                .changed();
+        }
         if ui
             .add_enabled(filter.is_active(), egui::Button::new("Reset").small())
             .clicked()
         {
             *filter = ItemFilter::default();
+            option_clicked = true;
         }
     });
     option_clicked
@@ -285,7 +315,7 @@ mod tests {
                             draw_item_filter_bar(
                                 ui,
                                 "test",
-                                ItemFilterScope::Weapon,
+                                ItemFilterScope::WeaponDonor,
                                 &[&item],
                                 &mut filter,
                             );
@@ -297,7 +327,13 @@ mod tests {
             assert!(overflow <= 1.0, "{width}px filter overflow: {overflow}");
             assert_eq!(filter.weapon_type.as_deref(), Some(item.type_name.as_str()));
             let tree = output.platform_output.accesskit_update.unwrap();
-            for label in ["Weapon type", "Damage type", "Ammo type", "Rarity"] {
+            for label in [
+                "Weapon type",
+                "Damage type",
+                "Ammo type",
+                "Rarity",
+                "Include Dummy Weapons",
+            ] {
                 let ids: Vec<_> = tree
                     .nodes
                     .iter()
@@ -318,6 +354,78 @@ mod tests {
         };
         assert!(filter.matches(&catalog, &weapon(1, "Rifle", " auto RIFLE ", 1_498_876_634)));
         assert!(!filter.matches(&catalog, &weapon(2, "Sidearm", "Sidearm", 1_498_876_634)));
+    }
+
+    #[test]
+    fn dummy_checkbox_and_reset_change_filter_and_report_interaction() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut filter = ItemFilter::default();
+        assert!(!filter.include_dummy_weapons);
+        for label in ["Include Dummy Weapons", "Reset"] {
+            let (output, _) = donor_filter_frame(&ctx, &mut filter, Vec::new());
+            let tree = output.platform_output.accesskit_update.unwrap();
+            let bounds = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("missing {label}"))
+                .1
+                .bounds()
+                .unwrap();
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            let mut changed = false;
+            for pressed in [true, false] {
+                changed |= donor_filter_frame(
+                    &ctx,
+                    &mut filter,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                )
+                .1;
+            }
+            assert!(
+                changed,
+                "{label} must keep the picker open after interaction"
+            );
+            assert_eq!(
+                filter.include_dummy_weapons,
+                label == "Include Dummy Weapons"
+            );
+            assert_eq!(filter.is_active(), filter.include_dummy_weapons);
+        }
+        assert_eq!(filter, ItemFilter::default());
+    }
+
+    fn donor_filter_frame(
+        ctx: &egui::Context,
+        filter: &mut ItemFilter,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, bool) {
+        let mut changed = false;
+        let output = ctx.run(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    changed =
+                        draw_item_filter_bar(ui, "test", ItemFilterScope::WeaponDonor, &[], filter);
+                });
+            },
+        );
+        (output, changed)
     }
 
     #[test]

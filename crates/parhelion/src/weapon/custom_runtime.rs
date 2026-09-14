@@ -149,8 +149,11 @@ pub(super) fn append_patched_runtime_resource_owners(
     for (value_index, value) in values.iter().enumerate() {
         let resolved = resolve_weapon_runtime_field(manager, entity, &value.locator)
             .map_err(|error| invalid(format!("Runtime value {value_index} is stale: {error}")))?;
-        let bytes = encode_weapon_runtime_value(&resolved.field.kind, &value.value)
-            .map_err(|error| invalid(format!("Runtime value {value_index} is invalid: {error}")))?;
+        let bytes = sundial::package_authoring::weapon_runtime::encode_weapon_runtime_field_value(
+            &resolved.field,
+            &value.value,
+        )
+        .map_err(|error| invalid(format!("Runtime value {value_index} is invalid: {error}")))?;
         if bytes.len() != usize::try_from(value.locator.byte_size).unwrap_or(usize::MAX) {
             return Err(invalid(format!(
                 "Runtime value {value_index} encoded to {} bytes, expected {}",
@@ -328,7 +331,20 @@ fn append_private_referenced_graph(
     }
     let mut graph = read_tag(manager, source, "referenced runtime graph")?;
     validate_weapon_entity(&graph).map_err(invalid)?;
-    append_patched_runtime_resource_owners(manager, &mut graph, values, &[], allocator, tags)?;
+    // Validate the source prerequisites now. Final assembly enrolls the required native
+    // records along with every authored graph and action.
+    sundial::package_authoring::sandbox_perk::projectile::residency::inspect(manager, source.0)
+        .map_err(invalid)?;
+    let values = values
+        .iter()
+        .map(|value| {
+            Ok(WeaponRuntimeValueOverride {
+                locator: value.locator.for_graph(source.0).map_err(invalid)?,
+                value: value.value.clone(),
+            })
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    append_patched_runtime_resource_owners(manager, &mut graph, &values, &[], allocator, tags)?;
     validate_weapon_entity(&graph).map_err(invalid)?;
     let authored =
         allocator.assigned_tag(tags.len(), "Private referenced graph", "runtime graph")?;
@@ -575,12 +591,9 @@ pub(super) fn build_private_perk_residency_chain(
         authored_root_tag,
         &authored_dependencies,
     )?;
-    if companion.len() != PRIVATE_PERK_RESIDENCY_COMPANION_SIZE {
-        return Err(validation(format!(
-            "Private perk residency companion serialized to 0x{:X} bytes instead of stock-shaped 0x{PRIVATE_PERK_RESIDENCY_COMPANION_SIZE:X}",
-            companion.len()
-        )));
-    }
+    // The canonical writer validates the envelope and exact dependency closure.
+    // Package order changes the last sparse list and therefore the encoded length.
+    // A size captured from one allocation cannot validate another package.
     validate_exact_tag_occurrences(
         &companion,
         authored_companion_tag,
@@ -672,6 +685,11 @@ pub(super) fn clone_private_sandbox_perk_runtime(
             source_runtime_tag.0,
             &runtime_action.action_payload,
             activation,
+            &read_tag(
+                manager,
+                TagHash(sundial::package_authoring::sandbox_perk::activation::LABEL_GLOBALS),
+                "activation label registry",
+            )?,
         )
         .map_err(invalid)?
     } else {
@@ -720,7 +738,12 @@ pub(super) fn clone_private_sandbox_perk_runtime(
             .iter()
             .enumerate()
             .filter_map(|(index, graph)| {
-                resolve_weapon_runtime_field(manager, &graph.payload, &value.locator)
+                value
+                    .locator
+                    .for_graph(graph.tag.0)
+                    .and_then(|locator| {
+                        resolve_weapon_runtime_field(manager, &graph.payload, &locator)
+                    })
                     .is_ok()
                     .then_some(index)
             })
@@ -737,7 +760,13 @@ pub(super) fn clone_private_sandbox_perk_runtime(
                 )
             }));
         };
-        values_by_graph[*graph_index].push(value.clone());
+        values_by_graph[*graph_index].push(WeaponRuntimeValueOverride {
+            locator: value
+                .locator
+                .for_graph(graphs[*graph_index].tag.0)
+                .map_err(invalid)?,
+            value: value.value.clone(),
+        });
     }
 
     for ((source, graph), graph_values) in runtime_action
@@ -746,7 +775,14 @@ pub(super) fn clone_private_sandbox_perk_runtime(
         .zip(&graphs)
         .zip(values_by_graph)
     {
-        if graph_values.is_empty() && source.tag == graph.tag {
+        // A different graph's scalar edits must not waive this graph's enrollment check.
+        let cloned = !graph_values.is_empty() || source.tag != graph.tag;
+        sundial::package_authoring::sandbox_perk::projectile::residency::inspect(
+            manager,
+            graph.tag.0,
+        )
+        .map_err(invalid)?;
+        if !cloned {
             continue;
         }
         let mut authored_graph = graph.payload.clone();
@@ -813,9 +849,16 @@ fn append_private_program_runtime(
 ) -> AuthoringResult<TagHash> {
     let mut compiled = sundial::package_authoring::sandbox_perk::program::compile(manager, program)
         .map_err(invalid)?;
-    for (action, offset) in program.actions.iter().zip(compiled.graph_offsets) {
-        let asset = action.asset();
+    for (index, offsets) in &compiled.asset_offsets {
+        let asset = program
+            .asset(*index)
+            .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
         if asset.values.is_empty() {
+            sundial::package_authoring::sandbox_perk::projectile::residency::inspect(
+                manager,
+                asset.graph,
+            )
+            .map_err(invalid)?;
             continue;
         }
         let graph = append_private_referenced_graph(
@@ -825,7 +868,9 @@ fn append_private_program_runtime(
             allocator,
             tags,
         )?;
-        write_u32(&mut compiled.payload, offset, graph.0)?;
+        for &offset in offsets {
+            write_u32(&mut compiled.payload, offset, graph.0)?;
+        }
     }
     let action =
         allocator.assigned_tag(tags.len(), "Custom effect action", "custom effect action")?;

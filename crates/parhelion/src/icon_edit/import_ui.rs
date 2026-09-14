@@ -93,7 +93,7 @@ impl ImageImport {
             .name("weapon-icon-import".to_owned())
             .spawn(move || {
                 let result = rfd::FileDialog::new()
-                    .set_title("Import primary icon artwork")
+                    .set_title("Import Primary Icon Artwork")
                     .add_filter("PNG / JPEG images", &["png", "jpg", "jpeg"])
                     .pick_file()
                     .map(|path| ImportedIcon::from_path(&path))

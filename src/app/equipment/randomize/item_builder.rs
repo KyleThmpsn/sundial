@@ -157,12 +157,12 @@ pub(super) fn draw_item_workspace(
                 context,
                 |ui| {
                     ui.set_width(440.0);
-                    ui.heading("Replace equipped item?");
+                    ui.heading("Replace Equipped Item?");
                     ui.add_space(6.0);
                     ui.colored_label(ui.visuals().warn_fg_color, warning.message());
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Delete old item and equip").clicked() {
+                        if ui.button("Delete Old Item and Equip").clicked() {
                             replace = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -219,7 +219,7 @@ pub(super) fn draw_item_workspace(
         };
         match result {
             Ok(message) => {
-                app.dirty = true;
+                app.record_edit("Randomized Item Applied");
                 app.set_status(format!("{message}. Click Save to write it"), false);
                 state.feedback = Some(Feedback {
                     text: unchanged.map_or_else(
@@ -661,7 +661,7 @@ fn draw_plug_heading(
         .and_then(|candidate| catalog.item(candidate.item_hash));
     ui.horizontal(|ui| {
         ui.heading("Plugs");
-        let reroll = ui.add_enabled(item.is_some(), egui::Button::new("Reroll plugs").small());
+        let reroll = ui.add_enabled(item.is_some(), egui::Button::new("Reroll Plugs").small());
         if reroll.clicked()
             && let Some(item) = item
         {
@@ -754,7 +754,7 @@ fn draw_available_plugs(
         let mut selection = None::<Option<u64>>;
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Available plugs").strong().size(15.0));
+            ui.label(egui::RichText::new("Available Plugs").strong().size(15.0));
             ui.label(format!("· {socket_label}"));
             if ui
                 .add_enabled(!choices.is_empty(), egui::Button::new("Reroll").small())
@@ -862,7 +862,7 @@ fn draw_selected_plugs(
 ) {
     ui.vertical(|ui| {
         ui.set_width(ui.available_width());
-        ui.label(egui::RichText::new("Selected plugs").strong().size(15.0));
+        ui.label(egui::RichText::new("Selected Plugs").strong().size(15.0));
         let mut selected = None;
         egui::ScrollArea::vertical()
             .id_salt("randomize-selected-plugs")
@@ -984,7 +984,7 @@ fn draw_footer(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let candidate = state.candidate.clone();
             let can_apply = candidate.is_some();
-            let equip = ui.add_enabled(can_apply, egui::Button::new("Equip item"));
+            let equip = ui.add_enabled(can_apply, egui::Button::new("Equip Item"));
             let equip = if let Some(warning) = equip_warning {
                 equip.on_hover_text(warning.message())
             } else {
@@ -1002,7 +1002,7 @@ fn draw_footer(
             }
             let add = ui.add_enabled(
                 can_apply && inventory_blocker.is_none(),
-                egui::Button::new("Add to inventory"),
+                egui::Button::new("Add to Inventory"),
             );
             let add = if let Some(reason) = inventory_blocker {
                 add.on_disabled_hover_text(reason)

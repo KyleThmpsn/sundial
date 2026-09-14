@@ -29,6 +29,7 @@ pub(super) fn solve(
     let mut best_available = current.to_vec();
     let mut reason = None;
     let mut failed = false;
+    let fixed_totals = fixed_non_allocation_values(catalog, item, current);
 
     for group in AllocationGroup::ALL {
         let indices = group.indices();
@@ -37,7 +38,7 @@ pub(super) fn solve(
             continue;
         }
 
-        let fixed_values = fixed_group_values(catalog, item, current, group);
+        let fixed_values = indices.map(|index| fixed_totals[index]);
         let allocation_targets = remaining_targets(group_targets, fixed_values);
         if allocation_targets.iter().all(|target| *target == 0) {
             continue;
@@ -515,15 +516,9 @@ pub(in crate::app::equipment) fn selected_totals(
     clamp_totals(totals)
 }
 
-/// Returns the stat contribution for a plug in one concrete socket. Allocation
-/// definitions sometimes expose partial package rows, so their display-name
-/// fallback is used independently of the destination socket's allocation group.
-pub(in crate::app::equipment) fn socket_stat_values(
-    catalog: &Catalog,
-    _item: &ItemDef,
-    _socket_index: usize,
-    hash: u64,
-) -> [i32; 6] {
+/// Returns a plug's stat contribution, using its display name as a fallback
+/// for allocation definitions with partial package rows.
+pub(in crate::app::equipment) fn plug_stat_values(catalog: &Catalog, hash: u64) -> [i32; 6] {
     if let Some((group, values)) = parse_allocation_hash(catalog, hash) {
         expand_allocation_values(group, values).map(i32::from)
     } else {
@@ -544,41 +539,11 @@ fn fixed_non_allocation_values(
         let Some(hash) = hash else {
             continue;
         };
-        for (total, value) in
-            totals
-                .iter_mut()
-                .zip(socket_stat_values(catalog, item, socket_index, hash))
-        {
+        for (total, value) in totals.iter_mut().zip(plug_stat_values(catalog, hash)) {
             *total = total.saturating_add(value);
         }
     }
     clamp_totals(totals)
-}
-
-fn fixed_group_values(
-    catalog: &Catalog,
-    item: &ItemDef,
-    plugs: &[Option<u64>],
-    group: AllocationGroup,
-) -> [u16; 3] {
-    let mut totals = catalog.armor_stat_values(item.hash);
-    for (socket_index, hash) in plugs.iter().copied().enumerate() {
-        if allocation_socket_group(catalog, item, socket_index).is_some() {
-            continue;
-        }
-        let Some(hash) = hash else {
-            continue;
-        };
-        for (total, value) in
-            totals
-                .iter_mut()
-                .zip(socket_stat_values(catalog, item, socket_index, hash))
-        {
-            *total = total.saturating_add(value);
-        }
-    }
-    let totals = clamp_totals(totals);
-    group.indices().map(|index| totals[index])
 }
 
 pub(super) fn remaining_targets(targets: [u16; 3], fixed: [u16; 3]) -> [u16; 3] {

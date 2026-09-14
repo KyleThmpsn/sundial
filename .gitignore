@@ -1,6 +1,7 @@
 # Build output, including standalone Cargo tools.
 target/
 /dist/
+/out/
 /tmp/
 THIRD_PARTY_NOTICES.md
 *.tmp

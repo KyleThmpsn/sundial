@@ -16,10 +16,15 @@ use crate::{
 };
 use tiger_pkg::{PackageManager, TagHash};
 
+pub mod action;
 pub mod activation;
 pub mod dependencies;
+pub mod ingredients;
+pub mod nodes;
 pub mod program;
 pub mod projectile;
+
+pub(crate) const CACHE_DIRECTORY: &str = "perks/cache";
 
 /// Package class for the finished sandbox-perk catalog.
 pub const FINISHED_SANDBOX_PERK_CATALOG_CLASS: u32 = 0x8080_5C97;
@@ -118,6 +123,15 @@ pub struct SandboxPerkRuntimeAssignment {
     pub index: usize,
     pub runtime_key: u32,
     pub runtime_tag: u32,
+}
+
+impl SandboxPerkRuntimeAssignment {
+    /// The row remains present when its native action reference is explicitly empty.
+    #[must_use]
+    pub fn action_tag(&self) -> Option<TagHash> {
+        let tag = TagHash(self.runtime_tag);
+        (!tag.is_none()).then_some(tag)
+    }
 }
 
 /// One runtime graph directly referenced by a finished sandbox-perk action.
@@ -666,7 +680,9 @@ pub fn load_sandbox_perk_runtime_action(
                 finished_perk.runtime_key
             )
         })?;
-    let action_tag = TagHash(assignment.runtime_tag);
+    let action_tag = assignment.action_tag().ok_or_else(|| {
+        format!("Finished sandbox-perk row {finished_perk_index} has no standalone runtime action")
+    })?;
     let action_payload = manager.read_tag(action_tag).map_err(|error| {
         format!("Could not read sandbox-perk runtime action {action_tag}: {error}")
     })?;

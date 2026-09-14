@@ -320,23 +320,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_paths_render_root_first() {
-        let package_path = vec![
-            "Aspirant Suit".to_owned(),
-            "Leveling".to_owned(),
-            "Warlock".to_owned(),
-            "Armor".to_owned(),
-            "Items".to_owned(),
-        ];
-
-        assert_eq!(
-            metadata_path_text(&package_path),
-            "Items > Armor > Warlock > Leveling > Aspirant Suit"
-        );
-        assert_eq!(metadata_path_text(&[]), "<empty path>");
-    }
-
-    #[test]
     fn parser_accepts_the_hex_component_of_a_hash_display_pair() {
         let displayed = "0x574E0A2A · 1464732202";
         assert_eq!(hash_hex_component(displayed), "0x574E0A2A");

@@ -54,6 +54,9 @@ impl PerkEditor {
         let mut visible = 0;
         for (_, graph) in &loaded.graphs {
             for field in graph.fields() {
+                if field.source != WeaponRuntimeFieldSource::OpaqueNativeType {
+                    continue;
+                }
                 if occurrences[&field.locator] != 1 {
                     continue;
                 }
@@ -92,17 +95,10 @@ impl PerkEditor {
                 });
             }
         }
+        visible += self.draw_native_fields(ui, loaded, &query);
         if visible == 0 {
             ui.label("No supported package fields match this view.");
         }
-        if !experimental
-            && self.draft.iter().any(|value| {
-                validation::fields_for(loaded, &value.locator)
-                    .first()
-                    .is_some_and(|field| field.source == WeaponRuntimeFieldSource::OpaqueNativeType)
-            })
-        {
-            ui.label("Saved byte edits are preserved. Enable Technical Controls in Preferences to edit them.");
-        }
+        structure::draw(ui, loaded, &query);
     }
 }

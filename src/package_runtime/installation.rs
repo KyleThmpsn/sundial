@@ -1,10 +1,12 @@
 //! Inspect the two supported runtime locations without changing installed content.
 mod backup;
+mod defaults;
 mod movement;
 mod restore;
-mod defaults;
-pub(crate) use defaults::SettingsResetPlan;
+mod workspace;
 pub(crate) use backup::archive_other_runtime;
+pub(crate) use backup::{checked_directory, checked_path};
+pub(crate) use defaults::SettingsResetPlan;
 use movement::move_without_replacing;
 pub(crate) use restore::{RuntimeRestorePlan, preview_runtime_restore, restore_runtime};
 
@@ -73,10 +75,11 @@ impl RuntimeInspection {
             let settings_path = directory.join("Sunrise/settings.json");
             let dll = fs::read(&dll_path);
             let settings = fs::read(&settings_path);
-            let version = dll.as_ref().ok().and_then(|b| super::sunrise_module_version(b));
+            let identity = dll.as_ref().ok().and_then(|b| super::runtime_version(b));
             let defaults = dll.as_ref().ok().and_then(|b| embedded_defaults(b));
             let bundled_schema = defaults.as_ref().and_then(crate::game_settings::schema_version);
-            let dawn = dll.as_ref().ok().is_some_and(|b| dawn_signature(b, defaults.as_ref()));
+            let dawn = identity.as_ref().is_some_and(|(name, _)| *name == "Dawn");
+            let version = identity.map(|(_, version)| version);
             let dawn_runtime = dawn.then(|| DawnRuntime::inspect(&dll_path));
             let parsed = settings.as_ref().ok().and_then(|b| settings_document(b));
             let schema = parsed.as_ref().and_then(crate::game_settings::schema_version);
@@ -93,7 +96,7 @@ impl RuntimeInspection {
                 compatibility.push(format!("Settings v{current} differs from the DLL's bundled v{bundled}."));
             }
             if version.is_none() {
-                compatibility.push("No Sunrise version resource was detected in this DLL.".into());
+                compatibility.push("No recognized Sunrise or Dawn version resource was found in this DLL.".into());
             }
             if dawn {
                 compatibility.push("Recognized Dawn mission runtime.".into());
@@ -122,25 +125,30 @@ impl RuntimeInspection {
     pub(crate) fn duplicates(&self) -> bool {
         self.copies.len() == 2
     }
-
-    pub(crate) fn for_settings(&self, settings_path: &Path) -> Option<&RuntimeCopy> {
-        self.copies
-            .iter()
-            .find(|copy| copy.settings_path == settings_path)
-    }
 }
 
 impl RuntimeCopy {
+    pub(crate) fn name(&self) -> &'static str {
+        if self.dawn {
+            "Dawn"
+        } else if self.version.is_some() || self.bundled_schema.is_some() {
+            "Sunrise"
+        } else {
+            "Unrecognized Runtime"
+        }
+    }
+
     pub(crate) fn persistence_problem(&self, json: &Value) -> Option<String> {
         let bundled = self.bundled_schema?;
         let current = crate::game_settings::schema_version(json)?;
+        let name = self.name();
         if bundled >= 18 && current < 18 {
             Some(format!(
-                "This runtime bundles settings v{bundled} with SQLite account storage, but the open settings are v{current} with JSON accounts. Load matching settings and data/investment.sqlite3 before saving. Changing the version number alone does not migrate an account."
+                "{name} requires settings v{bundled} with SQLite account storage. The open settings are v{current}. Open matching settings and data/investment.sqlite3 before saving."
             ))
         } else if bundled < 18 && current >= 18 {
             Some(format!(
-                "This runtime bundles settings v{bundled} with JSON account storage, but the open settings are v{current} with SQLite accounts. Restore matching JSON settings before saving."
+                "{name} requires settings v{bundled} with JSON accounts. The open settings are v{current} with SQLite account storage. Restore matching JSON settings or switch back to the runtime for this account before saving."
             ))
         } else {
             None
@@ -164,21 +172,6 @@ fn settings_document(bytes: &[u8]) -> Option<Value> {
         .ok()?
         .trim_start_matches('\u{feff}');
     crate::strict_json::from_str(text).ok()
-}
-
-fn dawn_signature(bytes: &[u8], defaults: Option<&Value>) -> bool {
-    const MARKERS: [&[u8]; 4] = [
-        b"ev=coo_script mission=omega result=loaded format=lua",
-        b"ev=coo_executor mission=omega mode=composition",
-        b"Sunrise/scripts/omega.lua",
-        b"coo_executor",
-    ];
-    defaults.is_some_and(|json| {
-        crate::game_settings::schema_version(json) == Some(6)
-            && json.pointer("/experiments/omega/coo_executor").is_some()
-    }) && MARKERS
-        .iter()
-        .all(|marker| bytes.windows(marker.len()).any(|w| w == *marker))
 }
 
 fn hash(bytes: &[u8]) -> String {

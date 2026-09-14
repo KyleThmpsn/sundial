@@ -1,5 +1,5 @@
 use super::*;
-use crate::investment::{AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement};
+use crate::account::{AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement};
 use crate::persistence::sqlite_account::package::preview_replacement;
 use std::collections::BTreeMap;
 

@@ -16,8 +16,7 @@ fn frame(
     events: Vec<egui::Event>,
     draw: bool,
 ) -> egui::FullOutput {
-    let previous = app.document.clone();
-    let output = ctx.run(
+    ctx.run(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -33,17 +32,13 @@ fn frame(
             }
             app.handle_workspace_shortcuts(ctx);
         },
-    );
-    app.record_document_change(previous);
-    output
+    )
 }
 
 fn edit(app: &mut SundialApp, value: u32) {
-    let previous = app.document.clone();
     app.document.json_mut()["review_value"] = serde_json::json!(value);
-    app.dirty = true;
+    app.record_edit(format!("Changed review value to {value}"));
     app.set_status(format!("Changed review value to {value}"), false);
-    app.record_document_change(previous);
 }
 
 #[test]

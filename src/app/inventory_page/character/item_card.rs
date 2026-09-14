@@ -21,6 +21,14 @@ struct InventoryItemActionContext<'a> {
     target_occupied: bool,
 }
 
+struct InventoryPlugEditor<'a> {
+    inventory: &'a InventoryItemSnapshot,
+    ui_identity: InventoryItemUiId,
+    item: &'a ItemDef,
+    editable: bool,
+    section: item_editor::PlugSection,
+}
+
 struct InventoryItemPickerContext<'a> {
     snapshot: &'a InventoryItemSnapshot,
     ui_identity: InventoryItemUiId,
@@ -89,19 +97,10 @@ impl SundialApp {
         ui.push_id(
             ("character-inventory-item", ui_identity),
             |ui| {
-                egui::Frame::group(ui.style())
-                    .inner_margin(egui::Margin::ZERO)
-                    .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let definition = resolved.as_ref().map_or(
-        DefinitionSummary::Unknown {
-            hash_display_text: &hash_hex_text,
-        },
-                        |definition| DefinitionSummary::Known {
-                            name: &definition.name,
-            hash_display_text: &hash_hex_text,
-                            type_name: &definition.type_name,
-                        },
+                item_editor::draw_item_card(ui, |ui| {
+                    let definition = DefinitionSummary::from_name_and_type(
+                        &hash_hex_text,
+                        resolved.as_ref().map(|definition| (definition.name.as_str(), definition.type_name.as_str())),
                     );
                     let inspection_context = DefinitionInspectionContext {
                             source: format!(
@@ -144,13 +143,25 @@ impl SundialApp {
                     item_editor::draw_context_menu(ui, &header_response, Some((u64::from(snapshot.definition_hash), inspection_context)), |ui| {
                             ui.add_enabled_ui(editable, |ui| {
                                 if let Some(flags) =
-                                    item_editor::draw_state_flags(ui, snapshot.flags, self.document.supports_v13_account())
+                                    item_editor::draw_state_flags(ui, snapshot.flags, self.document.supports_masterwork_flags())
                                 {
                                     requests.actions.push(InventoryItemAction::SetFlags(flags));
                                 }
                                 self.draw_item_seen(ui, snapshot.instance_soid);
                             });
                         });
+                    if let Some(flags) = item_editor::draw_header_lock(
+                        ui, &header_response, snapshot.flags, editable,
+                    ) {
+                        requests.actions.push(InventoryItemAction::SetFlags(flags));
+                    }
+                    let mut plugs = resolved.as_ref().and_then(|definition| definition.item.as_ref()).and_then(|item| {
+                        let (values, defaults) = displayed_inventory_plugs(snapshot, item);
+                        let count = item.sockets.len().max(values.len()).min(inventory::MAX_ITEM_PLUGS);
+                        (count > 0).then(|| item_editor::PlugSection::new(ui,
+                            ("character-inventory-plugs", ui_identity), count, defaults))
+                    });
+                    let inline_plugs = !self.manifest.item_has_power_stat(u64::from(snapshot.definition_hash));
                     self.draw_inventory_item_actions(
                         ui,
                         InventoryItemActionContext {
@@ -162,6 +173,7 @@ impl SundialApp {
                             target_occupied,
                         },
                         &mut requests,
+                        if inline_plugs { plugs.as_mut() } else { None },
                     );
 
                     let picker_anchor = requests.swap_response.as_ref().map_or_else(
@@ -190,16 +202,15 @@ impl SundialApp {
                         .iter()
                         .any(|action| matches!(action, InventoryItemAction::Remove))
                     {
-                        if let Some(item) = resolved
+                        if let (Some(item), Some(section)) = (resolved
                             .as_ref()
-                            .and_then(|definition| definition.item.as_ref())
+                            .and_then(|definition| definition.item.as_ref()), plugs)
                         {
                             self.draw_inventory_plugs(
                                 ui,
-                                snapshot,
-                                ui_identity,
-                                item,
-                                editable,
+                                InventoryPlugEditor {
+                                    inventory: snapshot, ui_identity, item, editable, section,
+                                },
                                 &mut requests.actions,
                             );
                         } else if matches!(snapshot.plugs, ItemPlugs::Authored(ref plugs) if !plugs.is_empty())
@@ -237,6 +248,7 @@ impl SundialApp {
         ui: &mut egui::Ui,
         context: InventoryItemActionContext<'_>,
         requests: &mut InventoryItemCardRequests,
+        plugs: Option<&mut item_editor::PlugSection>,
     ) {
         let InventoryItemActionContext {
             snapshot,
@@ -246,14 +258,20 @@ impl SundialApp {
             equipment_target,
             target_occupied,
         } = context;
-        ui.add_enabled_ui(editable, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            if let Some(plugs) = plugs {
+                plugs.draw_header(ui);
+            }
+            ui.add_enabled_ui(editable, |ui| {
                 for action in item_editor::draw_level_and_quantity(
                     ui,
                     ("character-inventory-numeric", ui_identity),
                     NumericItemFields {
-                        level: Some(i64::from(snapshot.level)),
+                        level: self
+                            .manifest
+                            .item_has_power_stat(u64::from(snapshot.definition_hash))
+                            .then_some(i64::from(snapshot.level)),
                         power_max: self
                             .manifest
                             .item_power_cap(u64::from(snapshot.definition_hash)),
@@ -267,21 +285,6 @@ impl SundialApp {
                     {
                         requests.actions.push(InventoryItemAction::SetLevel(level));
                     }
-                }
-                ui.add_space(8.0);
-                let flags = snapshot.flags.unwrap_or_default();
-                let locked = flags & INVENTORY_FLAG_LOCKED != 0;
-                let lock_response = if locked {
-                    item_editor::draw_lock_button(ui, true, "Unlock stored item")
-                        .on_hover_text("Unlock this item")
-                } else {
-                    item_editor::draw_unlock_button(ui, true, "Lock stored item")
-                        .on_hover_text("Lock this item")
-                };
-                if lock_response.clicked() {
-                    requests.actions.push(InventoryItemAction::SetFlags(
-                        set_inventory_locked_flag(snapshot.flags, !locked),
-                    ));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
@@ -368,7 +371,7 @@ impl SundialApp {
                                     .filter(|definition| {
                                         crate::account_contract::definition_available(
                                             definition.hash,
-                                            self.document.supports_v13_account(),
+                                            self.document.supports_emote_collection(),
                                         )
                                     })
                                     .filter(|definition| {
@@ -431,89 +434,83 @@ impl SundialApp {
     fn draw_inventory_plugs(
         &mut self,
         ui: &mut egui::Ui,
-        inventory: &InventoryItemSnapshot,
-        ui_identity: InventoryItemUiId,
-        item: &ItemDef,
-        editable: bool,
+        editor: InventoryPlugEditor<'_>,
         requested: &mut Vec<InventoryItemAction>,
     ) {
-        let (current_plugs, native_defaults) = displayed_inventory_plugs(inventory, item);
-        if item.sockets.is_empty() && current_plugs.is_empty() {
-            return;
-        }
+        let InventoryPlugEditor {
+            inventory,
+            ui_identity,
+            item,
+            editable,
+            section,
+        } = editor;
+        let (current_plugs, _) = displayed_inventory_plugs(inventory, item);
         let socket_count = item
             .sockets
             .len()
             .max(current_plugs.len())
             .min(inventory::MAX_ITEM_PLUGS);
-        let title = if native_defaults {
-            format!("Plugs ({socket_count}, default plugs)")
-        } else {
-            format!("Plugs ({socket_count})")
-        };
-        egui::CollapsingHeader::new(title)
-            .id_salt(("character-inventory-plugs", ui_identity))
-            .show(ui, |ui| {
-                for socket_index in 0..socket_count {
-                    let current_hash = current_plugs
-                        .get(socket_index)
-                        .copied()
-                        .flatten()
-                        .map(u64::from);
-                    let native_default = native_plug_default(&item.default_plugs, socket_index);
-                    let query_key = format!(
-                        "{}:plug:{socket_index}",
-                        inventory_item_state_key(ui_identity)
-                    );
-                    let mut query = self
-                        .plug_searches
-                        .get(&query_key)
-                        .cloned()
-                        .unwrap_or_default();
-                    let picker_snapshot = item_editor::plug_picker_snapshot(
-                        &self.manifest,
-                        item,
-                        socket_index,
-                        current_hash,
-                        current_hash.map_or_else(
-                            || "None".to_owned(),
-                            |hash| {
-                                self.manifest
-                                    .plug_label(hash, self.preferences.show_plug_hashes)
+        section.show_body(ui, |ui| {
+            for socket_index in 0..socket_count {
+                let current_hash = current_plugs
+                    .get(socket_index)
+                    .copied()
+                    .flatten()
+                    .map(u64::from);
+                let native_default = native_plug_default(&item.default_plugs, socket_index);
+                let query_key = format!(
+                    "{}:plug:{socket_index}",
+                    inventory_item_state_key(ui_identity)
+                );
+                let mut query = self
+                    .plug_searches
+                    .get(&query_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let picker_snapshot = item_editor::plug_picker_snapshot(
+                    &self.manifest,
+                    item,
+                    socket_index,
+                    current_hash,
+                    current_hash.map_or_else(
+                        || "None".to_owned(),
+                        |hash| {
+                            self.manifest
+                                .plug_label(hash, self.preferences.show_plug_hashes)
+                        },
+                    ),
+                    native_default,
+                    self.plug_selection_mode,
+                );
+                let searchable = picker_snapshot.choices.len() > 12;
+                let action = ui
+                    .add_enabled_ui(editable, |ui| {
+                        item_editor::draw_plug_picker(
+                            ui,
+                            &self.manifest,
+                            ("character-inventory-plug", ui_identity, socket_index),
+                            &mut query,
+                            &picker_snapshot,
+                            PickerHeight {
+                                min: PLUG_PICKER_MIN_HEIGHT,
+                                max: PLUG_PICKER_MAX_HEIGHT,
                             },
-                        ),
-                        native_default,
-                        self.plug_selection_mode,
-                    );
-                    let searchable = picker_snapshot.choices.len() > 12;
-                    let action = ui
-                        .add_enabled_ui(editable, |ui| {
-                            item_editor::draw_plug_picker(
-                                ui,
-                                &self.manifest,
-                                ("character-inventory-plug", ui_identity, socket_index),
-                                &mut query,
-                                &picker_snapshot,
-                                PickerHeight {
-                                    min: PLUG_PICKER_MIN_HEIGHT,
-                                    max: PLUG_PICKER_MAX_HEIGHT,
-                                },
-                            )
-                        })
-                        .inner;
-                    if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
-                        requested.push(InventoryItemAction::set_plug(
-                            &current_plugs,
-                            socket_index,
-                            hash,
-                        ));
-                    }
-                    if searchable {
-                        self.plug_searches.insert(query_key, query);
-                    } else {
-                        self.plug_searches.remove(&query_key);
-                    }
+                        )
+                    })
+                    .inner;
+                if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
+                    requested.push(InventoryItemAction::set_plug(
+                        &current_plugs,
+                        socket_index,
+                        hash,
+                    ));
                 }
-            });
+                if searchable {
+                    self.plug_searches.insert(query_key, query);
+                } else {
+                    self.plug_searches.remove(&query_key);
+                }
+            }
+        });
     }
 }

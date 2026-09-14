@@ -1,5 +1,6 @@
 use super::*;
 
+mod dependencies;
 mod plan;
 pub(super) use plan::{Payloads, author};
 

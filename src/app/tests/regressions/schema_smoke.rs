@@ -2,12 +2,6 @@
 use super::*;
 use serde_json::json;
 
-pub(super) const FIXTURES: [&str; 3] = [
-    include_str!("../../../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"),
-    include_str!("../../../../tests/fixtures/sunrise-v13-a57dc9a9-defaults.json"),
-    include_str!("../../../../tests/fixtures/sunrise-v16-1120748-defaults.json"),
-];
-
 const HISTORICAL_FIXTURES: [&str; 6] = [
     include_str!("../../../../tests/fixtures/sunrise-v2-052d6a48-defaults.json"),
     include_str!("../../../../tests/fixtures/sunrise-v3-86bd0a16-defaults.json"),
@@ -83,15 +77,6 @@ fn select(app: &mut SundialApp, page: Page) {
         }
         Page::Json => ViewMode::AdvancedJson,
     };
-}
-
-pub(super) fn with_document(path: PathBuf, json: Value) -> SundialApp {
-    let mut app = app(path);
-    app.document = WorkspaceDocument::json_only(json.clone());
-    app.persisted_document = app.document.clone();
-    app.raw_json = serde_json::to_string_pretty(&json).unwrap();
-    app.raw_json_document = json;
-    app
 }
 
 fn draw(app: &mut SundialApp, ctx: &egui::Context, size: egui::Vec2) {
@@ -193,12 +178,12 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
             db.execute_batch("COMMIT").unwrap();
             app.document = WorkspaceDocument::load(json, &app.settings_path);
             assert_eq!(
-                app.document.source_info().kind,
+                app.document.source_kind(),
                 account::AccountSourceKind::Sqlite
             );
             app.persisted_document = app.document.clone();
             let original = app.document.clone();
-            let native = crate::persistence::sqlite_account::package::read(&database).unwrap();
+            let native = crate::persistence::sqlite_account::snapshot::read(&database).unwrap();
             let ctx = egui::Context::default();
             ctx.set_visuals(if dark {
                 egui::Visuals::dark()
@@ -214,7 +199,7 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
                 }
             }
             assert_eq!(
-                crate::persistence::sqlite_account::package::read(&database).unwrap(),
+                crate::persistence::sqlite_account::snapshot::read(&database).unwrap(),
                 native
             );
         }
@@ -244,105 +229,4 @@ fn missing_or_malformed_optional_account_sections_are_not_repaired_by_navigation
             assert!(!app.settings_path.exists());
         }
     }
-}
-
-#[test]
-fn preferences_preserve_data_and_keep_actions_visible() {
-    for dark in [true, false] {
-        for width in [560.0, 960.0] {
-            for tab in PreferencesTab::ALL {
-                let directory = TestDirectory::new("preferences-layout");
-                let mut app = with_document(
-                    directory.0.clone(),
-                    serde_json::from_str(FIXTURES[2]).unwrap(),
-                );
-                app.preferences_tab = tab;
-                let before = serde_json::to_value(&app.preferences).unwrap();
-                let original = app.document.clone();
-                let ctx = egui::Context::default();
-                ctx.set_visuals(if dark {
-                    egui::Visuals::dark()
-                } else {
-                    egui::Visuals::light()
-                });
-                let mut output = egui::FullOutput::default();
-                for _ in 0..3 {
-                    output = ctx.run(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(width, 760.0),
-                            )),
-                            ..Default::default()
-                        },
-                        |ctx| {
-                            egui::CentralPanel::default()
-                                .show(ctx, |ui| app.draw_preferences_page(ui, ctx));
-                        },
-                    );
-                }
-                assert_eq!(serde_json::to_value(&app.preferences).unwrap(), before);
-                assert_eq!(app.document, original);
-                assert!(!app.dirty);
-                let reset = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::epaint::Shape::Text(text)
-                            if text.galley.job.text == "Reset Preferences\u{2026}" =>
-                        {
-                            Some(text.pos)
-                        }
-                        _ => None,
-                    })
-                    .expect("reset control");
-                assert!(
-                    reset.y < 740.0 && reset.x < width - 20.0,
-                    "{tab:?}: {reset:?}"
-                );
-                capture_preferences(
-                    &ctx,
-                    output,
-                    &format!(
-                        "sundial-{tab:?}-{}-{width}",
-                        if dark { "dark" } else { "light" }
-                    ),
-                    width,
-                );
-            }
-        }
-    }
-}
-
-pub(super) fn capture_preferences(
-    ctx: &egui::Context,
-    output: egui::FullOutput,
-    name: &str,
-    width: f32,
-) {
-    let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR").map(PathBuf::from) else {
-        return;
-    };
-    std::fs::create_dir_all(&directory).unwrap();
-    let atlas = ctx.fonts(|fonts| fonts.image());
-    let pixels = atlas
-        .srgba_pixels(None)
-        .flat_map(|color| color.to_array())
-        .collect::<Vec<_>>();
-    std::fs::write(directory.join(format!("{name}-atlas.rgba")), &pixels).unwrap();
-    let meshes = ctx.tessellate(output.shapes, 1.0).into_iter().filter_map(|primitive| {
-        let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else { return None; };
-        assert_eq!(mesh.texture_id, egui::TextureId::Managed(0));
-        Some(serde_json::json!({
-            "clip": [primitive.clip_rect.min.x, primitive.clip_rect.min.y, primitive.clip_rect.max.x, primitive.clip_rect.max.y],
-            "indices": mesh.indices,
-            "vertices": mesh.vertices.iter().map(|v| serde_json::json!([v.pos.x, v.pos.y, v.uv.x, v.uv.y, v.color.to_array()])).collect::<Vec<_>>()
-        }))
-    }).collect::<Vec<_>>();
-    std::fs::write(
-        directory.join(format!("{name}.json")),
-        serde_json::to_vec(&serde_json::json!({"width": width, "height": 760, "atlas_size": atlas.size, "meshes": meshes}))
-            .unwrap(),
-    )
-    .unwrap();
 }

@@ -251,7 +251,7 @@ fn verify_interrupted_uninstall_recovery(fixture: &NativeFixture) {
     }
     let plan = preview_uninstall(&fixture.request.target_packages_directory).unwrap();
     assert!(
-        uninstall::uninstall_inner(
+        crate::install::uninstall::uninstall_inner(
             &plan,
             &fixture.request.backup_root,
             starts_during_rollback,

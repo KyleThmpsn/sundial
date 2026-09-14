@@ -409,7 +409,7 @@ fn draw_bundled_recipe_selection(
         !bundled.is_empty(),
         egui::Checkbox::new(&mut all, format!("Include default Parhelion weapons ({}/{})", count, bundled.len()))
             .indeterminate(count > 0 && count < bundled.len()),
-    ).on_hover_text("Select or clear every bundled recipe, including recipes hidden by the search. Your custom weapons stay unchanged. Defaults are selected in a new library; Apply selection saves your choice.").changed() {
+    ).on_hover_text("Select or clear every bundled recipe, including recipes hidden by the search. Your custom weapons stay unchanged. Defaults are selected in a new library. Apply Selection saves your choice.").changed() {
         for entry in bundled {
             if all {
                 selected.insert(entry.path.clone());

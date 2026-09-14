@@ -116,7 +116,7 @@ fn draw_collection_metadata_panel(
             changed |= draw_collection_acquisition_action(
                 ui, document, definition, snapshot, catalog, state,
             );
-            egui::CollapsingHeader::new("Definition identifiers")
+            egui::CollapsingHeader::new("Definition Identifiers")
                 .id_salt(("collection_definition_identifiers", definition.index))
                 .show(ui, |ui| {
                     egui::Grid::new(("collection_metadata_identifiers", definition.index))
@@ -173,8 +173,8 @@ fn draw_collection_metadata_panel(
                                 ui.strong("Hash");
                                 ui.strong("Name");
                                 ui.strong("Quantity");
-                                ui.strong("Delete").on_hover_text("Delete on action");
-                                ui.strong("Omit").on_hover_text("Omit from requirements");
+                                ui.strong("Delete").on_hover_text("Delete on Action");
+                                ui.strong("Omit").on_hover_text("Omit from Requirements");
                                 ui.strong("Condition");
                                 ui.end_row();
                                 for requirement in &definition.material_requirements {
@@ -239,10 +239,10 @@ fn draw_collection_metadata_panel(
                                     ui.label(egui::RichText::new("Condition").weak());
                                     ui.monospace(format!("0x{:04X}", requirement.condition));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("Delete on action").weak());
+                                    ui.label(egui::RichText::new("Delete on Action").weak());
                                     ui.label(yes_no(requirement.delete_on_action));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("Omit from requirements").weak());
+                                    ui.label(egui::RichText::new("Omit from Requirements").weak());
                                     ui.label(yes_no(requirement.omit_from_requirements));
                                     ui.end_row();
                                 });
@@ -283,7 +283,7 @@ fn draw_collection_metadata_panel(
                                 ui.strong("#");
                                 ui.strong("Operation");
                                 ui.strong("Operand");
-                                ui.strong("Referenced entry");
+                                ui.strong("Referenced Entry");
                                 ui.strong("Current State");
                                 ui.end_row();
                                 for (token_index, token) in condition.tokens.iter().enumerate() {
@@ -321,7 +321,7 @@ fn draw_collection_metadata_panel(
                                     ui.label(condition_token_state(token, snapshot, catalog));
                                     ui.end_row();
                                     if !condition_token_metadata(token, catalog).is_empty() {
-                                        ui.label(egui::RichText::new("Referenced entry").weak());
+                                        ui.label(egui::RichText::new("Referenced Entry").weak());
                                         draw_condition_token_metadata(ui, token, catalog);
                                         ui.end_row();
                                     }
@@ -329,7 +329,7 @@ fn draw_collection_metadata_panel(
                             });
                         }
                     }
-                    egui::CollapsingHeader::new("Raw package program")
+                    egui::CollapsingHeader::new("Raw Package Program")
                         .id_salt(("collection_raw_condition", condition.field))
                         .show(ui, |ui| {
                             ui.add(

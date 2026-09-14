@@ -146,30 +146,11 @@ pub(super) fn materialize_collectibles(
                         )
                     })?
             };
-            let material_requirements = collectible
-                .material_requirements
-                .into_iter()
-                .enumerate()
-                .map(|(row, requirement)| {
-                    let item_hash = item_hashes
-                        .get(usize::from(requirement.item_definition_index))
-                        .copied()
-                        .ok_or_else(|| {
-                            format!(
-                                "Collectible #{} material requirement row #{row} references item definition index {}, which is outside the package table",
-                                collectible.index, requirement.item_definition_index
-                            )
-                        })?;
-                    Ok(MaterialRequirementDef {
-                        item_definition_index: requirement.item_definition_index,
-                        item_hash,
-                        quantity: requirement.quantity,
-                        delete_on_action: requirement.delete_on_action,
-                        omit_from_requirements: requirement.omit_from_requirements,
-                        condition: requirement.condition,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+            let material_requirements = materialize_requirements(
+                collectible.material_requirements,
+                item_hashes,
+                |row| format!("Collectible #{} material requirement row #{row}", collectible.index),
+            )?;
             Ok(CollectibleDef {
                 index: collectible.index,
                 hash: collectible.hash,
@@ -475,35 +456,44 @@ pub(super) fn materialize_material_requirement_sets(
         .into_iter()
         .enumerate()
         .map(|(index, set)| {
-            let requirements = set
-                .requirements
-                .into_iter()
-                .enumerate()
-                .map(|(row, requirement)| {
-                    let item_hash = item_hashes
-                        .get(usize::from(requirement.item_definition_index))
-                        .copied()
-                        .ok_or_else(|| {
-                            format!(
-                                "Material requirement set #{index} row #{row} references item definition index {}, which is outside the package table",
-                                requirement.item_definition_index
-                            )
-                        })?;
-                    Ok(MaterialRequirementDef {
-                        item_definition_index: requirement.item_definition_index,
-                        item_hash,
-                        quantity: requirement.quantity,
-                        delete_on_action: requirement.delete_on_action,
-                        omit_from_requirements: requirement.omit_from_requirements,
-                        condition: requirement.condition,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+            let requirements = materialize_requirements(set.requirements, item_hashes, |row| {
+                format!("Material requirement set #{index} row #{row}")
+            })?;
             Ok(MaterialRequirementSetDef {
                 index: u16::try_from(index)
                     .map_err(|_| "Material requirement set index is too large")?,
                 hash: set.hash,
                 requirements,
+            })
+        })
+        .collect()
+}
+
+fn materialize_requirements(
+    pending: Vec<PendingMaterialRequirementDef>,
+    item_hashes: &[u64],
+    describe_row: impl Fn(usize) -> String,
+) -> Result<Vec<MaterialRequirementDef>, String> {
+    pending
+        .into_iter()
+        .enumerate()
+        .map(|(row, requirement)| {
+            let item_hash = item_hashes
+                .get(usize::from(requirement.item_definition_index))
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "{} references item definition index {}, which is outside the package table",
+                        describe_row(row), requirement.item_definition_index
+                    )
+                })?;
+            Ok(MaterialRequirementDef {
+                item_definition_index: requirement.item_definition_index,
+                item_hash,
+                quantity: requirement.quantity,
+                delete_on_action: requirement.delete_on_action,
+                omit_from_requirements: requirement.omit_from_requirements,
+                condition: requirement.condition,
             })
         })
         .collect()

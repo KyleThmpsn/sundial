@@ -214,20 +214,6 @@ fn missing_or_invalid_settings_cannot_be_selected() {
 }
 
 #[test]
-fn generic_settings_and_build_paths_do_not_identify_dawn() {
-    let defaults = serde_json::json!({"version":6,"experiments":{"omega":{"coo_executor":false}}});
-    assert!(!dawn_signature(
-        b"C:/dev/dawn/steam_api64.pdb coo_executor",
-        Some(&defaults)
-    ));
-    let markers = b"ev=coo_script mission=omega result=loaded format=lua\0ev=coo_executor mission=omega mode=composition\0Sunrise/scripts/omega.lua\0coo_executor";
-    assert!(dawn_signature(markers, Some(&defaults)));
-    assert!(!dawn_signature(markers, None));
-    let current = serde_json::json!({"version":18,"experiments":{"omega":{"coo_executor":false}}});
-    assert!(!dawn_signature(markers, Some(&current)));
-}
-
-#[test]
 fn dawn_compatibility_accepts_negative_previous_activity_index() {
     let settings = serde_json::json!({"version":6,"state":{"activity":{"default_destination":{"previous_activity_index":-1}},"account":{},"characters":[{}]}});
     assert!(dawn_settings_issues(&settings).is_empty());

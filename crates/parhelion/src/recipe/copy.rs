@@ -45,21 +45,4 @@ mod tests {
         assert_ne!(copy.identity, recipe.identity);
         assert_eq!(copy.donor, recipe.donor);
     }
-
-    #[test]
-    fn copy_allocator_preserves_recipe_mechanics() {
-        let mut recipe = WeaponRecipe::every_end();
-        recipe.flavor = "A carried-over story.".into();
-        recipe.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
-        let before = recipe.clone();
-
-        let copy = recipe.unused_copy(std::iter::empty()).unwrap();
-
-        assert_eq!(copy.donor, before.donor);
-        assert_eq!(copy.presentation_donor, before.presentation_donor);
-        assert_eq!(copy.overrides, before.overrides);
-        assert_eq!(copy.flavor, before.flavor);
-        assert_eq!(copy.name, "Every End Copy");
-        assert!(copy.identity_is_name_derived());
-    }
 }

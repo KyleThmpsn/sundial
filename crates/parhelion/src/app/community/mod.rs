@@ -132,7 +132,7 @@ impl Window {
                     for (tab, name) in [
                         (Tab::Browse, "Browse"),
                         (Tab::Downloads, "My Downloads"),
-                        (Tab::Share, "Share A Recipe"),
+                        (Tab::Share, "Share a Recipe"),
                     ] {
                         if ui.selectable_label(self.tab == tab, name).clicked() {
                             self.tab = tab;

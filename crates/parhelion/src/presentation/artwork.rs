@@ -2,14 +2,8 @@ use super::composition::Composition;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ImageFormat, RgbaImage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{
-    fmt,
-    io::{Cursor, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{fmt, io::Cursor, path::Path, sync::Arc};
 
-const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const WIDTH: u32 = 512;
 pub(crate) const HEIGHT: u32 = 512;
 const SOURCE_EDGE: u32 = 1024;
@@ -33,27 +27,12 @@ impl fmt::Debug for Artwork {
 }
 impl Artwork {
     pub fn from_png(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_BYTES {
-            return Err("Choose a PNG no larger than 16 MiB.".into());
-        }
-        let source = crate::icon_edit::decode_image(bytes, ImageFormat::Png, 4096)?;
-        Self::normalized(crate::icon_edit::fit_rgba_image(&source, WIDTH, HEIGHT))
+        let source = crate::image_import::decode_png(bytes)?;
+        Self::normalized(crate::image_import::fit(&source, WIDTH, HEIGHT))
     }
     pub(crate) fn from_path(path: &Path) -> Result<Self, String> {
-        let mut bytes = vec![];
-        std::fs::File::open(path)
-            .map_err(|e| e.to_string())?
-            .take((MAX_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > MAX_BYTES {
-            return Err("Choose an image no larger than 16 MiB.".into());
-        }
-        let format = image::guess_format(&bytes).map_err(|_| "Choose a PNG or JPEG image.")?;
-        if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg) {
-            return Err("Choose a PNG or JPEG image.".into());
-        }
-        let source = crate::icon_edit::decode_image(&bytes, format, 4096)?;
+        let bytes = crate::image_import::read_path(path)?;
+        let source = crate::image_import::decode_source(&bytes)?;
         Self::from_source(source)
     }
     pub(crate) fn from_source(source: RgbaImage) -> Result<Self, String> {
@@ -62,7 +41,7 @@ impl Artwork {
         }
         let edge = source.width().max(source.height());
         let pixels = if edge > SOURCE_EDGE {
-            crate::icon_edit::fit_rgba_image(
+            crate::image_import::fit(
                 &source,
                 (source.width() * SOURCE_EDGE / edge).max(1),
                 (source.height() * SOURCE_EDGE / edge).max(1),
@@ -102,7 +81,7 @@ impl Artwork {
     }
     pub(crate) fn render(&self, width: u32, height: u32) -> RgbaImage {
         self.composition.as_ref().map_or_else(
-            || crate::icon_edit::fit_rgba_image(self.pixels(), width, height),
+            || crate::image_import::fit(self.pixels(), width, height),
             |composition| composition.render(self.pixels(), width, height),
         )
     }
@@ -141,7 +120,7 @@ impl<'de> Deserialize<'de> for Artwork {
         let bytes = STANDARD
             .decode(embedded.png_base64)
             .map_err(serde::de::Error::custom)?;
-        let pixels = crate::icon_edit::decode_image(
+        let pixels = crate::image_import::decode(
             &bytes,
             ImageFormat::Png,
             if edited { SOURCE_EDGE } else { WIDTH },

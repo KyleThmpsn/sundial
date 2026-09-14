@@ -1,5 +1,118 @@
 use super::*;
 
+// This fixture allocates the private pair in package 0x01BB before package 0x0238.
+const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
+
+#[test]
+#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+fn native_component_values_compile_into_private_owners_and_reject_stale_paths() {
+    use sundial::package_authoring::weapon_runtime::{
+        WeaponRuntimeFieldSource, encode_weapon_runtime_field_value,
+        load_weapon_runtime_graph_for_entity,
+    };
+    let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let manager = open_manager(&packages).unwrap();
+    let mut tested = BTreeSet::new();
+    let mut linked = 0;
+    for graph_tag in [0x80FB_5618, 0x8153_2FDC, 0x80FB_86B7] {
+        let source = read_tag(&manager, TagHash(graph_tag), "effect graph").unwrap();
+        let graph =
+            load_weapon_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &source).unwrap();
+        let mut candidates = graph.fields().filter(|field| {
+            field.source == WeaponRuntimeFieldSource::NativeDeclaration
+                && !matches!(field.locator.root_schema, 0x8080_3B73 | 0x8080_388F)
+                && matches!(field.value, WeaponRuntimeValue::Float32Bits(bits) if f32::from_bits(bits).is_finite())
+        }).collect::<Vec<_>>();
+        candidates.sort_by_key(|field| {
+            !field
+                .locator
+                .path
+                .iter()
+                .any(|step| step.name_hash == 0x504E_5000)
+        });
+        for field in candidates {
+            if !tested.insert(field.locator.root_schema) {
+                continue;
+            }
+            linked += usize::from(
+                field
+                    .locator
+                    .path
+                    .iter()
+                    .any(|step| step.name_hash == 0x504E_5000),
+            );
+            let resolved = resolve_weapon_runtime_field(&manager, &source, &field.locator).unwrap();
+            let original = read_tag(&manager, TagHash(resolved.owner_tag), "source owner").unwrap();
+            let value = WeaponRuntimeValue::Float32Bits(2.75_f32.to_bits());
+            let edits = vec![WeaponRuntimeValueOverride {
+                locator: field.locator.clone(),
+                value: value.clone(),
+            }];
+            let allocator = AppendedTagAllocator::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, 7000);
+            let mut entity = source.clone();
+            let mut tags = Vec::new();
+            append_patched_runtime_resource_owners(
+                &manager,
+                &mut entity,
+                &edits,
+                &[],
+                allocator,
+                &mut tags,
+            )
+            .unwrap();
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].template_tag.0, resolved.owner_tag);
+            let authored = allocator.assigned_tag(0, "test", "owner").unwrap();
+            let mut expected = original.clone();
+            let bytes = encode_weapon_runtime_field_value(&resolved.field, &value).unwrap();
+            expected[resolved.owner_offset..resolved.owner_offset + bytes.len()]
+                .copy_from_slice(&bytes);
+            retarget_weapon_component_owner_payload(
+                &mut expected,
+                &source,
+                resolved.owner_tag,
+                authored.0,
+            )
+            .unwrap();
+            assert_eq!(tags[0].payload, expected);
+            assert_eq!(
+                read_tag(
+                    &manager,
+                    TagHash(resolved.owner_tag),
+                    "unchanged stock owner"
+                )
+                .unwrap(),
+                original
+            );
+            assert_eq!(
+                read_tag(&manager, TagHash(graph_tag), "unchanged stock graph").unwrap(),
+                source
+            );
+            let mut stale = edits;
+            stale[0].locator.path.last_mut().unwrap().byte_offset ^= 4;
+            assert!(
+                append_patched_runtime_resource_owners(
+                    &manager,
+                    &mut source.clone(),
+                    &stale,
+                    &[],
+                    allocator,
+                    &mut Vec::new()
+                )
+                .is_err()
+            );
+        }
+    }
+    assert!(
+        tested.len() >= 3,
+        "expected several non-movement component schemas, got {tested:?}"
+    );
+    assert!(
+        linked > 0,
+        "expected a field reached through a native pointer"
+    );
+}
+
 #[test]
 #[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
 #[expect(

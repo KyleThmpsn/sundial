@@ -146,6 +146,16 @@ impl Payloads {
                 "weapon runtime",
             )?);
         }
+        additions.extend(super::dependencies::native_prerequisites(
+            manager,
+            [
+                (
+                    self.private_perk_allocator,
+                    self.private_perk_tags.as_slice(),
+                ),
+                (self.weapon_allocator, self.weapon_tags.as_slice()),
+            ],
+        )?);
         Ok(Some(
             crate::shared_tag_dependency_index::enroll_dependencies(
                 &source,

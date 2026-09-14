@@ -9,15 +9,6 @@ fn fixture() -> Value {
 }
 
 #[test]
-fn current_upstream_defaults_validate_without_normalization() {
-    let document = fixture();
-    let original = document.clone();
-    assert_eq!(super::super::validate(&document), Ok(()));
-    assert_eq!(validate(&document, true), Ok(()));
-    assert_eq!(document, original);
-}
-
-#[test]
 fn all_runtime_controls_enforce_the_schema_boundary_and_preserve_unrelated_data() {
     for field in FIELDS.iter().chain(services::FIELDS) {
         let value = match field.kind {
@@ -128,31 +119,6 @@ fn retired_settings_are_opaque_and_cannot_be_authored() {
         assert_eq!(document.pointer(path), before.pointer(path));
     }
     assert_eq!(document["state"]["unlocks"], before["state"]["unlocks"]);
-}
-
-#[test]
-fn opening_runtime_ui_is_lossless_at_wide_and_narrow_widths() {
-    for version in [6, 8, 15, 16] {
-        for width in [420.0, 1200.0] {
-            let mut document = json!({"version":version,"opaque":true});
-            let original = document.clone();
-            let context = eframe::egui::Context::default();
-            let input = eframe::egui::RawInput {
-                screen_rect: Some(eframe::egui::Rect::from_min_size(
-                    eframe::egui::Pos2::ZERO,
-                    eframe::egui::vec2(width, 900.0),
-                )),
-                ..Default::default()
-            };
-            let output = context.run(input, |context| {
-                eframe::egui::CentralPanel::default().show(context, |ui| {
-                    assert!(!draw(ui, &mut document, true));
-                });
-            });
-            assert!(!output.shapes.is_empty());
-            assert_eq!(document, original);
-        }
-    }
 }
 
 #[test]

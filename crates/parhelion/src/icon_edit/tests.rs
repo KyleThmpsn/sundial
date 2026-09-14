@@ -60,37 +60,46 @@ fn validation_rejects_out_of_range_controls() {
 }
 
 #[test]
-fn fixed_hue_rotation_moves_primary_colors_by_exact_sectors() {
-    let mut pixels = [255, 0, 0, 7, 0, 255, 0, 9, 0, 0, 255, 11];
-    WeaponIconEdit {
-        hue_shift_degrees: 120,
-        ..WeaponIconEdit::default()
+fn color_transforms_preserve_exact_channels_and_operation_order() {
+    for (edit, source, expected) in [
+        (
+            WeaponIconEdit {
+                hue_shift_degrees: 120,
+                ..Default::default()
+            },
+            vec![255, 0, 0, 7, 0, 255, 0, 9, 0, 0, 255, 11],
+            vec![0, 255, 0, 7, 0, 0, 255, 9, 255, 0, 0, 11],
+        ),
+        (
+            WeaponIconEdit {
+                brightness: 50,
+                invert: true,
+                ..Default::default()
+            },
+            vec![10, 100, 200, 17],
+            vec![122, 77, 27, 17],
+        ),
+        (
+            WeaponIconEdit {
+                brightness: -100,
+                ..Default::default()
+            },
+            vec![10, 100, 200, 33],
+            vec![0, 0, 0, 33],
+        ),
+        (
+            WeaponIconEdit {
+                opacity_percent: 25,
+                ..Default::default()
+            },
+            vec![12, 34, 56, 200],
+            vec![12, 34, 56, 50],
+        ),
+    ] {
+        let mut pixels = source;
+        edit.apply_to_rgba8(&mut pixels).unwrap();
+        assert_eq!(pixels, expected, "{edit:?}");
     }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [0, 255, 0, 7, 0, 0, 255, 9, 255, 0, 0, 11]);
-}
-
-#[test]
-fn brightness_then_invert_has_stable_fixed_pixels() {
-    let mut pixels = [10, 100, 200, 17];
-    WeaponIconEdit {
-        brightness: 50,
-        invert: true,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [122, 77, 27, 17]);
-
-    let mut black = [10, 100, 200, 33];
-    WeaponIconEdit {
-        brightness: -100,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut black)
-    .unwrap();
-    assert_eq!(black, [0, 0, 0, 33]);
 }
 
 #[test]
@@ -111,18 +120,6 @@ fn color_operations_preserve_alpha_at_full_opacity() {
     .apply_to_rgba8(&mut pixels)
     .unwrap();
     assert_eq!([pixels[3], pixels[7], pixels[11]], alpha);
-}
-
-#[test]
-fn opacity_scales_alpha_without_changing_rgb() {
-    let mut pixels = [12, 34, 56, 200];
-    WeaponIconEdit {
-        opacity_percent: 25,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [12, 34, 56, 50]);
 }
 
 #[test]

@@ -46,18 +46,12 @@ fn runtime_selection_fits_small_windows_and_preserves_files() {
 
 fn draw_and_check(app: &mut SundialApp, context: &egui::Context, screen: egui::Rect, id: &str) {
     for _ in 0..3 {
-        let output = context.run(
+        let _ = context.run(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
             |ctx| app.draw_runtime_choice(ctx),
-        );
-        super::schema_smoke::capture_preferences(
-            context,
-            output,
-            &format!("{id}-{}-{:?}", screen.width(), context.theme()),
-            screen.width(),
         );
     }
     let modal = context.memory(|m| m.area_rect(egui::Id::new(id))).unwrap();

@@ -3,6 +3,8 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 pub mod content;
+mod reading;
+pub use reading::{DetailLine, DetailSection};
 
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
@@ -51,6 +53,54 @@ pub struct Pattern {
     pub error: Option<String>,
 }
 
+/// A compact reading of a perk's action, computed once per package snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Behavior {
+    /// One sentence naming the trigger and effect count.
+    pub headline: String,
+    /// The weakest support level across the action's nodes.
+    pub support: super::nodes::Support,
+    /// Whether the action lies inside the shape the program compiler can emit.
+    pub editable: bool,
+    /// Distinct condition kinds, ascending.
+    pub condition_kinds: Vec<u8>,
+    /// Distinct effect kinds, ascending.
+    pub effect_kinds: Vec<u8>,
+    /// Native values and ordered conditions, without the editable payload bytes.
+    pub details: Vec<DetailSection>,
+    pub notes: Vec<String>,
+}
+
+impl Behavior {
+    fn read(payload: &[u8]) -> Option<Self> {
+        let decoded = super::action::decode(payload).ok()?;
+        let summary = super::action::ActionSummary::new(&decoded);
+        let details = reading::sections(&summary);
+        let mut condition_kinds = decoded
+            .conditions()
+            .into_iter()
+            .map(|condition| condition.kind)
+            .collect::<Vec<_>>();
+        condition_kinds.sort_unstable();
+        condition_kinds.dedup();
+        let mut effect_kinds = decoded
+            .effects()
+            .map(|effect| effect.kind)
+            .collect::<Vec<_>>();
+        effect_kinds.sort_unstable();
+        effect_kinds.dedup();
+        Some(Self {
+            headline: summary.headline,
+            support: summary.support,
+            editable: super::program::Program::from_native(payload, "Custom Effect").is_ok(),
+            condition_kinds,
+            effect_kinds,
+            details,
+            notes: summary.notes,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Perk {
     pub index: usize,
@@ -59,6 +109,9 @@ pub struct Perk {
     pub action: Option<u32>,
     pub graphs: Vec<Entity>,
     pub error: Option<String>,
+    /// Present when the action decoded. Absent for older cached indexes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior: Option<Behavior>,
 }
 
 impl Perk {
@@ -105,8 +158,10 @@ pub fn cached(
 ) -> Result<Arc<Index>, String> {
     crate::package_runtime::index_cache::cached(
         packages,
-        "native-indexes",
-        "dependencies-v1",
+        crate::sandbox_perk::CACHE_DIRECTORY,
+        // Bumped when the decoded behavior digest changes shape or wording, since the
+        // headline, support and editability of every perk are cached here.
+        "dependencies-v11",
         &CACHE,
         || inspect(manager, progress),
         |_| true,
@@ -250,11 +305,13 @@ pub fn inspect(
         });
         progress(index + 1, total);
     }
-    let mut actions = BTreeMap::<u32, Result<Vec<Entity>, String>>::new();
+    let mut actions = BTreeMap::<u32, Result<(Vec<Entity>, Option<Behavior>), String>>::new();
     for index in 0..perk_count {
         let row = finished_sandbox_perk_at(&perks, index)?;
         let assignment = sandbox_perk_runtime_assignment(&assignments, row.runtime_key)?;
-        let action_tag = assignment.map(|assignment| assignment.runtime_tag);
+        let action_tag = assignment
+            .and_then(|assignment| assignment.action_tag())
+            .map(|tag| tag.0);
         let mut perk = Perk {
             index,
             hash: row.perk_hash,
@@ -262,11 +319,12 @@ pub fn inspect(
             action: action_tag,
             graphs: Vec::new(),
             error: None,
+            behavior: None,
         };
         if let Some(tag) = action_tag {
             let inspected = actions.entry(tag).or_insert_with(|| {
                 let action = load_sandbox_perk_runtime_action(manager, &globals, index)?;
-                action
+                let graphs = action
                     .graphs
                     .iter()
                     .map(|graph| {
@@ -275,10 +333,14 @@ pub fn inspect(
                             .or_insert_with(|| entity(manager, graph.tag.0))
                             .clone()
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((graphs, Behavior::read(&action.action_payload)))
             });
             match inspected {
-                Ok(graphs) => perk.graphs.clone_from(graphs),
+                Ok((graphs, behavior)) => {
+                    perk.graphs.clone_from(graphs);
+                    perk.behavior.clone_from(behavior);
+                }
                 Err(error) => perk.error = Some(error.clone()),
             }
         }

@@ -132,7 +132,7 @@ pub(super) fn draw_condition_programs(
             .show(ui, |ui| {
                 let evaluation = evaluate_condition_program(program, catalog, snapshot);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Effective result").strong());
+                    ui.label(egui::RichText::new("Effective Result").strong());
                     let color = match evaluation {
                         ConditionEvaluation::Passed => ui.visuals().selection.bg_fill,
                         ConditionEvaluation::Failed => ui.visuals().error_fg_color,
@@ -152,7 +152,7 @@ pub(super) fn draw_condition_programs(
                             ui.strong("#");
                             ui.strong("Operation");
                             ui.strong("Operand");
-                            ui.strong("Referenced entry");
+                            ui.strong("Referenced Entry");
                             ui.end_row();
                             for (token_index, token) in program.iter().enumerate() {
                                 ui.monospace((token_index + 1).to_string());
@@ -179,13 +179,13 @@ pub(super) fn draw_condition_programs(
                                 ui.monospace(token[1].to_string());
                             });
                             ui.horizontal_wrapped(|ui| {
-                                ui.label(egui::RichText::new("Referenced entry").weak());
+                                ui.label(egui::RichText::new("Referenced Entry").weak());
                                 draw_condition_token_resolution(ui, token, catalog, state);
                             });
                         });
                     }
                 }
-                egui::CollapsingHeader::new("Raw opcodes")
+                egui::CollapsingHeader::new("Raw Opcodes")
                     .id_salt((id_source, "raw_condition", owner_hash, program_index))
                     .show(ui, |ui| {
                         ui.add(

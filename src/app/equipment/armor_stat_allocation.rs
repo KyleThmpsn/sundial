@@ -13,7 +13,6 @@ mod ui;
 
 pub(super) use model::{STAT_NAMES, State, TARGET_MAX};
 pub(super) use solver::{
-    is_allocation_plug, is_allocation_socket, is_intrinsic_plug, selected_totals,
-    socket_stat_values,
+    is_allocation_plug, is_allocation_socket, is_intrinsic_plug, plug_stat_values, selected_totals,
 };
 pub(super) use ui::{INLINE_CONTENT_WIDTH, draw, is_available};

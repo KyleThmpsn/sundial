@@ -2,13 +2,79 @@ use crate::app::account_workspace as account;
 
 use super::*;
 
+pub(super) struct EquipmentPicker {
+    pub(super) slot: &'static str,
+    pub(super) bucket: u64,
+    pub(super) class_type: u64,
+    pub(super) current_hash: Option<u64>,
+    pub(super) is_empty: bool,
+    pub(super) show_dummy_items: bool,
+    pub(super) allow_cross_class_subclasses: bool,
+    pub(super) supports_emote_collection: bool,
+}
+
+impl EquipmentPicker {
+    pub(super) fn choices(
+        &self,
+        catalog: &Catalog,
+        query: &str,
+        existing_inventory: &[ExistingInventoryChoice],
+    ) -> DefinitionPickerChoices {
+        let candidates = if query.trim().is_empty() {
+            catalog.browse(
+                self.bucket,
+                self.class_type,
+                self.show_dummy_items,
+                self.allow_cross_class_subclasses,
+            )
+        } else {
+            catalog.search(
+                query,
+                self.bucket,
+                self.class_type,
+                self.show_dummy_items,
+                self.allow_cross_class_subclasses,
+            )
+        };
+        let inventory_query = CatalogSearchQuery::new(query);
+        let weapon_slot = WEAPON_SLOTS.contains(&self.slot);
+        DefinitionPickerChoices {
+            definitions: equipment_definition_choices(candidates, self.supports_emote_collection),
+            existing_inventory: existing_inventory
+                .iter()
+                .filter(|choice| {
+                    inventory_query.matches(
+                        catalog,
+                        choice.hash,
+                        &[&choice.name, &choice.type_name],
+                    )
+                })
+                .cloned()
+                .collect(),
+            clear: (weapon_slot
+                && (query.trim().is_empty() || "empty weapon".contains(&query.to_lowercase())))
+            .then(|| ClearDefinitionChoice {
+                label: "Empty Weapon".to_owned(),
+                tooltip: "Sets this equipment slot to empty.".to_owned(),
+                selected: self.is_empty,
+            }),
+            random_item_builder_hash: self
+                .current_hash
+                .filter(|_| weapon_slot || ARMOR_SLOTS.contains(&self.slot)),
+            empty_message: "No compatible installed items found".to_owned(),
+        }
+    }
+}
+
 pub(super) fn equipment_definition_choices<'a>(
     candidates: impl IntoIterator<Item = &'a ItemDef>,
-    v13_account: bool,
+    supports_emote_collection: bool,
 ) -> Vec<DefinitionChoice> {
     candidates
         .into_iter()
-        .filter(|item| crate::account_contract::definition_available(item.hash, v13_account))
+        .filter(|item| {
+            crate::account_contract::definition_available(item.hash, supports_emote_collection)
+        })
         .map(|item| DefinitionChoice {
             hash: item.hash,
             name: item.name.clone(),
@@ -36,8 +102,10 @@ pub(super) fn equipment_inventory_choices(
                 return None;
             }
             let hash = u64::from(snapshot.definition_hash);
-            if !crate::account_contract::definition_available(hash, document.supports_v13_account())
-            {
+            if !crate::account_contract::definition_available(
+                hash,
+                document.supports_emote_collection(),
+            ) {
                 return None;
             }
             let definition = catalog.inventory_definition(hash)?;
@@ -57,14 +125,6 @@ pub(super) fn equipment_inventory_choices(
             })
         })
         .collect()
-}
-
-pub(super) fn existing_inventory_choice_matches(
-    catalog: &Catalog,
-    choice: &ExistingInventoryChoice,
-    query: &str,
-) -> bool {
-    CatalogSearchQuery::new(query).matches(catalog, choice.hash, &[&choice.name, &choice.type_name])
 }
 
 pub(in crate::app) fn combo_u64(

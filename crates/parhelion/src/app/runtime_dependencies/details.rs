@@ -15,18 +15,17 @@ impl Browser {
         &mut self,
         ui: &mut egui::Ui,
         index: &Index,
-        choices: &[WeaponSandboxPerkChoice],
         donors: &[WeaponDonorSummary],
         _target: Option<u16>,
     ) {
         let Some(perk) = index.perks.get(self.selected) else {
             return;
         };
-        ui.heading(perk_label(perk.index, choices));
+        ui.heading(self.sources.label(perk.index));
         ui.strong(if perk.error.is_some() {
             "Inspection Incomplete"
         } else if perk.action.is_none() {
-            "Marker Only"
+            "No Standalone Action"
         } else {
             "Has an Action"
         });
@@ -34,19 +33,26 @@ impl Browser {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
         ui.label(perk_explanation(perk));
+        if let Some(behavior) = &perk.behavior {
+            ui.add_space(8.0);
+            ui.strong("Decoded Behavior");
+            ui.label(&behavior.headline);
+        }
+        draw_sources(ui, &self.sources, perk.index);
         ui.add_space(12.0);
         self.draw_host_requirements(ui, index, perk, donors);
         ui.add_space(12.0);
-        self.draw_stock_defaults(ui, perk, donors);
+        self.draw_stock_defaults(ui, perk.index, None);
         ui.add_space(12.0);
         egui::CollapsingHeader::new("Technical Details")
             .id_salt(("perk-technical", perk.index))
             .show(ui, |ui| {
+                ui.monospace(format!(
+                    "Effect {} · Hash {:08X}\nRuntime Key {:08X}",
+                    perk.index, perk.hash, perk.runtime_key
+                ));
                 if let Some(action) = perk.action {
-                    ui.monospace(format!(
-                        "Action {action:08X} · Runtime Key {:08X}",
-                        perk.runtime_key
-                    ));
+                    ui.monospace(format!("Action {action:08X}"));
                 }
                 for graph in &perk.graphs {
                     draw_entity(ui, graph);
@@ -54,32 +60,39 @@ impl Browser {
             });
     }
 
-    fn draw_stock_defaults(
-        &mut self,
-        ui: &mut egui::Ui,
-        perk: &Perk,
-        donors: &[WeaponDonorSummary],
-    ) {
-        ui.horizontal(|ui| {
-            ui.strong("Used By");
-            sundial::investment::draw_authoring_info_icon(ui, "Stock weapons that use this perk by default. These are examples, not required pairings. Optional socket choices are excluded.");
-        });
-        let patterns = self
-            .uses
-            .iter()
-            .filter(|usage| usize::from(usage.perk_index) == perk.index)
-            .map(|usage| usage.pattern_index)
-            .collect::<BTreeSet<_>>();
-        if patterns.is_empty() {
-            ui.weak("No stock examples found.");
+    fn draw_stock_defaults(&mut self, ui: &mut egui::Ui, perk: usize, pattern: Option<usize>) {
+        let uses = default_uses(&self.uses, perk, pattern);
+        if pattern.is_none() {
+            ui.strong("Referenced in Item Defaults");
+            ui.small("Base items and default socket plugs that reference this effect. This does not establish activation or compatibility. Optional socket choices are excluded.");
         }
-        for pattern in patterns {
+        if uses.is_empty() {
+            ui.weak("No item default references found.");
+        }
+        for usage in uses {
+            let source = usage.source_plug.map_or_else(
+                || "Base Item".to_owned(),
+                |hash| {
+                    let name = self
+                        .sources
+                        .get(perk)
+                        .iter()
+                        .find(|source| source.hash == hash)
+                        .map_or("Unnamed Plug", |source| source.name.as_str());
+                    format!("Default Plug: {name} · {hash:08X}")
+                },
+            );
             if ui
-                .link(pattern_label(usize::from(pattern), donors))
+                .link(format!(
+                    "{} · Pattern {}",
+                    usage.weapon_name, usage.pattern_index
+                ))
+                .on_hover_text(format!("Item {:08X}\n{source}", usage.weapon_hash))
                 .clicked()
             {
-                self.navigate(Page::Patterns, usize::from(pattern));
+                self.navigate(Page::Patterns, usize::from(usage.pattern_index));
             }
+            ui.small(source);
         }
     }
 
@@ -90,17 +103,17 @@ impl Browser {
         perk: &Perk,
         donors: &[WeaponDonorSummary],
     ) {
-        ui.strong("What It Needs");
+        ui.strong("Host Evidence");
         let Some(caster) = index
             .caster
             .as_ref()
             .filter(|caster| caster.perk_index == perk.index)
         else {
-            ui.label("Unknown. Test with your weapon in game.");
+            ui.label("Host requirements have not been established. Test with your weapon in game.");
             return;
         };
-        ui.label("Needs the caster sword setup from Temptation's Hook. The Frame marker alone does not launch projectiles.");
-        ui.label("Use its runtime source or sword component, then test in game.");
+        ui.label("In the stock Temptation's Hook setup, the sword component supplies the projectile resources. The Frame marker has no standalone action.");
+        ui.label("This is one observed setup. Other combinations need a gameplay test.");
         if ui
             .link(pattern_label(caster.pattern_index, donors))
             .clicked()
@@ -118,7 +131,6 @@ impl Browser {
         &mut self,
         ui: &mut egui::Ui,
         index: &Index,
-        choices: &[WeaponSandboxPerkChoice],
         donors: &[WeaponDonorSummary],
         target: Option<u16>,
     ) {
@@ -135,7 +147,7 @@ impl Browser {
             .map(|donor| donor.name.as_str())
             .collect::<BTreeSet<_>>();
         if weapons.len() > 1 {
-            egui::CollapsingHeader::new(format!("Stock Weapons ({})", weapons.len()))
+            egui::CollapsingHeader::new(format!("Items Sharing This Pattern ({})", weapons.len()))
                 .id_salt(("pattern-weapons", pattern.index))
                 .show(ui, |ui| {
                     for name in weapons {
@@ -178,19 +190,23 @@ impl Browser {
                 .map(|peer| peer.index)
                 .collect::<Vec<_>>();
             if !peers.is_empty() {
-                egui::CollapsingHeader::new(format!("Related Patterns ({})", peers.len()))
-                    .id_salt(("pattern-peers", pattern.index))
-                    .show(ui, |ui| {
-                        for peer in peers {
-                            if ui.link(pattern_label(peer, donors)).clicked() {
-                                self.navigate(Page::Patterns, peer);
-                            }
+                egui::CollapsingHeader::new(format!(
+                    "Patterns Sharing This Entity ({})",
+                    peers.len()
+                ))
+                .id_salt(("pattern-peers", pattern.index))
+                .show(ui, |ui| {
+                    for peer in peers {
+                        if ui.link(pattern_label(peer, donors)).clicked() {
+                            self.navigate(Page::Patterns, peer);
                         }
-                    });
+                    }
+                });
             }
         }
         ui.add_space(12.0);
-        ui.strong("Default Perks");
+        ui.strong("Effects in Item Defaults");
+        ui.small("These effects occur on individual items that share this pattern. They are not defaults of the pattern itself.");
         let perks = self
             .uses
             .iter()
@@ -198,12 +214,17 @@ impl Browser {
             .map(|usage| usage.perk_index)
             .collect::<BTreeSet<_>>();
         if perks.is_empty() {
-            ui.weak("No stock examples found.");
+            ui.weak("No item default references found.");
         }
         for perk in perks {
-            if ui.link(perk_label(usize::from(perk), choices)).clicked() {
+            if ui.link(self.sources.label(usize::from(perk))).clicked() {
                 self.navigate(Page::Perks, usize::from(perk));
             }
+            egui::CollapsingHeader::new("Item References")
+                .id_salt(("pattern-perk-uses", pattern.index, perk))
+                .show(ui, |ui| {
+                    self.draw_stock_defaults(ui, usize::from(perk), Some(pattern.index))
+                });
         }
         ui.add_space(12.0);
         egui::CollapsingHeader::new("Technical Details")
@@ -219,3 +240,19 @@ impl Browser {
             });
     }
 }
+
+pub(super) fn default_uses(
+    uses: &[PerkPatternUse],
+    perk: usize,
+    pattern: Option<usize>,
+) -> Vec<PerkPatternUse> {
+    uses.iter()
+        .filter(|usage| {
+            usize::from(usage.perk_index) == perk
+                && pattern.is_none_or(|pattern| usize::from(usage.pattern_index) == pattern)
+        })
+        .cloned()
+        .collect()
+}
+
+use sundial::ui::catalog::draw_sources;

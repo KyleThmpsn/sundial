@@ -2,7 +2,9 @@ use super::*;
 
 #[test]
 fn slot_replacement_moves_or_deletes_with_package_commit_and_rolls_back_on_failure() {
-    use sundial::investment::{AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement};
+    use sundial::package_authoring::account::{
+        AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement,
+    };
     for capacity in [1, 2] {
         for fail in [false, true] {
             let fixture = Fixture::new();
@@ -75,7 +77,7 @@ fn socket_fixture(
     let review = crate::install::replacement::test_review_with_sockets(
         &fixture.target,
         BTreeSet::new(),
-        vec![sundial::investment::AuthoredSocketChange {
+        vec![sundial::package_authoring::account::AuthoredSocketChange {
             definition_hash: 100,
             previous_socket_count: previous,
             default_plugs: vec![Some(400); incoming],

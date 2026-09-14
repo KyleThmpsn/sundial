@@ -13,15 +13,26 @@ use super::model::{
 
 impl SundialApp {
     pub(super) fn profile_bucket_usage(&self, items: &[ProfileItemSnapshot]) -> BucketUsage {
+        self.bucket_usage(
+            InventoryScope::Profile,
+            items
+                .iter()
+                .map(|item| Some(u64::from(item.definition_hash))),
+            true,
+        )
+    }
+
+    pub(super) fn bucket_usage(
+        &self,
+        expected_scope: InventoryScope,
+        hashes: impl IntoIterator<Item = Option<u64>>,
+        mut occupancy_complete: bool,
+    ) -> BucketUsage {
         let mut counts = HashMap::new();
         let mut unresolved_count = 0;
-        let mut occupancy_complete = true;
-        for item in items {
-            match self
-                .manifest
-                .inventory_metadata(u64::from(item.definition_hash))
-            {
-                Some(metadata) if metadata.scope == InventoryScope::Profile => {
+        for hash in hashes {
+            match hash.and_then(|hash| self.manifest.inventory_metadata(hash)) {
+                Some(metadata) if metadata.scope == expected_scope => {
                     *counts.entry(metadata.native_bucket_id).or_default() += 1;
                 }
                 Some(metadata) if metadata.scope != InventoryScope::Unknown => {
@@ -71,7 +82,11 @@ impl SundialApp {
             } else {
                 groups.push(ItemBucket {
                     key,
-                    label: metadata.bucket_label(),
+                    label: if metadata.scope == InventoryScope::Unknown {
+                        "Invalid Items".into()
+                    } else {
+                        metadata.bucket_label()
+                    },
                     capacity: metadata.authored_row_capacity(),
                     addable: false,
                     items: vec![item],
@@ -80,6 +95,7 @@ impl SundialApp {
         }
         groups.sort_by_cached_key(|group| {
             (
+                group.key.scope != InventoryScope::Unknown,
                 page_bucket_display_rank(expected_scope, group.key),
                 group.label.to_lowercase(),
                 group.key.native_id,
@@ -127,6 +143,7 @@ pub(super) fn add_candidate_buckets<T>(
     }
     groups.sort_by_cached_key(|group| {
         (
+            group.key.scope != InventoryScope::Unknown,
             page_bucket_display_rank(expected_scope, group.key),
             group.label.to_lowercase(),
             group.key.native_id,
@@ -134,8 +151,11 @@ pub(super) fn add_candidate_buckets<T>(
     });
 }
 
-pub(super) fn prepare_character_buckets<T>(groups: &mut Vec<ItemBucket<T>>, v13_account: bool) {
-    if !v13_account {
+pub(super) fn prepare_character_buckets<T>(
+    groups: &mut Vec<ItemBucket<T>>,
+    supports_emote_collection: bool,
+) {
+    if !supports_emote_collection {
         return;
     }
     // The collection owns the emote equipment slot on current Sunrise. Keep native keys
@@ -179,19 +199,30 @@ pub(super) fn bucket_header_text(ui: &egui::Ui, text: &str) -> egui::RichText {
     egui::RichText::new(text).strong().size(size)
 }
 
-pub(super) fn bucket_key_has_room(
+pub(super) fn bucket_add_blocker(
     key: BucketKey,
     capacity: Option<u16>,
     usage: &BucketUsage,
-) -> bool {
-    capacity.is_some_and(|capacity| {
-        let occupied = usage
-            .counts
-            .get(&key.native_id)
-            .copied()
-            .unwrap_or_default();
-        occupied.saturating_add(usage.unresolved_count) < usize::from(capacity)
-    })
+    label: &str,
+) -> Option<String> {
+    let Some(capacity) = capacity.map(usize::from) else {
+        return Some(format!("The capacity of {label} could not be verified"));
+    };
+    let occupied = usage
+        .counts
+        .get(&key.native_id)
+        .copied()
+        .unwrap_or_default();
+    if occupied >= capacity {
+        Some(format!("{label} is full ({occupied} / {capacity})"))
+    } else if occupied.saturating_add(usage.unresolved_count) >= capacity {
+        Some(format!(
+            "Cannot verify space in {label}: {occupied} / {capacity} known items and {} invalid items with unknown placement. Review Invalid Items to replace or remove them",
+            usage.unresolved_count,
+        ))
+    } else {
+        None
+    }
 }
 
 pub(super) fn bucket_add_tooltip(
@@ -200,7 +231,7 @@ pub(super) fn bucket_add_tooltip(
     target_ready: bool,
     array_has_room: bool,
     occupancy_complete: bool,
-    bucket_has_room: bool,
+    bucket_blocker: Option<&str>,
     bucket_label: &str,
 ) -> String {
     if can_add {
@@ -215,8 +246,8 @@ pub(super) fn bucket_add_tooltip(
     } else if !occupancy_complete {
         "Bucket occupancy cannot be established until malformed or unsupported rows are repaired"
             .to_owned()
-    } else if !bucket_has_room {
-        format!("{bucket_label} is at capacity")
+    } else if let Some(reason) = bucket_blocker {
+        reason.to_owned()
     } else {
         "This bucket cannot accept another item".to_owned()
     }
@@ -304,7 +335,7 @@ pub(super) fn draw_bucket_details<T>(
     if group.key.scope == InventoryScope::Unknown {
         ui.label(
             egui::RichText::new(
-                "No installed bucket metadata is available; these rows remain in their original order.",
+                "These items have no installed bucket metadata. Use their hashes to identify them, or replace or remove them here.",
             )
             .weak(),
         );

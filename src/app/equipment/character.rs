@@ -495,8 +495,7 @@ impl SundialApp {
             melee,
             class_ability,
         };
-        let abilities_editable =
-            !self.document.uses_json_account() || !self.document.supports_v13_account();
+        let abilities_editable = !self.document.uses_subclass_plug_abilities();
         let display_values_need_materialization = self.document.uses_json_account()
             && [
                 ("race", original_values.race),
@@ -616,8 +615,6 @@ impl SundialApp {
             },
         );
 
-        ui.add_enabled_ui(editable, |ui| self.draw_character_runtime(ui, index));
-
         // A disabled egui scope still executes this function. Keep document writes behind
         // both the edit gate and an explicit selection change.
         if !editable {
@@ -657,10 +654,9 @@ impl SundialApp {
             .then(|| self.class_armor_defaults.get(&edited.class_type).copied())
             .flatten();
         let mut candidate = self.document.clone();
-        let metadata_updates = match edited.metadata_updates(
-            !selecting_subclass
-                && (!candidate.uses_json_account() || !candidate.supports_v13_account()),
-        ) {
+        let metadata_updates = match edited
+            .metadata_updates(!selecting_subclass && !candidate.uses_subclass_plug_abilities())
+        {
             Ok(updates) => updates,
             Err(error) => {
                 self.set_status(error, true);
@@ -693,11 +689,10 @@ impl SundialApp {
         }
         if candidate != self.document {
             self.document = candidate;
-            self.dirty = true;
-            self.set_status(
-                character_edit_status(index, original, edited, selected_subclass.as_deref()),
-                false,
-            );
+            let label =
+                character_edit_status(index, original, edited, selected_subclass.as_deref());
+            self.record_edit(label.clone());
+            self.set_status(label, false);
         }
     }
 

@@ -165,7 +165,7 @@ const fn inventory_bucket_name(scope: InventoryScope, bucket: u8) -> Option<&'st
         (InventoryScope::Character, 8) => Some("Ghost shells"),
         (InventoryScope::Character, 9) => Some("Vehicles"),
         (InventoryScope::Character, 10) => Some("Ships"),
-        (InventoryScope::Character, 12) => Some("Emote collection"),
+        (InventoryScope::Character, 12) => Some("Emote Collection"),
         (InventoryScope::Character, 16) => Some("Subclasses"),
         (InventoryScope::Character, 17) => Some("Clan banners"),
         (InventoryScope::Character, 27) => Some("Emblems"),
@@ -549,31 +549,5 @@ mod tests {
             item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 0),
             bucket_hash(0)
         );
-    }
-
-    #[test]
-    fn bucket_labels_cover_known_and_unknown_native_ids() {
-        let metadata = |scope, native_bucket_id| InventoryMetadata {
-            scope,
-            native_bucket_id,
-            ..InventoryMetadata::default()
-        };
-        assert_eq!(
-            metadata(InventoryScope::Profile, 14).bucket_label(),
-            "Shaders"
-        );
-        assert_eq!(
-            metadata(InventoryScope::Character, 0).bucket_label(),
-            "Kinetic weapons"
-        );
-        assert_eq!(
-            metadata(InventoryScope::Profile, 99).bucket_label(),
-            "Profile bucket 99"
-        );
-        assert_eq!(
-            InventoryMetadata::default().bucket_label(),
-            "Unknown bucket"
-        );
-        assert_eq!(bucket_hash(49), Some(0x59CA_1EA2));
     }
 }

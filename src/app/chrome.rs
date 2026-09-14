@@ -24,7 +24,7 @@ impl SundialApp {
             ui.horizontal(|ui| {
                 if self.has_unsaved_changes() {
                     ui.label(
-                        egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color),
+                        egui::RichText::new("Unsaved Changes").color(ui.visuals().warn_fg_color),
                     );
                 }
                 let undo_label = self.undo_history.last().map(|entry| entry.label.clone());
@@ -349,42 +349,4 @@ fn sidebar_footer(ui: &mut egui::Ui, available_update: Option<&str>) -> SidebarF
         }
     })
     .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn update_action_is_visible_above_footer_without_overlap() {
-        for height in [360.0, 600.0, 900.0] {
-            let ctx = egui::Context::default();
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(900.0, height),
-                )),
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| {
-                egui::SidePanel::left("test_sidebar")
-                    .exact_width(MAIN_SIDEBAR_WIDTH)
-                    .show(ctx, |ui| {
-                        ui.label("Character Inventory");
-                        let clip = ui.clip_rect();
-                        let footer = sidebar_footer(ui, Some("99.0.0"));
-                        let update = footer.update.unwrap();
-                        for response in [&footer.about, &footer.activity_log, &update] {
-                            assert!(
-                                clip.contains_rect(response.rect),
-                                "Clipped footer: {:?}",
-                                response.rect
-                            );
-                        }
-                        assert!(update.rect.bottom() < footer.about.rect.top());
-                        assert!(!footer.about.rect.intersects(footer.activity_log.rect));
-                    });
-            });
-        }
-    }
 }

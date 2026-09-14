@@ -26,7 +26,7 @@ impl Workbench {
         let picked = pickers::popup(
             ui,
             "perk-template",
-            "Copy Existing Perk…",
+            "Copy Existing…",
             &mut self.template_query,
             |ui, query, reset, height| {
                 let mut rows: Vec<(bool, usize, u32, String, String)> = Vec::new();

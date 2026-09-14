@@ -216,16 +216,13 @@ fn draw_choice(
         .and_then(|variant| variant.name.clone())
         .unwrap_or_else(|| catalog.plug_label(hash, false));
     let removable = choice_index > 0;
-    let tooltip = variant.map(|variant| {
-        catalog.private_plug_tooltip(
-            hash,
-            variant
-                .classification_donor_hash
-                .as_ref()
-                .and_then(|hash| hash.parse_u32().ok()),
-            variant.name.as_deref(),
-            variant.description.as_deref(),
-        )
+    let tooltip = variant.map(|variant| sundial::investment::PlugTooltip {
+        classification_hash: variant
+            .classification_donor_hash
+            .as_ref()
+            .and_then(|hash| hash.parse_u32().ok()),
+        name: variant.name.as_deref(),
+        description: variant.description.as_deref(),
     });
     let tile = ui.allocate_ui_with_layout(
         egui::vec2(f32::from(button_width), ui.spacing().interact_size.y),
@@ -256,7 +253,7 @@ fn draw_choice(
                     current_hash: variant.is_none().then_some(hash),
                     mode: plug_selection_mode,
                     button: PlugChoicePickerButton {
-                        tooltip: tooltip.as_deref(),
+                        tooltip,
                         text: &button_label,
                         icon_hash: Some(hash),
                         width: picker_width,

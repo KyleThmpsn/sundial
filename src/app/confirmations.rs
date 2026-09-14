@@ -87,7 +87,7 @@ impl SundialApp {
         if self.confirmation == Some(ConfirmationDialog::ResetDefaults) {
             let mut reset = false;
             let mut cancel = false;
-            let account_source = self.document.source_info().kind;
+            let account_source = self.document.source_kind();
             let response = egui::Modal::new("restore_sunrise_defaults".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
                 ui.heading("Restore Sunrise Defaults?");
@@ -135,13 +135,13 @@ impl SundialApp {
                 let response =
                     egui::Modal::new("restore_sqlite_backup".into()).show(ctx, |ui| {
                         ui.set_width(560.0);
-                        ui.heading("Restore this account database backup?");
+                        ui.heading("Restore This Account Database Backup?");
                         ui.add_space(6.0);
                         ui.label("Sundial will replace investment.sqlite3 with the selected compatible backup. Before replacement, it creates and integrity-checks a recovery snapshot of the current database.");
                         ui.add_space(6.0);
                         ui.label("Destiny 2 must be closed. Any unsaved Sundial changes will be discarded after the restored workspace reloads. settings.json is not changed or synchronized.");
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Selected backup").strong());
+                        ui.label(egui::RichText::new("Selected Backup").strong());
                         ui.label(
                             egui::RichText::new(backup.display().to_string())
                                 .weak()
@@ -149,7 +149,7 @@ impl SundialApp {
                         );
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
-                            if ui.button("Restore account database").clicked() {
+                            if ui.button("Restore Account Database").clicked() {
                                 restore = true;
                             }
                             if ui.button("Cancel").clicked() {
@@ -164,7 +164,7 @@ impl SundialApp {
                 } else if cancel {
                     self.confirmation = None;
                     self.pending_sqlite_restore = None;
-                    self.set_status("Database restore cancelled; no files were changed", false);
+                    self.set_status("Database restore cancelled. No files were changed", false);
                 }
             } else {
                 self.confirmation = None;
@@ -176,10 +176,10 @@ impl SundialApp {
         if self.confirmation == Some(ConfirmationDialog::ReallyUnsafe) {
             let mut enable = false;
             let mut cancel = false;
-            let account_source = self.document.source_info().kind;
+            let account_source = self.document.source_kind();
             let response = egui::Modal::new("really_unsafe_confirmation".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
-                ui.heading("Show all plugs?");
+                ui.heading("Show All Plugs?");
                 ui.add_space(6.0);
                 ui.colored_label(
                     ui.visuals().error_fg_color,
@@ -202,7 +202,7 @@ impl SundialApp {
                 });
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Show all plugs").clicked() {
+                    if ui.button("Show All Plugs").clicked() {
                         enable = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -345,7 +345,7 @@ impl SundialApp {
                     ui.label("You can Undo this change until the settings are saved.");
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Delete item").clicked() {
+                        if ui.button("Delete Item").clicked() {
                             delete = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -403,7 +403,7 @@ impl SundialApp {
             let response = egui::Modal::new("exit_confirmation".into()).show(ctx, |ui| {
                 ui.heading("Unsaved Changes");
                 ui.add_space(6.0);
-                ui.label("Save your changes before closing Sundial?");
+                ui.label("Save Your Changes before Closing Sundial?");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save and Exit").clicked() {

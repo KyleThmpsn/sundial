@@ -77,7 +77,7 @@ impl Editor {
         if let Some(badge) = &mut draft.badge {
             if !badges.is_empty() {
                 egui::ComboBox::from_id_salt("existing-badge")
-                    .selected_text("Choose From Library")
+                    .selected_text("Choose from Library")
                     .show_ui(ui, |ui| {
                         for existing in badges {
                             if ui

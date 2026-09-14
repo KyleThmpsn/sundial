@@ -48,7 +48,7 @@ impl Progression {
         definition_index: u16,
         slot: u16,
     ) -> Result<bool, SqliteAccountError> {
-        if usize::from(slot) >= crate::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY {
+        if usize::from(slot) >= crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY {
             return Err(SqliteAccountError::invalid_data(
                 "unlocks",
                 "The account claim flag is outside Sunrise's supported bank",
@@ -320,7 +320,7 @@ impl Progression {
             }
         }
         for kind in 0..2 {
-            super::package::compact(db, "family5", &format!("kind={kind}"))
+            super::positions::compact(db, "family5", &format!("kind={kind}"))
                 .map_err(|error| SqliteAccountError::invalid_data("family5", error))?;
         }
         Ok(())
@@ -344,13 +344,16 @@ fn insert_preserved(
         .iter()
         .find(|row| {
             keys.iter().all(|(name, value)| {
-                row.get(*name) == Some(&super::package::Cell::Integer(i64::from(*value)))
+                row.get(*name) == Some(&super::snapshot::Cell::Integer(i64::from(*value)))
             })
         })
         .cloned()
         .unwrap_or_default();
     for &(name, value) in keys.iter().chain(values) {
-        row.insert(name.into(), super::package::Cell::Integer(i64::from(value)));
+        row.insert(
+            name.into(),
+            super::snapshot::Cell::Integer(i64::from(value)),
+        );
     }
     super::writer::insert(db, table, row)
 }

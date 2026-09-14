@@ -85,12 +85,12 @@ pub(super) fn apply_candidate(
     *document = updated;
     let result = if previous_item_preserved {
         format!(
-            "Equipped {} in {slot_label}; moved the previous item to character inventory",
+            "Equipped {} in {slot_label}. Moved the previous item to character inventory",
             item.name
         )
     } else if previous_item_discarded {
         format!(
-            "Equipped {} in {slot_label}; deleted the previous equipped item",
+            "Equipped {} in {slot_label}. Deleted the previous equipped item",
             item.name
         )
     } else {

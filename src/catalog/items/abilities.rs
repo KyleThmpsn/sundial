@@ -78,8 +78,8 @@ pub(in crate::catalog) fn build_subclass_choices(
         if let Ok(list) = manager.read_tag(list_tag)
             && let Some(display) = ability_displays.get(&list_index)
         {
-            let middle_super = crate::subclass::shadowkeep_subclass_rules(item.hash)
-                .map_or(20, |(_, entry)| entry);
+            let middle_super =
+                crate::subclass::rules(item.hash).map_or(20, |rules| u64::from(rules.middle_super));
             item.abilities = parse_abilities(&list, display, middle_super);
             item.class_type = match list_index {
                 1..=3 => 1,  // Hunter

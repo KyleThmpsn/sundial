@@ -11,6 +11,11 @@ fn native_activation_clone_keeps_stock_effects_and_residency() {
     let globals = manager.read_tag(globals_tag).unwrap();
     let stock = load_sandbox_perk_runtime_action(&manager, &globals, 421).unwrap();
     let before = stock.action_payload.clone();
+    let registry = manager
+        .read_tag(TagHash(
+            sundial::package_authoring::sandbox_perk::activation::LABEL_GLOBALS,
+        ))
+        .unwrap();
     let allocator = AppendedTagAllocator::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, 6469);
     for condition in PerkActivation::ALL {
         let mut tags = Vec::new();
@@ -30,8 +35,9 @@ fn native_activation_clone_keeps_stock_effects_and_residency() {
         assert_eq!(tags[0].template_tag, stock.action_tag);
         assert_eq!(
             tags[0].payload,
-            with_activation(stock.action_tag.0, &before, condition).unwrap()
+            with_activation(stock.action_tag.0, &before, condition, &registry).unwrap()
         );
+        sundial::package_authoring::sandbox_perk::action::decode(&tags[0].payload).unwrap();
         let graphs = sandbox_perk_runtime_graph_sources(&manager, &tags[0].payload).unwrap();
         assert_eq!(graphs.len(), stock.graphs.len());
         for (actual, expected) in graphs.iter().zip(&stock.graphs) {

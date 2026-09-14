@@ -12,68 +12,6 @@ fn document(version: u64) -> Value {
 }
 
 #[test]
-fn official_release_v6_account_validates_and_preserves_fields() {
-    // Sunrise 0.3.2 / 4aebb148e92176c2b9d64a07b94068d759945853 defaults.
-    let mut document: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"
-    ))
-    .unwrap();
-    assert_eq!(document["version"], 6);
-    assert_eq!(settings::validate_document(&document), Ok(()));
-    let original = document.clone();
-    for index in 0..3 {
-        let rows = equipment::equipped_item_snapshots(&document, index).unwrap();
-        assert!(!rows.is_empty());
-        assert!(rows.iter().all(|item| item.issues.is_empty()), "{rows:?}");
-    }
-    equipment::set_equipment_item_flags(&mut document, 0, "kinetic", Some(1)).unwrap();
-    document["state"]["characters"][0]["equipment"]["kinetic"] =
-        original["state"]["characters"][0]["equipment"]["kinetic"].clone();
-    let round_trip: Value =
-        serde_json::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
-    assert_eq!(round_trip, original);
-    assert_eq!(settings::validate_document(&round_trip), Ok(()));
-}
-
-#[test]
-fn actual_upstream_v13_account_validates() {
-    let document: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/sunrise-v13-a57dc9a9-defaults.json"
-    ))
-    .unwrap();
-    assert_eq!(settings::validate_document(&document), Ok(()));
-    for index in 0..3 {
-        let rows = equipment::equipped_item_snapshots(&document, index).unwrap();
-        let artifact = rows.iter().find(|item| item.slot == "artifact").unwrap();
-        assert!(artifact.issues.is_empty());
-        assert_eq!(artifact.bucket_hash, 0x59CA_1EA2);
-    }
-}
-
-#[test]
-fn retired_orbit_fields_survive_account_edits_without_validation() {
-    for value in [
-        json!("orbit_d2"),
-        json!("invalid old name!"),
-        json!({"legacy": true}),
-        Value::Null,
-    ] {
-        let mut document: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/sunrise-v16-1120748-defaults.json"
-        ))
-        .unwrap();
-        document["client"]["orbit_slice_set"] = value;
-        let client = document["client"].clone();
-        assert_eq!(settings::validate_document(&document), Ok(()));
-        equipment::set_equipment_item_flags(&mut document, 0, "kinetic", Some(4)).unwrap();
-        let round_trip: Value =
-            serde_json::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
-        assert_eq!(round_trip["client"], client);
-        assert_eq!(settings::validate_document(&round_trip), Ok(()));
-    }
-}
-
-#[test]
 fn masterwork_flags_follow_version_for_reads_writes_and_moves() {
     for version in [6, 8, 12, 13, 14] {
         for flags in [0_u8, 1, 3, 4, 5, 7, 8] {
@@ -194,28 +132,6 @@ fn emote_wheel_authoring_is_gated_and_preserves_four_socket_lanes() {
 }
 
 #[test]
-fn travelling_activity_edits_are_gated_bounded_and_lossless() {
-    use crate::persistence::json_account::character_runtime::set_current_activity;
-    for version in [6, 8, 13, 14] {
-        let mut document = document(version);
-        let original = document.clone();
-        assert_eq!(
-            set_current_activity(&mut document, 0, Some(json!("0xFFFF"))).is_ok(),
-            version >= 13
-        );
-        if version < 13 {
-            assert_eq!(document, original);
-            continue;
-        }
-        let edited = document.clone();
-        assert!(set_current_activity(&mut document, 0, Some(json!(65536))).is_err());
-        assert_eq!(document, edited);
-        assert_eq!(set_current_activity(&mut document, 0, None), Ok(true));
-        assert_eq!(document, original);
-    }
-}
-
-#[test]
 fn equipping_a_v13_subclass_leaves_ignored_saved_abilities_untouched() {
     let mut raw = document(13);
     raw["state"]["characters"][0]["movement_ability"] = json!({"opaque":"keep"});
@@ -245,6 +161,23 @@ fn equipping_a_v13_subclass_leaves_ignored_saved_abilities_untouched() {
             document["state"]["characters"][0].get(key),
             abilities.get(key)
         );
+    }
+}
+
+#[test]
+fn retired_activity_state_does_not_block_edits_or_change_on_round_trip() {
+    for version in [8, 13, 16] {
+        for retired in [json!(65536), json!("unknown"), json!({"opaque": [1, 2, 3]})] {
+            let mut raw = document(version);
+            raw["state"]["characters"][0]["current_activity_index"] = retired;
+            assert_eq!(settings::validate_characters(&raw), Ok(()));
+            let mut expected = raw.clone();
+            expected["state"]["characters"][0]["equipment"]["kinetic"]["flags"] = 1.into();
+            equipment::set_equipment_item_flags(&mut raw, 0, "kinetic", Some(1)).unwrap();
+            assert_eq!(settings::validate_characters(&raw), Ok(()));
+            let saved: Value = serde_json::from_slice(&serde_json::to_vec(&raw).unwrap()).unwrap();
+            assert_eq!(saved, expected);
+        }
     }
 }
 

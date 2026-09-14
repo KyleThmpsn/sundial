@@ -64,3 +64,15 @@ pub(super) fn validate(db: &Connection) -> Result<(), SqliteAccountError> {
     }
     Ok(())
 }
+
+pub(super) fn connection(db: &Connection) -> Result<(), String> {
+    match super::reader::load_connection(db).map_err(|error| error.to_string())? {
+        super::SqliteAccountLoad::Loaded(_) => {
+            super::progression::Progression::load(db).map_err(|error| error.to_string())?;
+            super::entitlements::load(db).map_err(|error| error.to_string())?;
+            super::runtime::load(db).map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        _ => Err("A compatible Sunrise investment database is required".into()),
+    }
+}

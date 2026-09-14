@@ -130,7 +130,7 @@ fn draw_collectible_state_action(
     let label = if desired {
         "Mark Acquired"
     } else {
-        "Mark Missing"
+        "Mark Not Acquired"
     };
     if ui
         .add_enabled(available, egui::Button::new(label).small())
@@ -444,7 +444,7 @@ fn condition_operand_tooltip(kind: u32, operand: u32, catalog: &Catalog) -> Stri
         2 | 3 | 4 | 8 | 9 | 13 | 14 | 15 => format!(
             "This operation does not read its operand. {operand} is retained as the raw package value."
         ),
-        _ => format!("Raw operand {operand}; this operation has not been decoded."),
+        _ => format!("Raw operand {operand}. This operation has not been decoded."),
     }
 }
 

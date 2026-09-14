@@ -117,7 +117,6 @@ fn metadata_edits_replace_stale_status_and_name_the_correct_history_action() {
             assert!(!app.status_is_error);
             assert!(app.status.contains(field), "{}", app.status);
             assert!(app.status.contains(choice), "{}", app.status);
-            app.record_document_change(before.clone());
             app.undo();
             assert_eq!(app.document, before);
             assert!(app.status.starts_with("Undid: Changed Character 1"));

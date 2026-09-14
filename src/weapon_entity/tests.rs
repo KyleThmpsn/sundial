@@ -45,6 +45,41 @@ fn sandbox_pattern_identity_decodes_runtime_and_gear_art_groups() {
 }
 
 #[test]
+fn sandbox_pattern_lookups_reject_malformed_arrays_consistently() {
+    let mut valid = vec![0; 0x70];
+    write_array_descriptor(&mut valid, 0x08, 0x30, 1, SANDBOX_PATTERN_ROW_CLASS);
+    let mut wrong_class = valid.clone();
+    wrong_class[0x38..0x3C].copy_from_slice(&0_u32.to_le_bytes());
+    let mut mismatched_count = valid.clone();
+    mismatched_count[0x30..0x38].copy_from_slice(&2_u64.to_le_bytes());
+    let mut excessive_count = valid.clone();
+    excessive_count[0x08..0x10].copy_from_slice(&u64::MAX.to_le_bytes());
+    excessive_count[0x30..0x38].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut before_payload = valid.clone();
+    before_payload[0x10..0x18].copy_from_slice(&i64::MIN.to_le_bytes());
+    for malformed in [
+        wrong_class,
+        mismatched_count,
+        excessive_count,
+        before_payload,
+        valid[..0x3C].to_vec(),
+        valid[..0x6F].to_vec(),
+    ] {
+        let by_hash = sandbox_pattern_identity(&malformed, 0).unwrap_err();
+        assert_eq!(
+            sandbox_pattern_identity_at(&malformed, 0).unwrap_err(),
+            by_hash
+        );
+        assert_eq!(
+            sandbox_pattern_identity_at(&malformed, usize::MAX).unwrap_err(),
+            by_hash
+        );
+    }
+    assert_eq!(sandbox_pattern_identity(&valid, 1), Ok(None));
+    assert_eq!(sandbox_pattern_identity_at(&valid, usize::MAX), Ok(None));
+}
+
+#[test]
 fn assignment_insert_preserves_sort_order_and_auxiliary_data() {
     let mut data = vec![0; 0x88];
     data[0x28..0x30].copy_from_slice(&[0, 0, 0, 0, 0xBD, 0x9F, 0x80, 0x80]);
@@ -246,6 +281,113 @@ fn entity_validation_checks_event_array_bounds_and_class() {
     let len = truncated.len() as u64;
     write_u64(&mut truncated, 0, len).unwrap();
     assert!(validate_weapon_entity(&truncated).is_err());
+}
+
+fn system_entity_without_resources() -> Vec<u8> {
+    let mut entity = vec![0; 0xE8];
+    write_u64(&mut entity, 0, 0xE8).unwrap();
+    entity[0x96] = 28;
+    write_array_descriptor(
+        &mut entity,
+        0x10,
+        0xB0,
+        1,
+        WEAPON_ENTITY_COMPONENT_ROW_CLASS,
+    );
+    write_u32(&mut entity, 0xC0, 0x80BF_DDC9).unwrap();
+    write_array_descriptor(
+        &mut entity,
+        0x48,
+        0xD0,
+        1,
+        WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
+    );
+    write_u32(&mut entity, 0xE0, u32::MAX).unwrap();
+    entity
+}
+
+#[test]
+fn system_entities_allow_omitted_resource_tables_but_not_active_unresolved_bindings() {
+    let entity = system_entity_without_resources();
+    validate_weapon_entity(&entity).unwrap();
+    assert!(weapon_component_binding_hashes(&entity).unwrap().is_empty());
+    let mut active = entity.clone();
+    write_u32(&mut active, 0xE0, WEAPON_BARREL_COMPONENT_KEY).unwrap();
+    write_u32(&mut active, 0xE4, 0x0001_0000).unwrap();
+    assert!(
+        validate_weapon_entity(&active)
+            .unwrap_err()
+            .contains("outside its resource tables")
+    );
+    let mut truncated = entity;
+    truncated.truncate(0x70);
+    write_u64(&mut truncated, 0, 0x70).unwrap();
+    assert!(validate_weapon_entity(&truncated).is_err());
+}
+
+#[test]
+fn allocated_resource_tables_still_require_correct_classes_and_counts() {
+    let mut entity = system_entity_without_resources();
+    entity.resize(0x128, 0);
+    write_u64(&mut entity, 0, 0x128).unwrap();
+    write_array_descriptor(&mut entity, 0x58, 0xE8, 0, 0);
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("resource-map array has class")
+    );
+    write_array_descriptor(
+        &mut entity,
+        0x58,
+        0xE8,
+        1,
+        WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
+    );
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("counts disagree")
+    );
+    write_u64(&mut entity, 0xE8, 2).unwrap();
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("count mismatch")
+    );
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+fn installed_entity_graphs_all_validate_including_omitted_tables() {
+    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages");
+    let manager =
+        crate::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&packages))
+            .unwrap();
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for (tag, entry) in manager.get_all_by_reference(WEAPON_ENTITY_CLASS) {
+        if entry.file_type != 8 {
+            continue;
+        }
+        checked += 1;
+        match manager.read_tag(tag) {
+            Ok(payload) => {
+                if let Err(error) = validate_weapon_entity(&payload) {
+                    failures.push(format!("{tag}: {error}"));
+                }
+            }
+            Err(error) => failures.push(format!("{tag}: {error}")),
+        }
+    }
+    assert!(checked > 0);
+    failures.sort();
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} entity graphs failed: {}",
+        failures.len(),
+        failures.join("\n")
+    );
+    println!("All {checked} entity graphs validated");
 }
 
 #[test]

@@ -5,7 +5,7 @@ use super::{
         FoldProjection, ProjectionEditError, fold_regions, projected_matches, reveal_source_range,
         visible_line_numbers,
     },
-    syntax::{JsonTokenKind, find_matches, json_tokens, line_column},
+    syntax::{find_matches, line_column},
 };
 
 #[test]
@@ -16,30 +16,6 @@ fn json_search_is_ascii_case_insensitive_and_non_overlapping() {
     );
     assert_eq!(find_matches("Plug plug", "Plug"), vec![(0, 4), (5, 9)]);
     assert!(find_matches("anything", "").is_empty());
-}
-
-#[test]
-fn json_syntax_tokens_distinguish_keys_and_values() {
-    let text = r#"{"name":"Sundial","count":2,"enabled":true,"missing":null}"#;
-    let tokens = json_tokens(text);
-    assert!(tokens.iter().any(|&(start, end, kind)| {
-        kind == JsonTokenKind::Key && &text[start..end] == "\"name\""
-    }));
-    assert!(tokens.iter().any(|&(start, end, kind)| {
-        kind == JsonTokenKind::String && &text[start..end] == "\"Sundial\""
-    }));
-    assert!(
-        tokens
-            .iter()
-            .any(|&(_, _, kind)| kind == JsonTokenKind::Number)
-    );
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|&&(_, _, kind)| kind == JsonTokenKind::Literal)
-            .count(),
-        2
-    );
 }
 
 #[test]

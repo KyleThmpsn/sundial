@@ -78,7 +78,7 @@ pub(super) fn dismantle_rarity_label(rarity: DismantleRarity) -> &'static str {
 
 pub(super) fn dismantle_rarity_summary(rarities: &[DismantleRarity]) -> String {
     match rarities {
-        [] => "Any rarity".to_owned(),
+        [] => "Any Rarity".to_owned(),
         [rarity] => dismantle_rarity_label(*rarity).to_owned(),
         rarities => format!("{} rarities", rarities.len()),
     }
@@ -86,18 +86,18 @@ pub(super) fn dismantle_rarity_summary(rarities: &[DismantleRarity]) -> String {
 
 pub(super) fn dismantle_class_label(gear_class: Option<DismantleGearClass>) -> &'static str {
     match gear_class {
-        None => "Any gear",
+        None => "Any Gear",
         Some(DismantleGearClass::Weapon) => "Weapon",
         Some(DismantleGearClass::Armor) => "Armor",
-        Some(DismantleGearClass::Both) => "Weapon + armor",
+        Some(DismantleGearClass::Both) => "Weapon + Armor",
     }
 }
 
 pub(super) fn dismantle_masterwork_label(masterworked: Option<bool>) -> &'static str {
     match masterworked {
-        None => "Any state",
+        None => "Any State",
         Some(true) => "Masterworked",
-        Some(false) => "Not masterworked",
+        Some(false) => "Not Masterworked",
     }
 }
 
@@ -136,7 +136,7 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "Schema {version} is newer than this Sundial release. Known item fields remain editable; unrecognized fields are preserved."
+                    "Schema {version} is newer than this Sundial release. Known item fields remain editable. Unrecognized fields are preserved."
                 ),
             );
         }
@@ -152,7 +152,7 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
     if !editable {
         ui.label(
             egui::RichText::new(
-                "Guided controls are disabled; All settings (JSON) remains available for inspection.",
+                "Guided controls are disabled. All Settings (JSON) remains available for inspection.",
             )
             .weak(),
         );
@@ -185,6 +185,6 @@ pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error
 pub(super) fn draw_unresolved_bucket_warning(ui: &mut egui::Ui) {
     ui.colored_label(
         ui.visuals().warn_fg_color,
-        "At least one existing definition has no known bucket. Unknown rows are conservatively counted against each candidate bucket, so some additions or cross-bucket replacements may be hidden.",
+        "Some existing items have no known bucket. They are shown under Invalid Items. Their placement must be resolved before Sundial can confirm space in some buckets, even when the known item count is below the limit.",
     );
 }

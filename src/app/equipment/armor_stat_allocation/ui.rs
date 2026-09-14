@@ -65,7 +65,7 @@ pub(in crate::app::equipment) fn draw(
         ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
             let has_targets = state.targets.iter().any(|target| *target > 0);
             if ui
-                .add_enabled(has_targets, egui::Button::new("Adjust stats"))
+                .add_enabled(has_targets, egui::Button::new("Adjust Stats"))
                 .on_disabled_hover_text("Set at least one target first")
                 .clicked()
             {

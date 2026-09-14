@@ -1,4 +1,8 @@
 //! The workbench uses Sundial's icon and description rows in an independent popup.
+mod browser;
+pub(in crate::app::custom_perks) use browser::{
+    BrowserList, browser, browser_with_toolbar, search, show_all,
+};
 
 pub(in crate::app::custom_perks) fn matches(query: &str, text: &str) -> bool {
     let text = text.to_lowercase();
@@ -10,6 +14,17 @@ pub(in crate::app::custom_perks) fn popup<T>(
     scope: impl std::hash::Hash,
     label: &str,
     query: &mut String,
+    contents: impl FnMut(&mut egui::Ui, &str, bool, f32) -> Option<T>,
+) -> Option<T> {
+    popup_with_width(ui, scope, label, query, 660.0, contents)
+}
+
+pub(in crate::app::custom_perks) fn popup_with_width<T>(
+    ui: &mut egui::Ui,
+    scope: impl std::hash::Hash,
+    label: &str,
+    query: &mut String,
+    width: f32,
     mut contents: impl FnMut(&mut egui::Ui, &str, bool, f32) -> Option<T>,
 ) -> Option<T> {
     let id = ui.make_persistent_id(scope);
@@ -38,7 +53,7 @@ pub(in crate::app::custom_perks) fn popup<T>(
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
             ui.set_style(style);
-            ui.set_width(660.0_f32.min((screen.width() - 40.0).max(300.0)));
+            ui.set_width(width.min((screen.width() - 40.0).max(300.0)));
             // TextEdit requests scrolling when its cursor moves. Consume that request
             // inside the popup so it cannot reach the workbench's enclosing scroll area.
             egui::ScrollArea::neither()
@@ -82,12 +97,13 @@ pub(in crate::app::custom_perks) fn results<T>(
 ) -> Option<T> {
     ui.label(format!("{count} Results"));
     if count == 0 {
-        ui.label("No matching choices.");
+        ui.label("No matching choices. Try fewer words or clear the filters.");
         return None;
     }
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt(scope)
         .max_height(height)
+        .min_scrolled_height(height)
         .auto_shrink([false, false]);
     if reset {
         scroll = scroll.vertical_scroll_offset(0.0);

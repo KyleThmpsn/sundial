@@ -1059,7 +1059,7 @@ pub(crate) fn render_output_texture(texture_index: usize) -> AuthoringResult<ima
 fn upscale_texture(width: u32, height: u32, pixels: Vec<u8>) -> AuthoringResult<image::RgbaImage> {
     let source = image::RgbaImage::from_raw(width, height, pixels)
         .ok_or_else(|| validation("Watermark RGBA dimensions do not match its payload"))?;
-    Ok(crate::icon_edit::fit_rgba_image(
+    Ok(crate::image_import::fit(
         &source,
         width * OUTPUT_TEXTURE_SCALE,
         height * OUTPUT_TEXTURE_SCALE,

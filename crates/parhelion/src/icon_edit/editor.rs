@@ -340,7 +340,7 @@ impl WeaponIconEditor {
     fn draw_color_controls(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.horizontal_wrapped(|ui| {
-            ui.strong("All artwork colors");
+            ui.strong("All Artwork Colors");
             let grayscale = ui
                 .add_enabled(
                     self.draft.saturation != WeaponIconEdit::MIN_COLOR_ADJUSTMENT,

@@ -201,7 +201,7 @@ fn emote_groups(individual_items: Vec<u64>) -> Vec<super::model::ItemBucket<u64>
                 scope: InventoryScope::Character,
                 native_id: 12,
             },
-            label: "Emote collection".into(),
+            label: "Emote Collection".into(),
             capacity: Some(1),
             addable: true,
             items: (0..10).collect(),
@@ -370,6 +370,33 @@ fn bucket_capacity_counts_only_present_rows_and_allows_same_bucket_replacement()
     assert!(bucket_has_room(&metadata, &unresolved, Some(4), false));
     assert!(!bucket_has_room(&metadata, &unresolved, None, false));
     assert!(bucket_has_room(&metadata, &unresolved, None, true));
+}
+
+#[test]
+fn capacity_messages_distinguish_full_buckets_from_unknown_placement() {
+    use super::{buckets::bucket_add_blocker, model::BucketKey};
+    let key = BucketKey {
+        scope: InventoryScope::Character,
+        native_id: 0,
+    };
+    let mut usage = BucketUsage {
+        counts: HashMap::from([(0, 10)]),
+        unresolved_count: 1,
+        occupancy_complete: true,
+    };
+    assert!(
+        bucket_add_blocker(key, Some(10), &usage, "Kinetic Weapons")
+            .unwrap()
+            .contains("is full")
+    );
+    usage.counts.insert(0, 9);
+    let message = bucket_add_blocker(key, Some(10), &usage, "Kinetic Weapons").unwrap();
+    assert!(message.contains("Cannot verify space"));
+    assert!(message.contains("9 / 10 known items"));
+    assert!(message.contains("Invalid Items"));
+    assert!(!message.contains("full"));
+    usage.unresolved_count = 0;
+    assert!(bucket_add_blocker(key, Some(10), &usage, "Kinetic Weapons").is_none());
 }
 
 #[test]

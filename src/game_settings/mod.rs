@@ -13,6 +13,7 @@ mod validation;
 mod widgets;
 
 pub(super) use key_bindings::KeyBindingUiState;
+pub(crate) use key_bindings::{named_input_code, native_input_name};
 pub(super) use page::{PageContext, Tab, draw_page};
 pub(crate) use schema::requires_sqlite_account;
 pub(crate) use schema::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA};

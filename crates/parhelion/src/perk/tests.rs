@@ -12,7 +12,7 @@ fn weapon_with_perk(perk: &PerkRecipe) -> crate::WeaponRecipe {
 }
 
 #[test]
-fn library_perks_with_optional_descriptions_remain_saveable_after_attachment() {
+fn library_perks_own_their_description_including_an_empty_one() {
     let temp = tempfile::tempdir().unwrap();
     let library = library::Library::open(temp.path().to_owned()).unwrap();
     for description in ["", " \t\n", "  Authored description with spacing.  "] {
@@ -22,7 +22,11 @@ fn library_perks_with_optional_descriptions_remain_saveable_after_attachment() {
         let loaded = library::Library::read(&entry.path).unwrap();
         assert_eq!(loaded.recipe.description, description);
         let weapon = weapon_with_perk(&loaded.recipe);
-        let expected = (!description.trim().is_empty()).then_some(description);
+        let expected = Some(if description.trim().is_empty() {
+            ""
+        } else {
+            description
+        });
         assert_eq!(
             weapon.overrides.socket_plug_variants[0]
                 .description

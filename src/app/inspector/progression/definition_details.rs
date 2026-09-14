@@ -10,16 +10,20 @@ use crate::app::inspector::{
     progression_context_kind_label,
 };
 
-use super::{conditions::draw_condition_programs, state::ProgressionInspectorState};
+use super::{
+    conditions::draw_condition_programs,
+    state::{MetadataSelection, ProgressionInspectorState},
+};
 
 pub(super) fn draw_unlock_definition_metadata(
     ui: &mut egui::Ui,
-    index: usize,
+    selection: MetadataSelection,
     definition: &UnlockDefinition,
     catalog: &Catalog,
     snapshot: Option<&CollectionStateSnapshot>,
     state: &mut ProgressionInspectorState,
 ) {
+    let index = selection.definition_index();
     let [bank, code_high_byte] = definition.code.to_le_bytes();
     egui::Grid::new("progression_definition_metadata")
         .num_columns(2)
@@ -52,15 +56,42 @@ pub(super) fn draw_unlock_definition_metadata(
                         format!("0x{:04X} · {}", definition.code, definition.code),
                         true,
                     );
-                    metadata_field(ui, "Bank / code low byte", bank.to_string(), true);
-                    metadata_field(ui, "Code high byte", code_high_byte.to_string(), true);
+                    metadata_field(ui, "Bank / Code Low Byte", bank.to_string(), true);
+                    metadata_field(ui, "Code High Byte", code_high_byte.to_string(), true);
                     metadata_field(
                         ui,
-                        "Compact slot",
+                        "Compact Slot",
                         definition.compact_slot.map_or_else(
                             || "Unbanked".into(),
                             |slot| format!("{slot} · 0x{slot:04X}"),
                         ),
+                        true,
+                    );
+                    let evaluated = snapshot.and_then(|snapshot| {
+                        if selection.is_value() {
+                            snapshot
+                                .evaluated_value(index, catalog)
+                                .map(|value| value.to_string())
+                        } else {
+                            snapshot
+                                .evaluated_flag(index, catalog)
+                                .map(|value| if value { "Set" } else { "Clear" }.to_owned())
+                        }
+                    });
+                    metadata_field(
+                        ui,
+                        if selection.is_value() {
+                            "Evaluated Value"
+                        } else {
+                            "Evaluated State"
+                        },
+                        evaluated.unwrap_or_else(|| "Unknown".into()),
+                        true,
+                    );
+                    metadata_field(
+                        ui,
+                        "Runtime Writers",
+                        definition.runtime_writers.len().to_string(),
                         true,
                     );
                 });

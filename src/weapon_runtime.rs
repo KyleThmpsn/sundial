@@ -10,6 +10,8 @@ mod tests;
 
 mod registry;
 use registry::*;
+mod identity;
+pub use identity::{native_member_names, native_type_name};
 
 mod values;
 pub use values::encode_weapon_runtime_value;
@@ -17,6 +19,12 @@ use values::*;
 
 mod decode;
 use decode::*;
+
+mod structure;
+pub use structure::{NativeStructure, NativeStructureField};
+
+mod native;
+pub use native::{decode_weapon_runtime_field_value, encode_weapon_runtime_field_value};
 
 mod compatibility;
 pub use compatibility::{WeaponRuntimeResourceShape, load_weapon_runtime_resource_shape};
@@ -29,7 +37,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
     path::Path,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +67,13 @@ const MAX_RUNTIME_SCHEMA_DEPTH: usize = 32;
 const MAX_TECHNICAL_RUNTIME_FIELD_BYTES: usize = 256;
 const TECHNICAL_BYTES_PATH_HASH: u32 = 0x5048_4259;
 
+/// Shared component identity for catalog previews that do not need to load a full graph.
+pub fn component_binding_label(binding: u32) -> String {
+    runtime_registry()
+        .map(|registry| runtime_binding_label(binding, registry))
+        .unwrap_or_else(|_| format!("Binding 0x{binding:08X}"))
+}
+
 /// Which native root inside a component-owner payload contains a runtime value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,33 +102,52 @@ impl WeaponRuntimeRootKind {
 pub struct WeaponRuntimePathElement {
     pub name_hash: u32,
     pub type_handle: u32,
-    /// Byte offset relative to the containing reflected value.
+    /// Offset within the containing record, or the row index for a native array step.
     pub byte_offset: u32,
 }
 
 /// Donor-independent locator for one runtime field.
 ///
 /// The binding/resource pair selects the current component owner. The root schema and complete
-/// reflected path then prove that a saved edit still means the same thing after donor changes.
+/// reflected or native traversal path then prove the field still has its declared storage layout.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponRuntimeFieldLocator {
+    /// Selects one referenced graph in a private perk. Omitted by legacy and donor-relative edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_tag: Option<u32>,
     pub binding_hash: u32,
     pub resource_index: u16,
     pub root: WeaponRuntimeRootKind,
     pub root_schema: u32,
     pub path: Vec<WeaponRuntimePathElement>,
     pub type_handle: u32,
-    /// Final byte offset relative to the selected instance, definition, or concrete resource.
+    /// Final byte offset relative to the selected root for reflected paths, or to the
+    /// declaring object for a checked native traversal path.
     pub value_offset: u32,
     pub byte_size: u32,
 }
 
 impl WeaponRuntimeFieldLocator {
+    /// Check a private perk's graph selection before resolving its donor-relative path.
+    pub fn for_graph(&self, tag: u32) -> Result<Self, String> {
+        if self.graph_tag.is_some_and(|selected| selected != tag) {
+            return Err(format!(
+                "This field belongs to asset 0x{:08X}, not 0x{tag:08X}.",
+                self.graph_tag.unwrap()
+            ));
+        }
+        let mut locator = self.clone();
+        locator.graph_tag = None;
+        Ok(locator)
+    }
     /// Whether this locator has the compiler-supported shape needed for semantic re-resolution.
     #[must_use]
     pub fn is_buildable(&self) -> bool {
         !matches!(self.binding_hash, 0 | u32::MAX)
+            && self
+                .graph_tag
+                .is_none_or(|tag| !matches!(tag, 0 | u32::MAX))
             && !matches!(self.root_schema, 0 | u32::MAX)
             && !matches!(self.type_handle, 0 | u32::MAX)
             && self.byte_size != 0
@@ -130,6 +164,7 @@ pub enum WeaponRuntimeValue {
     Signed(i64),
     Unsigned(u64),
     Float32Bits(u32),
+    Float64Bits(u64),
     Vector4Float32Bits([u32; 4]),
     Bytes(Vec<u8>),
 }
@@ -145,6 +180,7 @@ pub enum WeaponRuntimeValueKind {
     BitFlags { bits: u8 },
     HexIdentifier { bits: u8 },
     Float32,
+    Float64,
     Vector4Float32,
     FixedBytes { size: u32 },
 }
@@ -160,6 +196,7 @@ impl WeaponRuntimeValueKind {
             | Self::BitFlags { bits }
             | Self::HexIdentifier { bits } => (*bits as u32) / 8,
             Self::Float32 => 4,
+            Self::Float64 => 8,
             Self::Vector4Float32 => 16,
             Self::FixedBytes { size } => *size,
         }
@@ -207,6 +244,8 @@ pub enum WeaponRuntimeFieldSource {
     NativeMember,
     /// A fixed-size type whose internal member semantics are not published by the client.
     OpaqueNativeType,
+    /// A stored value reached through checked native schema links.
+    NativeDeclaration,
 }
 
 /// One independently writable runtime value.
@@ -224,6 +263,10 @@ pub struct WeaponRuntimeField {
     pub source: WeaponRuntimeFieldSource,
     /// Low byte of generated-schema metadata, when the path begins at such a field.
     pub generated_kind: Option<u8>,
+    /// Whether this field's own name came from the inferred name table rather than a
+    /// verified source. An inferred name identifies the field consistently, but it is a
+    /// recovered candidate and not evidence of what the field means.
+    pub name_inferred: bool,
 }
 
 /// One typed recipe edit. The locator is re-resolved before the encoded value is written.
@@ -255,6 +298,9 @@ pub struct WeaponRuntimeRoot {
     pub byte_size: u32,
     pub generated_schema: bool,
     pub fields: Vec<WeaponRuntimeField>,
+    /// Native declaration details, including checked paths used by native field editing.
+    /// Storage declarations do not establish an unnamed value's gameplay meaning.
+    pub structure: Arc<NativeStructure>,
 }
 
 /// One concrete resource selected by an abstract runtime-component binding.
@@ -305,6 +351,22 @@ pub struct WeaponRuntimeEntitySource {
 }
 
 impl WeaponRuntimeGraph {
+    /// Private perk fields retain their graph identity without changing donor-relative locators.
+    pub fn scope_fields(&mut self) {
+        let tag = self.entity_tag;
+        for root in self
+            .resources
+            .iter_mut()
+            .flat_map(|resource| {
+                std::iter::once(&mut resource.instance).chain(resource.definition.iter_mut())
+            })
+            .chain(self.owners.iter_mut().flat_map(|owner| &mut owner.roots))
+        {
+            for field in &mut root.fields {
+                field.locator.graph_tag = Some(tag);
+            }
+        }
+    }
     pub fn fields(&self) -> impl Iterator<Item = &WeaponRuntimeField> {
         self.resources
             .iter()
@@ -363,6 +425,12 @@ struct RegistryRecord {
 struct RuntimeRegistry {
     records: BTreeMap<u32, RegistryRecord>,
     names: BTreeMap<u32, Vec<String>>,
+    /// Candidate member names recovered by an exhaustive FNV-1 name search.
+    ///
+    /// Every entry hashes to its key, so it names the member consistently. It is not a
+    /// verified source name, and it carries no claim about the field's gameplay meaning.
+    /// See `docs/runtime-member-name-recovery-2026-09-11.md`.
+    inferred: BTreeMap<u32, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -580,6 +648,42 @@ pub fn load_weapon_runtime_graph_for_entity(
         });
     }
     owners.sort_by_key(|owner| (owner.anchor_binding_hash, owner.anchor_resource_index));
+    let mut structures = BTreeMap::new();
+    for resource in &mut resources {
+        for root in std::iter::once(&mut resource.instance).chain(resource.definition.iter_mut()) {
+            let key = (resource.owner_tag, root.owner_offset, root.schema);
+            root.structure = structures
+                .entry(key)
+                .or_insert_with(|| {
+                    Arc::new(structure::inspect(
+                        manager,
+                        &owner_payloads[&resource.owner_tag],
+                        root.owner_offset as usize,
+                        root.schema,
+                        registry,
+                    ))
+                })
+                .clone();
+        }
+    }
+    for owner in &mut owners {
+        for root in &mut owner.roots {
+            let key = (owner.owner_tag, root.owner_offset, root.schema);
+            root.structure = structures
+                .entry(key)
+                .or_insert_with(|| {
+                    Arc::new(structure::inspect(
+                        manager,
+                        &owner_payloads[&owner.owner_tag],
+                        root.owner_offset as usize,
+                        root.schema,
+                        registry,
+                    ))
+                })
+                .clone();
+        }
+    }
+    native::append_fields(&mut resources, &mut owners, &owner_payloads)?;
     Ok(WeaponRuntimeGraph {
         item_hash,
         pattern_global_id_hash,
@@ -662,6 +766,9 @@ pub fn resolve_weapon_runtime_field(
     entity: &[u8],
     locator: &WeaponRuntimeFieldLocator,
 ) -> Result<ResolvedWeaponRuntimeField, String> {
+    if locator.graph_tag.is_some() {
+        return Err("A graph-scoped field requires an explicit source graph.".into());
+    }
     let bindings = weapon_component_bindings(entity, locator.binding_hash)?;
     let binding = bindings
         .get(usize::from(locator.resource_index))
@@ -718,9 +825,7 @@ pub fn resolve_weapon_runtime_field(
                 locator.root_schema, root.schema
             ));
         }
-        root.fields
-            .into_iter()
-            .find(|field| field.locator == *locator)
+        native::resolve(manager, &payload, &root, locator, registry)?
     } else {
         let mut roots = decode_owner_roots(
             manager,
@@ -776,9 +881,7 @@ pub fn resolve_weapon_runtime_field(
                 locator.root_schema, root.schema
             ));
         }
-        root.fields
-            .into_iter()
-            .find(|field| field.locator == *locator)
+        native::resolve(manager, &payload, &root, locator, registry)?
     }
     .ok_or_else(|| {
         format!(
@@ -895,3 +998,5 @@ fn relative_target(data: &[u8], pointer: usize) -> Result<usize, String> {
     }
     Ok(target)
 }
+
+pub mod presentation;

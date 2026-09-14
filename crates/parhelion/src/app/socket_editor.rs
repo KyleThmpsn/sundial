@@ -288,7 +288,7 @@ pub(super) fn draw_socket_override_diagnostics(
             .sum::<usize>();
         if authored_choice_count > LIVE_SOCKET_DIAGNOSTIC_CHOICE_LIMIT {
             ui.weak(format!(
-                "Live socket diagnostics paused for {authored_choice_count} authored choices; Build & stage still performs complete validation."
+                "Live socket diagnostics paused for {authored_choice_count} authored choices. Build & Stage still performs complete validation."
             ));
             return;
         }
@@ -390,7 +390,7 @@ pub(super) fn draw_socket_override_diagnostics(
                         ui.colored_label(
                             ui.visuals().warn_fg_color,
                             format!(
-                                "Socket {} is pending setup; choose an installed socket type and plug below",
+                                "Socket {} is pending setup. Choose an installed socket type and plug below",
                                 socket_index + 1
                             ),
                         );
@@ -644,7 +644,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
             let restore = !is_added && ui
                 .button("Restore Donor Row")
                 .on_hover_text(
-                    "Remove native row overrides; randomized donor rows still use Parhelion's stable collection roll",
+                    "Remove native row overrides. Randomized donor rows still use Parhelion's stable collection roll",
                 )
                 .clicked();
             if restore {
@@ -895,7 +895,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                 }
             });
             if column.randomized_plug_set_index.is_some() {
-                ui.label("Randomized selection-count program");
+                ui.label("Randomized Selection-Count Program");
                 draw_numeric_program_editor(
                     ui,
                     ("socket_random_program", socket_index),

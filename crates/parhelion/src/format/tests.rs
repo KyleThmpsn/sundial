@@ -225,19 +225,27 @@ fn parses_shadowkeep_table_locations() {
     let bytes = synthetic_package();
     let layout = PackageLayout::parse(&bytes).expect("synthetic package should parse");
 
-    assert_eq!(layout.package_id, 0x058f);
     assert_eq!(layout.content_build, SHADOWKEEP_CONTENT_BUILD);
     assert_eq!(layout.content_revision, SHADOWKEEP_CONTENT_REVISION);
-    assert_eq!(layout.patch_id, 2);
-    assert_eq!(layout.entry_count, 2);
-    assert_eq!(layout.block_count, 3);
-    assert_eq!(layout.entry_table_offset, 0x200);
-    assert_eq!(layout.block_table_offset, 0x240);
+    assert_eq!((layout.package_id, layout.patch_id), (0x058f, 2));
+    assert_eq!((layout.entry_count, layout.block_count), (2, 3));
+    assert_eq!(
+        (layout.entry_table_offset, layout.block_table_offset),
+        (0x200, 0x240)
+    );
     assert_eq!(layout.package_tables_data_offset, 0x1A0);
     assert_eq!(layout.package_tables_data_size, 0x170);
     assert_eq!(layout.opaque_trailer_offset, 0x310);
     assert_eq!(layout.opaque_trailer_size, PACKAGE_FILE_ALIGNMENT);
     assert_eq!(layout.shared_tag_enrollment_count(), 4);
+    let reserved = PackageLayout::parse(&synthetic_package_with_capacities(8, 8)).unwrap();
+    assert_eq!(
+        (reserved.entry_count, reserved.block_count),
+        (layout.entry_count, layout.block_count)
+    );
+    assert_eq!((reserved.entry_capacity, reserved.block_capacity), (8, 8));
+    assert_eq!(reserved.entry_table_trailer_size, 32);
+    assert_eq!(reserved.block_table_offset, 0x2A0);
 }
 
 #[test]
@@ -267,20 +275,6 @@ fn earlier_hud_generation_is_confined_to_its_audited_package_and_patch() {
         assert!(layout.set_authored_generation(&mut bytes).is_err());
         assert_eq!(bytes, before);
     }
-}
-
-#[test]
-fn parses_reserved_dynamic_array_capacity_without_treating_it_as_live_count() {
-    let bytes = synthetic_package_with_capacities(8, 8);
-    let layout =
-        PackageLayout::parse(&bytes).expect("reserved dynamic-array capacity should parse");
-
-    assert_eq!(layout.entry_count, 2);
-    assert_eq!(layout.entry_capacity, 8);
-    assert_eq!(layout.block_count, 3);
-    assert_eq!(layout.block_capacity, 8);
-    assert_eq!(layout.entry_table_trailer_size, 32);
-    assert_eq!(layout.block_table_offset, 0x2A0);
 }
 
 #[test]
@@ -548,58 +542,49 @@ fn creates_the_first_shared_tag_table_and_preserves_it_on_later_growth() {
 }
 
 #[test]
-fn rejects_truncated_or_wrong_variant_headers() {
-    let mut truncated = synthetic_package();
-    truncated.truncate(0x168);
+fn rejects_invalid_package_headers_and_table_descriptors() {
+    for (offset, replacement) in [
+        (PLATFORM_OFFSET, 1_u16.to_le_bytes().to_vec()),
+        (PACKAGE_ID_OFFSET, 0x0FFF_u16.to_le_bytes().to_vec()),
+        (PATCH_ID_OFFSET, 0x0100_u16.to_le_bytes().to_vec()),
+        (MUST_BE_ZERO_OFFSET, vec![1]),
+        (ENTRY_COUNT_OFFSET, 0_u32.to_le_bytes().to_vec()),
+        (
+            ENTRY_COUNT_OFFSET,
+            ((MAX_ENTRY_COUNT + 1) as u32).to_le_bytes().to_vec(),
+        ),
+        (BETA_ENTRY_TABLE_OFFSET, 0x200_u32.to_le_bytes().to_vec()),
+    ] {
+        let mut bytes = synthetic_package();
+        bytes[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        assert!(PackageLayout::parse(&bytes).is_err(), "offset {offset:#x}");
+    }
+    let bytes = synthetic_package();
     assert!(
-        PackageLayout::parse(&truncated)
-            .expect_err("the complete signed header is required")
+        PackageLayout::parse(&bytes[..0x168])
+            .unwrap_err()
             .to_string()
             .contains("shorter")
     );
-
-    let mut beta = synthetic_package();
-    beta[HEADER_VARIANT_OFFSET] = 0;
+    let mut bytes = synthetic_package();
+    bytes[HEADER_VARIANT_OFFSET] = 0;
     assert!(
-        PackageLayout::parse(&beta)
-            .expect_err("the beta variant is not authorable by this writer")
+        PackageLayout::parse(&bytes)
+            .unwrap_err()
             .to_string()
             .contains("d2_prebl")
     );
-}
-
-#[test]
-fn rejects_invalid_platform_identity_patch_and_header_control_fields() {
-    let mut wrong_platform = synthetic_package();
-    wrong_platform[PLATFORM_OFFSET..PLATFORM_OFFSET + 2].copy_from_slice(&1u16.to_le_bytes());
-    assert!(PackageLayout::parse(&wrong_platform).is_err());
-
-    let mut wrong_package = synthetic_package();
-    wrong_package[PACKAGE_ID_OFFSET..PACKAGE_ID_OFFSET + 2]
-        .copy_from_slice(&0x0FFFu16.to_le_bytes());
-    assert!(PackageLayout::parse(&wrong_package).is_err());
-
-    let mut wrong_patch = synthetic_package();
-    wrong_patch[PATCH_ID_OFFSET..PATCH_ID_OFFSET + 2].copy_from_slice(&0x0100u16.to_le_bytes());
-    assert!(PackageLayout::parse(&wrong_patch).is_err());
-
-    let mut wrong_zero = synthetic_package();
-    wrong_zero[MUST_BE_ZERO_OFFSET] = 1;
-    assert!(PackageLayout::parse(&wrong_zero).is_err());
-}
-
-#[test]
-fn rejects_invalid_entry_counts_and_beta_offsets() {
-    for count in [0u32, (MAX_ENTRY_COUNT + 1) as u32] {
-        let mut bytes = synthetic_package();
-        bytes[ENTRY_COUNT_OFFSET..ENTRY_COUNT_OFFSET + 4].copy_from_slice(&count.to_le_bytes());
-        assert!(PackageLayout::parse(&bytes).is_err());
-    }
-
     let mut bytes = synthetic_package();
-    bytes[BETA_ENTRY_TABLE_OFFSET..BETA_ENTRY_TABLE_OFFSET + 4]
-        .copy_from_slice(&0x200u32.to_le_bytes());
-    assert!(PackageLayout::parse(&bytes).is_err());
+    let pointer = 0x1A0 + PACKAGE_TABLES_BLOCK_DESCRIPTOR_OFFSET + DYNAMIC_ARRAY_POINTER_OFFSET;
+    let relative = read_i64(&bytes, pointer).unwrap();
+    write_i64(&mut bytes, pointer, relative + 16).unwrap();
+    rehash_package_tables(&mut bytes);
+    assert!(
+        PackageLayout::parse(&bytes)
+            .unwrap_err()
+            .to_string()
+            .contains("documented pre-BL")
+    );
 }
 
 #[test]
@@ -624,22 +609,6 @@ fn entry_region_count_is_u32_and_preserves_the_following_header_word() {
         .expect("rewriting counts should preserve adjacent metadata");
 
     assert_eq!(&bytes[count_offset + 4..count_offset + 8], &following);
-}
-
-#[test]
-fn rejects_block_descriptor_disagreement_with_prebl_formula() {
-    let mut bytes = synthetic_package();
-    let pointer = 0x1A0 + PACKAGE_TABLES_BLOCK_DESCRIPTOR_OFFSET + DYNAMIC_ARRAY_POINTER_OFFSET;
-    let relative = read_i64(&bytes, pointer).expect("block pointer should parse");
-    write_i64(&mut bytes, pointer, relative + 16).expect("block pointer should update");
-    rehash_package_tables(&mut bytes);
-
-    assert!(
-        PackageLayout::parse(&bytes)
-            .expect_err("the descriptor and documented formula must agree")
-            .to_string()
-            .contains("documented pre-BL")
-    );
 }
 
 #[test]

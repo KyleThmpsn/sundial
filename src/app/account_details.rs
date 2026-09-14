@@ -88,8 +88,7 @@ impl SundialApp {
                 return;
             }
             document.set_runtime(runtime);
-            self.progression_ui.invalidate_document();
-            self.dirty = true;
+            self.record_edit("Character Details Updated");
             self.set_status(
                 if unlocked {
                     "Title unlocked and equipped. Click Save to write it"
@@ -127,28 +126,13 @@ impl SundialApp {
         self.finish_native_inventory_edit(result);
     }
 
-    pub(super) fn draw_profile_item_seen(&mut self, ui: &mut egui::Ui, position: usize) {
-        let seen = self
-            .document
-            .native_account()
-            .and_then(|document| document.profile_item_seen(position));
-        if let Some(seen) = super::item_editor::draw_seen_flag(ui, seen) {
-            let result = self
-                .document
-                .native_account_mut()
-                .unwrap()
-                .set_profile_item_seen(position, seen);
-            self.finish_native_inventory_edit(result);
-        }
-    }
-
     pub(super) fn finish_native_inventory_edit(
         &mut self,
         result: Result<(), crate::persistence::sqlite_account::SqliteAccountError>,
     ) {
         match result {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Native Inventory Updated");
                 self.set_status("Inventory updated. Click Save to write it", false);
             }
             Err(error) => self.set_status(error.to_string(), true),

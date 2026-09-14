@@ -22,6 +22,7 @@ impl SundialApp {
                 let mut changed = false;
                 for (section, label) in [
                     (ProgressionSection::Collections, "Collections"),
+                    (ProgressionSection::Triumphs, "Triumphs"),
                     (ProgressionSection::Seasonal, "Seasonal"),
                     (ProgressionSection::Unlocks, "Unlocks"),
                     (ProgressionSection::Investment, "Investment"),
@@ -38,13 +39,33 @@ impl SundialApp {
             self.collections_ui.reset_navigation();
         }
         ui.separator();
-        let mut document = if self.progression_section == ProgressionSection::Seasonal
-            && self.progression_ui.seasonal.draw_navigation(ui)
-            && self.document.native_account().is_some()
-        {
+        let artifact_context = if self.progression_section == ProgressionSection::Seasonal {
+            let artifact = ui
+                .horizontal_wrapped(|ui| {
+                    let artifact = self.progression_ui.seasonal.draw_navigation(ui);
+                    if self.progression_ui.seasonal.rewards_selected()
+                        && self.document.native_account().is_some()
+                    {
+                        ui.add_space(8.0);
+                        self.draw_seasonal_character_picker(ui);
+                    }
+                    artifact
+                })
+                .inner;
+            ui.separator();
+            artifact
+        } else {
+            false
+        };
+        let mut document = if artifact_context && self.document.native_account().is_some() {
             self.draw_artifact_context(ui)
         } else {
-            self.document.progression_view(self.selected_character)
+            self.progression_ui
+                .cached_view
+                .take()
+                .filter(|(character, _)| *character == self.selected_character)
+                .map(|(_, document)| document)
+                .unwrap_or_else(|| self.document.progression_view(self.selected_character))
         };
         let changed = match self.progression_section {
             ProgressionSection::Seasonal => {
@@ -56,9 +77,13 @@ impl SundialApp {
                 &self.manifest,
                 &mut self.collections_ui,
             ),
-            ProgressionSection::Unlocks | ProgressionSection::Investment => {
+            ProgressionSection::Unlocks
+            | ProgressionSection::Investment
+            | ProgressionSection::Triumphs => {
                 let view = if self.progression_section == ProgressionSection::Unlocks {
                     super::View::Unlocks
+                } else if self.progression_section == ProgressionSection::Triumphs {
+                    super::View::Triumphs
                 } else {
                     super::View::Investment
                 };
@@ -81,7 +106,7 @@ impl SundialApp {
                 self.set_status(error, true);
                 return;
             }
-            self.dirty = true;
+            self.record_progression_edit("Progression Updated");
             self.set_status(
                 if self.progression_section == ProgressionSection::Seasonal {
                     "Seasonal progression updated. Click Save to write it"
@@ -90,6 +115,8 @@ impl SundialApp {
                 },
                 false,
             );
+        } else if self.progression_section != ProgressionSection::Seasonal {
+            self.progression_ui.cached_view = Some((self.selected_character, document));
         }
     }
 }

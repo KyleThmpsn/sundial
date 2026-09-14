@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy)]
 struct DefinitionPickerBehavior {
     height: PickerHeight,
@@ -118,7 +121,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
         let picker_response = anchor.cloned().unwrap_or_else(|| {
             ui.add_sized(
                 [ui.available_width(), ui.spacing().interact_size.y],
-                egui::Button::new("Choose an item…"),
+                egui::Button::new("Choose an Item…"),
             )
         });
         let popup_id = ui.make_persistent_id("definition-browser");
@@ -162,7 +165,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
             nested_popup_interacted = interacted;
             if let Some(hash) = choices.random_item_builder_hash {
                 if ui
-                    .button("Open item in Random Item Builder")
+                    .button("Open Item in Random Item Builder")
                     .on_hover_text("Open this item and its current plugs in Random Item Builder")
                     .clicked()
                 {
@@ -202,53 +205,61 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                     height.min,
                     height.max,
                 );
-                egui::ScrollArea::vertical()
+                let existing_rows = choices.existing_inventory.len()
+                    + usize::from(!choices.existing_inventory.is_empty());
+                let mut scroll = egui::ScrollArea::vertical()
+                    .id_salt("definition-list")
                     .min_scrolled_height(picker_height)
                     .max_height(picker_height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if !choices.existing_inventory.is_empty() {
-                            ui.label(egui::RichText::new("Existing inventory item").strong());
-                            for existing in &choices.existing_inventory {
-                                let label = format!(
-                                    "{}  ({})",
-                                    existing.name,
-                                    format_hash_hex(existing.hash)
-                                );
-                                let response = draw_catalog_picker_row(
-                                    ui,
-                                    catalog,
-                                    CatalogPickerRow {
-                                        hash: existing.hash,
-                                        primary: &label,
-                                        primary_max_rows: 1,
-                                        secondary: (!existing.type_name.trim().is_empty())
-                                            .then_some(existing.type_name.as_str()),
-                                        icon_size: 36.0,
-                                        row_height,
-                                        selected: false,
-                                    },
-                                );
-                                let response =
-                                    catalog_item_tooltip(response, catalog, existing.hash);
-                                if response.clicked() {
-                                    action = Some(ItemEditorAction::EquipInventoryItem {
-                                        item_index: existing.item_index,
-                                    });
-                                    ui.memory_mut(egui::Memory::close_popup);
-                                }
+                    .auto_shrink([false, false]);
+                if just_opened || search_response.changed() || nested_popup_interacted {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                }
+                scroll.show_rows(ui, row_height, scroll_row_count, |ui, range| {
+                    for index in range {
+                        if existing_rows > 0 && index == 0 {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), row_height),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_height(row_height);
+                                    ui.strong("Existing Inventory Item");
+                                },
+                            );
+                        } else if index < existing_rows {
+                            let existing = &choices.existing_inventory[index - 1];
+                            let label =
+                                format!("{}  ({})", existing.name, format_hash_hex(existing.hash));
+                            let response = draw_catalog_picker_row(
+                                ui,
+                                catalog,
+                                CatalogPickerRow {
+                                    hash: existing.hash,
+                                    primary: &label,
+                                    primary_max_rows: 1,
+                                    secondary: (!existing.type_name.trim().is_empty())
+                                        .then_some(existing.type_name.as_str()),
+                                    icon_size: 36.0,
+                                    row_height,
+                                    selected: false,
+                                },
+                            );
+                            let response = catalog_item_tooltip(response, catalog, existing.hash);
+                            if response.clicked() {
+                                action = Some(ItemEditorAction::EquipInventoryItem {
+                                    item_index: existing.item_index,
+                                });
+                                ui.memory_mut(egui::Memory::close_popup);
                             }
-                            ui.separator();
-                        }
-
-                        for row in rows {
-                            match row {
+                        } else {
+                            match &rows[index - existing_rows] {
                                 DefinitionPickerRow::Group(group) => {
                                     ui.allocate_ui_with_layout(
                                         egui::vec2(ui.available_width(), row_height),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            ui.label(egui::RichText::new(group).strong());
+                                            ui.set_min_height(row_height);
+                                            ui.label(egui::RichText::new(*group).strong());
                                         },
                                     );
                                 }
@@ -284,7 +295,8 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                                 }
                             }
                         }
-                    });
+                    }
+                });
             }
 
             if let Some(selected) = draw_footer(ui) {

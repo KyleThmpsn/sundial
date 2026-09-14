@@ -4,20 +4,15 @@ use crate::app::authoring_bridge;
 use eframe::egui;
 use std::{hash::Hash, path::Path};
 
-/// Shared tooltip title typography for Sundial and Parhelion.
-pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
-    crate::ui_help::tooltip_title(ui, title)
-}
-
-/// Native asset choices use the same row layout as investment choices.
-pub fn draw_asset_choice_row(
-    ui: &mut egui::Ui,
-    name: &str,
-    detail: &str,
-    selected: bool,
-) -> egui::Response {
-    authoring_bridge::draw_asset_choice_row(ui, name, detail, selected)
-}
+pub use crate::ui_help::tooltip_title;
+pub use authoring_bridge::{
+    AUTHORING_SOCKET_RESET_WIDTH, authoring_button_width, authoring_socket_label_width,
+    authoring_socket_reset_width, configure_fonts as configure_authoring_fonts,
+    default_plug_selection_mode, draw_asset_choice_row, draw_authoring_info_icon,
+    draw_authoring_plug_safety_warning as draw_plug_safety_warning, draw_authoring_socket_label,
+    draw_authoring_socket_reset, draw_authoring_toolbar, draw_plug_safety_selector,
+    show_plug_safety_warnings,
+};
 
 /// Consistent loading and build progress appearance across both applications.
 pub fn progress_bar(fraction: f32) -> egui::ProgressBar {
@@ -122,17 +117,21 @@ pub struct PlugSelection {
     pub hash: Option<u32>,
 }
 
-/// Compact trigger content for an additional authored socket-column choice.
-///
-/// The text is caller-owned (for example `+ Add choice`, `2`, `3`, or a plug name). When
-/// `icon_hash` is present, Sundial renders the corresponding catalog icon and tooltip beside the
-/// text while retaining its native plug browser popup.
+/// Authored presentation passed to the shared perk and plug tooltip renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlugTooltip<'a> {
+    pub name: Option<&'a str>,
+    /// `Some("")` clears the donor description.
+    pub description: Option<&'a str>,
+    pub classification_hash: Option<u32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlugChoicePickerButton<'a> {
     pub text: &'a str,
     pub icon_hash: Option<u32>,
     /// Effective authored text; omitted for stock choices. Never changes the stock catalog.
-    pub tooltip: Option<&'a str>,
+    pub tooltip: Option<PlugTooltip<'a>>,
     /// Exact compact trigger width in logical pixels. Zero keeps the natural button width.
     pub width: u16,
 }
@@ -149,18 +148,6 @@ pub struct PlugChoicePickerOptions<'a> {
     pub mode: PlugSelectionMode,
 }
 
-/// Width of the native Sundial Reset control used by an authoring socket row.
-pub const AUTHORING_SOCKET_RESET_WIDTH: f32 = authoring_bridge::AUTHORING_SOCKET_RESET_WIDTH;
-
-/// Measured for the active font and padding, shared with the native Reset renderer.
-pub fn authoring_socket_reset_width(ui: &egui::Ui) -> f32 {
-    authoring_bridge::authoring_socket_reset_width(ui)
-}
-
-pub fn authoring_button_width(ui: &egui::Ui, label: &str) -> f32 {
-    authoring_bridge::authoring_button_width(ui, label)
-}
-
 /// Fixed height shared with the native icon and description picker row.
 pub fn authoring_choice_row_height(ui: &egui::Ui) -> f32 {
     (ui.text_style_height(&egui::TextStyle::Button)
@@ -169,78 +156,24 @@ pub fn authoring_choice_row_height(ui: &egui::Ui) -> f32 {
         .max(48.0)
 }
 
-/// Returns the responsive right-aligned label width used by Sundial's plug rows.
-#[must_use]
-pub fn authoring_socket_label_width(available_width: f32) -> f32 {
-    authoring_bridge::authoring_socket_label_width(available_width)
-}
-
-/// Renders the compact, right-aligned socket label used by Sundial's plug rows.
-pub fn draw_authoring_socket_label(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
-    authoring_bridge::draw_authoring_socket_label(ui, label, width)
-}
-
-/// Renders the native Sundial Reset control used by an authoring socket row.
-pub fn draw_authoring_socket_reset(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    tooltip: impl Into<egui::WidgetText>,
-) -> egui::Response {
-    authoring_bridge::draw_authoring_socket_reset(ui, enabled, tooltip)
-}
-
-/// Renders Sundial's native inline plug-safety selector.
-pub fn draw_plug_safety_selector(
-    ui: &mut egui::Ui,
-    scope: impl Hash,
-    mode: &mut PlugSelectionMode,
-) -> bool {
-    authoring_bridge::draw_plug_safety_selector(ui, scope, mode)
-}
-
-/// Renders Sundial's matching risk warning for a selected plug-safety mode.
-pub fn draw_plug_safety_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
-    authoring_bridge::draw_authoring_plug_safety_warning(ui, mode);
-}
-
-/// Renders Sundial's compact information glyph with hover help.
-pub fn draw_authoring_info_icon(
-    ui: &mut egui::Ui,
-    tooltip: impl Into<egui::WidgetText>,
-) -> egui::Response {
-    authoring_bridge::draw_authoring_info_icon(ui, tooltip)
-}
-
-/// Draws Sundial's standard compact action toolbar for companion authoring utilities.
-pub fn draw_authoring_toolbar<R>(
-    ui: &mut egui::Ui,
-    contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    authoring_bridge::draw_authoring_toolbar(ui, contents)
-}
-
-/// Returns whether Sundial's saved preferences allow plug-selection safety warnings.
-#[must_use]
-pub fn show_plug_safety_warnings() -> bool {
-    authoring_bridge::show_plug_safety_warnings()
-}
-
-/// Returns Sundial's saved default scope for plug selection.
-#[must_use]
-pub fn default_plug_selection_mode() -> PlugSelectionMode {
-    authoring_bridge::default_plug_selection_mode()
-}
-
-/// Installs Sundial's text/symbol font families for an external investment-authoring window.
-/// The fallback family is registered even when optional game font files cannot be read.
-pub fn configure_authoring_fonts(
-    ctx: &egui::Context,
-    install_directory: &Path,
-) -> Result<(), String> {
-    authoring_bridge::configure_fonts(ctx, install_directory)
-}
-
 impl InvestmentCatalog {
+    /// Compact native catalog row with the shared authored perk tooltip.
+    pub fn draw_perk_row(
+        &self,
+        ui: &mut egui::Ui,
+        hash: u32,
+        name: &str,
+        selected: bool,
+        tooltip: PlugTooltip<'_>,
+    ) -> egui::Response {
+        authoring_bridge::draw_perk_row(ui, &self.catalog, hash, name, selected, tooltip)
+    }
+
+    /// The native catalog icon, sized for the surrounding authoring control.
+    pub fn draw_perk_icon(&self, ui: &mut egui::Ui, hash: u32, size: f32) {
+        authoring_bridge::draw_perk_icon(ui, &self.catalog, hash, size);
+    }
+
     /// Reuses the same icon, description, focus and tooltip renderer as Sundial's plug browser.
     pub fn draw_authoring_choice_row(
         &self,

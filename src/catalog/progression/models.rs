@@ -1,5 +1,37 @@
 use super::*;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RecordDefinition {
+    pub index: usize,
+    pub hash: u64,
+    pub name: String,
+    pub paths: Vec<Vec<String>>,
+    pub objectives: Vec<usize>,
+    pub completion_flag: Option<u16>,
+    pub redeemed_intervals: Option<u16>,
+    pub interval_count: usize,
+    #[serde(default)]
+    pub runtime: Option<RecordRuntime>,
+}
+
+/// The record's own replicated progress, distinct from an objective's source expression.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RecordRuntime {
+    pub progress: Vec<RecordProgress>,
+    pub score: u16,
+    pub interval_scores: Vec<u32>,
+    #[serde(default)]
+    pub interval_items: Vec<Option<usize>>,
+    pub rewards: Vec<(usize, i32)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RecordProgress {
+    pub objective: usize,
+    pub slot: u16,
+    pub threshold: i32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProgressionScope {
     Account,

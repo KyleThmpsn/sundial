@@ -48,8 +48,6 @@ use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
 use crate::icon_edit::{WeaponIconEditor, WeaponIconEditorAction, render_weapon_icon_preview};
-#[cfg(test)]
-use crate::install::CANONICAL_ARTIFACT_FILE_NAMES;
 use crate::install::{
     InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     install_staged_packages_with_progress,
@@ -996,8 +994,8 @@ impl PackageAuthoringApp {
             return;
         }
         ui.menu_button("Tools", |ui| {
-            if ui.button("Native Asset Browser…").clicked() {
-                self.perk_workbench.open_assets();
+            if ui.button("Engine Catalog…").clicked() {
+                self.perk_workbench.open_engine_catalog();
                 ui.close_menu();
             }
         });
@@ -1109,7 +1107,7 @@ impl PackageAuthoringApp {
         let response = egui::Modal::new("parhelion_discard_recipe".into()).show(ctx, |ui| {
             workbench_style(ui);
             ui.set_width(420.0);
-            ui.heading("Discard unsaved recipe changes?");
+            ui.heading("Discard Unsaved Recipe Changes?");
             ui.add_space(6.0);
             ui.label(match &action {
                 PendingRecipeAction::Close => {

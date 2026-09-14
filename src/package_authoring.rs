@@ -148,7 +148,9 @@ pub mod sandbox_perk {
         validate_finished_sandbox_perk_catalog, validate_sandbox_perk_index_catalog,
         validate_sandbox_perk_runtime_map,
     };
-    pub use crate::sandbox_perk::{activation, dependencies, program, projectile};
+    pub use crate::sandbox_perk::{
+        action, activation, dependencies, ingredients, nodes, program, projectile,
+    };
 }
 
 /// Weapon sandbox-pattern and runtime entity graph helpers shared with package authoring tools.
@@ -177,17 +179,20 @@ pub mod weapon_entity {
 
 /// Typed, data-driven weapon runtime discovery shared with package authoring tools.
 pub mod weapon_runtime {
+    pub use crate::weapon_runtime::presentation;
     pub use crate::weapon_runtime::{
-        ResolvedWeaponRuntimeField, WeaponRuntimeBinding, WeaponRuntimeEntitySource,
-        WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
-        WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement,
-        WeaponRuntimeResourceShape, WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue,
-        WeaponRuntimeValueKind, WeaponRuntimeValueOverride, encode_weapon_runtime_value,
+        NativeStructure, NativeStructureField, ResolvedWeaponRuntimeField, WeaponRuntimeBinding,
+        WeaponRuntimeEntitySource, WeaponRuntimeField, WeaponRuntimeFieldLocator,
+        WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement,
+        WeaponRuntimeResource, WeaponRuntimeResourceShape, WeaponRuntimeRoot,
+        WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
+        WeaponRuntimeValueOverride, component_binding_label, decode_weapon_runtime_field_value,
+        encode_weapon_runtime_field_value, encode_weapon_runtime_value,
         load_weapon_runtime_entity_at_pattern_index_with_manager,
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph,
         load_weapon_runtime_graph_for_entity, load_weapon_runtime_graph_with_manager,
-        load_weapon_runtime_resource_shape, resolve_weapon_runtime_field,
-        runtime_fields_share_semantics,
+        load_weapon_runtime_resource_shape, native_member_names, native_type_name,
+        resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
 }
 
@@ -199,24 +204,6 @@ pub fn fnv1_name_hash(name: &str) -> u32 {
 
 /// FNV-1's empty-string basis, reserved as the package-backed no-name sentinel.
 pub const FNV1_EMPTY_HASH: u32 = crate::hash::FNV1_EMPTY_HASH;
-
-/// One-based unlock-map bank backed by the Shadowkeep account object's primary flag region.
-pub const SHADOWKEEP_ACCOUNT_FLAG_BANK: u8 = 1;
-/// Start of the Shadowkeep account object's primary unlock-flag byte region.
-pub const SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET: usize = 29_740;
-/// Start of the next account-object region after the primary unlock-flag bytes.
-pub const SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET: usize = 42_040;
-/// Stock rows mapped into the primary account unlock-flag region.
-pub const SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS: usize = 11_923;
-/// Complete byte capacity available before the following account-object region begins.
-///
-/// Authored flag-map rows may claim the stock padding after
-/// [`SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS`], but must never cross this boundary.
-pub const SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY: usize =
-    SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET - SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET;
-/// Number of primary account unlock-flag rows available to authored extensions.
-pub const SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY: usize =
-    SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY - SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS;
 
 /// Parses authored JSON with Sundial's duplicate-key and nesting checks.
 pub fn parse_json<T: DeserializeOwned>(encoded: &str) -> Result<T, serde_json::Error> {
@@ -286,7 +273,7 @@ pub fn open_directory(path: &Path) -> Result<(), String> {
 fn validate_shadowkeep_install_directory(install: &Path) -> Result<PathBuf, String> {
     let install = fs::canonicalize(install).map_err(|error| {
         format!(
-            "Could not resolve Shadowkeep install {}: {error}",
+            "Could not resolve Sunrise install {}: {error}",
             install.display()
         )
     })?;
@@ -294,14 +281,47 @@ fn validate_shadowkeep_install_directory(install: &Path) -> Result<PathBuf, Stri
     Ok(install)
 }
 
-/// Validates and canonicalizes the `packages` directory of a Shadowkeep installation.
-pub fn validate_shadowkeep_packages_directory(packages: &Path) -> Result<PathBuf, String> {
-    let packages = fs::canonicalize(packages).map_err(|error| {
+/// Resolves a package directory without following it into a different installation.
+/// Does not require game files, so interrupted installs remain recoverable.
+pub fn resolve_packages_directory(packages: &Path) -> Result<PathBuf, String> {
+    let selected = std::path::absolute(packages).map_err(|error| error.to_string())?;
+    let selected_root = selected
+        .parent()
+        .ok_or("The packages directory has no game folder")?;
+    let root = fs::canonicalize(selected_root).map_err(|error| {
+        format!(
+            "Could not resolve the selected game folder {}: {error}",
+            selected_root.display()
+        )
+    })?;
+    let resolved = fs::canonicalize(&selected).map_err(|error| {
         format!(
             "Could not resolve Shadowkeep packages directory {}: {error}",
             packages.display()
         )
     })?;
+    if !resolved.is_dir() {
+        return Err(format!(
+            "The packages path is not a directory: {}",
+            selected.display()
+        ));
+    }
+    if resolved
+        .parent()
+        .is_none_or(|parent| !crate::paths::paths_equal(parent, &root))
+    {
+        return Err(format!(
+            "The selected packages directory resolves outside its game folder: {} points to {}. Select an installation whose packages belong to that game folder.",
+            selected.display(),
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+/// Validates and canonicalizes the `packages` directory of a Shadowkeep installation.
+pub fn validate_shadowkeep_packages_directory(packages: &Path) -> Result<PathBuf, String> {
+    let packages = resolve_packages_directory(packages)?;
     let install = packages.parent().ok_or_else(|| {
         format!(
             "Packages directory has no install root: {}",
@@ -338,19 +358,7 @@ pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String>
     crate::package_runtime::validate_package_authoring_runtime(install)
 }
 
-/// Opens a Shadowkeep package directory through Sundial's cross-platform runtime.
-///
-/// The directory may be the installed package set or an isolated authoring view whose parent is
-/// laid out like a Shadowkeep installation.
-pub fn open_shadowkeep_package_manager(packages: &Path) -> Result<PackageManager, String> {
-    let install = packages.parent().ok_or_else(|| {
-        format!(
-            "Packages directory has no install root: {}",
-            packages.display()
-        )
-    })?;
-    crate::package_runtime::open_shadowkeep_packages(install)
-}
+pub use crate::investment::native_content::open_packages as open_shadowkeep_package_manager;
 
 /// Reports whether the Destiny 2 client is currently running.
 pub fn destiny_is_running() -> Result<bool, String> {
@@ -407,3 +415,13 @@ pub mod native_payload {
 pub mod native_weapon {
     pub use crate::native_weapon::*;
 }
+
+/// Checked decoding only. Loading-index writing and enrollment belong to Parhelion.
+pub use crate::package_runtime::loading::index as loading_index;
+
+pub mod account;
+pub use crate::account_contract::{
+    SHADOWKEEP_ACCOUNT_FLAG_BANK, SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY,
+    SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY, SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET,
+    SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS, SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET,
+};

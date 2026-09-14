@@ -1,5 +1,6 @@
 //! Preserve native owner loading boundaries when cloning private resource groups.
 use super::*;
+use crate::tag_payload::read_u32;
 use crate::{NewTagSpec, tag_payload::write_u32};
 
 /// A native type-16 loading owner and its type-8 dependency index.

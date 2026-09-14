@@ -18,7 +18,6 @@ use crate::recipe::{RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponR
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthoringField {
-    Donor,
     InventorySlot,
     DamageProfile,
     InvestmentStat { definition_index: u16 },
@@ -28,7 +27,6 @@ pub enum AuthoringField {
 /// A stable, machine-readable explanation for an authoring diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthoringDiagnosticCode {
-    CollectionsBackingRequired,
     MissingInventorySlot,
     MissingEquipmentSlot,
     EquipmentSlotMismatch,
@@ -195,10 +193,10 @@ pub(crate) fn appearance_compatibility(
     use sundial::package_authoring::native_weapon::{
         AnimationCompatibility, animation_compatibility,
     };
-    if !candidate.collection_backed {
-        return AppearanceCompatibility::Blocked("Appearance has no Collections entry");
-    }
-    if candidate.type_name != base.type_name {
+    if !candidate.type_name.trim().is_empty()
+        && !base.type_name.trim().is_empty()
+        && candidate.type_name != base.type_name
+    {
         return AppearanceCompatibility::Blocked("Different weapon family");
     }
     if candidate.inventory_slot != Some(target)
@@ -382,16 +380,6 @@ pub fn weapon_summary_authoring_capabilities(
     donor: &WeaponDonorSummary,
 ) -> WeaponAuthoringCapabilities {
     let mut diagnostics = Vec::new();
-    if !donor.collection_backed {
-        diagnostics.push(AuthoringDiagnostic {
-            field: AuthoringField::Donor,
-            code: AuthoringDiagnosticCode::CollectionsBackingRequired,
-            message: format!(
-                "{} is not backed by a Collections definition, so Parhelion cannot safely author from it",
-                donor.name
-            ),
-        });
-    }
 
     let Some(slot) = donor.inventory_slot else {
         diagnostics.push(AuthoringDiagnostic {

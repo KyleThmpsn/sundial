@@ -291,12 +291,6 @@ fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
                 .iter()
                 .any(|(text, _)| text.contains("Sidearm · 0x00000021"))
         );
-        crate::app::ui_tests::build_flow::capture(
-            &ctx,
-            output,
-            &format!("runtime-donor-list-{}", viewport.x as u32),
-            viewport.x,
-        );
         assert_eq!(app.recipe, before);
         assert!(
             !app.runtime_donors.busy(),
@@ -510,41 +504,6 @@ fn a_compiler_conflict_blocks_apply_even_when_resets_are_accepted() {
     );
     review.result.as_mut().unwrap().error = Some("Saved edits overlap".into());
     assert!(!preview::can_apply(Some(review), &app.recipe, picker));
-}
-
-#[test]
-fn group_settings_review_keeps_the_apply_button_visible() {
-    for viewport in [
-        egui::vec2(480.0, 640.0),
-        egui::vec2(900.0, 760.0),
-        egui::vec2(930.0, 480.0),
-    ] {
-        let ctx = egui::Context::default();
-        let mut app = app();
-        app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
-        let review = Arc::make_mut(
-            app.runtime_donors
-                .reviews
-                .get_mut(&(BINDING, SAFE_Z))
-                .unwrap(),
-        );
-        let plan = review.result.as_mut().unwrap();
-        plan.kept = 4;
-        plan.transferred = vec!["Reload Duration".into()];
-        plan.resets = vec![
-            "Binary component patch at 0x28".into(),
-            "Unsupported Magazine Setting".into(),
-        ];
-        let output = settle(&ctx, &mut app, viewport);
-        let button = label_rect(&output, "Apply Donor");
-        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(button));
-        crate::app::ui_tests::build_flow::capture(
-            &ctx,
-            output,
-            &format!("runtime-donor-review-{}", viewport.x as u32),
-            viewport.x,
-        );
-    }
 }
 
 #[test]

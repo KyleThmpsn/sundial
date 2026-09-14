@@ -3,6 +3,7 @@ use super::*;
 fn field(schema: u32) -> WeaponRuntimeField {
     WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: 1,
             resource_index: 0,
             root: WeaponRuntimeRootKind::ComponentDefinition,
@@ -23,6 +24,7 @@ fn field(schema: u32) -> WeaponRuntimeField {
         value: WeaponRuntimeValue::Float32Bits(1.0_f32.to_bits()),
         source: WeaponRuntimeFieldSource::NativeMember,
         generated_kind: None,
+        name_inferred: false,
     }
 }
 
@@ -54,6 +56,7 @@ fn registry() -> RuntimeRegistry {
     RuntimeRegistry {
         records,
         names: BTreeMap::new(),
+        inferred: BTreeMap::new(),
     }
 }
 

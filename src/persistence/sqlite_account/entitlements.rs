@@ -58,17 +58,17 @@ pub(super) fn save(
             .ok_or_else(|| SqliteAccountError::invalid_data("entitlements", "invalid ownership"))?;
         let mut native = old
             .iter()
-            .find(|r| r.get("name") == Some(&super::package::Cell::Text(name.to_owned())))
+            .find(|r| r.get("name") == Some(&super::snapshot::Cell::Text(name.to_owned())))
             .cloned()
             .unwrap_or_default();
         native.insert(
             "position".into(),
-            super::package::Cell::Integer(position as i64),
+            super::snapshot::Cell::Integer(position as i64),
         );
-        native.insert("name".into(), super::package::Cell::Text(name.to_owned()));
+        native.insert("name".into(), super::snapshot::Cell::Text(name.to_owned()));
         native.insert(
             "ownership".into(),
-            super::package::Cell::Integer(owned as i64),
+            super::snapshot::Cell::Integer(owned as i64),
         );
         super::writer::insert(db, "entitlements", native)?;
     }

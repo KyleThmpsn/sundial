@@ -397,7 +397,7 @@ impl SundialApp {
                 &mut enable_parhelion,
                 "Enable Parhelion Weapon Workbench",
             );
-            crate::ui_help::info(ui, "Build custom Destiny weapons by combining stats, plugs, private perks, runtime behavior, and appearance sources from the selected Shadowkeep installation.");
+            crate::ui_help::info(ui, "Build custom Destiny weapons by combining stats, plugs, private perks, runtime behavior, and appearance sources from the selected Sunrise install.");
             response
         }).inner;
         if package_authoring_response.changed() {
@@ -408,13 +408,6 @@ impl SundialApp {
             self.open_package_authoring(ctx);
         }
         ui.add_space(6.0);
-        if self.document.uses_json_account() && self.document.supports_v13_account() {
-            preferences_changed |= ui.checkbox(
-                &mut self.preferences.experimental_activity_state,
-                "Show Activity State",
-            ).on_hover_text("Shows the raw current activity index on v13+ accounts. Its effect in game is not verified. Saved values are preserved when hidden.").changed();
-            ui.add_space(6.0);
-        }
         preferences_changed |= ui
             .checkbox(
                 &mut self.preferences.experimental_extended_fov,
@@ -473,13 +466,14 @@ impl SundialApp {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Installation and Compatibility");
-            crate::ui_help::info(ui, "Select the Destiny 2 Shadowkeep installation. Sundial finds Project Sunrise's settings.json inside it automatically.");
+            crate::ui_help::info(ui, "Select your Sunrise install, the directory containing destiny2.exe. Sundial finds Project Sunrise's settings.json inside it automatically.");
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
-        ui.label("Sunrise Destiny 2 Installation");
+        ui.label("Sunrise Install");
+        ui.label("The directory containing destiny2.exe.");
         preference_path(ui, &self.install_path);
-        if ui.button("Choose Installation…").clicked() {
+        if ui.button("Choose Sunrise Install…").clicked() {
             self.choose_install(ctx);
         }
         self.draw_runtime_preferences(ui);

@@ -25,13 +25,14 @@ pub(in crate::app) struct UiState {
 
 impl UiState {
     pub(in crate::app::progression) fn draw_navigation(&mut self, ui: &mut egui::Ui) -> bool {
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Artifact, "Artifact Mods");
-            ui.selectable_value(&mut self.tab, Tab::Experience, "Seasonal XP");
-            ui.selectable_value(&mut self.tab, Tab::Rewards, "Season Pass");
-        });
-        ui.separator();
+        ui.selectable_value(&mut self.tab, Tab::Artifact, "Artifact Mods");
+        ui.selectable_value(&mut self.tab, Tab::Experience, "Seasonal XP");
+        ui.selectable_value(&mut self.tab, Tab::Rewards, "Season Pass");
         self.tab == Tab::Artifact
+    }
+
+    pub(in crate::app::progression) fn rewards_selected(&self) -> bool {
+        self.tab == Tab::Rewards
     }
 
     pub(in crate::app::progression) fn invalidate(&mut self) {
@@ -103,6 +104,7 @@ fn draw_season(
         state.xp = source.1;
     }
     let mut requested = None;
+    let mut rewards_changed = false;
     egui::ScrollArea::vertical().id_salt("seasonal_content").show(ui, |ui| {
         if state.tab == Tab::Experience {
         if let Ok(experience) = snapshot.seasonal_experience(definition) {
@@ -124,7 +126,7 @@ fn draw_season(
             Tab::Artifact => super::artifact::draw(ui, catalog, definition, &snapshot, editable, &mut requested),
             Tab::Rewards => {
                 if let Some(pass) = catalog.progression_definition(rules::PASS_PROGRESSION) {
-                    super::rewards::draw_pass(ui, catalog, document, pass);
+                    rewards_changed = super::rewards::draw_pass(ui, catalog, document, pass, editable);
                 }
             }
         }
@@ -133,7 +135,9 @@ fn draw_season(
             ui.colored_label(ui.visuals().error_fg_color, message);
         }
     });
-    let Some(edit) = requested else { return false };
+    let Some(edit) = requested else {
+        return rewards_changed;
+    };
     match apply(document, catalog, edit) {
         Ok(changed) => {
             state.feedback = None;

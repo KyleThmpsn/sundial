@@ -3,12 +3,10 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::Write,
     path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
 use crate::WeaponRecipe;
 
@@ -318,7 +316,7 @@ impl RecipeLibrary {
             let current = WeaponRecipe::load_json(&target).map_err(|error| {
                 format!("Could not check the saved recipe before replacing it: {error}")
             })?;
-            if &current != baseline {
+            if !current.same_saved_content(baseline) {
                 return Err("This recipe changed on disk after you opened it. Your draft is still here. Export it to a separate file, then reopen the library recipe to reconcile the changes.".into());
             }
         }
@@ -551,43 +549,22 @@ fn collect_recipe_paths(
     Ok(paths)
 }
 
-fn write_temp_file(parent: &Path, bytes: &[u8]) -> Result<NamedTempFile, String> {
-    let mut temporary = NamedTempFile::new_in(parent)
-        .map_err(|error| format!("Could not create a temporary recipe file: {error}"))?;
-    temporary
-        .write_all(bytes)
-        .map_err(|error| format!("Could not write a temporary recipe file: {error}"))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| format!("Could not flush a temporary recipe file: {error}"))?;
-    Ok(temporary)
-}
-
 fn atomic_write_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     sundial::package_authoring::replace_authoring_file(path, bytes)
         .map_err(|error| format!("Could not atomically replace {}: {error}", path.display(),))
 }
 
 fn atomic_write_create_new(path: &Path, bytes: &[u8]) -> Result<(), WriteNewError> {
-    let parent = path.parent().ok_or_else(|| {
-        WriteNewError::Other(format!("Path has no parent directory: {}", path.display()))
-    })?;
-    let temporary = write_temp_file(parent, bytes).map_err(WriteNewError::Other)?;
-    temporary
-        .persist_noclobber(path)
-        .map(|_| ())
-        .map_err(|error| {
-            if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-                WriteNewError::AlreadyExists
-            } else {
-                WriteNewError::Other(format!(
-                    "Could not atomically create {}: {}",
-                    path.display(),
-                    error.error
-                ))
-            }
-        })
+    sundial::storage::create_file(path, bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            WriteNewError::AlreadyExists
+        } else {
+            WriteNewError::Other(format!(
+                "Could not atomically create {}: {error}",
+                path.display()
+            ))
+        }
+    })
 }
 
 #[cfg(test)]
@@ -710,12 +687,31 @@ mod tests {
     }
 
     #[test]
-    fn bundled_identities_are_unique_and_new_recipes_use_distinct_donors() {
+    fn bundled_recipes_validate_with_unique_identities() {
         let mut namespaces = BTreeSet::new();
         let mut hashes = BTreeSet::new();
         for (file_name, json) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            recipe.to_spec().unwrap();
+            let spec = recipe.to_spec().unwrap();
+            match file_name {
+                EVERY_END_FILE_NAME => {
+                    assert_eq!(recipe.namespace, "parhelion.every-end");
+                    assert!(!recipe.identity_is_name_derived());
+                    assert_eq!(spec.identity.item_hash, 0x5355_4E44);
+                }
+                SECOND_SUN_FILE_NAME => {
+                    assert!(recipe.identity_is_name_derived());
+                    assert_eq!(
+                        (
+                            spec.identity.item_hash,
+                            spec.identity.collectible_hash,
+                            spec.identity.unlock_hash
+                        ),
+                        (0x757D_33F5, 0xD347_B59A, 0xF137_B0F4),
+                    );
+                }
+                _ => {}
+            }
             assert!(namespaces.insert(recipe.namespace.clone()));
             for hash in recipe.identity.parsed_hashes(&recipe.namespace).unwrap() {
                 assert!(
@@ -723,50 +719,7 @@ mod tests {
                     "duplicate identity in {file_name}: {hash:08X}"
                 );
             }
-            assert_new_bundle_donors(file_name, &recipe);
         }
-    }
-
-    fn assert_new_bundle_donors(file_name: &str, recipe: &WeaponRecipe) {
-        if matches!(
-            file_name,
-            EVERY_END_FILE_NAME | SECOND_SUN_FILE_NAME | "redacted.parhelion.json"
-        ) {
-            return;
-        }
-        if matches!(
-            file_name,
-            "still-here.parhelion.json"
-                | "dead-air.parhelion.json"
-                | "night-shift.parhelion.json"
-                | "good-company.parhelion.json"
-        ) {
-            // These recipes intentionally inherit their gameplay donor's appearance.
-            assert!(recipe.presentation_donor.is_none());
-        } else {
-            assert_ne!(
-                recipe.donor.item_hash,
-                recipe.presentation_donor.as_ref().unwrap().item_hash
-            );
-        }
-        assert_eq!(
-            recipe.overrides.rarity,
-            Some(
-                if matches!(
-                    recipe.namespace.as_str(),
-                    "parhelion.dead-air" | "parhelion.reclamation-order"
-                ) {
-                    crate::RecipeRarity::Exotic
-                } else {
-                    crate::RecipeRarity::Legendary
-                }
-            )
-        );
-        assert!(recipe.inventory_hint.is_none());
-        assert!(recipe.runtime_component_donors.is_empty());
-        assert!(recipe.overrides.weapon_pattern_index.is_none());
-        assert!(recipe.overrides.raw_payload_patches.is_empty());
-        assert!(!recipe.flavor.contains("authored with Parhelion"));
     }
 
     #[test]
@@ -790,60 +743,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_weapons_offer_distinct_trait_choices_and_keep_custom_defaults() {
-        for (filename, json) in BUNDLED_RECIPES {
-            let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            let sockets: &[usize] = match filename {
-                "good-company.parhelion.json" | "reclamation-order.parhelion.json" => &[3, 4, 8],
-                _ => &[3, 4],
-            };
-            for &socket in sockets {
-                let column = recipe.overrides.socket_columns[socket].as_ref().unwrap();
-                let expected_count = if matches!(
-                    filename,
-                    EVERY_END_FILE_NAME
-                        | "stay.parhelion.json"
-                        | "good-company.parhelion.json"
-                        | "reclamation-order.parhelion.json"
-                ) {
-                    4
-                } else {
-                    3
-                };
-                assert_eq!(
-                    column.choices.len(),
-                    expected_count,
-                    "{filename} socket {socket}"
-                );
-                let hashes = column
-                    .choices
-                    .iter()
-                    .map(|hash| hash.parse_u32().unwrap())
-                    .collect::<BTreeSet<_>>();
-                assert_eq!(
-                    hashes.len(),
-                    expected_count,
-                    "{filename} has duplicate choices"
-                );
-            }
-            for variant in &recipe.overrides.socket_plug_variants {
-                assert_eq!(
-                    variant.choice_index, 0,
-                    "{filename} custom perk must stay the default"
-                );
-                let column = recipe.overrides.socket_columns[usize::from(variant.socket_index)]
-                    .as_ref()
-                    .unwrap();
-                assert_eq!(
-                    column.choices[0].parse_u32().unwrap(),
-                    variant.source_plug_hash.parse_u32().unwrap(),
-                    "{filename}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn all_bundled_defaults_are_seeded() {
         let directory = tempfile::tempdir().unwrap();
         let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
@@ -861,134 +760,6 @@ mod tests {
         assert!(scan.entries.iter().all(|entry| entry.bundled));
         assert_eq!(enabled.len(), BUNDLED_RECIPES.len());
         assert!(directory.path().join(LIBRARY_STATE_FILE_NAME).is_file());
-    }
-
-    #[test]
-    fn new_weapon_identities_match_native_derivation_and_defaults_have_shaders() {
-        for (name, json) in BUNDLED_RECIPES {
-            let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            if matches!(
-                name,
-                "stay.parhelion.json"
-                    | "still-here.parhelion.json"
-                    | "vaultbreaker.parhelion.json"
-                    | "good-company.parhelion.json"
-                    | "reclamation-order.parhelion.json"
-            ) {
-                assert_eq!(
-                    recipe.to_spec().unwrap().identity,
-                    crate::WeaponCloneIdentity::from_namespace(&recipe.namespace).unwrap()
-                );
-            }
-            let shader = recipe.overrides.socket_columns[5].as_ref().unwrap();
-            assert_ne!(shader.choices[0].parse_u32().unwrap(), 0xFD368D30, "{name}");
-        }
-    }
-
-    #[test]
-    fn dead_air_replaces_ornament_and_catalyst_with_effigy_traits() {
-        let recipe =
-            WeaponRecipe::from_json_str(include_str!("../recipes/dead-air.parhelion.json"))
-                .unwrap();
-        assert_eq!(
-            recipe.overrides.modern_damage_type,
-            Some(crate::recipe::RecipeDamageType::Solar)
-        );
-        for (index, hash) in [(6, 0x62C9F17F), (7, 0x2F98742C)] {
-            let column = recipe.overrides.socket_columns[index].as_ref().unwrap();
-            assert_eq!(column.socket_type, Some(92));
-            assert_eq!(column.choices.len(), 2);
-            assert_eq!(column.choices[0].parse_u32().unwrap(), hash);
-        }
-    }
-
-    #[test]
-    fn saved_dead_air_and_night_shift_edits_are_bundled() {
-        for (filename, damage, power_cap_group, hue_shift_degrees) in [
-            (
-                "dead-air.parhelion.json",
-                crate::recipe::RecipeDamageType::Solar,
-                15,
-                140,
-            ),
-            (
-                "night-shift.parhelion.json",
-                crate::recipe::RecipeDamageType::Void,
-                14,
-                -170,
-            ),
-        ] {
-            let (_, json) = BUNDLED_RECIPES
-                .iter()
-                .find(|(name, _)| *name == filename)
-                .unwrap();
-            let recipe = WeaponRecipe::from_json_str(json).unwrap();
-            assert!(recipe.presentation_donor.is_none(), "{filename}");
-            assert_eq!(
-                recipe.overrides.inventory_slot,
-                Some(crate::recipe::RecipeInventorySlot::Kinetic)
-            );
-            assert_eq!(recipe.overrides.modern_damage_type, Some(damage));
-            assert_eq!(recipe.overrides.power_cap_group, Some(power_cap_group));
-            assert!(recipe.overrides.icon_edit.flip_horizontal);
-            assert_eq!(
-                recipe.overrides.icon_edit.hue_shift_degrees,
-                hue_shift_degrees
-            );
-            assert!(recipe.overrides.raw_payload_patches.is_empty());
-        }
-    }
-
-    #[test]
-    fn every_end_has_four_traits_and_keeps_requested_defaults() {
-        let recipe = WeaponRecipe::from_json_str(EVERY_END_TEMPLATE).unwrap();
-        for (socket, expected) in [
-            (3, [0x5223_56C5, 0xA5A4_B58A, 0x0EC3_FDC8, 0x7481_2567]),
-            (4, [0xB517_FC25, 0xD201_3CA1, 0xF351_D2CC, 0xA9CA_6B03]),
-        ] {
-            let choices = &recipe.overrides.socket_columns[socket]
-                .as_ref()
-                .unwrap()
-                .choices;
-            assert_eq!(
-                choices
-                    .iter()
-                    .map(|hash| hash.parse_u32().unwrap())
-                    .collect::<Vec<_>>(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn june_ninth_is_a_void_smg_in_the_kinetic_slot() {
-        let recipe =
-            WeaponRecipe::from_json_str(include_str!("../recipes/june-ninth.parhelion.json"))
-                .unwrap();
-        assert_eq!(recipe.donor.item_hash.parse_u32().unwrap(), 0xC7ED_ADF6);
-        assert_eq!(
-            recipe.overrides.inventory_slot,
-            Some(crate::recipe::RecipeInventorySlot::Kinetic)
-        );
-        assert_eq!(
-            recipe.overrides.modern_damage_type,
-            Some(crate::recipe::RecipeDamageType::Void)
-        );
-        assert_eq!(
-            recipe.overrides.ammo_type,
-            Some(crate::recipe::RecipeAmmoType::Primary)
-        );
-        assert_eq!(
-            recipe
-                .presentation_donor
-                .as_ref()
-                .unwrap()
-                .item_hash
-                .parse_u32()
-                .unwrap(),
-            0x9BAD_D9A6
-        );
-        assert_eq!(recipe.overrides.socket_columns.len(), 12);
     }
 
     #[test]

@@ -186,7 +186,7 @@ fn preference_group_mut(
         })
 }
 
-fn group_name(group: AccountSettingGroup) -> Option<&'static str> {
+pub(crate) fn group_name(group: AccountSettingGroup) -> Option<&'static str> {
     match group {
         AccountSettingGroup::Root => None,
         AccountSettingGroup::Controls => Some("controls"),

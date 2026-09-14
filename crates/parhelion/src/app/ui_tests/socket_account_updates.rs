@@ -18,7 +18,7 @@ fn socket_only_install_review_shows_saved_instance_updates_without_writing_accou
     let review = crate::install::test_review_with_sockets(
         &packages,
         BTreeSet::new(),
-        vec![sundial::investment::AuthoredSocketChange {
+        vec![sundial::package_authoring::account::AuthoredSocketChange {
             definition_hash: 100,
             previous_socket_count: 8,
             default_plugs: vec![Some(400); 9],

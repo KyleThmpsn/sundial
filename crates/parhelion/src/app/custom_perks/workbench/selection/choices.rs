@@ -32,7 +32,7 @@ pub(super) fn collect(
     };
     // Saved payloads stay usable while a document with the same identity is being edited.
     for entry in entries {
-        add(entry.recipe.clone(), "My Perks".into(), false);
+        add(entry.recipe.clone(), "Custom Perks".into(), false);
     }
     let empty = PerkRecipe::new().at_socket(0, 0);
     for document in documents {
@@ -46,7 +46,12 @@ pub(super) fn collect(
             .is_some_and(|saved| saved == document.recipe);
         add(
             document.recipe.clone(),
-            if saved { "My Perks" } else { "Workbench Draft" }.into(),
+            if saved {
+                "Custom Perks"
+            } else {
+                "Workbench Draft"
+            }
+            .into(),
             document.pending_effect.is_some(),
         );
     }

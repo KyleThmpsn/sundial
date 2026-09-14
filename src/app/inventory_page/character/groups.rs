@@ -40,14 +40,15 @@ impl SundialApp {
                         scope_id(group.key.scope),
                         group.key.native_id
                     );
-                    let array_has_room =
-                        inventory_available && stored_count < CHARACTER_INVENTORY_CAPACITY;
-                    let bucket_has_room = group.addable
-                        && bucket_key_has_room(group.key, group.capacity, bucket_usage);
+                    let array_has_room = inventory_available
+                        && stored_count < account::character_inventory_capacity(&self.document);
+                    let bucket_blocker =
+                        bucket_add_blocker(group.key, group.capacity, bucket_usage, &group.label);
                     let can_add = editable
+                        && group.addable
                         && array_has_room
                         && bucket_usage.occupancy_complete
-                        && bucket_has_room;
+                        && bucket_blocker.is_none();
                     let repaint_context = ui.ctx().clone();
                     let mut toggle_header = false;
                     let mut open_picker = false;
@@ -79,7 +80,7 @@ impl SundialApp {
                                     true,
                                     array_has_room,
                                     bucket_usage.occupancy_complete,
-                                    bucket_has_room,
+                                    bucket_blocker.as_deref(),
                                     &group.label,
                                 );
                                 let response = if can_add {
@@ -141,7 +142,7 @@ impl SundialApp {
                                                     show_dummy_items,
                                                     allow_cross_class_subclasses,
                                                 )
-                                                .filter(|definition| crate::account_contract::definition_available(definition.hash, self.document.supports_v13_account()))
+                                                .filter(|definition| crate::account_contract::definition_available(definition.hash, self.document.supports_emote_collection()))
                                                 .filter(in_bucket)
                                                 .collect::<Vec<_>>();
                                             let filter_candidates = bucket_candidates.iter()

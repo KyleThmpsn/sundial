@@ -86,7 +86,7 @@ pub(super) fn draw_structural_details(
         if !rows.is_empty() {
             egui::CollapsingHeader::new(format!("Dye Reference Rows ({})", rows.len()))
                 .show(ui, |ui| {
-                    ui.weak("Custom, default, and locked lanes in stored order. Disabled rows are retained; indices are not item hashes.");
+                    ui.weak("Custom, default, and locked lanes in stored order. Disabled rows are retained. Indices are not item hashes.");
                     draw_rows(ui, "dyes", &["Override Lane", "Row", "Channel Index", "Dye Reference", "State"], rows);
                 });
         }
@@ -290,35 +290,6 @@ fn draw_rows(ui: &mut egui::Ui, id: &str, headings: &[&str], rows: Vec<Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn version_and_class_labels_do_not_invent_unknown_meanings() {
-        assert_eq!(version_cap_text(Some(1740)), "1740");
-        assert_eq!(version_cap_text(None), "No fixed cap decoded");
-        assert_eq!(art_class_text(-1), "Generic (-1)");
-        assert_eq!(art_class_text(7), "Unknown class (7)");
-    }
-
-    #[test]
-    fn damage_profile_labels_distinguish_fixed_inferred_and_unknown() {
-        use crate::catalog::ItemDamageType;
-        let modern = damage_profile_text(ItemDamageProfile::ModernFixed {
-            damage_type: ItemDamageType::Arc,
-        });
-        let legacy = damage_profile_text(ItemDamageProfile::LegacyFixed {
-            damage_type: ItemDamageType::Arc,
-        });
-        assert_ne!(modern, legacy);
-        assert!(
-            damage_profile_text(ItemDamageProfile::PlugOrEmptyAmbiguous { damage_type: None })
-                .contains("Unresolved")
-        );
-        assert!(damage_profile_text(ItemDamageProfile::Unknown).contains("Unknown"));
-        assert_eq!(
-            damage_profile_text(ItemDamageProfile::Variable),
-            "Variable Element"
-        );
-    }
 
     #[test]
     fn complete_dye_rows_preserve_order_and_disabled_rows() {

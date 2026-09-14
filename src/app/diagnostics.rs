@@ -11,14 +11,23 @@ use crate::{
     paths,
 };
 
-use super::persistence_compatibility::{PersistenceCompatibility, WARNING_MESSAGE};
+use super::{
+    SettingsLayout,
+    account_workspace::{AccountSourceInfo, AccountSourceKind},
+    persistence_compatibility::{PersistenceCompatibility, WARNING_MESSAGE},
+    settings::settings_path_for_install,
+};
 
 const MAX_LOG_BYTES: usize = 5 * 1024 * 1024;
-const MAX_RUNTIME_FILES: usize = 10_000;
 const LOG_DIRECTORY_NAME: &str = "logs";
 const LOG_FILE_NAME: &str = "sundial-troubleshooting.log";
 
 mod activity;
+mod runtime;
+
+use runtime::append_sunrise_runtime_files;
+#[cfg(test)]
+use runtime::scan_runtime_folder;
 
 pub(super) struct CatalogSummary<'a> {
     pub cache_path: &'a Path,
@@ -41,33 +50,13 @@ pub(super) struct ReportContext<'a> {
     pub settings_layout: &'a str,
     pub sunrise_version: &'a str,
     pub settings_schema: Option<u64>,
-    pub account_source: &'a str,
-    pub account_contract: &'a str,
-    pub account_detail: &'a str,
-    pub account_database_path: &'a Path,
+    pub account_source: &'a AccountSourceInfo,
     pub catalog: CatalogSummary<'a>,
     pub recent_activity: &'a str,
     pub current_status: &'a str,
     pub source_warning: Option<&'a str>,
     pub has_unsaved_changes: bool,
     pub destiny_process_status: &'a str,
-}
-
-#[derive(Clone)]
-struct RuntimeFile {
-    path: PathBuf,
-    relative_path: PathBuf,
-    kind: &'static str,
-    bytes: Option<u64>,
-    modified_unix_seconds: Option<u64>,
-    readonly: Option<bool>,
-}
-
-#[derive(Default)]
-struct RuntimeScan {
-    files: Vec<RuntimeFile>,
-    errors: Vec<String>,
-    truncated: bool,
 }
 
 pub(super) fn log_path() -> Option<PathBuf> {
@@ -82,8 +71,7 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
     append_workspace_section(&mut report, context);
     append_persistence_compatibility(&mut report, context.install_path);
     append_settings_candidates(&mut report, context.install_path);
-    let runtime_scans = append_sunrise_runtime_files(&mut report, context.install_path);
-    append_bin_files(&mut report, context.settings_path, &runtime_scans);
+    append_sunrise_runtime_files(&mut report, context.install_path);
     append_package_summary(&mut report, context.install_path);
     report.push_str(
         "Recent Sundial Activity (Newest First)\n-------------------------------------\n",
@@ -99,7 +87,7 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
 pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &str) -> String {
     let mut report = report_header();
     append_build_information(&mut report);
-    report.push_str("Startup failure\n---------------\n");
+    report.push_str("Startup Failure\n---------------\n");
     writeln!(report, "error = {}", error.replace(['\r', '\n'], " "))
         .expect("writing to a String cannot fail");
     writeln!(report).expect("writing to a String cannot fail");
@@ -119,8 +107,7 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
         writeln!(report).expect("writing to a String cannot fail");
         append_persistence_compatibility(&mut report, install);
         append_settings_candidates(&mut report, install);
-        let runtime_scans = append_sunrise_runtime_files(&mut report, install);
-        append_bin_files(&mut report, &install.join("settings.json"), &runtime_scans);
+        append_sunrise_runtime_files(&mut report, install);
         append_package_summary(&mut report, install);
     } else {
         report.push_str("selected_install = unavailable\n\n");
@@ -131,8 +118,8 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
 
 fn report_header() -> String {
     let mut report = String::new();
-    writeln!(report, "Sundial troubleshooting log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 2").expect("writing to a String cannot fail");
+    writeln!(report, "Sundial Troubleshooting Log").expect("writing to a String cannot fail");
+    writeln!(report, "format_version = 4").expect("writing to a String cannot fail");
     writeln!(
         report,
         "generated_unix_seconds = {}",
@@ -159,7 +146,7 @@ fn initialize_log_at(path: &Path, report: &str) -> Result<(), String> {
 
 pub(super) fn append_snapshot(report: &str) -> Result<PathBuf, String> {
     append_log_text(&format!(
-        "\n\n===== Refreshed environment snapshot =====\n{report}"
+        "\n\n===== Refreshed Environment Snapshot =====\n{report}"
     ))
 }
 
@@ -183,7 +170,7 @@ fn append_log_text_at(path: &Path, text: &str) -> Result<(), String> {
 }
 
 fn append_build_information(report: &mut String) {
-    report.push_str("Build and process\n-----------------\n");
+    report.push_str("Build and Process\n-----------------\n");
     writeln!(report, "sundial_version = {}", env!("CARGO_PKG_VERSION"))
         .expect("writing to a String cannot fail");
     writeln!(report, "operating_system = {}", std::env::consts::OS)
@@ -200,7 +187,7 @@ fn append_build_information(report: &mut String) {
 }
 
 fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
-    report.push_str("Resolved paths\n--------------\n");
+    report.push_str("Resolved Paths\n--------------\n");
     append_path(report, "selected_install", context.install_path);
     append_path(
         report,
@@ -221,23 +208,33 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
     if let Some(parent) = context.settings_path.parent() {
         append_path(report, "active_settings_directory", parent);
     }
-    append_path(
-        report,
-        "active_account_database",
-        context.account_database_path,
-    );
+    match context.account_source.kind {
+        AccountSourceKind::Json => {
+            append_path(report, "active_account_json", context.settings_path)
+        }
+        AccountSourceKind::Sqlite => append_path(
+            report,
+            "active_account_database",
+            &context.account_source.database_path,
+        ),
+        AccountSourceKind::Blocked => append_path(
+            report,
+            "required_account_database",
+            &context.account_source.database_path,
+        ),
+    }
     append_optional_known_path(report, "sundial_config_directory", paths::config_dir());
     append_optional_known_path(report, "sundial_data_directory", paths::data_dir());
     append_optional_known_path(report, "sundial_cache_directory", paths::cache_dir());
     append_optional_known_path(
         report,
         "sundial_preferences",
-        paths::config_dir().map(|path| path.join("preferences.json")),
+        super::settings::preferences_path(),
     );
     append_optional_known_path(
         report,
         "sundial_backups_directory",
-        paths::data_dir().map(|path| path.join("backups")),
+        super::settings::backups_path(),
     );
     append_optional_known_path(
         report,
@@ -265,7 +262,7 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
 }
 
 fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
-    report.push_str("Active workspace\n----------------\n");
+    report.push_str("Active Workspace\n----------------\n");
     writeln!(report, "settings_layout = {}", context.settings_layout)
         .expect("writing to a String cannot fail");
     writeln!(
@@ -289,14 +286,18 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
         context.destiny_process_status
     )
     .expect("writing to a String cannot fail");
-    writeln!(report, "account_source = {}", context.account_source)
-        .expect("writing to a String cannot fail");
-    writeln!(report, "account_contract = {}", context.account_contract)
+    writeln!(report, "account_source = {}", context.account_source.label)
         .expect("writing to a String cannot fail");
     writeln!(
         report,
+        "account_contract = {}",
+        context.account_source.contract
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(
+        report,
         "account_source_detail = {}",
-        single_line(context.account_detail)
+        single_line(&context.account_source.detail)
     )
     .expect("writing to a String cannot fail");
     writeln!(
@@ -362,7 +363,10 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
 
 fn append_persistence_compatibility(report: &mut String, install: &Path) {
     let inspection = PersistenceCompatibility::inspect(install);
-    report.push_str("Sunrise persistence compatibility\n---------------------------------\n");
+    if !inspection.detected() {
+        return;
+    }
+    report.push_str("Alternate Runtime Persistence\n-----------------------------\n");
     writeln!(
         report,
         "alternate_runtime_persistence_detected = {}",
@@ -375,16 +379,8 @@ fn append_persistence_compatibility(report: &mut String, install: &Path) {
         inspection.detection_evidence()
     )
     .expect("writing to a String cannot fail");
-    writeln!(
-        report,
-        "compatibility_warning = {}",
-        if inspection.detected() {
-            WARNING_MESSAGE
-        } else {
-            "none"
-        }
-    )
-    .expect("writing to a String cannot fail");
+    writeln!(report, "compatibility_warning = {WARNING_MESSAGE}")
+        .expect("writing to a String cannot fail");
     append_path(
         report,
         "runtime_state_file",
@@ -407,111 +403,23 @@ fn append_persistence_compatibility(report: &mut String, install: &Path) {
 }
 
 fn append_settings_candidates(report: &mut String, install: &Path) {
-    report.push_str("Settings and account candidates\n-------------------------------\n");
-    let candidates = [
-        ("game_root", install.join("settings.json")),
-        ("root", install.join("Sunrise").join("settings.json")),
-        (
-            "bin_x64",
-            install
-                .join("bin")
-                .join("x64")
-                .join("Sunrise")
-                .join("settings.json"),
-        ),
-    ];
-    for (layout, settings) in candidates {
-        writeln!(report, "[{layout}]").expect("writing to a String cannot fail");
-        append_path(report, "settings_json", &settings);
-        let directory = settings.parent().unwrap_or(install);
-        let state_db = directory.join("state.db");
-        {
-            let sqlite = directory.join("investment.sqlite3");
-            append_path(report, "state_sqlite3", &sqlite);
-            writeln!(report, "state_sqlite3_exists = {}", sqlite.is_file())
-                .expect("writing to a String cannot fail");
-        }
-        append_path(report, "state_db", &state_db);
-        writeln!(report, "state_db_exists = {}", state_db.is_file())
+    report.push_str("Settings and Account Candidates\n-------------------------------\n");
+    for layout in SettingsLayout::ALL {
+        let settings = settings_path_for_install(install, layout);
+        writeln!(report, "[{}]", layout.preference_value())
             .expect("writing to a String cannot fail");
-    }
-    writeln!(report).expect("writing to a String cannot fail");
-}
-
-fn append_sunrise_runtime_files(report: &mut String, install: &Path) -> Vec<RuntimeScan> {
-    report.push_str("Sunrise runtime folders\n-----------------------\n");
-    let roots = [
-        ("root", install.join("Sunrise")),
-        ("bin_x64", install.join("bin").join("x64").join("Sunrise")),
-    ];
-    let mut scans = Vec::with_capacity(roots.len());
-    for (label, root) in roots {
-        writeln!(report, "[{label}] {}", root.display()).expect("writing to a String cannot fail");
-        append_path(report, "runtime_directory", &root);
-        let scan = scan_runtime_folder(&root);
-        if !root.exists() {
-            report.push_str("status = missing\n");
-        } else if !root.is_dir() {
-            report.push_str("status = not_a_directory\n");
-        } else {
-            writeln!(report, "file_count = {}", scan.files.len())
-                .expect("writing to a String cannot fail");
-            for file in &scan.files {
-                writeln!(
-                    report,
-                    "{} | kind={} | bytes={} | modified_unix_seconds={} | readonly={}",
-                    file.relative_path.display(),
-                    file.kind,
-                    optional_number(file.bytes),
-                    optional_number(file.modified_unix_seconds),
-                    file.readonly
-                        .map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
-                )
-                .expect("writing to a String cannot fail");
-            }
-        }
-        for error in &scan.errors {
-            writeln!(report, "scan_error = {}", single_line(error))
-                .expect("writing to a String cannot fail");
-        }
-        if scan.truncated {
-            writeln!(report, "scan_truncated_after = {MAX_RUNTIME_FILES}")
-                .expect("writing to a String cannot fail");
-        }
-        scans.push(scan);
-    }
-    writeln!(report).expect("writing to a String cannot fail");
-    scans
-}
-
-fn append_bin_files(report: &mut String, settings_path: &Path, runtime_scans: &[RuntimeScan]) {
-    report.push_str("Sunrise .bin files\n------------------\n");
-    let mut files = runtime_scans
-        .iter()
-        .flat_map(|scan| scan.files.iter())
-        .filter(|file| extension_eq(&file.path, "bin"))
-        .map(|file| file.path.clone())
-        .collect::<Vec<_>>();
-    if let Some(directory) = settings_path.parent()
-        && let Ok(entries) = fs::read_dir(directory)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if extension_eq(&path, "bin") {
-                files.push(path);
-            }
-        }
-    }
-    sort_and_deduplicate_paths(&mut files);
-    writeln!(report, "bin_file_count = {}", files.len()).expect("writing to a String cannot fail");
-    for path in files {
-        append_path(report, "bin_file", &path);
+        append_path(report, "settings_json", &settings);
+        append_path(
+            report,
+            "investment_database",
+            &crate::persistence::investment_path(&settings),
+        );
     }
     writeln!(report).expect("writing to a String cannot fail");
 }
 
 fn append_package_summary(report: &mut String, install: &Path) {
-    report.push_str("Package summary\n---------------\n");
+    report.push_str("Package Summary\n---------------\n");
     let directory = install.join("packages");
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
@@ -569,94 +477,6 @@ fn append_package_summary(report: &mut String, install: &Path) {
             .expect("writing to a String cannot fail");
     }
     writeln!(report).expect("writing to a String cannot fail");
-}
-
-fn scan_runtime_folder(root: &Path) -> RuntimeScan {
-    let mut scan = RuntimeScan::default();
-    let metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return scan,
-        Err(error) => {
-            scan.errors
-                .push(format!("Could not inspect {}: {error}", root.display()));
-            return scan;
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        scan.errors.push(format!(
-            "Runtime root {} is a symlink and was not traversed",
-            root.display()
-        ));
-        return scan;
-    }
-    if !metadata.is_dir() {
-        return scan;
-    }
-    scan_runtime_directory(root, root, &mut scan);
-    scan.files
-        .sort_by_key(|file| path_sort_key(&file.relative_path));
-    scan
-}
-
-fn scan_runtime_directory(root: &Path, directory: &Path, scan: &mut RuntimeScan) {
-    if scan.files.len() >= MAX_RUNTIME_FILES {
-        scan.truncated = true;
-        return;
-    }
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            scan.errors
-                .push(format!("Could not read {}: {error}", directory.display()));
-            return;
-        }
-    };
-    let mut sorted_entries = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) => sorted_entries.push(entry),
-            Err(error) => scan.errors.push(format!(
-                "Could not enumerate an entry in {}: {error}",
-                directory.display()
-            )),
-        }
-    }
-    let mut entries = sorted_entries;
-    entries.sort_by_key(|entry| path_sort_key(&entry.path()));
-    for entry in entries {
-        if scan.files.len() >= MAX_RUNTIME_FILES {
-            scan.truncated = true;
-            return;
-        }
-        let path = entry.path();
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                scan.errors
-                    .push(format!("Could not inspect {}: {error}", path.display()));
-                continue;
-            }
-        };
-        let file_type = metadata.file_type();
-        if file_type.is_dir() {
-            scan_runtime_directory(root, &path, scan);
-            continue;
-        }
-        scan.files.push(RuntimeFile {
-            relative_path: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
-            path,
-            kind: if file_type.is_file() {
-                "file"
-            } else if file_type.is_symlink() {
-                "symlink"
-            } else {
-                "other"
-            },
-            bytes: file_type.is_file().then_some(metadata.len()),
-            modified_unix_seconds: metadata.modified().ok().and_then(unix_seconds),
-            readonly: Some(metadata.permissions().readonly()),
-        });
-    }
 }
 
 fn append_optional_path(report: &mut String, label: &str, result: Result<PathBuf, std::io::Error>) {
@@ -726,11 +546,6 @@ fn extension_eq(path: &Path, expected: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
-fn sort_and_deduplicate_paths(paths: &mut Vec<PathBuf>) {
-    paths.sort_by_key(|path| path_sort_key(path));
-    paths.dedup_by(|right, left| path_sort_key(right) == path_sort_key(left));
-}
-
 fn path_sort_key(path: &Path) -> String {
     let value = path.to_string_lossy();
     if cfg!(windows) {
@@ -755,163 +570,4 @@ fn single_line(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use crate::test_support::TestDirectory;
-
-    use super::{
-        CatalogSummary, ReportContext, append_log_text_at, build_report,
-        build_startup_failure_report, initialize_log_at, scan_runtime_folder,
-    };
-
-    #[test]
-    fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_contents() {
-        let directory = TestDirectory::new("troubleshooting-report");
-        let install = &directory.0;
-        let sunrise = install.join("bin").join("x64").join("Sunrise");
-        let cache = sunrise.join("cache");
-        let packages = install.join("packages");
-        fs::create_dir_all(&cache).unwrap();
-        fs::create_dir_all(&packages).unwrap();
-        let settings = sunrise.join("settings.json");
-        let database = sunrise.join("investment.sqlite3");
-        fs::write(&settings, br#"{"secret":"not-in-report"}"#).unwrap();
-        fs::write(&database, b"private account bytes").unwrap();
-        fs::write(cache.join("build_data.bin"), b"private cache bytes").unwrap();
-        let mut runtime_state_header = Vec::from(0x5352_5354u32.to_le_bytes());
-        runtime_state_header.extend_from_slice(&1u32.to_le_bytes());
-        fs::write(sunrise.join("runtime-state.bin"), runtime_state_header).unwrap();
-        fs::write(sunrise.join("runtime.toml"), b"private runtime settings").unwrap();
-        fs::write(
-            packages.join("w64_investment_globals_client_058c_4.pkg"),
-            b"package",
-        )
-        .unwrap();
-        fs::write(packages.join("w64_other_0001_0.pkg"), b"stock").unwrap();
-
-        let report = build_report(&ReportContext {
-            install_path: install,
-            settings_path: &settings,
-            settings_layout: "bin_x64",
-            sunrise_version: "test",
-            settings_schema: Some(8),
-            account_source: "settings.json",
-            account_contract: "test contract",
-            account_detail: "test detail",
-            account_database_path: &database,
-            catalog: CatalogSummary {
-                cache_path: &directory.0.join("catalog.json"),
-                loaded_from_cache: true,
-                items: 1,
-                plugs: 2,
-                icons: 3,
-                descriptions: 4,
-                unlock_flags: 5,
-                unlock_values: 6,
-                progressions: 7,
-                objectives: 8,
-                expressions: 9,
-                progression_error: Some("Missing table\nread failed"),
-            },
-            recent_activity: "[Error] Earlier failure",
-            current_status: "Ready",
-            source_warning: None,
-            has_unsaved_changes: false,
-            destiny_process_status: "not_running",
-        });
-
-        assert!(report.contains("runtime.toml"));
-        assert!(report.contains(
-            "progression_counts = flags:5 values:6 progressions:7 objectives:8 expressions:9"
-        ));
-        assert!(report.contains("progression_package_error = Missing table read failed"));
-        assert!(report.contains("[Error] Earlier failure"));
-        assert_report_paths(&report);
-        assert_account_source_details(&report);
-        assert!(report.contains("state_db_exists = false"));
-        assert!(report.contains("alternate_runtime_persistence_detected = true"));
-        assert!(report.contains("detection_evidence = runtime_state_header"));
-        assert!(report.contains("runtime_state_header = recognized | format_version=1"));
-        assert!(report.contains("w64_investment_globals_client_058c_4.pkg"));
-        assert!(!report.contains("w64_other_0001_0.pkg"));
-        assert!(!report.contains("not-in-report"));
-        assert!(!report.contains("private account bytes"));
-        assert!(!report.contains("private cache bytes"));
-    }
-
-    fn assert_report_paths(report: &str) {
-        assert!(
-            report.contains("cache\\build_data.bin") || report.contains("cache/build_data.bin")
-        );
-        if let Some(data_directory) = crate::package_authoring::parhelion_data_directory() {
-            assert!(report.contains(&format!(
-                "parhelion_package_backups_directory = {}",
-                data_directory.join("backups").join("packages").display()
-            )));
-        }
-    }
-
-    fn assert_account_source_details(report: &str) {
-        assert!(report.contains("state_sqlite3_exists = true"));
-    }
-
-    #[test]
-    fn runtime_scan_is_recursive_and_sorted() {
-        let directory = TestDirectory::new("troubleshooting-runtime-scan");
-        fs::create_dir_all(directory.0.join("nested")).unwrap();
-        fs::write(directory.0.join("z.bin"), b"z").unwrap();
-        fs::write(directory.0.join("nested").join("a.json"), b"a").unwrap();
-
-        let scan = scan_runtime_folder(&directory.0);
-        let names = scan
-            .files
-            .iter()
-            .map(|file| file.relative_path.to_string_lossy().replace('\\', "/"))
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["nested/a.json", "z.bin"]);
-        assert!(scan.errors.is_empty());
-        assert!(!scan.truncated);
-    }
-
-    #[test]
-    fn startup_failure_report_keeps_paths_and_error_without_reading_files() {
-        let directory = TestDirectory::new("troubleshooting-startup-failure");
-        fs::create_dir_all(directory.0.join("Sunrise")).unwrap();
-        fs::write(
-            directory.0.join("Sunrise").join("settings.json"),
-            b"private settings",
-        )
-        .unwrap();
-
-        let report = build_startup_failure_report(
-            Some(&directory.0),
-            "Could not parse settings\nprivate detail",
-        );
-        assert!(report.contains("Startup failure"));
-        assert!(report.contains("Could not parse settings private detail"));
-        assert!(report.contains("alternate_runtime_persistence_detected = false"));
-        assert!(report.contains("Sunrise"));
-        assert!(report.contains("settings.json"));
-        assert!(!report.contains("private settings"));
-    }
-
-    #[test]
-    fn log_initialization_preserves_old_sessions_and_events_append() {
-        let directory = TestDirectory::new("troubleshooting-log-write");
-        let log = directory.0.join("nested").join("troubleshooting.log");
-
-        initialize_log_at(&log, "first session").unwrap();
-        append_log_text_at(&log, "\nstatus event").unwrap();
-        assert!(
-            fs::read_to_string(&log)
-                .unwrap()
-                .ends_with("first session\nstatus event")
-        );
-
-        initialize_log_at(&log, "second session").unwrap();
-        let text = fs::read_to_string(log).unwrap();
-        assert!(text.contains("first session\nstatus event"));
-        assert!(text.ends_with("second session"));
-    }
-}
+mod tests;

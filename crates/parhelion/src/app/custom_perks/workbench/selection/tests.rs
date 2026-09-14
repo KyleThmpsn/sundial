@@ -255,7 +255,7 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
     assert_eq!(
         picker.choices.len(),
         2,
-        "Include My Perks and local weapon variants"
+        "Include Custom Perks and local weapon variants"
     );
     assert_eq!(
         picker.target,
@@ -377,25 +377,6 @@ fn verify_empty_picker(app: &mut PackageAuthoringApp, donor: &WeaponDonor) {
             &output,
             "No custom perks yet. Create one to use it in this choice.",
             false,
-        );
-        // Capture just the picker window so package icons in the background are not needed.
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 760.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                app.draw_perk_workbench(ctx);
-            },
-        );
-        crate::app::ui_tests::build_flow::capture(
-            &ctx,
-            output,
-            &format!("custom-perk-picker-{width}"),
-            width,
         );
     }
 }

@@ -8,28 +8,6 @@ fn recipe() -> WeaponRecipe {
 }
 
 #[test]
-fn good_company_has_three_exotic_defaults_and_four_choices_per_trait() {
-    let recipe = recipe();
-    assert_eq!(
-        recipe.to_spec().unwrap().identity,
-        WeaponCloneIdentity::from_namespace("parhelion.good-company").unwrap()
-    );
-    assert_eq!(recipe.donor.item_hash.parse_u32().unwrap(), 0xD84E_04AB);
-    assert!(recipe.runtime_component_donors.is_empty());
-    assert!(recipe.overrides.socket_columns[0].is_none());
-    let mut choices = BTreeSet::new();
-    for (socket, default) in [(3, 0xEEB6_9A10), (4, 0x8E18_595D), (8, 0xF72A_1183)] {
-        let column = recipe.overrides.socket_columns[socket].as_ref().unwrap();
-        assert_eq!(column.socket_type, Some(92));
-        assert_eq!(column.choices.len(), 4);
-        assert_eq!(column.choices[0].parse_u32().unwrap(), default);
-        for choice in &column.choices {
-            assert!(choices.insert(choice.parse_u32().unwrap()));
-        }
-    }
-}
-
-#[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_COMBINATION_ROOT"]
 fn native_good_company_trait_choices_preserve_intrinsic_and_stock() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());

@@ -23,8 +23,8 @@ mod collectibles;
 #[cfg(test)]
 use collectibles::*;
 pub(crate) use collectibles::{
-    append_collectible, append_collectible_display, collection_unlock_index,
-    donor_weapon_collection_page, template_presentation_parents,
+    append_collectible, append_collectible_display, collectible_clone_template,
+    collection_unlock_index, donor_weapon_collection_page, template_presentation_parents,
     validate_authored_collectible_display_row, validate_authored_collectible_nested_isolation,
     validate_weapon_material_sets,
 };
@@ -89,6 +89,7 @@ pub(crate) const EXOTIC_WEAPON_MATERIAL_SET_HASH: u32 = 0x727C_AEEE;
 pub(crate) const EXOTIC_WEAPON_MATERIAL_REQUIREMENTS: [(u32, u32); 3] =
     [(123, 777), (128, 7), (1_869, 7)];
 pub(crate) const COLLECTIBLE_CONDITION_OFFSET: usize = 0x70;
+pub(crate) const COLLECTIBLE_SECONDARY_CONDITION_OFFSETS: [usize; 4] = [0x30, 0x40, 0x50, 0x60];
 // Native reacquisition applies these by socket type, overriding the item's own defaults.
 pub(crate) const COLLECTIBLE_SOCKET_OVERRIDES_OFFSET: usize = 0xA8;
 pub(crate) const COLLECTIBLE_SOCKET_OVERRIDE_ROW_CLASS: u32 = 0x8080_3062;

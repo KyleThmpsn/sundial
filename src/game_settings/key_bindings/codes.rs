@@ -5,7 +5,7 @@ use super::{BindingModifier, NAMED_INPUTS, binding_modifier, modified_input, tri
 // are the unbound sentinel and named-format aliases, not additional native keys.
 pub(super) const INPUT_COUNT: usize = 116;
 
-pub(super) fn input_name(code: u64) -> Option<String> {
+pub(crate) fn input_name(code: u64) -> Option<String> {
     let code = u16::try_from(code).ok()?;
     let index = usize::from(code & 0xff);
     let name = *NAMED_INPUTS.get(index).filter(|_| index < INPUT_COUNT)?;
@@ -19,11 +19,20 @@ pub(super) fn input_name(code: u64) -> Option<String> {
     Some(format!("{modifier}+{name}"))
 }
 
-pub(super) fn input_code(input: &str) -> Option<u16> {
+pub(crate) fn input_code(input: &str) -> Option<u16> {
     let (modifier, key) = modified_input(input).map_or(
         (BindingModifier::None, trim_input_name(input)),
         |(modifier, key)| (binding_modifier(modifier), key),
     );
+    let key = if key.eq_ignore_ascii_case("ctrl") {
+        "control"
+    } else if key.eq_ignore_ascii_case("left ctrl") {
+        "left control"
+    } else if key.eq_ignore_ascii_case("right ctrl") {
+        "right control"
+    } else {
+        key
+    };
     let index = NAMED_INPUTS[..INPUT_COUNT]
         .iter()
         .position(|name| name.eq_ignore_ascii_case(key))?;

@@ -18,7 +18,7 @@ impl SundialApp {
         if self.document.uses_json_account()
             && ensure_schema_v8_preferences(self.document.json_mut())
         {
-            self.dirty = true;
+            self.record_edit("Account Preferences Initialized");
         }
         let repaired_ability_pairs = match repair_known_ability_pairs(&mut self.document) {
             Ok(repaired) => repaired,
@@ -28,7 +28,7 @@ impl SundialApp {
             }
         };
         if repaired_ability_pairs > 0 {
-            self.dirty = true;
+            self.record_edit("Ability Pairings Repaired");
         }
         let json_changed = self.document.json_changed_from(&self.persisted_document);
         let account_changed = self.document.account_changed_from(&self.persisted_document);
@@ -118,10 +118,8 @@ impl SundialApp {
             .as_ref()
             .is_some_and(|result| result.durability_warning.is_some());
         let safe_to_close = !sqlite_checkpoint_failed && !json_durability_warning;
-        self.persisted_document = self.document.clone();
+        self.mark_document_saved();
         self.source_warning = current_warning;
-        self.dirty = false;
-        self.progression_ui.mark_saved();
         if self.raw_json_document == *self.document.json() {
             // Saving unchanged editor content should preserve its formatting and undo history.
             self.json_editor.mark_synced();
@@ -189,8 +187,6 @@ impl SundialApp {
     ) -> Result<(), String> {
         if json_changed || account_changed {
             self.document.verify_account_source_unchanged()?;
-        }
-        if json_changed {
             verify_workspace_source_unchanged(
                 &self.settings_path,
                 self.persisted_document.json(),
@@ -216,23 +212,20 @@ impl SundialApp {
         &self,
         candidate: &WorkspaceDocument,
     ) -> Result<Option<String>, String> {
+        candidate.verify_account_source_unchanged()?;
         // Recheck the DLL and its own script before both raw-JSON application and saving.
         // Cached UI detection must not authorize a write after an external runtime change.
         let runtime =
             crate::package_runtime::installation::RuntimeInspection::inspect(&self.install_path);
-        let previous = self
-            .runtime_choice
-            .inspection
-            .for_settings(&self.settings_path);
-        let current = runtime.for_settings(&self.settings_path);
-        if previous.is_some()
-            && (current.is_none_or(|copy| copy.dll_hash.is_none())
-                || previous.and_then(|copy| copy.dll_hash.as_ref())
-                    != current.and_then(|copy| copy.dll_hash.as_ref()))
+        let warning = self.validation_warning_for_runtime(candidate, &runtime)?;
+        let previous = self.runtime_choice.inspection.launch_copy();
+        let current = runtime.launch_copy();
+        if previous.map(|copy| (&copy.dll_path, &copy.dll_hash))
+            != current.map(|copy| (&copy.dll_path, &copy.dll_hash))
         {
-            return Err("The detected runtime DLL changed or became unreadable. Recheck Runtime Copies in Installation preferences before applying or saving changes.".into());
+            return Err("The runtime DLL changed. Recheck Runtime Copies in Installation preferences before applying or saving changes.".into());
         }
-        self.validation_warning_for_runtime(candidate, &runtime)
+        Ok(warning)
     }
 
     pub(super) fn validation_warning_for_runtime(
@@ -240,16 +233,13 @@ impl SundialApp {
         candidate: &WorkspaceDocument,
         runtime: &crate::package_runtime::installation::RuntimeInspection,
     ) -> Result<Option<String>, String> {
-        if let Some(problem) = runtime
-            .for_settings(&self.settings_path)
-            .and_then(|copy| copy.persistence_problem(candidate.json()))
-        {
+        if let Some(problem) = runtime.workspace_problem(&self.settings_path, candidate.json()) {
             return Err(problem);
         }
         let warning = validate_workspace_document(candidate)
             .and_then(|_| {
                 runtime
-                    .for_settings(&self.settings_path)
+                    .launch_copy()
                     .and_then(|copy| copy.dawn_runtime.as_ref())
                     .map_or(Ok(()), |dawn| dawn.validate(candidate.json()))
             })

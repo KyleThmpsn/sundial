@@ -111,11 +111,6 @@ pub(super) fn resolve_presentation_donor(
     reference: &WeaponPresentationDonorReference,
 ) -> AuthoringResult<ResolvedPresentationDonor> {
     let manager = &sources.manager;
-    let collectibles = &sources.stock_collectibles;
-    let collectible_rows = sources.collectible_rows;
-    let collectible_count = sources.stock_collectible_count;
-    let collectible_displays = &sources.stock_collectible_displays;
-    let presentation_nodes = &sources.stock_nodes;
     let item_icons = &sources.stock_item_icons;
     let DonorItem {
         item_index,
@@ -128,49 +123,12 @@ pub(super) fn resolve_presentation_donor(
         reference.expected_name.as_deref(),
         "Geometry donor",
     )?;
-    let item_index_u16 = u16::try_from(item_index)
-        .map_err(|_| invalid("Geometry donor item index does not fit 16 bits"))?;
-    let donor_collectibles = (0..collectible_count)
-        .filter(|index| {
-            read_u16(
-                collectibles,
-                collectible_rows + *index * COLLECTIBLE_ROW_SIZE + COLLECTIBLE_ITEM_INDEX_OFFSET,
-            )
-            .ok()
-                == Some(item_index_u16)
-        })
-        .collect::<Vec<_>>();
-    let [collectible_index] = donor_collectibles.as_slice() else {
-        return Err(invalid(format!(
-            "Geometry donor resolves to {} collectible rows; exactly one is required",
-            donor_collectibles.len()
-        )));
-    };
-    let parents =
-        template_presentation_parents(presentation_nodes, collectibles, *collectible_index)?;
-    // Require a real weapon collection entry, but do not equate its page with weapon family:
-    // Exotic and Legendary weapons of the same family live on different Collections pages.
-    donor_weapon_collection_page(presentation_nodes, &parents)?;
+    // Collections metadata does not describe model compatibility. Validate the native
+    // weapon and its own icon here, then check runtime animation compatibility in resolve.
     let definition = read_tag(manager, definition_tag, "geometry donor weapon")?;
     let strings = read_tag(manager, string_tag, "geometry donor item-string")?;
     let icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
     validate_reused_stock_item_icon(item_icons, &strings, icon_index)?;
-    let (display_count, _, display_rows, display_class) = array_at(collectible_displays, 8)?;
-    let collectible_row = collectible_rows + *collectible_index * COLLECTIBLE_ROW_SIZE;
-    let display_row = display_rows + *collectible_index * COLLECTIBLE_DISPLAY_ROW_SIZE;
-    if display_class != COLLECTIBLE_DISPLAY_ROW_CLASS
-        || display_count != collectible_count
-        || read_u32(collectible_displays, display_row)?
-            != read_u32(collectibles, collectible_row + COLLECTIBLE_HASH_OFFSET)?
-        || read_u32(
-            collectible_displays,
-            display_row + COLLECTIBLE_DISPLAY_ICON_INDEX_OFFSET,
-        )? != u32::from(icon_index)
-    {
-        return Err(invalid(
-            "Geometry donor item-string and collectible-display icons are not aligned",
-        ));
-    }
     let icon_container = stock_item_icon_container(item_icons, icon_index)?;
     read_tag(manager, icon_container, "geometry donor icon container")?;
     weapon_translation_topology(&definition)?;

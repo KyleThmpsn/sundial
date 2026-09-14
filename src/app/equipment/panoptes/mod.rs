@@ -10,6 +10,7 @@ use crate::app::account_workspace as account;
 mod editors;
 mod icons;
 mod layout;
+mod sockets;
 mod widgets;
 
 use eframe::egui;
@@ -132,15 +133,21 @@ impl SundialApp {
         let unmatched_count = inventory_items
             .iter()
             .filter(|item| {
-                !self
-                    .document
-                    .equipment_slots()
-                    .iter()
-                    .any(|(_, _, bucket_hash)| {
-                        self.manifest
-                            .item_handle_for_bucket(u64::from(item.definition_hash), *bucket_hash)
-                            .is_some()
-                    })
+                self.manifest
+                    .inventory_definition(u64::from(item.definition_hash))
+                    .is_some()
+                    && !self
+                        .document
+                        .equipment_slots()
+                        .iter()
+                        .any(|(_, _, bucket_hash)| {
+                            self.manifest
+                                .item_handle_for_bucket(
+                                    u64::from(item.definition_hash),
+                                    *bucket_hash,
+                                )
+                                .is_some()
+                        })
             })
             .count();
         if unmatched_count > 0 {

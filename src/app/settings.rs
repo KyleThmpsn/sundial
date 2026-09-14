@@ -1,13 +1,11 @@
 //! Settings boundaries: discovery, installed defaults, validation, encoding, and persistence.
 mod defaults;
-mod encoding;
+use crate::persistence::json_document::encoding;
 mod paths;
 mod persistence;
 mod validation;
 
 pub(super) use super::preferences::store::{load_preferences, preferences_path};
-#[cfg(test)]
-pub(super) use crate::package_runtime::normalize_sunrise_version;
 pub(super) use defaults::{
     detect_sunrise_version, load_installed_account_defaults, load_installed_sunrise_defaults,
 };
@@ -19,7 +17,7 @@ pub(super) use paths::{
     settings_path_for_install,
 };
 pub(super) use persistence::{
-    SaveJsonError, SaveJsonResult, create_adjacent_backup, load_workspace_json,
+    SaveJsonError, SaveJsonResult, create_adjacent_backup, load_workspace_json, lock_settings,
     require_game_closed, save_json, verify_workspace_source_unchanged,
 };
 #[cfg(test)]

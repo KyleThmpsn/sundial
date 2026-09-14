@@ -1455,6 +1455,19 @@ impl WeaponRecipe {
         Ok(serde_json::to_string_pretty(&canonical)?)
     }
 
+    /// Compare the content saved by this format. Stat and locale ordering is normalized
+    /// by both load and save, and must not be mistaken for an external edit.
+    pub(crate) fn same_saved_content(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.canonicalize_investment_stats();
+        right.canonicalize_investment_stats();
+        left == right
+    }
+
     pub fn load_json(path: impl AsRef<Path>) -> Result<Self, RecipeError> {
         let path = path.as_ref();
         let encoded = fs::read_to_string(path).map_err(|source| RecipeError::Io {

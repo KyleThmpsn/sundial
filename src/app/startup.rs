@@ -63,7 +63,7 @@ impl StartupApp {
                 .as_ref()
                 .map(|selection| selection.install_path.clone()),
             progress: CatalogProgress {
-                message: "Waiting for a Shadowkeep installation…",
+                message: "Waiting for a Sunrise install…",
                 completed: 0,
                 total: 0,
             },
@@ -166,7 +166,7 @@ impl StartupApp {
 
     fn choose_install(&mut self) {
         let mut dialog =
-            rfd::FileDialog::new().set_title("Select the Destiny 2 Shadowkeep installation");
+            rfd::FileDialog::new().set_title("Select Sunrise Install (Contains destiny2.exe)");
         if let Some(path) = self.install_path.as_ref().filter(|path| path.is_dir()) {
             dialog = dialog.set_directory(path);
         }
@@ -293,7 +293,7 @@ impl StartupApp {
                             ui.add_space(18.0);
 
                             if let Some(install_path) = self.pending_settings_choice.clone() {
-                                ui.heading("Choose Sunrise settings");
+                                ui.heading("Choose Sunrise Settings");
                                 ui.add_space(6.0);
                                 ui.label("Multiple settings.json files were found. Choose the one Project Sunrise uses for this installation.");
                                 ui.add_space(14.0);
@@ -321,7 +321,7 @@ impl StartupApp {
                                     );
                                     ui.add_space(8.0);
                                 }
-                                if ui.button("Choose another folder").clicked() {
+                                if ui.button("Choose Another Folder").clicked() {
                                     self.choose_install();
                                 }
                                 return;
@@ -331,14 +331,14 @@ impl StartupApp {
                                 draw_future_schema_warning(ui, &pending);
                                 ui.add_space(16.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Proceed with caution").clicked() {
+                                    if ui.button("Proceed with Caution").clicked() {
                                         self.start_loading_at(
                                             pending.install_path.clone(),
                                             pending.settings_path.clone(),
                                             pending.settings_layout,
                                         );
                                     }
-                                    if ui.button("Choose another folder").clicked() {
+                                    if ui.button("Choose Another Folder").clicked() {
                                         self.pending_future_schema = None;
                                         self.choose_install();
                                     }
@@ -374,11 +374,11 @@ impl StartupApp {
                                 }
                                 ui.add_space(16.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Choose another folder").clicked() {
+                                    if ui.button("Choose Another Folder").clicked() {
                                         self.choose_install();
                                     }
                                     if let Some(path) = self.install_path.clone() {
-                                        if ui.button("Try again").clicked() {
+                                        if ui.button("Try Again").clicked() {
                                             self.begin_loading(path, None);
                                         }
                                     }
@@ -386,9 +386,9 @@ impl StartupApp {
                                 return;
                             }
 
-                            ui.heading("Choose your Shadowkeep installation");
+                            ui.heading("Choose Your Sunrise Install");
                             ui.add_space(6.0);
-                            ui.label("Select the Destiny 2 Shadowkeep installation you use with Project Sunrise to begin.");
+                            ui.label("Select your Sunrise install, the directory containing destiny2.exe, to begin.");
                             ui.add_space(10.0);
                             ui.label(
                                 egui::RichText::new(
@@ -404,7 +404,7 @@ impl StartupApp {
                             if ui
                                 .add_sized(
                                     [240.0, 36.0],
-                                    egui::Button::new("Choose Shadowkeep folder…"),
+                                    egui::Button::new("Choose Sunrise Install…"),
                                 )
                                 .clicked()
                             {

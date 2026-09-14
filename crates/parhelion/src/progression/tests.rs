@@ -1,6 +1,8 @@
 use super::*;
 use crate::tag_payload::read_u8;
 
+mod collection_templates;
+
 #[test]
 fn rarity_branches_increment_only_their_own_collection_ancestors() {
     fn array(
@@ -375,7 +377,7 @@ fn collectible_clone_drops_socket_overrides_without_changing_the_donor() {
 }
 
 #[test]
-fn collectible_clone_retargets_every_matching_donor_acquired_condition() {
+fn collectible_clone_uses_only_its_private_acquisition_condition() {
     let data = synthetic_collectible_conditions(7_502, 7_502);
     assert_eq!(
         collection_unlock_index(&data, 0).expect("non-bare acquisition should resolve"),
@@ -384,10 +386,7 @@ fn collectible_clone_retargets_every_matching_donor_acquired_condition() {
     let clones = collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 7_502, 21_613)
         .expect("Mountaintop-style conditions should deep-clone");
 
-    assert_eq!(
-        cloned_condition_tokens(&clones, 0x30),
-        vec![(NUMERIC_FLAG_INSTRUCTION, 21_613), (2, 0)]
-    );
+    assert_eq!(clones.len(), 1);
     assert_eq!(
         cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
         vec![(NUMERIC_FLAG_INSTRUCTION, 21_613)]
@@ -400,28 +399,24 @@ fn collectible_clone_retargets_every_matching_donor_acquired_condition() {
     assert_eq!(read_u64(&acquired.bytes, 0).unwrap(), 1);
     assert_eq!(&acquired.bytes[17..20], &[0xA1, 0xA2, 0xA3]);
     assert_eq!(&acquired.bytes[22..24], &[0xB1, 0xB2]);
-    let secondary = clones.iter().find(|clone| clone.field == 0x30).unwrap();
-    assert_eq!(&secondary.bytes[17..20], &[0xA1, 0xA2, 0xA3]);
-    assert_eq!(&secondary.bytes[22..24], &[0xB1, 0xB2]);
     assert_eq!(
         clones
             .iter()
             .map(|nested| nested.retargeted_source_flags)
             .sum::<usize>(),
-        2
+        1
     );
 }
 
 #[test]
-fn collectible_clone_preserves_unrelated_unlock_conditions() {
+fn collectible_clone_drops_unrelated_unlock_conditions_without_changing_stock() {
     let data = synthetic_collectible_conditions(10_699, 10_999);
+    let before = data.clone();
     let clones = collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 10_999, 21_613)
         .expect("Martyr-style conditions should deep-clone selectively");
 
-    assert_eq!(
-        cloned_condition_tokens(&clones, 0x30),
-        vec![(NUMERIC_FLAG_INSTRUCTION, 10_699), (2, 0)]
-    );
+    assert_eq!(clones.len(), 1);
+    assert_eq!(data, before);
     assert_eq!(
         cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
         vec![(NUMERIC_FLAG_INSTRUCTION, 21_613)]

@@ -3,7 +3,7 @@ use eframe::egui;
 
 pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -> bool {
     ui.heading("Dawn");
-    ui.label("Dawn was recognized in this installation's runtime DLL. These controls apply to its schema v6 settings.");
+    ui.label("Settings for the detected Dawn runtime.");
     ui.label(format!("DLL: {}", runtime.dll_path.display()));
     if super::super::schema_version(json) != Some(6) {
         ui.colored_label(ui.visuals().error_fg_color, "This runtime requires schema v6. Load compatible settings before editing these controls.");
@@ -16,7 +16,7 @@ pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -
     } else {
         "Omega uses its legacy executor. A missing setting also means off."
     });
-    ui.label("The executor choice is fixed for each mission run. Restart Destiny 2 after changing the script, which is loaded once per process.");
+    ui.label("Executor changes apply on the next mission run. Restart Destiny 2 after editing the script.");
     ui.add_space(6.0);
     ui.label(format!("Omega Script: {}", runtime.script_path.display()));
     if ui.button("Recheck Script").clicked() {
@@ -24,20 +24,32 @@ pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -
     }
     if let Some(problem) = &runtime.script_problem {
         ui.colored_label(ui.visuals().warn_fg_color, problem);
-        ui.label("To save with Omega Lua Executor enabled, restore a readable, nonempty omega.lua at this location. A script in the other runtime folder does not count.");
+        ui.label(if executor_enabled(json) {
+            "Restore omega.lua at this path or turn off Omega Lua Executor before saving."
+        } else {
+            "Restore omega.lua at this path before enabling Omega Lua Executor."
+        });
     } else {
-        ui.label("Script is readable and nonempty. Dawn validates the Lua script when Omega starts.");
+        ui.label(
+            "Script is readable and nonempty. Dawn validates the Lua script when Omega starts.",
+        );
     }
     ui.add_space(10.0);
     egui::CollapsingHeader::new("Advanced Experiments").show(ui, |ui| {
-        ui.label("Independent experimental flags. Missing flags default to off. Changing the executor does not change these flags.");
+        ui.label(
+            "These flags are separate from the executor choice. Missing flags default to off.",
+        );
         ui.strong("Omega");
-        for flag in &OMEGA_FLAGS[1..] { changed |= draw_flag(ui, json, OMEGA, *flag); }
+        for flag in &OMEGA_FLAGS[1..] {
+            changed |= draw_flag(ui, json, OMEGA, *flag);
+        }
         ui.add_space(8.0);
         ui.strong("Client");
-        for flag in CLIENT_FLAGS { changed |= draw_flag(ui, json, CLIENT, flag); }
+        for flag in CLIENT_FLAGS {
+            changed |= draw_flag(ui, json, CLIENT, flag);
+        }
     });
-    if let Err(error) = runtime.validate(json) {
+    for error in settings_issues(json) {
         ui.add_space(8.0);
         ui.colored_label(ui.visuals().error_fg_color, error);
     }

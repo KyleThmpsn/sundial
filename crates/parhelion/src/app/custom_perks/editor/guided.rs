@@ -4,18 +4,10 @@ use sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind;
 mod profiles;
 use profiles::{PROJECTILE_PROFILES, ProjectileProfile};
 
-pub(super) const GUIDED_SUPPORT_NOTICE: &str = "Mapped projectile properties include speed, gravity and travel distance for supported assets. Other properties are still being mapped.";
-
 pub(in crate::app) fn has_guided_profile(perk_index: u16) -> bool {
     PROJECTILE_PROFILES
         .iter()
         .any(|profile| profile.perk_index == perk_index)
-}
-
-pub(in crate::app) fn guided_support_notice(ui: &mut egui::Ui) {
-    ui.label(GUIDED_SUPPORT_NOTICE).on_hover_text(
-        "Micro-Missile's speed multiplier has gameplay evidence. Gravity, distance and other projectile combinations are mapped from native code and still need gameplay checks. Stat Bonuses While Equipped are separate from conditional bonuses.",
-    );
 }
 
 pub(super) struct ProjectileSpeed {
@@ -65,7 +57,8 @@ impl ProjectileSpeed {
             ),
         ] {
             let mut fields = graph.fields().filter(|field| {
-                field.locator.root == root
+                field.source != WeaponRuntimeFieldSource::NativeDeclaration
+                    && field.locator.root == root
                     && field.locator.root_schema == schema
                     && field.locator.value_offset <= offset
                     && field
@@ -173,7 +166,11 @@ pub(super) fn equivalent(
     left: &WeaponRuntimeFieldLocator,
     right: &WeaponRuntimeFieldLocator,
 ) -> bool {
+    if matches!((left.graph_tag, right.graph_tag), (Some(a), Some(b)) if a != b) {
+        return false;
+    }
     let mut normalized = right.clone();
+    normalized.graph_tag = left.graph_tag;
     normalized.binding_hash = left.binding_hash;
     normalized.resource_index = left.resource_index;
     if normalized != *left {
@@ -182,7 +179,7 @@ pub(super) fn equivalent(
     if left.binding_hash == right.binding_hash && left.resource_index == right.resource_index {
         return true;
     }
-    loaded.graphs.iter().any(|(_, graph)| {
+    loaded.graphs.iter().filter(|(tag, _)| left.graph_tag.or(right.graph_tag).is_none_or(|scope| scope == *tag)).any(|(_, graph)| {
         let binding = |locator: &WeaponRuntimeFieldLocator| graph.bindings.iter().find(|binding| {
             binding.binding_hash == locator.binding_hash && binding.resource_index == locator.resource_index
         });

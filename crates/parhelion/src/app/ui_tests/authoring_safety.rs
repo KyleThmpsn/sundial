@@ -102,7 +102,7 @@ fn advanced_power_cap_mode_preserves_the_effective_selection() {
         let mut draw = |ui: &mut egui::Ui| app.draw_native_inventory_fields(ui, Some(&donor));
         frame(&ctx, vec![], &mut draw);
         let output = frame(&ctx, vec![], &mut draw);
-        let pos = text_origin(&output, "Customize each row") + egui::vec2(8.0, 6.0);
+        let pos = text_origin(&output, "Customize Each Row") + egui::vec2(8.0, 6.0);
         assert_eq!(app.recipe, before);
         assert!(
             text(&output).contains(

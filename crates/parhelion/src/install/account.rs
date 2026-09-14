@@ -1,6 +1,6 @@
 //! Account bytes participate in the same durable journal as package replacement or removal.
 use super::*;
-use sundial::investment::{AuthoredAccountCleanup, AuthoredClientSettings};
+use sundial::package_authoring::account::{AuthoredAccountCleanup, AuthoredClientSettings};
 const BACKUP_NAME: &str = "account-settings.json";
 const CLIENT_SETTINGS_BACKUP: &str = "client-settings.json";
 
@@ -38,7 +38,9 @@ impl AccountCleanupRecord {
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
         match self.source {
-            Source::Account => sundial::investment::read_authored_account_source(path),
+            Source::Account => {
+                sundial::package_authoring::account::read_authored_account_source(path)
+            }
             Source::ClientSettings => fs::read(path).map_err(|error| error.to_string()),
         }
     }
@@ -46,7 +48,9 @@ impl AccountCleanupRecord {
     fn replace(&self, path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), String> {
         match self.source {
             Source::Account => {
-                sundial::investment::replace_authored_account_source(path, expected, updated)
+                sundial::package_authoring::account::replace_authored_account_source(
+                    path, expected, updated,
+                )
             }
             Source::ClientSettings => {
                 if self.read(path)? != expected {
@@ -90,7 +94,7 @@ fn target_path(record: &AccountCleanupRecord, packages: &Path) -> Result<PathBuf
         ));
     }
     if record.source == Source::Account {
-        sundial::investment::validate_authored_cleanup_backend(&path)
+        sundial::package_authoring::account::validate_authored_cleanup_backend(&path)
             .map_err(InstallError::validation)?;
     } else if path.file_name().is_none_or(|name| name != "settings.json") {
         return Err(InstallError::validation(

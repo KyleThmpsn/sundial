@@ -16,6 +16,7 @@
 #[cfg(not(any(windows, target_os = "linux")))]
 compile_error!("Sundial supports Windows and Linux");
 
+pub mod account;
 mod account_contract;
 pub mod activity_log;
 mod app;
@@ -38,11 +39,12 @@ mod package_runtime;
 mod paths;
 mod persistence;
 mod sandbox_perk;
-mod storage;
+pub mod storage;
 mod strict_json;
 mod subclass;
 #[cfg(test)]
 mod test_support;
+pub mod ui;
 mod ui_help;
 mod unnamed_plugs;
 mod updates;
@@ -51,8 +53,4 @@ mod weapon_entity;
 mod weapon_runtime;
 
 /// Runs Sundial with its in-process package-authoring utility.
-pub fn run(
-    package_authoring: Box<dyn package_authoring::PackageAuthoringUtility>,
-) -> eframe::Result<()> {
-    app::run(package_authoring)
-}
+pub use app::run;

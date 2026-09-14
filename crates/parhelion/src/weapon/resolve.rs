@@ -6,7 +6,8 @@ use super::*;
 pub(super) struct ResolvedWeapon {
     pub(super) weapon: WeaponCloneSpec,
     pub(super) donor_item_index: usize,
-    pub(super) donor_collectible_index: usize,
+    pub(super) collectible_display_template_index: usize,
+    pub(super) collectible_template_index: usize,
     pub(super) collection_donor_index: usize,
     pub(super) source_unlock_index: usize,
     pub(super) source_acquired_flag: u16,
@@ -133,22 +134,14 @@ pub(super) fn resolve_project_weapons_with_progress(
                     == Some(donor_item_index_u16)
             })
             .collect::<Vec<_>>();
-        let [donor_collectible_index] = donor_collectibles.as_slice() else {
-            return Err(invalid(format!(
-                "Donor resolves to {} collectible rows; exactly one is required",
+        let donor_collectible_index = match donor_collectibles.as_slice() {
+            [] => None,
+            [index] => Some(*index),
+            _ => return Err(invalid(format!(
+                "Donor resolves to {} collectible rows, so its Collections template is ambiguous",
                 donor_collectibles.len()
-            )));
+            ))),
         };
-        let donor_collectible_index = *donor_collectible_index;
-        let source_unlock_index = collection_unlock_index(
-            stock_collectibles,
-            collectible_rows + donor_collectible_index * COLLECTIBLE_ROW_SIZE,
-        )?;
-        if source_unlock_index >= stock_unlock_count {
-            return Err(invalid(
-                "Donor collectible references an unavailable unlock",
-            ));
-        }
         let definition = read_tag(manager, definition_tag, "donor weapon")?;
         let strings = read_tag(manager, string_tag, "donor item-string")?;
         if matching_u32_offsets(&definition, weapon.donor_item_hash)
@@ -159,12 +152,20 @@ pub(super) fn resolve_project_weapons_with_progress(
                 "Donor embeds its item identity at unsupported offsets",
             ));
         }
+        if read_i64(&definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)? == 0 {
+            return Err(invalid(
+                "This weapon definition has no socket block for gameplay authoring. Choose another base or use it as an appearance donor.",
+            ));
+        }
         let donor_icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
         validate_reused_stock_item_icon(stock_item_icons, &strings, donor_icon_index)?;
         let donor_icon_container =
             stock_item_icon_container(stock_item_icons, donor_icon_index)?;
         read_tag(manager, donor_icon_container, "gameplay donor icon container")?;
         let gameplay_inventory_slot = weapon_inventory_slot(&definition)?;
+        if weapon_equipment_slot(&definition)? != gameplay_inventory_slot {
+            return Err(invalid("Weapon inventory bucket and equipment slot disagree"));
+        }
         let gameplay_pattern_index = weapon_pattern_index(&definition)?;
         let selected_pattern_index = weapon
             .overrides
@@ -197,7 +198,7 @@ pub(super) fn resolve_project_weapons_with_progress(
         let collection_candidates = resolve_weapon_collection_donor(
             manager, stock_item_table, item_rows, stock_item_count,
             stock_item_strings, string_rows, stock_collectibles, collectible_rows,
-            stock_collectible_count, donor_collectible_index, &definition, &strings,
+            stock_collectible_count, stock_sandbox_patterns, donor_collectible_index, &definition, &strings,
             authored_rarity, authored_inventory_slot,
         )?;
         let mut placement_error = None;
@@ -220,6 +221,13 @@ pub(super) fn resolve_project_weapons_with_progress(
         placement
             .ok_or_else(|| placement_error.unwrap_or_else(|| invalid("No compatible Collections placement exemplar")))?
         };
+        let (collectible_template_index, source_unlock_index) =
+            crate::progression::collectible_clone_template(
+                stock_collectibles,
+                donor_collectible_index,
+                collection_donor_index,
+                stock_unlock_count,
+            )?;
         let presentation_donor = weapon
             .presentation_donor
             .as_ref()
@@ -358,7 +366,8 @@ pub(super) fn resolve_project_weapons_with_progress(
             Ok(ResolvedWeapon {
                 weapon: weapon.clone(),
                 donor_item_index,
-                donor_collectible_index,
+                collectible_display_template_index: donor_collectible_index.unwrap_or(collectible_template_index),
+                collectible_template_index,
                 collection_donor_index,
                 source_unlock_index,
                 source_acquired_flag,

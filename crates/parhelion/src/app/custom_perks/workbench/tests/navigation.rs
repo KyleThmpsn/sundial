@@ -2,6 +2,70 @@ use super::*;
 use crate::app::custom_perks::editor::tests::set_test_speed;
 
 #[test]
+fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clear() {
+    let mut loaded = fixture();
+    loaded.warnings = (0..40)
+        .map(|index| format!("Property Warning {index}"))
+        .collect();
+    let mut parameter_editor = editor(loaded);
+    parameter_editor.entity_source = Some(0x8152_9C54);
+    let mut workbench = Workbench::default();
+    workbench.set_test_editor(parameter_editor);
+    let mut recipe = workbench.documents[0].recipe.clone();
+    let ctx = egui::Context::default();
+    let mut render = |events| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 720.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    workbench.draw_effect_editor(ui, ctx, &mut recipe, false, 360.0);
+                    ui.label("Destination Footer");
+                });
+            },
+        )
+    };
+    let visible = |output: &egui::FullOutput, name: &str| {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == name => {
+                let rect = text.galley.rect.translate(text.pos.to_vec2());
+                shape.clip_rect.contains_rect(rect).then_some(rect)
+            }
+            _ => None,
+        })
+    };
+    let mut output = render(vec![]);
+    for _ in 0..3 {
+        output = render(vec![]);
+    }
+    let header = visible(&output, "Apply and Back").unwrap();
+    let footer = visible(&output, "Destination Footer").unwrap();
+    assert!(visible(&output, "Native Structure").is_none());
+    render(vec![
+        egui::Event::PointerMoved(egui::pos2(970.0, 240.0)),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -5000.0),
+            modifiers: Default::default(),
+        },
+    ]);
+    for _ in 0..30 {
+        output = render(vec![]);
+    }
+    let last = visible(&output, "Native Structure")
+        .expect("Last property section is fully reachable from the right side");
+    assert!(last.bottom() < footer.top());
+    assert_eq!(visible(&output, "Apply and Back"), Some(header));
+    assert_eq!(visible(&output, "Destination Footer"), Some(footer));
+}
+
+#[test]
 fn switching_documents_preserves_pending_edits_under_their_original_owner() {
     for existing in [false, true] {
         let mut parameter_editor = editor(fixture());
@@ -94,4 +158,44 @@ fn switching_documents_keeps_an_unfinished_worker_owned_until_it_finishes() {
     );
     assert!(workbench.retired_editors.is_empty());
     assert!(!workbench.busy());
+}
+
+#[test]
+fn new_draft_clears_search_and_is_visible_above_a_long_library() {
+    let ctx = egui::Context::default();
+    let mut workbench = Workbench {
+        initialized: true,
+        query: "Old Search".into(),
+        ..Default::default()
+    };
+    for index in 0..40 {
+        let mut recipe = PerkRecipe::new();
+        recipe.name = format!("Older Perk {index}");
+        workbench.documents.push(Document::new(recipe, None));
+    }
+    let mut recipe = PerkRecipe::new();
+    recipe.name = "New Visible Draft".into();
+    workbench.add_document(Document::new(recipe, None));
+    assert!(workbench.query.is_empty());
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| workbench.draw_library(ui, None, true));
+            },
+        );
+    }
+    let rect = label(&output, "New Visible Draft · Draft").expect("new draft visible");
+    assert!(rect.top() >= 0.0 && rect.bottom() < 400.0);
+    workbench.select_document(0);
+    workbench.select_document(40);
+    assert_eq!(workbench.documents[40].recipe.name, "New Visible Draft");
 }

@@ -8,33 +8,27 @@ use std::{
 pub(crate) mod plug_selection;
 pub use plug_selection::PlugSelectionMode;
 
-pub(crate) mod account_sync;
-mod client_settings;
-pub use client_settings::{AuthoredClientSettings, preview_authored_client_settings};
 mod controls;
 mod definitions;
 mod lore;
 pub(crate) mod titles;
 pub use lore::{LoreEntry, load_item_lore};
 mod perk_patterns;
+mod perk_sources;
+pub use perk_sources::{PerkSource, PerkSources};
+mod ingredients;
+pub mod native_content;
+pub use ingredients::{IngredientCatalog, IngredientSource};
 pub(crate) mod seasonal;
-pub use account_sync::{
-    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredItemMove, AuthoredMoveOutcome,
-    AuthoredProfileSyncReport, AuthoredSlotChange, AuthoredSlotReplacement, AuthoredSocketChange,
-    preview_authored_account_cleanup, preview_authored_account_replacement,
-    preview_authored_account_replacement_with_slots, read_authored_account_source,
-    replace_authored_account_source, synchronize_authored_collection_unlocks,
-    validate_authored_cleanup_backend,
-};
 pub use controls::{
     AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton,
-    PlugChoicePickerOptions, PlugSelection, WeaponDonorPickerAction, WeaponDonorPickerClearChoice,
-    WeaponDonorPickerOptions, authoring_button_width, authoring_choice_row_height,
-    authoring_socket_label_width, authoring_socket_reset_width, configure_authoring_fonts,
-    default_plug_selection_mode, draw_asset_choice_row, draw_authoring_info_icon,
-    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
-    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning, progress_bar,
-    show_plug_safety_warnings, tooltip_title,
+    PlugChoicePickerOptions, PlugSelection, PlugTooltip, WeaponDonorPickerAction,
+    WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, authoring_button_width,
+    authoring_choice_row_height, authoring_socket_label_width, authoring_socket_reset_width,
+    configure_authoring_fonts, default_plug_selection_mode, draw_asset_choice_row,
+    draw_authoring_info_icon, draw_authoring_socket_label, draw_authoring_socket_reset,
+    draw_authoring_toolbar, draw_catalog_loading_view, draw_plug_safety_selector,
+    draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
     PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
@@ -49,9 +43,6 @@ use crate::{
     hash::parse_hash_hex,
     paths,
 };
-
-#[cfg(test)]
-use crate::catalog::is_weapon_bucket;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatalogLoadProgress {
@@ -147,6 +138,17 @@ impl InvestmentCatalog {
     #[must_use]
     pub fn plug_label(&self, hash: u32, include_hash: bool) -> String {
         self.catalog.plug_label(u64::from(hash), include_hash)
+    }
+
+    /// The localized item type of a weapon or plug, such as "Hand Cannon", when the
+    /// installation names one.
+    #[must_use]
+    pub fn item_type_name(&self, hash: u32) -> Option<String> {
+        let hash = u64::from(hash);
+        self.catalog
+            .plug_type_name(hash)
+            .or_else(|| self.catalog.package_item_type_name(hash))
+            .map(str::to_owned)
     }
 
     /// Native definition identity for authoring clients that need to distinguish generated plugs.
@@ -539,6 +541,13 @@ impl InvestmentCatalog {
     #[must_use]
     pub fn perk_description(&self, hash: u32) -> Option<&str> {
         self.catalog.description(u64::from(hash))
+    }
+
+    /// Localized description attached to this exact finished perk row.
+    /// Item text can describe an entire mod or subclass and is not interchangeable.
+    #[must_use]
+    pub fn perk_component_description(&self, index: u16) -> Option<&str> {
+        self.catalog.perk_description(index)
     }
 
     fn weapon_investment_stat(
@@ -953,14 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_all_three_weapon_buckets() {
-        assert!(is_weapon_bucket(1_498_876_634));
-        assert!(is_weapon_bucket(2_465_295_065));
-        assert!(is_weapon_bucket(953_998_645));
-        assert!(!is_weapon_bucket(0));
-    }
-
-    #[test]
     fn donor_rarity_mapping_and_labels_are_stable_for_external_tools() {
         let mappings = [
             (ItemRarity::Unknown, WeaponRarity::Unknown, "Unknown"),
@@ -975,14 +976,5 @@ mod tests {
             assert_eq!(rarity, expected);
             assert_eq!(rarity.label(), label);
         }
-    }
-
-    #[test]
-    fn parhelion_recipe_library_is_below_sundial_data() {
-        let expected_suffix = std::path::Path::new("parhelion").join("recipes");
-        let directory = crate::package_authoring::parhelion_recipe_library_directory()
-            .expect("the test platform should expose a per-user data directory");
-
-        assert!(directory.ends_with(expected_suffix));
     }
 }

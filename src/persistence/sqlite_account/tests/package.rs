@@ -1,6 +1,9 @@
-use super::super::package::{preview, read, replace};
+use super::super::{
+    package::{preview, replace},
+    snapshot::read,
+};
 use super::*;
-use crate::investment::{AuthoredCollectionUnlock, AuthoredSocketChange};
+use crate::account::{AuthoredCollectionUnlock, AuthoredSocketChange};
 use std::collections::BTreeSet;
 mod placement;
 

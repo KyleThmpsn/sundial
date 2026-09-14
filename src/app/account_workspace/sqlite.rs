@@ -5,11 +5,10 @@ use sundial_account as domain;
 
 use super::super::{ARMOR_SLOTS, WEAPON_SLOTS};
 use super::{
-    DismantleGearClass, DismantleRarity, DismantleRewardAction, DismantleRewardLocation,
-    DismantleRewardSnapshot, EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue,
-    InventoryError, InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs,
-    NewInventoryItem, ProfileItemAction, ProfileItemLocation, ProfileItemSnapshot,
-    SqliteAccountDocument,
+    DismantleRewardAction, DismantleRewardLocation, DismantleRewardSnapshot, EquippedItemPlugs,
+    EquippedItemSnapshot, EquippedPlugValue, InventoryError, InventoryItemAction,
+    InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, NewInventoryItem, ProfileItemAction,
+    ProfileItemLocation, ProfileItemSnapshot, SqliteAccountDocument,
 };
 
 const SQLITE_PATH: &str = "investment.sqlite3";
@@ -142,8 +141,8 @@ pub(super) fn dismantle_rewards(
                 location: DismantleRewardLocation { index },
                 definition_hash: reward.definition_hash.get(),
                 quantity: reward.quantity,
-                rarities: reward.rarities.iter().copied().map(app_rarity).collect(),
-                gear_class: reward.gear_class.map(app_gear_class),
+                rarities: reward.rarities.clone(),
+                gear_class: reward.gear_class,
                 masterworked: reward.masterworked,
             })
             .collect(),
@@ -257,8 +256,8 @@ pub(super) fn apply_dismantle_reward_action(
             id,
             definition_hash: domain::DefinitionHash::new(definition_hash),
             quantity,
-            rarities: rarities.into_iter().map(domain_rarity).collect(),
-            gear_class: gear_class.map(domain_gear_class),
+            rarities,
+            gear_class,
             masterworked,
         }),
     };
@@ -577,7 +576,7 @@ pub(super) fn set_weapon_slot_empty(
 ) -> Result<(), String> {
     if !WEAPON_SLOTS.contains(&slot) {
         return Err(format!(
-            "Only weapon slots can be set to empty; {slot} was not changed"
+            "Only weapon slots can be set to empty. {slot} was not changed"
         ));
     }
     let character_id = character(document, character_index)?.id;
@@ -803,42 +802,6 @@ fn domain_item_update(action: InventoryItemAction) -> domain::ItemUpdate {
         }),
         InventoryItemAction::SetFlags(flags) => domain::ItemUpdate::SetFlags(flags.map(u32::from)),
         InventoryItemAction::Remove => unreachable!("remove actions are handled separately"),
-    }
-}
-
-const fn app_rarity(value: domain::DismantleRarity) -> DismantleRarity {
-    match value {
-        domain::DismantleRarity::Common => DismantleRarity::Common,
-        domain::DismantleRarity::Uncommon => DismantleRarity::Uncommon,
-        domain::DismantleRarity::Rare => DismantleRarity::Rare,
-        domain::DismantleRarity::Legendary => DismantleRarity::Legendary,
-        domain::DismantleRarity::Exotic => DismantleRarity::Exotic,
-    }
-}
-
-const fn domain_rarity(value: DismantleRarity) -> domain::DismantleRarity {
-    match value {
-        DismantleRarity::Common => domain::DismantleRarity::Common,
-        DismantleRarity::Uncommon => domain::DismantleRarity::Uncommon,
-        DismantleRarity::Rare => domain::DismantleRarity::Rare,
-        DismantleRarity::Legendary => domain::DismantleRarity::Legendary,
-        DismantleRarity::Exotic => domain::DismantleRarity::Exotic,
-    }
-}
-
-const fn app_gear_class(value: domain::DismantleGearClass) -> DismantleGearClass {
-    match value {
-        domain::DismantleGearClass::Weapon => DismantleGearClass::Weapon,
-        domain::DismantleGearClass::Armor => DismantleGearClass::Armor,
-        domain::DismantleGearClass::Both => DismantleGearClass::Both,
-    }
-}
-
-const fn domain_gear_class(value: DismantleGearClass) -> domain::DismantleGearClass {
-    match value {
-        DismantleGearClass::Weapon => domain::DismantleGearClass::Weapon,
-        DismantleGearClass::Armor => domain::DismantleGearClass::Armor,
-        DismantleGearClass::Both => domain::DismantleGearClass::Both,
     }
 }
 

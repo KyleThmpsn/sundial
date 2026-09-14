@@ -1,6 +1,96 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::dependencies::Pattern;
 
+fn shared_sources() -> PerkSources {
+    [(1, "Thorn Catalyst"), (2, "Masterwork Weapon")]
+        .into_iter()
+        .map(|(hash, name)| {
+            (
+                453,
+                sundial::investment::PerkSource {
+                    hash,
+                    name: name.into(),
+                    type_name: String::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn alias_search_returns_shared_identity_and_keeps_unrelated_effects_out() {
+    let sources = shared_sources();
+    for query in ["thorn catalyst", "masterwork", "453"] {
+        assert_eq!(
+            selector_rows(Page::Perks, 500, &sources, &[], false, query),
+            [(453, "Shared Effect 453".into())]
+        );
+    }
+    assert!(selector_rows(Page::Perks, 500, &sources, &[], false, "outlaw").is_empty());
+}
+
+#[test]
+fn default_references_preserve_individual_items_and_plugs_within_a_shared_pattern() {
+    let usage = |weapon_hash, perk_index, source_plug| PerkPatternUse {
+        pattern_index: 12,
+        weapon_hash,
+        weapon_name: format!("Weapon {weapon_hash}"),
+        perk_index,
+        source_plug,
+    };
+    let uses = vec![
+        usage(1, 453, Some(2)),
+        usage(2, 421, Some(3)),
+        usage(3, 453, None),
+    ];
+    let defaults = details::default_uses(&uses, 453, Some(12));
+    assert_eq!(defaults, [uses[0].clone(), uses[2].clone()]);
+    assert!(details::default_uses(&uses, 453, Some(13)).is_empty());
+}
+
+#[test]
+fn shared_effect_details_show_provenance_without_an_exclusive_marker_claim() {
+    let mut index = fixture();
+    index.perks.resize(454, index.perks[0].clone());
+    index.perks[453].index = 453;
+    let mut browser = Browser {
+        selected: 453,
+        sources: shared_sources(),
+        index: Some(Arc::new(index)),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 720.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| browser.show(ui, &[], None));
+            },
+        );
+    }
+    let text = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Shared Effect 453"));
+    assert!(text.contains("Source Items and Plugs (2)"));
+    assert!(text.contains("No Standalone Action"));
+    assert!(!text.contains("Marker Only"));
+    assert!(!text.contains("Thorn Catalyst · 453"));
+}
+
 fn fixture() -> Index {
     Index {
         patterns: vec![Pattern {
@@ -18,89 +108,9 @@ fn fixture() -> Index {
             action: None,
             graphs: Vec::new(),
             error: None,
+            behavior: None,
         }],
         caster: None,
-    }
-}
-
-fn text(shapes: &[egui::epaint::ClippedShape]) -> String {
-    fn append(shape: &egui::Shape, output: &mut String) {
-        match shape {
-            egui::Shape::Text(text) => {
-                output.push_str(&text.galley.job.text);
-                output.push('\n');
-            }
-            egui::Shape::Vec(shapes) => {
-                for shape in shapes {
-                    append(shape, output);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut output = String::new();
-    for shape in shapes {
-        append(&shape.shape, &mut output);
-    }
-    output
-}
-
-#[test]
-fn dependency_browser_preserves_unknowns_and_fits_narrow_windows() {
-    for width in [360.0, 780.0] {
-        for page in [Page::Perks, Page::Patterns] {
-            let original = Arc::new(fixture());
-            let mut browser = Browser {
-                index: Some(original.clone()),
-                page,
-                show_unnamed: true,
-                ..Default::default()
-            };
-            let ctx = egui::Context::default();
-            let mut labels = String::new();
-            for frame in 0..3 {
-                let output = ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(width, 1600.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            let right = ui.max_rect().right();
-                            browser.show(ui, &[], &[], None);
-                            assert!(
-                                ui.min_rect().right() <= right + 1.0,
-                                "dependency content overflows at {width}"
-                            );
-                        });
-                    },
-                );
-                labels = text(&output.shapes);
-                if frame == 2 {
-                    super::super::ui_tests::build_flow::capture(
-                        &ctx,
-                        output,
-                        &format!("dependencies-{}-{width}", page as u8),
-                        width,
-                    );
-                }
-            }
-            assert!(!labels.contains("Stock defaults are observations"));
-            match page {
-                Page::Perks => {
-                    assert!(labels.contains("Marker Only"));
-                    assert!(labels.contains("What It Needs"));
-                    assert!(labels.contains("Unknown. Test with your weapon in game."));
-                    assert!(labels.contains("Technical Details"));
-                }
-                Page::Patterns => assert!(labels.contains("Inactive pattern row")),
-            }
-            assert_eq!(browser.index.as_ref().unwrap().as_ref(), original.as_ref());
-            assert!(!browser.busy());
-        }
     }
 }
 

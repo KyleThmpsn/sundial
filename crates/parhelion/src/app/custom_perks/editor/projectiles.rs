@@ -2,11 +2,14 @@ use super::*;
 
 impl PerkEditor {
     pub(super) fn projectile_label(&self, source: &projectile::catalog::Entry) -> String {
-        source.label_with_perks(|index| self.projectile_labels.get(&index).cloned())
+        source.discovery_label_with(
+            |index| self.projectile_labels.get(&index).cloned(),
+            |item| self.item_names.get(&item).cloned(),
+        )
     }
 
     /// Carry mapped properties by meaning. Native field offsets are asset-specific.
-    fn select_projectile(
+    pub(super) fn select_projectile(
         &mut self,
         loaded: &PrivatePerkRuntimeGraph,
         source: u32,
@@ -64,6 +67,8 @@ impl PerkEditor {
         self.parameter_error = None;
     }
 
+    /// Draws every projectile slot in one list. Used when the action has no readable summary
+    /// to place the slots on. Returns whether a selection changed.
     pub(super) fn draw_projectiles(
         &mut self,
         ui: &mut egui::Ui,
@@ -76,6 +81,30 @@ impl PerkEditor {
             ui.label("This effect has no projectile or emitter that can be selected here.");
             return false;
         }
+        self.draw_projectile_notes(ui, loaded);
+        let mut change = None;
+        for (ordinal, &(source, _)) in loaded.projectile_slots.iter().enumerate() {
+            if loaded.projectile_slots.len() > 1 {
+                ui.label(format!("Effect {}", ordinal + 1));
+            }
+            if let Some(selected) = self.draw_projectile_slot(ui, loaded, source) {
+                change = Some((source, selected));
+            }
+        }
+        if let Some((source, selected)) = change {
+            self.select_projectile(loaded, source, selected);
+            return true;
+        }
+        ui.add_space(8.0);
+        false
+    }
+
+    /// The guidance shown once above the projectile pickers.
+    pub(super) fn draw_projectile_notes(
+        &self,
+        ui: &mut egui::Ui,
+        loaded: &PrivatePerkRuntimeGraph,
+    ) {
         ui.small(
             "Changing the projectile or emitter keeps your speed, gravity, and travel distance settings where supported. Other edits to that asset reset to its defaults.",
         );
@@ -87,12 +116,45 @@ impl PerkEditor {
                     loaded.projectile_catalog.errors.len()
                 ),
             );
+            egui::CollapsingHeader::new("Catalog Read Errors").show(ui, |ui| {
+                for error in &loaded.projectile_catalog.errors {
+                    ui.label(error);
+                }
+            });
         }
-        let mut change = None;
-        for (ordinal, &(source, _)) in loaded.projectile_slots.iter().enumerate() {
-            if loaded.projectile_slots.len() > 1 {
-                ui.label(format!("Effect {}", ordinal + 1));
-            }
+    }
+
+    /// One projectile or emitter picker. Returns a new selection when the user picked one,
+    /// with `None` inside meaning the original asset.
+    pub(super) fn draw_projectile_slot(
+        &mut self,
+        ui: &mut egui::Ui,
+        loaded: &PrivatePerkRuntimeGraph,
+        source: u32,
+    ) -> Option<Option<u32>> {
+        {
+            let labels_id = ui.make_persistent_id((
+                "projectile-display-names",
+                Arc::as_ptr(&loaded.projectile_catalog) as usize,
+                self.projectile_labels.len(),
+                self.item_names.len(),
+            ));
+            let labels = ui.data_mut(|data| {
+                data.get_temp_mut_or_insert_with(labels_id, || {
+                    Arc::new(loaded.projectile_catalog.discovery_labels_with(
+                        |index| self.projectile_labels.get(&index).cloned(),
+                        |item| self.item_names.get(&item).cloned(),
+                    ))
+                })
+                .clone()
+            });
+            let mut query_text = std::mem::take(&mut self.projectile_query);
+            let label_for = |entry: &projectile::catalog::Entry| {
+                labels
+                    .get(&entry.graph)
+                    .cloned()
+                    .unwrap_or_else(|| entry.discovery_label_with(|_| None, |_| None))
+            };
             let original = self
                 .projectile_draft
                 .iter()
@@ -106,140 +168,123 @@ impl PerkEditor {
                 .iter()
                 .find(|choice| choice.graph == tag);
             let label = current
-                .map(|source| self.projectile_label(source))
+                .map(label_for)
                 .unwrap_or_else(|| format!("Missing Effect · 0x{tag:08X}"));
-            let mut query_text = std::mem::take(&mut self.projectile_query);
-            let picked = super::super::workbench::pickers::popup(
+            use super::super::workbench::{assets, pickers};
+            let picked = pickers::browser(
                 ui,
                 ("perk-projectile", source),
                 &label,
+                "Choose a Projectile or Emitter",
                 &mut query_text,
                 |ui, query, reset, height| {
                     let filter_id = ui.make_persistent_id("projectile-kind");
-                    let mut filter =
-                        ui.data_mut(|state| state.get_temp::<u8>(filter_id).unwrap_or(0));
+                    let mut filter = ui.data(|state| state.get_temp::<u8>(filter_id).unwrap_or(0));
                     let before = filter;
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut filter, 0, "All Assets");
+                    let mut visibility = (false, false);
+                    let mut use_original = false;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut filter, 0, "All Types");
                         ui.selectable_value(&mut filter, 1, "Projectiles");
                         ui.selectable_value(&mut filter, 2, "Emitters");
+                        ui.separator();
+                        visibility = pickers::show_all(ui);
+                        use_original = ui.button("Use Original").clicked();
                     });
-                    ui.data_mut(|state| state.insert_temp(filter_id, filter));
-                    let source_name = loaded
-                        .projectile_catalog
-                        .entries
-                        .iter()
-                        .find(|entry| entry.graph == source)
-                        .map(|source| self.projectile_label(source))
-                        .unwrap_or_else(|| format!("0x{source:08X}"));
-                    if sundial::investment::draw_asset_choice_row(
-                        ui,
-                        &source_name,
-                        "Original Effect",
-                        original.is_none(),
-                    )
-                    .clicked()
-                    {
+                    if use_original {
                         return Some(None);
                     }
-                    ui.separator();
+                    ui.data_mut(|state| state.insert_temp(filter_id, filter));
                     let mut choices = loaded
                         .projectile_catalog
                         .entries
                         .iter()
-                        .filter(|choice| choice.graph != source)
+                        .filter(|choice| {
+                            matches!(
+                                choice.kind,
+                                projectile::Kind::Projectile | projectile::Kind::Emitter
+                            )
+                        })
+                        .filter(|choice| {
+                            visibility.0
+                                || choice.has_discovery_identity_with(
+                                    |index| self.projectile_labels.get(&index).cloned(),
+                                    |item| self.item_names.get(&item).cloned(),
+                                )
+                        })
                         .filter(|choice| {
                             filter == 0
                                 || (filter == 1 && choice.kind == projectile::Kind::Projectile)
                                 || (filter == 2 && choice.kind == projectile::Kind::Emitter)
                         })
                         .filter_map(|choice| {
-                            let label = self.projectile_label(choice);
-                            let paths = choice.native_paths.join("\n");
+                            let label = label_for(choice);
+                            let roles = choice.source_hint.as_deref().unwrap_or_default();
                             let contexts = choice
                                 .contexts
                                 .iter()
                                 .map(|context| context.path.as_str())
-                                .collect::<std::collections::BTreeSet<_>>()
-                                .into_iter()
                                 .collect::<Vec<_>>()
-                                .join("\n");
-                            let perks = choice
-                                .perk_indices
-                                .iter()
-                                .filter_map(|index| self.projectile_labels.get(index))
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join(", ");
+                                .join(" ");
                             let search = format!(
-                                "{label} {:08X} {} {} {paths} {contexts} {perks}",
+                                "{label} {:08X} {} {roles} {contexts}",
                                 choice.graph,
-                                choice.package,
-                                choice.kind.label()
+                                choice
+                                    .native_paths
+                                    .iter()
+                                    .chain(choice.native_name.iter())
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
                             );
-                            super::super::workbench::pickers::matches(query, &search)
-                                .then_some((choice, label, paths, contexts, perks))
+                            pickers::matches(&query.replace("0x", ""), &search)
+                                .then_some((choice, label))
                         })
                         .collect::<Vec<_>>();
-                    choices.sort_by_cached_key(|(choice, label, _, _, _)| {
-                        (choice.label_rank(), label.clone(), choice.graph)
+                    choices.sort_by_cached_key(|(choice, label)| {
+                        (choice.label_rank(), label.to_lowercase(), choice.graph)
                     });
-                    super::super::workbench::pickers::results(
+                    let keys = choices
+                        .iter()
+                        .map(|(choice, _)| u64::from(choice.graph))
+                        .collect::<Vec<_>>();
+                    pickers::BrowserList {
+                        keys: &keys,
+                        height,
+                        reset: reset || visibility.1 || filter != before,
+                        row_height: sundial::investment::authoring_choice_row_height(ui),
+                    }
+                    .draw(
                         ui,
-                        "projectile-options",
-                        choices.len(),
-                        (height - 92.0).max(60.0),
-                        reset || filter != before,
-                        sundial::investment::authoring_choice_row_height(ui),
-                        |ui, index| {
-                            let (choice, label, paths, contexts, perks) = &choices[index];
+                        |ui, index, selected| {
+                            let (choice, label) = &choices[index];
                             sundial::investment::draw_asset_choice_row(
                                 ui,
                                 label,
-                                &format!(
-                                    "{} · {} · 0x{:08X}",
-                                    choice.kind.label(),
-                                    choice.package,
-                                    choice.graph
-                                ),
-                                original == Some(choice.graph),
+                                &assets::technical_name(choice),
+                                selected,
                             )
-                            .on_hover_ui(|ui| {
-                                ui.label(&choice.package);
-                                if !paths.is_empty() {
-                                    ui.label(paths);
-                                }
-                                if !perks.is_empty() {
-                                    ui.label(format!("Used By: {perks}"));
-                                }
-                                if !contexts.is_empty() {
-                                    ui.label("Referenced By");
-                                    ui.label(contexts);
-                                }
-                            })
-                            .clicked()
-                            .then_some(Some(choice.graph))
+                        },
+                        |ui, index| {
+                            let (choice, label) = &choices[index];
+                            ui.heading(label);
+                            if ui
+                                .add(crate::app::style::primary(ui, "Use Effect"))
+                                .clicked()
+                            {
+                                return Some((choice.graph != source).then_some(choice.graph));
+                            }
+                            assets::asset_details(ui, choice, &loaded.projectile_catalog, "");
+                            None
                         },
                     )
                 },
             );
             self.projectile_query = query_text;
-            if let Some(path) = current.and_then(|entry| entry.native_paths.first()) {
-                ui.add(egui::Label::new(path).truncate())
-                    .on_hover_text(path);
-            }
             if let Some(picked) = picked {
                 selected = picked;
             }
-            if selected != original {
-                change = Some((source, selected));
-            }
+            (selected != original).then_some(selected)
         }
-        if let Some((source, selected)) = change {
-            self.select_projectile(loaded, source, selected);
-            return true;
-        }
-        ui.add_space(8.0);
-        false
     }
 }

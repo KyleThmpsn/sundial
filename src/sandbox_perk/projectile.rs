@@ -10,16 +10,73 @@ use crate::weapon_entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity};
 
 pub mod catalog;
 pub mod parameters;
+pub mod residency;
 
 /// Shadowkeep entity object type, also used by Sunrise's projectile spawner.
 const OBJECT_TYPE_OFFSET: usize = 0x96;
 const PROJECTILE_OBJECT_TYPE: u8 = 18;
 const EMITTER_OBJECT_TYPE: u8 = 17;
 
+/// Object types that stock Create Entity nodes attach, measured over the 1,010 references in
+/// the surveyed actions: type 23 (452), 28 (380), 24 (30), 17 (17), 25 (4), 26 (2), 22 (1)
+/// and 14 (1). An entity of one of these types is what the asset picker offers to attach,
+/// whether or not a stock perk references it.
+pub const ATTACHED_OBJECT_TYPES: [u8; 8] = [14, 17, 22, 23, 24, 25, 26, 28];
+
+/// The client's object-type names from its placed-content table.
+#[must_use]
+pub const fn object_type_name(object_type: u8) -> Option<&'static str> {
+    match object_type {
+        0 => Some("inherited"),
+        1 => Some("static_mesh"),
+        2 => Some("prop_simple_deprecated"),
+        3 => Some("prop_expensive_deprecated"),
+        4 => Some("prop_cosmetic_static"),
+        5 => Some("prop_cosmetic_movable"),
+        6 => Some("prop_cosmetic_movable_garbage"),
+        7 => Some("prop_networked_static"),
+        8 => Some("prop_networked_movable"),
+        9 => Some("prop_cinematic"),
+        10 => Some("speedtree"),
+        11 => Some("interactive"),
+        12 => Some("biped"),
+        13 => Some("creature"),
+        14 => Some("weapon"),
+        15 => Some("vehicle"),
+        16 => Some("turret"),
+        17 => Some("emitter"),
+        18 => Some("projectile"),
+        19 => Some("item"),
+        20 => Some("item_ammo"),
+        21 => Some("item_loot"),
+        22 => Some("gear"),
+        23 => Some("hop_on"),
+        24 => Some("hop_on_gear_biped"),
+        25 => Some("hop_on_gear_weapon"),
+        26 => Some("hop_on_gear_ship"),
+        27 => Some("hop_on_gear_sparrow"),
+        28 => Some("system"),
+        _ => None,
+    }
+}
+
+/// A readable label for an object type: the client's name when recorded, else the number.
+#[must_use]
+pub fn object_type_label(object_type: u8) -> String {
+    object_type_name(object_type)
+        .map_or_else(|| format!("type {object_type}"), |name| name.to_owned())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Kind {
     Projectile,
     Emitter,
+    /// Native item, ammunition or loot object. Uses generic object creation.
+    Pickup,
+    /// Physical props and interactable world objects, including native health orbs.
+    Object,
+    /// Any other entity graph of a type stock perks attach. Not a spawn or pattern candidate.
+    Entity,
 }
 
 impl Kind {
@@ -28,7 +85,16 @@ impl Kind {
         match self {
             Self::Projectile => "Projectile",
             Self::Emitter => "Emitter",
+            Self::Pickup => "Pickup",
+            Self::Object => "World Object",
+            Self::Entity => "Entity",
         }
+    }
+
+    /// Whether the compiler accepts this kind for a spawn action.
+    #[must_use]
+    pub const fn spawnable(self) -> bool {
+        !matches!(self, Self::Entity)
     }
 }
 
@@ -51,6 +117,19 @@ pub fn kind(payload: &[u8]) -> Result<Option<Kind>, String> {
     Ok(match payload.get(OBJECT_TYPE_OFFSET) {
         Some(&PROJECTILE_OBJECT_TYPE) => Some(Kind::Projectile),
         Some(&EMITTER_OBJECT_TYPE) => Some(Kind::Emitter),
+        _ => None,
+    })
+}
+
+/// Kinds accepted by the generic create-object route. Projectile replacement still uses
+/// `kind` so a world object cannot become a weapon's fired pattern by accident.
+pub fn spawn_kind(payload: &[u8]) -> Result<Option<Kind>, String> {
+    if let Some(kind) = kind(payload)? {
+        return Ok(Some(kind));
+    }
+    Ok(match payload.get(OBJECT_TYPE_OFFSET) {
+        Some(19..=21) => Some(Kind::Pickup),
+        Some(1..=8 | 11) => Some(Kind::Object),
         _ => None,
     })
 }

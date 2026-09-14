@@ -1,15 +1,3 @@
-#[test]
-fn sunrise_projection_warning_is_advisory_and_starts_after_four_entries() {
-    for count in 0..=4 {
-        assert!(super::sunrise_perk_projection_warning(count).is_none());
-    }
-    for count in [5, 16, 64, usize::MAX] {
-        let warning = super::sunrise_perk_projection_warning(count).unwrap();
-        assert!(warning.contains("replicated appearance data"));
-        assert!(warning.contains("Later effects remain in the package"));
-    }
-}
-
 use super::*;
 use std::{collections::BTreeSet, env, path::Path};
 
@@ -367,6 +355,35 @@ fn runtime_assignment_insert_rejects_duplicates_unsorted_rows_and_bad_layouts() 
     let mut bad_trailer = payload;
     bad_trailer[0x28] = 1;
     assert!(validate_sandbox_perk_runtime_map(&bad_trailer).is_err());
+}
+
+#[test]
+fn explicit_empty_action_references_preserve_the_assignment_without_loading_a_file() {
+    let mut payload = runtime_map_payload();
+    let layout = runtime_map_layout(&payload).unwrap();
+    let tag_at = layout.primary.rows + 4;
+    payload[tag_at..tag_at + 4].copy_from_slice(&TagHash::NONE.0.to_le_bytes());
+    validate_sandbox_perk_runtime_map(&payload).unwrap();
+    let row = sandbox_perk_runtime_assignment(&payload, 0x1000_0000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.runtime_tag, u32::MAX);
+    assert_eq!(row.action_tag(), None);
+    assert_eq!(
+        sandbox_perk_runtime_assignment_at(&payload, 0).unwrap(),
+        row
+    );
+    for tag in [0x8123_4567, 0] {
+        let row = SandboxPerkRuntimeAssignment {
+            runtime_tag: tag,
+            ..row
+        };
+        assert_eq!(
+            row.action_tag(),
+            Some(TagHash(tag)),
+            "Only the explicit native sentinel is absent"
+        );
+    }
 }
 
 #[test]

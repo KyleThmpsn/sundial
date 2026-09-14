@@ -2,14 +2,31 @@
 //!
 //! A content path is a name for its paired tag. References found in an owning
 //! graph provide context only, never a name for every nested projectile.
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
 use super::index_cache;
-use crate::package_payload::{i64_at, relative_offset, u64_at};
-mod shards;
+use crate::{
+    package_payload::{i64_at, relative_offset, u64_at},
+    weapon_entity::WEAPON_ENTITY_CLASS,
+};
+pub(super) mod shards;
+
+/// One aligned word inside a structured resource that equals a live weapon entity graph
+/// tag. It is a candidate reference: a matching word is evidence that the source refers
+/// to the graph, not proof that the native field is a tag.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityReference {
+    pub source: u32,
+    pub source_class: u32,
+    pub target: u32,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentPath {
@@ -33,6 +50,10 @@ pub struct Reference {
 pub struct Index {
     pub paths: Vec<ContentPath>,
     pub references: Vec<Reference>,
+    /// Which resources refer to which weapon entity graphs, one row per distinct pair.
+    /// An older cached index has none, which the cache version keeps from happening.
+    #[serde(default)]
+    pub entity_references: Vec<EntityReference>,
     pub scanned_resources: usize,
     pub errors: Vec<String>,
 }
@@ -53,12 +74,125 @@ impl Index {
         }
         names
     }
+
+    /// Every content path found inside each resource, paired or not, by source tag.
+    #[must_use]
+    pub fn own_paths(&self) -> BTreeMap<u32, Vec<String>> {
+        let mut own = BTreeMap::<u32, Vec<String>>::new();
+        for path in &self.paths {
+            own.entry(path.source).or_default().push(path.path.clone());
+        }
+        for paths in own.values_mut() {
+            paths.sort();
+            paths.dedup();
+        }
+        own
+    }
+}
+
+/// Every live weapon entity graph tag, the targets the reference scan looks for.
+pub(super) fn entity_graphs(manager: &PackageManager) -> HashSet<u32> {
+    manager
+        .get_all_by_reference(WEAPON_ENTITY_CLASS)
+        .into_iter()
+        .filter(|(_, entry)| entry.file_type == 8)
+        .map(|(tag, _)| tag.0)
+        .collect()
+}
+
+/// The live entity graph tags and the 64-bit lanes that resolve to them. Pattern graphs
+/// refer to the entities they fire through 64-bit lanes, so a 32-bit word scan alone
+/// misses most weapon and ability projectiles.
+pub(super) struct EntityTargets {
+    pub tags: HashSet<u32>,
+    pub lanes: HashMap<u64, u32>,
+}
+
+impl EntityTargets {
+    pub(super) fn new(manager: &PackageManager) -> Self {
+        let tags = entity_graphs(manager);
+        let lanes = manager
+            .lookup
+            .tag64_entries
+            .iter()
+            .filter(|(_, entry)| tags.contains(&entry.hash32.0))
+            .map(|(lane, entry)| (*lane, entry.hash32.0))
+            .collect();
+        Self { tags, lanes }
+    }
+
+    /// A stable digest of the target set, so a cached shard scanned against a different
+    /// set of graphs or lanes is not reused.
+    pub(super) fn key(&self) -> u64 {
+        let mut sorted = self.tags.iter().copied().map(u64::from).collect::<Vec<_>>();
+        sorted.extend(self.lanes.keys().copied());
+        sorted.sort_unstable();
+        sorted
+            .iter()
+            .fold(0xCBF2_9CE4_8422_2325_u64, |hash, value| {
+                (hash ^ value).wrapping_mul(0x0100_0000_01B3)
+            })
+    }
+}
+
+/// Distinct entity graph tags found in `payload`, as aligned 32-bit words or as 64-bit
+/// lanes, excluding class handles and the resource's own tag.
+pub(super) fn entity_words(payload: &[u8], source: u32, targets: &EntityTargets) -> Vec<u32> {
+    if targets.tags.is_empty() {
+        return Vec::new();
+    }
+    let mut found = payload
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte chunk")))
+        .filter(|word| {
+            word & 0x8000_0000 != 0
+                && word & 0xFFFF_0000 != 0x8080_0000
+                && *word != source
+                && targets.tags.contains(word)
+        })
+        .collect::<Vec<_>>();
+    if !targets.lanes.is_empty() {
+        found.extend(
+            (0..payload.len().saturating_sub(7))
+                .step_by(4)
+                .filter_map(|offset| {
+                    let lane = u64::from_le_bytes(payload[offset..offset + 8].try_into().ok()?);
+                    targets.lanes.get(&lane).copied()
+                })
+                .filter(|tag| *tag != source),
+        );
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 /// The game's filename, with its spelling, separators and extensions preserved.
 #[must_use]
 pub fn asset_label(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_owned()
+}
+
+/// The folder a content path sits in, without the leading `content` segment and with the
+/// separators shown as ` / `, so assets from one folder group under one readable heading.
+#[must_use]
+pub fn asset_folder(path: &str) -> String {
+    let mut segments = path
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    segments.pop();
+    if segments
+        .first()
+        .is_some_and(|first| first.eq_ignore_ascii_case("content"))
+    {
+        segments.remove(0);
+    }
+    if segments.is_empty() {
+        "content".to_owned()
+    } else {
+        segments.join(" / ")
+    }
 }
 
 fn content_paths(payload: &[u8]) -> BTreeMap<usize, String> {
@@ -112,6 +246,7 @@ fn references(
 /// Read every installed structured resource. Unpaired paths are retained too.
 pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize)) -> Index {
     let mut index = Index::default();
+    let targets = EntityTargets::new(manager);
     let total = manager
         .lookup
         .tag32_entries_by_pkg
@@ -141,6 +276,15 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
                     continue;
                 }
             };
+            index.entity_references.extend(
+                entity_words(&payload, tag.0, &targets)
+                    .into_iter()
+                    .map(|target| EntityReference {
+                        source: tag.0,
+                        source_class: entry.reference,
+                        target,
+                    }),
+            );
             let paths = content_paths(&payload);
             if paths.is_empty() {
                 continue;
@@ -177,6 +321,9 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
     index
         .references
         .sort_by_key(|reference| (reference.source, reference.offset, reference.target));
+    index
+        .entity_references
+        .sort_by_key(|reference| (reference.source, reference.target));
     progress(index.scanned_resources, total);
     index
 }
@@ -186,7 +333,7 @@ static CACHE: index_cache::Cache<Index> = index_cache::Cache::new();
 /// Opening a single effect must not trigger installation-wide name discovery.
 /// A missing full index is reported separately from missing native references.
 pub fn cached_only(packages: &Path) -> Result<Option<Arc<Index>>, String> {
-    index_cache::cached_only(packages, "native-names", "tft-v1", &CACHE)
+    index_cache::cached_only(packages, "native-names", "tft-v3", &CACHE)
 }
 
 /// Cache only names and evidence. Compilation always resolves live package tags.
@@ -198,7 +345,7 @@ pub fn cached(
     index_cache::cached(
         packages,
         "native-names",
-        "tft-v1",
+        "tft-v3",
         &CACHE,
         || shards::inspect(packages, manager, progress),
         // Read errors remain visible in the index. They must not force an

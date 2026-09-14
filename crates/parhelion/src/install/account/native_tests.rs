@@ -1,5 +1,7 @@
 use super::*;
-use sundial::investment::{preview_authored_account_cleanup, read_authored_account_source};
+use sundial::package_authoring::account::{
+    preview_authored_account_cleanup, read_authored_account_source,
+};
 
 #[test]
 fn native_account_journal_commits_recovers_and_refuses_concurrent_changes() {

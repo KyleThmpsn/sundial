@@ -1,6 +1,6 @@
 //! Compare retained native weapon placements and read capacity facts from the incoming generation.
 use super::*;
-use sundial::investment::{AuthoredSlotChange, AuthoredSlotReplacement};
+use sundial::package_authoring::account::{AuthoredSlotChange, AuthoredSlotReplacement};
 
 pub(in crate::install) fn slot_replacement(
     target: &Path,

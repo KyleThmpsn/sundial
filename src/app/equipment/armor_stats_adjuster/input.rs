@@ -229,15 +229,9 @@ pub(super) fn candidate_from_piece(
                 }
                 intrinsic_counted = true;
             }
-            for (total, value) in
-                fixed_totals
-                    .iter_mut()
-                    .zip(armor_stat_allocation::socket_stat_values(
-                        catalog,
-                        item,
-                        socket_index,
-                        hash,
-                    ))
+            for (total, value) in fixed_totals
+                .iter_mut()
+                .zip(armor_stat_allocation::plug_stat_values(catalog, hash))
             {
                 *total = total.saturating_add(value);
             }
@@ -265,7 +259,7 @@ pub(super) fn masterwork_choices(
     let current_choice = SocketChoice {
         hash: current,
         values: current.map_or([0; 6], |hash| {
-            armor_stat_allocation::socket_stat_values(catalog, item, socket_index, hash)
+            armor_stat_allocation::plug_stat_values(catalog, hash)
         }),
     };
     let best = catalog
@@ -275,7 +269,7 @@ pub(super) fn masterwork_choices(
         .filter(|hash| valid_masterwork_plug(catalog, *hash))
         .map(|hash| SocketChoice {
             hash: Some(hash),
-            values: armor_stat_allocation::socket_stat_values(catalog, item, socket_index, hash),
+            values: armor_stat_allocation::plug_stat_values(catalog, hash),
         })
         .filter(|choice| choice.values.iter().any(|value| *value > 0))
         .max_by_key(|choice| (choice.values.iter().sum::<i32>(), Reverse(choice.hash)));
@@ -501,7 +495,7 @@ pub(super) fn socket_choices(
         if armor_mod_socket && !is_armor_stat_mod_plug(catalog, hash) {
             continue;
         }
-        let values = armor_stat_allocation::socket_stat_values(catalog, item, socket_index, hash);
+        let values = armor_stat_allocation::plug_stat_values(catalog, hash);
         if values.iter().all(|value| *value == 0) && Some(hash) != current {
             continue;
         }

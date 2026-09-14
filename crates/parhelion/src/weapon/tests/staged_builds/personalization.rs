@@ -510,7 +510,11 @@ fn verify_recipe(
         let block = relative_target(&definition, 0x28).unwrap();
         let lore_index = read_u16(&definition, block).unwrap();
         assert!(lore_index >= 1425);
-        assert_eq!(read_u16(collectibles, row + 0x2C).unwrap(), lore_index);
+        // Lore is linked from the item only. The collectible must keep pointing at the item.
+        assert_eq!(
+            read_u16(collectibles, row + COLLECTIBLE_ITEM_INDEX_OFFSET).unwrap() as usize,
+            index
+        );
         assert_eq!(
             read_u32(lore_strings, lore_rows + usize::from(lore_index) * 40 + 32).unwrap(),
             crate::presentation::text_hash(&spec.namespace, "lore")

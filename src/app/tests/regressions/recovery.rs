@@ -58,12 +58,6 @@ fn installation_and_recovery_offer_the_active_source_resets_without_writing() {
                 sqlite
             );
             assert_eq!(text_position(&output, "Restore Backup…").is_some(), sqlite);
-            schema_smoke::capture_preferences(
-                &context,
-                output,
-                &format!("recovery-{tab:?}-{sqlite}"),
-                960.0,
-            );
             for pressed in [true, false] {
                 frame(
                     &mut app,
@@ -96,7 +90,7 @@ fn cancelling_account_reset_keeps_the_database_and_unsaved_edits() {
     app.document = WorkspaceDocument::load(serde_json::json!({"version":18}), &app.settings_path);
     app.document.json_mut()["unsaved"] = serde_json::json!("keep");
     let original = app.document.clone();
-    let disk = sqlite_account::package::read(&database).unwrap();
+    let disk = sqlite_account::snapshot::read(&database).unwrap();
     app.pending_sqlite_reset =
         Some(ResetPlan::prepare(&database, &sqlite_account::tests::default_resources()).unwrap());
     app.confirmation = Some(ConfirmationDialog::ResetSqliteDefaults);
@@ -106,7 +100,6 @@ fn cancelling_account_reset_keeps_the_database_and_unsaved_edits() {
     }
     let output = frame(&mut app, &context, vec![]);
     assert!(text_position(&output, "Reset Account Database?").is_some());
-    schema_smoke::capture_preferences(&context, output, "account-reset-confirmation", 960.0);
     frame(
         &mut app,
         &context,
@@ -121,7 +114,7 @@ fn cancelling_account_reset_keeps_the_database_and_unsaved_edits() {
     assert!(app.confirmation.is_none());
     assert!(app.pending_sqlite_reset.is_none());
     assert_eq!(app.document, original);
-    assert_eq!(sqlite_account::package::read(&database).unwrap(), disk);
+    assert_eq!(sqlite_account::snapshot::read(&database).unwrap(), disk);
 }
 
 #[test]
@@ -137,7 +130,7 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
     let database = directory.0.join("data/investment.sqlite3");
     sqlite_account::tests::create_fixture(&database, 3);
     app.document = WorkspaceDocument::load(settings, &app.settings_path);
-    let before = sqlite_account::package::read(&database).unwrap();
+    let before = sqlite_account::snapshot::read(&database).unwrap();
     app.request_sqlite_defaults_reset();
     assert!(
         app.confirmation == Some(ConfirmationDialog::ResetSqliteDefaults),
@@ -145,7 +138,7 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
         app.status
     );
     assert_eq!(app.pending_sqlite_reset.as_ref().unwrap().path(), database);
-    assert_eq!(sqlite_account::package::read(&database).unwrap(), before);
+    assert_eq!(sqlite_account::snapshot::read(&database).unwrap(), before);
     // Execute only against this disposable fixture, never the installed account.
     let receipt = app.pending_sqlite_reset.take().unwrap().apply().unwrap();
     assert!(matches!(
@@ -153,7 +146,7 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
         sqlite_account::SqliteAccountDocumentLoad::Loaded(_)
     ));
     assert_eq!(
-        sqlite_account::package::read(&receipt.safety_backup).unwrap(),
+        sqlite_account::snapshot::read(&receipt.safety_backup).unwrap(),
         before
     );
 }

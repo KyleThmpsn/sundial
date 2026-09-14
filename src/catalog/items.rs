@@ -35,9 +35,9 @@ pub(crate) use perks::ItemSandboxPerk;
 pub(in crate::catalog) use perks::scan_sandbox_perk_catalog;
 pub(crate) use quality::PowerCapDefinition;
 pub(in crate::catalog) use quality::{item_power_cap, scan_power_cap_definitions};
-pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 #[cfg(test)]
-pub(in crate::catalog) use scan::{attach_item_objective_owners, item_scan_progress_stride};
+pub(in crate::catalog) use scan::attach_item_objective_owners;
+pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,

@@ -1,6 +1,6 @@
 //! Remove the complete recognized authored overlay set, never stock generations.
 use super::*;
-use sundial::investment::AuthoredAccountCleanup;
+use sundial::package_authoring::account::AuthoredAccountCleanup;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UninstallPlan {
@@ -68,7 +68,7 @@ pub struct UninstallReport {
 
 /// Read-only review. Unknown signatures, aliases and incomplete sets fail closed.
 pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError> {
-    let target = canonical_directory(packages, "target packages")?;
+    let target = canonical_packages_directory(packages)?;
     validate_target_package_chain(&target)?;
     let mut artifacts = Vec::new();
     for profile in all_authored_packages() {
@@ -114,7 +114,7 @@ pub fn preview_uninstall_with_account_cleanup(
 
 fn prepare_account_cleanup(plan: &UninstallPlan) -> Result<AuthoredAccountCleanup, String> {
     let (hashes, unlocks) = identities::installed_identities(&plan.target)?;
-    sundial::investment::preview_authored_account_cleanup(
+    sundial::package_authoring::account::preview_authored_account_cleanup(
         plan.target.parent().ok_or("Missing game root")?,
         &hashes,
         &unlocks,

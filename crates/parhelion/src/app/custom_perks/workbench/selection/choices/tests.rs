@@ -30,7 +30,7 @@ fn saved_payload_stays_usable_while_a_draft_is_unfinished() {
     let choices = collect(document.clone());
     assert_eq!(choices.len(), 1);
     assert!(choices[0].issue.is_none());
-    assert_eq!(choices[0].source, "My Perks");
+    assert_eq!(choices[0].source, "Custom Perks");
 
     document.recipe.name = "Changed Draft".into();
     let choices = collect(document);

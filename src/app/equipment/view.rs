@@ -17,10 +17,8 @@ struct EquipmentCardActionContext {
     slot: &'static str,
     is_empty: bool,
     current_level: Option<i64>,
-    current_flags: Option<u8>,
     current_hash: Option<u64>,
     guided_editable: bool,
-    flags_editable: bool,
     inventory_editable: bool,
 }
 
@@ -48,6 +46,7 @@ struct EquipmentDefinitionPickerContext<'a> {
 
 impl SundialApp {
     pub(in crate::app) fn draw_equipment(&mut self, ui: &mut egui::Ui, character_index: usize) {
+        self.draw_invalid_inventory_items(ui, character_index);
         match self.preferences.character_inventory_layout {
             super::super::CharacterInventoryLayout::Cards => {
                 self.draw_sundial_equipment(ui, character_index);
@@ -295,7 +294,7 @@ impl SundialApp {
                                     if let Some(flags) = item_editor::draw_state_flags(
                                         ui,
                                         current_flags,
-                                        self.document.supports_v13_account(),
+                                        self.document.supports_masterwork_flags(),
                                     ) {
                                         self.select_equipment_flags(character_index, slot, flags);
                                     }
@@ -309,6 +308,16 @@ impl SundialApp {
                         );
                     }
 
+                    if !is_empty
+                        && let Some(flags) = item_editor::draw_header_lock(
+                            ui,
+                            &header_response,
+                            current_flags,
+                            guided_editable && flags_editable,
+                        )
+                    {
+                        self.select_equipment_flags(character_index, slot, flags);
+                    }
                     if let Some(snapshot) = snapshot {
                         if !snapshot.issues.is_empty() {
                             ui.colored_label(
@@ -325,6 +334,20 @@ impl SundialApp {
                         }
                     }
 
+                    let mut plugs = current.as_ref().and_then(|item| {
+                        let (values, defaults) =
+                            displayed_plugs(authored_plugs.as_ref(), &item.default_plugs);
+                        (!item.sockets.is_empty() || !values.is_empty()).then(|| {
+                            item_editor::PlugSection::new(
+                                ui,
+                                ("equipment-plugs", id_scope, character_index, slot),
+                                values.len(),
+                                defaults,
+                            )
+                        })
+                    });
+                    let inline_plugs =
+                        current_hash.is_some_and(|hash| !self.manifest.item_has_power_stat(hash));
                     let actions = self.draw_equipment_card_actions(
                         ui,
                         EquipmentCardActionContext {
@@ -332,12 +355,11 @@ impl SundialApp {
                             slot,
                             is_empty,
                             current_level,
-                            current_flags,
                             current_hash,
                             guided_editable,
-                            flags_editable,
                             inventory_editable,
                         },
+                        if inline_plugs { plugs.as_mut() } else { None },
                     );
                     let picker_anchor = header_response.clone() | actions.response;
                     let key = format!("{id_scope}:{character_index}:{slot}");
@@ -369,7 +391,7 @@ impl SundialApp {
                         },
                     );
 
-                    if let Some(item) = &current {
+                    if let (Some(item), Some(plugs)) = (&current, plugs) {
                         self.draw_equipment_plugs(
                             ui,
                             EquipmentPlugEditor {
@@ -380,6 +402,7 @@ impl SundialApp {
                                 authored_plugs: authored_plugs.as_ref(),
                                 guided_editable,
                             },
+                            plugs,
                         );
                     }
                 });
@@ -390,16 +413,15 @@ impl SundialApp {
         &mut self,
         ui: &mut egui::Ui,
         context: EquipmentCardActionContext,
+        plugs: Option<&mut item_editor::PlugSection>,
     ) -> EquipmentCardActions {
         let EquipmentCardActionContext {
             character_index,
             slot,
             is_empty,
             current_level,
-            current_flags,
             current_hash,
             guided_editable,
-            flags_editable,
             inventory_editable,
         } = context;
         let mut swap_requested = false;
@@ -408,65 +430,39 @@ impl SundialApp {
         let response = ui
             .horizontal(|ui| {
                 ui.add_space(4.0);
-                if !is_empty {
-                    ui.add_enabled_ui(guided_editable, |ui| {
-                        if let Some(level) = current_level {
-                            for action in item_editor::draw_level_and_quantity(
-                                ui,
-                                ("equipment-numeric", character_index, slot),
-                                NumericItemFields {
-                                    level: Some(level),
-                                    power_max: current_hash
-                                        .and_then(|hash| self.manifest.item_power_cap(hash)),
-                                    allow_power_above_cap: self
-                                        .preferences
-                                        .experimental_power_above_cap,
-                                    quantity: None,
-                                    quantity_max: None,
-                                },
-                            ) {
-                                if let ItemEditorAction::SetLevel { level } = action {
-                                    self.select_equipment_level(character_index, slot, level);
-                                }
-                            }
-                        } else {
-                            ui.label("Power");
-                            ui.label(egui::RichText::new("<invalid or missing>").weak());
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    ui.add_enabled_ui(guided_editable && flags_editable, |ui| {
-                        let locked = current_flags.unwrap_or_default()
-                            & super::inventory::INVENTORY_FLAG_LOCKED
-                            != 0;
-                        let lock_response = if locked {
-                            super::item_editor::draw_lock_button(
-                                ui,
-                                true,
-                                "Unlock equipped item",
-                            )
-                            .on_hover_text("Unlock this item")
-                        } else {
-                            super::item_editor::draw_unlock_button(
-                                ui,
-                                true,
-                                "Lock equipped item",
-                            )
-                            .on_hover_text("Lock this item")
-                        };
-                        if lock_response.clicked() {
-                            self.select_equipment_flags(
-                                character_index,
-                                slot,
-                                super::inventory::set_inventory_locked_flag(
-                                    current_flags,
-                                    !locked,
-                                ),
-                            );
-                        }
-                    });
+                if let Some(plugs) = plugs {
+                    plugs.draw_header(ui);
                 }
+                if !is_empty && current_hash.is_some_and(|hash| self.manifest.item_has_power_stat(hash)) {
+                        ui.add_enabled_ui(guided_editable, |ui| {
+                            if let Some(level) = current_level {
+                                for action in item_editor::draw_level_and_quantity(
+                                    ui,
+                                    ("equipment-numeric", character_index, slot),
+                                    NumericItemFields {
+                                        level: Some(level),
+                                        power_max: current_hash
+                                            .and_then(|hash| self.manifest.item_power_cap(hash)),
+                                        allow_power_above_cap: self
+                                            .preferences
+                                            .experimental_power_above_cap,
+                                        quantity: None,
+                                        quantity_max: None,
+                                    },
+                                ) {
+                                    if let ItemEditorAction::SetLevel { level } = action {
+                                        self.select_equipment_level(character_index, slot, level);
+                                    }
+                                }
+                            } else {
+                                ui.label("Power");
+                                ui.label(egui::RichText::new("<invalid or missing>").weak());
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                    }
+
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
@@ -537,7 +533,16 @@ impl SundialApp {
         } = context;
         let key = format!("{id_scope}:{character_index}:{slot}");
         let manifest = &self.manifest;
-        let show_dummy_items = self.show_dummy_items;
+        let picker = EquipmentPicker {
+            slot,
+            bucket,
+            class_type,
+            current_hash,
+            is_empty,
+            show_dummy_items: self.show_dummy_items,
+            allow_cross_class_subclasses: self.preferences.experimental_cross_class_subclasses,
+            supports_emote_collection: self.document.supports_emote_collection(),
+        };
         let query = self.searches.entry(key.clone()).or_default();
         let picker_action = ui
             .add_enabled_ui(guided_editable, |ui| {
@@ -551,51 +556,7 @@ impl SundialApp {
                         max: ITEM_PICKER_MAX_HEIGHT,
                     },
                     (Some(picker_anchor), swap_requested),
-                    |query_value| {
-                        let candidates = if query_value.trim().is_empty() {
-                            manifest.browse(
-                                bucket,
-                                class_type,
-                                show_dummy_items,
-                                self.preferences.experimental_cross_class_subclasses,
-                            )
-                        } else {
-                            manifest.search(
-                                query_value,
-                                bucket,
-                                class_type,
-                                show_dummy_items,
-                                self.preferences.experimental_cross_class_subclasses,
-                            )
-                        };
-                        let needle = query_value.to_lowercase();
-                        let definitions = equipment_definition_choices(
-                            candidates,
-                            self.document.supports_v13_account(),
-                        );
-                        let existing_inventory = existing_inventory
-                            .iter()
-                            .filter(|choice| {
-                                existing_inventory_choice_matches(manifest, choice, query_value)
-                            })
-                            .cloned()
-                            .collect();
-                        let show_empty_weapon = WEAPON_SLOTS.contains(&slot)
-                            && (query_value.trim().is_empty() || "empty weapon".contains(&needle));
-                        DefinitionPickerChoices {
-                            definitions,
-                            existing_inventory,
-                            clear: show_empty_weapon.then(|| ClearDefinitionChoice {
-                                label: "Empty weapon".to_owned(),
-                                tooltip: "Sets this equipment slot to empty.".to_owned(),
-                                selected: is_empty,
-                            }),
-                            random_item_builder_hash: current_hash.filter(|_| {
-                                WEAPON_SLOTS.contains(&slot) || ARMOR_SLOTS.contains(&slot)
-                            }),
-                            empty_message: "No compatible installed items found".to_owned(),
-                        }
-                    },
+                    |query_value| picker.choices(manifest, query_value, existing_inventory),
                 )
             })
             .inner;
@@ -636,7 +597,12 @@ impl SundialApp {
         }
     }
 
-    fn draw_equipment_plugs(&mut self, ui: &mut egui::Ui, editor: EquipmentPlugEditor<'_>) {
+    fn draw_equipment_plugs(
+        &mut self,
+        ui: &mut egui::Ui,
+        editor: EquipmentPlugEditor<'_>,
+        section: item_editor::PlugSection,
+    ) {
         let EquipmentPlugEditor {
             id_scope,
             character_index,
@@ -645,87 +611,77 @@ impl SundialApp {
             authored_plugs,
             guided_editable,
         } = editor;
-        let (current_plugs, native_defaults) = displayed_plugs(authored_plugs, &item.default_plugs);
-        if item.sockets.is_empty() && current_plugs.is_empty() {
-            return;
-        }
-        let title = if native_defaults {
-            format!("Plugs ({}, default plugs)", current_plugs.len())
-        } else {
-            format!("Plugs ({})", current_plugs.len())
-        };
-        egui::CollapsingHeader::new(title)
-            .id_salt(("equipment-plugs", id_scope, character_index, slot))
-            .show(ui, |ui| {
-                let socket_count = item.sockets.len().max(current_plugs.len());
-                // A plug's array index is part of the Sunrise save schema.
-                // Keep sockets in that exact order even when a label is unknown.
-                for socket_index in 0..socket_count {
-                    let current_hash = current_plugs
-                        .get(socket_index)
-                        .and_then(parse_unsigned_value);
-                    let native_default = native_plug_default(&item.default_plugs, socket_index);
-                    let current_label = current_hash.map_or_else(
-                        || "None".to_owned(),
-                        |hash| {
-                            self.manifest
-                                .plug_label(hash, self.preferences.show_plug_hashes)
-                        },
-                    );
-                    let plug_search_key =
-                        format!("plug-search:{id_scope}:{character_index}:{slot}:{socket_index}");
-                    let mut plug_query = self
-                        .plug_searches
-                        .get(&plug_search_key)
-                        .cloned()
-                        .unwrap_or_default();
-                    let snapshot = item_editor::plug_picker_snapshot(
-                        &self.manifest,
-                        item,
+        let (current_plugs, _) = displayed_plugs(authored_plugs, &item.default_plugs);
+        section.show_body(ui, |ui| {
+            let socket_count = item.sockets.len().max(current_plugs.len());
+            // A plug's array index is part of the Sunrise save schema.
+            // Keep sockets in that exact order even when a label is unknown.
+            for socket_index in 0..socket_count {
+                let current_hash = current_plugs
+                    .get(socket_index)
+                    .and_then(parse_unsigned_value);
+                let native_default = native_plug_default(&item.default_plugs, socket_index);
+                let current_label = current_hash.map_or_else(
+                    || "None".to_owned(),
+                    |hash| {
+                        self.manifest
+                            .plug_label(hash, self.preferences.show_plug_hashes)
+                    },
+                );
+                let plug_search_key =
+                    format!("plug-search:{id_scope}:{character_index}:{slot}:{socket_index}");
+                let mut plug_query = self
+                    .plug_searches
+                    .get(&plug_search_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let snapshot = item_editor::plug_picker_snapshot(
+                    &self.manifest,
+                    item,
+                    socket_index,
+                    current_hash,
+                    current_label,
+                    native_default,
+                    self.plug_selection_mode,
+                );
+                let searchable = snapshot.choices.len() > 12;
+                let action = ui
+                    .add_enabled_ui(guided_editable, |ui| {
+                        item_editor::draw_plug_picker(
+                            ui,
+                            &self.manifest,
+                            (
+                                "equipment-plug",
+                                id_scope,
+                                character_index,
+                                slot,
+                                socket_index,
+                            ),
+                            &mut plug_query,
+                            &snapshot,
+                            PickerHeight {
+                                min: PLUG_PICKER_MIN_HEIGHT,
+                                max: PLUG_PICKER_MAX_HEIGHT,
+                            },
+                        )
+                    })
+                    .inner;
+                if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
+                    self.select_plug(
+                        character_index,
+                        slot,
                         socket_index,
-                        current_hash,
-                        current_label,
-                        native_default,
-                        self.plug_selection_mode,
+                        &snapshot.socket_label,
+                        &item.default_plugs,
+                        hash,
                     );
-                    let searchable = snapshot.choices.len() > 12;
-                    let action = ui
-                        .add_enabled_ui(guided_editable, |ui| {
-                            item_editor::draw_plug_picker(
-                                ui,
-                                &self.manifest,
-                                (
-                                    "equipment-plug",
-                                    id_scope,
-                                    character_index,
-                                    slot,
-                                    socket_index,
-                                ),
-                                &mut plug_query,
-                                &snapshot,
-                                PickerHeight {
-                                    min: PLUG_PICKER_MIN_HEIGHT,
-                                    max: PLUG_PICKER_MAX_HEIGHT,
-                                },
-                            )
-                        })
-                        .inner;
-                    if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
-                        self.select_plug(
-                            character_index,
-                            slot,
-                            socket_index,
-                            &snapshot.socket_label,
-                            &item.default_plugs,
-                            hash,
-                        );
-                    }
-                    if searchable {
-                        self.plug_searches.insert(plug_search_key, plug_query);
-                    } else {
-                        self.plug_searches.remove(&plug_search_key);
-                    }
                 }
-            });
+                if searchable {
+                    self.plug_searches.insert(plug_search_key, plug_query);
+                } else {
+                    self.plug_searches.remove(&plug_search_key);
+                }
+            }
+        });
     }
 }

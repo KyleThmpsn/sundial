@@ -113,7 +113,6 @@ pub(crate) fn draw_socket_picker_label(
         },
     )
     .inner
-    .on_hover_text(label)
 }
 
 pub(crate) fn draw_socket_picker_reset(

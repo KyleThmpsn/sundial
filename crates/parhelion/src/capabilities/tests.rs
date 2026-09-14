@@ -301,7 +301,7 @@ fn cross_slot_profiles_require_a_compatible_target_slot_presentation_donor() {
     let mut collectionless = energy.clone();
     collectionless.hash = 0x3333_3333;
     collectionless.collection_backed = false;
-    assert!(!presentation_donor_candidate_is_compatible(
+    assert!(presentation_donor_candidate_is_compatible(
         &collectionless,
         &gameplay,
         WeaponInventorySlot::Energy
@@ -423,25 +423,54 @@ fn profile_reconciliation_clears_incompatible_or_malformed_presentation_donors()
 }
 
 #[test]
-fn collectionless_donor_is_blocked_even_when_profile_is_coherent() {
+fn collectionless_donor_is_authorable_when_profile_is_coherent() {
     let mut donor = summary(
         Some(WeaponInventorySlot::Energy),
         WeaponDamageProfile::ModernFixed(WeaponDamageType::Void),
     );
     donor.collection_backed = false;
     let capabilities = weapon_summary_authoring_capabilities(&donor);
-    assert!(!capabilities.is_authorable());
-    assert_eq!(
-        capabilities.diagnostics[0].code,
-        AuthoringDiagnosticCode::CollectionsBackingRequired
-    );
+    assert!(capabilities.is_authorable());
+    assert!(capabilities.diagnostics.is_empty());
     assert!(
         capabilities
             .combat_profiles
             .iter()
             .any(|choice| choice.action == CombatProfileAction::Preserve)
     );
-    assert!(!capabilities.supports(CombatProfileAction::Preserve));
+    assert!(capabilities.supports(CombatProfileAction::Preserve));
+    donor.inventory_slot = None;
+    assert!(!weapon_summary_authoring_capabilities(&donor).is_authorable());
+}
+
+#[test]
+fn missing_family_text_requires_verified_appearance_animations() {
+    let base = summary(
+        Some(WeaponInventorySlot::Energy),
+        WeaponDamageProfile::KineticEmpty,
+    );
+    let mut appearance = base.clone();
+    appearance.hash += 1;
+    appearance.collection_backed = false;
+    appearance.type_name.clear();
+    assert_eq!(
+        appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
+        AppearanceCompatibility::Compatible
+    );
+    assert_eq!(
+        appearance_compatibility(&base, &appearance, WeaponInventorySlot::Energy),
+        AppearanceCompatibility::Compatible
+    );
+    appearance.weapon_translation_group = Some(base.weapon_translation_group.unwrap() + 1);
+    assert_eq!(
+        appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
+        AppearanceCompatibility::Blocked("Incompatible weapon animations")
+    );
+    appearance.weapon_translation_group = None;
+    assert_eq!(
+        appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
+        AppearanceCompatibility::Unchecked
+    );
 }
 
 #[test]
@@ -482,7 +511,7 @@ fn donor() -> WeaponDonor {
             WeaponSocket {
                 index: 1,
                 socket_type: 3,
-                label: "Trait column".to_owned(),
+                label: "Trait Column".to_owned(),
                 native_default: Some(0x1111_1111),
                 ordered_embedded_choices: vec![0x1111_1111, 0x2222_2222],
                 compatible_plug_count: 3,

@@ -88,7 +88,11 @@ impl Target {
                     .map(|hash| catalog.plug_label(*hash, false))
             })
             .unwrap_or_else(|| "New Choice".into());
-        format!("{role} · Choice {} · {name}", self.choice + 1)
+        if self.choice == self.choices.len() {
+            format!("Add an Alternative · {role}")
+        } else {
+            format!("Replace {name} · {role} · Choice {}", self.choice + 1)
+        }
     }
 
     pub(super) fn check(&self, weapon: &WeaponRecipe, donor: &WeaponDonor) -> Result<(), String> {
@@ -248,8 +252,8 @@ impl Workbench {
         donor: &WeaponDonor,
         catalog: &InvestmentCatalog,
     ) {
-        ui.strong("This Weapon");
-        ui.small(&weapon.name);
+        ui.strong("Weapon Sockets");
+        crate::app::style::hint(ui, &weapon.name).on_hover_text("Pick a choice to edit its perk.");
         let mut picked = None;
         egui::ScrollArea::vertical()
             .id_salt("weapon-perk-choices")
@@ -262,9 +266,8 @@ impl Workbench {
                             .get(self.selected)
                             .and_then(|document| document.target.as_ref())
                             == Some(&target);
-                        if crate::app::style::list_row(ui, selected, &target.label(donor, catalog))
-                            .clicked()
-                        {
+                        let label = target.label(donor, catalog);
+                        if crate::app::style::list_row(ui, selected, &label).clicked() {
                             picked = Some(target);
                         }
                     }
@@ -282,17 +285,26 @@ impl Workbench {
         donor: Option<&WeaponDonor>,
         catalog: Option<&InvestmentCatalog>,
     ) -> Option<Change> {
+        let issue = self.perk_issue(&self.documents.get(self.selected)?.recipe);
         let (Some(donor), Some(catalog)) = (donor, catalog) else {
-            ui.weak("Open a weapon recipe to apply this perk.");
+            if let Some(issue) = &issue {
+                ui.colored_label(ui.visuals().warn_fg_color, issue);
+            } else {
+                ui.weak("Open a weapon recipe to apply this perk.");
+            }
             return None;
         };
-        let issue = self.perk_issue(&self.documents.get(self.selected)?.recipe);
         let document = self.documents.get_mut(self.selected)?;
         let mut result = None;
         ui.add_enabled_ui(self.editor.is_none(), |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.label("Destination");
-                egui::ComboBox::from_id_salt("perk-destination").width(340.0)
+                sundial::investment::draw_authoring_info_icon(
+                    ui,
+                    "Apply to Weapon copies this perk into the chosen socket choice. Save the weapon recipe afterwards.",
+                );
+                let width = (ui.available_width() * 0.45).clamp(160.0, 340.0);
+                egui::ComboBox::from_id_salt("perk-destination").width(width)
                     .selected_text(document.target.as_ref().map_or_else(|| "Select Socket and Choice".into(), |target| target.label(donor, catalog)))
                     .show_ui(ui, |ui| {
                         for target in targets(weapon, donor, true) {
@@ -300,15 +312,34 @@ impl Workbench {
                             if ui.selectable_label(document.target.as_ref() == Some(&target), label).clicked() { document.target = Some(target); }
                         }
                     });
-                let ready = document.target.is_some() && issue.is_none();
-                if ui.add_enabled(ready, egui::Button::new("Apply to Weapon"))
-                    .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.").clicked() {
-                    result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
-                }
-                if document.target.as_ref().is_some_and(|target| target.variant.is_some())
-                    && ui.button("Restore Original Perk").on_hover_text("Remove the selected choice's custom text, stats and effects. Other choices remain unchanged.").clicked() {
-                    result = document.target.clone().map(|target| Change { target, perk: None });
-                }
+                // The action and anything standing in its way sit together at the right.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ready = document.target.is_some() && issue.is_none();
+                    let apply = crate::app::style::primary(ui, "Apply to Weapon");
+                    if ui.add_enabled(ready, apply)
+                        .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.")
+                        .on_disabled_hover_text(issue.as_deref().unwrap_or("Choose a destination socket and choice."))
+                        .clicked() {
+                        result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
+                    }
+                    if let Some(target) = document.target.as_ref().filter(|target| target.variant.is_some())
+                        && let Some(hash) = target.choices.get(target.choice)
+                    {
+                        let source = catalog.plug_label(*hash, false);
+                        if ui.add(egui::Button::new(format!("Use Stock {source}")).truncate())
+                            .on_hover_text(format!("Remove this choice's custom text, stats and effects and use its source perk, {source}."))
+                            .clicked() {
+                            result = Some(Change { target: target.clone(), perk: None });
+                        }
+                    }
+                    if let Some(issue) = &issue {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(issue).color(ui.visuals().warn_fg_color))
+                                .truncate(),
+                        )
+                        .on_hover_text(issue);
+                    }
+                });
             });
         });
         result
@@ -339,7 +370,7 @@ impl Workbench {
         self.message_path = None;
         self.message = Some(
             if restored {
-                "Restored the original perk. Save Recipe to keep it."
+                "Replaced the custom perk with its stock source. Save Recipe to keep it."
             } else {
                 "Applied to the selected choice. Save Recipe to keep it."
             }

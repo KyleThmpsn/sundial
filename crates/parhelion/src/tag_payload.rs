@@ -64,7 +64,8 @@ pub(crate) fn array_at(
     data: &[u8],
     descriptor: usize,
 ) -> AuthoringResult<(usize, usize, usize, u32)> {
-    sundial::package_authoring::native_payload::native_array_at(data, descriptor).map_err(invalid)
+    sundial::package_authoring::native_payload::native_array_at(data, descriptor)
+        .map_err(|error| invalid(format!("Native array at 0x{descriptor:X}: {error}")))
 }
 
 pub(crate) fn set_array_count(

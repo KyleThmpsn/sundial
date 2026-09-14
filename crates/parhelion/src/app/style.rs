@@ -32,24 +32,48 @@ pub(crate) fn workbench_style(ui: &mut egui::Ui) {
     }
 }
 
-/// Keep the perk workbench close to the surrounding editor's text scale.
-pub(crate) fn perk_style(ui: &mut egui::Ui) {
-    workbench_style(ui);
-    let style = ui.style_mut();
-    for (text, minimum) in [
-        (egui::TextStyle::Body, 14.0),
-        (egui::TextStyle::Button, 14.0),
-        (egui::TextStyle::Small, 12.0),
-        (egui::TextStyle::Monospace, 12.0),
-        (egui::TextStyle::Heading, 18.0),
-    ] {
-        if let Some(font) = style.text_styles.get_mut(&text) {
-            font.size = font.size.max(minimum);
-        }
-    }
-    style.spacing.interact_size.y = style.spacing.interact_size.y.max(26.0);
-    style.spacing.button_padding = egui::vec2(7.0, 3.0);
-    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+/// Compact header controls retain the normal Parhelion font.
+pub(crate) fn compact_controls(ui: &mut egui::Ui) {
+    ui.spacing_mut().interact_size.y = 20.0;
+    ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+    ui.spacing_mut().item_spacing.x = 4.0;
+}
+
+/// The one action a page leads to, in the accent fill Build & Stage uses. Build it here and
+/// add it with `ui.add` or `ui.add_enabled`.
+pub(crate) fn primary(ui: &egui::Ui, label: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(label.to_owned()).strong())
+        .fill(ui.visuals().selection.bg_fill)
+}
+
+pub(crate) fn more_menu<R>(
+    ui: &mut egui::Ui,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let mut menu =
+        egui::menu::menu_custom_button(ui, egui::Button::new("…").frame(false), contents);
+    menu.response = named_control(menu.response, "More Options").on_hover_text("More Options");
+    menu
+}
+
+/// A raised card for one effect or one block: a faint fill over the window and a rounded
+/// outline, so a card reads as one thing and its controls sit inside it.
+pub(crate) fn card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .corner_radius(6)
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            content(ui)
+        })
+        .inner
+}
+
+/// A quiet explanation under a heading or a control. Reads after the control, never
+/// competes with it.
+pub(crate) fn hint(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).wrap())
 }
 
 /// A virtualized row must allocate exactly the height passed to `show_rows`.

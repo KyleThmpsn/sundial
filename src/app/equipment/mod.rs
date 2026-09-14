@@ -8,7 +8,6 @@ mod actions;
 mod armor_stat_allocation;
 mod armor_stats_adjuster;
 mod character;
-mod character_runtime;
 mod defaults;
 mod document;
 mod model;
@@ -29,8 +28,6 @@ pub(super) use defaults::{
     default_subclass_name, item_class_is_compatible, selected_attunement_index,
     subclass_display_name,
 };
-#[cfg(test)]
-pub(in crate::app) use document::legacy as legacy_document_tests;
 pub(super) use document::{
     displayed_plugs, equip_definition, equip_inventory_item, equip_subclass_with_default_abilities,
     equipment_slot_label, equipped_item_snapshots, native_plug_default,
@@ -50,8 +47,8 @@ pub(in crate::app) use randomize::{
 
 use document::equipped_header_label;
 use picker::{
-    character_field_group_layout, equipment_definition_choices, equipment_inventory_choices,
-    existing_inventory_choice_matches,
+    EquipmentPicker, character_field_group_layout, equipment_definition_choices,
+    equipment_inventory_choices,
 };
 
 use std::{collections::HashMap, sync::Arc};
@@ -62,7 +59,7 @@ use serde_json::Value;
 use crate::{
     catalog::{self, AbilityChoice, Catalog, CatalogSearchQuery, ItemDef},
     game_settings,
-    hash::{format_hash_hex, parse_hash_hex, parse_unsigned_value},
+    hash::{parse_hash_hex, parse_unsigned_value},
 };
 
 use super::{

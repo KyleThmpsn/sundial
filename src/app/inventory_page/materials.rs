@@ -1,4 +1,4 @@
-use crate::app::{SundialApp, account_workspace as account};
+use crate::app::SundialApp;
 use eframe::egui;
 
 enum Edit {
@@ -17,11 +17,16 @@ impl SundialApp {
         };
         let stacks = document.character_stacks(index).to_vec();
         let has_character = index < document.characters().characters().len();
+        let items = super::sources::character_items(&self.document, index);
+        if let Err(error) = &items {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            ui.label("Material additions are unavailable until the inventory can be read.");
+        }
         let mut edit = None;
         ui.horizontal_wrapped(|ui| {
             ui.strong("Character Materials");
             ui.weak(format!("{} / 32", stacks.len()));
-            ui.add_enabled_ui(has_character && stacks.len() < 32, |ui| {
+            ui.add_enabled_ui(has_character && items.is_ok() && stacks.len() < 32, |ui| {
                 egui::ComboBox::from_id_salt(("add-character-material", index))
                     .selected_text("Add Material")
                     .show_ui(ui, |ui| {
@@ -30,12 +35,11 @@ impl SundialApp {
                             .entry("character-material-picker".into())
                             .or_default();
                         ui.add(egui::TextEdit::singleline(query).hint_text("Search materials"));
-                        let inventory = account::character_inventory(&self.document, index)
-                            .ok()
-                            .flatten()
-                            .unwrap_or_default();
-                        let equipment = account::equipped_item_snapshots(&self.document, index)
-                            .unwrap_or_default();
+                        let Ok(items) = &items else {
+                            return;
+                        };
+                        let inventory = &items.stored;
+                        let equipment = &items.equipped;
                         let mut count = 0;
                         for definition in self.manifest.character_material_candidates(query) {
                             let Ok(hash) = u32::try_from(definition.hash) else {
@@ -106,10 +110,12 @@ impl SundialApp {
                             let definition = self
                                 .manifest
                                 .inventory_definition(u64::from(stack.definition_hash));
-                            ui.label(definition.map_or_else(
-                                || format!("0x{:08X}", stack.definition_hash),
-                                |definition| definition.name.to_owned(),
-                            ));
+                            ui.label(
+                                definition.map_or("Invalid Item", |definition| definition.name),
+                            );
+                            if definition.is_none() {
+                                ui.monospace(format!("0x{:08X}", stack.definition_hash));
+                            }
                             let mut quantity = stack.quantity;
                             let maximum = definition
                                 .and_then(|definition| definition.metadata.max_stack_size)

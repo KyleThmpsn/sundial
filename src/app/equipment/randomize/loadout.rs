@@ -52,7 +52,7 @@ pub(super) fn randomize_full_loadout(
             bucket_hash,
             class_type,
             show_dummy_items,
-            document.supports_v13_account(),
+            document.supports_emote_collection(),
             plug_mode,
         )?;
         if candidates.is_empty() {
@@ -186,10 +186,10 @@ fn loadout_candidates(
     bucket_hash: u64,
     class_type: u64,
     show_dummy_items: bool,
-    v13_account: bool,
+    supports_emote_collection: bool,
     plug_mode: PlugSelectionMode,
 ) -> Result<(Vec<&ItemDef>, PlugSelectionMode), String> {
-    if v13_account && bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH {
+    if supports_emote_collection && bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH {
         let collection = catalog
             .item(crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH)
             .filter(|item| item.bucket_hash == bucket_hash && item_can_be_authored(item))
@@ -203,7 +203,10 @@ fn loadout_candidates(
                 .into_iter()
                 .filter(|item| {
                     item_can_be_authored(item)
-                        && crate::account_contract::definition_available(item.hash, v13_account)
+                        && crate::account_contract::definition_available(
+                            item.hash,
+                            supports_emote_collection,
+                        )
                 })
                 .collect(),
             plug_mode,

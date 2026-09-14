@@ -82,7 +82,7 @@ impl PackageAuthoringApp {
             .sort_entries(&mut shown, &self.donor_summaries);
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
-                ui.strong("Choose Recipes To Export");
+                ui.strong("Choose Recipes to Export");
                 ui.add_enabled_ui(!busy, |ui| {
                     if ui
                         .small_button("Select All")

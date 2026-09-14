@@ -23,27 +23,6 @@ use super::{AccountDocument, AccountSourceKind, WorkspaceDocument};
 use crate::test_support::TestDirectory;
 
 #[test]
-fn json_workspace_exposes_neutral_character_metadata() {
-    let document = WorkspaceDocument::json_only(json!({
-        "version": 8,
-        "state": {"characters": [{
-            "race": 2,
-            "gender": 1,
-            "class": 2,
-            "movement_ability": 6,
-            "grenade_ability": 9,
-            "super_ability": 20,
-            "melee_ability": 21,
-            "class_ability": 3
-        }]}
-    }));
-
-    let metadata = account::character_metadata(&document, 0).unwrap();
-    assert_eq!(metadata.class_type, 2);
-    assert_eq!(metadata.abilities.super_ability, 20);
-}
-
-#[test]
 fn blocked_account_operations_never_read_or_mutate_stale_json() {
     let original = json!({
         "version": 8,
@@ -105,7 +84,7 @@ fn json_source_materializes_preferences_before_sqlite_schema() {
             &settings_path(&directory),
         );
 
-        assert_eq!(document.source_info().kind, AccountSourceKind::Json);
+        assert_eq!(document.source_kind(), AccountSourceKind::Json);
         assert_eq!(account::character_count(&document), 2);
 
         assert_eq!(
@@ -139,7 +118,7 @@ fn empty_database_blocks_stale_json() {
     fs::File::create(directory.0.join("data").join("investment.sqlite3")).unwrap();
     let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
 
-    assert_eq!(document.source_info().kind, AccountSourceKind::Blocked);
+    assert_eq!(document.source_kind(), AccountSourceKind::Blocked);
     assert_eq!(account::character_count(&document), 0);
 }
 
@@ -154,7 +133,7 @@ fn official_database_is_authoritative_and_preserves_inactive_json() {
     json["state"]["account"] = json!({"settings": {"display": {}}});
     let document = WorkspaceDocument::load(json.clone(), &settings_path(&directory));
 
-    assert_eq!(document.source_info().kind, AccountSourceKind::Sqlite);
+    assert_eq!(document.source_kind(), AccountSourceKind::Sqlite);
     assert_eq!(account::character_count(&document), 1);
     assert_eq!(document.json(), &json);
 }
@@ -177,7 +156,7 @@ fn old_schemas_ignore_databases_before_and_after_loading() {
             let original = fs::read(&database).unwrap();
             assert_eq!(document.verify_account_source_unchanged(), Ok(()));
             let loaded = WorkspaceDocument::load(json, &path);
-            assert_eq!(loaded.source_info().kind, AccountSourceKind::Json);
+            assert_eq!(loaded.source_kind(), AccountSourceKind::Json);
             assert_eq!(account::character_count(&loaded), 2);
             assert_eq!(loaded.verify_account_source_unchanged(), Ok(()));
             assert_eq!(fs::read(&database).unwrap(), original);
@@ -189,7 +168,7 @@ fn old_schemas_ignore_databases_before_and_after_loading() {
 fn schema18_requires_a_database_even_when_json_contains_characters() {
     let directory = TestDirectory::new("workspace-v18-missing");
     let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory));
-    assert_eq!(document.source_info().kind, AccountSourceKind::Blocked);
+    assert_eq!(document.source_kind(), AccountSourceKind::Blocked);
     assert_eq!(account::character_count(&document), 0);
 }
 
@@ -478,10 +457,7 @@ fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     )
     .unwrap();
     let corrupt_document = WorkspaceDocument::load(json_characters(2), &settings_path(&corrupt));
-    assert_eq!(
-        corrupt_document.source_info().kind,
-        AccountSourceKind::Blocked
-    );
+    assert_eq!(corrupt_document.source_kind(), AccountSourceKind::Blocked);
     assert_eq!(account::character_count(&corrupt_document), 0);
 
     let incompatible = TestDirectory::new("workspace-incompatible-source");
@@ -493,7 +469,7 @@ fn corrupt_or_incompatible_database_blocks_stale_json_fallback() {
     let incompatible_document =
         WorkspaceDocument::load(json_characters(2), &settings_path(&incompatible));
     assert_eq!(
-        incompatible_document.source_info().kind,
+        incompatible_document.source_kind(),
         AccountSourceKind::Blocked
     );
     assert_eq!(account::character_count(&incompatible_document), 0);
@@ -560,13 +536,15 @@ fn json_characters(count: usize) -> serde_json::Value {
 
 #[test]
 fn official_sqlite_equipment_contract_is_available_for_schema18() {
-    let directory = TestDirectory::new("workspace-sqlite-v13-gates");
+    let directory = TestDirectory::new("workspace-sqlite-equipment-capabilities");
     crate::persistence::sqlite_account::tests::create_fixture(
         &directory.0.join("data/investment.sqlite3"),
         3,
     );
     let mut document = WorkspaceDocument::load(json!({"version":18}), &settings_path(&directory));
-    assert!(document.supports_v13_account());
+    assert!(document.supports_emote_collection());
+    assert!(document.supports_masterwork_flags());
+    assert!(!document.uses_subclass_plug_abilities());
     assert_eq!(document.equipment_slots().len(), 17);
     assert_eq!(
         crate::persistence::sqlite_account::SqliteAccountDocument::character_capabilities()
@@ -595,6 +573,26 @@ fn official_sqlite_equipment_contract_is_available_for_schema18() {
             .iter()
             .any(|item| item.slot == "artifact" && item.definition_hash == Some(42))
     );
+}
+
+#[test]
+fn equipment_capabilities_follow_the_active_account_contract() {
+    for version in [8, 12, 13, 16] {
+        let document = WorkspaceDocument::json_only(json!({"version": version}));
+        assert_eq!(document.supports_emote_collection(), version >= 13);
+        assert_eq!(document.supports_masterwork_flags(), version >= 13);
+        assert_eq!(document.uses_subclass_plug_abilities(), version >= 13);
+        assert_eq!(
+            document.equipment_slots().len(),
+            if version >= 13 { 17 } else { 16 }
+        );
+    }
+    let directory = TestDirectory::new("blocked-equipment-capabilities");
+    let blocked = WorkspaceDocument::load(json!({"version": 18}), &settings_path(&directory));
+    assert_eq!(blocked.source_kind(), AccountSourceKind::Blocked);
+    assert!(!blocked.supports_emote_collection());
+    assert!(!blocked.supports_masterwork_flags());
+    assert!(!blocked.uses_subclass_plug_abilities());
 }
 
 #[test]
@@ -685,14 +683,14 @@ fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
     let path = directory.0.join("data/investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
     let mut document = WorkspaceDocument::load(json!({"version":18}), &settings_path(&directory));
-    let before = crate::persistence::sqlite_account::package::read(&path).unwrap();
+    let before = crate::persistence::sqlite_account::snapshot::read(&path).unwrap();
     let mut draft = document.runtime_view();
     draft["server"]["entitlements"] = json!([{"name":"","owned":"handle"}]);
     draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x");
     document.apply_runtime_view(draft).unwrap();
     assert!(document.save_sqlite().is_err());
     assert_eq!(
-        crate::persistence::sqlite_account::package::read(&path).unwrap(),
+        crate::persistence::sqlite_account::snapshot::read(&path).unwrap(),
         before
     );
     let mut draft = document.runtime_view();

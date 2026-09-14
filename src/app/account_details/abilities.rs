@@ -61,8 +61,7 @@ impl SundialApp {
             let mut runtime = document.runtime().clone();
             runtime["characters"][index]["acquired_subclass_mask"] = mask.into();
             document.set_runtime(runtime);
-            self.progression_ui.invalidate_document();
-            self.dirty = true;
+            self.record_edit("Ability Unlocks Updated");
             self.set_status("Ability unlocks updated. Click Save to write them", false);
         }
     }

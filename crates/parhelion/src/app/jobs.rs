@@ -568,7 +568,7 @@ impl PackageAuthoringApp {
                 match &report.profile_sync {
                     Some(Ok(sync)) => {
                         self.log.push(LogEntry::info(format!(
-                            "Synchronized {}/{} authored collection unlocks in {}; backup: {}",
+                            "Synchronized {}/{} authored collection unlocks in {}. Backup: {}",
                             sync.newly_set_unlocks,
                             sync.total_unlocks,
                             sync.settings_path.display(),
@@ -591,13 +591,13 @@ impl PackageAuthoringApp {
                     |cache| {
                         if let Some(quarantine) = &cache.retained_quarantine_path {
                             format!(
-                                "Sunrise build-data cache invalidated; cache backup: {}; retained quarantine: {}",
+                                "Sunrise build-data cache invalidated. Cache backup: {}. Retained quarantine: {}",
                                 cache.backup_path.display(),
                                 quarantine.display()
                             )
                         } else {
                             format!(
-                                "Sunrise build-data cache invalidated; cache backup: {}",
+                                "Sunrise build-data cache invalidated. Cache backup: {}",
                                 cache.backup_path.display()
                             )
                         }
@@ -612,7 +612,7 @@ impl PackageAuthoringApp {
                     )
                 };
                 self.log.push(LogEntry::info(format!(
-                    "Installed {} authored packages to {}; backup: {}; {}; {}",
+                    "Installed {} authored packages to {}. Backup: {}. {}. {}",
                     report.artifacts.len(),
                     report.target_packages_directory.display(),
                     report.backup_directory.display(),
@@ -627,7 +627,7 @@ impl PackageAuthoringApp {
                 }
                 if !report.removed_obsolete_packages.is_empty() {
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} obsolete authored runtime package(s); originals are in the installation backup",
+                        "Removed {} obsolete authored runtime package(s). Originals are in the installation backup",
                         report.removed_obsolete_packages.len()
                     )));
                 }

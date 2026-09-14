@@ -1,9 +1,6 @@
-mod character_validation;
+pub(in crate::app) mod capture;
 mod equipment;
-mod equipment_defaults;
 mod persistence;
-mod preferences;
-mod regressions;
+pub(in crate::app) mod regressions;
 mod schema_compatibility;
-mod settings_paths;
 mod workspace;

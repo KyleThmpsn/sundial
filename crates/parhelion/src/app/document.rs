@@ -19,7 +19,7 @@ impl PackageAuthoringApp {
             Ok(preferences) => preferences,
             Err(error) => {
                 log.push(LogEntry::error(format!(
-                    "Could not load Parhelion backup preferences; using defaults: {error}"
+                    "Could not load Parhelion backup preferences. Using defaults: {error}"
                 )));
                 ParhelionPreferences::default()
             }
@@ -78,9 +78,9 @@ impl PackageAuthoringApp {
                         path.display()
                     )
                 })?;
-                if saved != self.recipe_baseline {
+                if !saved.same_saved_content(&self.recipe_baseline) {
                     return Err(format!(
-                        "{} changed on disk after you opened it. Reopen it before building; export any unsaved draft first.",
+                        "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
                         self.recipe.name
                     ));
                 }

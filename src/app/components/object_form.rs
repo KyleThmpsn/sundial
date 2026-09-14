@@ -82,7 +82,7 @@ pub(crate) fn draw(
                     ui.end_row();
                 }
                 if !present {
-                    if !field.optional && ui.small_button("Set value").clicked() {
+                    if !field.optional && ui.small_button("Set Value").clicked() {
                         object.insert(field.key.into(), default_value(field.input));
                     } else {
                         ui.label(egui::RichText::new("Not set").weak());

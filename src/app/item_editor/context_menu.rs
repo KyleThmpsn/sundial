@@ -4,6 +4,40 @@ use eframe::egui;
 
 use super::{DefinitionInspectionContext, format_hash_hex, request_hash_inspection_with_context};
 
+/// Lock control aligned immediately before the header's item menu.
+pub(crate) fn draw_header_lock(
+    ui: &mut egui::Ui,
+    header: &egui::Response,
+    flags: Option<u8>,
+    enabled: bool,
+) -> Option<Option<u8>> {
+    let locked = flags.unwrap_or_default() & crate::account_contract::INVENTORY_FLAG_LOCKED != 0;
+    let rect = egui::Rect::from_min_size(
+        header.rect.right_bottom() - egui::vec2(47.0, 19.0),
+        egui::vec2(22.0, 18.0),
+    );
+    let response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(header.id.with("item_lock_button"))
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                if locked {
+                    super::draw_lock_button(ui, enabled, "Unlock Item")
+                        .on_hover_text("Unlock this item")
+                } else {
+                    super::draw_unlock_button(ui, enabled, "Lock Item")
+                        .on_hover_text("Lock this item")
+                }
+            },
+        )
+        .inner;
+    response
+        .clicked()
+        .then(|| crate::app::inventory::set_inventory_locked_flag(flags, !locked))
+}
+
 pub(crate) fn draw_context_menu(
     ui: &mut egui::Ui,
     header: &egui::Response,

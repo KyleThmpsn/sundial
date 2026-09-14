@@ -2,10 +2,13 @@
 use crate::app::account_workspace as account;
 
 use crate::app::{inventory, progression};
-use crate::subclass::shadowkeep_subclass_rules;
+use crate::subclass;
 use crate::{game_settings, hash::parse_unsigned_value};
 use serde_json::Value;
 use sundial_account::NO_DEFINITION_HASH;
+
+#[cfg(test)]
+mod tests;
 
 pub(in crate::app) fn validate_document(document: &Value) -> Result<(), String> {
     game_settings::validate(document)?;
@@ -45,10 +48,6 @@ pub(in crate::app) fn validate_characters(document: &Value) -> Result<(), String
     }
     for (character_index, character) in characters.iter().enumerate() {
         let number = character_index + 1;
-        if mode.supports_v13() {
-            crate::persistence::json_account::character_runtime::validate_character(character)
-                .map_err(|error| format!("Character {number}: {error}"))?;
-        }
         let character = character
             .as_object()
             .ok_or_else(|| format!("Character {number} must be an object"))?;
@@ -80,7 +79,7 @@ pub(in crate::app) fn validate_characters(document: &Value) -> Result<(), String
             ("class_ability", "class ability"),
         ]
         .into_iter()
-        .filter(|_| !mode.supports_v13())
+        .filter(|_| !mode.uses_subclass_plug_abilities())
         {
             optional_bounded(key, label, 63)?;
         }
@@ -91,7 +90,7 @@ pub(in crate::app) fn validate_characters(document: &Value) -> Result<(), String
         {
             return Err(format!("Character {number} has an invalid accepted state"));
         }
-        crate::persistence::json_account::character_runtime::validate_details(character)
+        crate::persistence::json_account::character_preferences::validate(character)
             .map_err(|error| format!("Character {number}: {error}"))?;
 
         let Some(equipment_value) = character.get("equipment") else {
@@ -101,7 +100,7 @@ pub(in crate::app) fn validate_characters(document: &Value) -> Result<(), String
             .as_object()
             .ok_or_else(|| format!("Character {number} equipment must be an object"))?;
 
-        if !mode.supports_v13()
+        if !mode.uses_subclass_plug_abilities()
             && let Some(issue) = character_ability_issue(character)
         {
             return Err(format!("Character {number} {issue}"));
@@ -220,7 +219,6 @@ pub(in crate::app) fn character_ability_issue(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn character_ability_issue_for_values(
     subclass_hash: u64,
     movement_ability: Option<u64>,
@@ -229,7 +227,8 @@ pub(in crate::app) fn character_ability_issue_for_values(
     melee_ability: Option<u64>,
     class_ability: Option<u64>,
 ) -> Option<String> {
-    let (subclass_name, middle_super) = shadowkeep_subclass_rules(subclass_hash)?;
+    let rules = subclass::rules(subclass_hash)?;
+    let subclass_name = rules.name;
 
     for (value, range, label) in [
         (movement_ability, 4..=6, "movement ability"),
@@ -248,10 +247,10 @@ pub(in crate::app) fn character_ability_issue_for_values(
     let (Some(super_ability), Some(melee_ability)) = (super_ability, melee_ability) else {
         return None;
     };
-    let supported = [(10, 11), (10, 15), (middle_super, 21)];
-    (!supported.contains(&(super_ability, melee_ability))).then(|| {
+    (!rules.supports_pair(super_ability, melee_ability)).then(|| {
+        let middle_super = rules.middle_super;
         format!(
-            "has an unsupported super and melee combination ({super_ability}/{melee_ability}) for {subclass_name}; expected 10/11, 10/15, or {middle_super}/21"
+            "has an unsupported super and melee combination ({super_ability}/{melee_ability}) for {subclass_name}. Expected 10/11, 10/15, or {middle_super}/21"
         )
     })
 }
@@ -259,7 +258,7 @@ pub(in crate::app) fn character_ability_issue_for_values(
 pub(in crate::app) fn repair_known_ability_pairs(
     document: &mut account::WorkspaceDocument,
 ) -> Result<usize, String> {
-    if document.uses_json_account() && document.supports_v13_account() {
+    if document.uses_subclass_plug_abilities() {
         return Ok(0);
     }
     let mut repairs = Vec::new();
@@ -271,44 +270,33 @@ pub(in crate::app) fn repair_known_ability_pairs(
         else {
             continue;
         };
-        let Some((_, middle_super)) = shadowkeep_subclass_rules(subclass_hash) else {
+        let Some(rules) = subclass::rules(subclass_hash) else {
             continue;
         };
         let metadata = account::character_metadata(document, character_index)?;
-        let super_ability = u64::from(metadata.abilities.super_ability);
-        let melee_ability = u64::from(metadata.abilities.melee);
-        let supported = [(10, 11), (10, 15), (middle_super, 21)];
-        if supported.contains(&(super_ability, melee_ability)) {
+        let super_ability = metadata.abilities.super_ability;
+        let melee = metadata.abilities.melee;
+        if rules.supports_pair(u64::from(super_ability), u64::from(melee)) {
             continue;
         }
 
-        // The melee entry identifies the tree for every Shadowkeep subclass.
-        // Prefer it when recovering a mismatched pair, then use a distinctive
-        // middle-tree super as a fallback before returning to the top tree.
-        let corrected = match melee_ability {
-            11 => (10, 11),
-            15 => (10, 15),
-            21 => (middle_super, 21),
-            _ if super_ability == 20 => (middle_super, 21),
-            _ => (10, 11),
-        };
-        repairs.push((character_index, corrected));
+        repairs.push((character_index, rules.repair_pair(super_ability, melee)));
     }
 
+    if repairs.is_empty() {
+        return Ok(0);
+    }
     let mut candidate = document.clone();
     for (character_index, (super_ability, melee)) in &repairs {
         account::apply_character_updates(
             &mut candidate,
             *character_index,
             vec![sundial_account::CharacterMetadataUpdate::SetSuperAndMelee {
-                super_ability: u8::try_from(*super_ability)
-                    .expect("known ability repair entries fit in u8"),
-                melee: u8::try_from(*melee).expect("known ability repair entries fit in u8"),
+                super_ability: *super_ability,
+                melee: *melee,
             }],
         )?;
     }
-    if !repairs.is_empty() {
-        *document = candidate;
-    }
+    *document = candidate;
     Ok(repairs.len())
 }

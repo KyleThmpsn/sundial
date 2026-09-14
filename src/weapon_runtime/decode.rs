@@ -204,6 +204,7 @@ pub(super) fn decode_component_root(
             .map_err(|_| "Runtime component size does not fit 32 bits")?,
         generated_schema,
         fields,
+        structure: Arc::default(),
     })
 }
 
@@ -277,6 +278,7 @@ pub(super) fn append_uncovered_runtime_ranges(
             };
             fields.push(WeaponRuntimeField {
                 locator: WeaponRuntimeFieldLocator {
+                    graph_tag: None,
                     binding_hash,
                     resource_index,
                     root: root.kind,
@@ -298,6 +300,7 @@ pub(super) fn append_uncovered_runtime_ranges(
                 value: WeaponRuntimeValue::Bytes(bytes),
                 source: WeaponRuntimeFieldSource::OpaqueNativeType,
                 generated_kind: None,
+                name_inferred: false,
             });
             cursor = chunk_end;
         }
@@ -583,6 +586,7 @@ pub(super) fn decode_owner_roots(
                 .map_err(|_| "Runtime root size does not fit 32 bits")?,
             generated_schema,
             fields,
+            structure: Arc::default(),
         });
     }
     roots.sort_by_key(|root| root.kind);
@@ -827,13 +831,21 @@ pub(super) fn push_runtime_leaf(
         .and_then(|offset| u32::try_from(offset).ok())
         .ok_or("Runtime field root-relative offset does not fit 32 bits")?;
     let value = decode_runtime_value(owner_payload, absolute, &kind)?;
-    let path_label = labels.join(" › ");
+    let name_inferred = path
+        .last()
+        .is_some_and(|element| runtime_member_name(element.name_hash, registry).1);
+    let mut path_label = labels.join(" › ");
+    if name_inferred {
+        // Mark the field's own name where a reader sees it, not only in the tooltip.
+        path_label.push_str(" (inferred)");
+    }
     let name = labels
         .last()
         .cloned()
         .unwrap_or_else(|| format_runtime_path(&path, registry));
     output.push(WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: anchor_binding_hash,
             resource_index: anchor_resource_index,
             root: root.kind,
@@ -850,6 +862,7 @@ pub(super) fn push_runtime_leaf(
         value,
         source,
         generated_kind,
+        name_inferred,
     });
     Ok(())
 }

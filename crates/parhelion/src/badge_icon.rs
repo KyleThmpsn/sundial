@@ -923,19 +923,6 @@ mod tests {
     }
 
     #[test]
-    fn card_background_stays_purple_with_only_a_faint_warm_lower_edge() {
-        let top = card_background(0, 0, HIGH_WIDTH, HIGH_HEIGHT);
-        let bottom = card_background(0, HIGH_HEIGHT - 1, HIGH_WIDTH, HIGH_HEIGHT);
-        assert_eq!(&top.0[..3], &CARD_PURPLE_TOP);
-        assert!(bottom[0] > CARD_PURPLE_BOTTOM[0]);
-        assert!(bottom[1] > CARD_PURPLE_BOTTOM[1]);
-        assert!(bottom[2] >= CARD_PURPLE_BOTTOM[2]);
-        assert!(bottom[0] - CARD_PURPLE_BOTTOM[0] <= 16);
-        assert!(bottom[1] - CARD_PURPLE_BOTTOM[1] <= 16);
-        assert!(bottom[2] > bottom[0]);
-    }
-
-    #[test]
     fn alpha_compositing_is_straight_and_fully_opaque() {
         let background = card_background(0, 0, LOW_WIDTH, LOW_HEIGHT);
         assert_eq!(

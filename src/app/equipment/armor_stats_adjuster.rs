@@ -14,8 +14,6 @@ use apply::*;
 use input::*;
 use solver::*;
 pub(super) use ui::equipped_totals;
-#[cfg(test)]
-use ui::preview_column_widths;
 pub(in crate::app) use ui::{draw_entry_button, draw_window};
 use ui::{is_armor_stat_mod_plug, is_armor_stat_mod_socket};
 

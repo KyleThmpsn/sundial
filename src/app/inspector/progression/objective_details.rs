@@ -249,7 +249,7 @@ fn draw_objective_references(ui: &mut egui::Ui, objective: &ObjectiveDef, catalo
                     } else {
                         ui.label(egui::RichText::new("<unavailable>").weak().italics());
                     }
-                    ui.label("Condition program reference (opcode 12)");
+                    ui.label("Condition Program Reference (Opcode 12)");
                     ui.end_row();
                 }
             });
@@ -302,7 +302,7 @@ fn draw_objective_intrinsic_perks(ui: &mut egui::Ui, objective: &ObjectiveDef, c
                     } else {
                         ui.label(egui::RichText::new("<unavailable>").weak().italics());
                     }
-                    ui.label("Enabled when this objective completes");
+                    ui.label("Enabled When This Objective Completes");
                     ui.end_row();
                 }
             });

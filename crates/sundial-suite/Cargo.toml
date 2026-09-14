@@ -1,9 +1,9 @@
 [package]
 name = "sundial-suite"
 version.workspace = true
-edition = "2024"
-rust-version = "1.88"
-license = "GPL-3.0-only"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Sundial desktop application with Parhelion package authoring"
 publish = false
 

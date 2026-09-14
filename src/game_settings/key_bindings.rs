@@ -1,6 +1,7 @@
 //! Named and numeric key-binding models, pickers, labels, and validation primitives.
 
 mod codes;
+pub(crate) use codes::{input_code as named_input_code, input_name as native_input_name};
 
 use eframe::egui;
 use serde_json::{Map, Value};

@@ -292,7 +292,8 @@ impl DismantleRarity {
         Self::Exotic,
     ];
 
-    const fn bit(self) -> u8 {
+    /// The bit representing this rarity in a dismantle filter.
+    pub const fn bit(self) -> u8 {
         match self {
             Self::Common => 1 << 1,
             Self::Uncommon => 1 << 2,

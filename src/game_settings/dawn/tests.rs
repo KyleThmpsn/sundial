@@ -223,6 +223,19 @@ fn dawn_page_is_gated_by_detection_and_readonly_until_clicked() {
             let mut expected = before;
             expected["experiments"]["omega"]["coo_executor"] = json!(true);
             assert_eq!(document, expected);
+            let problem = runtime.script_problem.clone().unwrap();
+            let (output, _) = draw_page(
+                &context,
+                size,
+                vec![],
+                &mut document,
+                Some(&mut runtime),
+                &mut tab,
+            );
+            let warnings = output.shapes.iter().filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(&problem))
+            }).count();
+            assert_eq!(warnings, 1, "Show the missing script warning once");
         }
     }
 }

@@ -71,7 +71,7 @@ fn load_from_paths(current: Option<&Path>, legacy: Option<&Path>) -> LoadedPrefe
                 return LoadedPreferences {
                     preferences: Preferences::default(),
                     warning: Some(format!(
-                        "{error}. Defaults are in use. Invalid JSON will be preserved beside the preferences file before saving; unreadable files will not be overwritten."
+                        "{error}. Defaults are in use. Invalid JSON will be preserved beside the preferences file before saving. Unreadable files will not be overwritten."
                     )),
                 };
             }
@@ -128,7 +128,7 @@ fn save_preferences_from(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(format!(
-                "Could not read {} before saving; it was not overwritten: {error}",
+                "Could not read {} before saving. It was not overwritten: {error}",
                 path.display()
             ));
         }

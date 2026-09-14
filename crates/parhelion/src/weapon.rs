@@ -139,9 +139,7 @@ use sundial::package_authoring::{
         sandbox_pattern_identity_at, validate_weapon_entity, weapon_component_bindings,
         weapon_entity_assignment,
     },
-    weapon_runtime::{
-        WeaponRuntimeValueOverride, encode_weapon_runtime_value, resolve_weapon_runtime_field,
-    },
+    weapon_runtime::{WeaponRuntimeValueOverride, resolve_weapon_runtime_field},
 };
 
 use tiger_pkg::{PackageManager, TagHash};
@@ -275,7 +273,6 @@ const PRIVATE_PERK_RESIDENCY_B9_SIZE: usize = 0x160;
 const PRIVATE_PERK_RESIDENCY_BA_SIZE: usize = 0xA14;
 const PRIVATE_PERK_RESIDENCY_ROOT_SIZE: usize = 0xC0;
 const PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE: usize = 0x122;
-const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
 const LOCALIZATION_STOCK_TABLE_COUNT: usize = 3108;
 // Bank 2927 is an already-rooted native two-string bank. Its existing hashes and strings are
 // preserved while authored weapon and private-plug text is appended in a patch overlay. A new independent

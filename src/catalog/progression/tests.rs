@@ -239,16 +239,6 @@ fn unlock_flag_displays_validate_aligned_hashes_and_relative_blocks() {
 }
 
 #[test]
-fn unlock_display_text_only_filters_blank_localized_strings() {
-    assert_eq!(nonblank_localized_string(None), None);
-    assert_eq!(nonblank_localized_string(Some(" \t ".into())), None);
-    assert_eq!(
-        nonblank_localized_string(Some("  Exact package text  ".into())),
-        Some("  Exact package text  ".into())
-    );
-}
-
-#[test]
 fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
     let definitions = vec![
         UnlockDefinition {

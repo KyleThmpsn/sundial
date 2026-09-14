@@ -11,6 +11,7 @@ struct RewardDraft {
     definition_hash: Option<u32>,
     quantity: i32,
     query: String,
+    item_type: Option<String>,
 }
 
 enum Edit {
@@ -41,6 +42,7 @@ impl SundialApp {
                 definition_hash: None,
                 quantity: 1,
                 query: String::new(),
+                item_type: None,
             });
         draft.character_slot = draft.character_slot.min(characters.len().saturating_sub(1));
         let editable = account::can_mutate_character_inventory(&self.document)
@@ -83,7 +85,7 @@ impl SundialApp {
                                     ui.image((texture.id(), egui::vec2(24.0, 24.0)));
                                 }
                                 ui.label(self.manifest.names.get(&hash).cloned().unwrap_or_else(
-                                    || format!("0x{:08X}", reward.definition_hash),
+                                    || format!("Invalid Item · 0x{:08X}", reward.definition_hash),
                                 ))
                                 .on_hover_text(kind_label(reward.kind));
                             });
@@ -170,6 +172,8 @@ fn draw_add_reward(
         if previous_target != (draft.character_slot, draft.kind) {
             draft.definition_hash = None;
             draft.quantity = 1;
+            draft.query.clear();
+            draft.item_type = None;
         }
     });
     let class = characters
@@ -180,55 +184,86 @@ fn draw_add_reward(
             .definition_hash
             .and_then(|hash| catalog.inventory_definition(u64::from(hash)))
             .map_or("Choose Reward", |definition| definition.name);
-        egui::ComboBox::from_id_salt("reward-definition")
-            .selected_text(selected_name)
-            .width(260.0)
-            .truncate()
-            .show_ui(ui, |ui| {
-                ui.set_min_width(300.0);
-                ui.add(egui::TextEdit::singleline(&mut draft.query).hint_text("Search rewards"));
-                let choices: Vec<_> = if draft.kind == 1 {
-                    catalog.profile_item_candidates(&draft.query).collect()
+        let anchor = ui.add_sized(
+            [260.0, ui.spacing().interact_size.y],
+            egui::Button::new(selected_name).truncate(),
+        );
+        let kind = draft.kind;
+        let action = item_editor::draw_definition_picker_with_open_request_and_item_filter(
+            ui,
+            catalog,
+            ("pending-reward-definition", draft.character_slot, kind),
+            &mut draft.query,
+            super::presentation::picker_height(),
+            (Some(&anchor), anchor.clicked()),
+            |ui, query, filter| {
+                let candidates = if kind == 1 {
+                    catalog.profile_item_candidates("").collect::<Vec<_>>()
                 } else {
                     catalog
-                        .character_inventory_candidates(&draft.query, class, false, false)
-                        .filter(|definition| definition.metadata.is_instanced_character_candidate())
-                        .collect()
+                        .character_inventory_candidates("", class, false, false)
+                        .filter(|definition| valid_reward(*definition, kind, class))
+                        .collect::<Vec<_>>()
                 };
-                egui::ScrollArea::vertical().max_height(280.0).show_rows(
-                    ui,
-                    28.0,
-                    choices.len(),
-                    |ui, range| {
-                        for definition in &choices[range] {
-                            ui.push_id(definition.hash, |ui| {
-                                ui.horizontal(|ui| {
-                                    if let Some(texture) =
-                                        catalog.icon_texture(ui.ctx(), definition.hash)
-                                    {
-                                        ui.image((texture.id(), egui::vec2(24.0, 24.0)));
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            draft.definition_hash.map(u64::from)
-                                                == Some(definition.hash),
-                                            definition.name,
-                                        )
-                                        .on_hover_text(definition.type_name)
-                                        .clicked()
-                                    {
-                                        draft.definition_hash = u32::try_from(definition.hash).ok();
-                                        ui.close_menu();
-                                    }
-                                });
-                            });
+                let mut types = candidates
+                    .iter()
+                    .map(|definition| definition.type_name)
+                    .filter(|name| !name.is_empty())
+                    .collect::<Vec<_>>();
+                types.sort_unstable();
+                types.dedup();
+                let mut filter_clicked = false;
+                egui::ComboBox::from_id_salt("reward-item-type")
+                    .selected_text(draft.item_type.as_deref().unwrap_or("All Item Types"))
+                    .show_ui(ui, |ui| {
+                        filter_clicked |= ui
+                            .selectable_value(&mut draft.item_type, None, "All Item Types")
+                            .clicked();
+                        for name in types {
+                            filter_clicked |= ui
+                                .selectable_value(&mut draft.item_type, Some(name.to_owned()), name)
+                                .clicked();
                         }
-                    },
+                    });
+                let items = candidates
+                    .iter()
+                    .filter_map(|definition| definition.item)
+                    .collect::<Vec<_>>();
+                filter_clicked |= item_editor::draw_item_filter_bar(
+                    ui,
+                    "reward-filters",
+                    item_editor::ItemFilterScope::from_candidates(&items),
+                    &items,
+                    filter,
                 );
-                if choices.is_empty() {
-                    ui.weak("No matching rewards");
-                }
-            });
+                let search = crate::catalog::CatalogSearchQuery::new(query);
+                let definitions = candidates.into_iter().filter(|definition| {
+                    draft
+                        .item_type
+                        .as_deref()
+                        .is_none_or(|name| name == definition.type_name)
+                        && search.matches(
+                            catalog,
+                            definition.hash,
+                            &[definition.name, definition.type_name],
+                        )
+                        && filter.matches_inventory(catalog, *definition)
+                });
+                (
+                    item_editor::DefinitionPickerChoices {
+                        definitions: super::definitions::profile_definition_choices(definitions),
+                        existing_inventory: Vec::new(),
+                        clear: None,
+                        random_item_builder_hash: None,
+                        empty_message: "No rewards match the current filters".into(),
+                    },
+                    filter_clicked,
+                )
+            },
+        );
+        if let Some(item_editor::ItemEditorAction::SetDefinition { hash }) = action {
+            draft.definition_hash = u32::try_from(hash).ok();
+        }
         if draft.kind == 1 {
             let maximum = maximum_quantity(catalog, draft.definition_hash);
             draft.quantity = draft.quantity.clamp(1, maximum);

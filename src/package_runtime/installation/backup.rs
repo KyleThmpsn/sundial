@@ -145,7 +145,7 @@ fn rollback(root: &Path, backup: &Path, moved: &[PathBuf]) -> Vec<String> {
     failures
 }
 
-pub(super) fn checked_directory(root: &Path, directory: &Path) -> Result<(), String> {
+pub(crate) fn checked_directory(root: &Path, directory: &Path) -> Result<(), String> {
     if directory.exists() {
         return checked_path(root, directory);
     }
@@ -154,7 +154,7 @@ pub(super) fn checked_directory(root: &Path, directory: &Path) -> Result<(), Str
     checked_path(root, directory)
 }
 
-pub(super) fn checked_path(root: &Path, path: &Path) -> Result<(), String> {
+pub(crate) fn checked_path(root: &Path, path: &Path) -> Result<(), String> {
     let resolved = fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !resolved.starts_with(root) || resolved == root && path != root {
         return Err(format!(

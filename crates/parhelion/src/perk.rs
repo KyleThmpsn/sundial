@@ -108,7 +108,13 @@ impl PerkRecipe {
             choice_index,
             source_plug_hash: self.template_plug.clone(),
             name: Some(self.name.clone()),
-            description: (!self.description.trim().is_empty()).then(|| self.description.clone()),
+            // A custom perk owns its description, including an intentionally blank one.
+            // None would inherit unrelated gameplay text from the icon donor.
+            description: Some(if self.description.trim().is_empty() {
+                String::new()
+            } else {
+                self.description.clone()
+            }),
             classification_donor_hash: self.classification.clone(),
             investment_stats: self.stats.clone(),
             additional_sandbox_perks: Vec::new(),

@@ -7,6 +7,7 @@ use crate::package_runtime::installation::{
     archive_other_runtime, preview_runtime_restore, restore_runtime,
 };
 use eframe::egui;
+mod conversion;
 
 #[derive(Default)]
 pub(super) struct RuntimeChoice {
@@ -15,6 +16,7 @@ pub(super) struct RuntimeChoice {
     pub error: Option<String>,
     pub pending_restore: Option<RuntimeRestorePlan>,
     pub pending_defaults: Option<SettingsResetPlan>,
+    pending_conversion: Option<conversion::Dialog>,
 }
 
 impl RuntimeChoice {
@@ -26,6 +28,7 @@ impl RuntimeChoice {
             error: None,
             pending_restore: None,
             pending_defaults: None,
+            pending_conversion: None,
         }
     }
 }
@@ -37,29 +40,27 @@ impl SundialApp {
             self.runtime_choice.open = true;
         }
         self.sunrise_version = inspection
-            .copies
-            .first()
+            .launch_copy()
             .and_then(|copy| copy.version.clone())
             .unwrap_or_else(|| "Not detected".into());
         self.runtime_choice.inspection = inspection;
     }
 
     pub(super) fn draw_runtime_banner(&mut self, ctx: &egui::Context) {
-        if let Some(problem) = self
-            .runtime_choice
-            .inspection
-            .for_settings(&self.settings_path)
-            .and_then(|copy| {
-                copy.persistence_problem(self.document.json()).or_else(|| {
-                    copy.dawn_runtime
-                        .as_ref()
-                        .and_then(|dawn| dawn.validate(self.document.json()).err())
-                })
+        let inspection = &self.runtime_choice.inspection;
+        if let Some(problem) = inspection
+            .workspace_problem(&self.settings_path, self.document.json())
+            .or_else(|| {
+                inspection
+                    .launch_copy()
+                    .and_then(|copy| copy.dawn_runtime.as_ref())
+                    .and_then(|dawn| dawn.validate(self.document.json()).err())
             })
         {
             egui::TopBottomPanel::top("runtime_account_schema_warning").show(ctx, |ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, "Runtime Compatibility");
                 ui.label(problem);
+                self.draw_conversion_button(ui);
             });
         }
         if self.runtime_choice.inspection.duplicates() {
@@ -77,12 +78,22 @@ impl SundialApp {
     }
 
     pub(super) fn draw_runtime_preferences(&mut self, ui: &mut egui::Ui) {
+        if let Some(copy) = self.runtime_choice.inspection.launch_copy() {
+            ui.strong(format!("Detected Runtime: {}", copy.name()));
+            ui.label(format!("DLL: {}", copy.dll_path.display()));
+        }
+        ui.label(format!("Open Settings: {}", self.settings_path.display()));
+        ui.label(self.document.source_info().detail);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Recheck Runtime Copies").clicked() {
                 self.refresh_runtime_inspection();
             }
             if ui.button("Restore Runtime Backup…").clicked() {
                 self.request_runtime_restore();
+            }
+            self.draw_conversion_button(ui);
+            if ui.button("Restore Conversion Backup…").clicked() {
+                self.request_conversion_restore();
             }
             if self.runtime_choice.inspection.duplicates()
                 && ui.button("Choose Runtime Copy…").clicked()
@@ -93,8 +104,9 @@ impl SundialApp {
         });
         for copy in &self.runtime_choice.inspection.copies {
             ui.label(format!(
-                "{}: Sunrise {}",
+                "{}: {} {}",
                 copy.location.label(),
+                copy.name(),
                 copy.version.as_deref().unwrap_or("version unavailable")
             ));
             for detail in &copy.compatibility {
@@ -107,6 +119,10 @@ impl SundialApp {
     }
 
     pub(super) fn draw_runtime_choice(&mut self, ctx: &egui::Context) {
+        if self.runtime_choice.pending_conversion.is_some() {
+            self.draw_account_conversion(ctx);
+            return;
+        }
         if self.runtime_choice.pending_defaults.is_some() {
             self.draw_runtime_defaults(ctx);
             return;
@@ -130,7 +146,7 @@ impl SundialApp {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 740.0));
             ui.heading("Choose a Runtime Copy");
             egui::ScrollArea::vertical().max_height((ctx.screen_rect().height() - 145.0).max(150.0)).show(ui, |ui| {
-                ui.label("Choose the settings and saved data you want to keep. The game-folder DLL takes precedence when both copies are present.");
+                ui.label("Choose the copy whose settings and saved data you want to use. The DLL in the game folder takes precedence.");
                 let copies = &self.runtime_choice.inspection.copies;
                 if copies.len() == 2 && copies[0].dll_hash.is_some() && copies[0].dll_hash == copies[1].dll_hash {
                     ui.add_space(6.0);
@@ -144,7 +160,7 @@ impl SundialApp {
                         ui.add_space(8.0);
                         let enabled = blocked.is_none() && copy.selection_problem.is_none() && copies.len() == 2;
                         let label = match copy.location {
-                            RuntimeLocation::Root => "Keep Game-Folder Copy",
+                            RuntimeLocation::Root => "Keep Game Folder Copy",
                             RuntimeLocation::BinX64 => "Keep bin/x64 Copy",
                         };
                         ui.horizontal_wrapped(|ui| {
@@ -196,11 +212,11 @@ impl SundialApp {
             ui.set_width((ctx.screen_rect().width() - 64.0).clamp(240.0, 580.0));
             ui.heading("Restore Default Settings");
             egui::ScrollArea::vertical().max_height((ctx.screen_rect().height() - 180.0).max(120.0)).show(ui, |ui| {
-                ui.label(format!("Restore settings v{} bundled with Sunrise {} in {}?", plan.schema,
-                    plan.copy().version.as_deref().unwrap_or("Unavailable"), plan.copy().location.label()));
+                ui.label(format!("Restore settings v{} from {} {} in {}?", plan.schema,
+                    plan.copy().name(), plan.copy().version.as_deref().unwrap_or("Unavailable"), plan.copy().location.label()));
                 ui.add_space(8.0);
                 ui.label(plan.copy().settings_path.display().to_string());
-                ui.label("The current settings.json will be backed up to .sunrise/backups before replacement. This does not choose or remove either runtime copy.");
+                ui.label("The current settings.json will be backed up to .sunrise/backups before replacement.");
                 if plan.schema < 18 {
                     ui.colored_label(ui.visuals().warn_fg_color, "These defaults include the JSON account. Its saved progress and unlocks will return to defaults.");
                     ui.label("If you have custom Parhelion packages installed, reinstall them afterward to restore their Collections entries and unlocks.");
@@ -393,7 +409,8 @@ fn draw_copy(ui: &mut egui::Ui, copy: &RuntimeCopy) {
     ui.horizontal_wrapped(|ui| {
         ui.strong(copy.location.label());
         ui.weak(format!(
-            "Sunrise {}",
+            "{} {}",
+            copy.name(),
             copy.version.as_deref().unwrap_or("Unavailable")
         ));
     });
@@ -407,7 +424,6 @@ fn draw_copy(ui: &mut egui::Ui, copy: &RuntimeCopy) {
     ));
     if let Some(problem) = &copy.selection_problem {
         ui.colored_label(ui.visuals().warn_fg_color, problem);
-        ui.weak("Restore this DLL's default settings to resolve a schema mismatch.");
     } else {
         ui.weak("Available to keep");
     }

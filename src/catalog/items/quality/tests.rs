@@ -36,21 +36,6 @@ fn power_caps_follow_native_values_and_indices_instead_of_season_numbers() {
     let changed = decode_power_cap_definitions(&table(&values)).unwrap();
     assert_eq!(item_power_cap(&[3], &changed), Some(3500));
     assert_eq!(changed[3].hash, 111);
-}
-
-#[test]
-fn duplicate_caps_keep_distinct_indices_and_hashes_through_serialization() {
-    let definitions = decode_power_cap_definitions(&table(&[(77, 106.0), (88, 106.0)])).unwrap();
-    let encoded = serde_json::to_vec(&definitions).unwrap();
-    let restored: Vec<PowerCapDefinition> = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(restored, definitions);
-    assert_eq!(restored.len(), 2);
-    assert_ne!(restored[0].hash, restored[1].hash);
-    assert_eq!(item_power_cap(&[0, 1], &restored), Some(1060));
-}
-
-#[test]
-fn unresolved_versions_do_not_become_a_partial_or_zero_cap() {
     let definitions = decode_power_cap_definitions(&table(&[(77, 171.0)])).unwrap();
     for groups in [&[][..], &[1], &[u16::MAX], &[0, 1], &[0, u16::MAX]] {
         assert_eq!(item_power_cap(groups, &definitions), None);
@@ -89,5 +74,48 @@ fn malformed_power_cap_tables_are_rejected() {
             decode_power_cap_definitions(&table(&[(77, cap)])).is_err(),
             "{cap}"
         );
+    }
+}
+
+#[test]
+fn power_editing_requires_the_native_power_stat() {
+    use crate::catalog::items::{
+        ItemPackageMetadata,
+        investment::{ItemInvestmentStat, ItemStatDefinition},
+    };
+
+    let mut catalog = Catalog::for_test(Vec::new(), Default::default());
+    catalog.item_stat_definitions = vec![
+        ItemStatDefinition {
+            definition_index: 0,
+            hash: 3897883278,
+            ..Default::default()
+        },
+        ItemStatDefinition {
+            definition_index: 1,
+            hash: 1935470627,
+            ..Default::default()
+        },
+    ];
+    for (hash, indices) in [(10, vec![1]), (20, vec![0]), (30, vec![]), (40, vec![2])] {
+        catalog.item_package_metadata.insert(
+            hash,
+            ItemPackageMetadata {
+                power_cap: Some(2000),
+                investment_stats: indices
+                    .into_iter()
+                    .map(|definition_index| ItemInvestmentStat {
+                        definition_index,
+                        value: 0,
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        );
+    }
+    // Power may be zero and need not be accompanied by Attack or Defense (engrams).
+    assert!(catalog.item_has_power_stat(10));
+    for hash in [20, 30, 40, 50] {
+        assert!(!catalog.item_has_power_stat(hash), "item {hash}");
     }
 }

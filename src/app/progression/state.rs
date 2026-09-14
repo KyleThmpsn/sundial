@@ -1,141 +1,32 @@
 use super::*;
+pub(super) use crate::persistence::progression::InvestmentTable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum View {
     Unlocks,
     Investment,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum UnlockTable {
-    #[default]
-    AccountFlagRuns,
-    ProfileFlagRuns,
-    CharacterFlags,
-    ObjectiveValues,
-    CharacterObjectFlagRuns,
-    CharacterObjectObjectiveValues,
-    AccountProgressions,
-    CharacterProgressions,
-    UnreplicatedProgressions,
-    FlagDefinitions,
-    ValueDefinitions,
-    StoredValues,
-}
-
-impl UnlockTable {
-    pub(super) const ALL: [Self; 12] = [
-        Self::AccountFlagRuns,
-        Self::ProfileFlagRuns,
-        Self::CharacterFlags,
-        Self::ObjectiveValues,
-        Self::CharacterObjectFlagRuns,
-        Self::CharacterObjectObjectiveValues,
-        Self::AccountProgressions,
-        Self::CharacterProgressions,
-        Self::UnreplicatedProgressions,
-        Self::FlagDefinitions,
-        Self::ValueDefinitions,
-        Self::StoredValues,
-    ];
-
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::AccountFlagRuns => "Account Acquired Flags",
-            Self::ProfileFlagRuns => "Profile Unlock Flags",
-            Self::CharacterFlags => "Character Flags",
-            Self::ObjectiveValues => "Account Objective Values",
-            Self::CharacterObjectFlagRuns => "Character Object Acquired Flags",
-            Self::CharacterObjectObjectiveValues => "Character Object Objective Values",
-            Self::AccountProgressions => "Account Progressions",
-            Self::CharacterProgressions => "Character Progressions",
-            Self::UnreplicatedProgressions => "Unreplicated Progressions",
-            Self::FlagDefinitions => "All Flag Definitions",
-            Self::ValueDefinitions => "All Value Definitions",
-            Self::StoredValues => "All Stored Values",
-        }
-    }
-
-    pub(super) const fn field_name(self) -> Option<&'static str> {
-        match self {
-            Self::AccountFlagRuns => Some("account_flag_runs"),
-            Self::ProfileFlagRuns => Some("profile_flag_runs"),
-            Self::CharacterFlags => Some("character_flags"),
-            Self::ObjectiveValues => Some("objective_values"),
-            Self::CharacterObjectFlagRuns => Some("character_flag_runs"),
-            Self::CharacterObjectObjectiveValues => Some("character_objective_values"),
-            Self::AccountProgressions => Some("account_progressions"),
-            Self::CharacterProgressions => Some("character_progressions"),
-            Self::UnreplicatedProgressions
-            | Self::FlagDefinitions
-            | Self::ValueDefinitions
-            | Self::StoredValues => None,
-        }
-    }
-
-    pub(super) const fn is_progression(self) -> bool {
-        matches!(
-            self,
-            Self::AccountProgressions | Self::CharacterProgressions
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum InvestmentTable {
-    #[default]
-    FlagOverrides,
-    ValueOverrides,
-}
-
-impl InvestmentTable {
-    pub(super) const ALL: [Self; 2] = [Self::FlagOverrides, Self::ValueOverrides];
-
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::FlagOverrides => "Unlock Flag Overrides",
-            Self::ValueOverrides => "Unlock Value Overrides",
-        }
-    }
-
-    pub(super) const fn explanation(self) -> &'static str {
-        match self {
-            Self::FlagOverrides => {
-                "Overrides the unlock flag used by the linked activities and objectives."
-            }
-            Self::ValueOverrides => {
-                "Overrides the value used by the linked activities and objectives."
-            }
-        }
-    }
-
-    pub(super) const fn field_name(self) -> &'static str {
-        match self {
-            Self::FlagOverrides => "family5_flag_overrides",
-            Self::ValueOverrides => "family5_value_overrides",
-        }
-    }
+    Triumphs,
 }
 
 #[derive(Debug, Default)]
 pub(in crate::app) struct UiState {
     pub(in crate::app) read_only: bool,
+    pub(super) storage: super::storage::State,
+    pub(super) triumphs: super::triumphs::State,
+    pub(super) unlock_browser: super::unlocks::Browser,
     pub(super) seasonal: seasonal::UiState,
-    pub(super) unlock_table: UnlockTable,
     pub(super) investment_table: InvestmentTable,
     pub(super) query: String,
     pub(super) table_sorts: HashMap<&'static str, TableSort>,
-    pub(super) objective_expansion: HashMap<ObjectiveBranchKey, bool>,
     pub(super) add_open: bool,
     pub(super) add_query: String,
     pub(super) add_value: i32,
-    pub(super) add_progression_lanes: [i32; 3],
     pub(super) cached_progression: Option<Result<Progression, String>>,
+    pub(super) cached_view: Option<(usize, Value)>,
     pub(super) metadata_inspector: ProgressionInspectorState,
     pub(super) hash_inspection: HashInspectionState,
     pub(super) override_filter: OverrideFilter,
     pub(super) last_investment_change: Option<InvestmentUndo>,
-    pub(super) edit_progression_lanes: bool,
     pub(super) progression_baselines: HashMap<(&'static str, usize), Option<[i32; 3]>>,
     pub(super) last_progression_change: Option<ProgressionUndo>,
 }
@@ -180,19 +71,12 @@ pub(super) struct ProgressionUndo {
     pub(super) previous: Option<[i32; 3]>,
 }
 
-impl ProgressionUndo {
-    pub(super) fn label(self) -> String {
-        let action = if self.previous.is_some() {
-            "Restore"
-        } else {
-            "Remove newly added"
-        };
-        format!("{action} progression #{}", self.definition_index)
-    }
-}
-
 impl UiState {
     pub(in crate::app) fn reset_navigation(&mut self) {
+        self.cached_view = None;
+        self.storage.reset();
+        self.triumphs.reset();
+        self.unlock_browser.reset();
         self.query.clear();
         self.add_open = false;
         self.add_query.clear();
@@ -203,9 +87,17 @@ impl UiState {
 
     pub(in crate::app) fn invalidate_document(&mut self) {
         self.seasonal.invalidate();
-        self.cached_progression = None;
+        self.invalidate_cache();
         self.progression_baselines.clear();
         self.last_progression_change = None;
+    }
+
+    pub(in crate::app) fn invalidate_cache(&mut self) {
+        self.storage.invalidate();
+        self.cached_view = None;
+        self.triumphs.invalidate();
+        self.cached_progression = None;
+        self.unlock_browser.invalidate();
     }
 
     pub(in crate::app) fn mark_saved(&mut self) {
@@ -238,13 +130,14 @@ impl UiState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn progression_changed(&self, table: &'static str, definition_index: usize) -> bool {
         self.progression_baselines
             .contains_key(&(table, definition_index))
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct TableSort {
     pub(super) column: usize,
     pub(super) descending: bool,
@@ -257,12 +150,6 @@ impl TableSort {
             descending: false,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ObjectiveBranchKey {
-    pub(super) table: &'static str,
-    pub(super) path: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

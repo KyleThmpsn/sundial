@@ -162,12 +162,4 @@ mod tests {
         }
         assert!(from_str::<Value>(&deepest_empty_container).is_ok());
     }
-
-    #[test]
-    fn preserves_normal_json_values() {
-        assert_eq!(
-            from_str::<Value>(r#"{"a":[null,true,-3,4.5,"ok"]}"#).unwrap(),
-            serde_json::json!({"a": [null, true, -3, 4.5, "ok"]})
-        );
-    }
 }

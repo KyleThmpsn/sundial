@@ -1,10 +1,10 @@
 use super::*;
-use crate::install::{InstallPhase, InstallProgress};
+use crate::install::{CANONICAL_ARTIFACT_FILE_NAMES, InstallPhase, InstallProgress};
 
 #[test]
 fn slot_replacement_review_names_every_move_and_full_inventory_deletion() {
     use std::collections::BTreeMap;
-    use sundial::investment::{AuthoredSlotChange, AuthoredSlotReplacement};
+    use sundial::package_authoring::account::{AuthoredSlotChange, AuthoredSlotReplacement};
     let directory = tempfile::tempdir().unwrap();
     let packages = directory.path().join("packages");
     std::fs::create_dir(&packages).unwrap();
@@ -72,15 +72,6 @@ fn slot_replacement_review_names_every_move_and_full_inventory_deletion() {
                 "{labels}"
             );
             assert!(labels.contains("Back Up, Remove & Install"));
-            capture(
-                &ctx,
-                output,
-                &format!(
-                    "slot-review-{}-{width}",
-                    if dark { "dark" } else { "light" }
-                ),
-                width,
-            );
         }
     }
 }
@@ -132,12 +123,6 @@ fn build_flow_stays_read_only_and_keeps_progress_and_actions_visible() {
                     "{state}, {width}: {rect:?}"
                 );
                 assert_eq!(app.recipe, recipe);
-                capture(
-                    &ctx,
-                    output,
-                    &format!("{state}-{}-{width}", if dark { "dark" } else { "light" }),
-                    width,
-                );
             }
         }
     }
@@ -240,45 +225,4 @@ fn fixture(state: &str) -> PackageAuthoringApp {
         }
     }
     app
-}
-
-// Optional QA output uses the actual egui meshes and font atlas, without opening an app or installing files.
-pub(in crate::app) fn capture(
-    ctx: &egui::Context,
-    output: egui::FullOutput,
-    name: &str,
-    width: f32,
-) {
-    let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR").map(PathBuf::from) else {
-        return;
-    };
-    std::fs::create_dir_all(&directory).unwrap();
-    let atlas = ctx.fonts(|fonts| fonts.image());
-    let pixels = atlas
-        .srgba_pixels(None)
-        .flat_map(|color| color.to_array())
-        .collect::<Vec<_>>();
-    image::save_buffer(
-        directory.join(format!("{name}-atlas.png")),
-        &pixels,
-        atlas.size[0] as u32,
-        atlas.size[1] as u32,
-        image::ColorType::Rgba8,
-    )
-    .unwrap();
-    let meshes = ctx.tessellate(output.shapes, 1.0).into_iter().filter_map(|primitive| {
-        let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else { return None; };
-        assert_eq!(mesh.texture_id, egui::TextureId::Managed(0));
-        Some(serde_json::json!({
-            "clip": [primitive.clip_rect.min.x, primitive.clip_rect.min.y, primitive.clip_rect.max.x, primitive.clip_rect.max.y],
-            "indices": mesh.indices,
-            "vertices": mesh.vertices.iter().map(|v| serde_json::json!([v.pos.x, v.pos.y, v.uv.x, v.uv.y, v.color.to_array()])).collect::<Vec<_>>()
-        }))
-    }).collect::<Vec<_>>();
-    std::fs::write(
-        directory.join(format!("{name}.json")),
-        serde_json::to_vec(&serde_json::json!({"width": width, "height": 760, "meshes": meshes}))
-            .unwrap(),
-    )
-    .unwrap();
 }

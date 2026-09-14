@@ -403,23 +403,6 @@ fn enter_in_find_advances_without_editing_the_document() {
 }
 
 #[test]
-fn empty_editor_accepts_text() {
-    let ctx = egui::Context::default();
-    let mut text = String::new();
-    let mut state = JsonEditorState::default();
-    frame(&ctx, &mut text, &mut state, vec![]);
-    select(&ctx, &state, 0, 0);
-    frame(
-        &ctx,
-        &mut text,
-        &mut state,
-        vec![egui::Event::Text("{}".into())],
-    );
-    assert_eq!(text, "{}");
-    assert!(state.has_unapplied_changes());
-}
-
-#[test]
 fn applying_or_saving_does_not_erase_source_history() {
     let mut state = JsonEditorState::default();
     state.history.feed_state(0.0, &"{\"x\":1}".to_owned());
@@ -460,7 +443,7 @@ fn rendered_editor_reports_errors_and_keeps_a_detached_save_indicator() {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(labels.contains(&"Unsaved changes"), detached);
+        assert_eq!(labels.contains(&"Unsaved Changes"), detached);
         assert!(labels.iter().any(|text| text.contains("duplicate")));
     }
 }

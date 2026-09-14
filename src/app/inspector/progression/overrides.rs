@@ -216,7 +216,7 @@ fn override_usage_summary(
             );
             let active = value == SET_FLAG_VALUE;
             let impact = Some(format!(
-                "Direct checks read {}; negated checks read {}",
+                "Direct checks read {}. Negated checks read {}",
                 if active { "true" } else { "false" },
                 if active { "false" } else { "true" }
             ));
