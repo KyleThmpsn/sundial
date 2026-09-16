@@ -345,8 +345,13 @@ mod tests {
         };
         assert_eq!(open_shard(&cache, 0x01bb).saved.children.len(), 1);
         // The package itself changing starts it over, and the older file is pruned once
-        // the new one is written.
-        std::fs::write(packages.path().join("w64_test_01bb_0.pkg"), b"patched").unwrap();
+        // the new one is written. The new content has a different length: a snapshot is
+        // name, size and modified time, and two writes can share a timestamp.
+        std::fs::write(
+            packages.path().join("w64_test_01bb_0.pkg"),
+            b"patched package",
+        )
+        .unwrap();
         let cache = Cache {
             directory: storage.path().to_path_buf(),
             snapshot: Snapshot::read(packages.path()).unwrap(),

@@ -558,8 +558,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0x8152_82E1]
         );
-        // A changed package still needs a fresh scan.
-        std::fs::write(packages.path().join("w64_test_01bb_0.pkg"), b"changed").unwrap();
+        // A changed package still needs a fresh scan. The new content has a different
+        // length: a snapshot is name, size and modified time, and two writes can share a
+        // timestamp.
+        std::fs::write(
+            packages.path().join("w64_test_01bb_0.pkg"),
+            b"changed package",
+        )
+        .unwrap();
         let changed = Snapshot::read(packages.path()).unwrap().for_package(0x01bb);
         assert!(load_shard(Some(&path), 0x01bb, &changed, &targets).is_none());
     }
