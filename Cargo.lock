@@ -2765,6 +2765,7 @@ version = "0.4.1"
 dependencies = [
  "base64",
  "egui",
+ "egui-phosphor",
  "fs2",
  "image",
  "libloading 0.8.9",

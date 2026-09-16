@@ -200,7 +200,7 @@ pub(super) fn draw_content(
 
     let mut expansion_action = None;
     let cache = collection_toolbar(ui, |ui| {
-        ui.label(egui::RichText::new("Filter").strong());
+        ui.strong("Filter");
         let width = (ui.available_width() * 0.25).clamp(160.0, 260.0);
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
@@ -237,7 +237,7 @@ pub(super) fn draw_content(
             remainder.push(format!("{} unresolved", counts.unknown));
         }
         if !remainder.is_empty() {
-            ui.label(egui::RichText::new(format!("· {}", remainder.join(" · "))).weak());
+            ui.weak(format!("· {}", remainder.join(" · ")));
         }
         if cache.indices.len() != counts.total() {
             ui.label(
@@ -285,7 +285,7 @@ pub(super) fn draw_content(
     });
     ui.separator();
     if cache.indices.is_empty() {
-        ui.label(egui::RichText::new("No matching rows").weak());
+        ui.weak("No matching rows");
         state.browse = Some(cache);
         return changed;
     }
@@ -539,7 +539,7 @@ fn collection_hash_cell(ui: &mut egui::Ui, width: f32, hash: u64) {
         |ui| {
             ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
             if hash == 0 {
-                ui.label(egui::RichText::new("-").weak());
+                ui.weak("-");
                 return;
             }
             let response = ui

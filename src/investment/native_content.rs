@@ -11,7 +11,10 @@ use std::{
 use tiger_pkg::PackageManager;
 mod assets;
 pub use assets::{AssetChoice, technical_name};
+pub mod behaviors;
+pub mod conditions;
 pub mod inspection;
+pub use crate::package_runtime::labels;
 
 pub struct Catalog {
     pub names: Arc<tft::Index>,
@@ -29,6 +32,7 @@ pub struct Catalog {
 pub enum DiscoveryEvent {
     Progress(usize, usize),
     Keys(Result<Arc<properties::KeyIndex>, String>),
+    Labels(Result<Arc<labels::Registry>, String>),
 }
 
 /// Composes the existing caches. Worker lifetime and cancellation remain with the caller.
@@ -42,6 +46,9 @@ pub fn discover(
         report(DiscoveryEvent::Keys(Ok(keys)));
     }
     let manager = open_packages(packages)?;
+    report(DiscoveryEvent::Labels(
+        labels::Registry::load(&manager).map(Arc::new),
+    ));
     if !keys_ready {
         report(DiscoveryEvent::Keys(properties::cached(packages, &manager)));
     }

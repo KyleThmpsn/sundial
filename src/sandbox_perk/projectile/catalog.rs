@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::{PackageManager, TagHash};
 
 use super::*;
+mod ancestry;
 mod identity;
 mod source_names;
 pub use source_names::NameEvidence;
@@ -246,6 +247,17 @@ impl Entry {
         None
     }
 
+    /// The installed package this asset lives in, for sorting a picker by where assets come
+    /// from. It names a file set, never a gameplay role.
+    #[must_use]
+    pub fn source_label(&self) -> &str {
+        if self.package.is_empty() {
+            "Unknown"
+        } else {
+            &self.package
+        }
+    }
+
     /// The kind, with the client's object type name for an entity that is not a projectile
     /// or emitter.
     #[must_use]
@@ -395,6 +407,8 @@ enum Named {
     Symbol(NameEvidence),
     /// A content path or misc tag name.
     Path(String),
+    /// All usable paths on a shared resource. The first path alone can misidentify it.
+    Paths(Vec<String>),
     /// A sandbox pattern entity, identified by the weapon items whose patterns share it.
     /// Reissued weapons keep the entity of the original, so one entity can carry several.
     Items(Vec<u32>),
@@ -478,9 +492,34 @@ pub fn inspect(
     index: &dependencies::Index,
     names: &tft::Index,
 ) -> Result<Catalog, String> {
+    build(manager, index, names, None)
+}
+
+/// The same catalog, with the ancestry walk's answers kept per package under the cache
+/// directory so the next build after an install rescans only the changed packages.
+pub fn inspect_cached(
+    packages: &Path,
+    manager: &PackageManager,
+    index: &dependencies::Index,
+    names: &tft::Index,
+) -> Result<Catalog, String> {
+    build(
+        manager,
+        index,
+        names,
+        ancestry::Cache::open(packages).as_ref(),
+    )
+}
+
+fn build(
+    manager: &PackageManager,
+    index: &dependencies::Index,
+    names: &tft::Index,
+    cache: Option<&ancestry::Cache>,
+) -> Result<Catalog, String> {
     let mut catalog = Catalog::default();
     let native_names = names.names();
-    let symbols = source_names::index(&names.paths);
+    let symbols = source_names::index(&names.paths, &names.vocabulary);
     let mut recovered = BTreeMap::new();
     catalog.errors.extend(names.errors.iter().cloned());
     let (mut references, perk_graphs) = perk_references(index);
@@ -566,6 +605,12 @@ pub fn inspect(
             source_hint: None,
         });
     }
+    let ancestry = ancestry::read(manager, resource_graph.keys().copied(), cache)?;
+    catalog.errors.extend(ancestry.errors);
+    let mut resource_parents = resource_graph;
+    for (child, parents) in ancestry.parents {
+        resource_parents.entry(child).or_default().extend(parents);
+    }
     attach_context(
         manager,
         &mut catalog,
@@ -574,7 +619,7 @@ pub fn inspect(
             paths: &native_names,
             symbols: &recovered,
         },
-        &resource_graph,
+        &resource_parents,
         &pattern_items,
         &perk_graphs,
     );
@@ -646,11 +691,6 @@ fn read_graphs(manager: &PackageManager) -> Vec<(TagHash, Scan)> {
     .collect()
 }
 
-/// How many reference steps the walk climbs before giving up on a name.
-const MAX_CLIMB: usize = 6;
-/// Caps one level of the walk, so a graph referenced from everywhere stays cheap.
-const MAX_FRONTIER: usize = 4096;
-
 struct SourceNames<'a> {
     paths: &'a BTreeMap<u32, Vec<String>>,
     symbols: &'a BTreeMap<u32, NameEvidence>,
@@ -674,36 +714,44 @@ fn attach_context(
             .push(reference.source);
     }
     let own_paths = names.own_paths();
+    let path_names = |paths: &Vec<String>| {
+        let paths = paths
+            .iter()
+            .filter(|path| identity::source_name(path).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        (!paths.is_empty()).then_some(Named::Paths(paths))
+    };
     let name_of = |tag: u32| -> Option<Named> {
         sources
             .paths
             .get(&tag)
-            .and_then(|paths| {
-                paths
-                    .iter()
-                    .find(|path| !shared_metadata_path(path))
-                    .cloned()
-            })
-            .or_else(|| manager.get_tag_name(TagHash(tag)))
-            .filter(|path| !shared_metadata_path(path))
-            .map(Named::Path)
-            .or_else(|| sources.symbols.get(&tag).cloned().map(Named::Symbol))
+            .and_then(path_names)
             .or_else(|| {
-                own_paths
-                    .get(&tag)
-                    .and_then(|paths| {
-                        paths
-                            .iter()
-                            .find(|path| !shared_metadata_path(path))
-                            .cloned()
-                    })
+                manager
+                    .get_tag_name(TagHash(tag))
+                    .filter(|path| identity::source_name(path).is_some())
                     .map(Named::Path)
             })
+            .or_else(|| {
+                sources
+                    .symbols
+                    .get(&tag)
+                    .filter(|evidence| identity::source_name(&evidence.name).is_some())
+                    .cloned()
+                    .map(Named::Symbol)
+            })
+            .or_else(|| own_paths.get(&tag).and_then(path_names))
             .or_else(|| pattern_items.get(&tag).cloned().map(Named::Items))
             .or_else(|| perk_graphs.get(&tag).cloned().map(Named::Perks))
     };
     for entry in &mut catalog.entries {
-        if entry.label_rank() == 0 {
+        if entry
+            .native_paths
+            .iter()
+            .chain(entry.native_name.iter())
+            .any(|path| identity::source_name(path).is_some())
+        {
             continue;
         }
         entry.contexts = climb(entry.graph, &parents, resource_graph, name_of);
@@ -722,15 +770,21 @@ fn attach_context(
                     name_evidence: Some(evidence.clone()),
                     item: None,
                     perk: None,
-                    depth: 0,
+                    depth: if evidence.legacy { LEGACY_DEPTH } else { 0 },
                 },
             );
         }
     }
 }
 
+/// A Destiny 1 name on the graph itself ranks below every installed ancestor, and below a
+/// stock perk that references the graph directly, because such names are often template
+/// names shared by dozens of graphs. It still beats having no name.
+const LEGACY_DEPTH: usize = 1_000;
+
 /// Breadth-first walk from `graph` through the resources that refer to it and the graphs
-/// that bind those resources, stopping at the first level with a named ancestor.
+/// that bind those resources. Perk indices are fallback context, not evidence that
+/// a usable name exists, so they cannot stop the search for a native ancestor.
 fn climb(
     graph: u32,
     parents: &HashMap<u32, Vec<u32>>,
@@ -739,7 +793,12 @@ fn climb(
 ) -> Vec<Context> {
     let mut seen = HashSet::from([graph]);
     let mut frontier = vec![graph];
-    for depth in 1..=MAX_CLIMB {
+    let mut fallback = Vec::new();
+    let mut depth = 0;
+    // The finite reference index and visited set bound the search. Do not discard
+    // branches or stop after an arbitrary depth while an owner can still be named.
+    while !frontier.is_empty() {
+        depth += 1;
         let mut next = Vec::new();
         let mut found = Vec::new();
         for &via in &frontier {
@@ -764,13 +823,27 @@ fn climb(
                     depth,
                 };
                 match name_of(up) {
+                    // A Destiny 1 name on an ancestor is kept only as a fallback, and the
+                    // climb continues past it, so an installed name further up still wins.
+                    Some(Named::Symbol(evidence)) if evidence.legacy => {
+                        let mut named = context(evidence.name.clone(), None, None);
+                        named.depth = LEGACY_DEPTH;
+                        named.name_evidence = Some(evidence);
+                        fallback.push(named);
+                        next.push(up);
+                    }
                     Some(Named::Symbol(evidence)) => {
                         let mut named = context(evidence.name.clone(), None, None);
                         named.name_evidence = Some(evidence);
                         found.push(named);
                     }
-                    Some(Named::Path(path)) if shared_metadata_path(&path) => next.push(up),
+                    Some(Named::Path(path)) if identity::source_name(&path).is_none() => {
+                        next.push(up)
+                    }
                     Some(Named::Path(path)) => found.push(context(path, None, None)),
+                    Some(Named::Paths(paths)) => {
+                        found.extend(paths.into_iter().map(|path| context(path, None, None)));
+                    }
                     // Every weapon that shares the pattern entity fires this asset.
                     Some(Named::Items(items)) => {
                         found.extend(
@@ -779,35 +852,36 @@ fn climb(
                                 .map(|item| context(String::new(), Some(item), None)),
                         );
                     }
-                    Some(Named::Perks(perks)) => found.extend(
-                        perks
-                            .into_iter()
-                            .map(|perk| context(String::new(), None, Some(perk))),
-                    ),
+                    Some(Named::Perks(perks)) => {
+                        fallback.extend(
+                            perks
+                                .into_iter()
+                                .map(|perk| context(String::new(), None, Some(perk))),
+                        );
+                    }
                     None => next.push(up),
                 }
             }
         }
         if !found.is_empty() {
+            found.extend(fallback);
             found.sort_by(|a, b| {
                 (&a.path, a.item, a.perk, a.graph).cmp(&(&b.path, b.item, b.perk, b.graph))
             });
             found.dedup_by(|a, b| a.path == b.path && a.item == b.item && a.perk == b.perk);
             return found;
         }
-        next.truncate(MAX_FRONTIER);
         frontier = next;
-        if frontier.is_empty() {
-            break;
-        }
     }
-    Vec::new()
+    fallback.sort_by_key(|context| (context.depth, context.perk, context.graph));
+    fallback.dedup_by_key(|context| (context.perk, context.graph));
+    fallback
 }
 
 static CACHE: index_cache::Cache<Catalog> = index_cache::Cache::new();
 
 /// The on-disk cache name. Bump it whenever an entry's contents change.
-const CACHE_VERSION: &str = "projectiles-v13";
+const CACHE_VERSION: &str = "projectiles-v21";
 
 /// The catalog already cached for this installation, without building one. The build uses
 /// it to refuse assets that only load with an activity.
@@ -830,7 +904,7 @@ pub fn cached(packages: &Path, manager: &PackageManager) -> Result<Arc<Catalog>,
         || {
             let dependencies = dependencies::cached(packages, manager, |_, _| {})?;
             let names = tft::cached(packages, manager, |_, _| {})?;
-            inspect(manager, &dependencies, &names)
+            inspect_cached(packages, manager, &dependencies, &names)
         },
         // Preserve incomplete-discovery warnings along with usable results.
         // Compiling a selected effect still reads and validates its live tags.

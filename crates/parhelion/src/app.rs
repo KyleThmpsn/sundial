@@ -47,12 +47,17 @@ use sundial::package_authoring::{
 use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
+use crate::capabilities::{
+    VariableDamageAppearance, reconcile_variable_damage, variable_damage_appearance,
+    variable_damage_resting_type,
+};
 use crate::icon_edit::{WeaponIconEditor, WeaponIconEditorAction, render_weapon_icon_preview};
 use crate::install::{
     InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     install_staged_packages_with_progress,
 };
 use crate::preferences::ParhelionPreferences;
+use crate::recipe::VariableDamageRecipe;
 use crate::runtime::{RuntimeGraphKey, load_effective_runtime_graph};
 use crate::workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildPhase, BuildProgress, BuildReport,
@@ -1534,8 +1539,7 @@ struct SocketTechnicalFields<'a> {
 
 fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) -> bool {
     let mut changed = false;
-    ui.label(egui::RichText::new(label).strong())
-        .on_hover_text(hint);
+    ui.strong(label).on_hover_text(hint);
     ui.horizontal(|ui| {
         let field_width = (ui.available_width() - 86.0).max(160.0);
         changed |= ui
@@ -1594,7 +1598,7 @@ fn runtime_component_control(binding_hash: u32) -> Option<RuntimeComponentContro
 
 fn draw_donor_section_label(ui: &mut egui::Ui, label: &str, tooltip: Option<&str>) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).strong());
+        ui.strong(label);
         if let Some(tooltip) = tooltip {
             draw_authoring_info_icon(ui, tooltip);
         }

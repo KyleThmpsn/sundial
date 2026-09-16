@@ -459,7 +459,7 @@ fn render_card(
         *target = composite_onto_opaque(*pixel, *target);
     }
 
-    finish_card(card, donor, width, height)
+    Ok(finish_card(card, donor, width, height))
 }
 
 fn render_artwork(
@@ -472,7 +472,12 @@ fn render_artwork(
         if donor.len() != (width * height * 4) as usize {
             return Err(invalid("Badge mask has unexpected dimensions"));
         }
-        return finish_card(artwork.render(width, height), donor, width, height);
+        return Ok(finish_card(
+            artwork.render(width, height),
+            donor,
+            width,
+            height,
+        ));
     }
     let source = artwork.map_or_else(decode_source, |a| Ok(a.pixels().clone()))?;
     render_card(&source, donor, width, height)
@@ -498,12 +503,7 @@ pub(crate) fn preview(
         .ok_or_else(|| invalid("Badge preview has unexpected dimensions"))
 }
 
-fn finish_card(
-    mut card: RgbaImage,
-    donor: &[u8],
-    width: u32,
-    height: u32,
-) -> AuthoringResult<Vec<u8>> {
+fn finish_card(mut card: RgbaImage, donor: &[u8], width: u32, height: u32) -> Vec<u8> {
     // Reproduce the Lunar card's shallow top bevel. Looking a few pixels inward isolates the
     // donor's edge highlight from its artwork, and following each column's first visible pixel
     // naturally carries that depth around both rounded upper corners.
@@ -533,7 +533,7 @@ fn finish_card(
     for (index, pixel) in card.pixels_mut().enumerate() {
         pixel[3] = donor[index * 4 + 3];
     }
-    Ok(card.into_raw())
+    card.into_raw()
 }
 
 fn donor_pixel(data: &[u8], width: u32, x: u32, y: u32) -> &[u8] {

@@ -7,6 +7,7 @@ mod resolve;
 mod sources;
 #[cfg(test)]
 mod tests;
+pub(crate) mod variable_damage;
 use custom_runtime::*;
 pub(crate) use custom_runtime::{preflight_runtime_edits, runtime_hud_key};
 mod localization;
@@ -463,6 +464,19 @@ pub enum ModernDamageType {
     Void,
 }
 
+/// Element switching by holding Reload, the way Hard Light and Borealis work.
+///
+/// The hold itself is client-side and exists only on those two weapons' gear-art rows, so the
+/// appearance donor has to be one of them. The switchable effects are the three stock rows on
+/// Hard Light's Fundamentals plug, one Set Host Mode node per element, each gated on the selector
+/// value the hold steps through: 0 is Void, 1 is Arc, 2 is Solar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeaponVariableDamage {
+    /// Elements the cycle can settle on. A selector step without a chosen element keeps the
+    /// element the weapon already has, so a two-element set repeats one element for one hold.
+    pub elements: Vec<ModernDamageType>,
+}
+
 /// The inventory column occupied by an authored weapon.
 ///
 /// This is intentionally separate from weapon/ammo category. The compact inventory bucket and
@@ -659,6 +673,9 @@ pub struct WeaponCloneOverrides {
     pub inventory_slot: Option<WeaponInventorySlot>,
     pub ammo_type: Option<WeaponAmmoType>,
     pub modern_damage_type: Option<ModernDamageType>,
+    /// Reload-hold element switching. Compilation pins The Fundamentals into the first trait
+    /// socket, and [`Self::modern_damage_type`] is then the element the weapon rests on.
+    pub variable_damage: Option<WeaponVariableDamage>,
     pub power_cap_group: Option<u16>,
     /// Complete ordered native version-group values. Mutually exclusive with
     /// [`Self::power_cap_group`] and required to match the donor row count.
@@ -975,6 +992,7 @@ impl WeaponCloneSpec {
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
         validate_weapon_donor_references(self)?;
+        variable_damage::validate_spec(self)?;
         validate_weapon_clone_text(&self.text)?;
         self.overrides.icon_edit.validate()?;
         validate_investment_stat_definitions(&self.overrides)?;

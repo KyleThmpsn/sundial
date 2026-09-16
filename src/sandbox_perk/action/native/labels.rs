@@ -85,6 +85,7 @@ pub fn source(graph: &Graph, block: usize, offset: usize) -> Result<[Vec<u32>; 4
 
 /// Rebuild masks from the authored source lists, including group expansion.
 pub fn compile(graph: &mut Graph, registry: &[u8]) -> Result<(), String> {
+    let registry = crate::package_runtime::labels::Registry::read(registry)?;
     let mut changed = graph.clone();
     let mut jobs = Vec::new();
     for (index, block) in graph
@@ -104,11 +105,27 @@ pub fn compile(graph: &mut Graph, registry: &[u8]) -> Result<(), String> {
         let lists = source(graph, block, at)?;
         let masks = lists
             .iter()
-            .map(|labels| crate::sandbox_perk::program::compiler::compile_labels(registry, labels))
+            .map(|labels| registry.mask(labels))
             .collect::<Result<Vec<_>, _>>()?;
         let expected: [[u8; 40]; 4] = std::array::from_fn(|index| masks[index]);
         if effective(graph, block, predicate).is_ok_and(|stored| stored == expected) {
             continue;
+        }
+        // A label set that contradicts itself compiles into masks the engine can never
+        // satisfy, so the effect would be saved and then silently never fire. The registry
+        // proves the contradiction from the four native mask operations, so this rejects
+        // only sets that cannot match, never sets that merely look unusual. It runs after
+        // the short circuit above so a stock perk whose masks are already stored keeps
+        // round-tripping exactly as the game shipped it, whatever the registry makes of its
+        // lists. A set naming a label this registry does not hold is unknown rather than
+        // contradictory, and the mask step has already accepted or rejected it.
+        if lists
+            .iter()
+            .flatten()
+            .all(|label| registry.get(*label).is_some())
+            && let Some(reason) = registry.conflict(&lists)?
+        {
+            return Err(format!("This label filter can never match: {reason}"));
         }
         let four = !lists[1].is_empty() || !lists[3].is_empty();
         let mut bytes = vec![0; if four { 164 } else { 84 }];
@@ -146,7 +163,7 @@ pub fn compile(graph: &mut Graph, registry: &[u8]) -> Result<(), String> {
         } else {
             Vec::new()
         };
-        let compiled = crate::sandbox_perk::program::compiler::compile_labels(registry, &labels)?;
+        let compiled = registry.mask(&labels)?;
         changed.blocks[index].bytes[mask..mask + 40].copy_from_slice(&compiled);
     }
     changed.validate()?;

@@ -11,6 +11,53 @@ use crate::package_payload::{
 };
 use serde::{Deserialize, Serialize};
 
+mod label_sites;
+pub use label_sites::{LABEL_SITES, Site};
+
+/// The labels stock perks use at one label binding site, most used first. Empty when no
+/// stock perk authors a named label there.
+#[must_use]
+pub fn site_labels(class: u32, offset: usize) -> &'static [(u32, &'static str, u32)] {
+    LABEL_SITES
+        .iter()
+        .find(|(candidate, at, _)| *candidate == class && *at == offset)
+        .map_or(&[], |(_, _, labels)| *labels)
+}
+
+/// The name of a label, when a stock perk uses it at some binding site.
+#[must_use]
+pub fn site_label_name(hash: u32) -> Option<&'static str> {
+    LABEL_SITES
+        .iter()
+        .flat_map(|(_, _, labels)| labels.iter())
+        .find(|(candidate, _, _)| *candidate == hash)
+        .map(|(_, name, _)| *name)
+}
+
+/// How each of the four native label lists at a binding site is applied to an event.
+pub const LABEL_OPERATIONS: [(usize, &str, &str); 4] = [
+    (
+        0,
+        "Matches any",
+        "The event passes when it carries any of these labels.",
+    ),
+    (
+        1,
+        "Requires all",
+        "The event passes only when it carries every one of these labels.",
+    ),
+    (
+        2,
+        "Excludes any",
+        "The event is rejected when it carries any of these labels.",
+    ),
+    (
+        3,
+        "Not all",
+        "The event is rejected only when it carries every one of these labels.",
+    ),
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerkActivation {
@@ -22,6 +69,18 @@ pub enum PerkActivation {
 }
 
 impl PerkActivation {
+    /// Match the complete kill category, independent of label ordering. Companion
+    /// restrictions are not part of this category and must remain on the node.
+    pub fn from_filter(labels: &[u32], requires_weapon: bool) -> Option<Self> {
+        let mut labels = labels.to_vec();
+        labels.sort_unstable();
+        Self::ALL.into_iter().find(|choice| {
+            let mut expected = choice.labels().to_vec();
+            expected.sort_unstable();
+            labels == expected && requires_weapon == choice.requires_weapon()
+        })
+    }
+
     pub const ALL: [Self; 5] = [
         Self::WeaponKill,
         Self::PrecisionWeaponKill,
@@ -41,7 +100,8 @@ impl PerkActivation {
         }
     }
 
-    const fn labels(self) -> &'static [u32] {
+    /// Source label hashes defining the credited kill category.
+    pub const fn labels(self) -> &'static [u32] {
         match self {
             Self::PrecisionWeaponKill => &[0x962E_A19B],
             Self::MeleeKill => &[0xBF39_E12B, 0xE175_76C9, 0x5D3A_7C84],
@@ -50,7 +110,8 @@ impl PerkActivation {
         }
     }
 
-    const fn requires_weapon(self) -> bool {
+    /// Whether the kill must originate from the owning weapon.
+    pub const fn requires_weapon(self) -> bool {
         matches!(self, Self::WeaponKill | Self::PrecisionWeaponKill)
     }
 }
@@ -202,7 +263,9 @@ fn validate_outlaw(action_tag: u32, source: &[u8]) -> Result<[usize; 2], String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    const REGISTRY: &[u8] = include_bytes!("action/native/tests/label_registry.bin");
+    fn registry() -> Vec<u8> {
+        crate::package_runtime::labels::fixture::registry()
+    }
 
     fn fixture() -> Vec<u8> {
         let mut b = vec![0; 1782];
@@ -267,7 +330,7 @@ mod tests {
     fn activation_changes_both_filters_and_preserves_effect_bytes() {
         let source = fixture();
         for condition in PerkActivation::ALL {
-            let result = with_activation(OUTLAW_ACTION, &source, condition, REGISTRY).unwrap();
+            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
             for start in NODE_STARTS {
                 assert_activation_filter(&result, start, condition);
             }
@@ -292,7 +355,7 @@ mod tests {
                 OUTLAW_ACTION,
                 &source,
                 PerkActivation::PrecisionWeaponKill,
-                REGISTRY
+                &registry()
             )
             .unwrap(),
             source
@@ -302,14 +365,19 @@ mod tests {
     #[test]
     fn activation_rejects_unmapped_or_changed_sources_without_mutation() {
         let source = fixture();
-        assert!(with_activation(0, &source, PerkActivation::AnyKill, REGISTRY).is_err());
+        assert!(with_activation(0, &source, PerkActivation::AnyKill, &registry()).is_err());
         for offset in [0, 0xFC, 0x108, 0x1D0, 0x270, 0x280, 0x241, 0x580] {
             let mut changed = source.clone();
             changed[offset] ^= 1;
             let before = changed.clone();
             assert!(
-                with_activation(OUTLAW_ACTION, &changed, PerkActivation::AnyKill, REGISTRY)
-                    .is_err(),
+                with_activation(
+                    OUTLAW_ACTION,
+                    &changed,
+                    PerkActivation::AnyKill,
+                    &registry()
+                )
+                .is_err(),
                 "{offset:X}"
             );
             assert_eq!(before, changed);
@@ -321,9 +389,9 @@ mod tests {
         use crate::sandbox_perk::action::native::{Graph, labels};
         let source = fixture();
         for condition in PerkActivation::ALL {
-            let result = with_activation(OUTLAW_ACTION, &source, condition, REGISTRY).unwrap();
+            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
             let expected =
-                super::super::program::compiler::compile_labels(REGISTRY, condition.labels())
+                super::super::program::compiler::compile_labels(&registry(), condition.labels())
                     .unwrap();
             for start in NODE_STARTS {
                 let graph = Graph::read(&result, start, NODE_CLASS).unwrap();

@@ -60,7 +60,7 @@ impl Plan {
                 match (&self.json, before) {
                     (Some(expected), Some(before)) => {
                         crate::storage::replace_file_if_unchanged(&target, &before, expected)
-                            .map_err(storage::err)?
+                            .map_err(storage::err)?;
                     }
                     (Some(_), None) => fs::remove_file(&target).map_err(storage::err)?,
                     (None, Some(before)) => storage::create_json(&target, &before)?,

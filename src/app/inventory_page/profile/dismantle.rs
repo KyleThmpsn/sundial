@@ -30,7 +30,7 @@ impl SundialApp {
                 || format!("{} policies", rewards.len()),
                 |capacity| format!("{} / {capacity}", rewards.len()),
             );
-            ui.label(egui::RichText::new(count).weak());
+            ui.weak(count);
             let can_add = editable && account_ready && has_room;
             let response = ui.add_enabled(can_add, egui::Button::new("+").small());
             let response = if can_add {
@@ -54,11 +54,8 @@ impl SundialApp {
             "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together.",
         );
         if filtered {
-            ui.label(
-                egui::RichText::new(
-                    "Leave a filter on Any to match every rarity, gear class, or masterwork state.",
-                )
-                .weak(),
+            ui.weak(
+                "Leave a filter on Any to match every rarity, gear class, or masterwork state.",
             );
         }
         ui.add_space(4.0);
@@ -95,7 +92,7 @@ impl SundialApp {
         }
 
         if rewards.is_empty() {
-            ui.label(egui::RichText::new("No dismantle payout policies.").weak());
+            ui.weak("No dismantle payout policies.");
             return pending;
         }
 

@@ -470,7 +470,7 @@ fn shape_reasons(
     match (before, after) {
         (Ok(before), Ok(after)) if before == after => {}
         (Ok(_), Ok(_)) => {
-            reasons.push("Affected component instance or definition schemas differ".into())
+            reasons.push("Affected component instance or definition schemas differ".into());
         }
         _ => reasons.push("Affected component schemas could not all be verified".into()),
     }

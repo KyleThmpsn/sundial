@@ -157,6 +157,11 @@ pub(super) fn resolve_project_weapons_with_progress(
                 "This weapon definition has no socket block for gameplay authoring. Choose another base or use it as an appearance donor.",
             ));
         }
+        // Reload-hold element switching is an ordinary socket column plus, for a subset of
+        // elements, a private plug variant. Expand it here so every later stage sees plain
+        // socket overrides.
+        let expanded = variable_damage::expand_spec(weapon, &definition)?;
+        let weapon = expanded.as_ref().unwrap_or(weapon);
         let donor_icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
         validate_reused_stock_item_icon(stock_item_icons, &strings, donor_icon_index)?;
         let donor_icon_container =

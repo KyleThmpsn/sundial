@@ -436,8 +436,7 @@ impl PackageAuthoringApp {
                     .weapon_pattern_index
                     .map(|_| HexHash::new(hash));
             }
-            Some(WeaponDonorPickerAction::Secondary) => {}
-            None => {}
+            Some(WeaponDonorPickerAction::Secondary) | None => {}
         }
 
         if let Some(index) = self.recipe.overrides.weapon_pattern_index {
@@ -483,14 +482,11 @@ impl PackageAuthoringApp {
             ),
         );
         let override_index = self.recipe.overrides.stat_group_index;
-        ui.label(
-            egui::RichText::new(if override_index.is_some() {
-                "Explicit display scaling"
-            } else {
-                "Inherited from gameplay donor"
-            })
-            .strong(),
-        );
+        ui.strong(if override_index.is_some() {
+            "Explicit display scaling"
+        } else {
+            "Inherited from gameplay donor"
+        });
         let source_hash = self
             .recipe
             .overrides
@@ -589,8 +585,7 @@ impl PackageAuthoringApp {
                     );
                 }
             }
-            Some(WeaponDonorPickerAction::Secondary) => {}
-            None => {}
+            Some(WeaponDonorPickerAction::Secondary) | None => {}
         }
         if let Some(index) = self.recipe.overrides.stat_group_index
             && !self

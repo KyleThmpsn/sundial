@@ -102,7 +102,7 @@ impl Review {
             egui::CollapsingHeader::new(format!("{} Saved Fields", self.fields.len()))
                 .id_salt("review_saved_fields")
                 .show(ui, |ui| {
-                    draw_changes(ui, "progression_field_changes", &self.fields)
+                    draw_changes(ui, "progression_field_changes", &self.fields);
                 });
         }
     }

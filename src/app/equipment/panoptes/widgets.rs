@@ -115,14 +115,14 @@ pub(super) fn draw_compact_item_header(
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut drew_metadata = false;
                 if let Some(type_name) = header.type_name {
-                    ui.label(egui::RichText::new(type_name).weak());
+                    ui.weak(type_name);
                     drew_metadata = true;
                 }
                 if let Some(generation) = header.armor_generation {
                     if drew_metadata {
-                        ui.label(egui::RichText::new("·").weak());
+                        ui.weak("·");
                     }
-                    ui.label(egui::RichText::new(generation).weak());
+                    ui.weak(generation);
                 }
             });
             if !header.valid {

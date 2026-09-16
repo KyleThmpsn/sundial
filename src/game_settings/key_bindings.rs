@@ -247,7 +247,7 @@ pub(super) fn draw_key_bindings(
                 ui.end_row();
             }
             if visible == 0 {
-                ui.label(egui::RichText::new("No matching actions").weak());
+                ui.weak("No matching actions");
                 ui.end_row();
             }
         });
@@ -309,7 +309,7 @@ pub(super) fn binding_picker(
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
             ui.set_min_width(400.0);
-            ui.label(egui::RichText::new("Modifier").strong());
+            ui.strong("Modifier");
             ui.horizontal_wrapped(|ui| {
                 for (modifier, label) in BindingModifier::ALL {
                     ui.selectable_value(&mut picker.modifier, modifier, label);
@@ -364,7 +364,7 @@ pub(super) fn binding_picker(
                         }
                     }
                     if visible == 0 {
-                        ui.label(egui::RichText::new("No matching keys found").weak());
+                        ui.weak("No matching keys found");
                     }
                 });
         },
@@ -402,7 +402,7 @@ pub(super) fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
         return;
     };
     if value.is_null() {
-        ui.label(egui::RichText::new("Unassigned").weak());
+        ui.weak("Unassigned");
     } else if let Some(code) = value.as_u64() {
         ui.add_enabled(
             false,
@@ -418,152 +418,12 @@ pub(super) fn binding_label(ui: &mut egui::Ui, value: Option<&Value>) {
     }
 }
 
-pub(super) const NAMED_INPUTS: &[&str; 120] = &[
-    "escape",
-    "f1",
-    "f2",
-    "f3",
-    "f4",
-    "f5",
-    "f6",
-    "f7",
-    "f8",
-    "f9",
-    "f10",
-    "f11",
-    "f12",
-    "print screen",
-    "scroll lock",
-    "pause",
-    "`",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-    "0",
-    "-",
-    "=",
-    "backspace",
-    "tab",
-    "q",
-    "w",
-    "e",
-    "r",
-    "t",
-    "y",
-    "u",
-    "i",
-    "o",
-    "p",
-    "[",
-    "]",
-    r"\",
-    "caps lock",
-    "a",
-    "s",
-    "d",
-    "f",
-    "g",
-    "h",
-    "j",
-    "k",
-    "l",
-    ";",
-    "'",
-    "return",
-    "left shift",
-    "z",
-    "x",
-    "c",
-    "v",
-    "b",
-    "n",
-    "m",
-    ",",
-    ".",
-    "/",
-    "right shift",
-    "left control",
-    "left windows",
-    "left alt",
-    "space",
-    "right alt",
-    "right windows",
-    "menu",
-    "right control",
-    "up",
-    "down",
-    "left",
-    "right",
-    "insert",
-    "home",
-    "page up",
-    "delete",
-    "end",
-    "page down",
-    "num lock",
-    "keypad /",
-    "keypad *",
-    "keypad 0",
-    "keypad 1",
-    "keypad 2",
-    "keypad 3",
-    "keypad 4",
-    "keypad 5",
-    "keypad 6",
-    "keypad 7",
-    "keypad 8",
-    "keypad 9",
-    "keypad -",
-    "keypad +",
-    "keypad enter",
-    "keypad .",
-    "<",
-    "shift",
-    "control",
-    "key_windows",
-    "alt",
-    "left mouse button",
-    "middle mouse button",
-    "right mouse button",
-    "extra mouse button 1",
-    "extra mouse button 2",
-    "mouse wheel up",
-    "mouse wheel down",
-    "unused",
-    "ctrl",
-    "left ctrl",
-    "right ctrl",
-];
-
-pub(super) const MODIFIER_INPUTS: &[&str; 12] = &[
-    "left shift",
-    "right shift",
-    "shift",
-    "left control",
-    "right control",
-    "control",
-    "ctrl",
-    "left ctrl",
-    "right ctrl",
-    "left alt",
-    "right alt",
-    "alt",
-];
+// The named input and modifier catalogs live in the account domain so that the
+// editor and account validation can never drift apart.
+pub(super) use sundial_account::{MODIFIER_INPUTS, NAMED_INPUTS, matches_input_name};
 
 pub(super) fn trim_input_name(name: &str) -> &str {
     name.trim_matches([' ', '\t'])
-}
-
-pub(super) fn matches_input_name(candidate: &str, names: &[&str]) -> bool {
-    names
-        .iter()
-        .any(|name| candidate.eq_ignore_ascii_case(name))
 }
 
 pub(super) fn modified_input(name: &str) -> Option<(&str, &str)> {

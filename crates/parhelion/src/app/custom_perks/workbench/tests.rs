@@ -1,3 +1,4 @@
+mod accessibility;
 mod canvas;
 mod entry;
 mod guidance;

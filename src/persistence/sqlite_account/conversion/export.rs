@@ -153,7 +153,7 @@ fn export_item(item: &ItemInstance, flags: &mut usize) -> Value {
         row["plugs"] = json!(
             plugs
                 .iter()
-                .map(|plug| plug.map(|hash| hash.get()))
+                .map(|plug| plug.map(sundial_account::DefinitionHash::get))
                 .collect::<Vec<_>>()
         );
     }

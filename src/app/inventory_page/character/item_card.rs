@@ -215,12 +215,9 @@ impl SundialApp {
                             );
                         } else if matches!(snapshot.plugs, ItemPlugs::Authored(ref plugs) if !plugs.is_empty())
                         {
-                            ui.label(
-                                egui::RichText::new(
+                            ui.weak(
                                     "Plugs are preserved but cannot be guided without an installed item definition.",
-                                )
-                                .weak(),
-                            );
+                                );
                         }
                     }
                     });

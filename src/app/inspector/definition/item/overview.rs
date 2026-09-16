@@ -138,7 +138,7 @@ pub(super) fn draw_hash_item_investment_stats(
                         if let Some(definition) = definition {
                             draw_named_catalog_hash_link(ui, catalog, definition.hash, stat_name.unwrap_or("Unnamed Stat"));
                         } else {
-                            ui.label(egui::RichText::new("-").weak());
+                            ui.weak("-");
                         }
                         ui.monospace(stat.value.to_string());
                         ui.monospace(catalog.item_in_game_stat_display(item_hash, stat));

@@ -54,8 +54,8 @@ pub(in crate::app::custom_perks) fn browser_with_toolbar<T>(
     let mut picked = None;
     if open {
         let screen = ui.ctx().screen_rect();
-        let width = (screen.width() - 48.0).clamp(280.0, 1100.0);
-        let height = (screen.height() - 96.0).clamp(240.0, 760.0);
+        let width = (screen.width() - 48.0).clamp(280.0, 880.0);
+        let height = (screen.height() - 96.0).clamp(240.0, 640.0);
         let mut local_query = ui
             .data(|data| data.get_temp::<String>(id.with("query")))
             .unwrap_or_default();
@@ -74,8 +74,6 @@ pub(in crate::app::custom_perks) fn browser_with_toolbar<T>(
             .show(ui.ctx(), |ui| {
                 crate::app::style::workbench_style(ui);
                 let available = ui.available_height().max(110.0);
-                // Keep the user-sized window stable through loading and empty searches.
-                ui.set_min_height(available);
                 picked = contents(ui, &mut local_query, clicked, available);
             });
         *query = local_query.clone();

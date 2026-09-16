@@ -125,25 +125,33 @@ impl NativeNode {
     /// An editable configuration of an observed native effect kind.
     #[must_use]
     pub fn effect(kind: u8) -> Option<Self> {
-        Some(Self {
-            kind,
-            bytes: crate::sandbox_perk::action::layout::blank_effect(kind)
-                .or_else(|| crate::sandbox_perk::action::native::template(false, kind))?,
-        })
+        Self::fresh(false, kind)
     }
 
     /// An editable configuration of an observed native condition kind.
     #[must_use]
     pub fn condition(kind: u8) -> Option<Self> {
-        Some(Self {
-            kind,
-            bytes: crate::sandbox_perk::action::layout::blank_condition(kind)
-                .or_else(|| crate::sandbox_perk::action::native::template(true, kind))?,
-        })
+        Self::fresh(true, kind)
+    }
+
+    fn fresh(condition: bool, kind: u8) -> Option<Self> {
+        use crate::sandbox_perk::action::{layout, native};
+        let mut bytes = if condition {
+            layout::blank_condition(kind).or_else(|| native::template(true, kind))?
+        } else {
+            layout::blank_effect(kind).or_else(|| native::template(false, kind))?
+        };
+        // A kind with a plain title starts as the configuration that title describes.
+        for (offset, value) in layout::stock_defaults(condition, kind) {
+            if let Some(byte) = bytes.get_mut(*offset) {
+                *byte = *value;
+            }
+        }
+        Some(Self { kind, bytes })
     }
 
     fn check(&self, family: &str, size: Option<usize>, mapped: bool) -> Result<(), String> {
-        if !mapped {
+        if family == "Condition" || !mapped {
             let condition = family == "Condition";
             let entry = if condition {
                 crate::sandbox_perk::nodes::condition(self.kind)
@@ -170,27 +178,13 @@ impl NativeNode {
             ));
         }
         use crate::sandbox_perk::action::layout;
-        let layout = if family == "Condition" {
-            if self.bytes[..4] != 1.0_f32.to_le_bytes()
-                || self.bytes[4] != 0xFF
-                || self.bytes[5] != self.kind
-                || self.bytes[6] != 0
-            {
-                return Err(format!(
-                    "Condition kind {} has an unsupported probability, kind or linked-state header.",
-                    self.kind
-                ));
-            }
-            layout::condition_layout(self.kind)
-        } else {
-            if self.bytes[0] != self.kind || self.bytes[1] > 1 {
-                return Err(format!(
-                    "Effect kind {} has an invalid kind or retained-state header.",
-                    self.kind
-                ));
-            }
-            layout::effect_layout(self.kind)
-        };
+        if self.bytes[0] != self.kind || self.bytes[1] > 1 {
+            return Err(format!(
+                "Effect kind {} has an invalid kind or retained-state header.",
+                self.kind
+            ));
+        }
+        let layout = layout::effect_layout(self.kind);
         if let Some(layout) = layout {
             for field in layout.fields {
                 use crate::sandbox_perk::action::FactValue;
@@ -791,18 +785,96 @@ pub struct Program {
     /// The activation node of a `Trigger::Native` program, carried verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_trigger: Option<NativeNode>,
-    /// A verbatim ending condition for an always-active or native-triggered program, in
-    /// place of a timer or an ending key.
+    /// A verbatim ending condition, replacing the trigger's default ending condition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_removal: Option<NativeNode>,
     /// Complete native form for programs with arbitrary groups, policies and conditions.
     /// When present, this owns the behavior and the convenience controls must be defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeProgram>,
+    /// Root records outside the program, preserved verbatim from a stock action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auxiliary: Vec<NativeRecord>,
+    /// The execution policy preserved from a stock action. `None` is the default policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Policy>,
+    /// Further activation conditions beside the trigger, carried verbatim. The engine starts
+    /// the effect when any condition in the list passes, so these widen the trigger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_triggers: Vec<NativeNode>,
+    /// Further ending conditions beside the primary one, carried verbatim. Any one ends the
+    /// effect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_removals: Vec<NativeNode>,
+    /// A verbatim rearm condition, replacing the cooldown timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_rearm: Option<NativeNode>,
+    /// Further rearm conditions beside the primary one, carried verbatim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_rearms: Vec<NativeNode>,
 }
 
 mod native;
 pub use native::NativeProgram;
+
+/// One closed native record outside the program, carried by class and the bytes of its
+/// allocation graph.
+///
+/// Stock records hold keys, resource tags, scalars and at most a string, with no link into
+/// the program, so preserving them is a copy. Their meaning is not resolved and they have no
+/// controls.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeRecord {
+    #[serde(with = "hex_key")]
+    pub class: u32,
+    #[serde(with = "hex_bytes")]
+    pub bytes: Vec<u8>,
+}
+
+impl NativeRecord {
+    /// The bytes must read as one closed allocation graph of the declared class, with no
+    /// bytes left over.
+    pub fn check(&self) -> Result<(), String> {
+        let graph = crate::sandbox_perk::action::native::Graph::read(&self.bytes, 0, self.class)?;
+        let needed = graph.emit()?.len();
+        if needed != self.bytes.len() {
+            return Err(format!(
+                "Native record 0x{:08X} holds {} bytes where its allocation graph needs {needed}.",
+                self.class,
+                self.bytes.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl From<&crate::sandbox_perk::action::DecodedRecord> for NativeRecord {
+    fn from(record: &crate::sandbox_perk::action::DecodedRecord) -> Self {
+        Self {
+            class: record.class,
+            bytes: record.bytes.clone(),
+        }
+    }
+}
+
+/// The execution policy a stock action selects at its root, preserved verbatim.
+///
+/// Stock perks use selectors 1, 3 and 5, each with its own configuration record class. The
+/// policies' behavior is not resolved, so a program carries the selection without controls.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    pub selector: u8,
+    /// Root byte +0xB9. Set in two stock actions, role unresolved.
+    #[serde(default)]
+    pub modifier: u8,
+    /// Root key at +0x80. The empty key in all but one stock action, role unresolved.
+    #[serde(with = "hex_key")]
+    pub key: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<NativeRecord>,
+}
 
 /// An optional key written as a `0x` hexadecimal string.
 mod hex_key_option {
@@ -838,11 +910,28 @@ impl Default for Program {
             native_trigger: None,
             native_removal: None,
             native: None,
+            auxiliary: Vec::new(),
+            policy: None,
+            alternative_triggers: Vec::new(),
+            alternative_removals: Vec::new(),
+            native_rearm: None,
+            alternative_rearms: Vec::new(),
         }
     }
 }
 
 impl Program {
+    /// Kill-event capabilities come from the native event kind, regardless of
+    /// whether the condition was authored from defaults or copied from a perk.
+    pub fn has_kill_trigger(&self) -> bool {
+        self.trigger.is_event()
+            || self.trigger == Trigger::Native
+                && self
+                    .native_trigger
+                    .as_ref()
+                    .is_some_and(|node| node.kind == 2)
+    }
+
     /// Drafts can be empty. Build readiness is checked separately.
     pub fn validate_structure(&self) -> Result<(), String> {
         if self.name.trim().is_empty() || self.name.contains('\0') {
@@ -854,6 +943,12 @@ impl Program {
                 || self.native_trigger.is_some()
                 || self.native_removal.is_some()
                 || self.removal_key.is_some()
+                || !self.auxiliary.is_empty()
+                || self.policy.is_some()
+                || !self.alternative_triggers.is_empty()
+                || !self.alternative_removals.is_empty()
+                || self.native_rearm.is_some()
+                || !self.alternative_rearms.is_empty()
                 || self.trigger != defaults.trigger
                 || self.duration_ms != defaults.duration_ms
                 || self.cooldown_ms != defaults.cooldown_ms
@@ -868,6 +963,13 @@ impl Program {
         }
         if self.actions.len() > 16 {
             return Err("A custom effect can contain up to 16 actions.".into());
+        }
+        for record in self.auxiliary.iter().chain(
+            self.policy
+                .iter()
+                .filter_map(|policy| policy.configuration.as_ref()),
+        ) {
+            record.check()?;
         }
         match self.removal_key {
             Some(_) if self.trigger != Trigger::Always => {
@@ -894,17 +996,27 @@ impl Program {
             (None, _) => {}
         }
         if let Some(node) = &self.native_removal {
-            if !matches!(self.trigger, Trigger::Always | Trigger::Native) {
-                return Err(
-                    "A native ending condition applies to an always-active or native-triggered effect only."
-                        .into(),
-                );
-            }
             if self.removal_key.is_some() {
                 return Err(
                     "Use an ending event key or a native ending condition, not both.".into(),
                 );
             }
+            node.check(
+                "Condition",
+                layout::condition_size(node.kind),
+                layout::condition_layout(node.kind).is_some(),
+            )?;
+        }
+        if self.native_rearm.is_some() && self.cooldown_ms != 0 {
+            return Err("Use a cooldown or a native rearm condition, not both.".into());
+        }
+        for node in self
+            .alternative_triggers
+            .iter()
+            .chain(&self.alternative_removals)
+            .chain(&self.native_rearm)
+            .chain(&self.alternative_rearms)
+        {
             node.check(
                 "Condition",
                 layout::condition_size(node.kind),
@@ -1007,7 +1119,7 @@ impl Program {
         if self.actions.is_empty() {
             return Err("Add an action to the custom effect.".into());
         }
-        if self.trigger.is_event() && self.duration_ms == 0 {
+        if self.has_kill_trigger() && self.duration_ms == 0 && self.native_removal.is_none() {
             return Err(
                 "An event effect needs a duration greater than zero before it can be ready again."
                     .into(),
@@ -1035,11 +1147,11 @@ impl Program {
                     position: Position::Event,
                     ..
                 }
-            ) && !self.trigger.is_event()
+            ) && !self.has_kill_trigger()
             {
                 return Err("Event Position requires a kill trigger.".into());
             }
-            if matches!(action, Action::ExtendTimers { .. }) && !self.trigger.is_event() {
+            if matches!(action, Action::ExtendTimers { .. }) && !self.has_kill_trigger() {
                 return Err("Extend Timers requires a kill trigger.".into());
             }
         }

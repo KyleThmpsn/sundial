@@ -85,18 +85,19 @@ fn fidelity_detects_timer_caps_root_state_and_label_changes() {
 #[test]
 fn unsupported_action_structure_never_gets_a_false_exact_conversion() {
     let original = drawn_pattern_action();
+    // A policy selector is carried and compared, so a change is a reported difference.
     let mut changed = original.clone();
     changed[0xB8] = 1;
-    assert!(fidelity(&original, &changed).is_err());
+    assert!(!fidelity(&original, &changed).unwrap().is_empty());
     let mut builder = Builder::new();
     let activation = builder.unconditional();
     builder.pointer_list(0x20, CONDITION_ROW_CLASS, &[activation]);
+    // Auxiliary records are carried verbatim, so a root list whose rows are not the pointer
+    // rows every stock action uses cannot be decoded and nothing claims to convert it.
     builder.rows(0x10, 0x8080_4087, 1, 8);
-    let decoded = decode(&builder.finish()).unwrap();
     assert!(
-        decompile(&decoded, "Auxiliary", |tag| tag)
+        decode(&builder.finish())
             .unwrap_err()
-            .0
-            .contains("auxiliary")
+            .contains("0x80804087")
     );
 }

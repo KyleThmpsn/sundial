@@ -15,7 +15,7 @@ mod fields;
 pub use fields::{
     ADDED_LABELS, CONSTANT_VALUE, CREATE_ENTITY_FLOAT_LABELS, CREATE_ENTITY_KEY_LABELS,
     CREATE_ENTITY_MODE_LABEL, EXTEND_TIMERS_MASK_LABEL, NAMED_PROPERTY_LABELS, NamedPropertyLabels,
-    PROGRAM_WORDS, REQUIRED_LABELS, constant_program_value,
+    PROGRAM_WORDS, REQUIRED_LABELS, RESERVE_TRANSFER_PROGRAMS, constant_program_value,
 };
 #[cfg(test)]
 pub(crate) mod fixtures;
@@ -38,16 +38,19 @@ pub const EFFECT_ROW_CLASS: u32 = 0x8080_40AC;
 pub const SUBGROUP_ROW_CLASS: u32 = 0x8080_3E06;
 /// Row class of one source label entry.
 pub const LABEL_ROW_CLASS: u32 = 0x8080_94B3;
+/// Row class of the auxiliary record pointer list at the action root.
+pub const AUXILIARY_ROW_CLASS: u32 = 0x8080_4083;
 
 pub(crate) const GROUP_SIZE: usize = 0x48;
 pub(crate) const PRIMARY_GROUP: usize = 0x20;
 const ADDITIONAL_GROUPS: usize = 0x68;
-const AUXILIARY_RECORDS: usize = 0x10;
-const POLICY_CONFIGURATION: usize = 0x78;
+pub(crate) const AUXILIARY_RECORDS: usize = 0x10;
+pub(crate) const POLICY_CONFIGURATION: usize = 0x78;
+pub(crate) const ROOT_KEY: usize = 0x80;
 const ACTIVATION_EVENT_MASK: usize = 0x88;
 const REMOVAL_EVENT_MASK: usize = 0x90;
 const REARM_EVENT_MASK: usize = 0x98;
-const POLICY_SELECTOR: usize = 0xB8;
+pub(crate) const POLICY_SELECTOR: usize = 0xB8;
 const RETAINED_STATE_BUDGET: usize = 0xCC;
 const TIMER_BUDGET: usize = 0xCD;
 const ROOT_SIZE: usize = 0xD0;
@@ -192,6 +195,11 @@ pub struct DecodedCondition {
 }
 
 impl DecodedCondition {
+    /// Source-backed gameplay description, also used by the complete program editor.
+    pub fn description(&self) -> String {
+        summary::describe_condition(self)
+    }
+
     /// Catalog entry for this node, when the client registers the kind.
     #[must_use]
     pub fn catalog(&self) -> Option<&'static nodes::NodeKind> {
@@ -229,6 +237,11 @@ pub struct DecodedEffect {
 }
 
 impl DecodedEffect {
+    /// Source-backed gameplay description, also used by the complete program editor.
+    pub fn description(&self) -> String {
+        summary::describe_effect(self)
+    }
+
     /// Catalog entry for this node, when the client registers the kind.
     #[must_use]
     pub fn catalog(&self) -> Option<&'static nodes::NodeKind> {
@@ -276,8 +289,12 @@ pub struct DecodedAction {
     pub byte_size: usize,
     /// Execution policy selected by the action root.
     pub policy: u8,
-    /// Whether the policy carries a typed configuration record.
-    pub policy_configuration: bool,
+    /// The policy's configuration record, when the root links one.
+    pub policy_configuration: Option<DecodedRecord>,
+    /// Root byte +0xB9 beside the policy selector. Set in two stock actions, role unresolved.
+    pub policy_modifier: u8,
+    /// Root key at +0x80. The empty key in all but one stock action, role unresolved.
+    pub root_key: u32,
     /// Retained effect-state slots reserved by the compiled action.
     pub retained_state_budget: u8,
     /// Timer slots reserved by the compiled action.
@@ -288,10 +305,20 @@ pub struct DecodedAction {
     pub removal_event_mask: u64,
     /// Compiled event mask gating the primary rearm list.
     pub rearm_event_mask: u64,
-    /// Auxiliary root records whose role is not resolved.
-    pub auxiliary_records: usize,
+    /// Root records outside every group, in list order. Their role is not resolved.
+    pub auxiliary: Vec<DecodedRecord>,
     /// The primary group first, then any additional groups.
     pub groups: Vec<DecodedGroup>,
+}
+
+/// One closed native record, carried by class and the bytes of its allocation graph.
+///
+/// Auxiliary records are self-contained leaves. A policy configuration may link a string,
+/// which its bytes then include, so either kind can be preserved verbatim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedRecord {
+    pub class: u32,
+    pub bytes: Vec<u8>,
 }
 
 impl DecodedAction {
@@ -382,19 +409,55 @@ pub fn decode(payload: &[u8]) -> Result<DecodedAction, String> {
     for offset in additional_groups(payload)? {
         groups.push(decode_group(payload, offset)?);
     }
-    let (auxiliary_records, ..) = optional_array(payload, AUXILIARY_RECORDS)?;
     Ok(DecodedAction {
         byte_size,
         policy: bytes_at::<1>(payload, POLICY_SELECTOR)?[0],
-        policy_configuration: i64_at(payload, POLICY_CONFIGURATION)? != 0,
+        policy_configuration: policy_configuration(payload)?,
+        policy_modifier: bytes_at::<1>(payload, POLICY_SELECTOR + 1)?[0],
+        root_key: u32_at(payload, ROOT_KEY)?,
         retained_state_budget: bytes_at::<1>(payload, RETAINED_STATE_BUDGET)?[0],
         timer_budget: bytes_at::<1>(payload, TIMER_BUDGET)?[0],
         activation_event_mask: u64_at(payload, ACTIVATION_EVENT_MASK)?,
         removal_event_mask: u64_at(payload, REMOVAL_EVENT_MASK)?,
         rearm_event_mask: u64_at(payload, REARM_EVENT_MASK)?,
-        auxiliary_records,
+        auxiliary: auxiliary_records(payload)?,
         groups,
     })
+}
+
+/// Reads the policy configuration record with everything it links.
+fn policy_configuration(payload: &[u8]) -> Result<Option<DecodedRecord>, String> {
+    let relative = i64_at(payload, POLICY_CONFIGURATION)?;
+    if relative == 0 {
+        return Ok(None);
+    }
+    let node = relative_offset(POLICY_CONFIGURATION, 0, relative)?;
+    let class = node_class(payload, node)?;
+    Ok(Some(DecodedRecord {
+        class,
+        bytes: native::capture(payload, node, class)?,
+    }))
+}
+
+/// Reads each auxiliary record as one closed allocation, so a record that pointed at other
+/// allocations is refused rather than copied without them.
+fn auxiliary_records(payload: &[u8]) -> Result<Vec<DecodedRecord>, String> {
+    pointer_rows(payload, AUXILIARY_RECORDS, AUXILIARY_ROW_CLASS)?
+        .into_iter()
+        .map(|node| {
+            let class = node_class(payload, node)?;
+            let graph = native::Graph::read(payload, node, class)?;
+            let [block] = graph.blocks.as_slice() else {
+                return Err(format!(
+                    "Auxiliary record 0x{class:08X} points at other allocations"
+                ));
+            };
+            Ok(DecodedRecord {
+                class,
+                bytes: block.bytes.clone(),
+            })
+        })
+        .collect()
 }
 
 fn additional_groups(payload: &[u8]) -> Result<Vec<usize>, String> {
@@ -489,6 +552,21 @@ fn node_class(payload: &[u8], node: usize) -> Result<u32, String> {
         .checked_sub(size_of::<u32>())
         .ok_or("Action node begins before its class")?;
     u32_at(payload, class_offset)
+}
+
+/// Read a standalone condition through the same decoder used for complete actions.
+pub fn decode_condition_node(payload: &[u8]) -> Result<DecodedCondition, String> {
+    let kind = bytes_at::<8>(payload, 0)?[5];
+    let class = nodes::condition(kind)
+        .filter(|entry| entry.observed())
+        .ok_or_else(|| format!("Condition kind {kind} has no recovered native layout."))?
+        .class;
+    // Standalone nodes omit the allocation's preceding class tag. Relative pointers
+    // keep their meaning when the entire captured graph moves by the same amount.
+    let mut allocation = vec![0; 8];
+    allocation[4..8].copy_from_slice(&class.to_le_bytes());
+    allocation.extend_from_slice(payload);
+    decode_condition(&allocation, 8, 0)
 }
 
 fn decode_condition(payload: &[u8], node: usize, depth: usize) -> Result<DecodedCondition, String> {

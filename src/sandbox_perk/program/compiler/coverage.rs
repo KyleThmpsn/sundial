@@ -287,12 +287,15 @@ fn invalid_native_headers_and_numeric_values_are_rejected_before_emission() {
         }],
         ..Program::default()
     };
-    for (offset, value) in [(0, 1), (4, 1), (5, 9), (6, 1)] {
+    for (offset, value) in [(5, 9), (6, 2)] {
         let mut program = base.clone();
         program.native_trigger.as_mut().unwrap().bytes[offset] = value;
         assert!(program.validate().is_err(), "header byte {offset}");
     }
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut program = base.clone();
+        program.native_trigger.as_mut().unwrap().bytes[..4].copy_from_slice(&value.to_le_bytes());
+        assert!(program.validate().is_err());
         let mut program = base.clone();
         let Action::Native { node } = &mut program.actions[0] else {
             unreachable!()
@@ -303,6 +306,51 @@ fn invalid_native_headers_and_numeric_values_are_rejected_before_emission() {
     for text in ["0x0€", "0x💥", "0xGG", "0xF"] {
         let value = serde_json::json!({"kind": 0, "bytes": text});
         assert!(serde_json::from_value::<NativeNode>(value).is_err());
+    }
+}
+
+#[test]
+fn inspected_stock_conditions_reuse_probability_and_complete_nested_values() {
+    use crate::investment::native_content::conditions;
+    for kind in [6, 26, 28] {
+        let mut node = NativeNode::condition(kind).unwrap();
+        node.bytes[..4].copy_from_slice(&0.125f32.to_le_bytes());
+        node.bytes[4] = 255;
+        let original = Program {
+            trigger: Trigger::Native,
+            native_trigger: Some(node),
+            actions: vec![Action::add_rounds(3)],
+            ..Program::default()
+        };
+        let compiled = assemble(&original, None).unwrap();
+        let choices = conditions::from_payload(&compiled.payload).unwrap();
+        let copied = choices.iter().find(|choice| choice.kind == kind).unwrap();
+        let standalone = action::decode_condition_node(&copied.bytes).unwrap();
+        let complete = action::decode(&compiled.payload).unwrap();
+        let root = &complete.groups[0].activation[0];
+        assert_eq!(standalone.description(), root.description());
+        assert_eq!(standalone.facts, root.facts);
+        assert_eq!(standalone.native, root.native);
+        let custom = Program {
+            native_trigger: Some(NativeNode {
+                kind,
+                bytes: copied.bytes.clone(),
+            }),
+            ..original
+        };
+        let rebuilt = assemble(&custom, None).unwrap();
+        assert_eq!(rebuilt.payload, compiled.payload);
+        let reread = action::decode(&rebuilt.payload).unwrap();
+        assert_eq!(
+            &reread.groups[0].activation[0].native[..4],
+            &0.125f32.to_le_bytes()
+        );
+        if kind == 26 {
+            assert!(
+                choices.len() > 1,
+                "nested conditions must also be discoverable"
+            );
+        }
     }
 }
 

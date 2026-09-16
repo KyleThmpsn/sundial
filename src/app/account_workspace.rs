@@ -428,8 +428,7 @@ pub(super) fn account_settings_map(
 pub(super) fn named_key_bindings_editable(document: &WorkspaceDocument) -> bool {
     match &document.account {
         AccountDocument::Json => crate::game_settings::key_bindings_editable(&document.json),
-        AccountDocument::Sqlite(_) => false,
-        AccountDocument::Blocked(_) => false,
+        AccountDocument::Sqlite(_) | AccountDocument::Blocked(_) => false,
     }
 }
 
@@ -611,9 +610,9 @@ fn setting_value(value: &AccountSettingValue) -> Value {
     match value {
         AccountSettingValue::Boolean(value) => Value::Bool(*value),
         AccountSettingValue::Unsigned(value) => Value::Number(Number::from(*value)),
-        AccountSettingValue::Decimal(value) => Number::from_f64(value.get())
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
+        AccountSettingValue::Decimal(value) => {
+            Number::from_f64(value.get()).map_or(Value::Null, Value::Number)
+        }
         AccountSettingValue::Text(value) => Value::String(value.to_string()),
         AccountSettingValue::InputCode(value) => Value::Number(Number::from(*value)),
         AccountSettingValue::Unassigned => Value::Null,

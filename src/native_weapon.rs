@@ -40,8 +40,33 @@ pub const fn fixed_damage_marker(index: u16) -> Option<(DamageFamily, Element)> 
     }
 }
 
+/// The Fundamentals carries one effect per element, on the plug rather than the weapon. The
+/// Arc leg ships as two interchangeable effects that compile to the same action tag
+/// `0x80BBC95C`: Hard Light's plug carries 462 and Borealis's carries 461. Requiring 462
+/// alone read Borealis as a fixed Void weapon.
+///
+/// Both weapons also carry the legacy Void marker 85 on the item itself. That is not a
+/// contradiction: each effect is gated on the alternate-state key `0xA43A8C2E`, and the Void
+/// effect is the one gated on 0, which is the value an unwritten key holds. The marker is
+/// the same element the dynamic path selects by default, so the static reading agrees with
+/// the dynamic one. Copying the effects onto another weapon without also authoring a write
+/// to that key leaves it on Void permanently.
+pub const VARIABLE_ARC_PERK_INDICES: [u16; 2] = [461, 462];
+pub const VARIABLE_SOLAR_PERK_INDEX: u16 = 463;
+pub const VARIABLE_VOID_PERK_INDEX: u16 = 464;
+
+/// Whether this perk set changes the weapon's element at runtime rather than fixing it.
+#[must_use]
+pub fn carries_variable_element(perks: &[u16]) -> bool {
+    VARIABLE_ARC_PERK_INDICES
+        .iter()
+        .any(|perk| perks.contains(perk))
+        && perks.contains(&VARIABLE_SOLAR_PERK_INDEX)
+        && perks.contains(&VARIABLE_VOID_PERK_INDEX)
+}
+
 pub fn classify_base_damage(perks: &[u16]) -> BaseDamage {
-    if [462, 463, 464].iter().all(|perk| perks.contains(perk)) {
+    if carries_variable_element(perks) {
         return BaseDamage::Variable;
     }
     classify_fixed_damage(perks)

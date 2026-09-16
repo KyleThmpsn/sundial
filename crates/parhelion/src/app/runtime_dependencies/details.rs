@@ -223,7 +223,7 @@ impl Browser {
             egui::CollapsingHeader::new("Item References")
                 .id_salt(("pattern-perk-uses", pattern.index, perk))
                 .show(ui, |ui| {
-                    self.draw_stock_defaults(ui, usize::from(perk), Some(pattern.index))
+                    self.draw_stock_defaults(ui, usize::from(perk), Some(pattern.index));
                 });
         }
         ui.add_space(12.0);

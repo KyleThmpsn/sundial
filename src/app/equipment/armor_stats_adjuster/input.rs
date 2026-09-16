@@ -92,8 +92,7 @@ pub(super) fn source_key(
         allow_inventory_swaps,
         class_type: account::character_metadata(document, character_index)
             .ok()
-            .map(|metadata| u64::from(metadata.class_type))
-            .unwrap_or(99),
+            .map_or(99, |metadata| u64::from(metadata.class_type)),
         equipment: account::equipped_item_snapshots(document, character_index).unwrap_or_default(),
         inventory: account::character_inventory(document, character_index)
             .ok()

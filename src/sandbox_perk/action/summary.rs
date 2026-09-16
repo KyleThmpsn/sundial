@@ -140,12 +140,12 @@ fn condition_lines(conditions: &[DecodedCondition], depth: usize) -> Vec<Summary
         for (index, subgroup) in condition.subgroups.iter().enumerate() {
             out.push(SummaryLine {
                 native: None,
-                text: format!("Subgroup {}, any of", index + 1),
+                text: format!("Requirement {}, met by any of", index + 1),
                 detail: vec![format!(
                     "Hold: {}",
                     FactValue::Seconds(subgroup.hold).render()
                 )],
-                kind_name: "Subgroup".to_owned(),
+                kind_name: "Requirement".to_owned(),
                 support: Support::Readable,
                 depth: depth + 1,
                 asset: None,
@@ -269,7 +269,21 @@ fn requires_weapon(condition: &DecodedCondition) -> bool {
     )
 }
 
-fn describe_condition(condition: &DecodedCondition) -> String {
+pub(super) fn describe_condition(condition: &DecodedCondition) -> String {
+    if condition.kind == 20
+        && let Ok(graph) = super::native::Graph::read(&condition.native, 0, condition.class)
+        && let Some(name) = super::native::predicate::describe(&graph)
+    {
+        return name;
+    }
+    if matches!(condition.kind, 20 | 35)
+        && let Some(name) = state_description(condition.class, &condition.native)
+    {
+        return name;
+    }
+    if let Some(name) = recognized_condition(condition) {
+        return name.to_owned();
+    }
     match condition.kind {
         0 => "Always".to_owned(),
         1 => match fact_value(&condition.facts, "Duration") {
@@ -294,11 +308,115 @@ fn describe_condition(condition: &DecodedCondition) -> String {
         16 => "The weapon is drawn".to_owned(),
         17 => "The weapon is holstered".to_owned(),
         26 => "A counter built from the rows below reaches its threshold".to_owned(),
-        31 => "Every subgroup below passes".to_owned(),
+        31 => "Every requirement below is met".to_owned(),
         35 => "A predicate passes and its nested condition also passes".to_owned(),
         _ => condition
             .catalog()
             .map_or_else(|| condition.name(), |node| node.summary.to_owned()),
+    }
+}
+
+/// A general predicate read as the state it checks: the named key at +D4, inverted by the
+/// flag at +F8, and the equipped weapon labels of any weapon record it carries. Both are
+/// named from the stock perks that use them, so a node with neither keeps its traced name.
+pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
+    let key = native
+        .get(0xD4..0xD8)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))?;
+    let inverted = native.get(0xF8) == Some(&1);
+    let state = super::native::fields::keys::known(class, 0xD4)
+        .iter()
+        .find(|entry| entry.hash == key)
+        .map(|entry| entry.name.to_owned())
+        .or_else(|| {
+            // The inline player and weapon states, named the same way (see `values.rs`).
+            let player = match native.get(0x38) {
+                Some(2) => Some("Airborne"),
+                Some(4) => Some("Sliding"),
+                Some(8) => Some("Sprinting"),
+                _ => None,
+            };
+            let weapon = (native.get(0x81) == Some(&4)).then_some("Aiming Down Sights");
+            match (player, weapon) {
+                (Some(player), Some(weapon)) => Some(format!("{player} and {weapon}")),
+                (Some(one), None) | (None, Some(one)) => Some(one.to_owned()),
+                (None, None) => None,
+            }
+        });
+    let weapons = equipped_weapon_labels(class, native);
+    let mut text = String::new();
+    if let Some(state) = state {
+        text = if inverted {
+            format!("While not {state}")
+        } else {
+            format!("While {state}")
+        };
+    }
+    if !weapons.is_empty() {
+        let list = weapons.join(" or ");
+        if text.is_empty() {
+            text = format!("While a {list} is equipped");
+        } else {
+            text.push_str(&format!(" with a {list} equipped"));
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+/// The weapon type labels of the equipped weapon records a predicate carries. Every stock
+/// use of the record is an Ammo Finder mod reading "while you have an X equipped", and the
+/// record's label site holds the weapon type vocabulary.
+fn equipped_weapon_labels(class: u32, native: &[u8]) -> Vec<String> {
+    let Ok(graph) = super::native::Graph::read(native, 0, class) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for (index, block) in graph.blocks.iter().enumerate() {
+        if block.class != 0x8080_29DB {
+            continue;
+        }
+        let Ok(lists) = super::native::labels::source(&graph, index, 8) else {
+            continue;
+        };
+        for hash in &lists[0] {
+            let name = crate::sandbox_perk::activation::site_label_name(*hash)
+                .map_or_else(|| format!("label 0x{hash:08X}"), str::to_owned);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// Names require the complete identifying selectors, never just a node kind.
+/// The underlying condition and all of its restrictions remain intact.
+pub(super) fn recognized_condition(condition: &DecodedCondition) -> Option<&'static str> {
+    let bytes = &condition.native;
+    match condition.kind {
+        // Lead from Gold and Overflow agree on the recipient mask. Their second
+        // mask distinguishes Heavy from Special-or-Heavy pickups.
+        6 if bytes.get(8) == Some(&7) => match bytes.get(9) {
+            Some(4) => Some("Pick up Heavy ammunition"),
+            Some(6) => Some("Pick up Special or Heavy ammunition"),
+            _ => None,
+        },
+        // Osmosis/Demolitionist and Bomber/Outreach/Perpetuation identify these
+        // ability-use masks. Only the unfiltered player form gets this name.
+        8 if bytes
+            .get(9..32)
+            .is_some_and(|tail| tail.iter().all(|&byte| byte == 0)) =>
+        {
+            match bytes.get(8) {
+                Some(1) => Some("Use a grenade ability"),
+                Some(128) => Some("Use a class ability"),
+                _ => None,
+            }
+        }
+        12 if bytes.get(8..16) == Some(&[0x87, 0x7A, 0xEC, 0x6C, 0x24, 0xBF, 0xCC, 0x18]) => {
+            Some("Pick up an Orb of Light")
+        }
+        _ => None,
     }
 }
 
@@ -320,7 +438,7 @@ fn describe_kill(condition: &DecodedCondition) -> String {
     format!("A {names} kill from {source}")
 }
 
-fn describe_effect(effect: &DecodedEffect) -> String {
+pub(super) fn describe_effect(effect: &DecodedEffect) -> String {
     let asset = effect
         .referenced_path
         .as_deref()
@@ -419,6 +537,14 @@ fn describe_ammunition(effect: &DecodedEffect) -> String {
     let amounts = AMMUNITION_TARGETS
         .iter()
         .filter_map(|(label, target)| match fact_value(&effect.facts, label) {
+            Some(FactValue::Integer(value)) if *value != 0 => Some(format!(
+                "{value} {} to {target}",
+                if value.unsigned_abs() == 1 {
+                    "round"
+                } else {
+                    "rounds"
+                }
+            )),
             Some(FactValue::Number(value)) if *value != 0.0 => Some(if fraction {
                 format!(
                     "{}% of the capacity to {target}",

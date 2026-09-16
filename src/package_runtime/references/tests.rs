@@ -200,6 +200,33 @@ fn typed_pointer_headers_and_backward_arrays_are_checked() {
 }
 
 #[test]
+fn large_scalar_arrays_validate_bounds_without_consuming_reference_budget() {
+    let count = MAX_OBJECTS + 1;
+    let mut data = vec![0; 0x30 + count * 4];
+    array(&mut data, 0, 0x20, 2, count as u64);
+    let layout = |class| {
+        Ok(match class {
+            1 => Record {
+                size: 8,
+                fields: vec![(0, 3)].into(),
+            },
+            2 => Record {
+                size: 4,
+                fields: vec![].into(),
+            },
+            _ => return Err("Unexpected class".into()),
+        })
+    };
+    assert!(walk(&data, 1, layout).unwrap().is_empty());
+    data.pop();
+    assert!(
+        walk(&data, 1, layout)
+            .unwrap_err()
+            .contains("invalid bounds")
+    );
+}
+
+#[test]
 fn canonical_upper_package_range_is_retained_and_names_are_ignored() {
     let valid = TagHash::new(0xCFF, 10).0;
     let mut data = vec![0; 0x340];

@@ -60,7 +60,7 @@ impl LibraryIcons {
         let finished = self
             .worker
             .as_ref()
-            .is_some_and(|worker| worker.is_finished());
+            .is_some_and(std::thread::JoinHandle::is_finished);
         if finished {
             let _ = self.worker.take().unwrap().join();
         }

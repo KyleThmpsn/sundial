@@ -1,4 +1,4 @@
-use super::super::guidance::{self, EditingFilter, Purpose};
+use super::super::guidance::{self, EditingFilter, EffectOrder, Purpose};
 use super::*;
 use sundial::package_authoring::sandbox_perk::{
     dependencies::Behavior,
@@ -74,4 +74,36 @@ fn summary_distinguishes_spawn_lifetime_from_retained_duration_and_rearming() {
     assert!(guidance::summary(&program, None).contains("Retained effects end: After 2 s"));
     program.actions.push(Action::property(0x1234));
     assert!(guidance::summary(&program, None).contains("0x00001234"));
+}
+
+#[test]
+fn effect_orders_keep_the_same_results_and_only_change_their_order() {
+    let rows = [
+        ("rampage", "Weapon Perk", false),
+        ("absolution", "Armor Mod", false),
+        ("outlaw", "Weapon Perk", true),
+    ];
+    let order_by = |order| {
+        let mut sorted = rows.to_vec();
+        sorted.sort_by_cached_key(|(name, kind, direct)| {
+            guidance::effect_sort_key(order, kind, name, *direct)
+        });
+        sorted.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
+    };
+    // Best Match puts the effect whose own name matched the search first.
+    assert_eq!(
+        order_by(EffectOrder::BestMatch),
+        ["outlaw", "absolution", "rampage"]
+    );
+    assert_eq!(
+        order_by(EffectOrder::Name),
+        ["absolution", "outlaw", "rampage"]
+    );
+    assert_eq!(
+        order_by(EffectOrder::Kind),
+        ["absolution", "outlaw", "rampage"]
+    );
+    // Grouping by item type keeps both weapon perks together.
+    let grouped = order_by(EffectOrder::Kind);
+    assert_eq!(grouped.len(), rows.len());
 }

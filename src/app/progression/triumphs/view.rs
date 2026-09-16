@@ -225,7 +225,7 @@ fn header(ui: &mut egui::Ui, state: &mut State, rows: &[Row], name_width: f32) {
                         )
                         .inner;
                     ui.ctx().accesskit_node_builder(toggle.id, |node| {
-                        node.set_label("Select Filtered")
+                        node.set_label("Select Filtered");
                     });
                     if toggle.changed() {
                         state.selected.clear();

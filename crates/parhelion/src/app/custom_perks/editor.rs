@@ -258,7 +258,7 @@ impl PerkEditor {
     }
 
     pub(in crate::app) fn start_load(&mut self, ctx: &egui::Context) {
-        if self.receiver.is_some() {
+        if self.receiver.is_some() && self.graph.is_none() {
             return;
         }
         self.graph = None;
@@ -353,23 +353,29 @@ impl PerkEditor {
                 if !named {
                     ui.label("Gameplay property names have not been identified for this asset.");
                 }
-                egui::CollapsingHeader::new("Native Structure")
-                    .default_open(!named)
+                egui::CollapsingHeader::new("Advanced")
+                    .id_salt(("asset-native-structure", self.entity_source))
+                    .default_open(false)
                     .show(ui, |ui| {
                         self.draw_runtime_fields(ui, &loaded, experimental);
                     });
                 return;
             }
-            // The reading of the effect comes first. Converting it is an offer that follows.
+            // Opening Edit Behavior prepares an isolated native program and verifies
+            // fidelity before handing it to the editable canvas.
+            self.draw_conversion(ui, ctx, &loaded, experimental);
+            if self.receiver.is_some() || self.conversion.is_some() {
+                return;
+            }
             if self.draw_stock_canvas(ui, &loaded) {
                 self.start_load(ctx);
                 return;
             }
             self.draw_component_properties(ui, &loaded);
             ui.add_space(8.0);
-            self.draw_conversion(ui, ctx, &loaded, experimental);
             references::draw(ui, &loaded.native_assets);
-            egui::CollapsingHeader::new("Native Structure")
+            egui::CollapsingHeader::new("Advanced")
+                .id_salt("effect-native-structure")
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.small("Edit the stored values in each component and linked record.");

@@ -78,7 +78,7 @@ pub(super) fn draw_character_transfer_destinations(
     ui.separator();
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = TRANSFER_DESTINATION_ROW_SPACING;
-        ui.label(egui::RichText::new("Move to Another Character").strong());
+        ui.strong("Move to Another Character");
         for destination in destinations {
             let response = draw_character_transfer_destination(ui, destination)
                 .on_hover_text(&destination.tooltip);

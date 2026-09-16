@@ -167,7 +167,7 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
         if *error {
             ui.colored_label(ui.visuals().error_fg_color, message);
         } else {
-            ui.label(egui::RichText::new(message).weak());
+            ui.weak(message);
         }
     }
     changed

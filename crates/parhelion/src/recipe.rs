@@ -16,6 +16,7 @@ use crate::{
     WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponRawPayloadPatch,
     WeaponRawPayloadTarget, WeaponRenderGearDonorReference, WeaponSandboxPerkActionFloatOverride,
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
@@ -223,6 +224,39 @@ impl From<RecipeInventorySlot> for WeaponInventorySlot {
 #[serde(rename_all = "snake_case")]
 pub enum RecipeCollectionPlacement {
     SunriseBadge,
+}
+
+/// Element switching by holding Reload, the way Hard Light and Borealis work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariableDamageRecipe {
+    /// Elements the hold can settle on: any two or all three of Arc, Solar and Void.
+    pub elements: Vec<RecipeDamageType>,
+}
+
+impl VariableDamageRecipe {
+    /// Every element, in the order the hold steps through them.
+    #[must_use]
+    pub fn all() -> Self {
+        Self {
+            elements: vec![
+                RecipeDamageType::Void,
+                RecipeDamageType::Arc,
+                RecipeDamageType::Solar,
+            ],
+        }
+    }
+
+    fn to_compiler(&self) -> WeaponVariableDamage {
+        WeaponVariableDamage {
+            elements: self
+                .elements
+                .iter()
+                .copied()
+                .map(ModernDamageType::from)
+                .collect(),
+        }
+    }
 }
 
 impl From<RecipeDamageType> for ModernDamageType {
@@ -879,6 +913,11 @@ pub struct WeaponRecipeOverrides {
     /// default and perk-selected runtime variants. Does not rebalance magazine or reserve stats.
     pub ammo_type: Option<RecipeAmmoType>,
     pub modern_damage_type: Option<RecipeDamageType>,
+    /// Reload-hold element switching. Compilation pins Hard Light's Fundamentals plug into the
+    /// first trait socket, so the appearance donor must be Hard Light or Borealis.
+    /// [`Self::modern_damage_type`] is then the element the weapon rests on and must be in the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable_damage: Option<VariableDamageRecipe>,
     pub power_cap_group: Option<u16>,
     /// Complete native quality/version group sequence. This advanced form preserves the number
     /// and order of the gameplay donor's version rows while allowing every row to differ.
@@ -1043,6 +1082,10 @@ impl WeaponRecipeOverrides {
             inventory_slot: self.inventory_slot.map(WeaponInventorySlot::from),
             ammo_type: self.ammo_type.map(WeaponAmmoType::from),
             modern_damage_type: self.modern_damage_type.map(ModernDamageType::from),
+            variable_damage: self
+                .variable_damage
+                .as_ref()
+                .map(VariableDamageRecipe::to_compiler),
             power_cap_group: self.power_cap_group,
             power_cap_groups: self.power_cap_groups.clone(),
             rarity: self.rarity.map(AuthoredWeaponRarity::from),

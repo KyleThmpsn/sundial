@@ -73,5 +73,8 @@ fn dawn_in_bin_does_not_hide_an_unsupported_root_dll() {
     .unwrap();
     let error = validate_for_parhelion(&directory.path().join("packages")).unwrap_err();
     assert!(error.contains("no recognized Sunrise or Dawn"), "{error}");
-    assert!(error.contains(&root.display().to_string()), "{error}");
+    // The reported path is resolved, so compare against the canonical form: a temporary
+    // directory can sit under a short 8.3 ancestor that canonicalization expands.
+    let reported = fs::canonicalize(&root).unwrap();
+    assert!(error.contains(&reported.display().to_string()), "{error}");
 }

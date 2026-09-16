@@ -9,7 +9,7 @@ pub(super) fn seconds(ui: &mut egui::Ui, label: &str, hint: &str, millis: &mut u
         ui.label(label).on_hover_text(hint);
     }
     let mut value = *millis as f32 / 1000.0;
-    if ui
+    let control = ui
         .add_sized(
             [CONTROL_WIDTH, ui.spacing().interact_size.y],
             egui::DragValue::new(&mut value)
@@ -17,27 +17,43 @@ pub(super) fn seconds(ui: &mut egui::Ui, label: &str, hint: &str, millis: &mut u
                 .range((minimum as f32 / 1000.0)..=3600.0)
                 .suffix(" s"),
         )
-        .on_hover_text(hint)
-        .changed()
-    {
+        .on_hover_text(hint);
+    // The visible label sits beside the control without being linked to it, so the control
+    // takes the label as its accessible name.
+    if !label.is_empty() {
+        super::pickers::name_response(ui, &control, label);
+    }
+    if control.changed() {
         *millis = (value * 1000.0).round() as u32;
     }
 }
 
 /// A float stored as its bit pattern, so a recipe round-trips the exact native value.
-pub(super) fn float_field(ui: &mut egui::Ui, bits: &mut u32) {
+/// Returns the control's response so the caller can give it an accessible name.
+pub(super) fn float_field(ui: &mut egui::Ui, bits: &mut u32) -> egui::Response {
     let mut value = f32::from_bits(*bits);
-    if ui
-        .add(egui::DragValue::new(&mut value).speed(0.05).max_decimals(4))
-        .changed()
-        && value.is_finite()
-    {
+    if !value.is_finite() {
+        return ui.monospace(value.to_string());
+    }
+    let response = ui.add(
+        egui::DragValue::new(&mut value)
+            .speed(0.01)
+            .clamp_existing_to_range(false)
+            .custom_formatter(|value, _| format!("{:?}", value as f32)),
+    );
+    if response.changed() && value.is_finite() {
         *bits = value.to_bits();
     }
+    response
 }
 
 /// A hash key edited as `0x` hexadecimal text. The stored value only changes on valid input.
-pub(super) fn hex_key(ui: &mut egui::Ui, salt: impl std::hash::Hash, key: &mut u32) {
+/// Returns the text field's response so the caller can give it an accessible name.
+pub(super) fn hex_key(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    key: &mut u32,
+) -> egui::Response {
     let id = ui.make_persistent_id(("hex-key", salt));
     let mut text = ui
         .data_mut(|state| state.get_temp::<String>(id))
@@ -60,6 +76,7 @@ pub(super) fn hex_key(ui: &mut egui::Ui, salt: impl std::hash::Hash, key: &mut u
     if parsed.is_none() {
         ui.colored_label(ui.visuals().warn_fg_color, "Use 0x and 8 hex digits.");
     }
+    response
 }
 
 /// Comma separated numbers for a stock evidence line.

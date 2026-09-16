@@ -394,7 +394,7 @@ impl IconWorker {
         let thread = thread::Builder::new()
             .name("sundial-icon-loader".to_owned())
             .spawn(move || {
-                run_icon_worker(&install_path, &context, request_receiver, result_sender)
+                run_icon_worker(&install_path, &context, request_receiver, result_sender);
             })
             .map_err(|error| format!("Could not start the package icon loader: {error}"))?;
         Ok(Self {

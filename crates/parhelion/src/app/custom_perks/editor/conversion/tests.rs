@@ -114,6 +114,16 @@ fn native_conversion_preserves_all_conditions_activation_and_component_values() 
         let input = editor.conversion_input();
         let preview = prepare(&manager, &loaded, &input).unwrap();
         assert!(preview.fidelity.unwrap().is_empty());
+        // Outlaw ends on either of two conditions. The typed program holds one, so the stock
+        // action is carried in native form, and that is the path this test exercises.
+        match &preview.recovery {
+            decompile::Recovery::NativeForm(reason) => {
+                assert!(reason.contains("alternative removal"), "{reason}");
+            }
+            decompile::Recovery::Typed => {
+                panic!("two removal alternatives should not fit the typed program yet")
+            }
+        }
         let native = preview.program.native.as_ref().unwrap();
         let decoded =
             sundial::package_authoring::sandbox_perk::action::decode(&native.graph.emit().unwrap())

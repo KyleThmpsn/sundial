@@ -143,7 +143,7 @@ impl PackageAuthoringApp {
             .library_state
             .job
             .as_ref()
-            .is_some_and(|job| job.is_finished())
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             return;
         }

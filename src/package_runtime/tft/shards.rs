@@ -34,6 +34,8 @@ struct Shard {
     candidates: Vec<Candidate>,
     #[serde(default)]
     entity_references: Vec<EntityReference>,
+    #[serde(default)]
+    vocabulary: Vec<ContentPath>,
     scanned_resources: usize,
     errors: Vec<String>,
 }
@@ -55,7 +57,7 @@ struct Saved {
 const KEPT_FILES: usize = 2;
 
 /// The shard format this build writes. Files of older formats are dead weight.
-const SHARD_PREFIX: &str = "tft-source-v3-";
+const SHARD_PREFIX: &str = "tft-source-v4-";
 
 fn candidates(source: u32, source_class: u32, payload: &[u8], targets: &EntityTargets) -> Shard {
     let mut shard = Shard::default();
@@ -70,6 +72,14 @@ fn candidates(source: u32, source_class: u32, payload: &[u8], targets: &EntityTa
                     target,
                 }),
         );
+    shard.vocabulary = vocabulary_strings(payload)
+        .into_iter()
+        .map(|(offset, path)| ContentPath {
+            source,
+            offset,
+            path,
+        })
+        .collect();
     let paths = content_paths(payload);
     if paths.is_empty() {
         return shard;
@@ -313,6 +323,7 @@ fn scan_package(
                 shard.paths.extend(found.paths);
                 shard.candidates.extend(found.candidates);
                 shard.entity_references.extend(found.entity_references);
+                shard.vocabulary.extend(found.vocabulary);
             }
             Ok(_) => shard.errors.push(format!(
                 "{tag}: resource size does not match its package entry"
@@ -358,14 +369,23 @@ pub(super) fn inspect(
     // Packages in one order, so the assembled index and its errors read the same each time.
     let mut shards = BTreeMap::new();
     let mut jobs = Vec::new();
+    let mut plans = Vec::new();
     for (&package, entries) in &manager.lookup.tag32_entries_by_pkg {
         let source = snapshot.for_package(package);
         let path = shard_path(directory.as_deref(), package, &source)?;
-        match load_shard(path.as_deref(), package, &source, &targets) {
+        plans.push((package, entries.as_slice(), path, source));
+    }
+    // Five hundred shard files parse in parallel, one per worker, the way they were scanned.
+    let loaded =
+        crate::package_runtime::parallel::map_jobs(&plans, |(package, _, path, source)| {
+            load_shard(path.as_deref(), *package, source, &targets)
+        });
+    for ((package, entries, path, source), shard) in plans.into_iter().zip(loaded) {
+        match shard {
             Some(shard) => {
                 shards.insert(package, (shard, None));
             }
-            None => jobs.push((package, entries.as_slice(), path, source)),
+            None => jobs.push((package, entries, path, source)),
         }
     }
     let reused = shards
@@ -398,6 +418,7 @@ pub(super) fn inspect(
         }));
         index.scanned_resources += shard.scanned_resources;
         index.paths.extend(shard.paths.iter().cloned());
+        index.vocabulary.extend(shard.vocabulary.iter().cloned());
         index
             .entity_references
             .extend(shard.entity_references.iter().cloned());
@@ -427,6 +448,9 @@ pub(super) fn inspect(
         sweep_shards(directory);
     }
     index.paths.sort_by_key(|path| (path.source, path.offset));
+    index
+        .vocabulary
+        .sort_by_key(|path| (path.source, path.offset));
     index
         .references
         .sort_by_key(|reference| (reference.source, reference.offset, reference.target));
@@ -544,10 +568,10 @@ mod tests {
     fn sweeping_keeps_the_newest_shards_of_each_package_and_drops_older_formats() {
         let cache = tempfile::tempdir().unwrap();
         let names = [
-            "tft-source-v3-01bb-aaaa.json",
-            "tft-source-v3-01bb-bbbb.json",
-            "tft-source-v3-01bb-cccc.json",
-            "tft-source-v3-03c1-dddd.json",
+            "tft-source-v4-01bb-aaaa.json",
+            "tft-source-v4-01bb-bbbb.json",
+            "tft-source-v4-01bb-cccc.json",
+            "tft-source-v4-03c1-dddd.json",
             "tft-source-v2-03c1-eeee.json",
             "unrelated.json",
         ];
@@ -572,9 +596,9 @@ mod tests {
         assert_eq!(
             remaining,
             vec![
-                "tft-source-v3-01bb-bbbb.json",
-                "tft-source-v3-01bb-cccc.json",
-                "tft-source-v3-03c1-dddd.json",
+                "tft-source-v4-01bb-bbbb.json",
+                "tft-source-v4-01bb-cccc.json",
+                "tft-source-v4-03c1-dddd.json",
                 "unrelated.json",
             ]
         );

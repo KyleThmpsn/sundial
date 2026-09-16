@@ -13,9 +13,12 @@ pub(crate) struct Builder {
 
 impl Builder {
     pub(crate) fn new() -> Self {
-        Self {
+        let mut out = Self {
             bytes: vec![0; ROOT_SIZE],
-        }
+        };
+        // Every stock root carries the empty key here, as the compiler writes it.
+        out.u32(ROOT_KEY, crate::sandbox_perk::program::EMPTY_KEY);
+        out
     }
 
     pub(crate) fn u32(&mut self, at: usize, value: u32) {

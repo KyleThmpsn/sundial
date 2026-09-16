@@ -117,6 +117,53 @@ impl EditingFilter {
     }
 }
 
+/// How the stock effect results are ordered. Order changes presentation only. It never
+/// hides an effect and never changes which effects can be copied.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum EffectOrder {
+    /// Effects whose own name matches the query come first.
+    #[default]
+    BestMatch,
+    Name,
+    Kind,
+}
+
+impl EffectOrder {
+    pub(super) const ALL: [Self; 3] = [Self::BestMatch, Self::Name, Self::Kind];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::BestMatch => "Best Match",
+            Self::Name => "Name",
+            Self::Kind => "Item Type",
+        }
+    }
+
+    pub(super) fn hint(self) -> &'static str {
+        match self {
+            Self::BestMatch => "Effects whose own name matches the search come first.",
+            Self::Name => "Every result by name.",
+            Self::Kind => "Grouped by the item type that carries the effect, then by name.",
+        }
+    }
+}
+
+/// The comparable key for one stock effect result. Every order ends with the name, so
+/// results never reshuffle between frames.
+pub(super) fn effect_sort_key(
+    order: EffectOrder,
+    item_type: &str,
+    name: &str,
+    direct_match: bool,
+) -> (bool, String, String) {
+    let name = name.to_owned();
+    match order {
+        EffectOrder::BestMatch => (!direct_match, String::new(), name),
+        EffectOrder::Name => (false, String::new(), name),
+        EffectOrder::Kind => (false, item_type.to_lowercase(), name),
+    }
+}
+
 pub(super) fn filters(
     ui: &mut egui::Ui,
     purpose: &mut Purpose,
@@ -133,6 +180,7 @@ pub(super) fn filters(
                 ui.selectable_value(purpose, value, value.label());
             }
         });
+    pickers::name_combo(ui, "behavior-purpose", "Behavior Purpose");
     egui::ComboBox::from_id_salt("behavior-editing")
         .width(width)
         .truncate()
@@ -142,6 +190,7 @@ pub(super) fn filters(
                 ui.selectable_value(editing, value, value.label());
             }
         });
+    pickers::name_combo(ui, "behavior-editing", "Editing Support");
     before != (*purpose, *editing)
 }
 
@@ -233,46 +282,6 @@ pub(super) fn summary_with_assets(
 }
 
 impl Workbench {
-    pub(super) fn draw_starting_points(
-        &mut self,
-        ui: &mut egui::Ui,
-        choices: &[WeaponSandboxPerkChoice],
-    ) {
-        egui::CollapsingHeader::new("Getting Started")
-            .default_open(self.documents.get(self.selected).is_some_and(|document| document.recipe.effects.is_empty()))
-            .show(ui, |ui| {
-                ui.label("A perk is a set of effects. Each effect says when it starts, what it does and when it ends.");
-                for step in [
-                    "1. Copy an example below, or add an existing behavior.",
-                    "2. Change what it does, then Save Perk.",
-                    "3. Pick a socket under Weapon Sockets and Apply to Weapon.",
-                ] {
-                    crate::app::style::hint(ui, step);
-                }
-                ui.add_space(4.0);
-                egui::Grid::new("getting-started-examples")
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for (source, explanation) in [
-                            ("Micro-Missile", "A projectile pattern with movement properties you can change."),
-                            ("Dragonfly", "An effect that starts on a precision kill."),
-                            ("Cluster Bomb", "Spawned projectiles that live on their own after the effect ends."),
-                        ] {
-                            let choice = choices.iter().find(|choice| choice.representative_name.eq_ignore_ascii_case(source));
-                            if ui.add_enabled(choice.is_some(), egui::Button::new(format!("Copy {source}")))
-                                .on_disabled_hover_text("This stock behavior is not available in the loaded catalog.").clicked()
-                                && let Some(choice) = choice
-                            {
-                                self.copy_behavior(choice);
-                            }
-                            ui.label(explanation);
-                            ui.end_row();
-                        }
-                    });
-            });
-    }
-
     pub(super) fn copy_behavior(&mut self, choice: &WeaponSandboxPerkChoice) {
         let mut recipe = PerkRecipe::new();
         recipe.name = format!("Custom Effect {}", choice.perk_index);

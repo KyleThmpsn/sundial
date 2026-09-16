@@ -28,5 +28,5 @@ Desktop.ini
 
 # Local research, implementation notes, and diagnostic examples.
 /docs/
-/examples/
+examples/
 /crates/parhelion/import/

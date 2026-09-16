@@ -14,10 +14,6 @@ impl SundialApp {
             .manifest
             .inventory_metadata(u64::from(snapshot.definition_hash))
             .copied();
-        let hash_hex_text = format_hash_hex(u64::from(snapshot.definition_hash));
-        let valid = resolved
-            .as_ref()
-            .is_some_and(|definition| definition.metadata.is_profile_items_candidate());
         let current_bucket = metadata
             .filter(|metadata| metadata.scope == InventoryScope::Profile)
             .map(|metadata| metadata.native_bucket_id);
@@ -38,36 +34,14 @@ impl SundialApp {
 
         ui.push_id(("profile-item", snapshot.location.index), |ui| {
             item_editor::draw_item_card(ui, |ui| {
-                let definition = DefinitionSummary::from_name_and_type(
-                    &hash_hex_text,
-                    resolved.as_ref().map(|definition| {
-                        (definition.name.as_str(), definition.type_name.as_str())
-                    }),
-                );
-                let inspection_context = DefinitionInspectionContext {
-                    source: format!("Profile Inventory · Item {}", snapshot.location.index + 1),
-                    instance_id: None,
-                    authored_level: None,
-                    flags: None,
-                    plug_count: None,
-                    plugs: None,
-                    quantity: Some(i64::from(snapshot.quantity)),
-                };
-                let header_response = item_editor::draw_catalog_item_header_with_trailing(
+                let (header_response, inspection_context) = draw_profile_material_header(
                     ui,
                     &self.manifest,
-                    Some(u64::from(snapshot.definition_hash)),
-                    Some(inspection_context.clone()),
-                    ItemHeader {
-                        label: None,
-                        soid: None,
-                        definition,
-                        icon: None,
-                        fill: item_editor::muted_item_header_fill(ui),
-                        valid,
-                        invalid_message: "not a profile-scoped stackable definition",
-                    },
-                    |_| {},
+                    resolved.as_ref(),
+                    snapshot.definition_hash,
+                    snapshot.quantity,
+                    format!("Profile Inventory · Item {}", snapshot.location.index + 1),
+                    "not a profile-scoped stackable definition",
                 );
                 item_editor::draw_context_menu(
                     ui,

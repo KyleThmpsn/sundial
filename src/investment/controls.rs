@@ -48,7 +48,7 @@ pub fn draw_catalog_loading_view(
                     ui.vertical_centered(|ui| {
                         ui.image((logo.id(), egui::vec2(72.0, 72.0)));
                         ui.heading(view.product_name);
-                        ui.label(egui::RichText::new(view.version).weak());
+                        ui.weak(view.version);
                         ui.add_space(18.0);
                         ui.spinner();
                         ui.strong(view.message);

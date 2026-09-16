@@ -210,7 +210,7 @@ impl SundialApp {
                 ui.vertical_centered(|ui| {
                     ui.image((logo.id(), egui::vec2(64.0, 64.0)));
                     ui.heading("Sundial");
-                    ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
+                    ui.weak(DISPLAY_VERSION);
                     ui.add_space(8.0);
                     ui.label("Edit Project Sunrise accounts and settings, and create custom weapon packages.");
                     ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
@@ -226,7 +226,7 @@ impl SundialApp {
                             });
                         }
                         UpdateStatus::Current => {
-                            ui.label(egui::RichText::new("Sundial is up to date.").weak());
+                            ui.weak("Sundial is up to date.");
                         }
                         UpdateStatus::Available(release) => {
                             ui.colored_label(
@@ -236,9 +236,7 @@ impl SundialApp {
                             show_update = ui.button("View Update and Release Notes").clicked();
                         }
                         UpdateStatus::Failed => {
-                            ui.label(
-                                egui::RichText::new("Could not check for updates.").weak(),
-                            );
+                            ui.weak("Could not check for updates.");
                             retry_update_check = ui.button("Try Again").clicked();
                         }
                     }
@@ -269,12 +267,9 @@ impl SundialApp {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(
+                ui.weak(
                         "This project is not affiliated with or endorsed by Bungie Inc. or Sony Interactive Entertainment. Destiny and related intellectual property are owned by Bungie Inc. and their respective rights holders.",
-                    )
-                    .weak(),
-                );
+                    );
             });
         if retry_update_check {
             self.update_check.retry(ctx);

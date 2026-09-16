@@ -900,9 +900,8 @@ pub(super) fn validate_header(
     patch_id: u16,
     build_signature: Option<u64>,
 ) -> Result<(), InstallError> {
-    let signature_matches = build_signature
-        .map(|expected| header.build_signature == expected)
-        .unwrap_or(true);
+    let signature_matches =
+        build_signature.is_none_or(|expected| header.build_signature == expected);
     if header.version != SHADOWKEEP_HEADER_VERSION
         || header.package_id != package_id
         || header.patch_id != patch_id

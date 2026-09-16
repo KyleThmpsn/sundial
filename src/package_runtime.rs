@@ -10,6 +10,7 @@ use tiger_pkg::{PackageManager, TagHash};
 
 pub(crate) mod index_cache;
 pub(crate) mod installation;
+pub mod labels;
 pub(crate) mod loading;
 pub(crate) mod parallel;
 pub(crate) mod references;

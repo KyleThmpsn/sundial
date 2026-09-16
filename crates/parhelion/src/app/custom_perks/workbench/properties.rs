@@ -35,7 +35,9 @@ impl Panel {
     }
 }
 
-/// A shared label/value row for decoded native properties.
+/// A shared label/value row for decoded native properties. The label column is one line
+/// high and truncates rather than wrapping, so a long label in a narrow pane cannot spill
+/// into the row below it. The full label and the hint stay on hover.
 pub(super) fn field<R>(
     ui: &mut egui::Ui,
     label: &str,
@@ -44,11 +46,19 @@ pub(super) fn field<R>(
 ) -> R {
     let width = (ui.available_width() * 0.46).clamp(100.0, 220.0);
     ui.horizontal(|ui| {
-        ui.add_sized(
-            [width, ui.spacing().interact_size.y],
-            egui::Label::new(label).wrap(),
-        )
-        .on_hover_text(hint);
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, ui.spacing().interact_size.y),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(width);
+                ui.add(egui::Label::new(label).halign(egui::Align::Max).truncate())
+                    .on_hover_text(if hint.is_empty() {
+                        label.to_owned()
+                    } else {
+                        format!("{label}\n{hint}")
+                    });
+            },
+        );
         value(ui)
     })
     .inner
@@ -113,9 +123,7 @@ impl Properties {
                             line.starts_with("Type 0x") || line.starts_with("Native Bytes:")
                         });
                     if !named.is_empty() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(named.join(" · ")).small()).wrap(),
-                        );
+                        ui.add(egui::Label::new(named.join(" · ")).wrap());
                     }
                     if !technical.is_empty() {
                         ui.horizontal_wrapped(|ui| {

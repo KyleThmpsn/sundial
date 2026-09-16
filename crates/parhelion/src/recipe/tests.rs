@@ -770,3 +770,49 @@ fn custom_choices_sharing_a_template_round_trip_while_duplicate_definitions_are_
     let saved = recipe.to_json_pretty().unwrap();
     assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
 }
+
+#[test]
+fn variable_damage_round_trips_and_needs_a_carrier_appearance() {
+    use crate::weapon::variable_damage::HARD_LIGHT_ITEM_HASH;
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.variable").unwrap();
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe {
+        elements: vec![RecipeDamageType::Arc, RecipeDamageType::Solar],
+    });
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Arc);
+
+    // Nothing but Hard Light or Borealis carries the reload hold, and serialization validates.
+    let error = recipe.validate().unwrap_err();
+    assert!(format!("{error:?}").contains("Hard Light"), "{error:?}");
+    assert!(recipe.to_json_pretty().is_err());
+    recipe.presentation_donor = Some(WeaponDonorReference {
+        item_hash: HexHash::new(HARD_LIGHT_ITEM_HASH),
+        expected_name: Some("Hard Light".to_owned()),
+    });
+
+    let encoded = recipe.to_json_pretty().unwrap();
+    assert!(encoded.contains(r#""variable_damage": {"#));
+    assert!(encoded.contains(r#""elements": ["#));
+    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
+    assert!(
+        WeaponRecipe::from_json_str(&encoded.replace(r#""elements""#, r#""members""#)).is_err()
+    );
+    let spec = recipe.to_spec().unwrap();
+    assert_eq!(
+        spec.overrides.variable_damage,
+        Some(WeaponVariableDamage {
+            elements: vec![ModernDamageType::Arc, ModernDamageType::Solar],
+        })
+    );
+
+    // The resting element must be one of the set, and a single element is a fixed type.
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Void);
+    assert!(recipe.validate().is_err());
+    recipe.overrides.modern_damage_type = None;
+    assert!(recipe.validate().is_ok());
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe {
+        elements: vec![RecipeDamageType::Void],
+    });
+    assert!(recipe.validate().is_err());
+    recipe.overrides.variable_damage = None;
+    assert!(!recipe.to_json_pretty().unwrap().contains("variable_damage"));
+}

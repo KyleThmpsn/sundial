@@ -20,7 +20,7 @@ struct Request(Option<usize>);
 
 pub(super) fn request(ctx: &egui::Context, perk: Option<usize>) {
     ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::new("pattern-dependency-request"), Request(perk))
+        data.insert_temp(egui::Id::new("pattern-dependency-request"), Request(perk));
     });
 }
 

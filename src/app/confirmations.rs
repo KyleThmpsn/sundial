@@ -141,7 +141,7 @@ impl SundialApp {
                         ui.add_space(6.0);
                         ui.label("Destiny 2 must be closed. Any unsaved Sundial changes will be discarded after the restored workspace reloads. settings.json is not changed or synchronized.");
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Selected Backup").strong());
+                        ui.strong("Selected Backup");
                         ui.label(
                             egui::RichText::new(backup.display().to_string())
                                 .weak()

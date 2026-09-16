@@ -20,9 +20,12 @@ pub(crate) const fn is_weapon_bucket(bucket_hash: u64) -> bool {
 const ITEM_DAMAGE_PERK_CLASS: u32 = 0x8080_77BC;
 #[cfg(test)]
 const ITEM_DAMAGE_PERK_ROW_SIZE: usize = 24;
-// The Fundamentals plug carries these three rows together.
+// The Fundamentals plug carries one row per element. Hard Light's plug uses 462 for the Arc
+// leg and Borealis's uses 461; both compile to the same action, so either satisfies it.
 #[cfg(test)]
 const VARIABLE_ELEMENT_PERK_INDICES: [u16; 3] = [462, 463, 464];
+#[cfg(test)]
+const BOREALIS_VARIABLE_ELEMENT_PERK_INDICES: [u16; 3] = [461, 463, 464];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -304,6 +307,22 @@ mod tests {
                 &item_with_damage_perks(&VARIABLE_ELEMENT_PERK_INDICES),
                 ENERGY_BUCKET
             ),
+            ItemDamageProfile::Variable
+        );
+        // Borealis ships the other Arc effect. Both compile to one action, so reading it as
+        // a fixed Void weapon was wrong: the legacy Void marker it also carries is only the
+        // unwritten default the effects select between.
+        assert_eq!(
+            item_damage_profile(
+                &item_with_damage_perks(&BOREALIS_VARIABLE_ELEMENT_PERK_INDICES),
+                ENERGY_BUCKET
+            ),
+            ItemDamageProfile::Variable
+        );
+        // One leg alone is not enough. A weapon carrying only the Arc effect keeps whatever
+        // fixed marker it has.
+        assert_ne!(
+            item_damage_profile(&item_with_damage_perks(&[461]), ENERGY_BUCKET),
             ItemDamageProfile::Variable
         );
     }

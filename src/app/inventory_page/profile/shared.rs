@@ -25,36 +25,25 @@ impl SundialApp {
                 || format!("{profile_item_count} items"),
                 |capacity| format!("{profile_item_count} / {capacity}"),
             );
-            ui.label(egui::RichText::new(count).weak());
+            ui.weak(count);
         });
         ui.label("Stackable profile-scoped definitions only.");
 
         if !editable {
-            ui.label(
-                egui::RichText::new(
-                    "Profile-item editing is unavailable for the active account source.",
-                )
-                .weak(),
-            );
+            ui.weak("Profile-item editing is unavailable for the active account source.");
         } else if capacity.is_some_and(|capacity| profile_item_count >= capacity) {
-            ui.label(
-                egui::RichText::new("The profile-item collection is full for this account source.")
-                    .weak(),
-            );
+            ui.weak("The profile-item collection is full for this account source.");
         } else if !account_ready {
-            ui.label(
-                egui::RichText::new(
+            ui.weak(
                     "Add controls require an account collection in the active source. Existing rows remain visible.",
-                )
-                .weak(),
-            );
+                );
         } else if bucket_usage.unresolved_count > 0 {
             draw_unresolved_bucket_warning(ui);
         }
         ui.add_space(4.0);
 
         if groups.is_empty() {
-            ui.label(egui::RichText::new("No profile inventory buckets are available.").weak());
+            ui.weak("No profile inventory buckets are available.");
             return None;
         }
 

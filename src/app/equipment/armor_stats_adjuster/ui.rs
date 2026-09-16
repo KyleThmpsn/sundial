@@ -409,7 +409,7 @@ fn draw_controls(
                 "When enabled, the preview may equip unlocked armor stored on this character. The currently equipped piece is moved back to inventory.",
             )
             .changed();
-        ui.label(egui::RichText::new("Locked armor is always preserved").weak());
+        ui.weak("Locked armor is always preserved");
         if !narrow {
             draw_control_actions(ui, has_targets, can_apply, clear_requested, apply_requested);
         }
@@ -472,7 +472,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         "{pieces} pieces · {swaps} swaps · {masterworks} masterworks · {plugs} plugs"
                     )
                 };
-                ui.label(egui::RichText::new(text).weak());
+                ui.weak(text);
             }
         });
     });
@@ -639,7 +639,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         drew_line = true;
                     }
                     if !drew_line {
-                        ui.label(egui::RichText::new("No changes").weak());
+                        ui.weak("No changes");
                     }
                 });
 
@@ -658,17 +658,12 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
 
     ui.add_space(6.0);
     if let Some(solution) = &state.preview {
-        ui.label(
-            egui::RichText::new(format!(
-                "Projected: {}",
-                format_totals(solution.projected_totals)
-            ))
-            .weak(),
-        );
+        ui.weak(format!(
+            "Projected: {}",
+            format_totals(solution.projected_totals)
+        ));
     } else {
-        ui.label(
-            egui::RichText::new("Set a goal to preview the closest valid configuration.").weak(),
-        );
+        ui.weak("Set a goal to preview the closest valid configuration.");
     }
 }
 

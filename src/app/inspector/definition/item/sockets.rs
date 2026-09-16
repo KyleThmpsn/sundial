@@ -125,7 +125,7 @@ pub(super) fn draw_hash_item_sockets(
                                         .unwrap_or("Name not resolved");
                                     draw_named_catalog_hash_link(ui, catalog, default_hash, name);
                                 } else {
-                                    ui.label(egui::RichText::new("-").weak());
+                                    ui.weak("-");
                                 }
                                 if let Some(plugs) = plugs {
                                     super::super::instance::draw_saved_plug(
@@ -211,7 +211,7 @@ pub(super) fn draw_hash_item_socket_sources(
     let socket = &item.sockets[socket_index];
     let options = catalog.socket_options(socket);
     if socket.sources.is_empty() {
-        ui.label(egui::RichText::new("No decoded option sources.").weak());
+        ui.weak("No decoded option sources.");
     } else {
         draw_hash_item_socket_source_summary(ui, catalog, item, socket_index);
     }

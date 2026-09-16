@@ -163,7 +163,7 @@ pub(super) fn draw_active(
                     selection = Some(RowCommand::EditChoice {
                         index: choice_index,
                         hash: chosen.hash,
-                    })
+                    });
                 }
                 Ok(None) => {}
                 Err(error) => context.log.push(LogEntry::error(error)),

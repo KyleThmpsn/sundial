@@ -397,9 +397,7 @@ fn draw_base_section(
                 |ui| {
                     ui.set_width(search.rect.width());
                     if instance_results.is_empty() && definition_results.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No items match the search and filters.").weak(),
-                        );
+                        ui.weak("No items match the search and filters.");
                     } else {
                         egui::ScrollArea::vertical()
                             .id_salt("randomize-base-results")
@@ -532,7 +530,7 @@ fn draw_base_filters(
         if family == ItemFamily::Armor {
             ui.separator();
             ui.label("Class");
-            ui.label(egui::RichText::new(class_name(class_type)).strong());
+            ui.strong(class_name(class_type));
         }
     });
 
@@ -696,9 +694,7 @@ fn draw_plug_section_contents(
             .as_ref()
             .map(|candidate| candidate.item_hash)
         else {
-            ui.label(
-                egui::RichText::new("Choose a base item to generate and edit its plugs.").weak(),
-            );
+            ui.weak("Choose a base item to generate and edit its plugs.");
             return;
         };
         let Some(item) = catalog.item(item_hash) else {
@@ -710,7 +706,7 @@ fn draw_plug_section_contents(
         };
         let socket_count = item.sockets.len().min(inventory::MAX_ITEM_PLUGS);
         if socket_count == 0 {
-            ui.label(egui::RichText::new("This item has no configurable sockets.").weak());
+            ui.weak("This item has no configurable sockets.");
             return;
         }
         state.selected_socket = state.selected_socket.min(socket_count - 1);
@@ -839,7 +835,7 @@ fn draw_available_plugs(
                     }
                 }
                 if visible == 0 {
-                    ui.label(egui::RichText::new("No matching plugs.").weak());
+                    ui.weak("No matching plugs.");
                 }
             });
 

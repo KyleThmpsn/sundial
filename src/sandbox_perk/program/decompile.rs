@@ -6,8 +6,8 @@
 //! not reproduce, so the workbench can say whether a conversion is exact before offering it.
 
 use super::{
-    Action, AmmunitionStore, AmmunitionTarget, Asset, EMPTY_KEY, NativeNode, Position, Program,
-    Trigger,
+    Action, AmmunitionStore, AmmunitionTarget, Asset, EMPTY_KEY, NativeNode, NativeRecord, Policy,
+    Position, Program, Trigger,
 };
 use crate::package_payload::{i64_at, relative_offset, u64_at};
 use crate::sandbox_perk::action::{
@@ -44,20 +44,17 @@ pub fn decompile(
             "This perk runs more than one program. Parhelion can author one program.".into(),
         ));
     }
-    if action.policy != 0 || action.policy_configuration {
-        return Err(Unsupported(
-            "This perk uses an execution policy Parhelion cannot author.".into(),
-        ));
-    }
-    if action.auxiliary_records != 0 {
-        return Err(Unsupported(
-            "This perk has auxiliary records the program model cannot preserve.".into(),
-        ));
-    }
     let group = &action.groups[0];
-    let (trigger, chance_permyriad, native_trigger) = trigger_of(&group.activation)?;
-    let ending = duration_of(trigger, &group.removal)?;
-    let cooldown_ms = cooldown_of(trigger, &group.rearm)?;
+    // The first condition of each list is the typed reading. The engine accepts any condition
+    // in a list, so the rest are alternatives carried verbatim in their stock order.
+    let primary_activation = &group.activation[..group.activation.len().min(1)];
+    let primary_removal = &group.removal[..group.removal.len().min(1)];
+    let (trigger, chance_permyriad, native_trigger) = trigger_of(primary_activation)?;
+    let ending = duration_of(trigger, primary_removal)?;
+    let rearm = cooldown_of(trigger, &group.rearm[..group.rearm.len().min(1)]);
+    let alternatives = |list: &[DecodedCondition]| -> Vec<NativeNode> {
+        list.iter().skip(1).map(native_condition).collect()
+    };
     // The native list is stored last to first. Restore authored order.
     let actions = group
         .effects
@@ -69,24 +66,74 @@ pub fn decompile(
         name: name.to_owned(),
         trigger,
         duration_ms: ending.duration_ms,
-        cooldown_ms,
+        cooldown_ms: rearm.cooldown_ms,
         chance_permyriad,
         actions,
         removal_key: ending.removal_key,
         native_trigger,
         native_removal: ending.native_removal,
         native: None,
+        auxiliary: action.auxiliary.iter().map(NativeRecord::from).collect(),
+        policy: policy_of(action),
+        alternative_triggers: alternatives(&group.activation),
+        alternative_removals: alternatives(&group.removal),
+        native_rearm: rearm.native_rearm,
+        alternative_rearms: alternatives(&group.rearm),
     };
     program.validate().map_err(Unsupported)?;
     Ok(program)
 }
 
+/// How a stock action was recovered for editing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Recovery {
+    /// The typed program model holds the whole action, so the workbench shows typed controls.
+    Typed,
+    /// The action lies outside the typed model and is carried in its complete native form.
+    /// The message says which shape the model does not hold yet.
+    NativeForm(String),
+}
+
+/// Recovers a stock action for editing without ever refusing it.
+///
+/// The typed program is preferred because it gives the same controls a custom perk has. When
+/// the action lies outside that model the complete native form carries it instead, so every
+/// stock perk opens and the caller can say which representation it received.
+pub fn recover(
+    payload: &[u8],
+    name: &str,
+    graph_of: impl Fn(u32) -> u32,
+) -> Result<(Program, Recovery), String> {
+    let decoded = decode(payload)?;
+    match decompile(&decoded, name, graph_of) {
+        Ok(program) => Ok((program, Recovery::Typed)),
+        Err(Unsupported(reason)) => Ok((
+            Program::from_native(payload, name)?,
+            Recovery::NativeForm(reason),
+        )),
+    }
+}
+
+/// The root's policy settings, when any differs from what the compiler writes by default.
+fn policy_of(action: &DecodedAction) -> Option<Policy> {
+    (action.policy != 0
+        || action.policy_modifier != 0
+        || action.root_key != EMPTY_KEY
+        || action.policy_configuration.is_some())
+    .then(|| Policy {
+        selector: action.policy,
+        modifier: action.policy_modifier,
+        key: action.root_key,
+        configuration: action.policy_configuration.as_ref().map(NativeRecord::from),
+    })
+}
+
 /// Preserve every native byte and allocation, including unnamed scalar fields.
-fn native_condition(condition: &DecodedCondition) -> Option<NativeNode> {
-    Some(NativeNode {
+fn native_condition(condition: &DecodedCondition) -> NativeNode {
+    NativeNode {
         kind: condition.kind,
         bytes: condition.native.clone(),
-    })
+    }
 }
 
 fn native_effect(effect: &DecodedEffect, graph_of: &impl Fn(u32) -> u32) -> Option<NativeNode> {
@@ -151,7 +198,7 @@ fn trigger_of(
     }
     let condition = single(activation, "activation")?;
     if !condition.children.is_empty() || !condition.subgroups.is_empty() {
-        return Ok((Trigger::Native, 10_000, native_condition(condition)));
+        return Ok((Trigger::Native, 10_000, Some(native_condition(condition))));
     }
     let chance = match condition.probability {
         Probability::Always => 10_000,
@@ -164,7 +211,7 @@ fn trigger_of(
             ));
         }
         Probability::NativeStat(_) if layout::condition_layout(condition.kind).is_none() => {
-            return Ok((Trigger::Native, 10_000, native_condition(condition)));
+            return Ok((Trigger::Native, 10_000, Some(native_condition(condition))));
         }
         Probability::NativeStat(_) => {
             return Err(Unsupported(
@@ -176,16 +223,12 @@ fn trigger_of(
         0 => Trigger::Always,
         14 => Trigger::Equipped,
         16 => Trigger::Drawn,
-        2 => kill_trigger(condition)?,
-        _ => match native_condition(condition) {
-            Some(node) => return Ok((Trigger::Native, 10_000, Some(node))),
-            None => {
-                return Err(Unsupported(format!(
-                    "Parhelion cannot author a {} trigger yet.",
-                    condition.name()
-                )));
-            }
+        // A kill filter outside the named trigger set keeps its labels and chance in the node.
+        2 => match kill_trigger(condition) {
+            Ok(trigger) => trigger,
+            Err(_) => return Ok((Trigger::Native, 10_000, Some(native_condition(condition)))),
         },
+        _ => return Ok((Trigger::Native, 10_000, Some(native_condition(condition)))),
     };
     if condition.kind != 2 && chance != 10_000 {
         return Err(Unsupported(
@@ -278,16 +321,10 @@ fn duration_of(trigger: Trigger, removal: &[DecodedCondition]) -> Result<Ending,
                 ..Ending::default()
             });
         }
-        return match native_condition(condition) {
-            Some(node) => Ok(Ending {
-                native_removal: Some(node),
-                ..Ending::default()
-            }),
-            None => Err(Unsupported(format!(
-                "A {} removal condition is not modeled yet.",
-                condition.name()
-            ))),
-        };
+        return Ok(Ending {
+            native_removal: Some(native_condition(condition)),
+            ..Ending::default()
+        });
     }
     let condition = single(removal, "removal")?;
     let expected = match trigger {
@@ -295,24 +332,23 @@ fn duration_of(trigger: Trigger, removal: &[DecodedCondition]) -> Result<Ending,
         Trigger::Drawn => Some(17),
         _ => None,
     };
-    match expected {
-        Some(kind) if condition.kind == kind => Ok(Ending::default()),
-        Some(_) => Err(Unsupported(format!(
-            "The removal condition is {}, which does not pair with the trigger.",
-            condition.name()
-        ))),
-        None => timer_seconds(condition)
-            .map(|seconds| Ending {
-                duration_ms: millis(seconds),
-                ..Ending::default()
-            })
-            .ok_or_else(|| {
-                Unsupported(format!(
-                    "The removal condition is {}, not a timer.",
-                    condition.name()
-                ))
-            }),
+    if expected == Some(condition.kind) {
+        return Ok(Ending::default());
     }
+    if expected.is_none()
+        && let Some(seconds) = timer_seconds(condition)
+    {
+        return Ok(Ending {
+            duration_ms: millis(seconds),
+            ..Ending::default()
+        });
+    }
+    // Any other ending stays native: kill perks that end on an unconditional check, drawn
+    // perks that end on a different weapon event.
+    Ok(Ending {
+        native_removal: Some(native_condition(condition)),
+        ..Ending::default()
+    })
 }
 
 fn effect_key(condition: &DecodedCondition) -> Option<u32> {
@@ -322,15 +358,30 @@ fn effect_key(condition: &DecodedCondition) -> Option<u32> {
     })
 }
 
-fn cooldown_of(trigger: Trigger, rearm: &[DecodedCondition]) -> Result<u32, Unsupported> {
+/// How a program becomes ready again: a cooldown timer, a native node, or nothing.
+struct Rearm {
+    cooldown_ms: u32,
+    native_rearm: Option<NativeNode>,
+}
+
+/// The primary rearm condition. A timer on a trigger with a cooldown is the typed reading.
+/// Anything else, including a rearm on a trigger without a cooldown, stays native.
+fn cooldown_of(trigger: Trigger, rearm: &[DecodedCondition]) -> Rearm {
     match rearm {
-        [] => Ok(0),
-        [condition] if trigger.supports_cooldown() => timer_seconds(condition)
-            .map(millis)
-            .ok_or_else(|| Unsupported("The rearm condition is not a timer.".into())),
-        _ => Err(Unsupported(
-            "This perk has rearm conditions Parhelion cannot author.".into(),
-        )),
+        [] => Rearm {
+            cooldown_ms: 0,
+            native_rearm: None,
+        },
+        [condition, ..] => match timer_seconds(condition).filter(|_| trigger.supports_cooldown()) {
+            Some(seconds) => Rearm {
+                cooldown_ms: millis(seconds),
+                native_rearm: None,
+            },
+            None => Rearm {
+                cooldown_ms: 0,
+                native_rearm: Some(native_condition(condition)),
+            },
+        },
     }
 }
 
@@ -343,7 +394,14 @@ fn action_of(
     match effect.kind {
         32 => return extend_timers_of(effect, trigger, activation),
         10 => return property_of(effect),
-        14 | 15 => return ammunition_of(effect),
+        // Source label filters and multi-target fills stay verbatim in a native node.
+        14 | 15 => {
+            return ammunition_of(effect).or_else(|refusal| {
+                native_effect(effect, graph_of)
+                    .map(|node| Action::Native { node })
+                    .ok_or(refusal)
+            });
+        }
         1 | 3 | 26 => {}
         _ => {
             if let Some(node) = native_effect(effect, graph_of) {
@@ -630,17 +688,11 @@ pub fn fidelity(stock: &[u8], compiled: &[u8]) -> Result<Vec<Difference>, String
     if stock == compiled {
         return Ok(out);
     }
-    if stock_action.groups.len() != 1
-        || compiled_action.groups.len() != 1
-        || stock_action.policy != 0
-        || compiled_action.policy != 0
-        || stock_action.policy_configuration
-        || compiled_action.policy_configuration
-        || stock_action.auxiliary_records != 0
-        || compiled_action.auxiliary_records != 0
-    {
-        return Err("Exact conversion cannot be checked for additional groups, execution policies or auxiliary records.".into());
+    if stock_action.groups.len() != 1 || compiled_action.groups.len() != 1 {
+        return Err("Exact conversion cannot be checked for additional groups.".into());
     }
+    compare_auxiliary(&stock_action, &compiled_action, &mut out);
+    compare_policy(&stock_action, &compiled_action, &mut out);
     if stock_action
         .conditions()
         .iter()
@@ -715,6 +767,68 @@ pub fn fidelity(stock: &[u8], compiled: &[u8]) -> Result<Vec<Difference>, String
 
 fn node_bytes(payload: &[u8], offset: usize, size: usize) -> &[u8] {
     payload.get(offset..offset + size).unwrap_or(&[])
+}
+
+/// The policy selector and modifier sit inside the routing range compared elsewhere. The root
+/// key and the configuration record are carried verbatim, so they are compared byte for byte.
+fn compare_policy(stock: &DecodedAction, compiled: &DecodedAction, out: &mut Vec<Difference>) {
+    compare_bytes(
+        "Root Key".into(),
+        &stock.root_key.to_le_bytes(),
+        &compiled.root_key.to_le_bytes(),
+        &[],
+        out,
+    );
+    match (&stock.policy_configuration, &compiled.policy_configuration) {
+        (None, None) => {}
+        (Some(x), Some(y)) => {
+            if x.class != y.class {
+                out.push(Difference {
+                    node: "Policy Configuration Class".into(),
+                    offset: 0,
+                    stock: x.class.to_le_bytes().to_vec(),
+                    compiled: y.class.to_le_bytes().to_vec(),
+                });
+            }
+            compare_bytes(
+                format!("Policy Configuration 0x{:08X}", x.class),
+                &x.bytes,
+                &y.bytes,
+                &[],
+                out,
+            );
+        }
+        (x, y) => out.push(Difference {
+            node: "Policy Configuration Presence".into(),
+            offset: 0,
+            stock: vec![u8::from(x.is_some())],
+            compiled: vec![u8::from(y.is_some())],
+        }),
+    }
+}
+
+/// Auxiliary records are carried verbatim, so every byte of every record is compared.
+fn compare_auxiliary(stock: &DecodedAction, compiled: &DecodedAction, out: &mut Vec<Difference>) {
+    for (index, (x, y)) in stock.auxiliary.iter().zip(&compiled.auxiliary).enumerate() {
+        let node = format!("Auxiliary Record {index} 0x{:08X}", x.class);
+        if x.class != y.class {
+            out.push(Difference {
+                node: format!("{node} Class"),
+                offset: 0,
+                stock: x.class.to_le_bytes().to_vec(),
+                compiled: y.class.to_le_bytes().to_vec(),
+            });
+        }
+        compare_bytes(node, &x.bytes, &y.bytes, &[], out);
+    }
+    if stock.auxiliary.len() != compiled.auxiliary.len() {
+        out.push(Difference {
+            node: "Auxiliary Record List Length".into(),
+            offset: 0,
+            stock: (stock.auxiliary.len() as u64).to_le_bytes().to_vec(),
+            compiled: (compiled.auxiliary.len() as u64).to_le_bytes().to_vec(),
+        });
+    }
 }
 
 fn condition_mask(kind: u8, size: usize) -> Vec<(usize, usize)> {
@@ -1061,6 +1175,356 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_records_are_carried_verbatim_through_the_round_trip() {
+        use crate::sandbox_perk::action::{AUXILIARY_RECORDS, AUXILIARY_ROW_CLASS};
+        // The three leaf classes stock actions list at the root, with representative bytes.
+        let key_record = {
+            let mut bytes = [0_u8; 24];
+            bytes[..4].copy_from_slice(&2_u32.to_le_bytes());
+            bytes[4..8].copy_from_slice(&0xA43A_8C2E_u32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&1.5_f32.to_le_bytes());
+            bytes
+        };
+        // Offset 0x08 is a declared reference and stays null in every stock record. The
+        // resource tag sits at 0x10.
+        let mut tag_record = [0_u8; 24];
+        tag_record[..4].copy_from_slice(&3_u32.to_le_bytes());
+        tag_record[16..20].copy_from_slice(&0x80BC_5810_u32.to_le_bytes());
+        let mut small_record = [0_u8; 8];
+        small_record[..4].copy_from_slice(&0x10FF_0000_u32.to_le_bytes());
+        small_record[4..].copy_from_slice(&0x599B_031D_u32.to_le_bytes());
+
+        let mut out = Builder {
+            bytes: drawn_pattern_action(),
+        };
+        let mut nodes = Vec::new();
+        for (class, bytes) in [
+            (0x8080_4085, &key_record[..]),
+            (0x8080_4087, &tag_record[..]),
+            (0x8080_2A20, &small_record[..]),
+        ] {
+            let at = out.node(class, bytes.len());
+            out.bytes[at..at + bytes.len()].copy_from_slice(bytes);
+            nodes.push(at);
+        }
+        out.pointer_list(AUXILIARY_RECORDS, AUXILIARY_ROW_CLASS, &nodes);
+        let payload = out.finish();
+
+        let action = decode(&payload).unwrap();
+        assert_eq!(
+            action
+                .auxiliary
+                .iter()
+                .map(|record| (record.class, record.bytes.as_slice()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0x8080_4085, &key_record[..]),
+                (0x8080_4087, &tag_record[..]),
+                (0x8080_2A20, &small_record[..]),
+            ]
+        );
+        let (program, recovery) = recover(&payload, "Demo", |tag| tag).unwrap();
+        assert_eq!(recovery, Recovery::Typed);
+        assert_eq!(program.auxiliary.len(), 3);
+        assert_eq!(program.auxiliary[0].bytes, key_record.to_vec());
+
+        let compiled = super::super::compiler::assemble(&program, None).unwrap();
+        assert_eq!(
+            decode(&compiled.payload).unwrap().auxiliary,
+            action.auxiliary
+        );
+        // The fixture is not byte-faithful to compiler routing metadata. The records are.
+        let differences = fidelity(&payload, &compiled.payload).unwrap();
+        assert!(
+            differences
+                .iter()
+                .all(|difference| !difference.node.starts_with("Auxiliary")),
+            "{differences:?}"
+        );
+
+        // Dropping a record is a reported difference, not a refusal.
+        let mut trimmed = program.clone();
+        trimmed.auxiliary.pop();
+        let compiled = super::super::compiler::assemble(&trimmed, None).unwrap();
+        let differences = fidelity(&payload, &compiled.payload).unwrap();
+        assert!(
+            differences
+                .iter()
+                .any(|difference| difference.node == "Auxiliary Record List Length"),
+            "{differences:?}"
+        );
+
+        // A record of the wrong size for its class is refused before it reaches the compiler.
+        let mut wrong = program;
+        wrong.auxiliary[2].bytes.push(0);
+        assert!(wrong.validate().unwrap_err().contains("8"));
+    }
+
+    #[test]
+    fn alternative_conditions_are_carried_verbatim_beside_the_typed_reading() {
+        let mut out = Builder::new();
+        let draw = out.draw();
+        let also_starts = out.event_key(0x1234_5678);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_ACTIVATION,
+            CONDITION_ROW_CLASS,
+            &[draw, also_starts],
+        );
+        let pattern = out.pattern(0x8161_F73A, "content/sandbox/weapons/demo/demo.pattern.tft");
+        out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[pattern]);
+        let holster = out.holster();
+        let also_ends = out.timer(4.0);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_REMOVAL,
+            CONDITION_ROW_CLASS,
+            &[holster, also_ends],
+        );
+        let payload = out.finish();
+
+        let action = decode(&payload).unwrap();
+        let program = decompile(&action, "Demo", |tag| tag).unwrap();
+        assert_eq!(program.trigger, Trigger::Drawn);
+        assert_eq!(program.alternative_triggers.len(), 1);
+        assert_eq!(program.alternative_triggers[0].kind, 30);
+        assert_eq!(program.alternative_removals.len(), 1);
+        assert_eq!(program.alternative_removals[0].kind, 1);
+        assert_eq!(
+            program.alternative_removals[0].bytes,
+            action.groups[0].removal[1].native
+        );
+
+        let compiled = super::super::compiler::assemble(&program, None).unwrap();
+        let again = decode(&compiled.payload).unwrap();
+        let kinds = |list: &[DecodedCondition]| list.iter().map(|c| c.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&again.groups[0].activation), vec![16, 30]);
+        assert_eq!(kinds(&again.groups[0].removal), vec![17, 1]);
+        // The alternative timer takes a timer slot, and both lists route their events.
+        assert_eq!(again.timer_budget, 1);
+        assert_eq!(again.activation_event_mask, (1 << 16) | (1 << 30));
+        assert_eq!(again.removal_event_mask, (1 << 17) | (1 << 1));
+        let differences = fidelity(&payload, &compiled.payload).unwrap();
+        assert!(
+            differences
+                .iter()
+                .all(|difference| !difference.node.contains("list length")),
+            "{differences:?}"
+        );
+
+        // Dropping an alternative is reported, not refused.
+        let mut trimmed = program.clone();
+        trimmed.alternative_removals.clear();
+        let compiled = super::super::compiler::assemble(&trimmed, None).unwrap();
+        assert!(
+            fidelity(&payload, &compiled.payload)
+                .unwrap()
+                .iter()
+                .any(|difference| difference.node == "removal list length")
+        );
+
+        // An alternative of a kind without a recovered layout is refused before it reaches the
+        // compiler.
+        let mut wrong = program;
+        wrong.alternative_removals[0].kind = 200;
+        assert!(
+            wrong
+                .validate()
+                .unwrap_err()
+                .contains("no recovered native layout")
+        );
+    }
+
+    #[test]
+    fn unnamed_label_filters_are_carried_in_native_nodes() {
+        let mut out = Builder::new();
+        let activation = out.kill(&[0x599B_031D], false, 0.5);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_ACTIVATION,
+            CONDITION_ROW_CLASS,
+            &[activation],
+        );
+        let rounds = out.fixed_ammunition(&[0x599B_031D], 1, 0);
+        out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[rounds]);
+        let duration = out.timer(5.0);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_REMOVAL,
+            CONDITION_ROW_CLASS,
+            &[duration],
+        );
+        let payload = out.finish();
+
+        let action = decode(&payload).unwrap();
+        let program = decompile(&action, "Demo", |tag| tag).unwrap();
+        assert_eq!(program.trigger, Trigger::Native);
+        let trigger = program.native_trigger.as_ref().unwrap();
+        assert_eq!(trigger.kind, 2);
+        assert_eq!(trigger.bytes, action.groups[0].activation[0].native);
+        assert!(program.has_kill_trigger());
+        assert_eq!(program.duration_ms, 5_000);
+        let [Action::Native { node }] = program.actions.as_slice() else {
+            panic!("{:?}", program.actions);
+        };
+        assert_eq!(node.kind, action.groups[0].effects[0].kind);
+        assert_eq!(node.bytes, action.groups[0].effects[0].native);
+
+        let compiled = super::super::compiler::assemble(&program, None).unwrap();
+        let again = decode(&compiled.payload).unwrap();
+        assert_eq!(
+            again.groups[0].activation[0].native,
+            action.groups[0].activation[0].native
+        );
+        assert_eq!(
+            again.groups[0].effects[0].native,
+            action.groups[0].effects[0].native
+        );
+    }
+
+    #[test]
+    fn execution_policies_are_carried_verbatim_through_the_round_trip() {
+        use crate::sandbox_perk::action::{POLICY_CONFIGURATION, POLICY_SELECTOR, ROOT_KEY};
+        let mut out = Builder {
+            bytes: drawn_pattern_action(),
+        };
+        out.bytes[POLICY_SELECTOR] = 1;
+        out.bytes[POLICY_SELECTOR + 1] = 1;
+        out.u32(ROOT_KEY, 0xC767_798C);
+        // Selector 1 uses an 8-byte record: a key and a flag word.
+        let configuration = out.node(0x8080_3E07, 8);
+        out.u32(configuration, 0xDB33_855E);
+        out.u32(configuration + 4, 1);
+        out.pointer(POLICY_CONFIGURATION, configuration);
+        let payload = out.finish();
+
+        let action = decode(&payload).unwrap();
+        let record = action.policy_configuration.as_ref().unwrap();
+        assert_eq!(record.class, 0x8080_3E07);
+        assert_eq!(record.bytes.len(), 8);
+        let (program, recovery) = recover(&payload, "Demo", |tag| tag).unwrap();
+        assert_eq!(recovery, Recovery::Typed);
+        let policy = program.policy.as_ref().unwrap();
+        assert_eq!(
+            (policy.selector, policy.modifier, policy.key),
+            (1, 1, 0xC767_798C)
+        );
+        assert_eq!(policy.configuration.as_ref().unwrap().bytes, record.bytes);
+
+        let compiled = super::super::compiler::assemble(&program, None).unwrap();
+        let again = decode(&compiled.payload).unwrap();
+        assert_eq!(again.policy, 1);
+        assert_eq!(again.policy_modifier, 1);
+        assert_eq!(again.root_key, 0xC767_798C);
+        assert_eq!(again.policy_configuration, action.policy_configuration);
+        let differences = fidelity(&payload, &compiled.payload).unwrap();
+        assert!(
+            differences
+                .iter()
+                .all(|difference| !difference.node.starts_with("Policy")
+                    && difference.node != "Root Key"
+                    && !(difference.node == "Action Routing and State"
+                        && (0x30..0x32).contains(&difference.offset))),
+            "{differences:?}"
+        );
+
+        // Dropping the policy is reported, not refused.
+        let mut plain = program.clone();
+        plain.policy = None;
+        let compiled = super::super::compiler::assemble(&plain, None).unwrap();
+        let differences = fidelity(&payload, &compiled.payload).unwrap();
+        assert!(
+            differences
+                .iter()
+                .any(|difference| difference.node == "Policy Configuration Presence"),
+            "{differences:?}"
+        );
+
+        // A default-policy action carries no policy, so the recipe stays minimal.
+        let plain =
+            decompile(&decode(&drawn_pattern_action()).unwrap(), "Demo", |tag| tag).unwrap();
+        assert!(plain.policy.is_none());
+    }
+
+    #[test]
+    fn native_endings_and_rearms_are_carried_beside_kill_triggers() {
+        let mut out = Builder::new();
+        let activation = out.kill(&[PRECISION], true, 1.0);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_ACTIVATION,
+            CONDITION_ROW_CLASS,
+            &[activation],
+        );
+        let attach = out.attach(
+            0x80BC_5810,
+            "content/sandbox/effects/trail/trail.entity.tft",
+        );
+        out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[attach]);
+        // The stock shape behind 51 perks: a kill perk that ends on an unconditional check.
+        let ends = out.unconditional();
+        out.pointer_list(PRIMARY_GROUP + GROUP_REMOVAL, CONDITION_ROW_CLASS, &[ends]);
+        // A rearm that is not a timer, with a second alternative.
+        let rearm = out.draw();
+        let also = out.event_key(0x1234_5678);
+        out.pointer_list(
+            PRIMARY_GROUP + GROUP_REARM,
+            CONDITION_ROW_CLASS,
+            &[rearm, also],
+        );
+        let payload = out.finish();
+
+        let action = decode(&payload).unwrap();
+        let program = decompile(&action, "Demo", |tag| tag).unwrap();
+        assert_eq!(program.trigger, Trigger::PrecisionKill);
+        assert_eq!(program.duration_ms, 0);
+        assert_eq!(
+            program.native_removal.as_ref().map(|node| node.kind),
+            Some(0)
+        );
+        assert_eq!(program.cooldown_ms, 0);
+        assert_eq!(
+            program.native_rearm.as_ref().map(|node| node.kind),
+            Some(16)
+        );
+        assert_eq!(program.alternative_rearms.len(), 1);
+
+        let mask = Some((&[PRECISION][..], [0_u8; 40]));
+        let compiled = super::super::compiler::assemble(&program, mask).unwrap();
+        let again = decode(&compiled.payload).unwrap();
+        let kinds = |list: &[DecodedCondition]| list.iter().map(|c| c.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&again.groups[0].removal), vec![0]);
+        assert_eq!(kinds(&again.groups[0].rearm), vec![16, 30]);
+        assert_eq!(again.rearm_event_mask, (1 << 16) | (1 << 30));
+
+        // A cooldown and a native rearm cannot both apply.
+        let mut both = program;
+        both.cooldown_ms = 1_000;
+        assert!(both.validate().unwrap_err().contains("not both"));
+    }
+
+    #[test]
+    fn recovery_prefers_the_typed_program_and_never_refuses() {
+        let payload = drawn_pattern_action();
+        let (typed, recovery) = recover(&payload, "Demo", |tag| tag).unwrap();
+        assert_eq!(recovery, Recovery::Typed);
+        assert!(typed.native.is_none());
+        assert_eq!(
+            typed,
+            decompile(&decode(&payload).unwrap(), "Demo", |tag| tag).unwrap()
+        );
+
+        // A drawn program without any ending is outside the typed model. The same action still
+        // opens, carried in native form, and the reason names the shape that was refused.
+        let mut no_removal = payload;
+        no_removal[PRIMARY_GROUP + GROUP_REMOVAL..PRIMARY_GROUP + GROUP_REMOVAL + 16].fill(0);
+        let (native, recovery) = recover(&no_removal, "Demo", |tag| tag).unwrap();
+        assert!(native.native.is_some());
+        assert!(native.actions.is_empty());
+        match recovery {
+            Recovery::NativeForm(reason) => {
+                assert!(reason.contains("no removal"), "{reason}")
+            }
+            Recovery::Typed => panic!("a drawn program needs an ending to be typed"),
+        }
+    }
+
+    #[test]
     fn a_drawn_pattern_action_recovers_its_program_in_authored_order() {
         let action = decode(&drawn_pattern_action()).unwrap();
         let program = decompile(&action, "Demo", |tag| tag).unwrap();
@@ -1190,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn ammunition_effects_recover_their_one_amount_and_refuse_filters_and_spreads() {
+    fn ammunition_effects_recover_their_one_amount_and_carry_filters_and_spreads_natively() {
         let mut out = Builder::new();
         let activation = out.kill(&[], true, 1.0);
         out.pointer_list(
@@ -1224,7 +1688,7 @@ mod tests {
             serde_json::from_str::<Action>(&json).unwrap(),
             program.actions[1]
         );
-        // A source label filter is refused by name.
+        // A source label filter lies outside the typed action and is carried verbatim.
         let mut out = Builder::new();
         let activation = out.kill(&[], true, 1.0);
         out.pointer_list(
@@ -1240,9 +1704,14 @@ mod tests {
             CONDITION_ROW_CLASS,
             &[duration],
         );
-        let error = decompile(&decode(&out.finish()).unwrap(), "Ammo", |tag| tag).unwrap_err();
-        assert!(error.0.contains("source labels"), "{error}");
-        // Two amounts in one node are refused, since the program carries one.
+        let decoded = decode(&out.finish()).unwrap();
+        let program = decompile(&decoded, "Ammo", |tag| tag).unwrap();
+        let [Action::Native { node }] = program.actions.as_slice() else {
+            panic!("{:?}", program.actions);
+        };
+        assert_eq!(node.bytes, decoded.groups[0].effects[0].native);
+        // Two amounts in one node exceed the typed action, which carries one, so the node stays
+        // native.
         let mut out = Builder::new();
         let activation = out.kill(&[], true, 1.0);
         out.pointer_list(
@@ -1258,8 +1727,13 @@ mod tests {
             CONDITION_ROW_CLASS,
             &[duration],
         );
-        let error = decompile(&decode(&out.finish()).unwrap(), "Ammo", |tag| tag).unwrap_err();
-        assert!(error.0.contains("2 ammunition targets"), "{error}");
+        let decoded = decode(&out.finish()).unwrap();
+        let program = decompile(&decoded, "Ammo", |tag| tag).unwrap();
+        assert!(
+            matches!(&program.actions[0], Action::Native { node } if node.bytes == decoded.groups[0].effects[0].native),
+            "{:?}",
+            program.actions
+        );
     }
 
     fn always_attach_action(repeat: Option<f32>) -> Vec<u8> {

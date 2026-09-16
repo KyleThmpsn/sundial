@@ -289,7 +289,7 @@ impl StartupApp {
                         ui.vertical_centered(|ui| {
                             ui.image((logo.id(), egui::vec2(72.0, 72.0)));
                             ui.heading("Sundial");
-                            ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
+                            ui.weak(DISPLAY_VERSION);
                             ui.add_space(18.0);
 
                             if let Some(install_path) = self.pending_settings_choice.clone() {
@@ -390,16 +390,13 @@ impl StartupApp {
                             ui.add_space(6.0);
                             ui.label("Select your Sunrise install, the directory containing destiny2.exe, to begin.");
                             ui.add_space(10.0);
-                            ui.label(
-                                egui::RichText::new(
+                            ui.weak(
                                     if cfg!(target_os = "linux") {
                 "Sundial will read the installed packages to build its local item catalog. On first use, it downloads a small, verified Linux package-decompression helper, not Destiny data."
                                     } else {
                                         "Sundial will read the installed packages once to build its local item catalog. No Destiny data is downloaded."
                                     },
-                                )
-                                .weak(),
-                            );
+                                );
                             ui.add_space(18.0);
                             if ui
                                 .add_sized(

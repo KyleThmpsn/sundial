@@ -442,16 +442,18 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
                 "Related Player Path",
                 FactValue::Flag(flag(payload, node, 4)?),
             ),
+            // The three categories are the ammo types, established by the stock perks that
+            // weight exactly one (Snapload, Special and Heavy Finisher among them).
             Fact::new(
-                "First Weight",
+                "Primary Ammo Weight",
                 FactValue::Number(float(payload, node, 0x20)?),
             ),
             Fact::new(
-                "Second Weight",
+                "Special Ammo Weight",
                 FactValue::Number(float(payload, node, 0x2C)?),
             ),
             Fact::new(
-                "Third Weight",
+                "Heavy Ammo Weight",
                 FactValue::Number(float(payload, node, 0x38)?),
             ),
         ]),
@@ -621,18 +623,19 @@ fn component_value_adjustment_facts(payload: &[u8], node: usize) -> Result<Vec<F
 /// Kind 11: two shared floats and three slot specific triples, added on activation and
 /// subtracted on removal.
 fn host_numeric_modifier_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
+    // The three triples are per ammo type, established by the three Finder mods.
     const LABELS: [&str; 11] = [
-        "First Shared Value",
-        "Second Shared Value",
-        "Slot 1 First Value",
-        "Slot 1 Second Value",
-        "Slot 1 Third Value",
-        "Slot 2 First Value",
-        "Slot 2 Second Value",
-        "Slot 2 Third Value",
-        "Slot 3 First Value",
-        "Slot 3 Second Value",
-        "Slot 3 Third Value",
+        "Shared Value 1",
+        "Shared Value 2",
+        "Primary Ammo Value 1",
+        "Primary Ammo Value 2",
+        "Primary Ammo Value 3",
+        "Special Ammo Value 1",
+        "Special Ammo Value 2",
+        "Special Ammo Value 3",
+        "Heavy Ammo Value 1",
+        "Heavy Ammo Value 2",
+        "Heavy Ammo Value 3",
     ];
     LABELS
         .into_iter()
@@ -646,7 +649,7 @@ fn host_numeric_modifier_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>,
         .collect()
 }
 
-/// The eight contributions the two ammunition adjustment kinds store at `+0x6C`.
+/// The seven contributions the two ammunition adjustment kinds store at `+0x6C`.
 const AMMUNITION_CONTRIBUTIONS: [&str; 7] = [
     "Owning Slot Amount",
     "Slot 1 Amount",
@@ -715,19 +718,21 @@ fn proportional_ammunition_facts(payload: &[u8], node: usize) -> Result<Vec<Fact
     Ok(facts)
 }
 
+/// Kind 16's independent value programs, in native field order.
+pub const RESERVE_TRANSFER_PROGRAMS: [(usize, &str, &str); 5] = [
+    (0x78, "Selected Slot Value", "Selected Slot Program Words"),
+    (
+        0xB0,
+        "Second Selected Slot Value",
+        "Second Selected Slot Program Words",
+    ),
+    (0xE8, "Slot 0 Value", "Slot 0 Program Words"),
+    (0x120, "Slot 1 Value", "Slot 1 Program Words"),
+    (0x158, "Slot 2 Value", "Slot 2 Program Words"),
+];
+
 /// Kind 16: five value programs selected per slot, plus the transfer selectors.
 fn reserve_transfer_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
-    const PROGRAMS: [(usize, &str, &str); 5] = [
-        (0x78, "Selected Slot Value", "Selected Slot Program Words"),
-        (
-            0xB0,
-            "Second Selected Slot Value",
-            "Second Selected Slot Program Words",
-        ),
-        (0xE8, "Slot 0 Value", "Slot 0 Program Words"),
-        (0x120, "Slot 1 Value", "Slot 1 Program Words"),
-        (0x158, "Slot 2 Value", "Slot 2 Program Words"),
-    ];
     let mut facts = Vec::new();
     label_filter_facts(payload, node + 0x08, &mut facts)?;
     facts.push(Fact::new(
@@ -750,7 +755,7 @@ fn reserve_transfer_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, Stri
         "Normalize Input",
         FactValue::Flag(flag(payload, node, 0x6C)?),
     ));
-    for (offset, value_label, words_label) in PROGRAMS {
+    for (offset, value_label, words_label) in RESERVE_TRANSFER_PROGRAMS {
         facts.push(program_fact(
             payload,
             node + offset,
@@ -935,7 +940,8 @@ fn event_modifier_rows(
     Ok(())
 }
 
-/// Kind 48: three target selectors, an operation value and the referenced runtime resource.
+/// Kind 48: three target selectors and a path/tag resource reference.
+/// The declaration marks +8 as a relative string pointer, not a numeric operation.
 fn referenced_runtime_operation_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
     let mut facts = vec![
         Fact::new(
@@ -951,8 +957,8 @@ fn referenced_runtime_operation_facts(payload: &[u8], node: usize) -> Result<Vec
             FactValue::Selector(byte(payload, node, 4)?),
         ),
         Fact::new(
-            "Operation Value",
-            FactValue::Count(u32_at(payload, node + 8)?.into()),
+            "Has Resource Path",
+            FactValue::Flag(reference_path(payload, node).is_some()),
         ),
     ];
     if let Some(resource) = tag(payload, node, 0x10)? {

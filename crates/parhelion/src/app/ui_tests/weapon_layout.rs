@@ -126,9 +126,26 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
         let before = app.recipe.clone();
         for width in [480.0, 900.0, 1320.0] {
             let (output, overflow) = render(width, |ui| {
-                draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), true);
-                draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), false);
-                draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
+                draw_combat_profile_control(
+                    ui,
+                    &mut app.recipe.overrides,
+                    Some(&donor),
+                    true,
+                    false,
+                );
+                draw_combat_profile_control(
+                    ui,
+                    &mut app.recipe.overrides,
+                    Some(&donor),
+                    false,
+                    false,
+                );
+                draw_combat_profile_diagnostics(
+                    ui,
+                    &app.recipe.overrides,
+                    Some(&donor),
+                    VariableDamageAppearance::Unavailable,
+                );
             });
             assert!(text(&output).contains("Experimental slot and damage combination"));
             assert!(!text(&output).contains("Reset it before building"));
@@ -141,9 +158,14 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
         let donor = app.current_donor().unwrap();
         let before = app.recipe.clone();
         let (profile, _) = render(900.0, |ui| {
-            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), true);
-            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), false);
-            draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
+            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), true, false);
+            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), false, false);
+            draw_combat_profile_diagnostics(
+                ui,
+                &app.recipe.overrides,
+                Some(&donor),
+                VariableDamageAppearance::Unavailable,
+            );
         });
         assert!(
             !text(&profile).contains("Unsupported recipe combination"),

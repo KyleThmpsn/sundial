@@ -1000,3 +1000,69 @@ fn socket_column_validation_reports_structural_set_errors_in_socket_order() {
         ]
     );
 }
+
+#[test]
+fn variable_damage_needs_a_carrier_appearance_and_dresses_the_recipe() {
+    use crate::recipe::VariableDamageRecipe;
+    use crate::weapon::variable_damage::HARD_LIGHT_ITEM_HASH;
+    let base = summary(
+        Some(WeaponInventorySlot::Kinetic),
+        WeaponDamageProfile::KineticEmpty,
+    );
+    let mut hard_light = summary(
+        Some(WeaponInventorySlot::Energy),
+        WeaponDamageProfile::Variable,
+    );
+    hard_light.hash = HARD_LIGHT_ITEM_HASH;
+    hard_light.name = "Hard Light".to_owned();
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.variable").unwrap();
+    assert!(!reconcile_variable_damage(
+        &mut recipe,
+        &base,
+        &[base.clone()]
+    ));
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe::all());
+
+    // Same family and animation group across the Kinetic/Energy pair: Hard Light can dress it.
+    let summaries = [base.clone(), hard_light.clone()];
+    assert_eq!(
+        variable_damage_appearance(&recipe, &base, &summaries),
+        VariableDamageAppearance::Available(HARD_LIGHT_ITEM_HASH)
+    );
+    assert!(reconcile_variable_damage(&mut recipe, &base, &summaries));
+    let presentation = recipe.presentation_donor.clone().unwrap();
+    assert_eq!(presentation.item_hash.parse_u32(), Ok(HARD_LIGHT_ITEM_HASH));
+    assert_eq!(presentation.expected_name.as_deref(), Some("Hard Light"));
+    assert_eq!(
+        variable_damage_appearance(&recipe, &base, &summaries),
+        VariableDamageAppearance::Ready(HARD_LIGHT_ITEM_HASH)
+    );
+    assert!(!reconcile_variable_damage(&mut recipe, &base, &summaries));
+
+    // A different animation group leaves nothing to wear.
+    let mut other_group = hard_light.clone();
+    other_group.weapon_translation_group = Some(2);
+    recipe.set_presentation_donor(None);
+    assert_eq!(
+        variable_damage_appearance(&recipe, &base, &[base.clone(), other_group]),
+        VariableDamageAppearance::Unavailable
+    );
+    assert!(!reconcile_variable_damage(
+        &mut recipe,
+        &base,
+        &[base.clone()]
+    ));
+    assert!(recipe.presentation_donor.is_none());
+
+    // Hard Light itself as the base weapon is ready without an appearance donor.
+    assert_eq!(
+        variable_damage_appearance(&recipe, &hard_light, std::slice::from_ref(&hard_light)),
+        VariableDamageAppearance::Ready(HARD_LIGHT_ITEM_HASH)
+    );
+
+    assert_eq!(
+        variable_damage_resting_type(&[RecipeDamageType::Solar, RecipeDamageType::Arc]),
+        Some(RecipeDamageType::Arc)
+    );
+    assert_eq!(variable_damage_resting_type(&[]), None);
+}

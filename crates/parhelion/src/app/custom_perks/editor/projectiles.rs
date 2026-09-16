@@ -167,9 +167,7 @@ impl PerkEditor {
                 .entries
                 .iter()
                 .find(|choice| choice.graph == tag);
-            let label = current
-                .map(label_for)
-                .unwrap_or_else(|| format!("Missing Effect · 0x{tag:08X}"));
+            let label = current.map_or_else(|| format!("Missing Effect · 0x{tag:08X}"), label_for);
             use super::super::workbench::{assets, pickers};
             let picked = pickers::browser(
                 ui,

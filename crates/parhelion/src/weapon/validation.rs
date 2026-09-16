@@ -793,6 +793,7 @@ pub(crate) fn validate_catalog_with_progress<'a>(
         .into_iter()
         .filter(|spec| {
             spec.presentation_donor.is_some()
+                || spec.overrides.variable_damage.is_some()
                 || !spec.overrides.investment_stats.is_empty()
                 || !spec.overrides.removed_investment_stats.is_empty()
                 || spec.overrides.base_sandbox_perks.is_some()
@@ -816,11 +817,12 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     })
     .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
     let installed_donors = catalog.weapon_donors();
-    let installed_sandbox_perks = catalog
-        .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)
-        .into_iter()
-        .map(|choice| choice.perk_index)
-        .collect::<BTreeSet<_>>();
+    // The base-item array may carry declaration-only rows: stock puts 479, whose metadata
+    // liveness byte is zero and which has no runtime action, on Hard Light's intrinsic plug.
+    // Requiring the active-only choice set here was stricter than the shipped data, so the
+    // guard checks that the installed catalog knows the index at all.
+    let installed_sandbox_perks =
+        catalog.referenced_sandbox_perk_indices(crate::package_profile::is_stock_item_definition);
     let installed_trait_indices = catalog
         .weapon_trait_choices()
         .into_iter()

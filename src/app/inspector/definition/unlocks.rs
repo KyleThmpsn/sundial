@@ -253,7 +253,7 @@ fn draw_unlock_state_editor(
             response.on_hover_text(error);
         }
     } else if !unlock_state_editable(definition, value_definition) {
-        ui.label(egui::RichText::new("Read Only").weak())
+        ui.weak("Read Only")
             .on_hover_text("This definition uses a storage bank Sundial does not write");
     } else if value_definition {
         draw_unlock_value_editor(ui, index, definition, snapshot, action);

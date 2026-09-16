@@ -295,6 +295,14 @@ impl Workbench {
             return None;
         };
         let document = self.documents.get_mut(self.selected)?;
+        if let Some(target) = &document.target
+            && target.check(weapon, donor).is_err()
+        {
+            // The weapon changed under this perk, such as a Recipe discard or an apply from
+            // another perk. Follow the same socket choice so the caption names what sits
+            // there now. A choice that no longer exists clears the destination.
+            document.target = Target::capture(weapon, donor, target.socket, target.choice).ok();
+        }
         let mut result = None;
         ui.add_enabled_ui(self.editor.is_none(), |ui| {
             ui.horizontal(|ui| {
@@ -312,6 +320,7 @@ impl Workbench {
                             if ui.selectable_label(document.target.as_ref() == Some(&target), label).clicked() { document.target = Some(target); }
                         }
                     });
+                pickers::name_combo(ui, "perk-destination", "Destination Socket");
                 // The action and anything standing in its way sit together at the right.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ready = document.target.is_some() && issue.is_none();

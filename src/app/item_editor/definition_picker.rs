@@ -178,7 +178,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                 || !choices.existing_inventory.is_empty()
                 || choices.clear.is_some();
             if !has_picker_choices {
-                ui.label(egui::RichText::new(&choices.empty_message).weak());
+                ui.weak(&choices.empty_message);
             } else if let Some(clear) = &choices.clear {
                 if ui
                     .selectable_label(clear.selected, &clear.label)
@@ -259,7 +259,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             ui.set_min_height(row_height);
-                                            ui.label(egui::RichText::new(*group).strong());
+                                            ui.strong(*group);
                                         },
                                     );
                                 }

@@ -112,3 +112,52 @@ impl SundialApp {
         }
     }
 }
+
+/// Draws the catalog header shared by profile-scoped material cards.
+///
+/// The dismantle-reward and shared-item cards show the same summary: the resolved
+/// definition name and type, whether it is a valid profile-items candidate, and an
+/// inspection context for the row. Returns the header response for anchoring pickers
+/// and the context for a context menu.
+fn draw_profile_material_header(
+    ui: &mut egui::Ui,
+    manifest: &crate::catalog::Catalog,
+    resolved: Option<&super::model::ResolvedDefinition>,
+    definition_hash: u32,
+    quantity: i32,
+    source: String,
+    invalid_message: &'static str,
+) -> (egui::Response, DefinitionInspectionContext) {
+    let valid = resolved.is_some_and(|definition| definition.metadata.is_profile_items_candidate());
+    let hash_hex_text = format_hash_hex(u64::from(definition_hash));
+    let definition = DefinitionSummary::from_name_and_type(
+        &hash_hex_text,
+        resolved.map(|definition| (definition.name.as_str(), definition.type_name.as_str())),
+    );
+    let inspection_context = DefinitionInspectionContext {
+        source,
+        instance_id: None,
+        authored_level: None,
+        flags: None,
+        plug_count: None,
+        plugs: None,
+        quantity: Some(i64::from(quantity)),
+    };
+    let response = item_editor::draw_catalog_item_header_with_trailing(
+        ui,
+        manifest,
+        Some(u64::from(definition_hash)),
+        Some(inspection_context.clone()),
+        ItemHeader {
+            label: None,
+            soid: None,
+            definition,
+            icon: None,
+            fill: item_editor::muted_item_header_fill(ui),
+            valid,
+            invalid_message,
+        },
+        |_| {},
+    );
+    (response, inspection_context)
+}

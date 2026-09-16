@@ -7,7 +7,7 @@ pub(in crate::app) fn profile_items(
 ) -> Result<Option<Vec<ProfileItemSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::profile_items(&document.json),
-        AccountDocument::Sqlite(document) => Ok(sqlite::profile_items(document)),
+        AccountDocument::Sqlite(document) => Ok(Some(sqlite::profile_items(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }
@@ -17,7 +17,7 @@ pub(in crate::app) fn dismantle_rewards(
 ) -> Result<Option<Vec<DismantleRewardSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::dismantle_rewards(&document.json),
-        AccountDocument::Sqlite(document) => Ok(sqlite::dismantle_rewards(document)),
+        AccountDocument::Sqlite(document) => Ok(Some(sqlite::dismantle_rewards(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }

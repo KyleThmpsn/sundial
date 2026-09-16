@@ -65,13 +65,7 @@ impl PackageAuthoringApp {
                     );
                 } else {
                     if let Some(progress) = &self.build_progress {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Elapsed {}",
-                                format_elapsed(progress.elapsed)
-                            ))
-                            .weak(),
-                        );
+                        ui.weak(format!("Elapsed {}", format_elapsed(progress.elapsed)));
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("parhelion-build-status-report")

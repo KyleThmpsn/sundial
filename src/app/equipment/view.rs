@@ -325,12 +325,7 @@ impl SundialApp {
                                 snapshot.issues.join(" · "),
                             )
                             .on_hover_text(format!("Authored item: {}", snapshot.raw_item_text));
-                            ui.label(
-                                egui::RichText::new(
-                                    "Guided edits are disabled for this malformed equipped item.",
-                                )
-                                .weak(),
-                            );
+                            ui.weak("Guided edits are disabled for this malformed equipped item.");
                         }
                     }
 
@@ -456,7 +451,7 @@ impl SundialApp {
                                 }
                             } else {
                                 ui.label("Power");
-                                ui.label(egui::RichText::new("<invalid or missing>").weak());
+                                ui.weak("<invalid or missing>");
                             }
                         });
 

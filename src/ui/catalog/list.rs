@@ -38,7 +38,7 @@ impl BrowserList<'_> {
             .data(|data| data.get_temp::<u64>(id))
             .filter(|key| self.keys.contains(key))
             .unwrap_or(self.keys[0]);
-        let keyboard_step = if ui.memory(|memory| memory.any_popup_open()) {
+        let keyboard_step = if ui.memory(eframe::egui::Memory::any_popup_open) {
             0
         } else {
             ui.input_mut(|input| {

@@ -116,10 +116,10 @@ pub(super) fn draw_add_investment_window(
                     drag.range(0..=i32::from(FAMILY5_FLAG_VALUE_MAXIMUM))
                 });
             });
-            ui.label(egui::RichText::new(format!("{} available", candidates.len())).weak());
+            ui.weak(format!("{} available", candidates.len()));
             ui.separator();
             if candidates.is_empty() {
-                ui.label(egui::RichText::new("No matching definitions").weak());
+                ui.weak("No matching definitions");
                 return;
             }
             egui::ScrollArea::vertical()

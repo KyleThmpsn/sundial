@@ -190,19 +190,32 @@ fn follow(
     bytes_at::<16>(data, target)?;
     let count = usize::try_from(u64_at(data, target)?).map_err(|_| "Native array is too large")?;
     let class = u32_at(data, target + 8)?;
-    let stride = record(class)?.size;
+    let layout = record(class)?;
+    let stride = layout.size;
     let rows = target
         .checked_add(16)
         .ok_or("Native array offset overflow")?;
-    if stride == 0
-        || count > MAX_OBJECTS
-        || pending.len().saturating_add(count) > MAX_OBJECTS
+    if (stride == 0 && count != 0)
         || count
             .checked_mul(stride)
             .and_then(|size| rows.checked_add(size))
             .is_none_or(|end| end > data.len())
     {
-        return Err("Native reference array has invalid bounds or stride".into());
+        return Err(format!(
+            "Native reference array at +0x{target:X} has invalid bounds or stride: class 0x{class:08X}, count {count}, stride {stride}, resource size {}",
+            data.len()
+        ));
+    }
+    // Large scalar/vertex arrays contain no references. Validate their complete
+    // extent without treating every element as another object to traverse.
+    if layout.fields.is_empty() {
+        if count != 0 && is_reference(class) {
+            pending.push((rows, class));
+        }
+        return Ok(());
+    }
+    if count > MAX_OBJECTS || pending.len().saturating_add(count) > MAX_OBJECTS {
+        return Err("Native reference array exceeded its object limit".into());
     }
     pending.extend((0..count).map(|i| (rows + i * stride, class)));
     Ok(())

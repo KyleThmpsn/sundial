@@ -63,8 +63,10 @@ pub const fn object_type_name(object_type: u8) -> Option<&'static str> {
 /// A readable label for an object type: the client's name when recorded, else the number.
 #[must_use]
 pub fn object_type_label(object_type: u8) -> String {
-    object_type_name(object_type)
-        .map_or_else(|| format!("type {object_type}"), |name| name.to_owned())
+    object_type_name(object_type).map_or_else(
+        || format!("type {object_type}"),
+        std::borrow::ToOwned::to_owned,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -40,6 +40,14 @@ impl PerkEditor {
                         .map(move |root| (owner.owner_tag, "Shared Component", root))
                 }));
             for (owner, binding, root) in roots {
+                // Reflection can name a field without identifying its component's role.
+                // Keep those records in Advanced, using the same checked writer.
+                if sundial::package_authoring::weapon_runtime::native_type_name(root.schema)
+                    .is_none()
+                    && (binding.starts_with("Binding 0x") || binding == "Shared Component")
+                {
+                    continue;
+                }
                 let fields = root
                     .fields
                     .iter()
@@ -356,6 +364,7 @@ fn draw_property_value(
             egui::vec2(width, ui.spacing().interact_size.y),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
+                ui.set_min_width(width);
                 ui.add(
                     egui::Label::new(&field.name)
                         .halign(egui::Align::Max)

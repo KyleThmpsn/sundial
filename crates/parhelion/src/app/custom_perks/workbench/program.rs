@@ -77,36 +77,33 @@ const COOLDOWN_HINT: &str = "The delay before this effect can activate again.";
 const REPEAT_HINT: &str = "The interval at which an always-active effect runs its actions again.";
 const EXTEND_HINT: &str = "Seconds added to each running timer on another matching kill.";
 const CAP_HINT: &str = "The most time a running timer can hold after the extension.";
+pub(super) type ConditionPicker<'a> = dyn FnMut(&mut egui::Ui) -> Option<NativeNode> + 'a;
 
-/// The trigger block: the trigger itself and, for kill triggers, the activation chance. A
-/// native trigger adds the condition kind and its fields.
-pub(super) fn draw_trigger_block(ui: &mut egui::Ui, program: &mut Program) {
-    let mut properties = super::properties::Panel::new(ui, "trigger");
-    let mut selected = program.trigger;
+/// The same behavior catalog supplies built-in and recovered native triggers.
+pub(super) fn draw_trigger_block(
+    ui: &mut egui::Ui,
+    program: &mut Program,
+    mut pick: impl FnMut(&mut egui::Ui, &str, bool) -> Option<super::behaviors::Selection>,
+) {
     let retained = program.actions.is_empty() || program.actions.iter().any(Action::retained);
     ui.horizontal_wrapped(|ui| {
-        egui::ComboBox::from_id_salt("program-trigger")
-            .selected_text(trigger_label(program.trigger, retained))
-            .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
-                for trigger in Trigger::ALL {
-                    ui.selectable_value(&mut selected, trigger, trigger_label(trigger, retained))
-                        .on_hover_text(trigger.description());
+        let label = program
+            .native_trigger
+            .as_ref()
+            .filter(|_| program.trigger == Trigger::Native)
+            .map_or_else(
+                || trigger_label(program.trigger, retained).to_owned(),
+                native_condition_text,
+            );
+        if let Some(selection) = pick(ui, &label, retained) {
+            match selection {
+                super::behaviors::Selection::Trigger(trigger) => change_trigger(program, trigger),
+                super::behaviors::Selection::Condition(node) => {
+                    program.native_trigger = Some(node);
+                    change_trigger(program, Trigger::Native);
                 }
-            })
-            .response
-            .on_hover_text(program.trigger.description());
-        if selected != program.trigger {
-            change_trigger(program, selected);
-        }
-        if program.trigger == Trigger::Native {
-            let node = program
-                .native_trigger
-                .get_or_insert_with(|| NativeNode::condition(6).expect("a plain condition kind"));
-            draw_native_kind(ui, "native-trigger-kind", node, NativeFamily::Condition);
-            properties.button(ui);
-        } else {
-            program.native_trigger = None;
+                super::behaviors::Selection::Action(_) => {}
+            }
         }
         if program.trigger.is_event() {
             ui.label("Chance")
@@ -126,14 +123,45 @@ pub(super) fn draw_trigger_block(ui: &mut egui::Ui, program: &mut Program) {
         }
     });
     if let (Trigger::Native, Some(node)) = (program.trigger, &mut program.native_trigger) {
-        properties.show(ui, |ui| {
-            ui.strong("Condition");
-            native::draw(ui, "native-trigger", node, NativeFamily::Condition);
-        });
+        native::draw(ui, "native-trigger", node, NativeFamily::Condition);
+    }
+    draw_alternatives(
+        ui,
+        "alternative-trigger",
+        "Also Starts When",
+        &mut program.alternative_triggers,
+    );
+    if let Some(policy) = &program.policy {
+        ui.small(format!(
+            "Execution Policy {}, carried from the stock perk. Its behavior has no controls yet.",
+            policy.selector
+        ));
     }
 }
 
-fn trigger_label(trigger: Trigger, retained: bool) -> &'static str {
+/// Further conditions a stock action accepts beside the primary one. Each has the same
+/// controls as a native node. Removing one is reported by the conversion review.
+fn draw_alternatives(ui: &mut egui::Ui, id: &str, heading: &str, nodes: &mut Vec<NativeNode>) {
+    if nodes.is_empty() {
+        return;
+    }
+    ui.strong(heading);
+    let mut removed = None;
+    for (index, node) in nodes.iter_mut().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(native_condition_text(node));
+            if ui.small_button("Remove").clicked() {
+                removed = Some(index);
+            }
+        });
+        native::draw(ui, &format!("{id}-{index}"), node, NativeFamily::Condition);
+    }
+    if let Some(index) = removed {
+        nodes.remove(index);
+    }
+}
+
+pub(super) fn trigger_label(trigger: Trigger, retained: bool) -> &'static str {
     match (trigger, retained) {
         (Trigger::Drawn, false) => "On Draw",
         (Trigger::Equipped, false) => "On Equip",
@@ -163,7 +191,7 @@ fn change_trigger(program: &mut Program, trigger: Trigger) {
     if !matches!(trigger, Trigger::Always | Trigger::Native) {
         program.native_removal = None;
     }
-    if trigger.is_event() {
+    if program.has_kill_trigger() {
         program.duration_ms = program.duration_ms.max(1);
     } else {
         for action in &mut program.actions {
@@ -225,51 +253,11 @@ impl NativeFamily {
         }
     }
 
-    fn blank(self, kind: u8) -> Option<NativeNode> {
-        match self {
-            Self::Condition => NativeNode::condition(kind),
-            Self::Effect => NativeNode::effect(kind),
-        }
-    }
-
     fn name(self, kind: u8) -> String {
         match self {
             Self::Condition => nodes::condition_name(kind),
             Self::Effect => nodes::effect_name(kind),
         }
-    }
-}
-
-/// The kind picker of a native node. Changing the kind starts a fresh node of that kind.
-fn draw_native_kind(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: NativeFamily) {
-    let mut kind = node.kind;
-    egui::ComboBox::from_id_salt(id)
-        .width(240.0)
-        .selected_text(format!("{kind:02}: {}", family.name(kind)))
-        .show_ui(ui, |ui| {
-            crate::app::style::workbench_style(ui);
-            let entries: &[nodes::NodeKind] = match family {
-                NativeFamily::Condition => &nodes::CONDITIONS,
-                NativeFamily::Effect => &nodes::EFFECTS,
-            };
-            for entry in entries {
-                ui.add_enabled_ui(entry.support == nodes::Support::Authorable, |ui| {
-                    ui.selectable_value(
-                        &mut kind,
-                        entry.kind,
-                        format!("{:02}: {}", entry.kind, entry.name),
-                    )
-                    .on_hover_text(entry.summary)
-                    .on_disabled_hover_text(entry.support.detail());
-                });
-            }
-        })
-        .response
-        .on_hover_text(family.catalog(node.kind).map_or("", |entry| entry.summary));
-    if kind != node.kind
-        && let Some(fresh) = family.blank(kind)
-    {
-        *node = fresh;
     }
 }
 
@@ -280,57 +268,76 @@ fn draw_native_field(ui: &mut egui::Ui, field: &layout::Field, bytes: &mut [u8])
         return;
     };
     let width = [controls::CONTROL_WIDTH, ui.spacing().interact_size.y];
+    // The label is drawn beside the control by the caller, so the control is named here.
+    let name = |ui: &egui::Ui, response: &egui::Response| {
+        pickers::name_response(ui, response, field.label);
+    };
     let changed = match (field.format, value) {
-        (FieldFormat::Byte, FactValue::Selector(mut byte)) => ui
-            .add_sized(width, egui::DragValue::new(&mut byte).range(0..=255))
-            .changed()
-            .then_some(FactValue::Selector(byte)),
-        (FieldFormat::Flag, FactValue::Flag(mut flag)) => ui
-            .checkbox(&mut flag, "")
-            .changed()
-            .then_some(FactValue::Flag(flag)),
+        (FieldFormat::Byte, FactValue::Selector(mut byte)) => {
+            let response = ui.add_sized(width, egui::DragValue::new(&mut byte).range(0..=255));
+            name(ui, &response);
+            response.changed().then_some(FactValue::Selector(byte))
+        }
+        (FieldFormat::Flag, FactValue::Flag(mut flag)) => {
+            let response = ui.checkbox(&mut flag, "");
+            name(ui, &response);
+            response.changed().then_some(FactValue::Flag(flag))
+        }
         (FieldFormat::Mask8, FactValue::Mask(mask)) => {
             let mut byte = mask as u8;
-            ui.add_sized(
+            let response = ui.add_sized(
                 width,
                 egui::DragValue::new(&mut byte)
                     .range(0..=255)
                     .hexadecimal(2, false, true),
-            )
-            .changed()
-            .then(|| FactValue::Mask(byte.into()))
+            );
+            name(ui, &response);
+            response.changed().then(|| FactValue::Mask(byte.into()))
         }
         (FieldFormat::Mask32, FactValue::Mask(mask)) => {
             let mut word = mask as u32;
-            hex_key(ui, field.offset, &mut word);
+            let response = hex_key(ui, field.offset, &mut word);
+            name(ui, &response);
             (u64::from(word) != mask).then(|| FactValue::Mask(word.into()))
         }
         (FieldFormat::Key, FactValue::Key(mut key)) => {
             let before = key;
-            hex_key(ui, field.offset, &mut key);
+            let response = hex_key(ui, field.offset, &mut key);
+            name(ui, &response);
+            // A key that the label registry names reads as that name, the same way an
+            // unmapped key field already does. The registry is engine data, so this adds
+            // no interpretation of its own.
+            if let Some(name) = sundial::package_authoring::sandbox_perk::action::label_name(key) {
+                ui.weak(name)
+                    .on_hover_text("Name from the engine's label registry.");
+            }
             (key != before).then_some(FactValue::Key(key))
         }
         (FieldFormat::Float, FactValue::Number(number)) => {
             let mut bits = number.to_bits();
-            float_field(ui, &mut bits);
+            let response = float_field(ui, &mut bits);
+            name(ui, &response);
             (bits != number.to_bits()).then(|| FactValue::Number(f32::from_bits(bits)))
         }
         (FieldFormat::Seconds, FactValue::Seconds(value)) => {
             let mut seconds = value;
-            ui.add(
+            let response = ui.add(
                 egui::DragValue::new(&mut seconds)
                     .range(0.0..=3600.0)
+                    .clamp_existing_to_range(false)
                     .suffix(" s"),
-            )
-            .changed()
-            .then_some(FactValue::Seconds(seconds))
+            );
+            name(ui, &response);
+            response.changed().then_some(FactValue::Seconds(seconds))
         }
         (FieldFormat::Range, FactValue::Range(low, high)) => {
             let (mut low_bits, mut high_bits) = (low.to_bits(), high.to_bits());
             ui.horizontal(|ui| {
-                float_field(ui, &mut low_bits);
+                let low = float_field(ui, &mut low_bits);
+                pickers::name_response(ui, &low, &format!("{} Low", field.label));
                 ui.label("to");
-                float_field(ui, &mut high_bits);
+                let high = float_field(ui, &mut high_bits);
+                pickers::name_response(ui, &high, &format!("{} High", field.label));
             });
             (low_bits != low.to_bits() || high_bits != high.to_bits())
                 .then(|| FactValue::Range(f32::from_bits(low_bits), f32::from_bits(high_bits)))
@@ -344,7 +351,9 @@ fn draw_native_field(ui: &mut egui::Ui, field: &layout::Field, bytes: &mut [u8])
 
 /// The reading of a native condition for a sentence: its kind and its fields.
 pub(super) fn native_condition_text(node: &NativeNode) -> String {
-    native_text(node, NativeFamily::Condition)
+    sundial::package_authoring::sandbox_perk::action::decode_condition_node(&node.bytes)
+        .map(|condition| condition.description())
+        .unwrap_or_else(|_| native_text(node, NativeFamily::Condition))
 }
 
 fn native_text(node: &NativeNode, family: NativeFamily) -> String {
@@ -389,8 +398,8 @@ impl Workbench {
                     });
                 });
             });
-            if program.trigger == Trigger::Native {
-                draw_native_ending(ui, program);
+            if program.trigger == Trigger::Native || program.native_removal.is_some() {
+                self.draw_native_ending(ui, program);
             }
         } else if program.trigger == Trigger::Always {
             if program.actions.iter().any(Action::retained) {
@@ -400,7 +409,9 @@ impl Workbench {
                     "Retained effects stay until the perk leaves the weapon."
                 });
             }
-            egui::CollapsingHeader::new("Technical Ending Condition")
+            self.draw_native_ending(ui, program);
+            egui::CollapsingHeader::new("Advanced")
+                .id_salt("ending-event-key")
                 .default_open(program.removal_key.is_some())
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
@@ -420,6 +431,7 @@ impl Workbench {
                                 );
                                 ui.selectable_value(&mut ends_on_key, true, "On an Event Key");
                             });
+                        pickers::name_combo(ui, "always-removal", "Effect Removal");
                         match (ends_on_key, program.removal_key) {
                             (false, Some(_)) => select_ending_key(program, None),
                             (true, None) => {
@@ -453,43 +465,49 @@ impl Workbench {
                         );
                         self.draw_key_status(ui);
                     }
-                    if program.removal_key.is_none() {
-                        draw_native_ending(ui, program);
+                });
+        } else if program.actions.iter().any(Action::retained) || program.native_removal.is_some() {
+            self.draw_native_ending(ui, program);
+        }
+        draw_alternatives(
+            ui,
+            "alternative-removal",
+            "Also Ends When",
+            &mut program.alternative_removals,
+        );
+    }
+
+    fn draw_native_ending(&mut self, ui: &mut egui::Ui, program: &mut Program) {
+        let label = removal_text(program, Some(&self.keys.catalog))
+            .unwrap_or_else(|| "Default for This Trigger".into());
+        canvas::row(
+            ui,
+            "End Condition",
+            "Ends this effect when the selected condition passes.",
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(label);
+                    if let Some(node) = self.behaviors.draw_condition(
+                        ui,
+                        &self.discovery,
+                        &self.perk_names,
+                        &self.asset_labels,
+                    ) {
+                        program.removal_key = None;
+                        program.native_removal = Some(node);
+                    }
+                    if (program.native_removal.is_some() || program.removal_key.is_some())
+                        && ui.small_button("Reset").clicked()
+                    {
+                        program.native_removal = None;
+                        program.removal_key = None;
                     }
                 });
-        } else if program.actions.iter().any(Action::retained)
-            && let Some(text) = removal_text(program, Some(&self.keys.catalog))
-        {
-            canvas::row(ui, "End Condition", DURATION_HINT, |ui| {
-                ui.label(text);
-            });
-        }
-    }
-}
-
-/// An optional native ending condition, for always-active and native-triggered programs.
-fn draw_native_ending(ui: &mut egui::Ui, program: &mut Program) {
-    let mut enabled = program.native_removal.is_some();
-    ui.checkbox(&mut enabled, "Native Ending Condition")
-        .on_hover_text(
-            "End the effect when a native condition node passes, carried as the client stores it.",
+                if let Some(node) = &mut program.native_removal {
+                    native::draw(ui, "native-removal", node, NativeFamily::Condition);
+                }
+            },
         );
-    if enabled && program.native_removal.is_none() {
-        program.removal_key = None;
-        program.native_removal = NativeNode::condition(29);
-    } else if !enabled {
-        program.native_removal = None;
-    }
-    if let Some(node) = &mut program.native_removal {
-        let mut properties = super::properties::Panel::new(ui, "ending-condition");
-        ui.horizontal_wrapped(|ui| {
-            draw_native_kind(ui, "native-removal-kind", node, NativeFamily::Condition);
-            properties.button(ui);
-        });
-        properties.show(ui, |ui| {
-            ui.strong("Condition");
-            native::draw(ui, "native-removal", node, NativeFamily::Condition);
-        });
     }
 }
 
@@ -504,12 +522,24 @@ fn draw_key_picker<'a>(
     what: &str,
     query: &mut String,
 ) -> Option<&'a KeyEvidence> {
-    hex_key(ui, (id, "raw"), key);
+    let raw = hex_key(ui, (id, "raw"), key);
+    pickers::name_response(ui, &raw, &format!("{what} Key"));
     let current = table.iter().find(|entry| entry.hash() == *key);
+    // A key whose purpose the installed data establishes reads as that purpose instead of a
+    // list of the perks that happen to use it.
     let label = match current {
-        Some(evidence) => format!("0x{key:08X} · {}", evidence.seen_in_as(what)),
+        Some(evidence) => match evidence.purpose() {
+            Some(purpose) => format!(
+                "0x{key:08X} · {}",
+                purpose.split(['.', ',']).next().unwrap_or(purpose)
+            ),
+            None => format!("0x{key:08X} · {}", evidence.seen_in_as(what)),
+        },
         None => format!("0x{key:08X}"),
     };
+    if let Some(purpose) = current.and_then(KeyEvidence::purpose) {
+        ui.label("ⓘ").on_hover_text(purpose);
+    }
     let picked = pickers::popup(ui, id, &label, query, |ui, query, reset, height| {
         let choices = table
             .iter()
@@ -529,7 +559,9 @@ fn draw_key_picker<'a>(
                 sundial::investment::draw_asset_choice_row(
                     ui,
                     &format!("0x{} · {} {what}", entry.key, entry.nodes),
-                    &entry.seen_in_as(what),
+                    &entry
+                        .purpose()
+                        .map_or_else(|| entry.seen_in_as(what), str::to_owned),
                     entry.hash() == *key,
                 )
                 .clicked()
@@ -546,7 +578,7 @@ fn draw_key_picker<'a>(
 /// The rearm block: a cooldown for kill triggers or a repeat interval for an always-active
 /// program.
 pub(super) fn draw_rearm_block(ui: &mut egui::Ui, program: &mut Program) {
-    if program.trigger == Trigger::Always {
+    if program.trigger == Trigger::Always && program.native_rearm.is_none() {
         canvas::row(ui, "Repeat Interval", REPEAT_HINT, |ui| {
             seconds(
                 ui,
@@ -557,6 +589,30 @@ pub(super) fn draw_rearm_block(ui: &mut egui::Ui, program: &mut Program) {
             );
         });
     }
+    let mut reset = false;
+    if let Some(node) = &mut program.native_rearm {
+        canvas::row(
+            ui,
+            "Ready Again When",
+            "Rearms this effect when the carried condition passes, in place of a cooldown.",
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(native_condition_text(node));
+                    reset = ui.small_button("Reset").clicked();
+                });
+                native::draw(ui, "native-rearm", node, NativeFamily::Condition);
+            },
+        );
+    }
+    if reset {
+        program.native_rearm = None;
+    }
+    draw_alternatives(
+        ui,
+        "alternative-rearm",
+        "Also Ready Again When",
+        &mut program.alternative_rearms,
+    );
 }
 
 pub(super) fn rearm_label(program: &Program) -> &'static str {
@@ -570,14 +626,16 @@ pub(super) fn rearm_label(program: &Program) -> &'static str {
 /// Whether the program has a rearm block to show at all.
 pub(super) fn has_rearm(program: &Program) -> bool {
     program.trigger.supports_cooldown()
+        || program.native_rearm.is_some()
+        || !program.alternative_rearms.is_empty()
 }
 
 /// The locked reading of the trigger block.
 pub(super) fn trigger_text(program: &Program) -> String {
-    if let (Trigger::Native, Some(node)) = (program.trigger, &program.native_trigger) {
-        return native_condition_text(node);
-    }
-    if program.trigger.is_event() && program.chance_permyriad != 10_000 {
+    let primary = if let (Trigger::Native, Some(node)) = (program.trigger, &program.native_trigger)
+    {
+        native_condition_text(node)
+    } else if program.trigger.is_event() && program.chance_permyriad != 10_000 {
         format!(
             "{} ({}% chance)",
             program.trigger.label(),
@@ -585,42 +643,75 @@ pub(super) fn trigger_text(program: &Program) -> String {
         )
     } else {
         program.trigger.label().to_owned()
-    }
+    };
+    std::iter::once(primary)
+        .chain(
+            program
+                .alternative_triggers
+                .iter()
+                .map(native_condition_text),
+        )
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 /// The locked reading of the removal block, or `None` when the program has no removal list.
 pub(super) fn removal_text(program: &Program, keys: Option<&KeyCatalog>) -> Option<String> {
-    if let Some(node) = &program.native_removal {
-        return Some(format!("When {}", native_condition_text(node)));
-    }
-    match program.trigger {
-        Trigger::Native => (program.duration_ms != 0)
-            .then(|| format!("After {} s", program.duration_ms as f32 / 1000.0)),
-        Trigger::Always => program.removal_key.map(|key| {
-            let seen = keys
-                .and_then(|keys| keys.removal_key(key))
-                .map_or_else(String::new, |evidence| {
-                    format!(" ({})", evidence.seen_in_as(REMOVAL_KEY_NOTE))
-                });
-            format!("On event key 0x{key:08X}{seen}")
-        }),
-        Trigger::Equipped => Some("The weapon is detached".into()),
-        Trigger::Drawn => Some("The weapon is holstered".into()),
-        _ => Some(format!("After {} s", program.duration_ms as f32 / 1000.0)),
-    }
+    let primary = if let Some(node) = &program.native_removal {
+        Some(format!("When {}", native_condition_text(node)))
+    } else {
+        match program.trigger {
+            Trigger::Native => (program.duration_ms != 0)
+                .then(|| format!("After {} s", program.duration_ms as f32 / 1000.0)),
+            Trigger::Always => program.removal_key.map(|key| {
+                let seen = keys
+                    .and_then(|keys| keys.removal_key(key))
+                    .map_or_else(String::new, |evidence| {
+                        format!(" ({})", evidence.seen_in_as(REMOVAL_KEY_NOTE))
+                    });
+                format!("On event key 0x{key:08X}{seen}")
+            }),
+            Trigger::Equipped => Some("The weapon is detached".into()),
+            Trigger::Drawn => Some("The weapon is holstered".into()),
+            _ => Some(format!("After {} s", program.duration_ms as f32 / 1000.0)),
+        }
+    };
+    let parts = primary
+        .into_iter()
+        .chain(
+            program
+                .alternative_removals
+                .iter()
+                .map(|node| format!("When {}", native_condition_text(node))),
+        )
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" or "))
 }
 
 /// The locked reading of the rearm block, or `None` when the program has no rearm timer.
 pub(super) fn rearm_text(program: &Program) -> Option<String> {
-    if !program.trigger.supports_cooldown() || program.cooldown_ms == 0 {
-        return None;
-    }
-    let seconds = program.cooldown_ms as f32 / 1000.0;
-    Some(if program.trigger == Trigger::Always {
-        format!("Every {seconds} s")
+    let primary = if let Some(node) = &program.native_rearm {
+        Some(format!("When {}", native_condition_text(node)))
+    } else if program.trigger.supports_cooldown() && program.cooldown_ms != 0 {
+        let seconds = program.cooldown_ms as f32 / 1000.0;
+        Some(if program.trigger == Trigger::Always {
+            format!("Every {seconds} s")
+        } else {
+            format!("After {seconds} s")
+        })
     } else {
-        format!("After {seconds} s")
-    })
+        None
+    };
+    let parts = primary
+        .into_iter()
+        .chain(
+            program
+                .alternative_rearms
+                .iter()
+                .map(|node| format!("When {}", native_condition_text(node))),
+        )
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" or "))
 }
 
 /// The locked reading of one action block.
@@ -696,19 +787,17 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
         ),
         Action::Native { node } if node.kind == 5 && node.bytes.len() >= 32 => {
             let count = u32::from_le_bytes(node.bytes[4..8].try_into().expect("orb count"));
+            let entity = if count == 1 {
+                "Orb of Light"
+            } else {
+                "Orbs of Light"
+            };
             let place = match node.bytes[2] {
                 0 => "at your position",
                 1 => "at the triggering event",
                 _ => "using its native position setting",
             };
-            format!(
-                "Generate {count} {} {place}",
-                if count == 1 {
-                    "Orb of Light"
-                } else {
-                    "Orbs of Light"
-                }
-            )
+            format!("Generate {count} {entity} {place}")
         }
         Action::Native { node } => native_text(node, NativeFamily::Effect),
     }
@@ -741,22 +830,300 @@ fn action_description(action: &Action) -> &'static str {
     }
 }
 
-/// Perk validation is shown once beside Apply to Weapon.
-pub(super) fn draw_actions_footer(ui: &mut egui::Ui, program: &mut Program, keys: &KeyCatalog) {
-    ui.horizontal(|ui| draw_add_action(ui, program, keys));
+/// A name in the words a player uses, for the effect kinds whose traced behavior says
+/// plainly what happens in game.
+///
+/// A kind is listed here only when its recorded evidence in `nodes.rs` leaves the behavior
+/// resolved. Kinds whose evidence ends in "remains unresolved" stay off this list even when
+/// their fields are editable, because the workbench would be putting words to something it
+/// has not established. Everything not listed keeps the engine's own traced name and is
+/// held behind the picker's Advanced setting.
+pub(super) fn plain_action_title(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Attach an Effect",
+        2 => "Attach an Effect with a Dynamic Value",
+        3 => "Spawn an Object or Effect",
+        4 => "Apply an Effect to a Chosen Target",
+        5 => "Generate Orbs of Light",
+        6 => "Change Damage Type",
+        7 => "Change an Ability Stat",
+        8 => "Change Ability Energy",
+        10 => "Change a Weapon or Ability Stat",
+        11 => "Change Ammo Drop Chance",
+        13 => "Drop Ammo by Weighted Chance",
+        14 => "Adjust Ammunition",
+        15 => "Adjust Ammunition by Capacity",
+        16 => "Reload from Reserves",
+        18 => "Set Radar Detection Range",
+        26 => "Change Fired Projectile",
+        32 => "Extend Timers",
+        35 => "Set a Weapon Firing Mode",
+        37 => "Label the Event when the Damage Source Matches",
+        40 => "Change the Event's Values",
+        42 => "Set the Effect's Counter",
+        47 => "Set Transmat Effect",
+        48 => "Run a Game Script",
+        53 => "Adjust Several Named Values",
+        54 => "Label the Event when the Target Matches",
+        _ => return None,
+    })
 }
 
-fn common_actions(
+/// What a player would be told this effect kind does. Present for exactly the kinds
+/// `plain_action_title` names, which the tests enforce.
+pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Keep an entity attached for the duration of the effect.",
+        2 => "Keep an effect attached and drive one of its values from a formula.",
+        3 => {
+            "Spawn a pickup, relic, world object, projectile or effect at the player or event location."
+        }
+        4 => "Apply a referenced effect to a target the action selects.",
+        5 => {
+            "Create a collectible Orb of Light at the kill location or at the player, the way Masterwork weapons do."
+        }
+        6 => {
+            "Change the weapon's damage type to Kinetic, Solar, Arc or Void, as The Fundamentals does."
+        }
+        7 => "Change a named stat inside an ability.",
+        8 => "Scale grenade, melee or class ability energy, with an optional limit.",
+        10 => "Adjust a named weapon or ability property.",
+        // Kind 11: the Primary, Special and Heavy Ammo Finder mods each write one of the
+        // three triples, so the triples are per ammo type. All four described stock perks
+        // read "increases the drop chance of ... ammo on kill".
+        11 => {
+            "Add to the ammo drop chances by ammo type, as the Primary, Special and Heavy Ammo Finder mods do. Each type has three values, and the Finder mods set the second."
+        }
+        // Kind 13: the three weights are the ammo types. Snapload Finisher weights only the
+        // first and generates Primary ammo, Special Finisher only the second, Heavy Finisher
+        // only the third, and every other described stock perk agrees.
+        13 => {
+            "Pick Primary, Special or Heavy ammo by weight and drop it, as Special Finisher weights only Special and Heavy Finisher only Heavy."
+        }
+        14 => "Add whole rounds to the magazine or reserves, as Triple Tap returns a round.",
+        15 => {
+            "Add a share of the magazine or reserve capacity, as kill-to-reload perks refill half a magazine."
+        }
+        16 => "Move ammunition out of reserves and into the magazine, without adding any new ammo.",
+        // Kind 18: Long March and Radar Booster, the only stock uses, both write the third
+        // host float (80 and 56) and leave the other two at -1, which the callback leaves
+        // unchanged.
+        18 => {
+            "Replace the radar detection range while the effect is active, as Long March sets 80 and Radar Booster 56. A value of -1 leaves a setting unchanged, and the other two settings are not identified."
+        }
+        26 => "Use a selected projectile pattern while the effect is active.",
+        32 => {
+            "Another matching kill while the effect is active adds time to its running timers, as Outlaw does."
+        }
+        // Kind 35: every stock use is a firing mode. Full Auto Trigger System, Rapid-Fire
+        // Frame and Thunderer write the same key, and Fan Fire clears it.
+        35 => {
+            "Set the weapon's firing mode while the effect is active. Every stock use is a firing mode: Full Auto Trigger System, Rapid-Fire Frame and Thunderer all set full auto."
+        }
+        37 => {
+            "Add labels to the event that started this effect when its damage source filter passes, so other perks can read them. The stock filters name weapon families and abilities, and the champion mods use it to add labels such as stagger and overload."
+        }
+        40 => "Change the values the triggering event carries, after its filters pass.",
+        42 => "Write the counter value that accumulator conditions read.",
+        // Kind 47: all 112 stock perks that carry it belong to Transmat Effect items, one key
+        // each, which is what the key identifies. The client code that reads the key has
+        // not been traced, and the sentence says so.
+        47 => {
+            "Set which transmat effect this perk carries. Every one of the 112 stock perks with this action belongs to a Transmat Effect item. The game code that reads it has not been traced."
+        }
+        // Kind 48: the referenced resource is a behavior script whose path names it, such
+        // as apply_tiered_charge_of_light, the one 17 Charged with Light mods run.
+        48 => {
+            "Run one of the game's own scripts, such as applying a stack of Charged with Light. The scripts on offer are the ones stock perks run, chosen by name."
+        }
+        53 => "Add to, replace or multiply the named values that match.",
+        54 => {
+            "Add labels to the event that started this effect when its target filter passes, so other perks can read them. Stock perks use it for the champion effects: stagger, pierce and overload."
+        }
+        _ => return None,
+    })
+}
+
+/// A name in the words a player uses for a condition kind, on the same terms as
+/// `plain_action_title`: listed only where the traced evidence leaves the behavior resolved.
+pub(super) fn plain_condition_title(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        0 => "Always",
+        1 => "After a Delay",
+        2 => "On a Kill",
+        4 => "On Dealing Damage",
+        5 => "On Taking Damage",
+        6 => "On Picking Up Ammo",
+        8 => "On Using an Ability",
+        9 => "On Activating an Ability",
+        12 => "On a Game Event",
+        14 => "When the Weapon Is Equipped",
+        15 => "When the Weapon Is Unequipped",
+        16 => "When the Weapon Is Drawn",
+        17 => "When the Weapon Is Holstered",
+        19 => "On Reloading",
+        22 => "On Crouching",
+        23 => "On Aiming Down Sights",
+        26 => "After Enough Stacks",
+        27 => "On Firing This Weapon",
+        29 => "On a Game Signal",
+        30 => "Ends on a Game Signal",
+        31 => "When All Requirements Are Met",
+        42 => "On a Finisher",
+        _ => return None,
+    })
+}
+
+/// What a player would be told this condition kind does. Present for exactly the kinds
+/// `plain_condition_title` names.
+pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        0 => "Always passes. The effect still obeys its chance and its trigger.",
+        1 => {
+            "Waits a fixed number of seconds. The same condition serves as a duration and as a cooldown."
+        }
+        2 => "Passes on a kill. It can require this weapon and a label such as a precision hit.",
+        // Kind 4: every described stock perk on it reads as damage dealt, from Impact
+        // Induction ("causing damage with a melee attack") and The Perfect Fifth ("precision
+        // hits") to Disruption Break ("breaking an enemy's shield with this weapon"). Its
+        // label filter names what dealt the damage.
+        4 => {
+            "Passes when damage is dealt, as Impact Induction reads a melee hit and The Perfect Fifth a precision hit. Its labels name what dealt it, such as precision, grenade or sword."
+        }
+        // Kind 6: every described stock perk on it is a Scavenger or Lead from Gold, and all
+        // read "when you pick up ammo". The ammunition type mask is named from the same perks.
+        6 => {
+            "Passes when ammunition is picked up, as every Scavenger perk does. Its ammo type setting picks Primary, Special or Heavy."
+        }
+        // Kind 8: every described stock perk on it reads as an ability cast, from Bomber
+        // ("when using your class ability") to Radiant Light ("casting your Super"). The
+        // ability mask is named from the same perks.
+        8 => {
+            "Passes when an ability is used. Its ability setting picks the grenade, the Super or the class ability, as Bomber reads the class ability and Radiant Light the Super."
+        }
+        // Kind 9: the event carries the ability slot as a bit, numbered as kind 8's mask.
+        // Resolute and Volatile Conduction read Super casts on bit 1, Aeon Energy a dodge
+        // on bit 7.
+        9 => {
+            "Passes when the selected ability activates, as Resolute reads a Super cast and Aeon Energy a dodge. Its ability setting picks the Super or the class ability."
+        }
+        // Kind 5: Dreaded Visage ("when you're damaged"), Arc Conductor ("taking Arc
+        // damage"), Vengeance ("those that harm you") and the Taken, Fallen and Hive Barrier
+        // mods ("receiving Taken damage") all read as damage taken.
+        5 => {
+            "Passes when the player takes damage, as Dreaded Visage, Arc Conductor and the Taken, Fallen and Hive Barrier mods read. Its labels name what dealt the damage."
+        }
+        // Kind 12: the event and context keys are named from the perks that listen to them,
+        // 19 of them on the Orb of Light pickup alone.
+        12 => {
+            "Passes when a game event fires, such as picking up an Orb of Light, the event Innervation and Recuperation listen to. The events on offer are the ones stock perks listen to."
+        }
+        // Kind 19: all 18 stock perks with the reload flag set read as reloading, from Kill
+        // Clip and Impetus starting to Under Pressure and High-Impact Reserves ending.
+        19 => {
+            "Passes when this weapon is reloaded, as Kill Clip starts and Under Pressure ends. On Reload is the setting all 18 of those stock perks use. The second weapon event is one no stock description names."
+        }
+        22 => {
+            "Passes when crouching starts or ends, as Field Prep, Firmly Planted and Sneak Bow use it. Its event setting picks which."
+        }
+        23 => {
+            "Passes when aiming down sights starts or stops, as Rangefinder starts on aiming and Hip-Fire Grip on leaving it. Its event setting picks which."
+        }
+        14 => "Passes when this weapon is equipped to the character.",
+        15 => "Passes when this weapon is no longer equipped.",
+        16 => "Passes when this weapon is drawn.",
+        17 => "Passes when this weapon is put away.",
+        26 => {
+            "Counts toward a threshold and passes once it is reached. Its rows add to, replace or multiply the stored count."
+        }
+        // Kind 27: every described stock perk reads as a shot fired, from Tap the Trigger
+        // and Under Pressure starting on one to Box Breathing and The Perfect Fifth ending.
+        27 => {
+            "Passes when a shot is fired, as Tap the Trigger starts and Box Breathing resets. Its mode can restrict it to a missed shot, as Mulligan and Reversal of Fortune do."
+        }
+        29 => {
+            "Passes when a game signal fires, such as collecting a Warmind Cell or standing near a Vex Relay. The signals on offer are the ones stock perks start on."
+        }
+        30 => {
+            "Ends the effect when a game signal fires. An always-active effect ends on its own signal, and Relay Defender and Resistant Tether end on the signals they started on."
+        }
+        42 => {
+            "Passes on a finisher, as Bulwark Finisher reads the final blow and Reactive Pulse the finisher starting and ending. Its event setting picks which."
+        }
+        // Kind 31 is structural and fully traced: every subgroup must pass, and the
+        // conditions inside one subgroup are alternatives. Each subgroup reads as one
+        // requirement. Backup Plan and Archer's Gambit use it to require two things at once.
+        31 => {
+            "Passes only when every requirement below is met. A requirement is met by any one of the conditions listed under it, as Archer's Gambit needs both a hip fire state and a precision hit."
+        }
+        _ => return None,
+    })
+}
+
+/// The condition title a reader sees: the plain one where it exists, otherwise the engine's
+/// own traced name.
+pub(super) fn native_condition_title(kind: u8) -> String {
+    plain_condition_title(kind).map_or_else(|| nodes::condition_name(kind), str::to_owned)
+}
+
+pub(super) fn native_action_title(kind: u8) -> &'static str {
+    plain_action_title(kind)
+        .unwrap_or_else(|| nodes::effect(kind).map_or("Action", |node| node.name))
+}
+
+pub(super) fn native_action_label(kind: u8, bytes: &[u8]) -> String {
+    if kind == 8
+        && let Some(values) = bytes.get(2..5)
+        && let Some(role) = sundial::package_authoring::sandbox_perk::action::component_target(
+            values[0], values[1], values[2],
+        )
+    {
+        return format!("Adjust {role}");
+    }
+    native_action_title(kind).to_owned()
+}
+
+/// Effect kinds offered as guided actions in their own right, beyond the ones the workbench
+/// composes as typed `Action` variants. Each has a plain title and sentence, and the tests
+/// assert that every one of them actually produces an editable node.
+pub(super) const PROMOTED_NATIVE_ACTIONS: [u8; 17] = [
+    2, 4, 6, 7, 8, 11, 13, 16, 18, 35, 37, 40, 42, 47, 48, 53, 54,
+];
+
+/// One guided condition per engine variable the stock perks compare: a general predicate
+/// composed from the stock template with that variable's own comparison. The variable
+/// names come from the client's compiled source strings, so each row is a comparison the
+/// game itself makes, and the editor lets the value, the operation and the variable change.
+pub(super) fn compiled_comparisons() -> Vec<(String, String, NativeNode)> {
+    use sundial::package_authoring::sandbox_perk::action::native::predicate;
+    predicate::VARIABLES
+        .iter()
+        .filter_map(|variable| {
+            let bytes =
+                predicate::compose(variable.name, variable.operation, variable.threshold).ok()?;
+            Some((
+                variable.plain.to_owned(),
+                format!(
+                    "Passes while {} {} {}. {} The value, the comparison and the tracked variable can be changed.",
+                    variable.plain, variable.operation, variable.threshold, variable.evidence
+                ),
+                NativeNode { kind: 20, bytes },
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn common_actions(
     program: &Program,
     keys: &KeyCatalog,
-) -> [(&'static str, &'static str, Action); 8] {
-    [
+) -> Vec<(&'static str, &'static str, Action)> {
+    let mut actions = vec![
         (
             "Spawn an Object or Effect",
             "Spawn a pickup, relic, world object, projectile or effect at the player or event location.",
             Action::Spawn {
                 asset: Asset::default(),
-                position: if program.trigger.is_event() {
+                position: if program.has_kill_trigger() {
                     Position::Event
                 } else {
                     Position::Owner
@@ -764,9 +1131,9 @@ fn common_actions(
             },
         ),
         (
-            "Generate Orb of Light",
+            "Generate Orbs of Light",
             "Use the native masterwork operation to create a collectible orb at the kill location or owner.",
-            Action::generate_orb(if program.trigger.is_event() {
+            Action::generate_orb(if program.has_kill_trigger() {
                 Position::Event
             } else {
                 Position::Owner
@@ -793,109 +1160,36 @@ fn common_actions(
             },
         ),
         (
-            "Add Rounds",
+            native_action_title(14),
             "Add whole rounds to the magazine or reserves, as Triple Tap returns a round.",
             Action::add_rounds(1),
         ),
         (
-            "Add Ammunition Fraction",
+            native_action_title(15),
             "Add a share of the magazine or reserve capacity, as kill-to-reload perks refill half a magazine.",
             Action::add_fraction(0.5),
         ),
         (
-            "Named Property",
+            native_action_title(10),
             "Adjust a named weapon or ability property.",
             keys.property_keys()
                 .first()
                 .map_or_else(|| Action::property(EMPTY_KEY), Action::property_from),
         ),
-    ]
-}
-
-fn draw_add_action(ui: &mut egui::Ui, program: &mut Program, keys: &KeyCatalog) {
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let width = nodes::EFFECTS
-        .iter()
-        .map(|entry| {
-            ui.painter()
-                .layout_no_wrap(
-                    format!("{:02}: {}", entry.kind, entry.name),
-                    font.clone(),
-                    ui.visuals().text_color(),
-                )
-                .size()
-                .x
-        })
-        .fold(280.0, f32::max)
-        + ui.spacing().indent
-        + 32.0;
-    ui.add_enabled_ui(program.actions.len() < 16, |ui| {
-        if let Some(action) = pickers::popup_with_width(
-            ui,
-            "add-action",
-            "Add Action\u{2026}",
-            &mut String::new(),
-            width,
-            |ui, query, reset, height| {
-                let mut selected = None;
-                let mut scroll = egui::ScrollArea::vertical()
-                    .id_salt("action-choices")
-                    .max_height(height);
-                if reset {
-                    scroll = scroll.vertical_scroll_offset(0.0);
-                }
-                scroll.show(ui, |ui| {
-                    for (label, description, action) in common_actions(program, keys) {
-                        if !pickers::matches(query, &format!("{label} {description}")) {
-                            continue;
-                        }
-                        let enabled = match action {
-                            Action::Pattern { .. } => !program
-                                .actions
-                                .iter()
-                                .any(|current| matches!(current, Action::Pattern { .. })),
-                            Action::ExtendTimers { .. } => program.trigger.is_event(),
-                            _ => true,
-                        };
-                        if ui
-                            .add_enabled(enabled, egui::Button::new(label).frame(false))
-                            .on_hover_text(description)
-                            .on_disabled_hover_text(description)
-                            .clicked()
-                        {
-                            selected = Some(action);
-                        }
-                    }
-                    egui::CollapsingHeader::new("Technical Actions")
-                        .id_salt("technical-actions")
-                        .open((!query.is_empty()).then_some(true))
-                        .show(ui, |ui| {
-                            for entry in &nodes::EFFECTS {
-                                let label = format!("{:02}: {}", entry.kind, entry.name);
-                                if !pickers::matches(query, &format!("{label} {}", entry.summary)) {
-                                    continue;
-                                }
-                                let action = Action::native(entry.kind);
-                                if ui
-                                    .add_enabled(
-                                        action.is_some(),
-                                        egui::Button::new(label).frame(false),
-                                    )
-                                    .on_hover_text(entry.summary)
-                                    .on_disabled_hover_text(entry.support.detail())
-                                    .clicked()
-                                {
-                                    selected = action;
-                                }
-                            }
-                        });
-                });
-                selected
-            },
+    ];
+    // A native kind is offered as a guided action once its traced behavior supports a plain
+    // sentence and its fields already carry names. Each of these keeps its complete native
+    // record; the guided entry supplies the name, the sentence and a starting configuration.
+    for kind in PROMOTED_NATIVE_ACTIONS {
+        if let (Some(node), Some(title), Some(summary)) = (
+            NativeNode::effect(kind),
+            plain_action_title(kind),
+            plain_action_summary(kind),
         ) {
-            program.actions.push(action);
+            actions.push((title, summary, Action::Native { node }));
         }
-    });
+    }
+    actions
 }
 
 impl Workbench {
@@ -904,7 +1198,7 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         catalog: Option<&InvestmentCatalog>,
-        trigger: Trigger,
+        kill_trigger: bool,
         action: &mut Action,
         index: usize,
         count: usize,
@@ -939,16 +1233,21 @@ impl Workbench {
                         ui.close_menu();
                     }
                 });
-                properties.button(ui);
+                // The panel holds the technical bytes and the referenced object. An action
+                // with neither, such as Extend Timers, has nothing to put behind the button.
+                if action.asset().is_some() || has_technical_fields(action) {
+                    properties.button(ui);
+                }
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
                         let title = match action {
-                            Action::Spawn { .. } => "Spawn an Object or Effect",
-                            Action::Attach { .. } => "Attach an Effect",
-                            Action::Pattern { .. } => "Change Fired Projectile",
-                            _ => action.label(),
+                            Action::Spawn { .. } => native_action_title(3).to_owned(),
+                            Action::Attach { .. } => native_action_title(1).to_owned(),
+                            Action::Pattern { .. } => native_action_title(26).to_owned(),
+                            Action::Native { node } => native_action_label(node.kind, &node.bytes),
+                            _ => action.label().to_owned(),
                         };
                         ui.strong(format!("{}. {}", index + 1, title))
                             .on_hover_text(action_description(action));
@@ -959,46 +1258,110 @@ impl Workbench {
                 );
             });
         });
+        // What the action is about stays in view, the way the native editors lead with
+        // their named fields. Only the technical bytes wait behind Properties.
+        match action {
+            Action::Spawn { position, .. } => draw_spawn_position(ui, kill_trigger, position),
+            Action::Native { node } => {
+                native::draw(ui, "native-effect", node, NativeFamily::Effect);
+            }
+            Action::ExtendTimers { extend_ms, cap_ms } => {
+                ui.horizontal_wrapped(|ui| {
+                    seconds(ui, "Extend By", EXTEND_HINT, extend_ms, 1);
+                    seconds(ui, "Up To", CAP_HINT, cap_ms, 1);
+                });
+                if *cap_ms < *extend_ms {
+                    *cap_ms = *extend_ms;
+                }
+            }
+            Action::Property { .. } => self.draw_property_action(ui, action),
+            Action::AddRounds {
+                rounds,
+                target,
+                store,
+                ..
+            } => {
+                properties::field(
+                    ui,
+                    "Rounds",
+                    "Whole rounds. Negative removes rounds.",
+                    |ui| {
+                        let control = ui.add_sized(
+                            [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
+                            egui::DragValue::new(rounds).range(-999..=999),
+                        );
+                        pickers::name_response(ui, &control, "Rounds");
+                        draw_ammunition_target(ui, target, store);
+                    },
+                );
+            }
+            Action::AddFraction {
+                fraction_bits,
+                target,
+                store,
+                ..
+            } => {
+                properties::field(
+                    ui,
+                    "Share",
+                    "A percentage of the chosen capacity. 50% of the magazine capacity is half a magazine.",
+                    |ui| {
+                        let mut percent = f32::from_bits(*fraction_bits) * 100.0;
+                        let control = ui.add_sized(
+                            [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
+                            egui::DragValue::new(&mut percent)
+                                .range(-10_000.0..=10_000.0)
+                                .max_decimals(2)
+                                .suffix("%"),
+                        );
+                        pickers::name_response(ui, &control, "Share");
+                        if control.changed() && percent.is_finite() {
+                            *fraction_bits = (percent / 100.0).to_bits();
+                        }
+                        draw_ammunition_target(ui, target, store);
+                    },
+                );
+            }
+            Action::Attach { .. } | Action::Pattern { .. } => {}
+        }
         properties.show(ui, |ui| {
-            if !matches!(action, Action::Pattern { .. }) {
+            if has_technical_fields(action) {
                 ui.strong("Action");
             }
             match action {
-                Action::Spawn { position, .. } => draw_spawn_position(ui, trigger, position),
                 Action::Attach {
                     mode,
                     keys,
                     float_bits,
                     ..
                 } => draw_attach_technical_fields(ui, mode, keys, float_bits),
-                Action::Pattern { .. } => {}
-                Action::ExtendTimers { extend_ms, cap_ms } => {
-                    ui.horizontal_wrapped(|ui| {
-                        seconds(ui, "Extend By", EXTEND_HINT, extend_ms, 1);
-                        seconds(ui, "Up To", CAP_HINT, cap_ms, 1);
-                    });
-                    if *cap_ms < *extend_ms {
-                        *cap_ms = *extend_ms;
-                    }
-                }
-                Action::Property { .. } => self.draw_property_action(ui, action),
-                Action::AddRounds {
-                    rounds,
+                Action::Property {
                     target,
-                    store,
+                    operation_byte,
+                    removal,
+                    restore_bits,
+                    ability_mask,
+                    input,
+                    flag,
+                    ..
+                } => draw_property_technical_fields(
+                    ui,
+                    PropertyBytes {
+                        target,
+                        operation: operation_byte,
+                        removal,
+                        restore_bits,
+                        ability_mask,
+                        input,
+                        flag,
+                    },
+                ),
+                Action::AddRounds {
                     overflow,
                     unit_scaled,
                     action_scaled,
+                    ..
                 } => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Rounds")
-                            .on_hover_text("Whole rounds. Negative removes rounds.");
-                        ui.add_sized(
-                            [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
-                            egui::DragValue::new(rounds).range(-999..=999),
-                        );
-                        draw_ammunition_target(ui, target, store);
-                    });
                     draw_ammunition_technical_fields(
                         ui,
                         overflow,
@@ -1008,37 +1371,23 @@ impl Workbench {
                     );
                 }
                 Action::AddFraction {
-                    fraction_bits,
-                    target,
-                    store,
                     capacity,
                     overflow,
                     action_scaled,
+                    ..
                 } => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Share")
-                            .on_hover_text("A percentage of the chosen capacity. 50% of the magazine capacity is half a magazine.");
-                        let mut percent = f32::from_bits(*fraction_bits) * 100.0;
-                        if ui
-                            .add_sized(
-                                [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
-                                egui::DragValue::new(&mut percent)
-                                    .range(-10_000.0..=10_000.0)
-                                    .max_decimals(2)
-                                    .suffix("%"),
-                            )
-                            .changed()
-                            && percent.is_finite()
-                        {
-                            *fraction_bits = (percent / 100.0).to_bits();
-                        }
-                        draw_ammunition_target(ui, target, store);
-                    });
-                    draw_ammunition_technical_fields(ui, overflow, None, Some(capacity), action_scaled);
+                    draw_ammunition_technical_fields(
+                        ui,
+                        overflow,
+                        None,
+                        Some(capacity),
+                        action_scaled,
+                    );
                 }
-                Action::Native { node } => {
-                    native::draw(ui, "native-effect", node, NativeFamily::Effect);
-                }
+                Action::Spawn { .. }
+                | Action::Pattern { .. }
+                | Action::ExtendTimers { .. }
+                | Action::Native { .. } => {}
             }
             if let Some(asset) = action.asset() {
                 ui.separator();
@@ -1052,8 +1401,8 @@ impl Workbench {
         event
     }
 
-    /// The Named Property controls: the key picker, the constant value and the bytes the
-    /// installed nodes carry beside them.
+    /// The Named Property controls a reader needs in view: the key picker and the constant
+    /// value. The bytes the installed nodes carry beside them wait under Properties.
     fn draw_property_action(&mut self, ui: &mut egui::Ui, action: &mut Action) {
         let Action::Property {
             key,
@@ -1061,10 +1410,7 @@ impl Workbench {
             operation_byte,
             removal,
             value_bits,
-            restore_bits,
-            ability_mask,
-            input,
-            flag,
+            ..
         } = action
         else {
             return;
@@ -1084,21 +1430,13 @@ impl Workbench {
             *removal = r;
             *value_bits = v;
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Value")
-                .on_hover_text("The constant the value program pushes.");
-            float_field(ui, value_bits);
-        });
-        draw_property_technical_fields(
+        properties::field(
             ui,
-            PropertyBytes {
-                target,
-                operation: operation_byte,
-                removal,
-                restore_bits,
-                ability_mask,
-                input,
-                flag,
+            "Value",
+            "The constant the value program pushes.",
+            |ui| {
+                let value = float_field(ui, value_bits);
+                pickers::name_response(ui, &value, "Value");
             },
         );
     }
@@ -1155,34 +1493,47 @@ impl Workbench {
     }
 }
 
+/// Whether an action carries bytes that only the Properties panel edits: the attach
+/// mode, keys and floats, the ammunition flags, or the unmapped Named Property bytes.
+fn has_technical_fields(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Attach { .. }
+            | Action::AddRounds { .. }
+            | Action::AddFraction { .. }
+            | Action::Property { .. }
+    )
+}
+
 /// The position selector of a spawn action. The event position needs a kill trigger.
-fn draw_spawn_position(ui: &mut egui::Ui, trigger: Trigger, position: &mut Position) {
+fn draw_spawn_position(ui: &mut egui::Ui, kill_trigger: bool, position: &mut Position) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Spawn Location");
         egui::ComboBox::from_id_salt("spawn-position")
-            .selected_text(position_label(trigger, *position))
+            .selected_text(position_label(kill_trigger, *position))
             .show_ui(ui, |ui| {
                 crate::app::style::workbench_style(ui);
                 ui.selectable_value(
                     position,
                     Position::Owner,
-                    position_label(trigger, Position::Owner),
+                    position_label(kill_trigger, Position::Owner),
                 );
-                ui.add_enabled_ui(trigger.is_event(), |ui| {
+                ui.add_enabled_ui(kill_trigger, |ui| {
                     ui.selectable_value(
                         position,
                         Position::Event,
-                        position_label(trigger, Position::Event),
+                        position_label(kill_trigger, Position::Event),
                     );
                 });
             });
+        pickers::name_combo(ui, "spawn-position", "Spawn Location");
     });
 }
 
-pub(super) fn position_label(trigger: Trigger, position: Position) -> &'static str {
+pub(super) fn position_label(kill_trigger: bool, position: Position) -> &'static str {
     match position {
         Position::Owner => "At Your Position",
-        Position::Event if trigger.is_event() => "At the Defeated Enemy",
+        Position::Event if kill_trigger => "At the Defeated Enemy",
         Position::Event => "At the Triggering Event",
     }
 }
@@ -1205,6 +1556,7 @@ fn draw_ammunition_target(
                 ui.selectable_value(target, choice, choice.label());
             }
         });
+    pickers::name_combo(ui, "ammunition-target", "Ammunition Target");
     egui::ComboBox::from_id_salt("ammunition-store")
         .selected_text(store.label())
         .show_ui(ui, |ui| {
@@ -1217,6 +1569,7 @@ fn draw_ammunition_target(
         .on_hover_text(
             "Read from stock use: Triple Tap returns rounds to the magazine through this byte, and the ammo pickup perks add to reserves.",
         );
+    pickers::name_combo(ui, "ammunition-store", "Ammunition Store");
 }
 
 /// The flags of an ammunition node, kept under a disclosure since stock perks rarely set them.
@@ -1228,7 +1581,7 @@ fn draw_ammunition_technical_fields(
     action_scaled: &mut bool,
 ) {
     let open = *overflow || *action_scaled || unit_scaled.as_deref().is_some_and(|set| *set);
-    egui::CollapsingHeader::new(egui::RichText::new("Technical Fields").small())
+    egui::CollapsingHeader::new("Advanced")
         .id_salt("ammunition-technical-fields")
         .default_open(open)
         .show(ui, |ui| {
@@ -1239,9 +1592,7 @@ fn draw_ammunition_technical_fields(
                     .on_hover_text("Byte +0x6A. The ammo pickup perks set it on their ammo type amounts.");
             }
             if let Some(capacity) = capacity {
-                ui.horizontal(|ui| {
-                    ui.label("Capacity")
-                        .on_hover_text("Byte +0x6A. Which capacity the share scales. Stock nodes match it to the destination.");
+                properties::field(ui, "Capacity", "Byte +0x6A. Which capacity the share scales. Stock nodes match it to the destination.", |ui| {
                     egui::ComboBox::from_id_salt("ammunition-capacity")
                         .selected_text(format!("{} Capacity", capacity.label()))
                         .show_ui(ui, |ui| {
@@ -1254,6 +1605,7 @@ fn draw_ammunition_technical_fields(
                                 );
                             }
                         });
+                    pickers::name_combo(ui, "ammunition-capacity", "Capacity Basis");
                 });
             }
             ui.checkbox(action_scaled, "Scale by Action Value")
@@ -1274,54 +1626,57 @@ struct PropertyBytes<'a> {
 
 /// The remaining bytes of a Named Property node. Their roles are not mapped.
 fn draw_property_technical_fields(ui: &mut egui::Ui, bytes: PropertyBytes<'_>) {
-    egui::CollapsingHeader::new(egui::RichText::new("Technical Fields").small())
+    egui::CollapsingHeader::new("Advanced")
         .id_salt("property-technical-fields")
         .show(ui, |ui| {
-            ui.weak("Native bytes with unmapped roles.");
-            egui::Grid::new("property-technical-grid")
-                .num_columns(2)
-                .spacing([12.0, 4.0])
-                .show(ui, |ui| {
-                    for (label, value, hint) in [
-                        (
-                            "Target Selector",
-                            bytes.target,
-                            "Byte +0x02. Stock nodes store 0 through 3.",
-                        ),
-                        (
-                            "Operation",
-                            bytes.operation,
-                            "Byte +0x49. Stock nodes store 0, 1 and 3.",
-                        ),
-                        (
-                            "Removal Policy",
-                            bytes.removal,
-                            "Byte +0x4A. Stock nodes store 0, 1 and 2.",
-                        ),
-                        (
-                            "Input Selector",
-                            bytes.input,
-                            "Byte +0x48. Stock nodes store 0 in all but four cases.",
-                        ),
-                        (
-                            "Flag Byte",
-                            bytes.flag,
-                            "Byte +0x03. Stock nodes store 1 in all but one case.",
-                        ),
-                    ] {
-                        ui.label(label).on_hover_text(hint);
-                        ui.add(egui::DragValue::new(value).range(0..=255));
-                        ui.end_row();
-                    }
-                    ui.label("Removal Value")
-                        .on_hover_text("Float at +0x4C. Stock nodes store 0 or 1.");
-                    float_field(ui, bytes.restore_bits);
-                    ui.end_row();
-                    ui.label("Ability Slot Mask").on_hover_text(
-                        "Mask at +0x04. Stock nodes leave it zero in 190 of 203 cases.",
-                    );
-                    hex_key(ui, "ability-mask", bytes.ability_mask);
-                    ui.end_row();
+            for (label, value, hint) in [
+                (
+                    "Target Selector",
+                    bytes.target,
+                    "Byte +0x02. Stock nodes store 0 through 3.",
+                ),
+                (
+                    "Operation",
+                    bytes.operation,
+                    "Byte +0x49. Stock nodes store 0, 1 and 3.",
+                ),
+                (
+                    "Removal Policy",
+                    bytes.removal,
+                    "Byte +0x4A. Stock nodes store 0, 1 and 2.",
+                ),
+                (
+                    "Input Selector",
+                    bytes.input,
+                    "Byte +0x48. Stock nodes store 0 in all but four cases.",
+                ),
+                (
+                    "Flag Byte",
+                    bytes.flag,
+                    "Byte +0x03. Stock nodes store 1 in all but one case.",
+                ),
+            ] {
+                properties::field(ui, label, hint, |ui| {
+                    ui.add(egui::DragValue::new(value).range(0..=255));
                 });
+            }
+            properties::field(
+                ui,
+                "Removal Value",
+                "Float at +0x4C. Stock nodes store 0 or 1.",
+                |ui| {
+                    let restore = float_field(ui, bytes.restore_bits);
+                    pickers::name_response(ui, &restore, "Removal Value");
+                },
+            );
+            properties::field(
+                ui,
+                "Ability Slot Mask",
+                "Mask at +0x04. Stock nodes leave it zero in 190 of 203 cases.",
+                |ui| {
+                    let mask = hex_key(ui, "ability-mask", bytes.ability_mask);
+                    pickers::name_response(ui, &mask, "Ability Slot Mask");
+                },
+            );
         });
 }

@@ -1,6 +1,7 @@
 //! Conversion is reviewed against the current draft, then committed without losing overrides.
 use super::*;
 use sundial::package_authoring::sandbox_perk::{
+    action,
     activation::{self, PerkActivation},
     program::{self, Program, decompile},
 };
@@ -20,6 +21,8 @@ pub(in crate::app::custom_perks) struct Input {
 pub(in crate::app::custom_perks) struct Preview {
     program: Program,
     fidelity: Result<Vec<decompile::Difference>, String>,
+    /// Whether the stock action fit the typed program or is carried in native form.
+    recovery: decompile::Recovery,
 }
 
 impl PerkEditor {
@@ -40,6 +43,13 @@ impl PerkEditor {
         loaded: &Arc<PrivatePerkRuntimeGraph>,
         experimental: bool,
     ) {
+        if self.receiver.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Preparing Behavior…");
+            });
+            return;
+        }
         let input = self.conversion_input();
         let valid = self.validation_errors().is_empty() && !self.is_loading();
         if let Some((_, result)) = self
@@ -49,6 +59,17 @@ impl PerkEditor {
         {
             match result {
                 Ok(preview) => {
+                    if experimental && valid && preview.fidelity.as_ref().is_ok_and(Vec::is_empty) {
+                        let mut program = preview.program.clone();
+                        program.name = self.plug_label.clone();
+                        self.conversion = Some(program);
+                        return;
+                    }
+                    if let decompile::Recovery::NativeForm(reason) = &preview.recovery {
+                        ui.small(format!(
+                            "Carried in native form because the typed program does not hold it yet. {reason}"
+                        ));
+                    }
                     self.conversion = behavior::draw_conversion(
                         ui,
                         Some(&Ok(preview.program.clone())),
@@ -64,23 +85,11 @@ impl PerkEditor {
             }
             return;
         }
-        ui.strong("Edit as a Program");
-        if let Some(Err(reason)) = &loaded.program {
-            ui.weak(format!("Not convertible yet. {reason}"));
-        }
-        ui.small(
-            "Review conversion with the current activation, action values and component edits.",
-        );
-        if ui
-            .add_enabled(
-                experimental && valid,
-                egui::Button::new("Review Conversion"),
-            )
-            .on_disabled_hover_text(
-                "Enable Experimental Features and correct unfinished edits first.",
-            )
-            .clicked()
-        {
+        if experimental && valid {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Preparing Behavior…");
+            });
             let packages = self.packages.clone();
             let loaded = Arc::clone(loaded);
             let repaint = ctx.clone();
@@ -92,6 +101,8 @@ impl PerkEditor {
                 let _ = sender.send(PrivatePerkGraphEvent::Preview(input, result));
                 repaint.request_repaint();
             }));
+        } else if !experimental {
+            ui.weak("Enable Experimental Features to edit behavior.");
         }
     }
 }
@@ -129,20 +140,67 @@ fn prepare(
             field.copy_from_slice(&effective.tag.0.to_le_bytes());
         }
     }
-    let mut program = Program::from_native(&payload, "Custom Effect")?;
+    // Prefer the typed program so a stock perk gets the same controls as a custom perk. The
+    // complete native form is the fallback that can carry any action, so nothing is refused.
+    let (program, recovery) = match typed_program(loaded, input, &payload) {
+        Ok(program) => (program, decompile::Recovery::Typed),
+        Err(reason) => (
+            native_program(
+                loaded,
+                input,
+                &payload,
+                graphs.iter().map(|graph| graph.tag.0),
+            )?,
+            decompile::Recovery::NativeForm(reason),
+        ),
+    };
+    let compiled = program::compile(manager, &program)?;
+    let fidelity = match recovery {
+        decompile::Recovery::Typed => decompile::fidelity(&payload, &compiled.payload),
+        decompile::Recovery::NativeForm(_) => {
+            decompile::native_fidelity(&payload, &compiled.payload)
+        }
+    };
+    Ok(Preview {
+        program,
+        fidelity,
+        recovery,
+    })
+}
+
+/// The typed program for a stock action, with the component edits carried on its assets.
+/// Fails when the action lies outside the typed model or an edit has no typed asset.
+fn typed_program(
+    loaded: &PrivatePerkRuntimeGraph,
+    input: &Input,
+    payload: &[u8],
+) -> Result<Program, String> {
+    let decoded = action::decode(payload)?;
+    let mut program = decompile::decompile(&decoded, "Custom Effect", |tag| tag)
+        .map_err(|unsupported| unsupported.0)?;
+    transfer_values(loaded, &input.values, &mut program)?;
+    Ok(program)
+}
+
+/// The complete native form of a stock action, which can carry any shape the game emits.
+fn native_program(
+    loaded: &PrivatePerkRuntimeGraph,
+    input: &Input,
+    payload: &[u8],
+    graph_tags: impl IntoIterator<Item = u32>,
+) -> Result<Program, String> {
+    let mut program = Program::from_native(payload, "Custom Effect")?;
     let native = program.native.as_mut().expect("complete program");
-    for graph in &graphs {
-        if !native.assets.iter().any(|asset| asset.graph == graph.tag.0) {
+    for graph in graph_tags {
+        if !native.assets.iter().any(|asset| asset.graph == graph) {
             native.assets.push(program::Asset {
-                graph: graph.tag.0,
+                graph,
                 ..program::Asset::default()
             });
         }
     }
     transfer_values(loaded, &input.values, &mut program)?;
-    let compiled = program::compile(manager, &program)?;
-    let fidelity = decompile::native_fidelity(&payload, &compiled.payload);
-    Ok(Preview { program, fidelity })
+    Ok(program)
 }
 
 fn effective_action(

@@ -898,12 +898,9 @@ impl SundialApp {
                                 self.draw_character_fields(ui, index, character_editable)
                             });
                             if !character_editable {
-                                ui.label(
-                                    egui::RichText::new(
+                                ui.weak(
                                         "Character and equipment controls are disabled for this settings schema.",
-                                    )
-                                    .weak(),
-                                );
+                                    );
                             }
                             self.draw_equipment(ui, index);
                         });

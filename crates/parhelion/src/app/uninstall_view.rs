@@ -175,7 +175,7 @@ impl PackageAuthoringApp {
                                 ui.label(format!("Selected account: {}", cleanup.settings_path.display()));
                                 ui.label(format!("{} saved item instances, {} custom plug references, {} collection unlocks. Includes equipped weapons and all characters in this account. Affected equipment slots will be empty.", cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs, cleanup.cleared_unlocks));
                                 ui.collapsing("Affected Items", |ui| { for (hash, count) in &cleanup.removed_items {
-                                    let name = self.donor_summaries.iter().find(|item| item.hash == *hash).map(|item| item.name.as_str()).unwrap_or("Custom Item");
+                                    let name = self.donor_summaries.iter().find(|item| item.hash == *hash).map_or("Custom Item", |item| item.name.as_str());
                                     ui.label(format!("{name} · 0x{hash:08X} · {count} instance(s)"));
                                 } });
                                 if cleanup.removed_reward_rules > 0 { ui.label(format!("{} dismantle reward rules referencing custom items will also be removed.", cleanup.removed_reward_rules)); }

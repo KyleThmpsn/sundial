@@ -108,7 +108,7 @@ fn captured_programs_preserve_all_groups_policies_and_auxiliary_records() {
         counts[0] += 1;
         counts[1] += usize::from(action.groups.len() > 1);
         counts[2] += usize::from(action.policy != 0);
-        counts[3] += usize::from(action.auxiliary_records > 0);
+        counts[3] += usize::from(!action.auxiliary.is_empty());
     }
     assert!(counts.iter().all(|count| *count > 0));
     println!(
@@ -144,7 +144,7 @@ fn native_complete_programs_compile_multiple_groups_policies_and_auxiliary_data(
         let after = action::decode(&compiled.payload).unwrap();
         assert_eq!(before.groups.len(), after.groups.len());
         assert_eq!(before.policy, after.policy);
-        assert_eq!(before.auxiliary_records, after.auxiliary_records);
+        assert_eq!(before.auxiliary, after.auxiliary);
         assert_eq!(before.activation_event_mask, after.activation_event_mask);
         assert_eq!(before.removal_event_mask, after.removal_event_mask);
         assert_eq!(before.rearm_event_mask, after.rearm_event_mask);

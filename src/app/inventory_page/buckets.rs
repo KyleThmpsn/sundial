@@ -333,12 +333,9 @@ pub(super) fn draw_bucket_details<T>(
         ui.colored_label(ui.visuals().error_fg_color, message);
     }
     if group.key.scope == InventoryScope::Unknown {
-        ui.label(
-            egui::RichText::new(
+        ui.weak(
                 "These items have no installed bucket metadata. Use their hashes to identify them, or replace or remove them here.",
-            )
-            .weak(),
-        );
+            );
         return;
     }
     if group.key.scope != expected_scope {

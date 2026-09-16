@@ -16,7 +16,7 @@ use crate::{
     package_payload::{i64_at, relative_offset, u64_at},
     weapon_entity::WEAPON_ENTITY_CLASS,
 };
-pub(super) mod shards;
+pub(crate) mod shards;
 
 /// One aligned word inside a structured resource that equals a live weapon entity graph
 /// tag. It is a candidate reference: a matching word is evidence that the source refers
@@ -54,6 +54,11 @@ pub struct Index {
     /// An older cached index has none, which the cache version keeps from happening.
     #[serde(default)]
     pub entity_references: Vec<EntityReference>,
+    /// Engine strings that name things without being `.tft` content paths: wwise event
+    /// paths and the client's enum tables. They are never paired with a tag, so they feed
+    /// the name-hash vocabulary and never identify a resource on their own.
+    #[serde(default)]
+    pub vocabulary: Vec<ContentPath>,
     pub scanned_resources: usize,
     pub errors: Vec<String>,
 }
@@ -216,6 +221,44 @@ fn content_paths(payload: &[u8]) -> BTreeMap<usize, String> {
     found
 }
 
+/// Strings the engine uses as names outside `.tft` content paths. A wwise event path names
+/// the ability or event that plays it. A resource whose strings include one of the form
+/// `namespace_enums.e_name` is a client enum table, and every identifier in it is an
+/// engine name (the ability enum lists `thermal_maul_super`, `glide` and `pulse_void`).
+fn vocabulary_strings(payload: &[u8]) -> Vec<(usize, String)> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for (offset, &byte) in payload.iter().chain(std::iter::once(&0)).enumerate() {
+        if (32..=126).contains(&byte) {
+            continue;
+        }
+        if byte == 0
+            && offset - start >= 3
+            && offset - start <= 1024
+            && let Ok(text) = std::str::from_utf8(&payload[start..offset])
+        {
+            runs.push((start, text));
+        }
+        start = offset + 1;
+    }
+    let table = runs
+        .iter()
+        .any(|(_, text)| text.contains("_enums.") && !text.contains(['\\', '/']));
+    runs.into_iter()
+        .filter(|(_, text)| {
+            let lower = text.to_ascii_lowercase();
+            let wwise = (lower.starts_with("content\\") || lower.starts_with("content/"))
+                && lower.ends_with(".wwise_event");
+            let identifier = table
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            wwise || identifier
+        })
+        .map(|(offset, text)| (offset, text.to_owned()))
+        .collect()
+}
+
 fn references(
     payload: &[u8],
     paths: &BTreeMap<usize, String>,
@@ -285,6 +328,17 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
                         target,
                     }),
             );
+            index
+                .vocabulary
+                .extend(
+                    vocabulary_strings(&payload)
+                        .into_iter()
+                        .map(|(offset, path)| ContentPath {
+                            source: tag.0,
+                            offset,
+                            path,
+                        }),
+                );
             let paths = content_paths(&payload);
             if paths.is_empty() {
                 continue;
@@ -319,6 +373,9 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
     }
     index.paths.sort_by_key(|path| (path.source, path.offset));
     index
+        .vocabulary
+        .sort_by_key(|path| (path.source, path.offset));
+    index
         .references
         .sort_by_key(|reference| (reference.source, reference.offset, reference.target));
     index
@@ -333,7 +390,7 @@ static CACHE: index_cache::Cache<Index> = index_cache::Cache::new();
 /// Opening a single effect must not trigger installation-wide name discovery.
 /// A missing full index is reported separately from missing native references.
 pub fn cached_only(packages: &Path) -> Result<Option<Arc<Index>>, String> {
-    index_cache::cached_only(packages, "native-names", "tft-v3", &CACHE)
+    index_cache::cached_only(packages, "native-names", "tft-v4", &CACHE)
 }
 
 /// Cache only names and evidence. Compilation always resolves live package tags.
@@ -345,7 +402,7 @@ pub fn cached(
     index_cache::cached(
         packages,
         "native-names",
-        "tft-v3",
+        "tft-v4",
         &CACHE,
         || shards::inspect(packages, manager, progress),
         // Read errors remain visible in the index. They must not force an

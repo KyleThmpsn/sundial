@@ -149,7 +149,8 @@ fn equipped_item_snapshot(
     match (definition_value, definition_hash) {
         (None, _) => issues.push("missing definition_hash".to_owned()),
         (Some(_), None) => {
-            issues.push("definition_hash must be an unsigned integer or a 0x hex string".to_owned())
+            issues
+                .push("definition_hash must be an unsigned integer or a 0x hex string".to_owned());
         }
         (_, Some(hash)) if u32::try_from(hash).is_err() => {
             issues.push("definition_hash must fit in an unsigned 32-bit value".to_owned());

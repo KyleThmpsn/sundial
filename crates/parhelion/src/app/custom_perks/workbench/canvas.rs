@@ -206,7 +206,12 @@ fn badge(ui: &mut egui::Ui, label: &str, color: egui::Color32, hint: &str) {
 
 /// One canvas row: a fixed label column and the blocks beside it. The label sits on the
 /// first line of its content so a row with one control reads as one line.
-pub(super) fn row(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     ui.add_space(2.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
@@ -214,14 +219,21 @@ pub(super) fn row(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOn
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.set_min_width(LABEL_WIDTH);
-                ui.strong(label).on_hover_text(hint);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(label).strong())
+                        .halign(egui::Align::Max)
+                        .wrap(),
+                )
+                .on_hover_text(hint);
             },
         );
         ui.vertical(|ui| {
             ui.set_min_width(ui.available_width());
-            content(ui);
-        });
-    });
+            content(ui)
+        })
+        .inner
+    })
+    .inner
 }
 
 /// One effect block, framed so an editable and a locked block share an outline.
@@ -262,23 +274,53 @@ fn draw_program_rows(
     editing: Option<Editing<'_>>,
 ) -> Option<usize> {
     if let Some(native) = &mut program.native {
-        return program::draw_complete(ui, native, editing.is_some());
+        return match editing {
+            Some(Editing { workbench, .. }) => {
+                let labels = workbench.program_asset_labels(native, &program.name);
+                program::draw_complete(ui, native, true, &labels, &mut |ui| {
+                    workbench.behaviors.draw_condition(
+                        ui,
+                        &workbench.discovery,
+                        &workbench.perk_names,
+                        &workbench.asset_labels,
+                    )
+                })
+            }
+            None => program::draw_complete(ui, native, false, &BTreeMap::new(), &mut |_| None),
+        };
     }
     let mut edit = None;
     match editing {
         Some(Editing { workbench, catalog }) => {
             row(ui, "Trigger", ACTIVATION_HINT, |ui| {
-                plain(ui, "trigger", |ui| program::draw_trigger_block(ui, program));
+                plain(ui, "trigger", |ui| {
+                    program::draw_trigger_block(ui, program, |ui, label, retained| {
+                        workbench.behaviors.draw_trigger(
+                            ui,
+                            &workbench.discovery,
+                            &workbench.perk_names,
+                            &workbench.asset_labels,
+                            label,
+                            retained,
+                        )
+                    })
+                });
             });
             row(ui, "Actions", EFFECTS_HINT, |ui| {
-                let trigger = program.trigger;
+                let kill_trigger = program.has_kill_trigger();
                 let count = program.actions.len();
                 let mut remove = None;
                 let mut swap = None;
                 for (index, action) in program.actions.iter_mut().enumerate() {
                     block(ui, index, |ui| {
-                        let event =
-                            workbench.draw_action_block(ui, catalog, trigger, action, index, count);
+                        let event = workbench.draw_action_block(
+                            ui,
+                            catalog,
+                            kill_trigger,
+                            action,
+                            index,
+                            count,
+                        );
                         if event.edit {
                             edit = Some(index);
                         }
@@ -298,7 +340,18 @@ fn draw_program_rows(
                     program.actions.swap(from, to);
                     edit = None;
                 }
-                program::draw_actions_footer(ui, program, &workbench.keys.catalog);
+                ui.horizontal(|ui| {
+                    if let Some(action) = workbench.behaviors.draw_action(
+                        ui,
+                        &workbench.discovery,
+                        &workbench.perk_names,
+                        &workbench.asset_labels,
+                        program,
+                        &workbench.keys.catalog,
+                    ) {
+                        program.actions.push(action);
+                    }
+                });
             });
             workbench.draw_removal_block(ui, program);
             if program::has_rearm(program) {

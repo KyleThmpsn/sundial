@@ -608,8 +608,8 @@ pub const EFFECTS: [NodeKind; 55] = [
         struct_size: 32,
         occurrences: 8,
         name: "Generate Orbs of Light",
-        summary: "Uses the orb-generation path with a configurable entity, count, value and location. Publishes the generation event.",
-        evidence: "Callback 1089AF0 uses EC0FC0 to select the owner position (0) or activation event position (1), then passes count +4, orb value +8 and optional entity +18 to FBC3E0. Masterwork Weapon 453 and Trinity Ghoul Catalyst 2010 use entity 80EFAE02. Striking Light 1803 and Light of the Fire 1960 use its default entity. FBC3E0 accepts an entity override and selects player recipients. FBC980 reads that entity, initializes available components and submits each creation through 56D990. The traced path does not require one fixed orb entity, but compatibility with other entities is not established.",
+        summary: "Generates Orbs of Light for player recipients, with a count, value and location. Publishes the generation event. Use a spawn action for health pickups and other objects.",
+        evidence: "Callback 1089AF0 uses EC0FC0 to select the owner position (0) or activation event position (1), then passes count +4, orb value +8 and a resource reference at +18 to FBC3E0. Masterwork Weapon 453 and Trinity Ghoul Catalyst 2010 use entity 80EFAE02. Striking Light 1803 and Light of the Fire 1960 use its default entity. The downstream helper accepts an entity argument and selects player recipients, but that does not establish that this perk action honors arbitrary pickup overrides. Stock sources establish orb generation. The resource reference's effect on pickup type remains unresolved.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -619,7 +619,7 @@ pub const EFFECTS: [NodeKind; 55] = [
         occurrences: 9,
         name: "Set Host Mode",
         summary: "Sets a mode byte on the host and restores it on removal unless persistence is requested.",
-        evidence: "Writes byte +2 through the selected ability interface or DAB210. Cleanup resets the mode unless byte +3 requests persistence. The mode names remain unresolved.",
+        evidence: "Writes byte +2 through the selected ability interface or DAB210. Cleanup resets the mode unless byte +3 requests persistence. Mode 0 is Kinetic, 1 Solar, 2 Arc and 3 Void, established by the stock plugs that set each value: Solar, Arc and Void Damage Mod name their element, The Fundamentals sets all three and is described in game as changing the weapon's damage type, and Play with Your Prey sets 1 and 3 while describing a Solar and a Void rocket.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -689,7 +689,7 @@ pub const EFFECTS: [NodeKind; 55] = [
         occurrences: 12,
         name: "Weighted Spawn Operation",
         summary: "Picks one of three weighted categories and spawns from the sampled range.",
-        evidence: "Chooses one of three categories using weights +20, +2C and +38, then samples its configured range. Flags +3 and +4 control owner and related-player paths. The optional resource at +10 is attached to the spawned result. Category names remain unresolved.",
+        evidence: "Chooses one of three categories using weights +20, +2C and +38, then samples its configured range. Flags +3 and +4 control owner and related-player paths. The optional resource at +10 is attached to the spawned result. The categories are the ammo types, established by the stock perks that weight exactly one: Snapload Finisher (Primary ammo) the first, Special Finisher, Extra Reserves and Swift Charge (Special ammo) the second, Heavy Finisher, Giving Hand and the Voltaic Ammo Collectors (Heavy ammo) the third.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -1039,7 +1039,7 @@ pub const EFFECTS: [NodeKind; 55] = [
         occurrences: 51,
         name: "Referenced Runtime Operation",
         summary: "Runs a referenced runtime operation against three resolved targets.",
-        evidence: "Reads the three target selectors at +2 through +4, the operation value at +8 and the referenced runtime resource tag at +10. The downstream operation still needs semantic identification.",
+        evidence: "Stores three target selectors at +2 through +4 and the referenced runtime resource tag at +10. The native declaration marks +8 as a relative string pointer, and stock records resolve it to a resource path. It is not an operation value. The downstream operation still needs semantic identification.",
         support: Support::Authorable,
     },
     NodeKind {

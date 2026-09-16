@@ -1,5 +1,178 @@
 use super::*;
+
+/// Stock finished sandbox-perk row whose live action serves as the tag-placement template when a
+/// private program is authored over a declaration-only source row. 464 is The Fundamentals' Void
+/// effect: a plain, always-present sandbox-perk action with no entity assets.
+const DECLARATION_ONLY_TEMPLATE_PERK_INDEX: usize = 464;
 mod sharing;
+
+/// Validated stock rows and decoded tables behind one private socket plug donor.
+struct PrivatePlugSource {
+    item_index: usize,
+    definition_tag: TagHash,
+    string_tag: TagHash,
+    definition: Vec<u8>,
+    strings: Vec<u8>,
+    icon_container: TagHash,
+    perk_indices: Vec<u16>,
+    classification: Option<crate::plug_classification::PlugClassification>,
+    classification_perk_index: Option<usize>,
+}
+
+/// Reads the classification template from a donor, recording its one visible finished perk.
+fn read_plug_classification(
+    sources: &sources::ProjectSources,
+    hash: u32,
+    classification_perk_index: &mut Option<usize>,
+) -> AuthoringResult<crate::plug_classification::PlugClassification> {
+    let rows = sources
+        .stock_item_rows_by_hash
+        .get(&hash)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let [index] = rows else {
+        return Err(invalid(format!(
+            "Private plug classification source 0x{hash:08X} resolves to {} stock item rows",
+            rows.len()
+        )));
+    };
+    if read_u32(
+        &sources.stock_item_strings,
+        sources.string_rows + index * ITEM_ROW_SIZE,
+    )? != hash
+    {
+        return Err(validation(
+            "Classification source item/string indices are not aligned",
+        ));
+    }
+    let definition = read_tag(
+        &sources.manager,
+        TagHash(read_u32(
+            &sources.stock_item_table,
+            sources.item_rows + index * ITEM_ROW_SIZE + 16,
+        )?),
+        "classification source definition",
+    )?;
+    let strings = read_tag(
+        &sources.manager,
+        TagHash(read_u32(
+            &sources.stock_item_strings,
+            sources.string_rows + index * ITEM_ROW_SIZE + 16,
+        )?),
+        "classification source strings",
+    )?;
+    for perk in weapon_sandbox_perks(&definition)? {
+        let row =
+            finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(perk))
+                .map_err(invalid)?;
+        if row
+            .detail
+            .as_ref()
+            .is_some_and(|detail| read_u16(detail, 0).ok() != Some(u16::MAX))
+            && classification_perk_index
+                .replace(usize::from(perk))
+                .is_some()
+        {
+            return Err(invalid(
+                "Classification donor has more than one visible finished perk",
+            ));
+        }
+    }
+    crate::plug_classification::PlugClassification::from_template(&definition, &strings)
+}
+
+/// Reads and validates the stock donor one private socket plug is built from.
+///
+/// This performs every check that does not allocate authored identity, so that
+/// allocation and its occupancy bookkeeping stay together in the caller.
+fn read_private_plug_source(
+    sources: &sources::ProjectSources,
+    variant: &WeaponSocketPlugVariantOverride,
+    sandbox_perk_string_template: &[u8],
+) -> AuthoringResult<PrivatePlugSource> {
+    let source_rows = sources
+        .stock_item_rows_by_hash
+        .get(&variant.source_plug_hash)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let [item_index] = source_rows else {
+        return Err(invalid(format!(
+            "Private socket plug 0x{:08X} resolves to {} stock item rows",
+            variant.source_plug_hash,
+            source_rows.len()
+        )));
+    };
+    let item_index = *item_index;
+    if read_u32(
+        &sources.stock_item_strings,
+        sources.string_rows + item_index * ITEM_ROW_SIZE,
+    )? != variant.source_plug_hash
+    {
+        return Err(validation(
+            "Private socket-plug item and item-string rows are not aligned",
+        ));
+    }
+    let definition_tag = TagHash(read_u32(
+        &sources.stock_item_table,
+        sources.item_rows + item_index * ITEM_ROW_SIZE + 16,
+    )?);
+    let string_tag = TagHash(read_u32(
+        &sources.stock_item_strings,
+        sources.string_rows + item_index * ITEM_ROW_SIZE + 16,
+    )?);
+    let definition = read_tag(
+        &sources.manager,
+        definition_tag,
+        "private socket-plug donor definition",
+    )?;
+    let strings = read_tag(
+        &sources.manager,
+        string_tag,
+        "private socket-plug donor strings",
+    )?;
+    if matching_u32_offsets(&definition, variant.source_plug_hash) != [ITEM_DEFINITION_HASH_OFFSET]
+        || !matching_u32_offsets(&strings, variant.source_plug_hash).is_empty()
+    {
+        return Err(invalid(format!(
+            "Private socket-plug donor 0x{:08X} embeds its identity at unsupported offsets",
+            variant.source_plug_hash
+        )));
+    }
+    validate_weapon_sandbox_perk_parallelism(&definition, &strings, sandbox_perk_string_template)?;
+    let perk_indices = weapon_sandbox_perks(&definition)?;
+    for &index in &variant.additional_sandbox_perks {
+        if !variant.replace_effects && perk_indices.contains(&index) {
+            return Err(invalid(format!(
+                "Private plug already supplies additional perk {index}"
+            )));
+        }
+        load_sandbox_perk_runtime_action(
+            &sources.manager,
+            &sources.globals_data,
+            usize::from(index),
+        )
+        .map_err(invalid)?;
+    }
+    let icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
+    validate_reused_stock_item_icon(&sources.stock_item_icons, &strings, icon_index)?;
+    let icon_container = stock_item_icon_container(&sources.stock_item_icons, icon_index)?;
+    let mut classification_perk_index = None;
+    let classification = variant
+        .classification_donor_hash
+        .map(|hash| read_plug_classification(sources, hash, &mut classification_perk_index))
+        .transpose()?;
+    Ok(PrivatePlugSource {
+        item_index,
+        definition_tag,
+        string_tag,
+        definition,
+        strings,
+        icon_container,
+        perk_indices,
+        classification,
+        classification_perk_index,
+    })
+}
 
 pub(super) fn plan(
     sources: &sources::ProjectSources,
@@ -94,110 +267,15 @@ pub(super) fn plan(
                 usize::from(variant.choice_index) + 1
             );
             (|| -> AuthoringResult<()> {
-                    let source_rows = sources
-                        .stock_item_rows_by_hash
-                        .get(&variant.source_plug_hash)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
-                    let [source_item_index] = source_rows else {
-                        return Err(invalid(format!(
-                            "Private socket plug 0x{:08X} resolves to {} stock item rows",
-                            variant.source_plug_hash,
-                            source_rows.len()
-                        )));
-                    };
-                    if read_u32(
-                        &sources.stock_item_strings,
-                        sources.string_rows + source_item_index * ITEM_ROW_SIZE,
-                    )? != variant.source_plug_hash
-                    {
-                        return Err(validation(
-                            "Private socket-plug item and item-string rows are not aligned",
-                        ));
-                    }
-                    let source_definition_tag = TagHash(read_u32(
-                        &sources.stock_item_table,
-                        sources.item_rows + source_item_index * ITEM_ROW_SIZE + 16,
-                    )?);
-                    let source_string_tag = TagHash(read_u32(
-                        &sources.stock_item_strings,
-                        sources.string_rows + source_item_index * ITEM_ROW_SIZE + 16,
-                    )?);
-                    let source_definition = read_tag(
-                        &sources.manager,
-                        source_definition_tag,
-                        "private socket-plug donor definition",
-                    )?;
-                    let source_strings = read_tag(
-                        &sources.manager,
-                        source_string_tag,
-                        "private socket-plug donor strings",
-                    )?;
-                    if matching_u32_offsets(&source_definition, variant.source_plug_hash)
-                        != [ITEM_DEFINITION_HASH_OFFSET]
-                        || !matching_u32_offsets(&source_strings, variant.source_plug_hash).is_empty()
-                    {
-                        return Err(invalid(format!(
-                            "Private socket-plug donor 0x{:08X} embeds its identity at unsupported offsets",
-                            variant.source_plug_hash
-                        )));
-                    }
-                    validate_weapon_sandbox_perk_parallelism(
-                        &source_definition,
-                        &source_strings,
-                        sandbox_perk_string_template,
-                    )?;
-                    let source_perk_indices = weapon_sandbox_perks(&source_definition)?;
-                    for &index in &variant.additional_sandbox_perks {
-                        if !variant.replace_effects && source_perk_indices.contains(&index) {
-                            return Err(invalid(format!(
-                                "Private plug already supplies additional perk {index}"
-                            )));
-                        }
-                        load_sandbox_perk_runtime_action(
-                            &sources.manager,
-                            &sources.globals_data,
-                            usize::from(index),
-                        )
-                        .map_err(invalid)?;
-                    }
-                    let source_icon_index = read_u16(&source_strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
-                    validate_reused_stock_item_icon(
-                        &sources.stock_item_icons,
-                        &source_strings,
-                        source_icon_index,
-                    )?;
-                    let source_icon_container =
-                        stock_item_icon_container(&sources.stock_item_icons, source_icon_index)?;
-                    let mut classification_perk_index = None;
-                    let classification = variant.classification_donor_hash.map(|hash| {
-                        let rows = sources.stock_item_rows_by_hash.get(&hash).map(Vec::as_slice).unwrap_or(&[]);
-                        let [index] = rows else {
-                            return Err(invalid(format!("Private plug classification source 0x{hash:08X} resolves to {} stock item rows", rows.len())));
-                        };
-                        if read_u32(&sources.stock_item_strings, sources.string_rows + index * ITEM_ROW_SIZE)? != hash {
-                            return Err(validation("Classification source item/string indices are not aligned"));
-                        }
-                        let definition = read_tag(&sources.manager, TagHash(read_u32(&sources.stock_item_table,
-                            sources.item_rows + index * ITEM_ROW_SIZE + 16)?), "classification source definition")?;
-                        let strings = read_tag(&sources.manager, TagHash(read_u32(&sources.stock_item_strings,
-                            sources.string_rows + index * ITEM_ROW_SIZE + 16)?), "classification source strings")?;
-                        for perk in weapon_sandbox_perks(&definition)? {
-                            let row = finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(perk)).map_err(invalid)?;
-                            if row.detail.as_ref().is_some_and(|detail| read_u16(detail, 0).ok() != Some(u16::MAX))
-                                && classification_perk_index.replace(usize::from(perk)).is_some() {
-                                return Err(invalid("Classification donor has more than one visible finished perk"));
-                            }
-                        }
-                        crate::plug_classification::PlugClassification::from_template(&definition, &strings)
-                    }).transpose()?;
+                    let source =
+                        read_private_plug_source(sources, &variant, sandbox_perk_string_template)?;
                     let usage = CustomPlugUse {
                         weapon_ordinal,
                         socket_index: usize::from(variant.socket_index),
                         choice_index: usize::from(variant.choice_index),
                     };
                     let shared_key =
-                        sharing::Key::new(sources, &variant, classification, classification_perk_index)?;
+                        sharing::Key::new(sources, &variant, source.classification, source.classification_perk_index)?;
                     if let Some(index) = shared_keys.iter().position(|key| *key == shared_key) {
                         custom_plugs[index].uses.push(usage);
                         return Ok(());
@@ -313,19 +391,50 @@ pub(super) fn plan(
                     for (perk, hidden) in effects {
                         if !variant.replace_effects
                             && !hidden
-                            && !source_perk_indices.contains(&perk.source_perk_index)
+                            && !source.perk_indices.contains(&perk.source_perk_index)
                         {
                             return Err(invalid(format!(
                                 "Private socket-plug donor 0x{:08X} does not contain finished sandbox-perk index {}",
                                 variant.source_plug_hash, perk.source_perk_index
                             )));
                         }
-                        let runtime_action = load_sandbox_perk_runtime_action(
+                        let runtime_action = match load_sandbox_perk_runtime_action(
                             &sources.manager,
                             &sources.globals_data,
                             usize::from(perk.source_perk_index),
-                        )
-                        .map_err(invalid)?;
+                        ) {
+                            Ok(action) => action,
+                            // A declaration-only row has no runtime action: its runtime key is
+                            // the no-hash sentinel. Stock ships such rows on real plugs (479,
+                            // Volatile Light, Hard Light's alternate-fire marker), and the client
+                            // docs record that the native perk-bank producer simply skips them.
+                            // With an authored program the source contributes only its
+                            // finished-perk identity and a placement template for the new tag,
+                            // so borrow a live stock action as the template and let the program
+                            // supply the whole payload.
+                            Err(error)
+                                if perk.program.is_some() && error.contains("is not assigned") =>
+                            {
+                                let finished_perk = finished_sandbox_perk_at(
+                                    &sources.stock_finished_sandbox_perks,
+                                    usize::from(perk.source_perk_index),
+                                )
+                                .map_err(invalid)?;
+                                let template = load_sandbox_perk_runtime_action(
+                                    &sources.manager,
+                                    &sources.globals_data,
+                                    DECLARATION_ONLY_TEMPLATE_PERK_INDEX,
+                                )
+                                .map_err(invalid)?;
+                                sundial::package_authoring::sandbox_perk::SandboxPerkRuntimeAction {
+                                    finished_perk,
+                                    action_tag: template.action_tag,
+                                    action_payload: Vec::new(),
+                                    graphs: Vec::new(),
+                                }
+                            }
+                            Err(error) => return Err(invalid(error)),
+                        };
                         let perk_role = format!(
                             "socket/{}/choice/{}/perk/{}/definition",
                             variant.socket_index, variant.choice_index, perk.source_perk_index
@@ -362,20 +471,20 @@ pub(super) fn plan(
                         investment_stats: variant.investment_stats,
                         uses: vec![usage],
                         source_item_hash: variant.source_plug_hash,
-                        source_item_index: *source_item_index,
-                        source_definition_tag,
-                        source_string_tag,
-                        source_definition,
-                        source_strings,
-                        source_icon_container,
+                        source_item_index: source.item_index,
+                        source_definition_tag: source.definition_tag,
+                        source_string_tag: source.string_tag,
+                        source_definition: source.definition,
+                        source_strings: source.strings,
+                        source_icon_container: source.icon_container,
                         authored_item_hash,
                         authored_item_index,
                         authored_definition_tag,
                         authored_string_tag,
                         authored_name_hash,
                         authored_name,
-                        classification,
-                        classification_perk_index,
+                        classification: source.classification,
+                        classification_perk_index: source.classification_perk_index,
                         classification_item_index: variant
                             .classification_donor_hash
                             .map(|hash| sources.stock_item_rows_by_hash[&hash][0]),

@@ -76,14 +76,6 @@ impl Program {
         if self.constants.len() > 256 || self.instructions.len() > 4096 || self.fast_path > 1 {
             return Err("The value program exceeds its native limits.".into());
         }
-        if self
-            .constants
-            .iter()
-            .flatten()
-            .any(|bits| !f32::from_bits(*bits).is_finite())
-        {
-            return Err("Value constants must be finite.".into());
-        }
         if self.fast_path == 1 && self.constants.is_empty() {
             return Err("The polynomial fast path needs a constant vector.".into());
         }
@@ -151,6 +143,16 @@ impl Program {
 
     /// Publish instructions, constants and the selected execution mode together.
     pub fn write(&self, graph: &mut Graph, block: usize, offset: usize) -> Result<(), String> {
+        let original = Self::read(graph, block, offset)?;
+        for (row, constant) in self.constants.iter().enumerate() {
+            for (lane, bits) in constant.iter().enumerate() {
+                if !f32::from_bits(*bits).is_finite()
+                    && original.constants.get(row).map(|value| value[lane]) != Some(*bits)
+                {
+                    return Err("Edited value constants must be finite.".into());
+                }
+            }
+        }
         let program = self.clone();
         program.validate()?;
         let mut changed = graph.clone();

@@ -104,6 +104,7 @@ pub(crate) use weapon::{
     WeaponRenderGearDonorReference, WeaponRuntimeComponentDonorReference,
     WeaponRuntimeResourcePatch, WeaponSandboxPerkActionFloatOverride,
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
 };
 pub use workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildProgress, BuildReport,

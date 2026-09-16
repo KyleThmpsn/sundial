@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub(super) mod assets;
 mod attachment;
+mod behaviors;
 pub(super) mod canvas;
 mod controls;
 mod discovery;
@@ -109,12 +110,14 @@ pub(in crate::app) struct Workbench {
     effect_query: String,
     effect_purpose: guidance::Purpose,
     effect_editing: guidance::EditingFilter,
+    effect_order: guidance::EffectOrder,
     stat_query: String,
     icon_query: String,
     asset_query: String,
     property_query: String,
     removal_query: String,
     keys: program::Keys,
+    behaviors: behaviors::Picker,
     /// Stock perk names by finished perk index, for labelling assets the perks reference.
     perk_names: BTreeMap<u16, String>,
     ingredients: Option<(usize, usize, Arc<sundial::investment::IngredientCatalog>)>,
@@ -209,6 +212,7 @@ impl Workbench {
     pub(in crate::app) fn invalidate(&mut self) {
         self.capture_effect_draft();
         self.discovery.invalidate();
+        self.behaviors = behaviors::Picker::default();
         self.keys = program::Keys::default();
         self.ingredients = None;
         self.retire_editor();
@@ -219,6 +223,20 @@ impl Workbench {
     }
 
     fn refresh_editor_context(&mut self) {
+        let context_name = self.editor.as_ref().and_then(|editor| {
+            let tag = editor.entity_source?;
+            let program = self
+                .documents
+                .get(self.selected)?
+                .recipe
+                .effects
+                .iter()
+                .find(|effect| Some(effect.source_perk_index) == self.editing_effect)?
+                .program
+                .as_ref()?;
+            self.program_asset_labels(program.native.as_ref()?, &program.name)
+                .remove(&tag)
+        });
         if let Some(editor) = &mut self.editor {
             if editor.item_names != self.item_names {
                 editor.item_names = self.item_names.clone();
@@ -230,7 +248,9 @@ impl Workbench {
                 if let Some(graph) = &editor.graph {
                     self.properties.remember(tag, graph.clone());
                 }
-                if let Some(entry) =
+                if let Some(name) = context_name {
+                    editor.plug_label = name;
+                } else if let Some(entry) =
                     self.discovery.data.as_ref().and_then(|data| {
                         data.effects.entries.iter().find(|entry| entry.graph == tag)
                     })
@@ -356,15 +376,20 @@ impl Workbench {
             .open(&mut open)
             .collapsible(false)
             .default_size(egui::vec2(1020.0, 720.0))
-            .min_width(520.0_f32.min((ctx.screen_rect().width() - 40.0).max(320.0)))
+            .min_width(700.0_f32.min((ctx.screen_rect().width() - 40.0).max(320.0)))
             .max_width((ctx.screen_rect().width() - 40.0).max(320.0))
             .max_height((ctx.screen_rect().height() - 64.0).max(360.0))
             .show(ctx, |ui| {
                 crate::app::style::workbench_style(ui);
-                // The body takes a fixed share of the screen, so the window keeps one height
-                // as effects come and go instead of growing with its content.
-                let body_height = (ctx.screen_rect().height() - 290.0).clamp(320.0, 760.0);
-                let library_width = (ui.available_width() * 0.26).clamp(260.0, 290.0);
+                // Respect the requested window size and reserve the destination footer.
+                // The body follows the window, so dragging the window taller shows more of
+                // the editor instead of stopping at a fixed height on a tall screen.
+                let tallest = (ctx.screen_rect().height() - 140.0).max(240.0);
+                let body_height = (ui.available_height() - 40.0).clamp(240.0, tallest);
+                let width = ui.available_width();
+                let library_width = (width * 0.26).clamp(260.0, 290.0).min(width * 0.46);
+                let editor_width =
+                    (width - library_width - ui.spacing().item_spacing.x * 3.0 - 2.0).max(120.0);
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), body_height),
                     egui::Layout::left_to_right(egui::Align::Min),
@@ -386,51 +411,56 @@ impl Workbench {
                             },
                         );
                         ui.separator();
-                        ui.vertical(|ui| {
-                            ui.set_min_width((ui.available_width() - 8.0).max(300.0));
-                            let Some(document) = self.documents.get(self.selected) else {
-                                return;
-                            };
-                            let mut recipe = document.recipe.clone();
-                            let before = recipe.clone();
-                            let document_id = recipe.id.clone();
-                            let header_height = self.draw_document_header(ui, &mut recipe, catalog);
-                            if self.editor.is_some() {
-                                self.draw_effect_editor(
-                                    ui,
-                                    ctx,
-                                    &mut recipe,
-                                    experimental,
-                                    body_height - header_height,
-                                );
-                            } else {
-                                egui::ScrollArea::vertical()
-                                    .id_salt("independent-perk-body")
-                                    .max_height((body_height - header_height - 8.0).max(120.0))
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        self.draw_effects(
-                                            ui,
-                                            packages,
-                                            catalog,
-                                            choices,
-                                            &mut recipe,
-                                            experimental,
-                                        );
-                                    });
-                            }
-                            if recipe != before {
-                                if let Some(document) = self
-                                    .documents
-                                    .iter_mut()
-                                    .find(|document| document.recipe.id == document_id)
-                                {
-                                    document.recipe = recipe;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(editor_width, body_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(editor_width);
+                                let Some(document) = self.documents.get(self.selected) else {
+                                    return;
+                                };
+                                let mut recipe = document.recipe.clone();
+                                let before = recipe.clone();
+                                let document_id = recipe.id.clone();
+                                let header_height =
+                                    self.draw_document_header(ui, &mut recipe, catalog);
+                                if self.editor.is_some() {
+                                    self.draw_effect_editor(
+                                        ui,
+                                        ctx,
+                                        &mut recipe,
+                                        experimental,
+                                        body_height - header_height,
+                                    );
+                                } else {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("independent-perk-body", &document_id))
+                                        .max_height((body_height - header_height - 8.0).max(120.0))
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            self.draw_effects(
+                                                ui,
+                                                packages,
+                                                catalog,
+                                                choices,
+                                                &mut recipe,
+                                                experimental,
+                                            );
+                                        });
                                 }
-                                self.message = None;
-                                self.persist_drafts();
-                            }
-                        });
+                                if recipe != before {
+                                    if let Some(document) = self
+                                        .documents
+                                        .iter_mut()
+                                        .find(|document| document.recipe.id == document_id)
+                                    {
+                                        document.recipe = recipe;
+                                    }
+                                    self.message = None;
+                                    self.persist_drafts();
+                                }
+                            },
+                        );
                     },
                 );
                 ui.separator();
@@ -505,6 +535,17 @@ impl Workbench {
                 {
                     self.header_action = Some(HeaderAction::Save(false));
                 }
+                if let Some(message) = &self.message {
+                    let detail = self.message_path.as_ref().map_or_else(
+                        || message.clone(),
+                        |path| format!("{message}\n{}", path.display()),
+                    );
+                    ui.label(
+                        egui::RichText::new(egui_phosphor::regular::CHECK)
+                            .color(crate::app::style::success_color(ui.visuals())),
+                    )
+                    .on_hover_text(detail);
+                }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     if let Some(catalog) = catalog {
                         catalog.draw_perk_icon(
@@ -534,13 +575,6 @@ impl Workbench {
         }
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        if let Some(message) = &self.message {
-            let response =
-                ui.colored_label(crate::app::style::success_color(ui.visuals()), message);
-            if let Some(path) = &self.message_path {
-                response.on_hover_text(path.display().to_string());
-            }
         }
         ui.separator();
         ui.cursor().top() - top

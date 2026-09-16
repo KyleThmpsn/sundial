@@ -164,18 +164,21 @@ const THREE_VALUES: &[Field] = &[
     Field::new("Second Value", 8, Float),
     Field::new("Third Value", 0x0C, Float),
 ];
+// The three triples are per ammo type, established by the three Finder mods: Primary Ammo
+// Finder writes only the first, Special Ammo Finder only the second and Heavy Ammo Finder
+// only the third.
 const HOST_NUMERIC_MODIFIERS: &[Field] = &[
-    Field::new("First Shared Value", 0x04, Float),
-    Field::new("Second Shared Value", 0x08, Float),
-    Field::new("Slot 1 First Value", 0x0C, Float),
-    Field::new("Slot 1 Second Value", 0x10, Float),
-    Field::new("Slot 1 Third Value", 0x14, Float),
-    Field::new("Slot 2 First Value", 0x18, Float),
-    Field::new("Slot 2 Second Value", 0x1C, Float),
-    Field::new("Slot 2 Third Value", 0x20, Float),
-    Field::new("Slot 3 First Value", 0x24, Float),
-    Field::new("Slot 3 Second Value", 0x28, Float),
-    Field::new("Slot 3 Third Value", 0x2C, Float),
+    Field::new("Shared Value 1", 0x04, Float),
+    Field::new("Shared Value 2", 0x08, Float),
+    Field::new("Primary Ammo Value 1", 0x0C, Float),
+    Field::new("Primary Ammo Value 2", 0x10, Float),
+    Field::new("Primary Ammo Value 3", 0x14, Float),
+    Field::new("Special Ammo Value 1", 0x18, Float),
+    Field::new("Special Ammo Value 2", 0x1C, Float),
+    Field::new("Special Ammo Value 3", 0x20, Float),
+    Field::new("Heavy Ammo Value 1", 0x24, Float),
+    Field::new("Heavy Ammo Value 2", 0x28, Float),
+    Field::new("Heavy Ammo Value 3", 0x2C, Float),
 ];
 
 /// The scalar effect kinds. Kinds 1, 3, 10, 14, 15, 26 and 32 have their own program
@@ -204,9 +207,16 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
         kind: 11,
         fields: HOST_NUMERIC_MODIFIERS,
     },
+    // Long March writes 80 to the third float and Radar Booster 56, the only two stock uses,
+    // both reading as radar detection range. The first two stay at -1, which the callback
+    // leaves unchanged.
     Layout {
         kind: 18,
-        fields: THREE_VALUES,
+        fields: &[
+            Field::new("Other Setting 1", 4, Float),
+            Field::new("Other Setting 2", 8, Float),
+            Field::new("Radar Detection Range", 0x0C, Float),
+        ],
     },
     Layout {
         kind: 20,
@@ -448,6 +458,49 @@ pub fn blank_condition(kind: u8) -> Option<Vec<u8>> {
     bytes[4] = 0xFF;
     bytes[5] = kind;
     Some(bytes)
+}
+
+/// The bytes a fresh node of a kind starts with so that it reads as its plain title. Each
+/// is the configuration every stock perk of that reading uses, read off the perks' own
+/// activation and end slots.
+#[must_use]
+pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
+    if !condition {
+        return match kind {
+            // Three host floats at -1.0, the value the callback leaves unchanged, so a fresh
+            // radar node changes nothing until its range is set. Zero would replace all
+            // three host floats with zero.
+            18 => &[
+                (0x04, 0x00),
+                (0x05, 0x00),
+                (0x06, 0x80),
+                (0x07, 0xBF),
+                (0x08, 0x00),
+                (0x09, 0x00),
+                (0x0A, 0x80),
+                (0x0B, 0xBF),
+                (0x0C, 0x00),
+                (0x0D, 0x00),
+                (0x0E, 0x80),
+                (0x0F, 0xBF),
+            ],
+            _ => &[],
+        };
+    }
+    match kind {
+        // Reloading: the owning weapon and the reload flag alone, as Kill Clip and 17 others.
+        19 => &[(8, 1), (9, 1), (0x0A, 0)],
+        // Crouching started, the activation byte of Field Prep, Firmly Planted and Sneak Bow.
+        22 => &[(8, 1)],
+        // Aiming started on the owning weapon, the activation bytes of Rangefinder and the
+        // eleven other aiming perks.
+        23 => &[(8, 1), (0x0A, 1)],
+        // A shot from the owning weapon, as every stock use of the kind.
+        27 => &[(8, 1)],
+        // A finisher final blow, as Bulwark Finisher and Empowered Finish.
+        42 => &[(8, 1)],
+        _ => &[],
+    }
 }
 
 #[cfg(test)]

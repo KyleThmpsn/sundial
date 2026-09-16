@@ -116,7 +116,7 @@ pub(crate) fn draw_authoring_choice_row(
                         description,
                         classification_hash: None,
                     }),
-                )
+                );
             })
         }
     } else {

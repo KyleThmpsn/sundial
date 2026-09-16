@@ -1,5 +1,5 @@
 use super::*;
-use sundial::package_authoring::sandbox_perk::activation::{PerkActivation, supports_activation};
+use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
 
 impl Workbench {
     pub(super) fn stock_effect_name(
@@ -60,12 +60,16 @@ impl Workbench {
                             }
                         }
                     });
+                pickers::name_combo(ui, "perk-type", "Perk Type");
             }
-            let response = egui::CollapsingHeader::new("Description")
-                .id_salt("perk-description")
-                .open(Some(open))
-                .show(ui, |_| {});
-            if response.header_response.clicked() {
+            let description = ui.add(egui::Button::new("Description    ").frame(false));
+            let mut arrow = description.clone();
+            arrow.rect = egui::Rect::from_center_size(
+                egui::pos2(description.rect.right() - 6.0, description.rect.center().y),
+                egui::vec2(8.0, 8.0),
+            );
+            egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &arrow);
+            if description.clicked() {
                 self.page = if open { Page::Effects } else { Page::Basics };
             }
             if let Some(catalog) = catalog {
@@ -125,24 +129,29 @@ impl Workbench {
             }
         });
         if self.page == Page::Basics {
-            if let Some(summary) = self.description_from_effects(recipe, catalog) {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button("Use Effect Summary")
-                        .on_hover_text(
-                            "Replace the description with a summary of the current effects.",
-                        )
-                        .clicked()
-                    {
-                        recipe.description = summary;
-                    }
-                });
-            }
             ui.add(
                 egui::TextEdit::multiline(&mut recipe.description)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
                     .hint_text("Describe what this perk does. Leave blank for no description."),
+            );
+            let summary = self.description_from_effects(recipe, catalog);
+            // One row high, so the right-aligned command sits under the text box instead of
+            // centering itself in whatever height the scroll area has left.
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui
+                        .add_enabled(summary.is_some(), egui::Button::new("Use Effect Summary").small())
+                        .on_hover_text("Replace the description with a summary of the current effects.")
+                        .on_disabled_hover_text("A complete description cannot yet be generated for these effects. You can write one above.")
+                        .clicked()
+                        && let Some(summary) = summary
+                    {
+                        recipe.description = summary;
+                    }
+                },
             );
         }
     }
@@ -204,9 +213,6 @@ impl Workbench {
         experimental: bool,
     ) {
         let ctx = ui.ctx().clone();
-        if recipe.effects.is_empty() {
-            self.draw_starting_points(ui, choices);
-        }
         if self.perk_names.len() != choices.len() {
             self.perk_names = choices
                 .iter()
@@ -364,8 +370,53 @@ impl Workbench {
     ) {
         let index = effect.source_perk_index;
         let issue = self.discovery.perk_issue(index).map(str::to_owned);
+        let activation_summary = effect.activation.map(|activation| {
+            let trigger = match activation {
+                PerkActivation::WeaponKill => "A kill with this weapon",
+                PerkActivation::PrecisionWeaponKill => "A precision kill with this weapon",
+                PerkActivation::MeleeKill => "A melee kill",
+                PerkActivation::GrenadeKill => "A grenade kill",
+                PerkActivation::AnyKill => "Any credited kill",
+            };
+            format!("{trigger} activates this effect and its actions.")
+        });
+        let description = activation_summary.as_deref().or(description);
         let mut remove = false;
         let mut edit = false;
+        let mut edit_trigger = false;
+        let digest = self.discovery.behavior(index);
+        let trigger = effect
+            .activation
+            .map(|value| value.label().to_owned())
+            .or_else(|| {
+                digest.and_then(|behavior| {
+                    let sections = behavior
+                        .details
+                        .iter()
+                        .filter(|section| section.heading == "Starts When")
+                        .collect::<Vec<_>>();
+                    let lines = sections
+                        .iter()
+                        .map(|section| {
+                            let text = section
+                                .lines
+                                .iter()
+                                .filter(|line| line.depth == 0)
+                                .map(|line| line.text.trim_end_matches('.'))
+                                .collect::<Vec<_>>()
+                                .join(" or ");
+                            if sections.len() > 1 {
+                                format!("{}: {text}", section.group)
+                            } else {
+                                text
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    (!lines.is_empty()).then(|| lines.join("\n"))
+                })
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "Original Conditions".into());
         let mut header = |ui: &mut egui::Ui| {
             crate::app::style::more_menu(ui, |ui| {
                 crate::app::style::workbench_style(ui);
@@ -394,22 +445,20 @@ impl Workbench {
             if let Some(issue) = &issue {
                 ui.colored_label(ui.visuals().warn_fg_color, issue);
             }
-            let count = effect.runtime_values.len()
-                + effect.action_float_values.len()
-                + effect.projectiles.len();
-            if count > 0 {
-                ui.small(format!("{count} Edits"))
-                    .on_hover_text("Parameter, action and projectile edits this effect carries.");
-            }
-            if effect.activation.is_some() && ui.button("Reset Activation").clicked() {
-                effect.activation = None;
-            }
-            if supports_activation(index) {
-                draw_activation_choice(ui, &mut effect.activation, experimental);
-            }
+            canvas::row(
+                ui,
+                "Trigger",
+                "Changes this effect only. Other effects and action-specific conditions keep their settings.",
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                    ui.label(&trigger);
+                    edit_trigger = ui.add_enabled(experimental && issue.is_none(), egui::Button::new("Edit Trigger…"))
+                        .on_hover_text("Open this effect's editable trigger, including its original filters.").clicked();
+                });
+                },
+            );
         };
         // The cached digest keeps the card informative before the editor loads the action.
-        let digest = self.discovery.behavior(index);
         let reading = digest.is_none() && self.discovery.busy();
         ui.push_id(index, |ui| match digest {
             Some(behavior) => {
@@ -455,7 +504,7 @@ impl Workbench {
         if remove {
             events.remove = Some(index);
         }
-        if edit {
+        if edit || edit_trigger {
             events.edit = Some(index);
         }
     }
@@ -572,10 +621,12 @@ impl Workbench {
             |ui, query, reset, _height| {
                 let mut filter_changed = reset;
                 let mut available = Vec::new();
-                ui.horizontal(|ui| {
+                // Four filters plus search and visibility do not fit one line in a narrow
+                // window. Wrapping keeps every control usable.
+                ui.horizontal_wrapped(|ui| {
                     let filter_width = (ui.available_width() * 0.12).clamp(80.0, 132.0);
                     let search_width =
-                        (ui.available_width() - filter_width * 3.0 - 285.0).max(100.0);
+                        (ui.available_width() - filter_width * 4.0 - 285.0).max(160.0);
                     filter_changed |= pickers::search(ui, query, reset, search_width);
                     filter_changed |= guidance::filters(
                         ui,
@@ -598,7 +649,23 @@ impl Workbench {
                                 );
                             }
                         });
+                    pickers::name_combo(ui, "ingredient-source", "Ingredient Source");
                     filter_changed |= before != self.ingredient_source;
+                    let order_before = self.effect_order;
+                    egui::ComboBox::from_id_salt("effect-order")
+                        .width(filter_width)
+                        .truncate()
+                        .selected_text(format!("Sort: {}", self.effect_order.label()))
+                        .show_ui(ui, |ui| {
+                            for choice in guidance::EffectOrder::ALL {
+                                ui.selectable_value(&mut self.effect_order, choice, choice.label())
+                                    .on_hover_text(choice.hint());
+                            }
+                        })
+                        .response
+                        .on_hover_text("Order the results. Sorting never hides an effect.");
+                    pickers::name_combo(ui, "effect-order", "Sort Order");
+                    filter_changed |= order_before != self.effect_order;
                     let (show_all, visibility_changed) = pickers::show_all(ui);
                     filter_changed |= visibility_changed;
                     let query = query.trim().to_lowercase();
@@ -671,8 +738,20 @@ impl Workbench {
                 });
                 ui.separator();
                 let height = (ui.available_height() - 4.0).max(110.0);
-                available
-                    .sort_by_cached_key(|choice| names[&choice.perk_index].clone().to_lowercase());
+                let normalized_query = query.trim().to_lowercase();
+                let order = self.effect_order;
+                available.sort_by_cached_key(|choice| {
+                    let name = names[&choice.perk_index].to_lowercase();
+                    // A perk-name match comes before incidental native field/context
+                    // matches, such as Fourth Float plus Extend Timers.
+                    let direct = pickers::matches(&normalized_query, &name);
+                    guidance::effect_sort_key(
+                        order,
+                        &choice.representative_type_name,
+                        &name,
+                        direct,
+                    )
+                });
                 let keys = available
                     .iter()
                     .map(|choice| u64::from(choice.perk_index))
@@ -703,7 +782,7 @@ impl Workbench {
                         if let Some(behavior) = self.discovery.behavior(choice.perk_index) {
                             ui.separator();
                             reading::overview(ui, behavior, &self.asset_labels);
-                            egui::CollapsingHeader::new("Technical Details").default_open(true).show(ui, |ui| {
+                            egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
                                 reading::draw(ui, behavior, self.discovery.data.as_ref(), choice.perk_index, &self.asset_labels);
                             });
                         }
@@ -870,34 +949,6 @@ struct EffectEvents {
         usize,
         sundial::package_authoring::sandbox_perk::program::Asset,
     )>,
-}
-
-/// The activation selector of a stock effect, or its locked reading when program editing
-/// is off.
-fn draw_activation_choice(
-    ui: &mut egui::Ui,
-    activation: &mut Option<PerkActivation>,
-    experimental: bool,
-) {
-    if experimental {
-        ui.horizontal(|ui| {
-            ui.label("Activation");
-            egui::ComboBox::from_id_salt("standalone-activation")
-                .selected_text(activation.map_or("Original Activation", PerkActivation::label))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(activation, None, "Original Activation");
-                    for choice in PerkActivation::ALL {
-                        ui.selectable_value(activation, Some(choice), choice.label());
-                    }
-                });
-        });
-    } else {
-        ui.label(format!(
-            "Activation: {}",
-            activation.map_or("Original", PerkActivation::label)
-        ))
-        .on_hover_text("Turn on Experimental Features in Preferences to change the activation.");
-    }
 }
 
 /// Every node kind the client registers, whether or not a stock perk uses it, with how far

@@ -124,12 +124,9 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             );
         }
         SchemaMode::PreInventory(version) if matches!(page, InventoryPageKind::Character) => {
-            ui.label(
-                egui::RichText::new(format!(
+            ui.weak(format!(
                     "Schema {version} supports profile inventory and equipped loadouts, but stored character inventory requires schema 6. Stored rows are never created or rewritten here."
-                ))
-                .weak(),
-            );
+                ));
         }
         SchemaMode::PreInventory(_) | SchemaMode::Inventory(_) => {}
         SchemaMode::Future(version) => {
@@ -150,23 +147,17 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             }
         };
     if !editable {
-        ui.label(
-            egui::RichText::new(
-                "Guided controls are disabled. All Settings (JSON) remains available for inspection.",
-            )
-            .weak(),
+        ui.weak(
+            "Guided controls are disabled. All Settings (JSON) remains available for inspection.",
         );
     }
 }
 
 pub(super) fn draw_section_error(ui: &mut egui::Ui, error: &str) {
     ui.colored_label(ui.visuals().error_fg_color, error);
-    ui.label(
-        egui::RichText::new(
+    ui.weak(
             "This section was left untouched. Repair it in All settings (JSON) before using guided controls.",
-        )
-        .weak(),
-    );
+        );
 }
 
 pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error: &str) {
@@ -174,12 +165,9 @@ pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error
         ui.visuals().error_fg_color,
         format!("{source} could not be read: {error}"),
     );
-    ui.label(
-        egui::RichText::new(
+    ui.weak(
             "The other inventory source remains visible, but additions are disabled until this is repaired in All settings (JSON).",
-        )
-        .weak(),
-    );
+        );
 }
 
 pub(super) fn draw_unresolved_bucket_warning(ui: &mut egui::Ui) {

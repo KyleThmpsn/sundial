@@ -121,7 +121,7 @@ pub(super) fn draw_unlock_definition_metadata(
             .id_salt(("progression_context_metadata", context_index))
             .default_open(context_index == 0)
             .show(ui, |ui| {
-                draw_context_metadata(ui, context, catalog, snapshot, state)
+                draw_context_metadata(ui, context, catalog, snapshot, state);
             });
     }
 }

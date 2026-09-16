@@ -188,7 +188,7 @@ impl Solver<'_> {
                 }
             }
             OR_INSTRUCTION | AND_INSTRUCTION | NOR_INSTRUCTION | NAND_INSTRUCTION => {
-                out = self.boolean(expr, goal, plan, depth)
+                out = self.boolean(expr, goal, plan, depth);
             }
             EQUAL_INSTRUCTION
             | NOT_EQUAL_INSTRUCTION

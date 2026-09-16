@@ -16,8 +16,8 @@ mod validation;
 pub use account_settings::{
     AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCapabilities,
     AccountSettingsCommand, AccountSettingsState, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MINIMUM,
-    FiniteF64, KEY_BINDING_ACTIONS, KeyBindingSlot, is_supported_key_binding_action,
-    is_valid_named_binding_input,
+    FiniteF64, KEY_BINDING_ACTIONS, KeyBindingSlot, MODIFIER_INPUTS, NAMED_INPUTS,
+    is_supported_key_binding_action, is_valid_named_binding_input, matches_input_name,
 };
 pub use character::{
     Character, CharacterAbilities, CharacterCapabilities, CharacterCommand, CharacterCommandResult,

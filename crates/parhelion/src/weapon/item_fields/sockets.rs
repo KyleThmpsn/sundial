@@ -1,5 +1,23 @@
 use super::*;
 
+/// The native socket type of every ordinary socket row, in lane order.
+pub(in crate::weapon) fn weapon_socket_types(data: &[u8]) -> AuthoringResult<Vec<u16>> {
+    let resource = relative_target(data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
+    let (count, _, rows, class) = array_at(data, resource)?;
+    if class != ITEM_ORDINARY_SOCKET_ROW_CLASS || count > 64 {
+        return Err(invalid("Weapon ordinary-socket rows are incompatible"));
+    }
+    let end = rows
+        .checked_add(count * ITEM_ORDINARY_SOCKET_ROW_SIZE)
+        .ok_or_else(|| invalid("Weapon ordinary-socket row extent overflowed"))?;
+    if end > data.len() {
+        return Err(invalid("Weapon ordinary-socket rows are truncated"));
+    }
+    (0..count)
+        .map(|lane| read_u16(data, rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE))
+        .collect()
+}
+
 pub(in crate::weapon) fn weapon_pattern_index(data: &[u8]) -> AuthoringResult<Option<u16>> {
     let topology = weapon_translation_topology(data)?;
     let index = read_u16(

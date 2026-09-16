@@ -41,5 +41,10 @@ fn missing_package_directory_is_rejected_and_codec_free_views_remain_supported()
     let runtime = root.path().join("bin/x64");
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::write(runtime.join("oo2core_3_win64.dll"), b"not a native library").unwrap();
+    // Only this target consults the native encoder. Elsewhere the runtime DLL is never
+    // loaded, so an unusable one cannot be reported and raw blocks stay supported.
+    #[cfg(all(windows, target_pointer_width = "64"))]
     assert!(PackageBlockEncoder::open_for_packages(&packages).is_err());
+    #[cfg(not(all(windows, target_pointer_width = "64")))]
+    assert!(PackageBlockEncoder::open_for_packages(&packages).is_ok());
 }

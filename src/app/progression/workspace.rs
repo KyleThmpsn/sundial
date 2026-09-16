@@ -64,8 +64,10 @@ impl SundialApp {
                 .cached_view
                 .take()
                 .filter(|(character, _)| *character == self.selected_character)
-                .map(|(_, document)| document)
-                .unwrap_or_else(|| self.document.progression_view(self.selected_character))
+                .map_or_else(
+                    || self.document.progression_view(self.selected_character),
+                    |(_, document)| document,
+                )
         };
         let changed = match self.progression_section {
             ProgressionSection::Seasonal => {

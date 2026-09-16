@@ -210,7 +210,7 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
     }
     match context.account_source.kind {
         AccountSourceKind::Json => {
-            append_path(report, "active_account_json", context.settings_path)
+            append_path(report, "active_account_json", context.settings_path);
         }
         AccountSourceKind::Sqlite => append_path(
             report,
@@ -527,9 +527,10 @@ fn append_path(report: &mut String, label: &str, path: &Path) {
     } else {
         "other"
     };
-    let canonical = fs::canonicalize(path)
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|error| format!("unavailable ({error})"));
+    let canonical = fs::canonicalize(path).map_or_else(
+        |error| format!("unavailable ({error})"),
+        |path| path.display().to_string(),
+    );
     writeln!(
         report,
         "{label} = {} | kind={kind} | bytes={} | modified_unix_seconds={} | readonly={} | canonical={canonical}",

@@ -420,14 +420,11 @@ fn draw_plug_browser_contents(
         )
     });
     if visible.is_empty() {
-        ui.label(
-            egui::RichText::new(if searchable {
-                "No matching plugs found"
-            } else {
-                "No plugs available"
-            })
-            .weak(),
-        );
+        ui.weak(if searchable {
+            "No matching plugs found"
+        } else {
+            "No plugs available"
+        });
     } else {
         let option_row_height = row_height.max(40.0);
         let picker_height =

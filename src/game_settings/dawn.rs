@@ -100,7 +100,7 @@ pub(crate) fn settings_issues(json: &Value) -> Vec<String> {
         || json
             .pointer("/state/characters")
             .and_then(Value::as_array)
-            .is_none_or(|a| a.is_empty())
+            .is_none_or(std::vec::Vec::is_empty)
     {
         issues.push("Dawn needs account and character data in settings.json.".into());
     }

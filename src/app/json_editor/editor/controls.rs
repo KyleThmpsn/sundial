@@ -194,15 +194,12 @@ pub(super) fn draw_status(ui: &mut egui::Ui, text: &str, state: &mut JsonEditorS
             );
         }
         None => {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Valid JSON · {line_count} lines · {:.1} KiB · Ln {}, Col {}",
-                    text.len() as f64 / 1024.0,
-                    state.cursor_line,
-                    state.cursor_column
-                ))
-                .weak(),
-            );
+            ui.weak(format!(
+                "Valid JSON · {line_count} lines · {:.1} KiB · Ln {}, Col {}",
+                text.len() as f64 / 1024.0,
+                state.cursor_line,
+                state.cursor_column
+            ));
         }
         Some(error) => {
             ui.colored_label(

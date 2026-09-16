@@ -55,6 +55,64 @@ impl AssetScope {
     }
 }
 
+/// How the asset results are ordered. Order changes presentation only. It never hides a
+/// result and never changes which assets an action accepts.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Order {
+    /// Query matches first, then assets the packages name directly.
+    #[default]
+    BestMatch,
+    Name,
+    Kind,
+    Source,
+}
+
+impl Order {
+    const ALL: [Self; 4] = [Self::BestMatch, Self::Name, Self::Kind, Self::Source];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::BestMatch => "Best Match",
+            Self::Name => "Name",
+            Self::Kind => "Type",
+            Self::Source => "Package",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::BestMatch => "Search matches first, then assets the packages name directly.",
+            Self::Name => "Every result by name, including unnamed assets by tag.",
+            Self::Kind => "Grouped by object type, then by name.",
+            Self::Source => "Grouped by the installed package the asset lives in.",
+        }
+    }
+
+    fn from_index(index: u8) -> Self {
+        Self::ALL
+            .get(usize::from(index))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// The comparable key for one result. Every order ends with the name, so results never
+/// reshuffle between frames.
+fn asset_sort_key(
+    order: Order,
+    entry: &projectile::catalog::Entry,
+    name: &str,
+    direct_match: bool,
+) -> (bool, u8, String, String) {
+    let name = name.to_lowercase();
+    match order {
+        Order::BestMatch => (!direct_match, entry.label_rank(), String::new(), name),
+        Order::Name => (false, 0, String::new(), name),
+        Order::Kind => (false, 0, entry.kind_label().to_lowercase(), name),
+        Order::Source => (false, 0, entry.source_label().to_lowercase(), name),
+    }
+}
+
 fn asset_usage(
     entry: &projectile::catalog::Entry,
     perk_names: &BTreeMap<u16, String>,
@@ -85,6 +143,55 @@ fn asset_usage(
 }
 
 impl Workbench {
+    /// A shared attachment's ancestry is not its identity or gameplay role in this effect.
+    pub(super) fn program_asset_labels(
+        &self,
+        program: &sundial::package_authoring::sandbox_perk::program::NativeProgram,
+        name: &str,
+    ) -> BTreeMap<u32, String> {
+        let attachments: BTreeSet<_> = program
+            .graph
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.class, 0x80803E45 | 0x80803E44))
+            .filter_map(|block| block.bytes.get(16..20))
+            .filter_map(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_le_bytes)
+            .collect();
+        let context = name.split(" · Effect ").next().unwrap_or(name).trim();
+        program
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| {
+                let label = self
+                    .asset_labels
+                    .get(&asset.graph)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Asset 0x{:08X}", asset.graph));
+                let shared_attachment = attachments.contains(&asset.graph)
+                    && self.discovery.data.as_ref().is_some_and(|data| {
+                        data.effects
+                            .entries
+                            .iter()
+                            .find(|entry| entry.graph == asset.graph)
+                            .is_some_and(|entry| {
+                                entry.kind == projectile::Kind::Entity
+                                    && entry.direct_name().is_none()
+                            })
+                    });
+                (
+                    asset.graph,
+                    if shared_attachment {
+                        format!("{context} Attachment {}", index + 1)
+                    } else {
+                        label
+                    },
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn draw_asset_picker(
         &mut self,
         ui: &mut egui::Ui,
@@ -94,17 +201,7 @@ impl Workbench {
     ) {
         self.refresh_asset_labels();
         let (empty_label, title, use_label) = scope.picker_labels();
-        let label = self
-            .asset_labels
-            .get(&asset.graph)
-            .cloned()
-            .unwrap_or_else(|| {
-                if asset.graph == 0 {
-                    empty_label.into()
-                } else {
-                    format!("Unidentified Effect · 0x{:08X}", asset.graph)
-                }
-            });
+        let label = asset_label(asset, &self.asset_labels, empty_label);
         let picked = pickers::browser_with_toolbar(
             ui,
             "program-asset",
@@ -128,6 +225,28 @@ impl Workbench {
             *asset = picked;
         }
     }
+}
+
+/// A saved native path remains useful while discovery is loading or lacks ancestry.
+pub(super) fn asset_label(asset: &Asset, labels: &BTreeMap<u32, String>, empty: &str) -> String {
+    labels
+        .get(&asset.graph)
+        .filter(|name| !name.starts_with("Unidentified "))
+        .cloned()
+        .or_else(|| {
+            (!asset.path.is_empty())
+                .then(|| sundial::package_authoring::tft::asset_label(&asset.path))
+        })
+        .unwrap_or_else(|| {
+            if asset.graph == 0 {
+                empty.into()
+            } else {
+                labels
+                    .get(&asset.graph)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Asset 0x{:08X}", asset.graph))
+            }
+        })
 }
 
 /// Shared asset list, filters and details for selection and Engine Catalog inspection.
@@ -163,17 +282,22 @@ impl Browser<'_> {
         };
         let filter_id = ui.make_persistent_id("asset-kind");
         let mut filter = ui.data(|state| state.get_temp::<u8>(filter_id).unwrap_or(0));
-        let before = filter;
+        let order_id = ui.make_persistent_id("asset-order");
+        let mut order =
+            Order::from_index(ui.data(|state| state.get_temp::<u8>(order_id).unwrap_or_default()));
+        let before = (filter, order);
         let mut visibility = (false, false);
         let mut search_changed = reset;
         let count_rect = ui
-            .horizontal(|ui| {
+            // The type, sort and visibility controls do not fit one line beside the search
+            // box in a narrow window. Wrapping keeps every control usable.
+            .horizontal_wrapped(|ui| {
                 let reserved = if scope == AssetScope::Projectiles {
-                    240.0
-                } else {
                     380.0
+                } else {
+                    520.0
                 };
-                let width = (ui.available_width() - reserved).max(100.0);
+                let width = (ui.available_width() - reserved).max(160.0);
                 search_changed |= pickers::search(ui, query, reset, width);
                 if scope != AssetScope::Projectiles {
                     let types = [
@@ -199,7 +323,20 @@ impl Browser<'_> {
                                 }
                             }
                         });
+                    pickers::name_combo(ui, "asset-type-filter", "Asset Type");
                 }
+                egui::ComboBox::from_id_salt("asset-order")
+                    .width(120.0)
+                    .selected_text(format!("Sort: {}", order.label()))
+                    .show_ui(ui, |ui| {
+                        for choice in Order::ALL {
+                            ui.selectable_value(&mut order, choice, choice.label())
+                                .on_hover_text(choice.hint());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Order the results. Sorting never hides a result.");
+                pickers::name_combo(ui, "asset-order", "Sort Order");
                 visibility = pickers::show_all(ui);
                 ui.allocate_exact_size(
                     egui::vec2(86.0, ui.spacing().interact_size.y),
@@ -208,9 +345,22 @@ impl Browser<'_> {
                 .0
             })
             .inner;
-        ui.data_mut(|state| state.insert_temp(filter_id, filter));
+        ui.data_mut(|state| {
+            state.insert_temp(filter_id, filter);
+            state.insert_temp(
+                order_id,
+                Order::ALL
+                    .iter()
+                    .position(|choice| *choice == order)
+                    .unwrap_or(0) as u8,
+            );
+        });
         let normalized_query = query.trim().to_lowercase();
         let exact_graph = exact_asset_tag(&normalized_query);
+        let words = normalized_query
+            .split_whitespace()
+            .map(|word| word.strip_prefix("0x").unwrap_or(word))
+            .collect::<Vec<_>>();
         let mut choices = data
             .asset_choices
             .iter()
@@ -280,13 +430,18 @@ impl Browser<'_> {
         );
         ui.separator();
         choices.sort_by_cached_key(|row| {
-            (
-                data.effects.entries[row.index].label_rank(),
-                self.asset_labels
-                    .get(&data.effects.entries[row.index].graph)
-                    .map(|name| name.to_lowercase())
-                    .unwrap_or_default(),
-            )
+            let entry = &data.effects.entries[row.index];
+            let name = self
+                .asset_labels
+                .get(&entry.graph)
+                .map(|name| name.to_lowercase())
+                .unwrap_or_default();
+            let direct_match = !normalized_query.is_empty()
+                && (exact_graph == Some(entry.graph)
+                    || normalized_query
+                        .split_whitespace()
+                        .all(|word| name.contains(word)));
+            asset_sort_key(order, entry, &name, direct_match)
         });
         let keys = choices
             .iter()
@@ -295,7 +450,7 @@ impl Browser<'_> {
         pickers::BrowserList {
             keys: &keys,
             height: (ui.available_height() - 4.0).max(110.0),
-            reset: search_changed || visibility.1 || filter != before,
+            reset: search_changed || visibility.1 || (filter, order) != before,
             row_height: sundial::investment::authoring_choice_row_height(ui),
         }
         .draw_body(
@@ -307,7 +462,10 @@ impl Browser<'_> {
                     .get(&entry.graph)
                     .cloned()
                     .unwrap_or_else(|| entry.discovery_label_with(|_| None, |_| None));
-                let detail = technical_name(entry);
+                let mut detail = technical_name(entry);
+                if let Some(reason) = self.match_reason(entry, &name, &words) {
+                    detail = format!("{detail} · {reason}");
+                }
                 if let Some(catalog) = self.catalog {
                     catalog.draw_authoring_choice_row(
                         ui,
@@ -327,6 +485,10 @@ impl Browser<'_> {
                     .get(&entry.graph)
                     .cloned()
                     .unwrap_or_else(|| entry.discovery_label_with(|_| None, |_| None));
+                if let Some(reason) = self.match_reason(entry, &name, &words) {
+                    ui.small(format!("Matched through its source. {reason}."))
+                        .on_hover_text("The search words are not in this asset's own name.");
+                }
                 ui.heading(name);
                 ui.label(
                     entry
@@ -357,6 +519,76 @@ impl Browser<'_> {
     }
 }
 
+impl Browser<'_> {
+    /// Why an entry answers a search when its own name does not: the perk, weapon, source
+    /// context or behavior the words matched instead. Nothing when the name itself holds
+    /// every word, so an ordinary match stays unadorned.
+    fn match_reason(
+        &self,
+        entry: &projectile::catalog::Entry,
+        name: &str,
+        words: &[&str],
+    ) -> Option<String> {
+        let name = name.to_lowercase();
+        let missing = words
+            .iter()
+            .copied()
+            .filter(|word| !name.contains(word))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return None;
+        }
+        let holds = |text: &str| {
+            let text = text.to_lowercase();
+            missing.iter().all(|word| text.contains(word))
+        };
+        let perks = entry
+            .perk_indices
+            .iter()
+            .copied()
+            .chain(entry.contexts.iter().filter_map(|context| context.perk))
+            .collect::<BTreeSet<_>>();
+        if let Some(perk) = perks
+            .iter()
+            .filter_map(|index| self.perk_names.get(index))
+            .find(|perk| holds(perk))
+        {
+            return Some(format!("Referenced by {perk}"));
+        }
+        if let Some(item) = entry
+            .contexts
+            .iter()
+            .filter_map(|context| context.item)
+            .filter_map(|item| self.item_names.get(&item))
+            .find(|item| holds(&item.name))
+        {
+            return Some(format!("Fired by {}", item.name));
+        }
+        if let Some(hint) = entry.source_hint.as_deref().filter(|hint| holds(hint)) {
+            return Some(format!("Source context: {hint}"));
+        }
+        if let Some(perk) = perks
+            .iter()
+            .filter(|index| {
+                self.discovery
+                    .behavior(**index)
+                    .is_some_and(|behavior| holds(&guidance::behavior_search(behavior)))
+            })
+            .filter_map(|index| self.perk_names.get(index))
+            .next()
+        {
+            return Some(format!(
+                "The behavior of {perk} mentions {}",
+                missing.join(" ")
+            ));
+        }
+        Some(format!(
+            "Its native path or type mentions {}",
+            missing.join(" ")
+        ))
+    }
+}
+
 /// A complete native tag is an explicit lookup, including entries hidden by Show All.
 fn exact_asset_tag(query: &str) -> Option<u32> {
     let digits = query.trim().strip_prefix("0x").unwrap_or(query.trim());
@@ -378,38 +610,33 @@ pub(super) fn draw_attach_technical_fields(
     float_bits: &mut [u32; 4],
 ) {
     let default = *mode == 1 && *keys == [EMPTY_KEY; 2] && *float_bits == [0; 4];
-    egui::CollapsingHeader::new(egui::RichText::new("Technical Fields").small())
+    egui::CollapsingHeader::new("Advanced")
         .id_salt("attach-technical-fields")
         .show(ui, |ui| {
-            ui.weak("Native bytes of the attach node. Their gameplay roles are not mapped.");
-            egui::Grid::new("attach-technical-grid")
-                .num_columns(2)
-                .spacing([12.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label("Attachment Mode")
-                        .on_hover_text("Byte +0x02 of the Create Entity node. Stock actions store 0 through 3.");
-                    ui.add(egui::DragValue::new(mode).range(0..=255));
-                    ui.end_row();
+            properties::field(ui, "Attachment Mode", "Byte +0x02 of the Create Entity node. Stock actions store 0 through 3.", |ui| {
+                ui.add(egui::DragValue::new(mode).range(0..=255));
+            });
                     for (index, label) in ["First Key", "Second Key"].into_iter().enumerate() {
-                        ui.label(label).on_hover_text(format!(
+                        let hint = format!(
                             "Key at +0x{:X} of the Create Entity node, written as a 32-bit hash. The empty hash is 0x{EMPTY_KEY:08X}.",
                             0x18 + index * 4
-                        ));
-                        controls::hex_key(ui, ("attach", index), &mut keys[index]);
-                        ui.end_row();
+                        );
+                        properties::field(ui, label, &hint, |ui| {
+                            controls::hex_key(ui, ("attach", index), &mut keys[index]);
+                        });
                     }
                     for (index, label) in ["First Float", "Second Float", "Third Float", "Fourth Float"]
                         .into_iter()
                         .enumerate()
                     {
-                        ui.label(label).on_hover_text(format!(
+                        let hint = format!(
                             "Float at +0x{:X} of the Create Entity node. Stock actions store 0 or 1.",
                             0x20 + index * 4
-                        ));
-                        controls::float_field(ui, &mut float_bits[index]);
-                        ui.end_row();
+                        );
+                        properties::field(ui, label, &hint, |ui| {
+                            controls::float_field(ui, &mut float_bits[index]);
+                        });
                     }
-                });
             if !default && ui.small_button("Reset Technical Fields").clicked() {
                 *mode = 1;
                 *keys = [EMPTY_KEY; 2];
@@ -420,7 +647,81 @@ pub(super) fn draw_attach_technical_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::exact_asset_tag;
+    use super::{Order, asset_sort_key, exact_asset_tag};
+    use sundial::package_authoring::sandbox_perk::projectile::{self, catalog::Entry};
+
+    fn entry(graph: u32, kind: projectile::Kind, package: &str, path: Option<&str>) -> Entry {
+        Entry {
+            graph,
+            kind,
+            object_type: 18,
+            owners: Vec::new(),
+            package: package.into(),
+            native_name: None,
+            native_paths: path.map(|path| vec![path.to_owned()]).unwrap_or_default(),
+            contexts: Vec::new(),
+            perk_indices: Vec::new(),
+            source_hint: None,
+        }
+    }
+
+    #[test]
+    fn every_asset_order_is_total_and_keeps_the_same_result_set() {
+        let named = entry(
+            0x80B1_0001,
+            projectile::Kind::Emitter,
+            "sandbox",
+            Some("content/sandbox/effects/zebra.pattern.tft"),
+        );
+        let unnamed = entry(
+            0x80B1_0002,
+            projectile::Kind::Projectile,
+            "activities",
+            None,
+        );
+        let mut rows = [(&named, "zebra emitter"), (&unnamed, "alpha projectile")];
+        fn order_by<'a>(order: Order, rows: &mut [(&Entry, &'a str)]) -> Vec<&'a str> {
+            rows.sort_by_cached_key(|(entry, name)| asset_sort_key(order, entry, name, false));
+            rows.iter().map(|(_, name)| *name).collect()
+        }
+        // Best Match ranks an asset the packages name above one they do not.
+        assert_eq!(
+            order_by(Order::BestMatch, &mut rows),
+            ["zebra emitter", "alpha projectile"]
+        );
+        assert_eq!(
+            order_by(Order::Name, &mut rows),
+            ["alpha projectile", "zebra emitter"]
+        );
+        // Emitter sorts before Projectile, and activities before sandbox.
+        assert_eq!(
+            order_by(Order::Kind, &mut rows),
+            ["zebra emitter", "alpha projectile"]
+        );
+        assert_eq!(
+            order_by(Order::Source, &mut rows),
+            ["alpha projectile", "zebra emitter"]
+        );
+    }
+
+    #[test]
+    fn a_query_match_outranks_a_named_asset_only_under_best_match() {
+        let named = entry(
+            0x80B1_0001,
+            projectile::Kind::Projectile,
+            "sandbox",
+            Some("content/sandbox/effects/named.pattern.tft"),
+        );
+        let matched = entry(0x80B1_0002, projectile::Kind::Projectile, "sandbox", None);
+        assert!(
+            asset_sort_key(Order::BestMatch, &matched, "hit", true)
+                < asset_sort_key(Order::BestMatch, &named, "aaa", false)
+        );
+        assert!(
+            asset_sort_key(Order::Name, &matched, "hit", true)
+                > asset_sort_key(Order::Name, &named, "aaa", false)
+        );
+    }
 
     #[test]
     fn only_complete_asset_tags_bypass_discovery_visibility() {

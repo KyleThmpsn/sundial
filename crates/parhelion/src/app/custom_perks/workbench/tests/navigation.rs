@@ -46,7 +46,7 @@ fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clea
     }
     let header = visible(&output, "Apply and Back").unwrap();
     let footer = visible(&output, "Destination Footer").unwrap();
-    assert!(visible(&output, "Native Structure").is_none());
+    assert!(visible(&output, "Advanced").is_none());
     render(vec![
         egui::Event::PointerMoved(egui::pos2(970.0, 240.0)),
         egui::Event::MouseWheel {
@@ -58,7 +58,7 @@ fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clea
     for _ in 0..30 {
         output = render(vec![]);
     }
-    let last = visible(&output, "Native Structure")
+    let last = visible(&output, "Advanced")
         .expect("Last property section is fully reachable from the right side");
     assert!(last.bottom() < footer.top());
     assert_eq!(visible(&output, "Apply and Back"), Some(header));

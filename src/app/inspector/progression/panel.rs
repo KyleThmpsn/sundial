@@ -221,7 +221,7 @@ fn draw_metadata_panel(
                         });
                     }
                     if objectives.is_empty() && selection.is_value() {
-                        ui.label(egui::RichText::new("No objective uses this value.").weak());
+                        ui.weak("No objective uses this value.");
                     }
                 });
         });
@@ -313,14 +313,11 @@ fn draw_effective_state_summary(
         );
     });
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(evaluation_coverage).weak());
-    ui.label(
-        egui::RichText::new(format!(
-            "Source: {}",
-            selection_provenance(selection, definition)
-        ))
-        .weak(),
-    );
+    ui.weak(evaluation_coverage);
+    ui.weak(format!(
+        "Source: {}",
+        selection_provenance(selection, definition)
+    ));
 
     ui.add_space(8.0);
     egui::Grid::new(("progression_effective_summary", selection))

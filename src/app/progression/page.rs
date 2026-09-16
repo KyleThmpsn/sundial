@@ -144,7 +144,7 @@ pub(super) fn draw_investment(
     let hidden_count = super::native::hidden_count(document, state.investment_table);
     let can_add = !state.read_only && row_count + hidden_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
-        ui.label(egui::RichText::new("Table").strong());
+        ui.strong("Table");
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
             .selected_text(state.investment_table.label())
             .width(220.0)

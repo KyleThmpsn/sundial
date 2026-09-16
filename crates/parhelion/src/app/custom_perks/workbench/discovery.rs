@@ -7,6 +7,7 @@ pub(super) use sundial::investment::native_content::Catalog as Data;
 enum Event {
     Progress(usize, usize),
     Keys(Result<Arc<properties::KeyIndex>, String>),
+    Labels(Result<Arc<sundial::investment::native_content::labels::Registry>, String>),
     Ready(Result<Box<Data>, String>),
 }
 
@@ -15,6 +16,8 @@ pub(super) struct Discovery {
     pub data: Option<Data>,
     pub keys: Option<Arc<properties::KeyIndex>>,
     pub key_error: Option<String>,
+    pub labels: Option<Arc<sundial::investment::native_content::labels::Registry>>,
+    pub label_error: Option<String>,
     packages: Option<PathBuf>,
     discard_result: bool,
     receiver: Option<Receiver<Event>>,
@@ -25,6 +28,9 @@ pub(super) struct Discovery {
 }
 
 impl Discovery {
+    pub fn packages(&self) -> Option<&Path> {
+        self.packages.as_deref()
+    }
     pub fn busy(&self) -> bool {
         self.receiver.is_some() || self.worker.is_some()
     }
@@ -32,6 +38,8 @@ impl Discovery {
         self.data = None;
         self.keys = None;
         self.key_error = None;
+        self.labels = None;
+        self.label_error = None;
         self.discard_result = true;
         self.attempted = false;
         self.error = None;
@@ -57,6 +65,7 @@ impl Discovery {
                 let event = match event {
                     DiscoveryEvent::Progress(current, total) => Event::Progress(current, total),
                     DiscoveryEvent::Keys(result) => Event::Keys(result),
+                    DiscoveryEvent::Labels(result) => Event::Labels(result),
                 };
                 let _ = sender.send(event);
                 repaint.request_repaint();
@@ -79,6 +88,17 @@ impl Discovery {
                     ))),
                 });
             match event {
+                Some(Event::Labels(result)) => {
+                    if !self.discard_result {
+                        match result {
+                            Ok(labels) => {
+                                self.labels = Some(labels);
+                                self.label_error = None;
+                            }
+                            Err(error) => self.label_error = Some(error),
+                        }
+                    }
+                }
                 Some(Event::Progress(current, total)) => {
                     if !self.discard_result {
                         self.progress = Some((current, total));
@@ -110,6 +130,9 @@ impl Discovery {
                             self.error = None;
                         }
                         Err(error) => {
+                            if self.labels.is_none() && self.label_error.is_none() {
+                                self.label_error = Some(error.clone());
+                            }
                             if self.keys.is_none() && self.key_error.is_none() {
                                 self.key_error = Some(error.clone());
                             }

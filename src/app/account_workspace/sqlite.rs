@@ -112,41 +112,35 @@ pub(super) fn apply_account_settings(
     Ok(document.settings() != &before)
 }
 
-pub(super) fn profile_items(document: &SqliteAccountDocument) -> Option<Vec<ProfileItemSnapshot>> {
-    Some(
-        document
-            .profile()
-            .profile_items()
-            .iter()
-            .enumerate()
-            .map(|(index, item)| ProfileItemSnapshot {
-                location: ProfileItemLocation { index },
-                definition_hash: item.definition_hash.get(),
-                quantity: item.quantity,
-            })
-            .collect(),
-    )
+pub(super) fn profile_items(document: &SqliteAccountDocument) -> Vec<ProfileItemSnapshot> {
+    document
+        .profile()
+        .profile_items()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ProfileItemSnapshot {
+            location: ProfileItemLocation { index },
+            definition_hash: item.definition_hash.get(),
+            quantity: item.quantity,
+        })
+        .collect()
 }
 
-pub(super) fn dismantle_rewards(
-    document: &SqliteAccountDocument,
-) -> Option<Vec<DismantleRewardSnapshot>> {
-    Some(
-        document
-            .profile()
-            .dismantle_rewards()
-            .iter()
-            .enumerate()
-            .map(|(index, reward)| DismantleRewardSnapshot {
-                location: DismantleRewardLocation { index },
-                definition_hash: reward.definition_hash.get(),
-                quantity: reward.quantity,
-                rarities: reward.rarities.clone(),
-                gear_class: reward.gear_class,
-                masterworked: reward.masterworked,
-            })
-            .collect(),
-    )
+pub(super) fn dismantle_rewards(document: &SqliteAccountDocument) -> Vec<DismantleRewardSnapshot> {
+    document
+        .profile()
+        .dismantle_rewards()
+        .iter()
+        .enumerate()
+        .map(|(index, reward)| DismantleRewardSnapshot {
+            location: DismantleRewardLocation { index },
+            definition_hash: reward.definition_hash.get(),
+            quantity: reward.quantity,
+            rarities: reward.rarities.clone(),
+            gear_class: reward.gear_class,
+            masterworked: reward.masterworked,
+        })
+        .collect()
 }
 
 pub(super) fn character_inventory(

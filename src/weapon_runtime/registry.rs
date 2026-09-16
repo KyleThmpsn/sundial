@@ -149,8 +149,10 @@ pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistr
             .names
             .get(&binding_hash)
             .and_then(|names| names.first())
-            .map(|name| humanize_identifier(name))
-            .unwrap_or_else(|| format!("Binding 0x{binding_hash:08X}"))
+            .map_or_else(
+                || format!("Binding 0x{binding_hash:08X}"),
+                |name| humanize_identifier(name),
+            )
     })
 }
 

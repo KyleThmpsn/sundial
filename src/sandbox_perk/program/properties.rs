@@ -109,7 +109,72 @@ pub struct KeyEvidence {
     pub removals: Vec<u8>,
 }
 
+/// What a named property key is for, where the installed data establishes it.
+///
+/// A key is listed only when the perks that read and write it agree on a purpose. Everything
+/// else keeps its hash and its evidence, since a key name is a reference and not a gameplay
+/// meaning.
+#[must_use]
+pub fn key_purpose(hash: u32) -> Option<&'static str> {
+    match hash {
+        // The Fundamentals reads this key to choose the weapon's element: its Void effect is
+        // gated on 0, its Arc effect on 1 and its Solar effect on 2. Sixteen stock exotic
+        // perks write 1 to it when they enter their empowered state, among them Memento
+        // Mori, Reservoir Burst, Release the Wolves and the Bad Juju catalyst.
+        0xA43A_8C2E => Some(
+            "The weapon's alternate state. The Fundamentals reads it to pick the element: Void at 0, Arc at 1, Solar at 2. Sixteen stock exotic perks write 1 here for their empowered state and none writes 2, so Solar is only reachable by authoring a write. Writing this key on a weapon that carries The Fundamentals also changes that weapon's element.",
+        ),
+        // The three ammo find chances split by ammo type, not weapon slot: Hand Cannon Ammo
+        // Finder writes both the Primary and the Special key because Eriana's Vow is a
+        // Special ammo hand cannon, Bow Ammo Finder writes Primary and Heavy for Leviathan's
+        // Breath, and every other Finder mod fits the same reading.
+        0xDAAB_765C => Some(
+            "Primary Ammo Find Chance. Written by Primary Ammo Finder and by the Auto Rifle, Pulse Rifle, Scout Rifle, Sidearm, Submachine Gun, Hand Cannon and Bow Ammo Finders, all reading \"chance of finding Primary ammo\".",
+        ),
+        0xDC84_2CD7 => Some(
+            "Special Ammo Find Chance. Written by Special Ammo Finder and by the Fusion Rifle, Shotgun, Sniper Rifle, Grenade Launcher, Linear Fusion Rifle and Hand Cannon Ammo Finders, all reading \"chance of finding Special ammo\" or covering a Special ammo weapon.",
+        ),
+        0x4164_BE13 => Some(
+            "Heavy Ammo Find Chance. Written by Heavy Ammo Finder and by the Machine Gun, Rocket Launcher, Sword, Shotgun, Sniper Rifle, Fusion Rifle, Grenade Launcher, Linear Fusion Rifle and Bow Ammo Finders, all reading \"chance of finding Heavy ammo\" or covering a Heavy ammo weapon.",
+        ),
+        0xA5E0_B02C => Some(
+            "Finisher Super Energy Cost. Written by Bulwark Finisher, Empowered Finish, Explosive Finisher, Heavy Finisher, One-Two Finisher and Special Finisher, all reading \"requires one-Nth of your Super energy\".",
+        ),
+        0x0427_C343 => Some(
+            "Charged with Light Stack Limit. Written by Charged Up (\"1 additional stack of Charged with Light\") and Supercharged (\"2 additional stacks, up to a maximum of 5\").",
+        ),
+        0x5EE2_66FC => Some(
+            "Explosive Rounds. Written by Timed Payload, Explosive Payload, Sunburn and Explosive Head, every one reading as projectiles that explode.",
+        ),
+        0xB120_D867 => Some(
+            "Shield Piercing Rounds. Written by Anti-Barrier Rounds and Looks Can Kill (\"shield-piercing ammunition\") and four undescribed Anti-Barrier variants.",
+        ),
+        0xCAF9_15D8 => Some(
+            "Armor Piercing. Written by Armor-Piercing Rounds, For the Empire (\"penetrates Phalanx shields\"), Dornröschen (\"laser overpenetrates\"), Shock Blast, Seraph Rounds and Anti-Barrier Rounds.",
+        ),
+        0x2995_F40E => Some(
+            "Lightning Rod Chain Lightning. Written by Lightning Rod (\"the next shot chain-lightning capabilities\"), Split Electron and the Trinity Ghoul Catalyst.",
+        ),
+        0x79E0_20E6 => Some(
+            "Personal Assistant. Written by Personal Assistant (\"shows critical information in scope\") and read by Target Acquired (\"when Personal Assistant is active\").",
+        ),
+        0xA7C6_3FDC => Some(
+            "Sticky Grenades. Written by Sticky Grenades (\"grenades attach on impact\") and Excavation (\"sticky flame grenades\").",
+        ),
+        0x7838_029C => Some(
+            "Warmind Cell Spawn Chance. Added to by Blessing of Rasputin when a Warmind Cell is collected (\"increases the chances that your next final blow with a Seraph weapon will create a Warmind Cell\") and initialised by the five Seraph weapon perks that read it.",
+        ),
+        _ => None,
+    }
+}
+
 impl KeyEvidence {
+    /// What this key is for, when the installed data establishes it.
+    #[must_use]
+    pub fn purpose(&self) -> Option<&'static str> {
+        key_purpose(self.hash())
+    }
+
     #[must_use]
     pub fn hash(&self) -> u32 {
         u32::from_str_radix(&self.key, 16).unwrap_or(0)

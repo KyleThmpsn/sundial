@@ -1,6 +1,138 @@
 use super::*;
 
 #[test]
+fn a_shared_attachment_does_not_inherit_its_owner_as_a_direct_identity() {
+    let mut asset = entry(12, Kind::Entity, 18);
+    asset.contexts = vec![context(
+        30,
+        "content/characters/cabal/ultra_emperor_decoy.pattern.tft",
+        None,
+        2,
+    )];
+    assert!(asset.discovery_name().is_some());
+    assert!(asset.direct_name().is_none());
+    asset
+        .native_paths
+        .push("content/objects/d2_soccer_ball/d2_soccer_ball.pattern.tft".into());
+    assert!(asset.direct_name().unwrap().contains("Soccer Ball"));
+}
+
+#[test]
+fn naming_follows_deep_owners_and_terminates_reference_cycles() {
+    let mut parents = (1..80)
+        .map(|tag| (tag, vec![tag + 1]))
+        .collect::<HashMap<_, _>>();
+    parents.get_mut(&40).unwrap().push(1);
+    let found = climb(1, &parents, &HashMap::new(), |tag| {
+        (tag == 80)
+            .then(|| Named::Path("content/vehicles/cabal/cabal_interceptor.pattern.tft".into()))
+    });
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].depth, 79);
+    assert_eq!(found[0].graph, 80);
+    assert!(climb(1, &parents, &HashMap::new(), |_| None).is_empty());
+}
+
+#[test]
+fn anonymous_perk_references_do_not_hide_a_native_ancestor() {
+    let parents = HashMap::from([(1, vec![2, 3]), (3, vec![4])]);
+    let contexts = climb(1, &parents, &HashMap::new(), |tag| match tag {
+        2 => Some(Named::Perks(vec![2481])),
+        4 => Some(Named::Path(
+            "content/sandbox/vehicles/cabal/cabal_interceptor/cabal_interceptor.pattern.tft".into(),
+        )),
+        _ => None,
+    });
+    assert!(
+        contexts
+            .iter()
+            .any(|context| context.graph == 4 && context.depth == 2)
+    );
+    assert!(contexts.iter().any(|context| context.perk == Some(2481)));
+    let entry = Entry {
+        graph: 1,
+        kind: Kind::Projectile,
+        object_type: 18,
+        owners: vec![],
+        package: String::new(),
+        native_name: None,
+        native_paths: vec![],
+        contexts,
+        perk_indices: vec![2481],
+        source_hint: None,
+    };
+    for perk_name in ["Effect 2481", "A Custom Perk"] {
+        assert_eq!(
+            entry
+                .discovery_name_with(|_| Some(perk_name.into()), |_| None)
+                .as_deref(),
+            Some("Cabal Interceptor Projectile")
+        );
+    }
+}
+
+#[test]
+fn a_legacy_name_on_an_ancestor_does_not_stop_the_climb() {
+    // Asset 1 is bound by 2, which only a Destiny 1 template name covers, and 2 is bound by
+    // 3, which an installed path names. The installed name must still be found, and the
+    // legacy one must rank as a fallback below it.
+    let parents = HashMap::from([(1, vec![2]), (2, vec![3])]);
+    let contexts = climb(1, &parents, &HashMap::new(), |tag| match tag {
+        2 => Some(Named::Symbol(NameEvidence {
+            name: "frag_grenade".into(),
+            hash: 0xDAD7E57E,
+            source: "Destiny 1 PS4 alpha wwise event frag_grenade_throw".into(),
+            legacy: true,
+        })),
+        3 => Some(Named::Path(
+            "content/sandbox/vehicles/cabal/cabal_interceptor/cabal_interceptor.pattern.tft".into(),
+        )),
+        _ => None,
+    });
+    let installed = contexts
+        .iter()
+        .find(|context| context.graph == 3)
+        .expect("the installed ancestor is still reached");
+    assert_eq!(installed.depth, 2);
+    let legacy = contexts
+        .iter()
+        .find(|context| context.graph == 2)
+        .expect("the legacy name is kept as a fallback");
+    assert_eq!(legacy.depth, LEGACY_DEPTH);
+    assert!(legacy.name_evidence.as_ref().is_some_and(|e| e.legacy));
+    // An installed symbol on the ancestor still stops the climb as before.
+    let direct = climb(1, &parents, &HashMap::new(), |tag| match tag {
+        2 => Some(Named::Symbol(NameEvidence {
+            name: "cabal_interceptor".into(),
+            hash: 1,
+            source: String::new(),
+            legacy: false,
+        })),
+        _ => None,
+    });
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].depth, 1);
+}
+
+#[test]
+fn shared_ancestor_keeps_competing_paths_instead_of_naming_the_first() {
+    let contexts = climb(1, &HashMap::from([(1, vec![2])]), &HashMap::new(), |_| {
+        Some(Named::Paths(vec![
+            "fallen_shank.pattern.tft".into(),
+            "fallen_captain.pattern.tft".into(),
+        ]))
+    });
+    assert_eq!(contexts.len(), 2);
+    let mut asset = entry(1, Kind::Projectile, 18);
+    asset.contexts = contexts;
+    // Neither path wins. The label states both, which is what the resource records.
+    assert_eq!(
+        asset.discovery_name().as_deref(),
+        Some("Shared by Fallen Captain, Fallen Shank Projectile")
+    );
+}
+
+#[test]
 fn pickup_roles_require_direct_source_names_and_preserve_related_operations() {
     let mut asset = entry(7, Kind::Emitter, 17);
     asset
@@ -448,9 +580,10 @@ fn native_discovery_uses_common_ancestry_without_promoting_gameplay_reports() {
         None,
         2,
     ));
-    assert!(
-        asset.discovery_name().is_none(),
-        "unrelated families must remain ambiguous"
+    // Unrelated families never merge into one invented family. The label lists them.
+    assert_eq!(
+        asset.discovery_name().as_deref(),
+        Some("Shared by Taken Captain, Taken Wizard Projectile")
     );
 }
 
@@ -495,7 +628,8 @@ fn discovery_variants_are_stable_across_catalog_order_and_keep_shared_weapon_typ
         ),
         Some("Shared Hand Cannon Projectile".into())
     );
-    assert!(
+    // Weapons of different types share no family, so the weapons themselves are listed.
+    assert_eq!(
         shared
             .discovery_name_with(
                 |_| None,
@@ -508,7 +642,8 @@ fn discovery_variants_are_stable_across_catalog_order_and_keep_shared_weapon_typ
                     }
                 ))
             )
-            .is_none()
+            .as_deref(),
+        Some("Shared by Weapon 10, Weapon 20, Weapon 30 Projectile")
     );
     shared.contexts.pop();
     assert_eq!(

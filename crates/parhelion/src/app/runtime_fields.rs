@@ -34,9 +34,10 @@ pub(super) fn draw_runtime_value_override_field(
         });
         return;
     }
-    let current_value = override_index
-        .map(|index| overrides[index].value.clone())
-        .unwrap_or_else(|| field.value.clone());
+    let current_value = override_index.map_or_else(
+        || field.value.clone(),
+        |index| overrides[index].value.clone(),
+    );
     let compatible = encode_weapon_runtime_value(&field.kind, &current_value).is_ok();
     let shown_value = if compatible {
         current_value

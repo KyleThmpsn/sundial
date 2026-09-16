@@ -90,30 +90,30 @@ fn section_title(heading: &str) -> &str {
 
 fn draw_fields(ui: &mut egui::Ui, fields: &[String]) {
     let width = ui.available_width();
-    egui::Grid::new("native-facts")
-        .num_columns(2)
-        .spacing([12.0, 3.0])
-        .striped(true)
-        .show(ui, |ui| {
-            for field in fields {
-                let (name, value) = field.split_once(": ").unwrap_or(("", field));
-                let label_width = (width * 0.43).min(185.0);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(label_width, 16.0),
-                    egui::Layout::right_to_left(egui::Align::Min),
-                    |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(name).weak()).wrap());
-                    },
-                );
-                ui.allocate_ui(
-                    egui::vec2((width - label_width - 12.0).max(60.0), 16.0),
-                    |ui| {
-                        ui.add(egui::Label::new(value).wrap());
-                    },
-                );
-                ui.end_row();
-            }
+    for field in fields {
+        ui.horizontal_top(|ui| {
+            let (name, value) = field.split_once(": ").unwrap_or(("", field));
+            let label_width = (width * 0.43).min(185.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(label_width, 16.0),
+                egui::Layout::right_to_left(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(label_width);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(name).weak())
+                            .halign(egui::Align::Max)
+                            .wrap(),
+                    );
+                },
+            );
+            ui.allocate_ui(
+                egui::vec2((width - label_width - 12.0).max(60.0), 16.0),
+                |ui| {
+                    ui.add(egui::Label::new(value).wrap());
+                },
+            );
         });
+    }
     ui.add_space(6.0);
 }
 

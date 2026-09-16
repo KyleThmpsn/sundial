@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod fields;
 pub mod labels;
+pub mod predicate;
 mod read;
 pub mod schema;
 pub mod value;

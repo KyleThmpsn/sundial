@@ -67,7 +67,7 @@ pub(in crate::app) fn draw_hash_hex_cell(ui: &mut egui::Ui, width: f32, hash: Op
             if let Some(hash) = hash.filter(|hash| *hash != 0) {
                 draw_hash_link(ui, hash, format_hash_hex(hash));
             } else {
-                ui.label(egui::RichText::new("-").weak());
+                ui.weak("-");
             }
         },
     );
@@ -133,7 +133,7 @@ pub(in crate::app) fn metadata_subsection<R>(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.label(egui::RichText::new(title).strong());
+    ui.strong(title);
     ui.add_space(2.0);
     add_contents(ui)
 }

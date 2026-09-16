@@ -107,6 +107,32 @@ fn perk_bank_projects_defaults_alternatives_and_private_additions() {
 }
 
 #[test]
+fn perk_bank_counts_variable_damage_rows_in_the_first_trait_socket() {
+    use crate::recipe::VariableDamageRecipe;
+    let donor = donor();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(
+        "parhelion.bank-variable",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    let project = |recipe: &WeaponRecipe| {
+        crate::weapon::perk_bank::project(recipe, &donor, |_| vec![1, 2, 3, 4])
+    };
+    assert_eq!(project(&recipe).default_count, 12);
+    // Every socket in the fixture is a trait socket, so the first lane carries the three rows
+    // instead of its four-row native plug.
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe::all());
+    let bank = project(&recipe);
+    assert_eq!(bank.default_count, 11);
+    assert_eq!(bank.maximum_count, 11);
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe {
+        elements: vec![RecipeDamageType::Arc, RecipeDamageType::Solar],
+    });
+    assert_eq!(project(&recipe).default_count, 10);
+}
+
+#[test]
 fn perk_bank_applies_fixed_damage_before_projection() {
     let donor = donor();
     let mut recipe = WeaponRecipe::new_weapon_for_donor(

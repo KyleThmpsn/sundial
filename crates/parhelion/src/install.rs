@@ -1160,10 +1160,8 @@ fn unique_token() -> String {
     format!("{nanos:032X}-{:08X}-{counter:016X}", process::id())
 }
 
+/// Best-effort cleanup. A missing file is already the desired state, and no other failure
+/// here is fatal for the caller.
 fn remove_file_if_present(path: &Path) {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => {}
-    }
+    let _ = fs::remove_file(path);
 }

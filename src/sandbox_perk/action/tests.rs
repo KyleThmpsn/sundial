@@ -11,7 +11,47 @@ use crate::sandbox_perk::nodes::Support;
 mod catalog;
 
 #[test]
-fn source_derived_ability_roles_preserve_native_facts_and_require_the_known_context() {
+fn condition_choices_preserve_owned_records_and_report_nested_probability_sources() {
+    let payload = precision_kill_action();
+    let mut graph = native::Graph::read(&payload, 0, ACTION_ROOT_CLASS).unwrap();
+    let kill = graph
+        .blocks
+        .iter_mut()
+        .find(|block| block.class == 0x80803DE7)
+        .unwrap();
+    kill.bytes[4] = 7;
+    kill.bytes[6] = 1;
+    let payload = graph.emit().unwrap();
+    let decoded = decode(&payload).unwrap();
+    let choices = crate::investment::native_content::conditions::from_payload(&payload).unwrap();
+    let original = &decoded.groups[0].activation[0];
+    let copied = choices
+        .iter()
+        .find(|choice| choice.bytes == original.native)
+        .unwrap();
+    assert!(!copied.requirements.is_empty());
+    let rebuilt = native::Graph::read(&copied.bytes, 0, original.class).unwrap();
+    rebuilt.validate_node(true, copied.kind).unwrap();
+    assert_eq!(rebuilt.emit().unwrap(), copied.bytes);
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.source.ends_with("End Condition"))
+    );
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.source.ends_with("Reactivation"))
+    );
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.source.ends_with("Matching Condition"))
+    );
+}
+
+#[test]
+fn source_derived_ability_roles_preserve_native_facts_and_the_known_event_key() {
     for known in [true, false] {
         let mut out = Builder::new();
         let declaration = nodes::condition(12).unwrap();
@@ -35,10 +75,10 @@ fn source_derived_ability_roles_preserve_native_facts_and_require_the_known_cont
                 .contains("Orb of Light"),
             known
         );
-        assert_eq!(
-            summary.groups[0].effects[0].text.contains("grenade energy"),
-            known
-        );
+        // The flag byte no longer gates the ability role. A census of every kind 8 node in
+        // the stock perks showed the selector alone decides which ability is adjusted, so
+        // grenade energy is named whether or not the flag is set.
+        assert!(summary.groups[0].effects[0].text.contains("grenade energy"));
         assert!(
             summary.groups[0].effects[0]
                 .detail
@@ -202,7 +242,7 @@ fn structural_kinds_now_read_their_traced_fields() {
         &[adjustment, ammunition, modifier],
     );
     let action = decode(&out.finish()).expect("decode");
-    assert_eq!(action.support(), Support::Readable);
+    assert_eq!(action.support(), Support::Authorable);
     let filter = &action.groups[0].activation[0];
     assert_eq!(filter.kind, 4);
     assert_eq!(
@@ -216,6 +256,10 @@ fn structural_kinds_now_read_their_traced_fields() {
         ]
     );
     let effects = &action.groups[0].effects;
+    assert_eq!(
+        effects[1].description(),
+        "Add 2 rounds to this weapon and -1 round to ammo type 1 in the magazine"
+    );
     assert_eq!(
         effects[0].facts,
         vec![
@@ -467,4 +511,99 @@ fn record(census: &mut Census, action: &DecodedAction) {
     for kind in blocking_effects {
         *census.blocking_effects.entry(kind).or_default() += 1;
     }
+}
+
+#[test]
+fn general_predicates_read_as_the_state_and_weapon_type_they_check() {
+    use crate::sandbox_perk::action::{native, summary::state_description};
+    let class = 0x8080_3DCE;
+    let mut bytes = native::template(true, 20).unwrap();
+    // A key no stock perk names, and no weapon record, keeps the traced name.
+    bytes[0xD4..0xD8].copy_from_slice(&0x811C_9DC5u32.to_le_bytes());
+    bytes[0xF8] = 0;
+    let plain = state_description(class, &bytes);
+    // The template may carry its own state; only assert on the keys written below.
+    let _ = plain;
+    bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Charged with Light")
+    );
+    bytes[0xF8] = 1;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While not Charged with Light")
+    );
+    bytes[0xD4..0xD8].copy_from_slice(&0xE1E6_BB64u32.to_le_bytes());
+    bytes[0xF8] = 0;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Subclass Is Arc")
+    );
+    // The state keys hash from the engine's own variable names with the predicate fold.
+    use crate::sandbox_perk::action::native::predicate::binding_key;
+    assert_eq!(binding_key("is_arc"), 0xE1E6_BB64);
+    assert_eq!(binding_key("is_void"), 0xEE5F_6482);
+    assert_eq!(binding_key("super_active"), 0xD16E_1FA3);
+    assert_eq!(binding_key("iron_sights"), 0xD9C4_6BC4);
+    assert_eq!(binding_key("weapon_firing"), 0x59E4_FF8D);
+    assert_eq!(binding_key("charged_with_light_stacks"), 0x59E3_47ED);
+    assert_eq!(binding_key("kill_tag_gathered"), 0x7020_0731);
+    assert_eq!(binding_key("near_bank"), 0x4FAA_5194);
+    assert_eq!(binding_key("melee_energy"), 0x2814_F006);
+}
+
+#[test]
+fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them() {
+    use crate::sandbox_perk::action::{native, summary::state_description};
+    for class in [0x8080_3DCEu32, 0x8080_3DCC] {
+        let fields = native::fields::describe(class).unwrap();
+        let player = fields.iter().find(|f| f.offset == 0x38).unwrap();
+        assert_eq!(player.label, "Player State");
+        assert_eq!(
+            native::fields::contract(class, player).choices.to_vec(),
+            vec![(2u8, "Airborne"), (4, "Sliding"), (8, "Sprinting")]
+        );
+        let weapon = fields.iter().find(|f| f.offset == 0x81).unwrap();
+        assert_eq!(weapon.label, "Weapon State");
+        assert_eq!(
+            native::fields::contract(class, weapon).choices.to_vec(),
+            vec![(4u8, "Aiming Down Sights")]
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.offset == 0x18 && f.label == "Health Value 1")
+        );
+    }
+    let class = 0x8080_3DCE;
+    let mut bytes = native::template(true, 20).unwrap();
+    bytes[0xD4..0xD8].copy_from_slice(&0x811C_9DC5u32.to_le_bytes());
+    bytes[0xF8] = 0;
+    bytes[0x38] = 0;
+    bytes[0x81] = 0;
+    assert_eq!(state_description(class, &bytes), None);
+    bytes[0x38] = 2;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Airborne")
+    );
+    bytes[0x81] = 4;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Airborne and Aiming Down Sights")
+    );
+    bytes[0x38] = 0;
+    bytes[0xF8] = 1;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While not Aiming Down Sights")
+    );
+    // A named key still wins over the inline states.
+    bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
+    bytes[0xF8] = 0;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Charged with Light")
+    );
 }

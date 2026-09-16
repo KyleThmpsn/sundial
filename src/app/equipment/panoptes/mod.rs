@@ -115,7 +115,7 @@ impl SundialApp {
             let reason = self.document.account_editing_blocked().unwrap_or(
                 "Character inventory editing is unavailable for this settings.json schema.",
             );
-            ui.label(egui::RichText::new(format!("Stored items are read-only. {reason}")).weak());
+            ui.weak(format!("Stored items are read-only. {reason}"));
         }
         if let Some(error) = inventory_error {
             ui.colored_label(
@@ -151,12 +151,9 @@ impl SundialApp {
             })
             .count();
         if unmatched_count > 0 {
-            ui.label(
-                egui::RichText::new(format!(
+            ui.weak(format!(
                     "{unmatched_count} stored item(s) do not map to a loadout slot and remain available in Character inventory."
-                ))
-                .weak(),
-            );
+                ));
         }
         ui.add_space(8.0);
 

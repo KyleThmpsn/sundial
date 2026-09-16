@@ -238,6 +238,36 @@ impl InvestmentCatalog {
 
     /// Lists effect sources from accepted native item-definition tags. Authoring clients can
     /// exclude generated items whose private effect indices are absent from their build source.
+    /// Every sandbox-perk index an installed item references, including declaration-only rows.
+    ///
+    /// [`Self::weapon_sandbox_perk_choices_from`] is the authoring choice set and is active-only.
+    /// This is the wider "does the installed catalog know this index at all" set. Stock ships
+    /// inactive rows on real plugs, such as 479 on Hard Light's intrinsic, so a validation guard
+    /// that rejects them is stricter than the shipped data.
+    pub fn referenced_sandbox_perk_indices(
+        &self,
+        include_definition: impl Fn(u32) -> bool,
+    ) -> std::collections::BTreeSet<u16> {
+        let hashes = self
+            .catalog
+            .items
+            .iter()
+            .map(|item| item.hash)
+            .chain(self.catalog.all_plug_options().iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut indices = std::collections::BTreeSet::new();
+        for item_hash in hashes {
+            let Some(metadata) = self.catalog.item_package_metadata(item_hash) else {
+                continue;
+            };
+            if !include_definition(metadata.definition_tag) {
+                continue;
+            }
+            indices.extend(metadata.sandbox_perks.iter().map(|perk| perk.perk_index));
+        }
+        indices
+    }
+
     pub fn weapon_sandbox_perk_choices_from(
         &self,
         include_definition: impl Fn(u32) -> bool,
@@ -262,7 +292,10 @@ impl InvestmentCatalog {
             if !include_definition(metadata.definition_tag) {
                 continue;
             }
-            for perk in &metadata.sandbox_perks {
+            // This list is the authoring choice set, and its contract is active rows only.
+            // Declaration-only rows such as 479 stay in `item_sandbox_perk_indices`, which
+            // reports what an item carries rather than what the producer will run.
+            for perk in metadata.sandbox_perks.iter().filter(|perk| perk.active) {
                 let name = self
                     .catalog
                     .display_name(item_hash)

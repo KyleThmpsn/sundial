@@ -264,12 +264,9 @@ impl SundialApp {
                     self.armor_stats_adjuster.open(character_index);
                 }
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{stored_count} / {inventory_capacity} stored · {equipped_count} equipped"
-                    ))
-                    .weak(),
-                );
+                ui.weak(format!(
+                    "{stored_count} / {inventory_capacity} stored · {equipped_count} equipped"
+                ));
                 request
             })
             .inner;
@@ -295,9 +292,9 @@ impl SundialApp {
             } else {
                 "Stored character-inventory editing requires Sunrise settings schema 6. Equipped loadout editing is also disabled for this schema."
             };
-            ui.label(egui::RichText::new(message).weak());
+            ui.weak(message);
         } else if sources.items.len() >= account::character_inventory_capacity(&self.document) {
-            ui.label(egui::RichText::new("This character inventory is full.").weak());
+            ui.weak("This character inventory is full.");
         }
         if let Some(error) = &sources.metadata_error {
             draw_inventory_source_error(ui, "Character details", error);
@@ -381,7 +378,7 @@ impl SundialApp {
         let query = self.character_inventory_query.trim().to_ascii_lowercase();
         entries.retain(|entry| self.character_inventory_entry_matches(entry, &query));
         if filters_active {
-            ui.label(egui::RichText::new(format!("Showing {} items", entries.len())).weak());
+            ui.weak(format!("Showing {} items", entries.len()));
         }
         let candidate_buckets = self
             .manifest
@@ -425,14 +422,11 @@ impl SundialApp {
             }
         }
         if groups.is_empty() {
-            ui.label(
-                egui::RichText::new(if filters_active {
-                    "No inventory items match the current view."
-                } else {
-                    "No character inventory buckets are available."
-                })
-                .weak(),
-            );
+            ui.weak(if filters_active {
+                "No inventory items match the current view."
+            } else {
+                "No character inventory buckets are available."
+            });
             return;
         }
 

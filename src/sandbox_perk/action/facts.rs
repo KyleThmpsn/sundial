@@ -82,48 +82,10 @@ fn render_labels(values: &[u32]) -> String {
         .join(", ")
 }
 
-/// Source label hashes whose FNV-1 name is recovered.
-///
-/// These names come from matching the stored hash against candidate strings found in the
-/// client image, and the melee set is copied from the stock perks that use it. The label
-/// registry survey recorded the rest as exact hash matches, which can collide. They name
-/// the filter, not the complete activation contract around it.
-const LABEL_NAMES: [(u32, &str); 26] = [
-    (0x962E_A19B, "precision"),
-    (0xC20D_D425, "grenade"),
-    (0xBF39_E12B, "melee"),
-    (0xE175_76C9, "melee alternate"),
-    (0x5D3A_7C84, "melee alternate"),
-    (0xBB85_80DB, "charged"),
-    (0x253F_6F5C, "projectile"),
-    (0x68C8_F859, "push"),
-    (0xFDF5_BFAF, "sparrow"),
-    (0xE5C0_A0BA, "tiger"),
-    (0xA2DE_7B76, "heavy"),
-    (0xF941_1F85, "primary"),
-    (0x8365_1CD5, "female"),
-    (0xB976_E27E, "male"),
-    (0xEFCD_14BE, "ghost"),
-    (0x2EF1_E402, "slow"),
-    (0x8E6F_FB46, "boost"),
-    (0xE480_E089, "jump"),
-    (0xE810_D505, "weapon"),
-    (0x78BD_DF27, "vehicle"),
-    (0x1A01_9935, "biped"),
-    (0x7EEF_AD12, "movement"),
-    (0xB9D3_4B96, "super"),
-    (0x3FBE_3C2A, "player"),
-    (0xD3DC_5D07, "ammo"),
-    (0x9F6D_B313, "turret"),
-];
-
 /// Recovered name for a source label hash.
 #[must_use]
 pub fn label_name(hash: u32) -> Option<&'static str> {
-    LABEL_NAMES
-        .iter()
-        .find(|(candidate, _)| *candidate == hash)
-        .map(|(_, name)| *name)
+    crate::package_runtime::labels::name(hash)
 }
 
 pub(super) fn trim_number(value: f32) -> String {

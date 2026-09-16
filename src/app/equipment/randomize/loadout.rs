@@ -501,8 +501,7 @@ pub(super) fn character_class(
 ) -> u64 {
     account::character_metadata(document, character_index)
         .ok()
-        .map(|metadata| u64::from(metadata.class_type))
-        .unwrap_or(99)
+        .map_or(99, |metadata| u64::from(metadata.class_type))
 }
 
 pub(super) fn item_can_be_authored(item: &ItemDef) -> bool {

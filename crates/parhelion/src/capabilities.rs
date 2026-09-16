@@ -13,7 +13,12 @@ use sundial::investment::{
     WeaponInventorySlot, authored_socket_choice_limit,
 };
 
-use crate::recipe::{RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides};
+use crate::ModernDamageType;
+use crate::recipe::{
+    RecipeDamageType, RecipeInventorySlot, WeaponDonorReference, WeaponRecipe,
+    WeaponRecipeOverrides,
+};
+use crate::weapon::variable_damage::{CARRIERS, carrier_name, resting_element};
 
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +275,109 @@ pub(crate) fn reconcile_presentation_donor(
     }
 }
 
+/// Whether the recipe can wear a Fundamentals carrier's appearance, which the reload hold needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VariableDamageAppearance {
+    /// The appearance already comes from Hard Light or Borealis.
+    Ready(u32),
+    /// A carrier is a compatible appearance donor but is not selected yet.
+    Available(u32),
+    /// Neither carrier fits this base weapon in its authored slot.
+    Unavailable,
+}
+
+impl VariableDamageAppearance {
+    #[must_use]
+    pub(crate) const fn is_possible(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
+/// The carrier whose gear-art row the recipe shows, or the one it could show. The hold follows
+/// that row, so a recipe on any other appearance cannot switch elements.
+#[must_use]
+pub(crate) fn variable_damage_appearance(
+    recipe: &WeaponRecipe,
+    gameplay_donor: &WeaponDonorSummary,
+    donor_summaries: &[WeaponDonorSummary],
+) -> VariableDamageAppearance {
+    let selected = recipe
+        .presentation_donor
+        .as_ref()
+        .and_then(|reference| reference.item_hash.parse_u32().ok());
+    match selected {
+        Some(hash) if carrier_name(hash).is_some() => return VariableDamageAppearance::Ready(hash),
+        None if carrier_name(gameplay_donor.hash).is_some() => {
+            return VariableDamageAppearance::Ready(gameplay_donor.hash);
+        }
+        _ => {}
+    }
+    let mut effective_base = gameplay_donor.clone();
+    effective_base.weapon_translation_group = effective_weapon_translation_group(
+        gameplay_donor,
+        recipe.overrides.weapon_pattern_index,
+        donor_summaries,
+    );
+    let Some(target_slot) = authored_inventory_slot(&recipe.overrides, gameplay_donor) else {
+        return VariableDamageAppearance::Unavailable;
+    };
+    CARRIERS
+        .iter()
+        .find_map(|(hash, _)| {
+            donor_summaries
+                .iter()
+                .find(|candidate| candidate.hash == *hash)
+                .filter(|candidate| {
+                    presentation_donor_candidate_is_compatible(
+                        candidate,
+                        &effective_base,
+                        target_slot,
+                    )
+                })
+                .map(|candidate| VariableDamageAppearance::Available(candidate.hash))
+        })
+        .unwrap_or(VariableDamageAppearance::Unavailable)
+}
+
+/// Dresses a variable-damage recipe as its carrier when it is not already wearing one.
+/// Returns whether the presentation donor changed.
+pub(crate) fn reconcile_variable_damage(
+    recipe: &mut WeaponRecipe,
+    gameplay_donor: &WeaponDonorSummary,
+    donor_summaries: &[WeaponDonorSummary],
+) -> bool {
+    if recipe.overrides.variable_damage.is_none() {
+        return false;
+    }
+    match variable_damage_appearance(recipe, gameplay_donor, donor_summaries) {
+        VariableDamageAppearance::Available(hash) => {
+            let name = donor_summaries
+                .iter()
+                .find(|donor| donor.hash == hash)
+                .map(|donor| donor.name.clone());
+            recipe.set_presentation_donor(Some(WeaponDonorReference {
+                item_hash: hash.into(),
+                expected_name: name,
+            }));
+            true
+        }
+        VariableDamageAppearance::Ready(_) | VariableDamageAppearance::Unavailable => false,
+    }
+}
+
+/// The element a variable-damage weapon rests on: the first chosen one in selector order.
+#[must_use]
+pub(crate) fn variable_damage_resting_type(
+    elements: &[RecipeDamageType],
+) -> Option<RecipeDamageType> {
+    let elements = elements
+        .iter()
+        .copied()
+        .map(ModernDamageType::from)
+        .collect::<Vec<_>>();
+    resting_element(&elements).map(RecipeDamageType::from)
+}
+
 const fn recipe_inventory_slot(value: RecipeInventorySlot) -> WeaponInventorySlot {
     match value {
         RecipeInventorySlot::Kinetic => WeaponInventorySlot::Kinetic,
@@ -288,7 +396,7 @@ pub(crate) const fn recipe_inventory_slot_from_catalog(
     }
 }
 
-const fn recipe_damage_type(value: RecipeDamageType) -> WeaponDamageType {
+pub(crate) const fn recipe_damage_type(value: RecipeDamageType) -> WeaponDamageType {
     match value {
         RecipeDamageType::Kinetic => WeaponDamageType::Kinetic,
         RecipeDamageType::Arc => WeaponDamageType::Arc,

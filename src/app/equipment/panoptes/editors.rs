@@ -163,7 +163,7 @@ impl SundialApp {
                             } else {
                                 ui.horizontal(|ui| {
                                     ui.label("Power");
-                                    ui.label(egui::RichText::new("<invalid or missing>").weak());
+                                    ui.weak("<invalid or missing>");
                                 });
                             }
                         });

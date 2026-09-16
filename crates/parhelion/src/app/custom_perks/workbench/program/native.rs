@@ -6,17 +6,40 @@ use sundial::package_authoring::sandbox_perk::action::native::{
     schema,
 };
 
+mod behavior;
+
 pub(in crate::app::custom_perks::workbench) fn draw_complete(
     ui: &mut egui::Ui,
     program: &mut sundial::package_authoring::sandbox_perk::program::NativeProgram,
     editing: bool,
+    labels: &BTreeMap<u32, String>,
+    pick: &mut ConditionPicker<'_>,
 ) -> Option<usize> {
-    ui.strong("Complete Program");
-    ui.small("Edit the condition lists, effects, groups and execution settings below.");
     let mut changed = program.clone();
+    let mut edit_asset = None;
     let result = ui
         .add_enabled_ui(editing, |ui| {
-            allocation(ui, &mut changed.graph, 0, &mut Vec::new())?;
+            edit_asset = behavior::draw(ui, &mut changed.graph, labels, pick)?;
+            egui::CollapsingHeader::new("Advanced")
+                .id_salt("complete-program-structure")
+                .show(ui, |ui| {
+                    if !changed.assets.is_empty() {
+                        ui.strong("Components");
+                        for asset in &changed.assets {
+                            let label = labels
+                                .get(&asset.graph)
+                                .cloned()
+                                .unwrap_or_else(|| format!("Asset 0x{:08X}", asset.graph));
+                            if ui.button(label).clicked() {
+                                edit_asset = Some(asset.graph);
+                            }
+                        }
+                        ui.separator();
+                    }
+                    allocation(ui, &mut changed.graph, 0, &mut Vec::new())
+                })
+                .body_returned
+                .transpose()?;
             changed.sync_assets()?;
             changed.validate()
         })
@@ -27,38 +50,23 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
     }
-    let mut edit = None;
-    for (index, asset) in program.assets.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(if asset.path.is_empty() {
-                format!("Asset 0x{:08X}", asset.graph)
-            } else {
-                sundial::package_authoring::tft::asset_label(&asset.path)
-            });
-            if ui
-                .add_enabled_ui(editing, |ui| {
-                    super::super::properties::edit_object(ui, asset)
-                })
-                .inner
-            {
-                edit = Some(index);
-            }
-            if !asset.values.is_empty() {
-                ui.weak(format!("{} Changes", asset.values.len()));
-            }
-        });
-    }
-    edit
+    edit_asset.and_then(|tag| program.assets.iter().position(|asset| asset.graph == tag))
 }
 
 pub(super) fn draw(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: NativeFamily) {
     let Some(entry) = family.catalog(node.kind) else {
         return;
     };
-    ui.small(entry.summary);
     let result = Graph::read(&node.bytes, 0, entry.class).and_then(|mut graph| {
-        ui.push_id(id, |ui| allocation(ui, &mut graph, 0, &mut Vec::new()))
-            .inner?;
+        ui.push_id(id, |ui| {
+            behavior::draw_node(ui, &mut graph, 0)?;
+            egui::CollapsingHeader::new("Advanced")
+                .show(ui, |ui| allocation(ui, &mut graph, 0, &mut Vec::new()))
+                .body_returned
+                .transpose()?;
+            Ok::<_, String>(())
+        })
+        .inner?;
         graph.validate_node(family == NativeFamily::Condition, node.kind)?;
         graph.emit()
     });
@@ -76,7 +84,7 @@ fn allocation(
     index: usize,
     ancestors: &mut Vec<usize>,
 ) -> Result<(), String> {
-    if ancestors.contains(&index) || ancestors.len() > 32 {
+    if ancestors.contains(&index) || ancestors.len() >= 64 {
         return Err("The native structure contains a cycle or nests too deeply.".into());
     }
     ancestors.push(index);
@@ -174,17 +182,13 @@ fn record(
             if field.format == Format::Pointer {
                 pointer(ui, graph, index, at, field.offset, ancestors)
             } else {
-                let component_target = field.editable
-                    && class == 0x80803E4D
-                    && field.offset == 2
-                    && graph.blocks[index]
-                        .bytes
-                        .get(row * stride + 3..row * stride + 5)
-                        == Some(&[0, 0]);
+                // The selector alone names the ability, whatever the flag and option bytes
+                // hold (see `action::roles`), so the picker is not gated on them.
+                let component_target = field.editable && class == 0x80803E4D && field.offset == 2;
                 super::super::properties::field(
                     ui,
                     &field.label,
-                    &format!("Native byte +0x{:02X}", field.offset),
+                    fields::contract(class, &field).description,
                     |ui| {
                         if component_target {
                             let target = graph.blocks[index]
@@ -204,19 +208,77 @@ fn record(
     Ok(())
 }
 
+/// The label a field shows in the guided editor: the traced name, or the plain word where
+/// the field's values are named. A field named by its values reads by what it selects, so
+/// "Event Byte" with Aiming Started and Aiming Stopped reads "Event", and the general
+/// predicate's key with Charged with Light behind it reads "State".
+pub(super) fn plain_field_label(class: u32, label: &str) -> &'static str {
+    match (class, label) {
+        (0x80803DDA | 0x80803DF9 | 0x808029E6, "Event Byte") => "Event",
+        (0x80803E01 | 0x80803DFD, "Slot Mask") | (0x80803E00, "Selected Bits") => "Ability",
+        (0x80803DFB, "Second Flag Mask") => "Ammo Type",
+        (0x80803DFB, "First Flag Mask") => "Pickup Flags",
+        (0x808029E0, "Mode") => "Shots",
+        (0x80803E41, "Mode") => "Damage Type",
+        (0x80803DCE | 0x80803DCC, "Key") => "State",
+        (0x80803DEA, "Event Value") => "Event",
+        (0x80803DEA, "Context Key") => "Context",
+        (0x80803DEC | 0x80803DEB, "Event Key") => "Signal",
+        (0x80803E1C, "Replacement Key") => "Firing Mode",
+        (0x808029ED | 0x80803E1D, "Property Key") => "Property",
+        (0x80803E1D, "Target Selector") => "Ability",
+        (0x80803E45, "First Key") => "Effect",
+        (0x80803E39, "Property Key") => "Counter",
+        (0x80803E43, "Position Selector") => "Position",
+        (_, "Hold Duration") => "Condition Hold",
+        (_, "Up To") => "Extension Limit",
+        (_, "Storage Path") => "Destination",
+        (_, "Owning Slot Amount") => "This Weapon",
+        (_, "Slot 1 Amount") => "Weapon Slot 1",
+        (_, "Slot 2 Amount") => "Weapon Slot 2",
+        (_, "Slot 3 Amount") => "Weapon Slot 3",
+        (_, "Category 1 Amount") => "Ammo Type 1",
+        (_, "Category 2 Amount") => "Ammo Type 2",
+        (_, "Category 3 Amount") => "Ammo Type 3",
+        _ => leak_label(label),
+    }
+}
+
+/// Labels come from the schema as owned strings. The few that reach here are the fixed
+/// vocabulary of `fields::describe`, so interning them once is bounded.
+fn leak_label(label: &str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static INTERNED: OnceLock<Mutex<std::collections::BTreeMap<String, &'static str>>> =
+        OnceLock::new();
+    let mut map = INTERNED
+        .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(interned) = map.get(label) {
+        return interned;
+    }
+    let interned: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    map.insert(label.to_owned(), interned);
+    interned
+}
+
 fn ability_target(ui: &mut egui::Ui, target: &mut u8) {
     use sundial::package_authoring::sandbox_perk::action::component_target;
     egui::ComboBox::from_id_salt("ability-target")
         .selected_text(component_target(*target, 0, 0).unwrap_or("Unmapped Target"))
         .show_ui(ui, |ui| {
-            for selector in [0, 2, 7] {
+            for selector in [0, 1, 2, 7] {
                 ui.selectable_value(target, selector, component_target(selector, 0, 0).unwrap());
             }
+            ui.selectable_value(target, 255, "Other Target…");
         }).response.on_hover_text(
-            "Source-derived from Innervation and Bomber, Invigoration and Outreach, Insulation and Perpetuation. The numeric selector remains editable."
+            "Source-derived from Innervation and Bomber, Invigoration and Outreach, Insulation and Perpetuation, and for Super from Ashes to Assets, Hands-On and Heavy Lifting. The numeric selector remains editable."
         );
-    ui.add(egui::DragValue::new(target).range(0..=255))
-        .on_hover_text("Native target selector. Other values have no identified ability role.");
+    pickers::name_combo(ui, "ability-target", "Ability Target");
+    if component_target(*target, 0, 0).is_none() {
+        ui.add(egui::DragValue::new(target).range(0..=255))
+            .on_hover_text("Native target selector. Other values have no identified ability role.");
+    }
 }
 
 fn pointer(
@@ -233,49 +295,7 @@ fn pointer(
         return Ok(());
     }
     let target = graph.blocks[index].links.get(&at).copied();
-    let mut name = target.map_or_else(
-        || "Reference".into(),
-        |i| fields::name(graph.blocks[i].class),
-    );
-    let group_field = if class == 0x808040B5 && (0x20..0x68).contains(&field) {
-        Some(field - 0x20)
-    } else if class == 0x8080407D {
-        Some(field)
-    } else {
-        None
-    };
-    if let Some(label) = match group_field {
-        Some(0x08) => Some("Starts When"),
-        Some(0x20) => Some("Effects"),
-        Some(0x30) => Some("Ends When"),
-        Some(0x40) => Some("Ready Again When"),
-        _ => None,
-    } {
-        name = label.into();
-    }
-    if class == 0x808040B5 {
-        match field {
-            0x18 => name = "Auxiliary Records".into(),
-            0x70 => name = "Additional Groups".into(),
-            0x78 => name = "Execution Policy Settings".into(),
-            _ => {}
-        }
-    }
-    for (source, kind, _) in schema::inline(class)? {
-        if kind == native::labels::SOURCE_CLASS
-            && field >= source + 8
-            && (field - source - 8) % 16 == 0
-            && field < source + 64
-        {
-            name = [
-                "Any Labels",
-                "All Labels",
-                "Excluded Labels",
-                "Not All Labels",
-            ][(field - source - 8) / 16]
-                .into();
-        }
-    }
+    let name = reference_name(graph, index, field, target)?;
     egui::CollapsingHeader::new(format!("{name} +0x{field:02X}"))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -323,6 +343,66 @@ fn pointer(
     Ok(())
 }
 
+fn reference_name(
+    graph: &Graph,
+    index: usize,
+    field: usize,
+    target: Option<usize>,
+) -> Result<String, String> {
+    let class = graph.blocks[index].class;
+    let mut name = target.map_or_else(
+        || "Reference".into(),
+        |i| fields::name(graph.blocks[i].class),
+    );
+    let group_field = if class == 0x808040B5 && (0x20..0x68).contains(&field) {
+        Some(field - 0x20)
+    } else if class == 0x8080407D {
+        Some(field)
+    } else {
+        None
+    };
+    if let Some(label) = match group_field {
+        Some(0x08) => Some("Starts When"),
+        Some(0x20) => Some("Effects"),
+        Some(0x30) => Some("Ends When"),
+        Some(0x40) => Some("Ready Again When"),
+        _ => None,
+    } {
+        name = label.into();
+    }
+    if class == 0x80802F16 {
+        match field {
+            0x128 => name = "Assignments".into(),
+            0x138 => name = "Multipliers".into(),
+            _ => {}
+        }
+    }
+    if class == 0x808040B5 {
+        match field {
+            0x18 => name = "Auxiliary Records".into(),
+            0x70 => name = "Additional Groups".into(),
+            0x78 => name = "Execution Policy Settings".into(),
+            _ => {}
+        }
+    }
+    for (source, kind, _) in schema::inline(class)? {
+        if kind == native::labels::SOURCE_CLASS
+            && field >= source + 8
+            && (field - source - 8) % 16 == 0
+            && field < source + 64
+        {
+            name = [
+                "Any Labels",
+                "All Labels",
+                "Excluded Labels",
+                "Not All Labels",
+            ][(field - source - 8) / 16]
+                .into();
+        }
+    }
+    Ok(name)
+}
+
 fn scalar(
     ui: &mut egui::Ui,
     field: &fields::Field,
@@ -336,6 +416,207 @@ fn scalar(
     if !field.editable {
         ui.weak(hex(&bytes));
         return Ok(());
+    }
+    let contract = fields::contract(block.class, field);
+    // A selector with no recovered names still has the values the game itself sets. Offering
+    // those keeps the control a choice rather than a blind 0 to 255 spinner, and says plainly
+    // that a count is evidence of use and not of meaning.
+    if field.format == Format::Byte && contract.choices.is_empty() && !contract.observed.is_empty()
+    {
+        let mut selected = bytes[0];
+        let stock = |value: u8| {
+            contract
+                .observed
+                .iter()
+                .find(|(candidate, _, _)| *candidate == value)
+                .map(|(_, count, _)| *count)
+        };
+        egui::ComboBox::from_id_salt("native-observed-value")
+            .selected_text(match stock(selected) {
+                Some(count) => format!("{selected} · {count} stock perks"),
+                None => format!("{selected} · not used by stock perks"),
+            })
+            .width(230.0)
+            .show_ui(ui, |ui| {
+                for (value, count, perks) in contract.observed {
+                    ui.selectable_value(
+                        &mut selected,
+                        *value,
+                        format!("{value} · {count} stock perks"),
+                    )
+                    .on_hover_text(if perks.is_empty() {
+                        "No named stock perk sets this value.".to_owned()
+                    } else {
+                        format!("Set by {perks}.")
+                    });
+                }
+                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Native Value");
+                        ui.add(egui::DragValue::new(&mut selected).range(0..=255));
+                    });
+                });
+            })
+            .response
+            .on_hover_text(format!(
+                "{} What this byte selects is not established. The listed values are the ones the game's own perks set, so they are the values the engine is known to accept here.",
+                contract.description
+            ));
+        pickers::name_combo(
+            ui,
+            "native-observed-value",
+            plain_field_label(block.class, &field.label),
+        );
+        if selected != bytes[0] {
+            field.write(block, row, &[selected])?;
+        }
+        return Ok(());
+    }
+    // A byte selector or a 32-bit mask whose values are named. Both read as one number here,
+    // and the write goes back at the field's own width.
+    if matches!(field.format, Format::Byte | Format::Mask32) && !contract.choices.is_empty() {
+        let before = if bytes.len() == 1 {
+            u32::from(bytes[0])
+        } else {
+            u32::from_le_bytes(
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid native mask width.")?,
+            )
+        };
+        let mut selected = before;
+        // Values the stock perks set that no name covers stay selectable with their
+        // evidence, so the census is never hidden behind a named list. The kind 8 input
+        // selector is 255 in most stock actions, and 255 has no client-traced name.
+        let unnamed = contract
+            .observed
+            .iter()
+            .filter(|(value, _, _)| !contract.choices.iter().any(|(named, _)| named == value))
+            .collect::<Vec<_>>();
+        let stock = |value: u32| {
+            contract
+                .observed
+                .iter()
+                .find(|(candidate, _, _)| u32::from(*candidate) == value)
+                .map(|(_, count, _)| *count)
+        };
+        egui::ComboBox::from_id_salt("native-value-choice")
+            .selected_text(
+                contract
+                    .choices
+                    .iter()
+                    .find(|(value, _)| u32::from(*value) == selected)
+                    .map_or_else(
+                        || match stock(selected) {
+                            Some(count) => format!("{selected} · {count} stock perks"),
+                            // Zero is the template's own value and selects nothing named.
+                            // Any other unnamed value is shown with what is known about
+                            // it, which is only that no stock perk sets it.
+                            None if selected == 0 => "Not Set".to_owned(),
+                            None => format!("{selected} · not used by stock perks"),
+                        },
+                        |(_, name)| (*name).into(),
+                    ),
+            )
+            .show_ui(ui, |ui| {
+                for (value, name) in contract.choices {
+                    ui.selectable_value(&mut selected, u32::from(*value), *name)
+                        .on_hover_text(match stock(u32::from(*value)) {
+                            Some(count) => format!("{count} stock perks set this value."),
+                            None => "No stock perk sets this value.".to_owned(),
+                        });
+                }
+                for (value, count, perks) in unnamed {
+                    ui.selectable_value(
+                        &mut selected,
+                        u32::from(*value),
+                        format!("{value} · {count} stock perks"),
+                    )
+                    .on_hover_text(if perks.is_empty() {
+                        "What this value selects is not established. No named stock perk sets it."
+                            .to_owned()
+                    } else {
+                        format!("What this value selects is not established. Set by {perks}.")
+                    });
+                }
+                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Native Value");
+                        let mut drag = egui::DragValue::new(&mut selected);
+                        if bytes.len() == 1 {
+                            drag = drag.range(0..=255);
+                        }
+                        ui.add(drag);
+                    });
+                });
+            })
+            .response
+            .on_hover_text(contract.description);
+        pickers::name_combo(
+            ui,
+            "native-value-choice",
+            plain_field_label(block.class, &field.label),
+        );
+        if selected != before {
+            if bytes.len() == 1 {
+                let value =
+                    u8::try_from(selected).map_err(|_| "A byte selector holds 0 to 255.")?;
+                field.write(block, row, &[value])?;
+            } else {
+                field.write(block, row, &selected.to_le_bytes())?;
+            }
+        }
+        return Ok(());
+    }
+    // A key whose stock values are named is chosen by name, with the hex value kept under
+    // Advanced for any other key.
+    if field.format == Format::Key {
+        let known = fields::keys::known(block.class, field.offset);
+        if !known.is_empty() {
+            let mut value = u32::from_le_bytes(
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid native key width.")?,
+            );
+            let before = value;
+            egui::ComboBox::from_id_salt("native-event-key")
+                .width(230.0)
+                .selected_text(known.iter().find(|key| key.hash == value).map_or_else(
+                    || {
+                        // The FNV-1 basis is the hash of the empty name, which is
+                        // how the stock templates leave a key unset.
+                        if matches!(value, 0 | 0x811C9DC5) {
+                            "None".to_owned()
+                        } else {
+                            format!("0x{value:08X}")
+                        }
+                    },
+                    |key| key.name.to_owned(),
+                ))
+                .show_ui(ui, |ui| {
+                    for key in known {
+                        ui.selectable_value(&mut value, key.hash, key.name)
+                            .on_hover_text(key.evidence);
+                    }
+                    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                        let raw = hex_key(ui, "native-event-key-hex", &mut value);
+                        pickers::name_response(ui, &raw, "Key as Hex");
+                    });
+                })
+                .response
+                .on_hover_text(contract.description);
+            pickers::name_combo(
+                ui,
+                "native-event-key",
+                plain_field_label(block.class, &field.label),
+            );
+            if value != before {
+                field.write(block, row, &value.to_le_bytes())?;
+            }
+            return Ok(());
+        }
     }
     let mapped = nodes::CONDITIONS
         .iter()
@@ -357,18 +638,35 @@ fn scalar(
         super::draw_native_field(ui, mapped, &mut block.bytes[start..]);
         return Ok(());
     }
+    // The visible label sits beside the control without being linked to it, so each control
+    // is given that label as its accessible name here.
+    let name = plain_field_label(block.class, &field.label);
     let changed = match field.format {
         Format::Flag => {
             let mut v = bytes[0] != 0;
-            ui.checkbox(&mut v, "").changed().then(|| vec![u8::from(v)])
+            let response = ui.checkbox(&mut v, "");
+            pickers::name_response(ui, &response, name);
+            response.changed().then(|| vec![u8::from(v)])
         }
         Format::Float => {
-            let mut v = f32::from_le_bytes(bytes.try_into().map_err(|_| "Invalid float field.")?);
-            ui.add(egui::DragValue::new(&mut v).speed(0.01))
-                .changed()
-                .then(|| v.to_le_bytes().to_vec())
+            let mut bits = u32::from_le_bytes(
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid float field.")?,
+            );
+            let before = bits;
+            let response = float_field(ui, &mut bits);
+            pickers::name_response(ui, &response, name);
+            if block.class == 0x80803E4D && field.offset == 12 && f32::from_bits(bits) < 0.0 {
+                ui.weak("No Limit");
+            }
+            if !contract.suffix.is_empty() {
+                ui.label(contract.suffix.trim());
+            }
+            (bits != before).then(|| bits.to_le_bytes().to_vec())
         }
-        Format::Key | Format::Tag => {
+        Format::Key | Format::Tag | Format::Mask32 => {
             let mut value = u32::from_le_bytes(
                 bytes
                     .as_slice()
@@ -376,7 +674,8 @@ fn scalar(
                     .map_err(|_| "Invalid native key width.")?,
             );
             let before = value;
-            hex_key(ui, "native-key", &mut value);
+            let response = hex_key(ui, "native-key", &mut value);
+            pickers::name_response(ui, &response, name);
             if block.class == 0x808094B3 && field.offset == 0 {
                 if let Some(name) =
                     sundial::package_authoring::sandbox_perk::action::label_name(value)
@@ -388,30 +687,26 @@ fn scalar(
         }
         Format::Byte => {
             let mut v = bytes[0];
-            if block.class == 0x80803E42 && field.offset == 2 {
-                egui::ComboBox::from_id_salt("orb-position")
-                    .selected_text(if v == 1 {
-                        "Event Position"
-                    } else {
-                        "Owner Position"
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut v, 0, "Owner Position");
-                        ui.selectable_value(&mut v, 1, "Event Position");
-                    });
-                (v != bytes[0]).then(|| vec![v])
-            } else {
-                ui.add(egui::DragValue::new(&mut v))
-                    .changed()
-                    .then(|| vec![v])
-            }
+            let response = ui.add(egui::DragValue::new(&mut v));
+            pickers::name_response(ui, &response, name);
+            response.changed().then(|| vec![v])
         }
         Format::Integer => {
             let mut value =
                 i32::from_le_bytes(bytes.try_into().map_err(|_| "Invalid integer field.")?);
-            ui.add(egui::DragValue::new(&mut value))
-                .changed()
-                .then(|| value.to_le_bytes().to_vec())
+            let response = ui.add(egui::DragValue::new(&mut value));
+            pickers::name_response(ui, &response, name);
+            response.changed().then(|| value.to_le_bytes().to_vec())
+        }
+        Format::Unsigned => {
+            let mut value = u32::from_le_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| "Invalid unsigned integer field.")?,
+            );
+            let response = ui.add(egui::DragValue::new(&mut value));
+            pickers::name_response(ui, &response, name);
+            response.changed().then(|| value.to_le_bytes().to_vec())
         }
         _ => hex_input(ui, &bytes, false),
     };
@@ -433,15 +728,19 @@ fn value(ui: &mut egui::Ui, graph: &mut Graph, index: usize, at: usize) -> Resul
         program.fast_path = u32::from(fast_path);
     }
     for (row, constant) in program.constants.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(format!("Constant {row}"));
-            for lane in constant {
-                let mut v = f32::from_bits(*lane);
-                if ui.add(egui::DragValue::new(&mut v).speed(0.01)).changed() && v.is_finite() {
-                    *lane = v.to_bits();
+        super::super::properties::field(
+            ui,
+            &format!("Constant {row}"),
+            "Stored four-lane constant used by this value program.",
+            |ui| {
+                for lane in constant {
+                    let mut v = f32::from_bits(*lane);
+                    if ui.add(egui::DragValue::new(&mut v).speed(0.01)).changed() && v.is_finite() {
+                        *lane = v.to_bits();
+                    }
                 }
-            }
-        });
+            },
+        );
     }
     ui.horizontal(|ui| {
         if ui

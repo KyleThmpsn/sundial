@@ -168,7 +168,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
             crate::ui_help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
             if let Some(current) = document.pointer("/steam/user/persona_name").and_then(Value::as_str) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("{}/63", current.len())).weak());
+                    ui.weak(format!("{}/63", current.len()));
                 });
             }
         });

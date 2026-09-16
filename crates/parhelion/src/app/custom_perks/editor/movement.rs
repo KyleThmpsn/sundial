@@ -89,17 +89,24 @@ impl PerkEditor {
                 .show(ui, |ui| {
                     for parameter in parameters {
                         ui.push_id((parameter.kind.label(), "label"), |ui| {
-                            if parameter.kind != parameters::Kind::Speed
-                                || !self.draw_verified_projectile_speed(
-                                    ui,
-                                    loaded,
-                                    tag,
-                                    parameter.owner_tag,
-                                )
-                            {
-                                ui.label(parameter.kind.label())
-                                    .on_hover_text(parameter.kind.description());
-                            }
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(150.0, ui.spacing().interact_size.y),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_width(150.0);
+                                    if parameter.kind != parameters::Kind::Speed
+                                        || !self.draw_verified_projectile_speed(
+                                            ui,
+                                            loaded,
+                                            tag,
+                                            parameter.owner_tag,
+                                        )
+                                    {
+                                        ui.label(parameter.kind.label())
+                                            .on_hover_text(parameter.kind.description());
+                                    }
+                                },
+                            );
                         });
                         let current = parameter.value(&self.draft);
                         let mut value = current.clone().unwrap_or(parameter.original());

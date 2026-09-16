@@ -279,14 +279,13 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
     let base_damage = weapon_damage_descriptor(data)?;
     let requested_damage = overrides
         .modern_damage_type
-        .map(|damage_type| {
+        .map_or(base_damage, |damage_type| {
             if damage_type == ModernDamageType::Kinetic {
                 WeaponDamageDescriptor::Empty
             } else {
                 WeaponDamageDescriptor::Elemental(damage_type)
             }
-        })
-        .unwrap_or(base_damage);
+        });
 
     if let Some(inventory_slot) = overrides.inventory_slot {
         set_weapon_inventory_slot(data, inventory_slot)?;

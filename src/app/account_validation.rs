@@ -119,7 +119,7 @@ fn collect_catalog_issues<C: AccountCatalog>(
                             i64::from(stack.quantity),
                             metadata.max_stack_size,
                             &mut issues,
-                        )
+                        );
                     }
                     _ => issues.push(format!(
                         "{context} is not a character material in the installed catalog"

@@ -189,7 +189,7 @@ fn color_control(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3], index: usi
     ui.label(label);
     let response = ui.color_edit_button_srgb(color);
     response.ctx.accesskit_node_builder(response.id, |node| {
-        node.set_label(format!("Color replacement {} {label}", index + 1))
+        node.set_label(format!("Color replacement {} {label}", index + 1));
     });
     response
         .on_hover_text(format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]))

@@ -69,9 +69,10 @@ const TECHNICAL_BYTES_PATH_HASH: u32 = 0x5048_4259;
 
 /// Shared component identity for catalog previews that do not need to load a full graph.
 pub fn component_binding_label(binding: u32) -> String {
-    runtime_registry()
-        .map(|registry| runtime_binding_label(binding, registry))
-        .unwrap_or_else(|_| format!("Binding 0x{binding:08X}"))
+    runtime_registry().map_or_else(
+        |_| format!("Binding 0x{binding:08X}"),
+        |registry| runtime_binding_label(binding, registry),
+    )
 }
 
 /// Which native root inside a component-owner payload contains a runtime value.

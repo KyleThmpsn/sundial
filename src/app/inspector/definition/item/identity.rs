@@ -17,7 +17,7 @@ pub(super) fn draw_hash_item_source_comparison(
         },
         true,
         |ui| {
-            ui.label(egui::RichText::new(&context.source).strong());
+            ui.strong(&context.source);
             ui.weak(
                 "Snapshot captured when opened. Reopen the item after editing its account data.",
             );
@@ -248,7 +248,7 @@ pub(super) fn draw_inline_item_hash(
     hash: u64,
 ) {
     if *drew {
-        ui.label(egui::RichText::new("·").weak());
+        ui.weak("·");
     }
     ui.label(metadata_label_text(ui, "Hash"));
     crate::app::item_editor::catalog_item_tooltip(
@@ -271,7 +271,7 @@ pub(super) fn draw_inline_item_fact(
     monospace: bool,
 ) {
     if *drew {
-        ui.label(egui::RichText::new("·").weak());
+        ui.weak("·");
     }
     ui.label(metadata_label_text(ui, label));
     let value = egui::RichText::new(value.into()).strong();
@@ -288,7 +288,7 @@ pub(super) fn draw_inline_item_fact_with_tooltip(
     tooltip: impl Into<String>,
 ) {
     if *drew {
-        ui.label(egui::RichText::new("·").weak());
+        ui.weak("·");
     }
     ui.label(metadata_label_text(ui, label));
     let value = egui::RichText::new(value.into()).strong();
@@ -306,7 +306,7 @@ pub(super) fn draw_inline_item_definition_fact(
     hash: u64,
 ) {
     if *drew {
-        ui.label(egui::RichText::new("·").weak());
+        ui.weak("·");
     }
     ui.label(metadata_label_text(ui, label));
     draw_named_catalog_hash_link(ui, catalog, hash, value);

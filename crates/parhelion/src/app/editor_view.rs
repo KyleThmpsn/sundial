@@ -202,7 +202,13 @@ impl PackageAuthoringApp {
             });
 
         ui.add_space(4.0);
+        let variable_appearance = donor.map(|gameplay| {
+            variable_damage_appearance(&self.recipe, &gameplay.summary, &self.donor_summaries)
+        });
+        let variable_available =
+            variable_appearance.is_some_and(VariableDamageAppearance::is_possible);
         let mut inventory_slot_changed = false;
+        let mut damage_changed = false;
         let column_count = core_profile_column_count(ui.available_width());
         for fields in [0, 1, 2, 3, 4].chunks(column_count) {
             ui.columns(column_count, |columns| {
@@ -214,8 +220,10 @@ impl PackageAuthoringApp {
                                 &mut self.recipe.overrides,
                                 donor,
                                 field == 0,
+                                variable_available,
                             );
                             inventory_slot_changed |= field == 0 && changed;
+                            damage_changed |= field == 1 && changed;
                         }
                         2 => draw_ammo_type_control(column, &mut self.recipe.overrides, donor),
                         3 => draw_rarity_control(column, &mut self.recipe.overrides, donor),
@@ -229,9 +237,23 @@ impl PackageAuthoringApp {
                 }
             });
         }
-        draw_combat_profile_diagnostics(ui, &self.recipe.overrides, donor);
+        draw_combat_profile_diagnostics(
+            ui,
+            &self.recipe.overrides,
+            donor,
+            variable_appearance.unwrap_or(VariableDamageAppearance::Unavailable),
+        );
         if inventory_slot_changed && let Some(gameplay_donor) = donor {
             reconcile_presentation_donor(
+                &mut self.recipe,
+                &gameplay_donor.summary,
+                &self.donor_summaries,
+            );
+        }
+        if (damage_changed || inventory_slot_changed)
+            && let Some(gameplay_donor) = donor
+        {
+            reconcile_variable_damage(
                 &mut self.recipe,
                 &gameplay_donor.summary,
                 &self.donor_summaries,

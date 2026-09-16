@@ -11,10 +11,6 @@ impl SundialApp {
         combined_gear_class: bool,
     ) -> Option<DismantleRewardAction> {
         let resolved = self.resolve_inventory_definition(snapshot.definition_hash);
-        let valid = resolved
-            .as_ref()
-            .is_some_and(|definition| definition.metadata.is_profile_items_candidate());
-        let hash_hex_text = format_hash_hex(u64::from(snapshot.definition_hash));
         let key = format!("dismantle-rewards:edit:{}", snapshot.location.index);
         let mut definition_hash = snapshot.definition_hash;
         let mut quantity = snapshot.quantity;
@@ -28,39 +24,17 @@ impl SundialApp {
 
         ui.push_id(("dismantle-reward", snapshot.location.index), |ui| {
             item_editor::draw_item_card(ui, |ui| {
-                let definition = DefinitionSummary::from_name_and_type(
-                    &hash_hex_text,
-                    resolved.as_ref().map(|definition| {
-                        (definition.name.as_str(), definition.type_name.as_str())
-                    }),
-                );
-                let inspection_context = DefinitionInspectionContext {
-                    source: format!(
+                let (header_response, _) = draw_profile_material_header(
+                    ui,
+                    &self.manifest,
+                    resolved.as_ref(),
+                    snapshot.definition_hash,
+                    snapshot.quantity,
+                    format!(
                         "Dismantle Reward Policy · Row {}",
                         snapshot.location.index + 1
                     ),
-                    instance_id: None,
-                    authored_level: None,
-                    flags: None,
-                    plug_count: None,
-                    plugs: None,
-                    quantity: Some(i64::from(snapshot.quantity)),
-                };
-                let header_response = item_editor::draw_catalog_item_header_with_trailing(
-                    ui,
-                    &self.manifest,
-                    Some(u64::from(snapshot.definition_hash)),
-                    Some(inspection_context.clone()),
-                    ItemHeader {
-                        label: None,
-                        soid: None,
-                        definition,
-                        icon: None,
-                        fill: item_editor::muted_item_header_fill(ui),
-                        valid,
-                        invalid_message: "not a profile-scoped material definition",
-                    },
-                    |_| {},
+                    "not a profile-scoped material definition",
                 );
 
                 ui.add_enabled_ui(editable, |ui| {

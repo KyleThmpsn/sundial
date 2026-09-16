@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     investment_schema::NESTED_ARRAY_TRAILER,
-    package_payload::{native_array_at, u32_at},
+    package_payload::u32_at,
     sandbox_perk::projectile,
     weapon_entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity},
 };
@@ -31,11 +31,14 @@ pub struct Compiled {
 }
 
 /// The activation trigger as the compiler emits it, reused by effects that nest it.
-struct Activation<'a> {
-    trigger: Trigger,
-    labels: &'a [u32],
-    mask: [u8; 40],
-    chance: u16,
+enum Activation<'a> {
+    Kill {
+        trigger: Trigger,
+        labels: &'a [u32],
+        mask: [u8; 40],
+        chance: u16,
+    },
+    Native(&'a NativeNode),
 }
 
 pub fn compile(manager: &PackageManager, program: &Program) -> Result<Compiled, String> {
@@ -52,7 +55,7 @@ pub fn compile(manager: &PackageManager, program: &Program) -> Result<Compiled, 
     assemble(&program, label_mask)
 }
 
-fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compiled, String> {
+pub(super) fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compiled, String> {
     program.validate()?;
     let mut out = Payload::new();
     let activation = match program.trigger {
@@ -71,13 +74,26 @@ fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compiled, String
             out.kill_condition(trigger, labels, mask, program.chance_permyriad, 0)
         }
     };
-    out.nodes(0x20, CONDITION_ROWS, &[activation]);
-    let nested = label_mask.map(|(labels, mask)| Activation {
-        trigger: program.trigger,
-        labels,
-        mask,
-        chance: program.chance_permyriad,
-    });
+    // The typed trigger is the first condition. Alternatives follow in their stock order.
+    let mut activations = vec![activation];
+    for node in &program.alternative_triggers {
+        activations.push(out.native_condition(node, 0)?);
+    }
+    out.nodes(0x20, CONDITION_ROWS, &activations);
+    let nested = label_mask
+        .map(|(labels, mask)| Activation::Kill {
+            trigger: program.trigger,
+            labels,
+            mask,
+            chance: program.chance_permyriad,
+        })
+        .or_else(|| {
+            program
+                .native_trigger
+                .as_ref()
+                .filter(|node| program.trigger == Trigger::Native && node.kind == 2)
+                .map(Activation::Native)
+        });
     let mut effects = Vec::new();
     // The native initial dispatcher walks from last to first. Preserve authored execution order.
     for action in program.actions.iter().rev() {
@@ -85,12 +101,21 @@ fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compiled, String
     }
     out.nodes(0x38, EFFECT_ROWS, &effects);
     out.removal_and_rearm(program)?;
+    out.auxiliary(&program.auxiliary);
+    out.policy(program.policy.as_ref());
     out.u64(0, out.bytes.len() as u64);
     metadata::rebuild(&mut out.bytes)?;
     // Complex native graphs can carry state below their root node. Reserve an upper
     // bound for each node instead of reusing the scalar-only reservation calculation.
-    let complex = program.native_trigger.iter().chain(&program.native_removal)
-        .any(|node|crate::sandbox_perk::action::layout::condition_layout(node.kind).is_none())
+    let complex = program
+        .native_trigger
+        .iter()
+        .chain(&program.native_removal)
+        .chain(&program.alternative_triggers)
+        .chain(&program.alternative_removals)
+        .chain(&program.native_rearm)
+        .chain(&program.alternative_rearms)
+        .any(|node| crate::sandbox_perk::action::layout::condition_layout(node.kind).is_none())
         || program.actions.iter().any(|action|matches!(action,Action::Native{node} if crate::sandbox_perk::action::layout::effect_layout(node.kind).is_none()));
     if complex {
         let decoded = crate::sandbox_perk::action::decode(&out.bytes)?;
@@ -316,34 +341,7 @@ fn kill_label_mask(manager: &PackageManager, trigger: Trigger) -> Result<LabelMa
 }
 
 pub(crate) fn compile_labels(registry: &[u8], labels: &[u32]) -> Result<[u8; 40], String> {
-    let (count, _, rows, class) = native_array_at(registry, 8)?;
-    if class != 0x8080_0070 || count > 320 {
-        return Err("Label globals have an unsupported layout.".into());
-    }
-    let (group_count, _, groups, group_class) = native_array_at(registry, 0x18)?;
-    if group_class != 0x8080_94BE {
-        return Err("Label groups have an unsupported layout.".into());
-    }
-    let mut mask = [0; 40];
-    for &label in labels {
-        if let Some(index) =
-            (0..count).find(|index| u32_at(registry, rows + index * 4).ok() == Some(label))
-        {
-            mask[index / 8] |= 1 << (index % 8);
-        } else if let Some(index) =
-            (0..group_count).find(|index| u32_at(registry, groups + index * 44).ok() == Some(label))
-        {
-            let source = registry
-                .get(groups + index * 44 + 4..groups + index * 44 + 44)
-                .ok_or("Label group is truncated.")?;
-            for (target, source) in mask.iter_mut().zip(source) {
-                *target |= source;
-            }
-        } else {
-            return Err(format!("Label 0x{label:08X} is not registered."));
-        }
-    }
-    Ok(mask)
+    crate::package_runtime::labels::Registry::read(registry)?.mask(labels)
 }
 
 pub(crate) struct Payload {
@@ -406,6 +404,39 @@ impl Payload {
         for (index, target) in nodes.iter().enumerate() {
             self.pointer(rows + index * 8, *target);
         }
+    }
+    /// Root records preserved from a stock action. Each is a self-contained leaf, so it is
+    /// copied as it was read and listed at the root in the same order.
+    /// The execution policy preserved from a stock action. `Payload::new` wrote the default
+    /// policy, so only a selected one changes the root.
+    fn policy(&mut self, policy: Option<&Policy>) {
+        use crate::sandbox_perk::action::{POLICY_CONFIGURATION, POLICY_SELECTOR, ROOT_KEY};
+        let Some(policy) = policy else {
+            return;
+        };
+        self.bytes[POLICY_SELECTOR] = policy.selector;
+        self.bytes[POLICY_SELECTOR + 1] = policy.modifier;
+        self.u32(ROOT_KEY, policy.key);
+        if let Some(record) = &policy.configuration {
+            let at = self.node(record.class, record.bytes.len());
+            self.bytes[at..at + record.bytes.len()].copy_from_slice(&record.bytes);
+            self.pointer(POLICY_CONFIGURATION, at);
+        }
+    }
+    fn auxiliary(&mut self, records: &[NativeRecord]) {
+        if records.is_empty() {
+            return;
+        }
+        let nodes = records
+            .iter()
+            .map(|record| {
+                let at = self.node(record.class, record.bytes.len());
+                self.bytes[at..at + record.bytes.len()].copy_from_slice(&record.bytes);
+                at
+            })
+            .collect::<Vec<_>>();
+        use crate::sandbox_perk::action::{AUXILIARY_RECORDS, AUXILIARY_ROW_CLASS};
+        self.nodes(AUXILIARY_RECORDS, AUXILIARY_ROW_CLASS, &nodes);
     }
     fn condition(&mut self, class: u32, kind: u8, size: usize, ordinal: u8) -> usize {
         let at = self.node(class, size);
@@ -502,11 +533,12 @@ impl Payload {
     /// The ending condition of a program, when it has one. The kind decides the removal
     /// event mask, so it is returned beside the node.
     fn removal(&mut self, program: &Program) -> Result<Option<(usize, u8)>, String> {
+        if let Some(node) = &program.native_removal {
+            return Ok(Some((self.native_condition(node, 1)?, node.kind)));
+        }
         Ok(match program.trigger {
             Trigger::Always | Trigger::Native => {
-                if let Some(node) = &program.native_removal {
-                    Some((self.native_condition(node, 1)?, node.kind))
-                } else if let Some(key) = program.removal_key {
+                if let Some(key) = program.removal_key {
                     Some((self.event_key_condition(key, 1), 30))
                 } else if program.trigger == Trigger::Native && program.duration_ms != 0 {
                     Some((self.timer(program.duration_ms, 1), 1))
@@ -526,14 +558,28 @@ impl Payload {
     /// descriptor zeroed and its event mask clear, and the rearm ordinal follows directly.
     fn removal_and_rearm(&mut self, program: &Program) -> Result<bool, String> {
         let removal = self.removal(program)?;
-        if let Some((removal, _)) = removal {
-            self.nodes(0x48, CONDITION_ROWS, &[removal]);
+        let mut removals = removal.iter().map(|(at, _)| *at).collect::<Vec<_>>();
+        for node in &program.alternative_removals {
+            removals.push(self.native_condition(node, 1)?);
         }
-        let has_cooldown = program.trigger.supports_cooldown() && program.cooldown_ms != 0;
-        if has_cooldown {
-            let ordinal = if removal.is_some() { 2 } else { 1 };
-            let rearm = self.timer(program.cooldown_ms, ordinal);
-            self.nodes(0x58, CONDITION_ROWS, &[rearm]);
+        if !removals.is_empty() {
+            self.nodes(0x48, CONDITION_ROWS, &removals);
+        }
+        let has_cooldown = program.trigger.supports_cooldown()
+            && program.cooldown_ms != 0
+            && program.native_rearm.is_none();
+        let ordinal = if removal.is_some() { 2 } else { 1 };
+        let mut rearms = Vec::new();
+        if let Some(node) = &program.native_rearm {
+            rearms.push(self.native_condition(node, ordinal)?);
+        } else if has_cooldown {
+            rearms.push(self.timer(program.cooldown_ms, ordinal));
+        }
+        for node in &program.alternative_rearms {
+            rearms.push(self.native_condition(node, ordinal)?);
+        }
+        if !rearms.is_empty() {
+            self.nodes(0x58, CONDITION_ROWS, &rearms);
         }
         self.root_state(program, removal.map(|(_, kind)| kind), has_cooldown);
         Ok(has_cooldown)
@@ -570,8 +616,18 @@ impl Payload {
             .iter()
             .filter(|action| action.retained())
             .count() as u8;
-        self.bytes[0xCD] =
-            u8::from(active_kind == 1) + u8::from(removal_kind == Some(1)) + u8::from(has_cooldown);
+        let alternative_timers = program
+            .alternative_triggers
+            .iter()
+            .chain(&program.alternative_removals)
+            .chain(&program.native_rearm)
+            .chain(&program.alternative_rearms)
+            .filter(|node| node.kind == 1)
+            .count() as u8;
+        self.bytes[0xCD] = u8::from(active_kind == 1)
+            + u8::from(removal_kind == Some(1))
+            + u8::from(has_cooldown)
+            + alternative_timers;
     }
     fn action(
         &mut self,
@@ -629,13 +685,15 @@ impl Payload {
                 // The nested list repeats the trigger. Nested conditions carry ordinal 0xFF
                 // and do not advance the action's ordinal sequence. The mask at +0x20 routes
                 // the same event kind to the nested list.
-                let condition = self.kill_condition(
-                    nested.trigger,
-                    nested.labels,
-                    nested.mask,
-                    nested.chance,
-                    0xFF,
-                );
+                let condition = match nested {
+                    Activation::Kill {
+                        trigger,
+                        labels,
+                        mask,
+                        chance,
+                    } => self.kill_condition(*trigger, labels, *mask, *chance, 0xFF),
+                    Activation::Native(node) => self.native_condition(node, 0xFF)?,
+                };
                 self.nodes(at + 0x10, CONDITION_ROWS, &[condition]);
                 self.u64(at + 0x20, 1 << 2);
             }
@@ -728,6 +786,7 @@ impl Payload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package_payload::native_array_at;
 
     fn attach_node(action: &Action) -> Vec<u8> {
         let mut out = Payload::new();
@@ -885,6 +944,30 @@ mod tests {
     }
 
     #[test]
+    fn explicit_end_conditions_override_trigger_defaults_and_rebuild_event_masks() {
+        for trigger in [Trigger::Drawn, Trigger::Equipped, Trigger::WeaponKill] {
+            let mut ending = NativeNode::condition(1).unwrap();
+            ending.bytes[8..12].copy_from_slice(&2.75f32.to_le_bytes());
+            let program = Program {
+                trigger,
+                native_removal: Some(ending),
+                actions: vec![Action::add_rounds(1)],
+                ..Program::default()
+            };
+            program.validate_structure().unwrap();
+            let mut out = Payload::new();
+            let (at, kind) = out.removal(&program).unwrap().unwrap();
+            assert_eq!(kind, 1);
+            assert_eq!(&out.bytes[at + 8..at + 12], &2.75f32.to_le_bytes());
+            out.removal_and_rearm(&program).unwrap();
+            assert_eq!(
+                u64::from_le_bytes(out.bytes[0x90..0x98].try_into().unwrap()),
+                1 << 1
+            );
+        }
+    }
+
+    #[test]
     fn native_nodes_are_written_verbatim_under_a_compiler_owned_header() {
         let mut trigger = NativeNode::condition(6).unwrap();
         trigger.bytes[8] = 0x03;
@@ -956,6 +1039,59 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("kill trigger"));
+    }
+
+    #[test]
+    fn recovered_kill_triggers_preserve_filters_and_chance_in_timer_extensions() {
+        use crate::sandbox_perk::action::{self, native::Graph};
+        let mut source = Payload::new();
+        let at = source.kill_condition(Trigger::PrecisionKill, &[0x962E_A19B], [0; 40], 3750, 0);
+        // Retain an additional opaque native requirement and an untouched float lane.
+        source.bytes[at + 0x140] = 1;
+        source.u32(at + 0x154, (-0.0f32).to_bits());
+        let bytes = Graph::read(&source.bytes, at, 0x80803DE7)
+            .unwrap()
+            .emit()
+            .unwrap();
+        let program = Program {
+            trigger: Trigger::Native,
+            native_trigger: Some(NativeNode {
+                kind: 2,
+                bytes: bytes.clone(),
+            }),
+            actions: vec![
+                Action::ExtendTimers {
+                    extend_ms: 3000,
+                    cap_ms: 7000,
+                },
+                Action::Spawn {
+                    asset: Asset {
+                        graph: 1,
+                        ..Default::default()
+                    },
+                    position: Position::Event,
+                },
+            ],
+            ..Default::default()
+        };
+        let compiled = assemble(&program, None).unwrap();
+        let decoded = action::decode(&compiled.payload).unwrap();
+        let kills = decoded
+            .conditions()
+            .into_iter()
+            .filter(|condition| condition.kind == 2)
+            .collect::<Vec<_>>();
+        assert_eq!(kills.len(), 2);
+        for condition in kills {
+            let mut actual = condition.native.clone();
+            actual[7] = bytes[7]; // Only the compiled ordinal belongs to the receiving program.
+            assert_eq!(actual, bytes);
+        }
+        let spawn = decoded.effects().find(|effect| effect.kind == 3).unwrap();
+        assert_eq!(spawn.native[4], 1);
+        let mut no_kill = program;
+        no_kill.native_trigger = NativeNode::condition(6);
+        assert!(no_kill.validate().is_err());
     }
 
     #[test]

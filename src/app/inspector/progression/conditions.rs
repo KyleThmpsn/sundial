@@ -132,7 +132,7 @@ pub(super) fn draw_condition_programs(
             .show(ui, |ui| {
                 let evaluation = evaluate_condition_program(program, catalog, snapshot);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Effective Result").strong());
+                    ui.strong("Effective Result");
                     let color = match evaluation {
                         ConditionEvaluation::Passed => ui.visuals().selection.bg_fill,
                         ConditionEvaluation::Failed => ui.visuals().error_fg_color,
@@ -175,11 +175,11 @@ pub(super) fn draw_condition_programs(
                                     token_index + 1,
                                     condition_opcode_label(token[0])
                                 ));
-                                ui.label(egui::RichText::new("Operand").weak());
+                                ui.weak("Operand");
                                 ui.monospace(token[1].to_string());
                             });
                             ui.horizontal_wrapped(|ui| {
-                                ui.label(egui::RichText::new("Referenced Entry").weak());
+                                ui.weak("Referenced Entry");
                                 draw_condition_token_resolution(ui, token, catalog, state);
                             });
                         });
@@ -226,7 +226,7 @@ fn draw_condition_dependencies(
             for token in dependencies {
                 ui.horizontal_wrapped(|ui| {
                     draw_condition_token_resolution(ui, token, catalog, state);
-                    ui.label(egui::RichText::new("Current:").weak());
+                    ui.weak("Current:");
                     ui.monospace(condition_dependency_value(token, catalog, snapshot));
                 });
             }
