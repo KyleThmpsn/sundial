@@ -423,7 +423,14 @@ impl SundialApp {
         let cache = catalog_path().ok_or("Could not locate Sundial's local catalog folder")?;
         let manifest = Manifest::load_or_scan_with_progress(&install_path, cache, false, report)?;
         let sunrise_version = detect_sunrise_version(&install_path);
-        let document = WorkspaceDocument::load(json_document, &settings_path);
+        // The installed DLL decides the account source. A Dawn runtime keeps its account in
+        // player-state.db, which the settings schema alone cannot tell us.
+        let runtime_choice = runtime_installation::RuntimeChoice::inspect(&install_path);
+        let dawn = runtime_choice
+            .inspection
+            .launch_copy()
+            .is_some_and(|copy| copy.dawn);
+        let document = WorkspaceDocument::load(json_document, &settings_path, dawn);
         let source_warning = validate_workspace_document(&document).err();
         let persistence_compatibility = PersistenceCompatibility::inspect(&install_path);
         let class_armor_defaults = account::class_armor_default_characters(&document);
@@ -433,7 +440,7 @@ impl SundialApp {
         preferences.normalize_for_runtime();
         let default_plug_selection_mode = preferences.default_plug_selection_mode;
         let mut app = Self {
-            runtime_choice: runtime_installation::RuntimeChoice::inspect(&install_path),
+            runtime_choice,
             settings_path,
             settings_layout,
             install_path,
@@ -826,6 +833,10 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind)
             "Account Data",
             "As of schema v18, most account data is stored in investment.sqlite3. Some settings, including player identity and runtime configuration, are still read from settings.json.",
         ),
+        AccountSourceKind::Dawn => (
+            "Dawn Account Data",
+            "This install runs Dawn, so account data is read from player-state.db beside settings.json. Sundial does not write that database yet, and player identity and runtime configuration are still read from settings.json.",
+        ),
         AccountSourceKind::Blocked => (
             "Account Database Unavailable",
             "Sundial couldn't load investment.sqlite3. Database-backed account editing is unavailable.",
@@ -908,6 +919,14 @@ impl SundialApp {
                 ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
                 ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
+                    // Read the launch copy before the Dawn borrow below takes the same inspection.
+                    let runtime_capabilities = {
+                        let launch = self.runtime_choice.inspection.launch_copy();
+                        game_settings::Capabilities::detect(
+                            launch.and_then(|copy| copy.version.as_deref()),
+                            launch.is_some_and(|copy| copy.dawn),
+                        )
+                    };
                     let dawn = self.runtime_choice.inspection.copies.iter_mut()
                         .find(|copy| copy.settings_path == self.settings_path)
                         .and_then(|copy| copy.dawn_runtime.as_mut());
@@ -926,6 +945,7 @@ impl SundialApp {
                             dawn,
                             tab: &mut self.game_settings_tab,
                             key_bindings: &mut self.key_binding_ui,
+                            runtime_capabilities,
                         },
                     );
                     if edits.json_changed && let Err(error)=self.document.apply_runtime_view(runtime_document) {

@@ -6,14 +6,13 @@
 use std::path::Path;
 
 use super::{
-    account_workspace::WorkspaceDocument,
+    account_workspace::{AccountSaveReceipt, WorkspaceDocument},
     settings::{SaveJsonError, SaveJsonResult, save_json},
 };
-use crate::persistence::sqlite_account::SqliteSaveReceipt;
 
 pub(super) struct WorkspaceSaveReceipt {
     pub json: Option<SaveJsonResult>,
-    pub sqlite: Option<SqliteSaveReceipt>,
+    pub sqlite: Option<AccountSaveReceipt>,
 }
 
 #[derive(Debug)]
@@ -115,10 +114,10 @@ pub(super) fn save_changed_sources_with_json(
         &mut context,
         json_changed,
         account_changed,
-        |context| context.document.save_sqlite(),
+        |context| context.document.save_account(),
         |context| save_context_json(context, save_json),
         |context, receipt| {
-            context.document.rollback_sqlite_save(receipt)?;
+            context.document.rollback_account_save(receipt)?;
             context
                 .document
                 .rebase_account_revision_from(context.persisted_document);

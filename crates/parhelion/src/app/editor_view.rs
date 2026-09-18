@@ -202,15 +202,26 @@ impl PackageAuthoringApp {
             });
 
         ui.add_space(4.0);
-        let variable_appearance = donor.map(|gameplay| {
-            variable_damage_appearance(&self.recipe, &gameplay.summary, &self.donor_summaries)
-        });
+        // A behavior copied from Hard Light or Borealis owns the damage type.
+        let damage_locked = self
+            .recipe
+            .overrides
+            .additional_behaviors
+            .iter()
+            .filter_map(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
+            .any(crate::weapon_behavior::source_switches_element);
         let variable_available =
-            variable_appearance.is_some_and(VariableDamageAppearance::is_possible);
+            donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
         let mut inventory_slot_changed = false;
         let mut damage_changed = false;
+        let behaviors = crate::app::donor_view::unique_behavior_sources(donor);
         let column_count = core_profile_column_count(ui.available_width());
-        for fields in [0, 1, 2, 3, 4].chunks(column_count) {
+        let fields: &[usize] = if behaviors.is_empty() {
+            &[0, 1, 2, 3, 4]
+        } else {
+            &[0, 1, 2, 3, 4, 5]
+        };
+        for fields in fields.chunks(column_count) {
             ui.columns(column_count, |columns| {
                 for (&field, column) in fields.iter().zip(columns) {
                     match field {
@@ -221,39 +232,32 @@ impl PackageAuthoringApp {
                                 donor,
                                 field == 0,
                                 variable_available,
+                                damage_locked,
                             );
                             inventory_slot_changed |= field == 0 && changed;
                             damage_changed |= field == 1 && changed;
                         }
                         2 => draw_ammo_type_control(column, &mut self.recipe.overrides, donor),
                         3 => draw_rarity_control(column, &mut self.recipe.overrides, donor),
-                        _ => draw_power_cap_control(
+                        4 => draw_power_cap_control(
                             column,
                             &mut self.recipe.overrides,
                             donor,
                             self.catalog.as_ref(),
                         ),
+                        _ => crate::app::donor_view::draw_unique_behavior_control(
+                            column,
+                            &mut self.recipe.overrides,
+                            &behaviors,
+                        ),
                     }
                 }
             });
         }
-        draw_combat_profile_diagnostics(
-            ui,
-            &self.recipe.overrides,
-            donor,
-            variable_appearance.unwrap_or(VariableDamageAppearance::Unavailable),
-        );
+        crate::app::donor_view::draw_unique_behavior_details(ui, &mut self.recipe.overrides);
+        draw_combat_profile_diagnostics(ui, &self.recipe.overrides, donor);
         if inventory_slot_changed && let Some(gameplay_donor) = donor {
             reconcile_presentation_donor(
-                &mut self.recipe,
-                &gameplay_donor.summary,
-                &self.donor_summaries,
-            );
-        }
-        if (damage_changed || inventory_slot_changed)
-            && let Some(gameplay_donor) = donor
-        {
-            reconcile_variable_damage(
                 &mut self.recipe,
                 &gameplay_donor.summary,
                 &self.donor_summaries,
@@ -478,6 +482,7 @@ impl PackageAuthoringApp {
         ui.heading("Icon & Colors");
         ui.label("These follow the appearance on the Weapon tab unless you choose another source.");
         ui.add_space(8.0);
+        self.draw_appearance_ornaments(ui);
         if ui.available_width() >= 880.0 {
             ui.columns(2, |columns| {
                 self.draw_icon_donor_picker(&mut columns[0]);
@@ -847,13 +852,40 @@ impl PackageAuthoringApp {
                     "The first choice starts equipped. Right-click an extra choice to make it the default. Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
                 if ui
                     .button("Use Custom Perk…")
-                    .on_hover_text("Add a saved custom perk to this weapon.")
+                    .on_hover_text("Create a custom perk, or add one you already saved, to this weapon.")
                     .clicked()
                 {
                     self.perk_workbench.open = true;
                 }
                 self.draw_socket_options(ui, has_authored_columns);
             });
+            // A graft fills these sockets when the weapon is built, so say which and where.
+            if !self.recipe.overrides.skip_behavior_perks
+                && let Some(catalog) = self.catalog.as_ref()
+            {
+                for entry in self
+                    .recipe
+                    .overrides
+                    .additional_behaviors
+                    .iter()
+                    .filter_map(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
+                {
+                    let mut pinned = Vec::new();
+                    if let Some(plug) = entry.intrinsic_plug {
+                        pinned.push(format!("{} in Intrinsic", catalog.plug_label(plug, false)));
+                    }
+                    if let Some(plug) = entry.trait_plug {
+                        pinned.push(format!("{} in Trait", catalog.plug_label(plug, false)));
+                    }
+                    if !pinned.is_empty() {
+                        ui.weak(format!(
+                            "{} adds {} when the weapon is built.",
+                            entry.source_name,
+                            pinned.join(" and ")
+                        ));
+                    }
+                }
+            }
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
             }

@@ -15,7 +15,7 @@ fn dawn_defaults_convert_to_sqlite_and_back() {
         panic!("Account not loaded")
     };
     let mut notes = Vec::new();
-    let result = to_json(&document, &source, &mut notes).unwrap();
+    let result = to_json(&document, &source, &mut notes, &|_| true).unwrap();
     assert_eq!(result["state"]["characters"].as_array().unwrap().len(), 3);
     assert_eq!(
         result["state"]["account"]["primary_soid"],
@@ -126,9 +126,11 @@ fn native_conversion_keeps_socket_lanes_and_reports_data_dawn_cannot_store() {
     .unwrap();
     let before = super::super::snapshot::read(&path).unwrap();
     let mut notes = Vec::new();
-    let result = to_json(&document, &defaults, &mut notes).unwrap();
+    let result = to_json(&document, &defaults, &mut notes, &|_| true).unwrap();
     let character = &result["state"]["characters"][0];
-    assert_eq!(character["inventory"].as_array().unwrap().len(), 2);
+    // The fixture parks one item in native slot 16, which Dawn v6 has no equipment slot for. It
+    // stays in the backup rather than moving into an inventory bucket the runtime cannot resolve.
+    assert_eq!(character["inventory"].as_array().unwrap().len(), 1);
     assert_eq!(character["inventory"][0]["flags"], 3);
     assert_eq!(
         character["equipment"]["subclass"]["plugs"],
@@ -142,7 +144,7 @@ fn native_conversion_keeps_socket_lanes_and_reports_data_dawn_cannot_store() {
         "dismantle reward",
         "character material stacks",
         "pending rewards",
-        "move to inventory",
+        "no matching slot",
         "marked as masterworked",
     ] {
         assert!(
@@ -161,17 +163,19 @@ fn native_conversion_keeps_socket_lanes_and_reports_data_dawn_cannot_store() {
 }
 
 #[test]
-fn native_conversion_refuses_inventory_overflow() {
+fn native_conversion_keeps_a_full_inventory_when_a_slot_has_no_target_equivalent() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("investment.sqlite3");
     super::super::tests::create_fixture(&path, 3);
     let db = Connection::open(&path).unwrap();
+    // Native slot 16 has no Dawn v6 equivalent. It used to move into the inventory, which could
+    // push a full character past its capacity. Dropping it keeps the conversion available.
     db.execute(
         "UPDATE items SET position=16 WHERE location=0 AND position=0",
         [],
     )
     .unwrap();
-    for position in 1..135 {
+    for position in 1..crate::account_contract::CHARACTER_INVENTORY_CAPACITY {
         db.execute("INSERT INTO items SELECT character_slot,location,?,instance_soid+?,definition_hash,level,quantity,mutation_serial,flags,socket_policy,plug_count,movement_ability,grenade_ability,super_ability,melee_ability,class_ability,seen FROM items WHERE location=1 AND position=0", rusqlite::params![position, position]).unwrap();
     }
     let super::super::SqliteAccountDocumentLoad::Loaded(document) =
@@ -183,9 +187,84 @@ fn native_conversion_refuses_inventory_overflow() {
         "../../../../tests/fixtures/dawn-v6-42fc41e-defaults.json"
     ))
     .unwrap();
+    let mut notes = Vec::new();
+    let result = to_json(&document, &defaults, &mut notes, &|_| true).unwrap();
+    assert_eq!(
+        result["state"]["characters"][0]["inventory"]
+            .as_array()
+            .unwrap()
+            .len(),
+        crate::account_contract::CHARACTER_INVENTORY_CAPACITY
+    );
     assert!(
-        to_json(&document, &defaults, &mut Vec::new())
-            .unwrap_err()
-            .contains("136 inventory slots")
+        notes.iter().any(|text| text.contains("no matching slot")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn native_conversion_drops_items_the_target_schema_does_not_define() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("investment.sqlite3");
+    super::super::tests::create_fixture(&path, 3);
+    let db = Connection::open(&path).unwrap();
+    // The emote collection arrived with account schema 13. Dawn v6 has no bucket for it, and one
+    // unresolvable item makes Dawn abandon the whole character loadout rather than skip the item.
+    db.execute(
+        "UPDATE items SET definition_hash=? WHERE location=1 AND position=0",
+        [crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH],
+    )
+    .unwrap();
+    let super::super::SqliteAccountDocumentLoad::Loaded(document) =
+        super::super::load_document(&path).unwrap()
+    else {
+        panic!("Account not loaded")
+    };
+    let defaults: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/dawn-v6-42fc41e-defaults.json"
+    ))
+    .unwrap();
+    assert_eq!(defaults["version"], 6);
+    let mut notes = Vec::new();
+    let result = to_json(&document, &defaults, &mut notes, &|_| true).unwrap();
+    let inventory = result["state"]["characters"][0]["inventory"]
+        .as_array()
+        .unwrap();
+    assert!(
+        inventory.is_empty(),
+        "schema 13 definition must not reach a v6 account: {inventory:?}"
+    );
+    assert!(
+        notes.iter().any(|text| text.contains("cannot store")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn native_conversion_drops_items_the_installed_build_cannot_resolve() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("investment.sqlite3");
+    super::super::tests::create_fixture(&path, 3);
+    let super::super::SqliteAccountDocumentLoad::Loaded(document) =
+        super::super::load_document(&path).unwrap()
+    else {
+        panic!("Account not loaded")
+    };
+    let defaults: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/dawn-v6-42fc41e-defaults.json"
+    ))
+    .unwrap();
+    let mut notes = Vec::new();
+    // Definition 300 is the fixture's only inventory item and the catalog cannot resolve it.
+    let result = to_json(&document, &defaults, &mut notes, &|hash| hash != 300).unwrap();
+    assert!(
+        result["state"]["characters"][0]["inventory"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        notes.iter().any(|text| text.contains("cannot store")),
+        "{notes:?}"
     );
 }

@@ -181,9 +181,7 @@ fn draw_job(
     let (changed, close) = crate::app::ui::edit_modal(ui, "season_pass_claim", |ui| {
         if let Some(mut job) = state.job.take() {
             let (done, total) = job.progress();
-            ui.strong("Preparing Rewards");
-            ui.label(format!("{done} / {total}"));
-            if ui.button("Cancel").clicked() {
+            if crate::app::ui::modal_progress(ui, "Preparing Rewards", done, total) {
                 return false;
             }
             if job.step(catalog, pass) {
@@ -195,56 +193,56 @@ fn draw_job(
             return false;
         }
         let job = state.ready.as_ref().expect("prepared pass claims");
-        ui.strong("Review Season Pass Changes");
+        let mut counts = vec![(false, format!("{} Claims", job.claimed))];
         if let Some((before, after)) = job.rank_change {
-            ui.label(format!("Rank {before} → {after}"));
+            counts.push((false, format!("Rank {before} → {after}")));
         }
-        ui.label(format!(
-            "Claims: {} · Pending Rewards: {}",
-            job.claimed,
-            job.queued()
-        ));
-        job.draw_consumables(ui, catalog);
-        if job.queues_armor(catalog) {
-            ui.label("Queued armor uses standard rolls. Claim in Sunrise for the fixed Season Pass rolls.");
+        if job.queued() > 0 {
+            counts.push((true, format!("{} Pending Rewards", job.queued())));
         }
         if !job.issues.is_empty() {
-            ui.collapsing(
-                format!("{} Rewards Left Unclaimed", job.issues.len()),
-                |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("pass_issues")
-                        .max_height(180.0)
-                        .show_rows(ui, 42.0, job.issues.len(), |ui, range| {
-                            for index in range {
-                                let (name, reason) = &job.issues[index];
-                                ui.add(
-                                    egui::Label::new(crate::app::ui::destiny_text(ui, name))
-                                        .truncate(),
-                                );
-                                ui.add(egui::Label::new(reason).truncate())
-                                    .on_hover_text(reason);
-                            }
-                        });
-                },
-            );
+            counts.push((true, format!("{} Unclaimed", job.issues.len())));
         }
-        let (apply, cancel) = ui
-            .horizontal(|ui| {
-                (
-                    ui.add_enabled(
-                        job.changed(),
-                        egui::Button::new(if job.direct_count() > 0 {
-                            "Apply Anyway"
-                        } else {
-                            "Apply Changes"
-                        }),
-                    )
-                    .clicked(),
-                    ui.button("Cancel").clicked(),
-                )
-            })
-            .inner;
+        crate::app::ui::review_header(ui, "Review Season Pass Changes", &counts);
+        crate::app::ui::review_body(ui, "season_pass_review_body", |ui| {
+            job.draw_consumables(ui, catalog);
+            if job.queues_armor(catalog) {
+                ui.label(
+                    "Queued armor uses standard rolls. Claim in Sunrise for the fixed Season Pass rolls.",
+                );
+            }
+            if !job.issues.is_empty() {
+                egui::CollapsingHeader::new(format!("{} Rewards Left Unclaimed", job.issues.len()))
+                    .id_salt("season_pass_review_unclaimed")
+                    .show(ui, |ui| {
+                        // A full season can leave a long tail, so keep the rows virtualized.
+                        egui::ScrollArea::vertical()
+                            .id_salt("pass_issues")
+                            .max_height(220.0)
+                            .show_rows(ui, 42.0, job.issues.len(), |ui, range| {
+                                for index in range {
+                                    let (name, reason) = &job.issues[index];
+                                    ui.add(
+                                        egui::Label::new(crate::app::ui::destiny_text(ui, name))
+                                            .truncate(),
+                                    );
+                                    ui.add(egui::Label::new(reason).truncate())
+                                        .on_hover_text(reason);
+                                }
+                            });
+                    });
+            }
+        });
+        let (apply, cancel) = crate::app::ui::review_actions(
+            ui,
+            if job.direct_count() > 0 {
+                "Apply Anyway"
+            } else {
+                "Apply Changes"
+            },
+            job.changed(),
+            "No supported changes to apply.",
+        );
         if cancel {
             state.ready = None;
         }

@@ -217,7 +217,7 @@ fn ingredient_operation_summaries_wrap_inside_the_details_pane() {
         Behavior, DetailLine, DetailSection,
     };
     let behavior = Behavior {
-        headline: String::new(), support: Support::Readable, editable: true,
+        headline: String::new(), support: Support::Readable, editable: true, program: None,
         condition_kinds: Vec::new(), effect_kinds: vec![9], notes: Vec::new(),
         details: vec![DetailSection {
             group: "Main Program".into(), heading: "Then".into(),
@@ -391,6 +391,7 @@ fn program_recipe() -> PerkRecipe {
         alternative_removals: Vec::new(),
         native_rearm: None,
         alternative_rearms: Vec::new(),
+        additional_groups: Vec::new(),
     });
     recipe.effects.push(effect);
     recipe
@@ -692,4 +693,82 @@ fn the_behavior_stock_filter_keeps_its_choice_after_the_frame_that_set_it() {
         placements(&output, "Any Stock Use").is_empty(),
         "the source filter still shows All Sources after Guided was chosen"
     );
+}
+
+#[test]
+fn a_label_filter_keeps_its_column_however_long_its_selection_reads() {
+    use super::super::controls::{COLUMN_WIDTH, column};
+    // A kill filter reads as every label the author chose, joined. Eight of these stacked
+    // in one column used to take the whole pane and wrap onto several lines each.
+    let selection = "Precision, Grenade, Sword, Super, Melee, Shotgun, Sniper, Fusion, Bow";
+    for width in [640.0_f32, 1320.0] {
+        let (output, screen) = panel(width, |ui| {
+            column(ui, |ui| {
+                egui::ComboBox::from_id_salt("filter-column-width")
+                    .width(COLUMN_WIDTH)
+                    .truncate()
+                    .selected_text(selection)
+                    .show_ui(ui, |_| {});
+            });
+        });
+        assert_fits_horizontally(&output, screen);
+        let (_, rect) = placements(&output, selection)
+            .into_iter()
+            .next()
+            .expect("the filter's selected text");
+        assert!(
+            rect.width() <= COLUMN_WIDTH,
+            "a filter ran to {} at a pane width of {width}, past its {COLUMN_WIDTH} column",
+            rect.width()
+        );
+    }
+}
+
+#[test]
+fn an_ammunition_row_keeps_its_amount_destination_and_store_inside_a_narrow_pane() {
+    use sundial::package_authoring::sandbox_perk::program::{AmmunitionStore, AmmunitionTarget};
+    // A label column, an amount, a destination and a store on one line are wider than a
+    // narrow pane, so the value has to wrap rather than run off the edge.
+    let mut recipe = PerkRecipe::new();
+    let mut effect = PerkRecipe::effect(421);
+    let mut program = program_recipe().effects[0]
+        .program
+        .clone()
+        .expect("the fixture program");
+    program.actions = vec![
+        Action::AddRounds {
+            rounds: 3,
+            target: AmmunitionTarget::ALL[0],
+            store: AmmunitionStore::ALL[0],
+            overflow: false,
+            unit_scaled: false,
+            action_scaled: false,
+        },
+        Action::AddFraction {
+            fraction_bits: 0.5_f32.to_bits(),
+            target: AmmunitionTarget::ALL[0],
+            store: AmmunitionStore::ALL[0],
+            capacity: AmmunitionStore::ALL[0],
+            overflow: false,
+            action_scaled: false,
+        },
+    ];
+    effect.program = Some(program);
+    recipe.effects.push(effect);
+    let before = recipe.clone();
+    let mut workbench = Workbench::default();
+    for width in [440.0_f32, 520.0, 640.0, 900.0, 1320.0] {
+        let (output, screen) = panel(width, |ui| {
+            workbench.draw_effects(ui, Path::new(""), None, &[], &mut recipe, true);
+        });
+        assert_fits_horizontally(&output, screen);
+        // The row has to reach the screen for the assertion above to mean anything.
+        for name in ["Rounds", "Share", "To"] {
+            assert!(
+                !placements(&output, name).is_empty(),
+                "{name} was not drawn at a pane width of {width}"
+            );
+        }
+    }
+    assert_eq!(recipe, before);
 }

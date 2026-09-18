@@ -439,6 +439,7 @@ impl PerkEditor {
                 header: None,
                 place: Some(&mut place),
                 footer: None,
+                trigger_command: None,
             },
         );
         let unplaced = loaded

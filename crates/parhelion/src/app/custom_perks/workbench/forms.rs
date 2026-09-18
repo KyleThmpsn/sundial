@@ -48,27 +48,37 @@ impl Workbench {
                             .or_insert(choice.representative_hash);
                     }
                 }
-                egui::ComboBox::from_id_salt("perk-type")
-                    .selected_text(&type_name)
-                    .show_ui(ui, |ui| {
-                        crate::app::style::workbench_style(ui);
-                        for (name, source) in types {
-                            if ui.selectable_label(name == type_name, name).clicked()
-                                && name != type_name
-                            {
-                                recipe.classification = Some(source.into());
+                controls::column(ui, |ui| {
+                    egui::ComboBox::from_id_salt("perk-type")
+                        .width(controls::COLUMN_WIDTH)
+                        .truncate()
+                        .selected_text(&type_name)
+                        .show_ui(ui, |ui| {
+                            crate::app::style::workbench_style(ui);
+                            for (name, source) in types {
+                                if ui.selectable_label(name == type_name, name).clicked()
+                                    && name != type_name
+                                {
+                                    recipe.classification = Some(source.into());
+                                }
                             }
-                        }
-                    });
-                pickers::name_combo(ui, "perk-type", "Perk Type");
+                        })
+                        .response
+                        .on_hover_text(&type_name);
+                    pickers::name_combo(ui, "perk-type", "Perk Type");
+                });
             }
-            let description = ui.add(egui::Button::new("Description    ").frame(false));
-            let mut arrow = description.clone();
-            arrow.rect = egui::Rect::from_center_size(
-                egui::pos2(description.rect.right() - 6.0, description.rect.center().y),
-                egui::vec2(8.0, 8.0),
-            );
-            egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &arrow);
+            // A disclosure drawn as one control. It used to be a label padded with four
+            // spaces and an arrow painted into a copied response rect, which left the caret
+            // adrift from its own button and gave the control no pressed state.
+            let caret = if open {
+                egui_phosphor::regular::CARET_DOWN
+            } else {
+                egui_phosphor::regular::CARET_RIGHT
+            };
+            let description = ui
+                .add(egui::Button::new(format!("Description {caret}")).selected(open))
+                .on_hover_text("Show this perk's name, icon and description.");
             if description.clicked() {
                 self.page = if open { Page::Effects } else { Page::Basics };
             }
@@ -223,6 +233,9 @@ impl Workbench {
         self.refresh_item_names(catalog);
         self.refresh_asset_labels();
         ui.horizontal_wrapped(|ui| {
+            // The Basics header sizes its controls the same way, so moving between the two
+            // pages does not change the height of the row under the heading.
+            crate::app::style::compact_controls(ui);
             ui.heading("Effects");
             sundial::investment::draw_authoring_info_icon(
                 ui,
@@ -258,17 +271,20 @@ impl Workbench {
         {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
         }
+        ui.add_space(4.0);
         let mut events = EffectEvents::default();
         for (position, effect) in recipe.effects.iter_mut().enumerate() {
+            // Cards carry their own outline. A gap between them keeps two effects from
+            // reading as one.
+            if position > 0 {
+                ui.add_space(4.0);
+            }
             let index = effect.source_perk_index;
             if effect.program.is_some() {
                 self.draw_program_effect(ui, catalog, effect, experimental, &mut events);
             } else {
-                let name = format!(
-                    "{}. {}",
-                    position + 1,
-                    self.stock_effect_name(choices, index)
-                );
+                let title = self.stock_effect_name(choices, index);
+                let name = format!("{}. {title}", position + 1);
                 let description = catalog
                     .and_then(|catalog| catalog.perk_component_description(index))
                     .filter(|description| !description.is_empty())
@@ -278,7 +294,15 @@ impl Workbench {
                             && effect.projectiles.is_empty()
                             && effect.activation.is_none()
                     });
-                self.draw_stock_effect(ui, &name, description, effect, experimental, &mut events);
+                self.draw_stock_effect(
+                    ui,
+                    &name,
+                    &title,
+                    description,
+                    effect,
+                    experimental,
+                    &mut events,
+                );
             }
         }
         if let Some(index) = events.remove {
@@ -335,6 +359,9 @@ impl Workbench {
                         name: "",
                         backend: canvas::Backend::Program {
                             program,
+                            stock: None,
+                            description: None,
+                            labels: &BTreeMap::new(),
                             editing: experimental.then_some(canvas::Editing {
                                 workbench: self,
                                 catalog,
@@ -343,6 +370,7 @@ impl Workbench {
                         header: Some(&mut header),
                         place: None,
                         footer: None,
+                        trigger_command: None,
                     },
                 )
             })
@@ -359,10 +387,14 @@ impl Workbench {
 
     /// A stock effect card: the cached digest of its action when the dependency index has
     /// one, otherwise just the name, with the edit and activation controls around it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_stock_effect(
         &mut self,
         ui: &mut egui::Ui,
         name: &str,
+        // The effect's own name, without the position this card shows it at. An adopted
+        // program keeps this, since the position is a property of the list, not the effect.
+        title: &str,
         description: Option<&str>,
         effect: &mut WeaponSandboxPerkRuntimeRecipe,
         experimental: bool,
@@ -384,39 +416,8 @@ impl Workbench {
         let mut remove = false;
         let mut edit = false;
         let mut edit_trigger = false;
+        let mut adopted = None;
         let digest = self.discovery.behavior(index);
-        let trigger = effect
-            .activation
-            .map(|value| value.label().to_owned())
-            .or_else(|| {
-                digest.and_then(|behavior| {
-                    let sections = behavior
-                        .details
-                        .iter()
-                        .filter(|section| section.heading == "Starts When")
-                        .collect::<Vec<_>>();
-                    let lines = sections
-                        .iter()
-                        .map(|section| {
-                            let text = section
-                                .lines
-                                .iter()
-                                .filter(|line| line.depth == 0)
-                                .map(|line| line.text.trim_end_matches('.'))
-                                .collect::<Vec<_>>()
-                                .join(" or ");
-                            if sections.len() > 1 {
-                                format!("{}: {text}", section.group)
-                            } else {
-                                text
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    (!lines.is_empty()).then(|| lines.join("\n"))
-                })
-            })
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "Original Conditions".into());
         let mut header = |ui: &mut egui::Ui| {
             crate::app::style::more_menu(ui, |ui| {
                 crate::app::style::workbench_style(ui);
@@ -441,27 +442,105 @@ impl Workbench {
                 edit = true;
             }
         };
+        // Editing one of these rows is what turns a stock effect into an authored program,
+        // and a program replaces every stock override rather than sitting beside it. So the
+        // rows stay live only while there is nothing to lose.
+        let overridden = !effect.runtime_values.is_empty()
+            || !effect.action_float_values.is_empty()
+            || !effect.projectiles.is_empty()
+            || effect.activation.is_some();
+        let live = experimental && !overridden && issue.is_none();
+        // A locked card says why it is locked. Reading it as merely greyed out was the whole
+        // complaint, and the reason is never that the effect cannot be edited.
+        let locked_note = (overridden && issue.is_none()).then(|| {
+            let mut carried = Vec::new();
+            if !effect.projectiles.is_empty() {
+                carried.push("a projectile swap".to_owned());
+            }
+            let values = effect.runtime_values.len() + effect.action_float_values.len();
+            if values == 1 {
+                carried.push("1 value edit".to_owned());
+            } else if values > 1 {
+                carried.push(format!("{values} value edits"));
+            }
+            if effect.activation.is_some() {
+                carried.push("a changed trigger".to_owned());
+            }
+            format!(
+                "These rows are locked because this effect carries {}. Edit Behavior turns it into an editable program without losing them.",
+                carried.join(" and ")
+            )
+        });
         let mut footer = |ui: &mut egui::Ui| {
             if let Some(issue) = &issue {
                 ui.colored_label(ui.visuals().warn_fg_color, issue);
             }
-            canvas::row(
-                ui,
-                "Trigger",
-                "Changes this effect only. Other effects and action-specific conditions keep their settings.",
-                |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                    ui.label(&trigger);
-                    edit_trigger = ui.add_enabled(experimental && issue.is_none(), egui::Button::new("Edit Trigger…"))
-                        .on_hover_text("Open this effect's editable trigger, including its original filters.").clicked();
-                });
-                },
-            );
+            if let Some(note) = &locked_note {
+                ui.small(note);
+            }
+            // A live card edits its trigger in place, so the command belongs to a locked one.
+            if !live {
+                edit_trigger = ui
+                    .add_enabled(
+                        experimental && issue.is_none(),
+                        egui::Button::new("Edit Trigger…"),
+                    )
+                    .on_hover_text(
+                        "Open this effect's editable trigger, including its original filters.",
+                    )
+                    .clicked();
+            }
         };
         // The cached digest keeps the card informative before the editor loads the action.
         let reading = digest.is_none() && self.discovery.busy();
-        ui.push_id(index, |ui| match digest {
-            Some(behavior) => {
+        // Recovering the program is how the digest decides a perk is editable, so the result
+        // is already in hand. Showing it means a stock effect reads in the same rows, with the
+        // same real parameters, as one the reader has converted, with no click to find out.
+        let mut recovered = digest.and_then(|behavior| behavior.program.clone());
+        if let Some(program) = recovered.as_mut() {
+            program.name = title.to_owned();
+        }
+        let asset_labels = recovered
+            .as_ref()
+            .and_then(|program| program.native.as_ref())
+            .map(|native| self.program_asset_labels(native, title))
+            .unwrap_or_default();
+        let had_digest = digest.is_some();
+        let activation = effect.activation.map(PerkActivation::label);
+        // The recovered program is owned, so the editing branch can take the workbench
+        // mutably. The digest branch borrows it only to read, so the two are drawn apart
+        // rather than from one closure that would need both at once.
+        if let Some(program) = recovered.as_mut() {
+            let before = program.clone();
+            ui.push_id(index, |ui| {
+                canvas::draw(
+                    ui,
+                    canvas::Canvas {
+                        name,
+                        backend: canvas::Backend::Program {
+                            program,
+                            stock: Some(name),
+                            description,
+                            labels: &asset_labels,
+                            editing: live.then_some(canvas::Editing {
+                                workbench: self,
+                                catalog: None,
+                            }),
+                        },
+                        header: Some(&mut header),
+                        place: None,
+                        footer: Some(&mut footer),
+                        trigger_command: None,
+                    },
+                );
+            });
+            // Only a live card may adopt. Without this the read-only gate above decided
+            // what was drawn and nothing else, so a locked card could still convert itself.
+            if live && *program != before {
+                adopted = Some(program.clone());
+            }
+        } else if let Some(behavior) = self.discovery.behavior(index) {
+            ui.push_id(index, |ui| {
                 canvas::draw(
                     ui,
                     canvas::Canvas {
@@ -469,14 +548,19 @@ impl Workbench {
                         backend: canvas::Backend::Digest {
                             behavior,
                             description,
+                            labels: &self.asset_labels,
+                            activation,
                         },
                         header: Some(&mut header),
                         place: None,
                         footer: Some(&mut footer),
+                        trigger_command: None,
                     },
                 );
-            }
-            None => {
+            });
+        } else {
+            let _ = had_digest;
+            ui.push_id(index, |ui| {
                 crate::app::style::card(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -499,8 +583,17 @@ impl Workbench {
                     }
                     footer(ui);
                 });
-            }
-        });
+            });
+        }
+        // Editing a recovered row is the conversion. The program owns the behavior from here,
+        // which is why it is only offered while the effect carries no stock override.
+        if let Some(program) = adopted {
+            effect.program = Some(program);
+            effect.runtime_values.clear();
+            effect.action_float_values.clear();
+            effect.projectiles.clear();
+            effect.activation = None;
+        }
         if remove {
             events.remove = Some(index);
         }
@@ -624,9 +717,17 @@ impl Workbench {
                 // Four filters plus search and visibility do not fit one line in a narrow
                 // window. Wrapping keeps every control usable.
                 ui.horizontal_wrapped(|ui| {
-                    let filter_width = (ui.available_width() * 0.12).clamp(80.0, 132.0);
-                    let search_width =
-                        (ui.available_width() - filter_width * 4.0 - 285.0).max(160.0);
+                    // Every filter on this line is held to one width, the same one the
+                    // behavior picker uses, so the two toolbars read alike. The search box
+                    // takes what the named controls leave rather than a hand-summed total
+                    // that goes stale the moment one of them changes.
+                    const SHOW_ALL_WIDTH: f32 = 90.0;
+                    let filter_width = guidance::FILTER_WIDTH;
+                    let search_width = (ui.available_width()
+                        - filter_width * 4.0
+                        - SHOW_ALL_WIDTH
+                        - ui.spacing().item_spacing.x * 5.0)
+                        .max(160.0);
                     filter_changed |= pickers::search(ui, query, reset, search_width);
                     filter_changed |= guidance::filters(
                         ui,
@@ -635,36 +736,51 @@ impl Workbench {
                         filter_width,
                     );
                     let before = self.ingredient_source;
-                    egui::ComboBox::from_id_salt("ingredient-source")
-                        .width(filter_width)
-                        .truncate()
-                        .selected_text(before.map_or("All Sources", |source| source.label()))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.ingredient_source, None, "All Sources");
-                            for source in sundial::investment::IngredientSource::ALL {
+                    let source_label = before.map_or("All Sources", |source| source.label());
+                    controls::sized(ui, filter_width, |ui| {
+                        egui::ComboBox::from_id_salt("ingredient-source")
+                            .width(filter_width)
+                            .truncate()
+                            .selected_text(source_label)
+                            .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.ingredient_source,
-                                    Some(source),
-                                    source.label(),
+                                    None,
+                                    "All Sources",
                                 );
-                            }
-                        });
-                    pickers::name_combo(ui, "ingredient-source", "Ingredient Source");
+                                for source in sundial::investment::IngredientSource::ALL {
+                                    ui.selectable_value(
+                                        &mut self.ingredient_source,
+                                        Some(source),
+                                        source.label(),
+                                    );
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!("Ingredient Source: {source_label}"));
+                        pickers::name_combo(ui, "ingredient-source", "Ingredient Source");
+                    });
                     filter_changed |= before != self.ingredient_source;
                     let order_before = self.effect_order;
-                    egui::ComboBox::from_id_salt("effect-order")
-                        .width(filter_width)
-                        .truncate()
-                        .selected_text(format!("Sort: {}", self.effect_order.label()))
-                        .show_ui(ui, |ui| {
-                            for choice in guidance::EffectOrder::ALL {
-                                ui.selectable_value(&mut self.effect_order, choice, choice.label())
+                    controls::sized(ui, filter_width, |ui| {
+                        egui::ComboBox::from_id_salt("effect-order")
+                            .width(filter_width)
+                            .truncate()
+                            .selected_text(format!("Sort: {}", self.effect_order.label()))
+                            .show_ui(ui, |ui| {
+                                for choice in guidance::EffectOrder::ALL {
+                                    ui.selectable_value(
+                                        &mut self.effect_order,
+                                        choice,
+                                        choice.label(),
+                                    )
                                     .on_hover_text(choice.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text("Order the results. Sorting never hides an effect.");
-                    pickers::name_combo(ui, "effect-order", "Sort Order");
+                                }
+                            })
+                            .response
+                            .on_hover_text("Order the results. Sorting never hides an effect.");
+                        pickers::name_combo(ui, "effect-order", "Sort Order");
+                    });
                     filter_changed |= order_before != self.effect_order;
                     let (show_all, visibility_changed) = pickers::show_all(ui);
                     filter_changed |= visibility_changed;
@@ -885,7 +1001,16 @@ impl Workbench {
                 editor.draw_parameters(ui, ctx, experimental);
                 ui.add_space(8.0);
             });
-        if let Some(program) = editor.take_conversion() {
+        // Exactly one transition leaves the editor per frame. An explicit click wins over a
+        // conversion that became ready in the same frame: Back drops the conversion with the
+        // drafts, and Apply keeps the stock overrides the user confirmed. Only an unclicked
+        // frame lets the automatic conversion replace the effect. Letting both run left a
+        // program beside stock overrides, which the build rejects, or rewrote an effect the
+        // user had just discarded.
+        let conversion = editor.take_conversion();
+        if apply || back {
+            drop(conversion);
+        } else if let Some(program) = conversion {
             // The program replaces every stock override. The build rejects the two together.
             if let Some(effect) = recipe
                 .effects

@@ -6,9 +6,10 @@ mod tests;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum SortOrder {
-    #[default]
     Name,
     WeaponType,
+    /// The default: what you edited last is what you are most likely to want next.
+    #[default]
     RecentlyModified,
 }
 

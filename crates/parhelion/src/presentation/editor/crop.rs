@@ -15,8 +15,8 @@ impl Selection {
         let source = texture.size_vec2();
         let scale = (ui.available_width() / source.x).min(235.0 / source.y);
         let (rect, response) = ui.allocate_exact_size(source * scale, egui::Sense::drag());
-        ui.painter()
-            .rect_filled(rect, 0, egui::Color32::from_gray(42));
+        // The source is usually a transparent PNG, and a flat fill hides which parts are clear.
+        crate::app::transparency_backdrop(ui, rect);
         ui.painter().image(
             texture.id(),
             rect,

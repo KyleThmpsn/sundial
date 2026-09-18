@@ -9,8 +9,11 @@ impl Workbench {
         recipe: &mut PerkRecipe,
     ) {
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.strong("Stat Bonuses");
+        ui.horizontal_wrapped(|ui| {
+            // Stat Bonuses and Effects are the two sections of this page, so they carry the
+            // same heading level and the same control sizing.
+            crate::app::style::compact_controls(ui);
+            ui.heading("Stat Bonuses");
             sundial::investment::draw_authoring_info_icon(
                 ui,
                 "Applied while the perk is equipped. Effect triggers do not control them.",

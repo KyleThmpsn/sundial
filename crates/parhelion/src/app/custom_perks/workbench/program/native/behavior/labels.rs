@@ -5,6 +5,8 @@
 //! every one already has a named vocabulary in `activation::LABEL_SITES`, so each list is
 //! editable here from the words the game uses at that exact site.
 use super::*;
+use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, cell};
+
 use sundial::package_authoring::sandbox_perk::activation;
 
 /// Every label binding site on this node that has a stock vocabulary, each as its four set
@@ -26,6 +28,8 @@ pub(super) fn draw_row_sites(
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
     let stride = schema::record(class)?.size;
+    let fold = Fold::of(ui, index, row);
+    let mut unset = 0;
     for (binding, _) in native::labels::bindings(class)? {
         if activation::site_labels(class, binding).is_empty() {
             continue;
@@ -33,25 +37,15 @@ pub(super) fn draw_row_sites(
         let at = row * stride + binding;
         let lists = native::labels::source(graph, index, at)?;
         let caption = site_caption(class, binding);
-        ui.push_id(("label-site", row, binding), |ui| {
-            for (operation, name, hint) in activation::LABEL_OPERATIONS {
-                if let Some(labels) = draw_labels(
-                    ui,
-                    class,
-                    binding,
-                    operation,
-                    &format!("{caption} {}", name.to_lowercase()),
-                    hint,
-                    &lists[operation],
-                )? {
-                    set_labels(graph, index, at, operation, &labels)?;
-                    return Ok(());
-                }
-            }
-            Ok::<_, String>(())
-        })
-        .inner?;
+        unset += unset_operations(&lists);
+        if let Some((operation, labels)) =
+            draw_site_group(ui, class, binding, &caption, &lists, fold.unfolded)?
+        {
+            set_labels(graph, index, at, operation, &labels)?;
+            return Ok(());
+        }
     }
+    fold.draw(ui, unset);
     for &source in added_label_sites(class) {
         if activation::site_labels(class, source).is_empty() {
             continue;
@@ -87,11 +81,106 @@ fn added_label_sites(class: u32) -> &'static [usize] {
     }
 }
 
+/// The set operations a site leaves empty, which is what its node's fold reveals.
+pub(super) fn unset_operations(lists: &[Vec<u32>; 4]) -> usize {
+    activation::LABEL_OPERATIONS
+        .iter()
+        .filter(|(operation, _, _)| lists[*operation].is_empty())
+        .count()
+}
+
+/// One fold for every binding site on a node.
+///
+/// A site offers four set operations and a condition usually sets one, so the ones carrying
+/// labels lead and the empty ones wait behind a disclosure. That disclosure belongs to the
+/// node rather than to each site: the kill node carries two sites, so a fold on each made a
+/// reader open one to find the filters, then notice a second saying much the same thing a
+/// few rows down. One fold counts every empty operation on the node and reveals them all.
+pub(super) struct Fold {
+    id: egui::Id,
+    pub unfolded: bool,
+}
+
+impl Fold {
+    /// A wrapping row hands its contents a child `Ui`, so this state needs an id of its own
+    /// rather than one derived from the surrounding layout.
+    pub fn of(ui: &egui::Ui, index: usize, row: usize) -> Self {
+        let id = egui::Id::new(("label-sites-unset", index, row));
+        Self {
+            id,
+            unfolded: ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false)),
+        }
+    }
+
+    /// The disclosure takes a line of its own, in the control column. Inline it either
+    /// trailed the last filter or claimed a whole cell, so it sat in a different place on
+    /// every node depending on how many filters happened to be set.
+    pub fn draw(self, ui: &mut egui::Ui, unset: usize) {
+        if unset == 0 {
+            return;
+        }
+        let label = if self.unfolded {
+            "Fewer filters".to_owned()
+        } else if unset == 1 {
+            "1 more filter".to_owned()
+        } else {
+            format!("{unset} more filters")
+        };
+        let toggled = cell(ui, "", "", |ui| {
+            ui.small_button(label)
+                .on_hover_text("Set operations this node leaves empty. They stay editable here.")
+                .clicked()
+        });
+        if toggled {
+            ui.data_mut(|data| data.insert_temp(self.id, !self.unfolded));
+        }
+    }
+}
+
+/// One binding site's four set operations, with the empty ones drawn only while its node's
+/// fold is open. Returns the one list edited this frame, since the caller writes at most one.
+pub(super) fn draw_site_group(
+    ui: &mut egui::Ui,
+    class: u32,
+    binding: usize,
+    caption: &str,
+    lists: &[Vec<u32>; 4],
+    unfolded: bool,
+) -> Result<Option<(usize, Vec<u32>)>, String> {
+    let mut edited = None;
+    let mut failed = None;
+    ui.horizontal_wrapped(|ui| {
+        for (operation, name, hint) in activation::LABEL_OPERATIONS {
+            if lists[operation].is_empty() && !unfolded {
+                continue;
+            }
+            match draw_labels(
+                ui,
+                class,
+                binding,
+                operation,
+                &format!("{caption} {}", name.to_lowercase()),
+                hint,
+                &lists[operation],
+            ) {
+                Ok(Some(labels)) if edited.is_none() => edited = Some((operation, labels)),
+                Ok(_) => {}
+                Err(error) if failed.is_none() => failed = Some(error),
+                Err(_) => {}
+            }
+        }
+    });
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    Ok(edited)
+}
+
 /// What a binding site filters on, in the reader's words. Each caption is read off the
 /// vocabulary the stock perks use at that site: weapon types where every label is a weapon
 /// family, damage sources where the labels are precision, grenade and sword, targets where
 /// they are player, boss and combatant, and abilities where they are super and melee.
-fn site_caption(class: u32, binding: usize) -> String {
+pub(super) fn site_caption(class: u32, binding: usize) -> String {
     let known = match (class, binding) {
         // The kind 37 site mixes weapon families (pulse rifle, energy weapon, heavy weapon)
         // with abilities (super, grenade, melee), which together are what dealt the damage.
@@ -103,7 +192,12 @@ fn site_caption(class: u32, binding: usize) -> String {
         | (0x80803E3E, 0x8)
         | (0x80803E3F, 0x8) => Some("Weapon type"),
         (0x80802F16, 0x48) => Some("Ability"),
-        (0x80802F16, 0xC0) | (0x80804D73, 0x0) | (0x80803DE5, 0x8) => Some("Target"),
+        (0x80802F16, 0xC0) | (0x80804D73, 0x0) | (0x80803DE5, 0x8) | (0x80803DE7, 0x8) => {
+            Some("Target")
+        }
+        // The kill node filters on the kill's own labels and on what was killed, through
+        // the same four set operations, so each site needs its own word to read by.
+        (0x80803DE7, 0xD0) => Some("Kill"),
         (0x80803E3C, 0x30) => Some("Target rank"),
         _ => None,
     };
@@ -170,35 +264,43 @@ pub(super) fn draw_labels(
     };
     let mut changed = false;
     let salt = ("labels", class, binding, operation);
-    // A site can carry nineteen labels. The default popup shows nine and hides the rest
-    // behind a scroll with no visible bar, so the popup is tall enough for every stock list.
-    egui::ComboBox::from_id_salt(salt)
-        .width(240.0)
-        .height(480.0)
-        .selected_text(format!("{name}: {summary}"))
-        .show_ui(ui, |ui| {
-            ui.small(hint);
-            for (hash, label, uses) in vocabulary {
-                let mut on = chosen.contains(hash);
-                if ui
-                    .checkbox(&mut on, plain_label(label))
-                    .on_hover_text(format!(
-                        "{uses} stock perks use this label here. The engine's token is \"{label}\"."
-                    ))
-                    .changed()
-                {
-                    changed = true;
-                    if on {
-                        chosen.push(*hash);
-                    } else {
-                        chosen.retain(|candidate| candidate != hash);
+    // The operation names the row, so the control shows the chosen labels alone. A combo
+    // grows to the width of its text, and a node draws up to eight of these in one column:
+    // spelling the operation inside every one of them filled the pane and wrapped each
+    // control onto several lines. The full reading stays on hover.
+    cell(ui, name, hint, |ui| {
+        // A site can carry nineteen labels. The default popup shows nine and hides the
+        // rest behind a scroll with no visible bar, so the popup is tall enough for
+        // every stock list.
+        egui::ComboBox::from_id_salt(salt)
+                .width(COLUMN_WIDTH)
+                .height(480.0)
+                .truncate()
+                .selected_text(summary.clone())
+                .show_ui(ui, |ui| {
+                    ui.small(hint);
+                    for (hash, label, uses) in vocabulary {
+                        let mut on = chosen.contains(hash);
+                        if ui
+                            .checkbox(&mut on, plain_label(label))
+                            .on_hover_text(format!(
+                                "{uses} stock perks use this label here. The engine's token is \"{label}\"."
+                            ))
+                            .changed()
+                        {
+                            changed = true;
+                            if on {
+                                chosen.push(*hash);
+                            } else {
+                                chosen.retain(|candidate| candidate != hash);
+                            }
+                        }
                     }
-                }
-            }
-        })
-        .response
-        .on_hover_text(hint);
-    pickers::name_combo(ui, salt, name);
+                })
+            .response
+            .on_hover_text(format!("{name}: {summary}\n{hint}"));
+        pickers::name_combo(ui, salt, name);
+    });
     if changed {
         chosen.sort_unstable();
         chosen.dedup();

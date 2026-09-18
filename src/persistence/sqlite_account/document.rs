@@ -689,3 +689,43 @@ fn load_preserved_rows(
     .map(|table| Ok((table.into(), super::writer::rows(db, table)?)))
     .collect()
 }
+
+impl crate::persistence::native_account::NativeAccountDocument for SqliteAccountDocument {
+    const LABEL: &'static str = "investment.sqlite3";
+    fn profile(&self) -> &ProfileState {
+        Self::profile(self)
+    }
+    fn profile_mut(&mut self) -> &mut ProfileState {
+        Self::profile_mut(self)
+    }
+    fn characters(&self) -> &CharacterState {
+        Self::characters(self)
+    }
+    fn characters_mut(&mut self) -> &mut CharacterState {
+        Self::characters_mut(self)
+    }
+    fn settings(&self) -> &AccountSettingsState {
+        Self::settings(self)
+    }
+    fn settings_mut(&mut self) -> &mut AccountSettingsState {
+        Self::settings_mut(self)
+    }
+    fn next_entity_id(&self) -> Result<EntityId, String> {
+        Self::next_entity_id(self).map_err(|error| error.to_string())
+    }
+    fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
+        Self::persisted_item_abilities(self, id)
+    }
+    fn set_persisted_item_abilities(&mut self, id: EntityId, abilities: CharacterAbilities) {
+        Self::set_persisted_item_abilities(self, id, abilities);
+    }
+    fn profile_capabilities() -> ProfileCapabilities {
+        Self::profile_capabilities()
+    }
+    fn character_capabilities() -> CharacterCapabilities {
+        Self::character_capabilities()
+    }
+    fn settings_capabilities() -> AccountSettingsCapabilities {
+        Self::settings_capabilities()
+    }
+}

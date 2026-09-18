@@ -16,7 +16,7 @@ impl WorkspaceDocument {
                 crate::app::inventory::schema_mode(self.json()).supports_masterwork_flags()
             }
             AccountSourceKind::Sqlite => true,
-            AccountSourceKind::Blocked => false,
+            AccountSourceKind::Dawn | AccountSourceKind::Blocked => false,
         }
     }
 
@@ -48,6 +48,9 @@ pub(in crate::app) fn equipped_item_snapshots(
             sqlite::equipped_item_snapshots(document, character_index)
         }
         AccountDocument::Blocked(_) => Err(blocked_string(document)),
+        AccountDocument::Dawn(document) => {
+            sqlite::equipped_item_snapshots(document, character_index)
+        }
     }
 }
 
@@ -88,6 +91,13 @@ pub(in crate::app) fn equip_definition(
             definition_hash,
             default_plugs,
         ),
+        AccountDocument::Dawn(document) => sqlite::equip_definition(
+            document,
+            character_index,
+            slot,
+            definition_hash,
+            default_plugs,
+        ),
         AccountDocument::Blocked(reason) => Err(reason.clone()),
     }
 }
@@ -109,6 +119,9 @@ pub(in crate::app) fn set_equipment_item_level(
             sqlite::set_equipment_item_level(document, character_index, slot, level)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
+        AccountDocument::Dawn(document) => {
+            sqlite::set_equipment_item_level(document, character_index, slot, level)
+        }
     }
 }
 
@@ -129,6 +142,9 @@ pub(in crate::app) fn set_equipment_item_flags(
             sqlite::set_equipment_item_flags(document, character_index, slot, flags)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
+        AccountDocument::Dawn(document) => {
+            sqlite::set_equipment_item_flags(document, character_index, slot, flags)
+        }
     }
 }
 
@@ -158,6 +174,14 @@ pub(in crate::app) fn set_equipment_item_plug(
             default_plugs,
             hash,
         ),
+        AccountDocument::Dawn(document) => sqlite::set_equipment_item_plug(
+            document,
+            character_index,
+            slot,
+            socket_index,
+            default_plugs,
+            hash,
+        ),
         AccountDocument::Blocked(reason) => Err(reason.clone()),
     }
 }
@@ -175,6 +199,9 @@ pub(in crate::app) fn set_weapon_slot_empty(
             sqlite::set_weapon_slot_empty(document, character_index, slot)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
+        AccountDocument::Dawn(document) => {
+            sqlite::set_weapon_slot_empty(document, character_index, slot)
+        }
     }
 }
 
@@ -190,6 +217,11 @@ pub(in crate::app) fn restore_class_armor(
             destination_character_index,
         ),
         AccountDocument::Sqlite(document) => sqlite::restore_class_armor(
+            document,
+            source_character_index,
+            destination_character_index,
+        ),
+        AccountDocument::Dawn(document) => sqlite::restore_class_armor(
             document,
             source_character_index,
             destination_character_index,

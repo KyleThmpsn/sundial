@@ -166,7 +166,7 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
                 3,
             );
         }
-        let mut workspace = WorkspaceDocument::load(json.clone(), &path);
+        let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
         for acquired in [true, false] {
             let mut view = workspace.progression_view(0);
             assert_eq!(
@@ -188,6 +188,7 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
             workspace = WorkspaceDocument::load(
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
                 &path,
+                false,
             );
             let snapshot = collection_state_snapshot(&workspace.progression_view(0)).unwrap();
             for definition in &definitions {
@@ -240,4 +241,63 @@ fn large_boolean_conditions_are_editable_and_unsupported_rows_wait_for_review() 
         "Preparation must not commit a supported subset"
     );
     assert_eq!(job.finish(&mut document, &catalog).unwrap().changed, 1);
+}
+
+#[test]
+fn the_review_action_row_stays_visible_above_a_long_impact_list() {
+    // One selected item, forty more sharing its flag: the impact list is unbounded.
+    let catalog = catalog().with_test_collectibles(
+        (0..41u16)
+            .map(|index| collectible(index, 0, false))
+            .collect(),
+    );
+    let mut document = json!({});
+    let mut job = Job::new(&document, vec![collectible(0, 0, false)], true).unwrap();
+    while !job.step(&catalog, 64).unwrap() {}
+    assert_eq!(job.review.as_ref().unwrap().related.len(), 40);
+    let mut state = UiState {
+        bulk_ready: Some(job),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut output = egui::FullOutput::default();
+    for _ in 0..8 {
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 420.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    jobs(ui, &mut document, &catalog, &mut state);
+                });
+            },
+        );
+    }
+    crate::app::tests::capture::write(&ctx, &output, "collection-review-long");
+    let (pos, size, clip) = output
+        .shapes
+        .iter()
+        .find_map(|shape| {
+            let egui::Shape::Text(text) = &shape.shape else {
+                return None;
+            };
+            text.galley
+                .job
+                .text
+                .starts_with("Apply")
+                .then(|| (text.pos, text.galley.size(), shape.clip_rect))
+        })
+        .expect("the apply action is missing from the modal");
+    assert!(
+        clip.contains(pos) && clip.contains(pos + size),
+        "the action row is clipped away: {pos:?} {size:?} {clip:?}"
+    );
+    assert!(
+        pos.y + size.y <= 420.0,
+        "the action row is off screen: {pos:?}"
+    );
 }

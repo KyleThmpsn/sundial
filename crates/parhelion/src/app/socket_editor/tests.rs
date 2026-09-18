@@ -282,6 +282,43 @@ fn making_a_choice_default_moves_conditions_weights_and_private_data_together() 
 }
 
 #[test]
+fn moving_a_choice_carries_its_weight_condition_and_private_perk() {
+    let mut recipe = PackageAuthoringApp::default().recipe;
+    set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20, 21, 22], None);
+    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
+    column.choice_weight_bits = vec![1.0_f32.to_bits(), 2.0_f32.to_bits(), 3.0_f32.to_bits()];
+    let source =
+        WeaponRecipe::from_json_str(include_str!("../../../recipes/redacted.parhelion.json"))
+            .unwrap();
+    let mut private = source.overrides.socket_plug_variants[0].clone();
+    private.choice_index = 0;
+    private.source_plug_hash = HexHash::new(20);
+    recipe.overrides.socket_plug_variants = vec![private];
+
+    // Dragging the first choice to the end moves everything aligned with it.
+    move_choice(&mut recipe, 3, 0, &[10], 0, 2).unwrap();
+    let column = recipe.overrides.socket_columns[0].as_ref().unwrap();
+    assert_eq!(column.choices, vec![21.into(), 22.into(), 20.into()]);
+    assert_eq!(
+        column.choice_weight_bits,
+        vec![2.0_f32.to_bits(), 3.0_f32.to_bits(), 1.0_f32.to_bits()]
+    );
+    assert_eq!(recipe.overrides.socket_plug_variants[0].choice_index, 2);
+
+    // And back again, which is also how a choice becomes the default.
+    move_choice(&mut recipe, 3, 0, &[10], 2, 0).unwrap();
+    let column = recipe.overrides.socket_columns[0].as_ref().unwrap();
+    assert_eq!(column.choices, vec![20.into(), 21.into(), 22.into()]);
+    assert_eq!(recipe.overrides.socket_plug_variants[0].choice_index, 0);
+
+    let before = recipe.clone();
+    assert!(move_choice(&mut recipe, 3, 0, &[10], 0, 9).is_err());
+    assert_eq!(recipe, before);
+    move_choice(&mut recipe, 3, 0, &[10], 1, 1).unwrap();
+    assert_eq!(recipe, before);
+}
+
+#[test]
 fn making_a_choice_default_rejects_misaligned_metadata_without_mutation() {
     let mut recipe = PackageAuthoringApp::default().recipe;
     set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20, 21], None);

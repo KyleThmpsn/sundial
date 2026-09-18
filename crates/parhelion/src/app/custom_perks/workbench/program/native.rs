@@ -1,5 +1,6 @@
 //! Complete native records in the private-perk editor.
 use super::*;
+use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, NARROW_COLUMN, column, sized};
 use sundial::package_authoring::sandbox_perk::action::native::{
     self, Graph,
     fields::{self, Format},
@@ -7,6 +8,9 @@ use sundial::package_authoring::sandbox_perk::action::native::{
 };
 
 mod behavior;
+
+/// Room for a traced key name, or for a value with its stock count beside it.
+const EVIDENCE_WIDTH: f32 = 230.0;
 
 pub(in crate::app::custom_perks::workbench) fn draw_complete(
     ui: &mut egui::Ui,
@@ -40,12 +44,18 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
                 })
                 .body_returned
                 .transpose()?;
+            if !editing {
+                return Ok(());
+            }
             changed.sync_assets()?;
             changed.validate()
         })
         .inner;
     match result {
-        Ok(()) => *program = changed,
+        // A locked card is a reading. Writing the round trip back turned any value that
+        // normalises into an edit the reader never made.
+        Ok(()) if editing => *program = changed,
+        Ok(()) => {}
         Err(error) => {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -220,7 +230,23 @@ pub(super) fn plain_field_label(class: u32, label: &str) -> &'static str {
         (0x80803DFB, "First Flag Mask") => "Pickup Flags",
         (0x808029E0, "Mode") => "Shots",
         (0x80803E41, "Mode") => "Damage Type",
-        (0x80803DCE | 0x80803DCC, "Key") => "State",
+        (0x80803DCE | 0x80803DCC, "Named Key") => "State",
+        (0x80803DCE | 0x80803DCC, "Minimum Value") => "At Least",
+        (0x80803DCE | 0x80803DCC, "Maximum Value") => "At Most",
+        (0x80803DE5, "Minimum Value") => "At Least",
+        (0x80803DE5, "Maximum Value") => "At Most",
+        (0x80803E44, "Input Source") | (0x80803E4D, "Input Selector") => "Value Source",
+        (0x80803E4D, "Scale") => "Multiplier",
+        (0x80803E4D, "Limit") => "Stop At",
+        (0x80803E42, "Count") => "Orbs",
+        (0x80803E42, "Spawn Position") => "Position",
+        (0x80803E30, "Trigger Threshold") => "Count Needed",
+        (0x80803E30, "Reset Threshold") => "Resets At",
+        (0x80803E30, "Minimum Value") => "Lowest Count",
+        (0x80803E30, "Maximum Value") => "Highest Count",
+        (_, "Value Threshold") => "Required Value",
+        (_, "Extend By") => "Added Time",
+        (_, "Probability Source") => "Chance Source",
         (0x80803DEA, "Event Value") => "Event",
         (0x80803DEA, "Context Key") => "Context",
         (0x80803DEC | 0x80803DEB, "Event Key") => "Signal",
@@ -264,17 +290,30 @@ fn leak_label(label: &str) -> &'static str {
 
 fn ability_target(ui: &mut egui::Ui, target: &mut u8) {
     use sundial::package_authoring::sandbox_perk::action::component_target;
-    egui::ComboBox::from_id_salt("ability-target")
-        .selected_text(component_target(*target, 0, 0).unwrap_or("Unmapped Target"))
-        .show_ui(ui, |ui| {
-            for selector in [0, 1, 2, 7] {
-                ui.selectable_value(target, selector, component_target(selector, 0, 0).unwrap());
-            }
-            ui.selectable_value(target, 255, "Other Target…");
-        }).response.on_hover_text(
-            "Source-derived from Innervation and Bomber, Invigoration and Outreach, Insulation and Perpetuation, and for Super from Ashes to Assets, Hands-On and Heavy Lifting. The numeric selector remains editable."
-        );
-    pickers::name_combo(ui, "ability-target", "Ability Target");
+    let current = component_target(*target, 0, 0).unwrap_or("Unmapped Target");
+    let evidence = "Source-derived from Innervation and Bomber, Invigoration and Outreach, Insulation and Perpetuation, and for Super from Ashes to Assets, Hands-On and Heavy Lifting. The numeric selector remains editable.";
+    let hover = format!("{current}\n{evidence}");
+    // Four named abilities and an unmapped selector are a short vocabulary, and a combo
+    // grows to its selected text unless something bounds it, so it keeps a narrow column.
+    sized(ui, NARROW_COLUMN, |ui| {
+        egui::ComboBox::from_id_salt("ability-target")
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for selector in [0, 1, 2, 7] {
+                    ui.selectable_value(
+                        target,
+                        selector,
+                        component_target(selector, 0, 0).unwrap(),
+                    );
+                }
+                ui.selectable_value(target, 255, "Other Target…");
+            })
+            .response
+            .on_hover_text(hover);
+        pickers::name_combo(ui, "ability-target", "Ability Target");
+    });
     if component_target(*target, 0, 0).is_none() {
         ui.add(egui::DragValue::new(target).range(0..=255))
             .on_hover_text("Native target selector. Other values have no identified ability role.");
@@ -431,42 +470,50 @@ fn scalar(
                 .find(|(candidate, _, _)| *candidate == value)
                 .map(|(_, count, _)| *count)
         };
-        egui::ComboBox::from_id_salt("native-observed-value")
-            .selected_text(match stock(selected) {
-                Some(count) => format!("{selected} · {count} stock perks"),
-                None => format!("{selected} · not used by stock perks"),
-            })
-            .width(230.0)
-            .show_ui(ui, |ui| {
-                for (value, count, perks) in contract.observed {
-                    ui.selectable_value(
-                        &mut selected,
-                        *value,
-                        format!("{value} · {count} stock perks"),
-                    )
-                    .on_hover_text(if perks.is_empty() {
-                        "No named stock perk sets this value.".to_owned()
-                    } else {
-                        format!("Set by {perks}.")
-                    });
-                }
-                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Native Value");
-                        ui.add(egui::DragValue::new(&mut selected).range(0..=255));
-                    });
-                });
-            })
-            .response
-            .on_hover_text(format!(
-                "{} What this byte selects is not established. The listed values are the ones the game's own perks set, so they are the values the engine is known to accept here.",
-                contract.description
-            ));
-        pickers::name_combo(
-            ui,
-            "native-observed-value",
-            plain_field_label(block.class, &field.label),
+        let reading = match stock(selected) {
+            Some(count) => format!("{selected} · {count} stock perks"),
+            None => format!("{selected} · not used by stock perks"),
+        };
+        let hover = format!(
+            "{reading}\n{} What this byte selects is not established. The listed values are the ones the game's own perks set, so they are the values the engine is known to accept here.",
+            contract.description
         );
+        // `width` is only a floor, so the evidence beside the value would otherwise push
+        // the control across the pane. The allocation bounds it and the full reading and
+        // the field's own description stay on hover.
+        sized(ui, EVIDENCE_WIDTH, |ui| {
+            egui::ComboBox::from_id_salt("native-observed-value")
+                .selected_text(reading)
+                .width(EVIDENCE_WIDTH)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for (value, count, perks) in contract.observed {
+                        ui.selectable_value(
+                            &mut selected,
+                            *value,
+                            format!("{value} · {count} stock perks"),
+                        )
+                        .on_hover_text(if perks.is_empty() {
+                            "No named stock perk sets this value.".to_owned()
+                        } else {
+                            format!("Set by {perks}.")
+                        });
+                    }
+                    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Native Value");
+                            ui.add(egui::DragValue::new(&mut selected).range(0..=255));
+                        });
+                    });
+                })
+                .response
+                .on_hover_text(hover);
+            pickers::name_combo(
+                ui,
+                "native-observed-value",
+                plain_field_label(block.class, &field.label),
+            );
+        });
         if selected != bytes[0] {
             field.write(block, row, &[selected])?;
         }
@@ -501,63 +548,70 @@ fn scalar(
                 .find(|(candidate, _, _)| u32::from(*candidate) == value)
                 .map(|(_, count, _)| *count)
         };
-        egui::ComboBox::from_id_salt("native-value-choice")
-            .selected_text(
-                contract
-                    .choices
-                    .iter()
-                    .find(|(value, _)| u32::from(*value) == selected)
-                    .map_or_else(
-                        || match stock(selected) {
-                            Some(count) => format!("{selected} · {count} stock perks"),
-                            // Zero is the template's own value and selects nothing named.
-                            // Any other unnamed value is shown with what is known about
-                            // it, which is only that no stock perk sets it.
-                            None if selected == 0 => "Not Set".to_owned(),
-                            None => format!("{selected} · not used by stock perks"),
-                        },
-                        |(_, name)| (*name).into(),
-                    ),
-            )
-            .show_ui(ui, |ui| {
-                for (value, name) in contract.choices {
-                    ui.selectable_value(&mut selected, u32::from(*value), *name)
-                        .on_hover_text(match stock(u32::from(*value)) {
-                            Some(count) => format!("{count} stock perks set this value."),
-                            None => "No stock perk sets this value.".to_owned(),
+        let reading: String = contract
+            .choices
+            .iter()
+            .find(|(value, _)| u32::from(*value) == selected)
+            .map_or_else(
+                || match stock(selected) {
+                    Some(count) => format!("{selected} · {count} stock perks"),
+                    // Zero is the template's own value and selects nothing named.
+                    // Any other unnamed value is shown with what is known about
+                    // it, which is only that no stock perk sets it.
+                    None if selected == 0 => "Not Set".to_owned(),
+                    None => format!("{selected} · not used by stock perks"),
+                },
+                |(_, name)| (*name).into(),
+            );
+        let hover = format!("{reading}\n{}", contract.description);
+        // A value's name can be a sentence's worth of words, and a combo takes the width
+        // of its selected text, so it is held to the shared value column with the whole
+        // reading and the field's description on hover.
+        column(ui, |ui| {
+            egui::ComboBox::from_id_salt("native-value-choice")
+                .width(COLUMN_WIDTH)
+                .truncate()
+                .selected_text(reading)
+                .show_ui(ui, |ui| {
+                    for (value, name) in contract.choices {
+                        ui.selectable_value(&mut selected, u32::from(*value), *name)
+                            .on_hover_text(match stock(u32::from(*value)) {
+                                Some(count) => format!("{count} stock perks set this value."),
+                                None => "No stock perk sets this value.".to_owned(),
+                            });
+                    }
+                    for (value, count, perks) in unnamed {
+                        ui.selectable_value(
+                            &mut selected,
+                            u32::from(*value),
+                            format!("{value} · {count} stock perks"),
+                        )
+                        .on_hover_text(if perks.is_empty() {
+                            "What this value selects is not established. No named stock perk sets it."
+                                .to_owned()
+                        } else {
+                            format!("What this value selects is not established. Set by {perks}.")
                         });
-                }
-                for (value, count, perks) in unnamed {
-                    ui.selectable_value(
-                        &mut selected,
-                        u32::from(*value),
-                        format!("{value} · {count} stock perks"),
-                    )
-                    .on_hover_text(if perks.is_empty() {
-                        "What this value selects is not established. No named stock perk sets it."
-                            .to_owned()
-                    } else {
-                        format!("What this value selects is not established. Set by {perks}.")
+                    }
+                    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Native Value");
+                            let mut drag = egui::DragValue::new(&mut selected);
+                            if bytes.len() == 1 {
+                                drag = drag.range(0..=255);
+                            }
+                            ui.add(drag);
+                        });
                     });
-                }
-                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Native Value");
-                        let mut drag = egui::DragValue::new(&mut selected);
-                        if bytes.len() == 1 {
-                            drag = drag.range(0..=255);
-                        }
-                        ui.add(drag);
-                    });
-                });
-            })
-            .response
-            .on_hover_text(contract.description);
-        pickers::name_combo(
-            ui,
-            "native-value-choice",
-            plain_field_label(block.class, &field.label),
-        );
+                })
+                .response
+                .on_hover_text(hover);
+            pickers::name_combo(
+                ui,
+                "native-value-choice",
+                plain_field_label(block.class, &field.label),
+            );
+        });
         if selected != before {
             if bytes.len() == 1 {
                 let value =
@@ -581,37 +635,44 @@ fn scalar(
                     .map_err(|_| "Invalid native key width.")?,
             );
             let before = value;
-            egui::ComboBox::from_id_salt("native-event-key")
-                .width(230.0)
-                .selected_text(known.iter().find(|key| key.hash == value).map_or_else(
-                    || {
-                        // The FNV-1 basis is the hash of the empty name, which is
-                        // how the stock templates leave a key unset.
-                        if matches!(value, 0 | 0x811C9DC5) {
-                            "None".to_owned()
-                        } else {
-                            format!("0x{value:08X}")
-                        }
-                    },
-                    |key| key.name.to_owned(),
-                ))
-                .show_ui(ui, |ui| {
-                    for key in known {
-                        ui.selectable_value(&mut value, key.hash, key.name)
-                            .on_hover_text(key.evidence);
+            let reading = known.iter().find(|key| key.hash == value).map_or_else(
+                || {
+                    // The FNV-1 basis is the hash of the empty name, which is
+                    // how the stock templates leave a key unset.
+                    if matches!(value, 0 | 0x811C9DC5) {
+                        "None".to_owned()
+                    } else {
+                        format!("0x{value:08X}")
                     }
-                    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                        let raw = hex_key(ui, "native-event-key-hex", &mut value);
-                        pickers::name_response(ui, &raw, "Key as Hex");
-                    });
-                })
-                .response
-                .on_hover_text(contract.description);
-            pickers::name_combo(
-                ui,
-                "native-event-key",
-                plain_field_label(block.class, &field.label),
+                },
+                |key| key.name.to_owned(),
             );
+            let hover = format!("{reading}\n{}", contract.description);
+            // A key reads by its traced name, which is long enough to carry the combo
+            // across the pane, so the allocation bounds it and the name stays on hover.
+            sized(ui, EVIDENCE_WIDTH, |ui| {
+                egui::ComboBox::from_id_salt("native-event-key")
+                    .width(EVIDENCE_WIDTH)
+                    .truncate()
+                    .selected_text(reading)
+                    .show_ui(ui, |ui| {
+                        for key in known {
+                            ui.selectable_value(&mut value, key.hash, key.name)
+                                .on_hover_text(key.evidence);
+                        }
+                        egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                            let raw = hex_key(ui, "native-event-key-hex", &mut value);
+                            pickers::name_response(ui, &raw, "Key as Hex");
+                        });
+                    })
+                    .response
+                    .on_hover_text(hover);
+                pickers::name_combo(
+                    ui,
+                    "native-event-key",
+                    plain_field_label(block.class, &field.label),
+                );
+            });
             if value != before {
                 field.write(block, row, &value.to_le_bytes())?;
             }

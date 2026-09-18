@@ -17,15 +17,16 @@ const VARIABLE_DAMAGE_LABEL: &str = "Variable (Hold Reload)";
 
 /// Changes one field without implicitly changing the other or the ammo override.
 ///
-/// `variable_damage_available` says whether Hard Light or Borealis can dress the base weapon,
-/// which is what the Variable damage entry needs. The caller reconciles the appearance donor
-/// after a change.
+/// `variable_damage_available` says whether this weapon's family can switch damage at all.
+/// `damage_locked` holds the control while a behavior graft owns the damage type, which happens
+/// when the chosen source weapon switches damage itself.
 pub(super) fn draw_combat_profile_control(
     ui: &mut egui::Ui,
     overrides: &mut WeaponRecipeOverrides,
     donor: Option<&WeaponDonor>,
     select_slot: bool,
     variable_damage_available: bool,
+    damage_locked: bool,
 ) -> bool {
     use crate::capabilities::{
         recipe_damage_type_from_catalog, recipe_inventory_slot_from_catalog,
@@ -98,8 +99,9 @@ pub(super) fn draw_combat_profile_control(
     ];
     let mut changed = false;
     let variable_offered = !select_slot && (variable_damage_available || variable);
+    let locked = damage_locked && !select_slot;
     ui.add_enabled_ui(
-        capabilities.is_authorable() && (profile.is_some() || variable_offered),
+        !locked && capabilities.is_authorable() && (profile.is_some() || variable_offered),
         |ui| {
         egui::ComboBox::from_id_salt(if select_slot {
             "recipe_inventory_slot"
@@ -161,8 +163,8 @@ pub(super) fn draw_combat_profile_control(
                         variable_damage_available || variable,
                         egui::SelectableLabel::new(variable, VARIABLE_DAMAGE_LABEL),
                     )
-                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon wears Hard Light or Borealis.")
-                    .on_disabled_hover_text("Needs Hard Light (auto rifles) or Borealis (sniper rifles) as a compatible appearance donor for this base weapon and slot.")
+                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon keeps its own appearance.")
+                    .on_disabled_hover_text("This weapon family has no element-switch behavior to graft. Rifles and sniper rifles support it.")
                     .clicked()
                 && !variable
             {
@@ -174,6 +176,9 @@ pub(super) fn draw_combat_profile_control(
         .labelled_by(label.id);
         },
     );
+    if locked {
+        ui.weak("The chosen Unique Weapon Behavior switches damage, so this follows it.");
+    }
     if variable && (draw_variable_damage_elements(ui, overrides) || changed) {
         // The weapon rests on the first chosen element in selector order. A base weapon whose
         // damage cannot be converted, such as Hard Light itself, keeps its own marker.
@@ -281,37 +286,12 @@ pub(super) fn draw_combat_profile_diagnostics(
     ui: &mut egui::Ui,
     overrides: &WeaponRecipeOverrides,
     donor: Option<&WeaponDonor>,
-    variable_damage: VariableDamageAppearance,
 ) {
     let Some(donor) = donor else {
         return;
     };
     if let Some(variable) = &overrides.variable_damage {
-        use crate::weapon::variable_damage::{BOREALIS_ITEM_HASH, carrier_name};
-        match variable_damage {
-            VariableDamageAppearance::Unavailable => {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "Variable damage needs Hard Light (auto rifles) or Borealis (sniper rifles) as the appearance donor, and neither fits this base weapon in its slot. Choose another base weapon or a fixed damage type.",
-                );
-            }
-            VariableDamageAppearance::Available(hash) => {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!(
-                        "Variable damage dresses the weapon as {}.",
-                        carrier_name(hash).unwrap_or("its carrier")
-                    ),
-                );
-            }
-            VariableDamageAppearance::Ready(hash) => {
-                ui.weak(if hash == BOREALIS_ITEM_HASH {
-                    "Hold Reload in game to step the element. The Borealis hold has not been tested on other sniper bodies yet."
-                } else {
-                    "Hold Reload in game to step the element. Verified on an auto rifle body wearing Hard Light."
-                });
-            }
-        }
+        ui.weak("Hold Reload in game to step the element. The weapon keeps its own appearance.");
         if variable.elements.len() < 2 {
             ui.colored_label(
                 ui.visuals().error_fg_color,

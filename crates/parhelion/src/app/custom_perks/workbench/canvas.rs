@@ -29,6 +29,14 @@ pub(in crate::app::custom_perks) enum Backend<'a> {
     /// An authored program. Blocks are editable when a workbench is supplied.
     Program {
         program: &'a mut Program,
+        /// The installed perk this program was recovered from, when it is not an authored
+        /// one. A stock effect reads in these rows before anyone converts it.
+        stock: Option<&'a str>,
+        /// What this effect does, in the game's own words, when there is such a sentence.
+        description: Option<&'a str>,
+        /// Names for the assets the rows reference, so a locked card names them as a live
+        /// one does and its component buttons exist at all.
+        labels: &'a BTreeMap<u32, String>,
         editing: Option<Editing<'a>>,
     },
     /// A decoded stock action, read through its summary.
@@ -43,6 +51,11 @@ pub(in crate::app::custom_perks) enum Backend<'a> {
         behavior: &'a Behavior,
         /// Source description is appropriate only while the stock behavior is unchanged.
         description: Option<&'a str>,
+        /// Names for the assets the reading references.
+        labels: &'a BTreeMap<u32, String>,
+        /// An activation the reader chose for this effect, which replaces the stock
+        /// trigger in the reading. The rest of the stock behavior is unchanged.
+        activation: Option<&'a str>,
     },
 }
 
@@ -57,6 +70,9 @@ pub(in crate::app::custom_perks) struct Canvas<'a, 'b> {
     pub place: Option<&'b mut Placer<'b>>,
     /// Controls drawn under the rows, inside the same card.
     pub footer: Option<&'b mut dyn FnMut(&mut egui::Ui)>,
+    /// A command drawn inside the trigger row of a stock reading, so a stock effect places
+    /// it where an authored program places its own trigger control.
+    pub trigger_command: Option<&'b mut dyn FnMut(&mut egui::Ui)>,
 }
 
 /// What the user asked for on the canvas this frame.
@@ -73,34 +89,56 @@ pub(in crate::app::custom_perks) fn draw(ui: &mut egui::Ui, canvas: Canvas<'_, '
         header,
         place,
         footer,
+        trigger_command,
     } = canvas;
     let mut output = Output::default();
     crate::app::style::card(ui, |ui| {
         match backend {
-            Backend::Program { program, editing } => {
+            Backend::Program {
+                program,
+                stock,
+                description,
+                labels,
+                editing,
+            } => {
                 let editable = editing.is_some();
                 draw_header(ui, header, |ui| {
-                    if editable {
+                    // A stock card draws a clone whose name this frame restamped, so a box
+                    // over it read every keystroke as an edit and converted the effect. The
+                    // name becomes editable once the effect owns its program.
+                    if editable && stock.is_none() {
                         let width = (ui.available_width() - 120.0).max(120.0);
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut program.name)
+                                .id_salt("effect-name")
                                 .desired_width(width)
                                 .hint_text("Effect Name"),
                         );
                         crate::app::style::named_control(response, "Effect Name");
                     } else {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(&program.name).strong()).wrap(),
+                            egui::Label::new(
+                                egui::RichText::new(stock.unwrap_or(&program.name)).strong(),
+                            )
+                            .wrap(),
                         );
-                        badge(
-                            ui,
-                            "Program",
-                            ui.visuals().weak_text_color(),
-                            "This effect is an authored program.",
-                        );
+                        match stock {
+                            Some(_) => badge(
+                                ui,
+                                "Stock",
+                                ui.visuals().weak_text_color(),
+                                "This effect comes from an installed perk, read here as the program it recovers to. Edit Behavior makes it an authored program.",
+                            ),
+                            None => badge(
+                                ui,
+                                "Program",
+                                ui.visuals().weak_text_color(),
+                                "This effect is an authored program.",
+                            ),
+                        }
                     }
                 });
-                if !editable {
+                if !editable && stock.is_none() {
                     ui.small("Turn on Experimental Features in Preferences to edit this effect.");
                 }
                 if !editable && program.native.is_none() {
@@ -118,7 +156,10 @@ pub(in crate::app::custom_perks) fn draw(ui: &mut egui::Ui, canvas: Canvas<'_, '
                     );
                     ui.add_space(8.0);
                 }
-                output.edit_action = draw_program_rows(ui, program, editing);
+                if let Some(description) = description {
+                    ui.add(egui::Label::new(description).wrap());
+                }
+                output.edit_action = draw_program_rows(ui, program, labels, editing);
             }
             Backend::Stock {
                 summary,
@@ -146,27 +187,18 @@ pub(in crate::app::custom_perks) fn draw(ui: &mut egui::Ui, canvas: Canvas<'_, '
             Backend::Digest {
                 behavior,
                 description,
+                labels,
+                activation,
             } => {
                 draw_header(ui, header, |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(name).strong()).wrap());
                     stock_badge(ui, behavior.support, behavior.editable);
                 });
                 ui.add(egui::Label::new(description.unwrap_or(&behavior.headline)).wrap());
-                if description.is_none() {
-                    let actions = behavior
-                        .details
-                        .iter()
-                        .filter(|section| section.heading == "Then")
-                        .flat_map(|section| &section.lines)
-                        .filter(|line| line.depth == 0)
-                        .map(|line| line.kind.as_str())
-                        .collect::<Vec<_>>();
-                    if !actions.is_empty() {
-                        ui.add(
-                            egui::Label::new(format!("Actions: {}", actions.join(" · "))).wrap(),
-                        );
-                    }
-                }
+                // A stock effect reads in the rows an authored one is edited in. It used to
+                // show one line naming its effect kinds, so what a stock perk actually does
+                // stayed hidden until the reader converted it.
+                super::reading::rows(ui, behavior, labels, activation, trigger_command);
             }
         }
         if let Some(footer) = footer {
@@ -212,7 +244,6 @@ pub(super) fn row<R>(
     hint: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.add_space(2.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
@@ -236,10 +267,11 @@ pub(super) fn row<R>(
     .inner
 }
 
-/// One effect block, framed so an editable and a locked block share an outline.
+/// One effect block. It sits inside the card's outline, so it is set off by its own fill
+/// rather than a second outline of equal weight.
 fn block(ui: &mut egui::Ui, salt: impl std::hash::Hash, content: impl FnOnce(&mut egui::Ui)) {
     ui.push_id(salt, |ui| {
-        ui.group(|ui| {
+        crate::app::style::block(ui.style()).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             content(ui);
         });
@@ -262,15 +294,17 @@ fn plain(ui: &mut egui::Ui, salt: impl std::hash::Hash, content: impl FnOnce(&mu
     });
 }
 
-const ACTIVATION_HINT: &str =
+pub(super) const ACTIVATION_HINT: &str =
     "Conditions that start the action. Alternatives in one list start it when the first passes.";
-const EFFECTS_HINT: &str = "Effects applied while the action is active, in authored order.";
-const REMOVAL_HINT: &str = "Conditions that end the action.";
-const REARM_HINT: &str = "Conditions that allow the action to start again.";
+pub(super) const EFFECTS_HINT: &str =
+    "Effects applied while the action is active, in authored order.";
+pub(super) const REMOVAL_HINT: &str = "Conditions that end the action.";
+pub(super) const REARM_HINT: &str = "Conditions that allow the action to start again.";
 
 fn draw_program_rows(
     ui: &mut egui::Ui,
     program: &mut Program,
+    labels: &BTreeMap<u32, String>,
     editing: Option<Editing<'_>>,
 ) -> Option<usize> {
     if let Some(native) = &mut program.native {
@@ -286,7 +320,7 @@ fn draw_program_rows(
                     )
                 })
             }
-            None => program::draw_complete(ui, native, false, &BTreeMap::new(), &mut |_| None),
+            None => program::draw_complete(ui, native, false, labels, &mut |_| None),
         };
     }
     let mut edit = None;

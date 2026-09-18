@@ -183,31 +183,59 @@ fn solve_cross_group(
     }
 }
 
-pub(super) fn solve_cross_group_plan(
+/// The two choice kinds differ only in how wide the stat vector they carry is.
+trait StatChoice<const N: usize> {
+    fn hash(&self) -> u64;
+    fn values(&self) -> [u16; N];
+}
+
+impl StatChoice<3> for Choice {
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+    fn values(&self) -> [u16; 3] {
+        self.values
+    }
+}
+
+impl StatChoice<6> for CrossGroupChoice {
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+    fn values(&self) -> [u16; 6] {
+        self.values
+    }
+}
+
+/// Every stat total these sockets can reach, each kept with the cheapest plan that reaches
+/// it: fewest changed sockets, then the lowest hashes, so one installation always picks the
+/// same plan out of a tie.
+///
+/// The per-group and cross-group solvers ran a copy of this each. They had already drifted
+/// apart in how they summed the vector while meaning the same thing, which is the way two
+/// copies of a search stop agreeing.
+fn reachable_plans<const N: usize, C: StatChoice<N>>(
     sockets: &[usize],
-    choice_sets: &[Vec<CrossGroupChoice>],
+    choice_sets: &[Vec<C>],
     current: &[Option<u64>],
-    fixed: [u16; 6],
-    targets: [u16; 6],
-) -> Result<CrossGroupSolution, CrossGroupFailure> {
+) -> HashMap<[u16; N], Plan> {
     let mut plans = HashMap::from([(
-        [0_u16; 6],
+        [0_u16; N],
         Plan {
             hashes: Vec::new(),
             changes: 0,
         },
     )]);
-
     for (socket_index, choices) in sockets.iter().copied().zip(choice_sets) {
-        let mut next = HashMap::<[u16; 6], Plan>::new();
+        let mut next = HashMap::<[u16; N], Plan>::new();
         for (total, plan) in &plans {
             for choice in choices {
+                let values = choice.values();
                 let combined =
-                    std::array::from_fn(|index| total[index].saturating_add(choice.values[index]));
+                    std::array::from_fn(|index| total[index].saturating_add(values[index]));
                 let mut candidate = plan.clone();
-                candidate.hashes.push(choice.hash);
-                candidate.changes += usize::from(current[socket_index] != Some(choice.hash));
-
+                candidate.hashes.push(choice.hash());
+                candidate.changes += usize::from(current[socket_index] != Some(choice.hash()));
                 match next.entry(combined) {
                     Entry::Vacant(entry) => {
                         entry.insert(candidate);
@@ -222,6 +250,17 @@ pub(super) fn solve_cross_group_plan(
         }
         plans = next;
     }
+    plans
+}
+
+pub(super) fn solve_cross_group_plan(
+    sockets: &[usize],
+    choice_sets: &[Vec<CrossGroupChoice>],
+    current: &[Option<u64>],
+    fixed: [u16; 6],
+    targets: [u16; 6],
+) -> Result<CrossGroupSolution, CrossGroupFailure> {
+    let plans = reachable_plans(sockets, choice_sets, current);
 
     let best_meeting = plans
         .iter()
@@ -282,41 +321,7 @@ pub(super) fn solve_group(
     current: &[Option<u64>],
     targets: [u16; 3],
 ) -> Result<GroupSolution, GroupFailure> {
-    let mut plans = HashMap::from([(
-        [0_u16; 3],
-        Plan {
-            hashes: Vec::new(),
-            changes: 0,
-        },
-    )]);
-
-    for (socket_index, choices) in sockets.iter().copied().zip(choice_sets) {
-        let mut next = HashMap::<[u16; 3], Plan>::new();
-        for (total, plan) in &plans {
-            for choice in choices {
-                let combined = [
-                    total[0].saturating_add(choice.values[0]),
-                    total[1].saturating_add(choice.values[1]),
-                    total[2].saturating_add(choice.values[2]),
-                ];
-                let mut candidate = plan.clone();
-                candidate.hashes.push(choice.hash);
-                candidate.changes += usize::from(current[socket_index] != Some(choice.hash));
-
-                match next.entry(combined) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(candidate);
-                    }
-                    Entry::Occupied(mut entry) => {
-                        if plan_tie_key(&candidate) < plan_tie_key(entry.get()) {
-                            entry.insert(candidate);
-                        }
-                    }
-                }
-            }
-        }
-        plans = next;
-    }
+    let plans = reachable_plans(sockets, choice_sets, current);
 
     let best_meeting = plans
         .iter()

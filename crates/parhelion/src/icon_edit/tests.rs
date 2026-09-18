@@ -163,3 +163,82 @@ fn malformed_rgba_payload_is_rejected_without_mutation() {
     );
     assert_eq!(pixels, before);
 }
+
+#[test]
+fn clearing_a_color_removes_it_and_its_halo_but_not_separate_art() {
+    let plate = [0xF2, 0xE3, 0x70];
+    // Row 0: the plate and its darkened edge, which touch. Row 1: a similar colour that does not.
+    let mut pixels = vec![
+        plate[0], plate[1], plate[2], 255, //
+        0x79, 0x71, 0x38, 255, //
+        0x20, 0x40, 0x80, 255, //
+        0x79, 0x71, 0x38, 255,
+    ];
+    WeaponIconEdit {
+        cleared_color: Some(plate),
+        ..Default::default()
+    }
+    .apply_to_rgba8_sized(&mut pixels, 2, 2)
+    .expect("clearing a color should apply");
+
+    assert_eq!(&pixels[0..4], &[0, 0, 0, 0], "the plate is cleared");
+    assert_eq!(
+        &pixels[4..8],
+        &[0, 0, 0, 0],
+        "its darkened edge is cleared with it"
+    );
+    assert_eq!(
+        &pixels[8..12],
+        &[0x20, 0x40, 0x80, 255],
+        "unrelated artwork stays"
+    );
+    assert_eq!(
+        &pixels[12..16],
+        &[0, 0, 0, 0],
+        "art on the same ramp is cleared only where it touches the region"
+    );
+}
+
+#[test]
+fn levels_stretch_the_input_range_and_hue_rules_take_every_shade() {
+    // Levels: 64 becomes black, 192 becomes white, and the midpoint lands halfway.
+    let mut pixels = vec![
+        64, 128, 192, 255, //
+        0, 0, 0, 0, //
+        0, 0, 0, 0, //
+        0, 0, 0, 0,
+    ];
+    WeaponIconEdit {
+        black_point: 64,
+        white_point: 192,
+        ..Default::default()
+    }
+    .apply_to_rgba8_sized(&mut pixels, 2, 2)
+    .expect("levels should apply");
+    assert_eq!(&pixels[0..4], &[0, 128, 255, 255]);
+
+    // A hue rule claims a dark shade of its source that a color range never reaches.
+    let gold = [0xF2, 0xE3, 0x70];
+    let dark_gold = [0x79, 0x71, 0x38];
+    let by_range = IconColorReplacement {
+        source: gold,
+        replacement: [0x20, 0x40, 0x80],
+        range_percent: 20,
+        hue_range_degrees: None,
+    };
+    let by_hue = IconColorReplacement {
+        hue_range_degrees: Some(20),
+        ..by_range.clone()
+    };
+    assert_eq!(
+        by_range.weight(dark_gold),
+        0,
+        "range cannot reach the shade"
+    );
+    assert!(by_hue.weight(dark_gold) > 0, "hue takes the whole surface");
+    assert_eq!(
+        by_hue.weight([0x80, 0x80, 0x80]),
+        0,
+        "a grey has no hue to match"
+    );
+}

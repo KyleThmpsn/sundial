@@ -138,3 +138,79 @@ fn library_preserves_concurrent_saves_and_rejects_unsafe_ids() {
     perk.id = "../outside".into();
     assert!(library.save(&perk, None).is_err());
 }
+
+/// Documents saved by an earlier release must still load, and still save back unchanged. Point `PARHELION_LIBRARY_ROOT` at a
+/// Parhelion data directory, the one holding `perks/` and `recipes/`, to check a real library.
+#[test]
+#[ignore = "requires PARHELION_LIBRARY_ROOT"]
+fn documents_from_an_earlier_release_still_load() {
+    let root = std::path::PathBuf::from(std::env::var_os("PARHELION_LIBRARY_ROOT").unwrap());
+    let mut failures = Vec::new();
+    let mut perks = 0;
+    let mut recipes = 0;
+    let mut rewritten = 0;
+
+    for entry in std::fs::read_dir(root.join("perks")).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.to_string_lossy().ends_with(".perk.json") {
+            continue;
+        }
+        perks += 1;
+        let text = std::fs::read_to_string(&path).unwrap();
+        match serde_json::from_str::<PerkRecipe>(&text) {
+            Ok(perk) => {
+                if let Err(error) = perk.validate_draft() {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
+                // Loading is only half of it. Saving and reopening must give back the same
+                // perk, or an older document would quietly mean something else once resaved.
+                let saved = serde_json::to_string(&perk).unwrap();
+                match serde_json::from_str::<PerkRecipe>(&saved) {
+                    Ok(reloaded) if reloaded == perk => {}
+                    Ok(_) => {
+                        failures.push(format!("{}: resaving changed the perk", path.display()));
+                    }
+                    Err(error) => failures.push(format!(
+                        "{}: the resaved copy will not load: {error}",
+                        path.display()
+                    )),
+                }
+                // Text that changes is not a fault on its own: a float prints to more digits, and
+                // a field added since the document was written is filled in with its default.
+                // Both reload to the same perk, so they are only counted.
+                if serde_json::from_str::<serde_json::Value>(&text).unwrap()
+                    != serde_json::to_value(&perk).unwrap()
+                {
+                    rewritten += 1;
+                }
+            }
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    for entry in std::fs::read_dir(root.join("recipes")).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.to_string_lossy().ends_with(".parhelion.json") {
+            continue;
+        }
+        recipes += 1;
+        let text = std::fs::read_to_string(&path).unwrap();
+        if let Err(error) = crate::WeaponRecipe::from_json_str(&text) {
+            failures.push(format!("{}: {error:?}", path.display()));
+        }
+    }
+
+    assert!(
+        perks > 0 && recipes > 0,
+        "the library should hold documents"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {} perks and {} recipes failed to load:\n{}",
+        failures.len(),
+        perks,
+        recipes,
+        failures.join("\n")
+    );
+    println!("{perks} perks and {recipes} recipes loaded, {rewritten} resave with different text");
+}

@@ -59,14 +59,17 @@ fn saved_values_round_trip_through_json_and_sqlite_without_losing_rank_lanes() {
                 3,
             );
         }
-        let mut workspace = WorkspaceDocument::load(json.clone(), &path);
+        let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
         let mut view = workspace.progression_view(0);
-        assert!(super::super::mutations::set_progression_value(
-            &mut view,
-            "account_progressions",
-            15,
-            [9, 8, 7]
-        ));
+        assert!(
+            super::super::mutations::set_progression_value(
+                &mut view,
+                "account_progressions",
+                15,
+                [9, 8, 7]
+            )
+            .changed()
+        );
         let values = rows(&view, &catalog).unwrap();
         let row = values
             .iter()
@@ -91,6 +94,7 @@ fn saved_values_round_trip_through_json_and_sqlite_without_losing_rank_lanes() {
         let loaded = WorkspaceDocument::load(
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
             &path,
+            false,
         );
         assert_eq!(
             saved_progression_lanes(&loaded.progression_view(0), ProgressionScope::Account, 15),

@@ -18,6 +18,7 @@ pub(in crate::app::custom_perks) struct Input {
     projectiles: Vec<ProjectileSelection>,
 }
 
+#[derive(Debug)]
 pub(in crate::app::custom_perks) struct Preview {
     program: Program,
     fidelity: Result<Vec<decompile::Difference>, String>,
@@ -140,32 +141,107 @@ fn prepare(
             field.copy_from_slice(&effective.tag.0.to_le_bytes());
         }
     }
-    // Prefer the typed program so a stock perk gets the same controls as a custom perk. The
-    // complete native form is the fallback that can carry any action, so nothing is refused.
-    let (program, recovery) = match typed_program(loaded, input, &payload) {
-        Ok(program) => (program, decompile::Recovery::Typed),
-        Err(reason) => (
-            native_program(
-                loaded,
-                input,
-                &payload,
-                graphs.iter().map(|graph| graph.tag.0),
-            )?,
-            decompile::Recovery::NativeForm(reason),
-        ),
-    };
-    let compiled = program::compile(manager, &program)?;
-    let fidelity = match recovery {
-        decompile::Recovery::Typed => decompile::fidelity(&payload, &compiled.payload),
-        decompile::Recovery::NativeForm(_) => {
-            decompile::native_fidelity(&payload, &compiled.payload)
-        }
-    };
-    Ok(Preview {
-        program,
-        fidelity,
-        recovery,
+    // Each route is one candidate: recover the program, carry the edits, compile it and compare
+    // the compiled action with the effective stock action. The typed program is preferred so a
+    // stock perk gets the same controls as a custom perk. The complete native form can carry
+    // any action, so it stands in whenever the typed round trip is not exact.
+    let typed = typed_program(loaded, input, &payload).and_then(|program| {
+        let compiled = program::compile(manager, &program)
+            .map_err(|error| format!("The typed program did not compile. {error}"))?;
+        Ok(Candidate {
+            fidelity: decompile::fidelity(&payload, &compiled.payload),
+            program,
+        })
+    });
+    select(typed, || {
+        let program = native_program(
+            loaded,
+            input,
+            &payload,
+            graphs.iter().map(|graph| graph.tag.0),
+        )?;
+        let compiled = program::compile(manager, &program)
+            .map_err(|error| format!("The native form did not compile. {error}"))?;
+        Ok(Candidate {
+            fidelity: decompile::native_fidelity(&payload, &compiled.payload),
+            program,
+        })
     })
+}
+
+/// One route through the round trip: the recovered program carrying the edits, and how the
+/// action compiled from it compares with the effective stock action.
+struct Candidate {
+    program: Program,
+    fidelity: Result<Vec<decompile::Difference>, String>,
+}
+
+impl Candidate {
+    /// Whether the compiled action reproduces every checked native setting.
+    fn exact(&self) -> bool {
+        self.fidelity.as_ref().is_ok_and(Vec::is_empty)
+    }
+
+    /// Why this candidate is not exact, worded for the reader of the native form's notice.
+    fn shortfall(&self) -> String {
+        match &self.fidelity {
+            Ok(differences) => format!(
+                "The typed program differs in {} checked native setting{}.",
+                differences.len(),
+                if differences.len() == 1 { "" } else { "s" }
+            ),
+            Err(error) => {
+                format!("The typed program could not be checked for exactness. {error}")
+            }
+        }
+    }
+}
+
+/// Chooses between the typed round trip and the native one.
+///
+/// An exact typed program wins outright, and the native route is not tried. An exact native
+/// form wins next, and its notice says why the typed program fell short. When neither is
+/// exact, the typed candidate keeps its lossy or unchecked reading so the user can still
+/// review the differences and decide, and the native candidate stands in only when the typed
+/// route failed outright. Loss is never chosen automatically.
+fn select(
+    typed: Result<Candidate, String>,
+    native: impl FnOnce() -> Result<Candidate, String>,
+) -> Result<Preview, String> {
+    let typed = match typed {
+        Ok(candidate) if candidate.exact() => {
+            return Ok(Preview {
+                program: candidate.program,
+                fidelity: candidate.fidelity,
+                recovery: decompile::Recovery::Typed,
+            });
+        }
+        typed => typed,
+    };
+    let shortfall = match &typed {
+        Ok(candidate) => candidate.shortfall(),
+        Err(reason) => reason.clone(),
+    };
+    match (typed, native()) {
+        (_, Ok(candidate)) if candidate.exact() => Ok(Preview {
+            program: candidate.program,
+            fidelity: candidate.fidelity,
+            recovery: decompile::Recovery::NativeForm(shortfall),
+        }),
+        (Ok(candidate), _) => Ok(Preview {
+            program: candidate.program,
+            fidelity: candidate.fidelity,
+            recovery: decompile::Recovery::Typed,
+        }),
+        (Err(_), Ok(candidate)) => Ok(Preview {
+            program: candidate.program,
+            fidelity: candidate.fidelity,
+            recovery: decompile::Recovery::NativeForm(shortfall),
+        }),
+        (Err(typed), Err(native)) => Err(format!(
+            "This effect cannot be prepared as a program. Typed program: {typed} Native form: {native} Keep it as a stock behavior, or reopen the effect and try again after correcting its edits."
+        )),
+    }
 }
 
 /// The typed program for a stock action, with the component edits carried on its assets.

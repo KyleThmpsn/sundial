@@ -66,6 +66,10 @@ impl SundialApp {
             } else {
                 None
             };
+            // Dawn resolves every character loadout against installed build data and discards the
+            // whole snapshot when one item is unknown to it, so items with no catalog definition
+            // stay behind in the backup rather than stranding the account.
+            let catalog = &self.manifest;
             plan::Plan::prepare(
                 &self.install_path,
                 &self.settings_path,
@@ -74,6 +78,7 @@ impl SundialApp {
                 target,
                 defaults,
                 native_defaults.as_ref(),
+                &|hash| catalog.item(u64::from(hash)).is_some(),
             )
         })();
         match result {

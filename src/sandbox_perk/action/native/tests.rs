@@ -897,3 +897,14 @@ fn nested_damage_type_and_faction_records_are_named_from_the_perks_that_set_them
         );
     }
 }
+
+/// Every client-recovered key name must hash to the key it is filed under. The names came
+/// from matching FNV-1 hashes in client memory, so this is the same check that found them
+/// and it fails loudly if an entry is ever mistyped.
+#[test]
+fn client_recovered_key_names_hash_to_their_keys() {
+    for (hash, name) in super::fields::keys::CLIENT_NAMES {
+        assert_eq!(crate::hash::fnv1_name_hash(name), *hash, "{name}");
+        assert_eq!(super::fields::keys::client_name(*hash), Some(*name));
+    }
+}

@@ -119,11 +119,16 @@ fn draw_changes(ui: &mut egui::Ui, id: &str, rows: &[Change]) {
             ui.weak("After");
             ui.end_row();
             for row in rows {
-                ui.add_sized(
-                    [name_width, 0.0],
-                    egui::Label::new(destiny_text(ui, &row.name)).truncate(),
-                )
-                .on_hover_text(destiny_text(ui, &row.name));
+                // add_sized centres its content; the names belong flush with the column.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(name_width, 0.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(name_width);
+                        ui.add(egui::Label::new(destiny_text(ui, &row.name)).truncate())
+                            .on_hover_text(destiny_text(ui, &row.name));
+                    },
+                );
                 ui.label(&row.before);
                 ui.label(&row.after);
                 ui.end_row();

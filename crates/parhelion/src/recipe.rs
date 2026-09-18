@@ -226,6 +226,14 @@ pub enum RecipeCollectionPlacement {
     SunriseBadge,
 }
 
+/// One exotic behavior record grafted from another weapon of the same family.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdditionalBehaviorRecipe {
+    /// Catalogue identifier from [`crate::weapon_behavior::CATALOG`].
+    pub behavior: String,
+}
+
 /// Element switching by holding Reload, the way Hard Light and Borealis work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -918,6 +926,17 @@ pub struct WeaponRecipeOverrides {
     /// [`Self::modern_damage_type`] is then the element the weapon rests on and must be in the set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable_damage: Option<VariableDamageRecipe>,
+    /// Exotic behaviors grafted from weapons that share this weapon's content component owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_behaviors: Vec<AdditionalBehaviorRecipe>,
+    /// Leave the source weapon's own intrinsic and trait plugs out of the graft. Several exotics
+    /// keep half of their behavior in a perk, so the plugs travel with it by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_behavior_perks: bool,
+    /// IEEE-754 bit pattern raising the launch speed of a grafted projectile on a weapon that
+    /// fires none of its own, and the most it is raised to. Absent means the default boost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior_projectile_speed_bits: Option<u32>,
     pub power_cap_group: Option<u16>,
     /// Complete native quality/version group sequence. This advanced form preserves the number
     /// and order of the gameplay donor's version rows while allowing every row to differ.
@@ -1086,6 +1105,13 @@ impl WeaponRecipeOverrides {
                 .variable_damage
                 .as_ref()
                 .map(VariableDamageRecipe::to_compiler),
+            additional_behaviors: self
+                .additional_behaviors
+                .iter()
+                .map(|entry| entry.behavior.clone())
+                .collect(),
+            skip_behavior_perks: self.skip_behavior_perks,
+            behavior_projectile_speed: self.behavior_projectile_speed_bits.map(f32::from_bits),
             power_cap_group: self.power_cap_group,
             power_cap_groups: self.power_cap_groups.clone(),
             rarity: self.rarity.map(AuthoredWeaponRarity::from),

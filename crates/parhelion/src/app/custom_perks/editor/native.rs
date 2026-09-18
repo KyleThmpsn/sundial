@@ -1,4 +1,5 @@
 //! Component editing, including values reached through linked native records.
+use super::super::workbench::Workbench;
 use super::*;
 use sundial::package_authoring::weapon_runtime::{
     WeaponRuntimePathElement, decode_weapon_runtime_field_value, encode_weapon_runtime_field_value,
@@ -356,29 +357,13 @@ fn draw_property_value(
     text: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
 ) {
     let current = edits.first().map_or(&field.value, |edit| &edit.value);
-    let mut next = None;
-    let mut reset = false;
-    ui.horizontal_wrapped(|ui| {
-        let width = (ui.available_width() * 0.48).min(310.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(width, ui.spacing().interact_size.y),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.set_min_width(width);
-                ui.add(
-                    egui::Label::new(&field.name)
-                        .halign(egui::Align::Max)
-                        .wrap(),
-                )
-            },
-        )
-        .inner
-        .on_hover_text(format!(
-            "{}\nOriginal: {}",
-            field.path_label,
-            value_text(&field.value)
-        ));
-        next = match current {
+    let hint = format!(
+        "{}\nOriginal: {}",
+        field.path_label,
+        value_text(&field.value)
+    );
+    let (next, reset) = Workbench::property_row(ui, &field.name, &hint, |ui| {
+        let next = match current {
             WeaponRuntimeValue::Float32Bits(bits) if f32::from_bits(*bits).is_finite() => {
                 let mut value = f32::from_bits(*bits);
                 ui.add_sized(
@@ -401,9 +386,10 @@ fn draw_property_value(
         };
         let modified =
             !edits.is_empty() || text.keys().any(|(locator, _)| locator == &field.locator);
-        reset = ui
+        let reset = ui
             .add_enabled(modified, egui::Button::new("Reset"))
             .clicked();
+        (next, reset)
     });
     if reset {
         edits.clear();

@@ -55,13 +55,16 @@ enum Class {
     /// Understood by another subsystem or a fixed sentinel: program bytecode, label masks,
     /// the label globals tag, the null tag, the empty key, or a key that resolves to a label.
     Decoded,
+    /// Identical in every stock node of the class, recorded in `fields::fixed_values`. The
+    /// value is reproducible from evidence, but its role is not resolved.
+    Fixed,
     /// A key or resource hash with a known type but no recovered meaning at this site.
     TypedUnnamed,
     /// Bytes no declaration or contract covers.
     Unnamed,
 }
 
-const CLASSES: [(Class, &str); 5] = [
+const CLASSES: [(Class, &str); 6] = [
     (
         Class::Structural,
         "Structural (pointers, counts, class words, strings)",
@@ -70,6 +73,10 @@ const CLASSES: [(Class, &str); 5] = [
     (
         Class::Decoded,
         "Decoded elsewhere (program bytecode, label masks, label globals tag, sentinels, resolved labels)",
+    ),
+    (
+        Class::Fixed,
+        "Fixed (identical in every stock node of the class, role not resolved)",
     ),
     (
         Class::TypedUnnamed,
@@ -109,8 +116,8 @@ impl Site {
 
 #[derive(Default)]
 struct Tally {
-    bytes: [usize; 5],
-    nonzero: [usize; 5],
+    bytes: [usize; 6],
+    nonzero: [usize; 6],
 }
 
 impl Tally {
@@ -130,9 +137,15 @@ impl Tally {
     fn total(&self) -> usize {
         self.bytes.iter().sum()
     }
+    /// Bytes whose role is not resolved. A fixed byte is reproducible but not understood, so
+    /// it counts here and keeps the strict bar honest.
     fn unmapped(&self) -> usize {
-        self.bytes[Class::TypedUnnamed as usize] + self.bytes[Class::Unnamed as usize]
+        self.bytes[Class::Fixed as usize]
+            + self.bytes[Class::TypedUnnamed as usize]
+            + self.bytes[Class::Unnamed as usize]
     }
+    /// Non-zero bytes the workbench would show as opaque. A fixed byte is locked with its
+    /// stock value and stated as such, so it is not opaque.
     fn unmapped_nonzero(&self) -> usize {
         self.nonzero[Class::TypedUnnamed as usize] + self.nonzero[Class::Unnamed as usize]
     }
@@ -252,7 +265,14 @@ impl Distribution {
 #[derive(Default)]
 pub(super) struct Context {
     pub(super) names: BTreeMap<u64, BTreeSet<String>>,
-    perks: BTreeMap<u32, BTreeSet<u64>>,
+    /// Perk indices behind each captured action tag.
+    pub(super) perks: BTreeMap<u32, BTreeSet<u64>>,
+    /// Plug item hashes behind each perk index.
+    items: BTreeMap<u64, BTreeSet<u64>>,
+    /// Perks granted by an intrinsic or armor perk that only exotic items carry.
+    pub(super) exotic: BTreeSet<u64>,
+    /// In-game descriptions per plug item hash, evidence for what an effect does.
+    descriptions: BTreeMap<u64, String>,
 }
 
 impl Context {
@@ -267,7 +287,40 @@ impl Context {
         if let Some(value) = read_json(&runtime.join("catalog.json")) {
             context.load_perks(&value);
         }
+        if let Some(value) = read_json(&runtime.join("item-rarity.json")) {
+            context.load_exotics(&value);
+        }
+        if let Some(value) = read_json(&runtime.join("item-descriptions.json")) {
+            context.load_descriptions(&value);
+        }
         context
+    }
+
+    fn load_descriptions(&mut self, value: &serde_json::Value) {
+        let Some(plugs) = value["plugs"].as_object() else {
+            return;
+        };
+        for (hash, plug) in plugs {
+            if let (Ok(hash), Some(text)) = (hash.parse::<u64>(), plug["description"].as_str()) {
+                if !text.is_empty() {
+                    self.descriptions.insert(hash, text.to_owned());
+                }
+            }
+        }
+    }
+
+    /// The in-game description of the first plug behind a perk, when the catalog has one.
+    pub(super) fn description(&self, perk: u64) -> String {
+        self.items
+            .get(&perk)
+            .into_iter()
+            .flatten()
+            .find_map(|item| self.descriptions.get(item))
+            .cloned()
+            .unwrap_or_default()
+            .chars()
+            .take(120)
+            .collect()
     }
 
     fn load_names(&mut self, value: &serde_json::Value) {
@@ -276,10 +329,36 @@ impl Context {
                 continue;
             };
             let names = self.names.entry(index).or_default();
+            let items = self.items.entry(index).or_default();
             for item in iter(&perk["items"]) {
                 if let Some(name) = item["name"].as_str() {
                     names.insert(name.to_owned());
                 }
+                if let Some(hash) = item["item_hash"].as_u64() {
+                    items.insert(hash);
+                }
+            }
+        }
+    }
+
+    /// A plug is an exotic intrinsic when it is an intrinsic or armor perk and every item
+    /// whose socket carries it is exotic. A frame shared with legendaries is not one.
+    fn load_exotics(&mut self, value: &serde_json::Value) {
+        let Some(plugs) = value["plugs"].as_object() else {
+            return;
+        };
+        let exotic_plugs: BTreeSet<u64> = plugs
+            .iter()
+            .filter(|(_, plug)| {
+                matches!(plug["type"].as_str(), Some("Intrinsic" | "Armor Perk"))
+                    && iter(&plug["owner_rarities"]).count() > 0
+                    && iter(&plug["owner_rarities"]).all(|r| r.as_str() == Some("exotic"))
+            })
+            .filter_map(|(hash, _)| hash.parse().ok())
+            .collect();
+        for (perk, items) in &self.items {
+            if items.iter().any(|item| exotic_plugs.contains(item)) {
+                self.exotic.insert(*perk);
             }
         }
     }
@@ -556,6 +635,12 @@ fn classify(block_class: u32, field: &fields::Field, value: &[u8]) -> (Class, Op
     }
     if let Some(decoded) = decoded_sentinel(field.format, value) {
         return (Class::Decoded, Some(decoded));
+    }
+    if field.label.starts_with("Fixed Native Value +0x") {
+        return (
+            Class::Fixed,
+            Some("identical in every stock node of this class".into()),
+        );
     }
     if field.label.starts_with("Native Value +0x") {
         return (Class::Unnamed, census(block_class, field, value));
@@ -1205,6 +1290,83 @@ fn report_template_field_map() {
         study_sites(&collected, &survey).len(),
         path.display()
     );
+}
+
+/// Stock rows a site needs before one value counts as fixed. Below this, a single value is
+/// weak evidence of a constant.
+const FIXED_FLOOR: usize = 10;
+const FIXED_VALUES: &str = "src/sandbox_perk/action/native/fields/fixed_values.rs";
+
+/// Writes `fields::fixed_values` from the survey: every unnamed site whose value is identical
+/// across all stock nodes of its class. Run after the survey or the field contracts change.
+#[test]
+#[ignore = "generator, run explicitly with --ignored"]
+fn write_fixed_values() {
+    let collected = collect();
+    let wanted: BTreeSet<SiteKey> = collected
+        .unmapped_sites()
+        .filter(|site| matches!(site.class, Class::Unnamed | Class::Fixed))
+        .map(Site::key)
+        .collect();
+    let survey = survey(&wanted);
+    assert!(survey.dir.is_some(), "captured stock survey available");
+    let mut rows: BTreeSet<(u32, usize, Vec<u8>)> = BTreeSet::new();
+    for key in &wanted {
+        let Some(distribution) = survey.distributions.get(key) else {
+            continue;
+        };
+        if distribution.values.len() != 1 {
+            continue;
+        }
+        let value = distribution.values.keys().next().expect("one value");
+        // A non-zero constant needs enough rows before one value is evidence of a constant.
+        // A site that is zero in every row it was seen in needs no such bar: the template
+        // writes zero there anyway, so emitting zero reproduces it whatever the sample size.
+        if distribution.occurrences < FIXED_FLOOR && value.iter().any(|byte| *byte != 0) {
+            continue;
+        }
+        rows.insert((key.0, key.1, value.clone()));
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "//! Native bytes identical in every stock node of their class.\n//!\n\
+         //! A fixed value is evidence that the byte is not a per-perk setting, not a claim about\n\
+         //! its role. The workbench locks these fields at their stock value and says so, which\n\
+         //! leaves the fields that vary as the ones a reader has to think about.\n//!\n\
+         //! Generated by `schema::field_map::write_fixed_values` over the captured stock survey\n\
+         //! ({} stock actions). A site needs at least {FIXED_FLOOR} stock rows. Regenerate it when the\n\
+         //! survey or the field contracts change.\n",
+        survey.decoded
+    );
+    let _ = writeln!(
+        out,
+        "/// Native class, byte offset and the bytes every stock node stores there.\n\
+         pub type Fixed = (u32, usize, &'static [u8]);\n\n\
+         pub const FIXED: &[Fixed] = &["
+    );
+    for (class, offset, value) in &rows {
+        let bytes = value
+            .iter()
+            .map(|byte| format!("0x{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "    (0x{class:08X}, 0x{offset:02X}, &[{bytes}]),");
+    }
+    let _ = writeln!(
+        out,
+        "];\n\n/// The fixed bytes at one site, when every stock node of the class agrees.\n\
+         #[must_use]\n\
+         pub fn fixed(class: u32, offset: usize) -> Option<&'static [u8]> {{\n\
+         \x20   FIXED\n\
+         \x20       .iter()\n\
+         \x20       .find(|(site_class, site_offset, _)| *site_class == class && *site_offset == offset)\n\
+         \x20       .map(|(_, _, value)| *value)\n\
+         }}"
+    );
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXED_VALUES);
+    std::fs::write(&path, out).expect("write fixed values");
+    println!("fixed values: {} sites, {}", rows.len(), path.display());
 }
 
 /// Floors for the template map, raised as contracts are recovered. Lowering one means a

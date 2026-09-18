@@ -68,12 +68,15 @@ fn triumphs_merge_record_references_and_distinguish_objectives_from_completion()
         let result = rows(&catalog, &collection_state_snapshot(&document).unwrap());
         assert_eq!(result[0].status, Status::ObjectivesComplete);
         assert_eq!(result[0].completed_objectives, 1);
-        assert!(set_collection_flag(
-            &mut document,
-            0,
-            catalog.unlock_flag_definition(0).unwrap(),
-            true
-        ));
+        assert!(
+            set_collection_flag(
+                &mut document,
+                0,
+                catalog.unlock_flag_definition(0).unwrap(),
+                true
+            )
+            .changed()
+        );
         let result = rows(&catalog, &collection_state_snapshot(&document).unwrap());
         assert_eq!(result[0].status, Status::Completed);
     }
@@ -195,7 +198,7 @@ fn triumph_edits_persist_in_json_and_sqlite_accounts() {
                 3,
             );
         }
-        let mut workspace = WorkspaceDocument::load(json.clone(), &path);
+        let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
         for complete in [true, false] {
             let mut view = workspace.progression_view(0);
             edit::apply_record(&mut view, &catalog, record, complete).unwrap();
@@ -212,6 +215,7 @@ fn triumph_edits_persist_in_json_and_sqlite_accounts() {
             workspace = WorkspaceDocument::load(
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
                 &path,
+                false,
             );
             let snapshot = collection_state_snapshot(&workspace.progression_view(0)).unwrap();
             assert_eq!(snapshot.evaluated_flag(0, &catalog), Some(complete));

@@ -9,6 +9,71 @@ fn fixture() -> Value {
 }
 
 #[test]
+fn sunrise_0_5_retires_four_controls_without_touching_other_runtimes_or_settings() {
+    const RETIRED: [&str; 4] = [
+        "/client/region_private",
+        "/client/pin_replicated_record",
+        "/client/skip_orbit_cinematic_wait",
+        "/state/activity/arrival_overrides",
+    ];
+
+    // The schema version is 18 on both sides of the removal, so only the module version separates
+    // them. Every other case keeps the controls visible rather than guessing.
+    let retiring = Capabilities::detect(Some("0.5"), false);
+    for path in RETIRED {
+        assert!(!retiring.supports(path), "{path}");
+    }
+    assert!(retiring.supports("/client/socket_menu_routing"));
+    assert!(retiring.supports(activity::DESTINATION));
+
+    for (version, dawn) in [
+        (Some("0.3.2"), false),
+        (Some("0.4.9"), false),
+        (Some("Not detected"), false),
+        (None, false),
+        // Dawn versions independently, so a Dawn 0.5 is not a Sunrise 0.5.
+        (Some("0.5"), true),
+        (Some("1.0"), true),
+    ] {
+        let capabilities = Capabilities::detect(version, dawn);
+        for path in RETIRED {
+            assert!(
+                capabilities.supports(path),
+                "{version:?} dawn={dawn} {path}"
+            );
+        }
+    }
+
+    for version in ["0.5.1", "0.6", "1.0", "0.5.0.0"] {
+        let capabilities = Capabilities::detect(Some(version), false);
+        assert!(!capabilities.supports(RETIRED[0]), "{version}");
+    }
+}
+
+#[test]
+fn sunrise_0_5_defaults_load_and_validate_without_the_retired_settings() {
+    let encoded = include_str!("../../../tests/fixtures/sunrise-v18-5e4cbc7-defaults.json");
+    let document: Value = serde_json::from_str(encoded).unwrap();
+    assert_eq!(document["version"], 18);
+    for path in [
+        "/client/region_private",
+        "/client/pin_replicated_record",
+        "/client/skip_orbit_cinematic_wait",
+        "/state/activity/arrival_overrides",
+    ] {
+        assert_eq!(document.pointer(path), None, "{path}");
+    }
+    // The validator only checks fields it finds, so the shorter document still passes.
+    assert_eq!(
+        crate::game_settings::validate_non_account(&document),
+        Ok(())
+    );
+    assert!(available(&document));
+    assert_eq!(validate(&document, false), Ok(()));
+    assert_eq!(validate_activity(&document), Ok(()));
+}
+
+#[test]
 fn all_runtime_controls_enforce_the_schema_boundary_and_preserve_unrelated_data() {
     for field in FIELDS.iter().chain(services::FIELDS) {
         let value = match field.kind {
@@ -268,7 +333,7 @@ fn opening_sunrise_and_display_preserves_omissions_and_extended_fov() {
     let original = doc.clone();
     let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
         eframe::egui::CentralPanel::default().show(ctx, |ui| {
-            assert!(!page::draw(ui, &mut doc, true));
+            assert!(!page::draw(ui, &mut doc, true, Capabilities::default()));
             let settings = doc
                 .pointer("/state/account/settings")
                 .unwrap()

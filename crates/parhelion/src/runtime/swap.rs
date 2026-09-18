@@ -318,7 +318,7 @@ fn check_recipe(
         },
     )
     .map_err(|error| error.to_string())?;
-    preflight_runtime_edits(manager, &entity.payload, &spec.overrides, hud_key)
+    preflight_runtime_edits(manager, &entity.payload, &spec.overrides, hud_key, None)
         .map_err(|error| error.to_string())
 }
 

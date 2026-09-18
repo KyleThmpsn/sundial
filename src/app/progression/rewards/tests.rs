@@ -132,7 +132,7 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
     db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters WHERE slot=0;
         ALTER TABLE character_stacks ADD COLUMN future TEXT NOT NULL DEFAULT 'new';
         INSERT INTO character_stacks VALUES(0,0,1000,8,3,'keep'),(1,0,1000,1,0,'other');").unwrap();
-    let mut workspace = WorkspaceDocument::load(settings.clone(), &path);
+    let mut workspace = WorkspaceDocument::load(settings.clone(), &path, false);
     let mut view = workspace.progression_view(0);
     queue(
         &mut view,
@@ -140,7 +140,7 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
         [(9000, 2), (1000, 2), (1001, 3), (300, 1)],
     )
     .unwrap();
-    super::super::mutations::set_unlock_flag(&mut view, "account_flag_runs", 200, true);
+    let _ = super::super::mutations::set_unlock_flag(&mut view, "account_flag_runs", 200, true);
     let stale = view.clone();
     assert!(workspace.apply_progression_view(1, view.clone()).is_err());
     workspace.apply_progression_view(0, view).unwrap();
@@ -174,7 +174,7 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
         workspace.native_account_mut().unwrap(),
         &directory.0.join("backup.sqlite3"),
     );
-    let reloaded = WorkspaceDocument::load(settings.clone(), &path);
+    let reloaded = WorkspaceDocument::load(settings.clone(), &path, false);
     assert_eq!(reloaded.progression_view(0), after);
     let preserved: String = db
         .query_row(
@@ -198,13 +198,13 @@ fn direct_inventory_failure_rolls_back_pending_rewards_and_claim_flags() {
         &directory.0.join("data/investment.sqlite3"),
         3,
     );
-    let mut workspace = WorkspaceDocument::load(settings, &path);
+    let mut workspace = WorkspaceDocument::load(settings, &path, false);
     let before = workspace.progression_view(0);
     let mut view = before.clone();
     view["_progression_rewards"] = json!([{"kind":1,"hash":9000,"quantity":1}]);
     view["_progression_consumables"] =
         json!([{"hash":1000,"quantity":1,"maximum":10},{"hash":1001,"quantity":11,"maximum":10}]);
-    super::super::mutations::set_unlock_flag(&mut view, "account_flag_runs", 200, true);
+    let _ = super::super::mutations::set_unlock_flag(&mut view, "account_flag_runs", 200, true);
     assert!(workspace.apply_progression_view(0, view).is_err());
     assert_eq!(workspace.progression_view(0), before);
 }

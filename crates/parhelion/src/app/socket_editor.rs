@@ -1176,11 +1176,33 @@ pub(super) fn make_choice_default(
     inherited: &[u32],
     choice_index: usize,
 ) -> Result<(), String> {
+    move_choice(
+        recipe,
+        socket_count,
+        socket_index,
+        inherited,
+        choice_index,
+        0,
+    )
+}
+
+/// Moves one choice within its socket, carrying its weight, condition and custom perk with it.
+///
+/// The first choice is the one that starts equipped, so this is how the default is chosen as well
+/// as how the rest are ordered.
+pub(super) fn move_choice(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
     let mut choices = recipe_socket_choices(recipe, socket_index, inherited)?;
-    if choice_index >= choices.len() {
+    if from >= choices.len() || to >= choices.len() {
         return Err("The selected choice no longer exists. Reopen the socket picker.".into());
     }
-    if choice_index == 0 {
+    if from == to {
         return Ok(());
     }
     let mut column = recipe
@@ -1193,17 +1215,17 @@ pub(super) fn make_choice_default(
     if (!column.choice_weight_bits.is_empty() && column.choice_weight_bits.len() != choices.len())
         || (!column.choice_conditions.is_empty() && column.choice_conditions.len() != choices.len())
     {
-        return Err("The socket's weights or conditions do not match its choices. Correct them before changing the default.".into());
+        return Err("The socket's weights or conditions do not match its choices. Correct them before reordering.".into());
     }
-    let selected = choices.remove(choice_index);
-    choices.insert(0, selected);
+    let selected = choices.remove(from);
+    choices.insert(to, selected);
     if !column.choice_weight_bits.is_empty() {
-        let selected = column.choice_weight_bits.remove(choice_index);
-        column.choice_weight_bits.insert(0, selected);
+        let selected = column.choice_weight_bits.remove(from);
+        column.choice_weight_bits.insert(to, selected);
     }
     if !column.choice_conditions.is_empty() {
-        let selected = column.choice_conditions.remove(choice_index);
-        column.choice_conditions.insert(0, selected);
+        let selected = column.choice_conditions.remove(from);
+        column.choice_conditions.insert(to, selected);
     }
     recipe.overrides.socket_columns.resize_with(
         socket_count
@@ -1213,14 +1235,20 @@ pub(super) fn make_choice_default(
     );
     recipe.overrides.socket_columns[socket_index] = Some(column);
     for variant in &mut recipe.overrides.socket_plug_variants {
-        if usize::from(variant.socket_index) == socket_index {
-            let index = usize::from(variant.choice_index);
-            if index == choice_index {
-                variant.choice_index = 0;
-            } else if index < choice_index {
-                variant.choice_index += 1;
-            }
+        if usize::from(variant.socket_index) != socket_index {
+            continue;
         }
+        let index = usize::from(variant.choice_index);
+        let moved = if index == from {
+            to
+        } else if from < to && (from + 1..=to).contains(&index) {
+            index - 1
+        } else if to < from && (to..from).contains(&index) {
+            index + 1
+        } else {
+            index
+        };
+        variant.choice_index = u16::try_from(moved).unwrap_or(variant.choice_index);
     }
     set_recipe_socket_column(recipe, socket_count, socket_index, inherited, choices, None);
     Ok(())

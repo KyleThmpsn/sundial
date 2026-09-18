@@ -1,5 +1,6 @@
 use super::*;
-use crate::app::custom_perks::editor::tests::set_test_speed;
+use crate::app::custom_perks::editor::tests::{set_test_speed, test_speed};
+use sundial::package_authoring::sandbox_perk::program::Program;
 
 #[test]
 fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clear() {
@@ -198,4 +199,119 @@ fn new_draft_clears_search_and_is_visible_above_a_long_library() {
     workbench.select_document(0);
     workbench.select_document(40);
     assert_eq!(workbench.documents[40].recipe.name, "New Visible Draft");
+}
+
+/// A workbench editing a stock effect that already carries a saved speed override, with a
+/// different speed pending in the editor draft.
+fn workbench_with_saved_and_pending_speed() -> Workbench {
+    let mut parameter_editor = editor(fixture());
+    let graph = parameter_editor.graph.clone().unwrap();
+    let mut saved = Vec::new();
+    set_test_speed(&graph, &mut saved, 2.0);
+    set_test_speed(&graph, &mut parameter_editor.draft, 1.5);
+    let mut workbench = Workbench::default();
+    workbench.set_test_editor(parameter_editor);
+    workbench.documents[0].recipe.effects[0].runtime_values = saved;
+    workbench
+}
+
+fn converted() -> Program {
+    Program {
+        name: "Converted".into(),
+        ..Program::default()
+    }
+}
+
+/// Drives the same two-frame click the app receives and seeds a ready conversion between the
+/// press and the release, so the conversion competes with the click in the frame that lands it.
+fn click_with_ready_conversion(ctx: &egui::Context, workbench: &mut Workbench, button: &str) {
+    let size = egui::vec2(1000.0, 720.0);
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = frame(ctx, workbench, false, size, vec![]);
+    }
+    let position = label(&output, button)
+        .unwrap_or_else(|| panic!("Missing {button}"))
+        .center();
+    for pressed in [true, false] {
+        if !pressed {
+            workbench
+                .editor
+                .as_mut()
+                .expect("editor stays open until the click lands")
+                .conversion = Some(converted());
+        }
+        frame(
+            ctx,
+            workbench,
+            false,
+            size,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+    }
+}
+
+fn assert_editor_closed(workbench: &Workbench) {
+    assert!(workbench.editor.is_none());
+    assert!(workbench.editing_effect.is_none());
+    assert!(workbench.editing_program_action.is_none());
+    assert!(workbench.page == Page::Effects);
+    assert!(workbench.documents[0].pending_effect.is_none());
+}
+
+#[test]
+fn back_discards_a_conversion_that_became_ready_in_the_same_frame() {
+    let mut workbench = workbench_with_saved_and_pending_speed();
+    let before = serde_json::to_vec(&workbench.documents[0].recipe).unwrap();
+    let ctx = egui::Context::default();
+    click_with_ready_conversion(&ctx, &mut workbench, "Discard and Back");
+    assert_eq!(
+        serde_json::to_vec(&workbench.documents[0].recipe).unwrap(),
+        before
+    );
+    assert!(workbench.documents[0].recipe.effects[0].program.is_none());
+    assert_editor_closed(&workbench);
+}
+
+#[test]
+fn apply_keeps_stock_overrides_over_a_conversion_that_became_ready_in_the_same_frame() {
+    let mut workbench = workbench_with_saved_and_pending_speed();
+    let pending = workbench.editor.as_ref().unwrap().draft.clone();
+    let graph = workbench.editor.as_ref().unwrap().graph.clone().unwrap();
+    let ctx = egui::Context::default();
+    click_with_ready_conversion(&ctx, &mut workbench, "Apply and Back");
+    let effect = &workbench.documents[0].recipe.effects[0];
+    assert!(effect.program.is_none());
+    assert_eq!(effect.runtime_values, pending);
+    assert_eq!(test_speed(&graph, &effect.runtime_values), 1.5);
+    assert_editor_closed(&workbench);
+}
+
+#[test]
+fn a_ready_conversion_without_a_click_still_replaces_the_stock_effect() {
+    let mut workbench = workbench_with_saved_and_pending_speed();
+    let ctx = egui::Context::default();
+    let size = egui::vec2(1000.0, 720.0);
+    frame(&ctx, &mut workbench, false, size, vec![]);
+    assert!(workbench.editor.is_some());
+    workbench.editor.as_mut().unwrap().conversion = Some(converted());
+    frame(&ctx, &mut workbench, false, size, vec![]);
+    let effect = &workbench.documents[0].recipe.effects[0];
+    assert_eq!(
+        effect.program.as_ref().map(|program| program.name.as_str()),
+        Some("Converted")
+    );
+    assert!(effect.runtime_values.is_empty());
+    assert!(effect.action_float_values.is_empty());
+    assert!(effect.projectiles.is_empty());
+    assert!(effect.activation.is_none());
+    assert_editor_closed(&workbench);
 }

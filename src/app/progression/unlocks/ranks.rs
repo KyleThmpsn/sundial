@@ -209,6 +209,7 @@ pub(super) fn draw(
                                     row.saved.definition_index,
                                     lanes,
                                 )
+                                .changed()
                             {
                                 state.record_progression_change(
                                     id,

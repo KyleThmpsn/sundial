@@ -444,8 +444,14 @@ pub fn blank_effect(kind: u8) -> Option<Vec<u8>> {
     effect_layout(kind)?;
     let mut bytes = vec![0; effect_size(kind)?];
     bytes[0] = kind;
-    // Every stock node of these kinds except the one-shot ones is retained.
-    bytes[1] = u8::from(!matches!(kind, 0 | 24 | 27 | 42 | 43 | 47 | 49 | 51));
+    // The retained byte is not a per-node setting: every stock node of a kind agrees on it.
+    // Read it from the captured stock template, which is the same evidence a carried node
+    // arrives with, so a blank node and a stock one of the kind cannot disagree. A template
+    // can be longer than the node when the kind carries nested records, so only this byte
+    // is taken from it.
+    bytes[1] = super::native::template(false, kind)
+        .and_then(|template| template.get(1).copied())
+        .unwrap_or_default();
     Some(bytes)
 }
 
@@ -551,5 +557,25 @@ mod tests {
         assert_eq!(&effect[..2], &[42, 0]);
         assert_eq!(blank_effect(30).unwrap()[1], 1);
         assert!(blank_effect(1).is_none());
+    }
+
+    /// A blank node of a kind and a stock node of the same kind must agree on the retained
+    /// byte, since no stock node of a kind disagrees with another. The byte is read from the
+    /// captured template, so this checks that every kind with a scalar layout has one and
+    /// that the blank node leaves the rest of the template's settings zero.
+    #[test]
+    fn a_blank_effect_carries_the_stock_retained_byte_of_its_kind() {
+        for layout in EFFECT_LAYOUTS {
+            let blank = blank_effect(layout.kind)
+                .unwrap_or_else(|| panic!("effect kind {} has no blank node", layout.kind));
+            let template = crate::sandbox_perk::action::native::template(false, layout.kind)
+                .unwrap_or_else(|| panic!("effect kind {} has no stock template", layout.kind));
+            assert_eq!(blank[0], layout.kind);
+            assert_eq!(
+                blank[1], template[1],
+                "blank effect kind {} disagrees with its stock template",
+                layout.kind
+            );
+        }
     }
 }

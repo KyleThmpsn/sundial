@@ -103,20 +103,19 @@ pub(super) fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compi
     out.removal_and_rearm(program)?;
     out.auxiliary(&program.auxiliary);
     out.policy(program.policy.as_ref());
+    out.additional_groups(&program.additional_groups)?;
     out.u64(0, out.bytes.len() as u64);
     metadata::rebuild(&mut out.bytes)?;
     // Complex native graphs can carry state below their root node. Reserve an upper
     // bound for each node instead of reusing the scalar-only reservation calculation.
-    let complex = program
-        .native_trigger
-        .iter()
-        .chain(&program.native_removal)
-        .chain(&program.alternative_triggers)
-        .chain(&program.alternative_removals)
-        .chain(&program.native_rearm)
-        .chain(&program.alternative_rearms)
-        .any(|node| crate::sandbox_perk::action::layout::condition_layout(node.kind).is_none())
-        || program.actions.iter().any(|action|matches!(action,Action::Native{node} if crate::sandbox_perk::action::layout::effect_layout(node.kind).is_none()));
+    let complex = program.native_nodes().any(|(condition, node)| {
+        use crate::sandbox_perk::action::layout;
+        if condition {
+            layout::condition_layout(node.kind).is_none()
+        } else {
+            layout::effect_layout(node.kind).is_none()
+        }
+    });
     if complex {
         let decoded = crate::sandbox_perk::action::decode(&out.bytes)?;
         let conditions = decoded.conditions();
@@ -182,6 +181,13 @@ fn validate_asset(manager: &PackageManager, action: &Action) -> Result<(), Strin
         Action::Attach { .. }
         | Action::ExtendTimers { .. }
         | Action::Property { .. }
+        | Action::AdjustComponent { .. }
+        | Action::UpdateAccumulator { .. }
+        | Action::AbilityProperty { .. }
+        | Action::TransmatContext { .. }
+        | Action::OverrideHostKey { .. }
+        | Action::SetDamageType { .. }
+        | Action::WeaponReferenceCount { .. }
         | Action::AddRounds { .. }
         | Action::AddFraction { .. }
         | Action::Native { .. } => true,
@@ -203,22 +209,62 @@ fn validate_asset(manager: &PackageManager, action: &Action) -> Result<(), Strin
     }
 }
 
-fn prepare_native(manager: &PackageManager, program: &mut Program) -> Result<(), String> {
-    use crate::sandbox_perk::action::native::{Graph, labels, schema};
-    let mut registry = None;
-    let mut entries = Vec::new();
-    if let Some(node) = &mut program.native_trigger {
-        entries.push((true, node));
-    }
-    if let Some(node) = &mut program.native_removal {
-        entries.push((true, node));
-    }
-    for action in &mut program.actions {
-        if let Action::Native { node } = action {
-            entries.push((false, node));
+/// What preparing native nodes needs from an installation: the label registry, read once,
+/// and proof that every resource a node references is live. Compilation uses the package
+/// manager. Tests substitute a synthetic registry and a fixed set of live resources so the
+/// traversal itself is checked without game packages.
+pub(super) trait NativeResolver {
+    fn registry(&mut self) -> Result<&[u8], String>;
+    fn validate_resources(
+        &self,
+        graph: &crate::sandbox_perk::action::native::Graph,
+    ) -> Result<(), String>;
+}
+
+struct Installed<'a> {
+    manager: &'a PackageManager,
+    registry: Option<Vec<u8>>,
+}
+
+impl NativeResolver for Installed<'_> {
+    fn registry(&mut self) -> Result<&[u8], String> {
+        if self.registry.is_none() {
+            self.registry = Some(
+                self.manager
+                    .read_tag(TagHash(LABEL_GLOBALS))
+                    .map_err(|error| format!("Could not read label globals: {error}"))?,
+            );
         }
+        Ok(self.registry.as_deref().expect("loaded registry"))
     }
-    for (condition, node) in entries {
+
+    fn validate_resources(
+        &self,
+        graph: &crate::sandbox_perk::action::native::Graph,
+    ) -> Result<(), String> {
+        validate_native_resources(self.manager, graph)
+    }
+}
+
+fn prepare_native(manager: &PackageManager, program: &mut Program) -> Result<(), String> {
+    let mut resolver = Installed {
+        manager,
+        registry: None,
+    };
+    prepare_native_nodes(program, &mut resolver)
+}
+
+/// Compiles the label masks of every native node against the current registry and proves
+/// the resources it references are live, in every position the compiler emits verbatim:
+/// trigger, ending, rearm, their alternatives, native actions and every further group. The
+/// walk is `Program::native_nodes_mut`, so a node position the compiler emits cannot skip
+/// this pass.
+pub(super) fn prepare_native_nodes(
+    program: &mut Program,
+    resolver: &mut impl NativeResolver,
+) -> Result<(), String> {
+    use crate::sandbox_perk::action::native::{Graph, labels, schema};
+    for (condition, node) in program.native_nodes_mut() {
         let class = if condition {
             crate::sandbox_perk::nodes::condition(node.kind)
         } else {
@@ -239,28 +285,22 @@ fn prepare_native(manager: &PackageManager, program: &mut Program) -> Result<(),
                 })
             });
         if has_labels {
-            if registry.is_none() {
-                registry = Some(
-                    manager
-                        .read_tag(TagHash(LABEL_GLOBALS))
-                        .map_err(|error| format!("Could not read label globals: {error}"))?,
-                );
-            }
-            labels::compile(&mut graph, registry.as_deref().expect("loaded registry"))?;
+            labels::compile(&mut graph, resolver.registry()?)?;
         }
-        validate_native_resources(manager, &graph)?;
+        resolver.validate_resources(&graph)?;
         node.bytes = graph.emit()?;
     }
     Ok(())
 }
 
-fn validate_native_resources(
-    manager: &PackageManager,
+/// Every resource tag a native node's records reference, with the class of the record.
+/// Empty lanes are skipped.
+pub(super) fn referenced_resources(
     graph: &crate::sandbox_perk::action::native::Graph,
-) -> Result<(), String> {
+) -> Result<Vec<(u32, u32)>, String> {
     use crate::sandbox_perk::action::native::schema;
+    let mut result = Vec::new();
     for block in graph.blocks.iter().filter(|b| b.class != 0) {
-        validate_native_entity(manager, block)?;
         let record = schema::record(block.class)?;
         for row in 0..block.count.unwrap_or(1) {
             for &(field, code) in &record.fields {
@@ -271,13 +311,26 @@ fn validate_native_resources(
                 if matches!(tag, 0 | u32::MAX) {
                     continue;
                 }
-                let entry = manager
-                    .get_entry(TagHash(tag))
-                    .ok_or_else(|| format!("Native resource 0x{tag:08X} is missing."))?;
-                if entry.reference == WEAPON_ENTITY_CLASS {
-                    projectile::residency::inspect(manager, tag)?;
-                }
+                result.push((block.class, tag));
             }
+        }
+    }
+    Ok(result)
+}
+
+fn validate_native_resources(
+    manager: &PackageManager,
+    graph: &crate::sandbox_perk::action::native::Graph,
+) -> Result<(), String> {
+    for block in graph.blocks.iter().filter(|b| b.class != 0) {
+        validate_native_entity(manager, block)?;
+    }
+    for (_, tag) in referenced_resources(graph)? {
+        let entry = manager
+            .get_entry(TagHash(tag))
+            .ok_or_else(|| format!("Native resource 0x{tag:08X} is missing."))?;
+        if entry.reference == WEAPON_ENTITY_CLASS {
+            projectile::residency::inspect(manager, tag)?;
         }
     }
     Ok(())
@@ -422,6 +475,50 @@ impl Payload {
             self.bytes[at..at + record.bytes.len()].copy_from_slice(&record.bytes);
             self.pointer(POLICY_CONFIGURATION, at);
         }
+    }
+    /// Further programs preserved from a stock action, each list emitted in its native order,
+    /// with one zeroed routing record per group for `metadata::rebuild` to fill.
+    fn additional_groups(&mut self, groups: &[NativeGroup]) -> Result<(), String> {
+        use crate::sandbox_perk::action::{
+            ADDITIONAL_GROUPS, GROUP_ACTIVATION, GROUP_EFFECTS, GROUP_REARM, GROUP_REMOVAL,
+            GROUP_ROUTING, GROUP_ROUTING_CLASS, GROUP_ROUTING_SIZE, GROUP_ROW_CLASS, GROUP_SIZE,
+        };
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let rows = self.rows(ADDITIONAL_GROUPS, GROUP_ROW_CLASS, groups.len(), GROUP_SIZE);
+        for (index, group) in groups.iter().enumerate() {
+            let base = rows + index * GROUP_SIZE;
+            for (offset, list) in [
+                (GROUP_ACTIVATION, &group.activation),
+                (GROUP_REMOVAL, &group.removal),
+                (GROUP_REARM, &group.rearm),
+            ] {
+                if list.is_empty() {
+                    continue;
+                }
+                let mut nodes = Vec::with_capacity(list.len());
+                for node in list {
+                    nodes.push(self.native_condition(node, 0)?);
+                }
+                self.nodes(base + offset, CONDITION_ROWS, &nodes);
+            }
+            if !group.effects.is_empty() {
+                let mut nodes = Vec::with_capacity(group.effects.len());
+                for node in &group.effects {
+                    let action = Action::Native { node: node.clone() };
+                    nodes.push(self.action(&action, None)?);
+                }
+                self.nodes(base + GROUP_EFFECTS, EFFECT_ROWS, &nodes);
+            }
+        }
+        self.rows(
+            GROUP_ROUTING,
+            GROUP_ROUTING_CLASS,
+            groups.len(),
+            GROUP_ROUTING_SIZE,
+        );
+        Ok(())
     }
     fn auxiliary(&mut self, records: &[NativeRecord]) {
         if records.is_empty() {
@@ -581,12 +678,21 @@ impl Payload {
         if !rearms.is_empty() {
             self.nodes(0x58, CONDITION_ROWS, &rearms);
         }
-        self.root_state(program, removal.map(|(_, kind)| kind), has_cooldown);
+        self.root_state(program, removal.map(|(_, kind)| kind), has_cooldown)?;
         Ok(has_cooldown)
     }
 
     /// Writes the compiled event masks and the retained-state and timer budgets.
-    fn root_state(&mut self, program: &Program, removal_kind: Option<u8>, has_cooldown: bool) {
+    ///
+    /// Both budgets are one byte. The reservation pass in `assemble` refuses a program that
+    /// needs more slots than a byte holds, by name, so counting them here refuses it the same
+    /// way rather than wrapping into a budget smaller than the state the action keeps.
+    fn root_state(
+        &mut self,
+        program: &Program,
+        removal_kind: Option<u8>,
+        has_cooldown: bool,
+    ) -> Result<(), String> {
         let active_kind = match program.trigger {
             Trigger::Always => 0,
             Trigger::Equipped => 14,
@@ -611,23 +717,42 @@ impl Payload {
                     }
                 });
         self.u64(0xA0, extension_mask);
-        self.bytes[0xCC] = 1 + program
-            .actions
+        let group_retained = program
+            .additional_groups
             .iter()
-            .filter(|action| action.retained())
-            .count() as u8;
+            .flat_map(|group| &group.effects)
+            .filter(|node| node.bytes.get(1).is_some_and(|byte| *byte != 0))
+            .count();
+        let retained = 1
+            + program
+                .actions
+                .iter()
+                .filter(|action| action.retained())
+                .count()
+            + group_retained;
+        self.bytes[0xCC] = u8::try_from(retained)
+            .map_err(|_| "The program exceeds its retained-state reservation limit.")?;
         let alternative_timers = program
             .alternative_triggers
             .iter()
             .chain(&program.alternative_removals)
             .chain(&program.native_rearm)
             .chain(&program.alternative_rearms)
+            .chain(
+                program
+                    .additional_groups
+                    .iter()
+                    .flat_map(NativeGroup::conditions),
+            )
             .filter(|node| node.kind == 1)
-            .count() as u8;
-        self.bytes[0xCD] = u8::from(active_kind == 1)
-            + u8::from(removal_kind == Some(1))
-            + u8::from(has_cooldown)
+            .count();
+        let timers = usize::from(active_kind == 1)
+            + usize::from(removal_kind == Some(1))
+            + usize::from(has_cooldown)
             + alternative_timers;
+        self.bytes[0xCD] =
+            u8::try_from(timers).map_err(|_| "The program exceeds its timer reservation limit.")?;
+        Ok(())
     }
     fn action(
         &mut self,
@@ -640,6 +765,13 @@ impl Payload {
             Action::Pattern { .. } => (0x8080_3E12, 26, 24),
             Action::ExtendTimers { .. } => (0x8080_3E3B, 32, 40),
             Action::Property { .. } => (0x8080_29ED, 10, 80),
+            Action::AdjustComponent { .. } => (0x8080_3E4D, 8, 80),
+            Action::UpdateAccumulator { .. } => (0x8080_3E2F, 42, 8),
+            Action::AbilityProperty { .. } => (0x8080_3E1D, 7, 12),
+            Action::TransmatContext { .. } => (0x8080_3E2E, 47, 8),
+            Action::OverrideHostKey { .. } => (0x8080_3E1C, 35, 12),
+            Action::SetDamageType { .. } => (0x8080_3E41, 6, 4),
+            Action::WeaponReferenceCount { .. } => (0x8080_3E0D, 30, 3),
             Action::AddRounds { .. } => (0x8080_3E3F, 14, 136),
             Action::AddFraction { .. } => (0x8080_3E3E, 15, 136),
             Action::Native { node } => {
@@ -718,6 +850,60 @@ impl Payload {
                 self.bytes[at + 0x4A] = *removal;
                 self.u32(at + 0x4C, *restore_bits);
             }
+            Action::AdjustComponent {
+                target,
+                flag,
+                option,
+                scale_bits,
+                limit_bits,
+                value_bits,
+                input,
+            } => {
+                self.bytes[at + 2] = *target;
+                self.bytes[at + 3] = *flag;
+                self.bytes[at + 4] = *option;
+                self.u32(at + 8, *scale_bits);
+                self.u32(at + 0x0C, *limit_bits);
+                self.constant_program(at + 0x18, *value_bits);
+                // Two words every one of the 179 stock nodes sets to one. Their role is not
+                // mapped, so they are written as the stock template does.
+                self.u32(at + 0x38, 1);
+                self.u32(at + 0x40, 1);
+                self.bytes[at + 0x48] = *input;
+            }
+            Action::UpdateAccumulator { mode, value_bits } => {
+                self.bytes[at + 2] = *mode;
+                self.u32(at + 4, *value_bits);
+            }
+            Action::AbilityProperty {
+                target,
+                key,
+                option,
+            } => {
+                self.bytes[at + 2] = *target;
+                self.u32(at + 4, *key);
+                self.bytes[at + 8] = *option;
+            }
+            Action::TransmatContext { key } => self.u32(at + 4, *key),
+            Action::OverrideHostKey {
+                target,
+                interface,
+                key,
+                apply_to_player,
+            } => {
+                self.bytes[at + 2] = *target;
+                self.bytes[at + 3] = *interface;
+                self.u32(at + 4, *key);
+                self.bytes[at + 8] = u8::from(*apply_to_player);
+            }
+            Action::SetDamageType {
+                mode,
+                keep_after_removal,
+            } => {
+                self.bytes[at + 2] = *mode;
+                self.bytes[at + 3] = u8::from(*keep_after_removal);
+            }
+            Action::WeaponReferenceCount { selector } => self.bytes[at + 2] = *selector,
             Action::AddRounds {
                 rounds,
                 target,
@@ -787,6 +973,294 @@ impl Payload {
 mod tests {
     use super::*;
     use crate::package_payload::native_array_at;
+    use crate::sandbox_perk::action::native::{Graph, labels};
+    use crate::sandbox_perk::nodes;
+
+    /// A synthetic installation: the fixture label registry and a fixed set of live
+    /// resource tags. Nothing here reads a game package.
+    struct Synthetic {
+        registry: Vec<u8>,
+        live: Vec<u32>,
+    }
+
+    impl Synthetic {
+        /// The label globals are always live: every event condition refers to them.
+        fn new(live: &[u32]) -> Self {
+            let mut live = live.to_vec();
+            live.push(LABEL_GLOBALS);
+            Self {
+                registry: crate::package_runtime::labels::fixture::registry(),
+                live,
+            }
+        }
+    }
+
+    impl NativeResolver for Synthetic {
+        fn registry(&mut self) -> Result<&[u8], String> {
+            Ok(&self.registry)
+        }
+
+        fn validate_resources(&self, graph: &Graph) -> Result<(), String> {
+            for (_, tag) in referenced_resources(graph)? {
+                if !self.live.contains(&tag) {
+                    return Err(format!("Native resource 0x{tag:08X} is missing."));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    const KILL: u8 = 2;
+    const PRECISION: u32 = 0x962E_A19B;
+    const DEAD_RESOURCE: u32 = 0x8ABC_0001;
+
+    fn kill_class() -> u32 {
+        nodes::condition(KILL).unwrap().class
+    }
+
+    /// A Kill Event whose first source label list names a precision kill while its compiled
+    /// masks are still those of the template, exactly as a label edit leaves a node before
+    /// it is compiled.
+    fn kill_with_stale_masks() -> NativeNode {
+        let mut node = NativeNode::condition(KILL).unwrap();
+        let mut graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
+        let (source, _) = labels::bindings(kill_class()).unwrap()[0];
+        graph
+            .create_target(0, source + 8, 0x808094B3, true)
+            .unwrap();
+        let rows = graph.blocks[0].links[&(source + 8)];
+        graph.resize_array(rows, 1).unwrap();
+        graph.blocks[rows].bytes[..4].copy_from_slice(&PRECISION.to_le_bytes());
+        node.bytes = graph.emit().unwrap();
+        node
+    }
+
+    /// A Kill Event whose resource lane names a tag no installation holds.
+    fn kill_with_dead_resource() -> NativeNode {
+        let mut node = NativeNode::condition(KILL).unwrap();
+        node.bytes[80..84].copy_from_slice(&DEAD_RESOURCE.to_le_bytes());
+        node
+    }
+
+    fn compiled_precision_mask(node: &NativeNode) -> [u8; 40] {
+        let graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
+        let (_, predicate) = labels::bindings(kill_class()).unwrap()[0];
+        labels::effective(&graph, 0, predicate).unwrap()[0]
+    }
+
+    type Read = fn(&Program) -> &NativeNode;
+
+    /// Every position that carries a verbatim condition, each holding one copy of the node,
+    /// with a way to read that copy back after preparation. The primary trigger comes first
+    /// and is the reference the other positions must match.
+    fn condition_positions(node: &NativeNode) -> Vec<(String, Program, Read)> {
+        let base = Program {
+            trigger: Trigger::Always,
+            duration_ms: 1000,
+            actions: vec![Action::native(43).unwrap()],
+            ..Program::default()
+        };
+        let group = |group: NativeGroup| Program {
+            additional_groups: vec![group],
+            ..base.clone()
+        };
+        let positions: Vec<(&str, Program, Read)> = vec![
+            (
+                "native_trigger",
+                Program {
+                    trigger: Trigger::Native,
+                    native_trigger: Some(node.clone()),
+                    ..base.clone()
+                },
+                |program| program.native_trigger.as_ref().unwrap(),
+            ),
+            (
+                "alternative_triggers",
+                Program {
+                    alternative_triggers: vec![node.clone()],
+                    ..base.clone()
+                },
+                |program| &program.alternative_triggers[0],
+            ),
+            (
+                "native_removal",
+                Program {
+                    native_removal: Some(node.clone()),
+                    ..base.clone()
+                },
+                |program| program.native_removal.as_ref().unwrap(),
+            ),
+            (
+                "alternative_removals",
+                Program {
+                    alternative_removals: vec![node.clone()],
+                    ..base.clone()
+                },
+                |program| &program.alternative_removals[0],
+            ),
+            (
+                "native_rearm",
+                Program {
+                    native_rearm: Some(node.clone()),
+                    ..base.clone()
+                },
+                |program| program.native_rearm.as_ref().unwrap(),
+            ),
+            (
+                "alternative_rearms",
+                Program {
+                    alternative_rearms: vec![node.clone()],
+                    ..base.clone()
+                },
+                |program| &program.alternative_rearms[0],
+            ),
+            (
+                "additional_groups.activation",
+                group(NativeGroup {
+                    activation: vec![node.clone()],
+                    ..NativeGroup::default()
+                }),
+                |program| &program.additional_groups[0].activation[0],
+            ),
+            (
+                "additional_groups.removal",
+                group(NativeGroup {
+                    removal: vec![node.clone()],
+                    ..NativeGroup::default()
+                }),
+                |program| &program.additional_groups[0].removal[0],
+            ),
+            (
+                "additional_groups.rearm",
+                group(NativeGroup {
+                    rearm: vec![node.clone()],
+                    ..NativeGroup::default()
+                }),
+                |program| &program.additional_groups[0].rearm[0],
+            ),
+        ];
+        positions
+            .into_iter()
+            .map(|(name, program, read)| (name.to_string(), program, read))
+            .collect()
+    }
+
+    #[test]
+    fn label_edits_compile_in_every_native_condition_position() {
+        let node = kill_with_stale_masks();
+        assert_eq!(
+            compiled_precision_mask(&node),
+            [0; 40],
+            "fixture masks are stale"
+        );
+        let registry = crate::package_runtime::labels::fixture::registry();
+        let expected = compile_labels(&registry, &[PRECISION]).unwrap();
+        assert_ne!(expected, [0; 40]);
+        let mut reference = None;
+        for (position, mut program, read) in condition_positions(&node) {
+            let mut resolver = Synthetic::new(&[]);
+            prepare_native_nodes(&mut program, &mut resolver)
+                .unwrap_or_else(|error| panic!("{position}: {error}"));
+            let prepared = read(&program);
+            assert_eq!(
+                compiled_precision_mask(prepared),
+                expected,
+                "{position} kept its stale masks"
+            );
+            match &reference {
+                None => reference = Some(prepared.bytes.clone()),
+                Some(bytes) => assert_eq!(
+                    &prepared.bytes, bytes,
+                    "{position} compiled differently from the primary trigger"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_resources_are_rejected_in_every_native_condition_position() {
+        let node = kill_with_dead_resource();
+        let graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
+        assert_eq!(
+            referenced_resources(&graph).unwrap(),
+            vec![(kill_class(), DEAD_RESOURCE), (kill_class(), LABEL_GLOBALS)]
+        );
+        for (position, program, _) in condition_positions(&node) {
+            let mut missing = Synthetic::new(&[]);
+            let error =
+                prepare_native_nodes(&mut program.clone(), &mut missing).expect_err(&position);
+            assert!(error.contains("0x8ABC0001"), "{position}: {error}");
+            let mut live = Synthetic::new(&[DEAD_RESOURCE]);
+            prepare_native_nodes(&mut program.clone(), &mut live)
+                .unwrap_or_else(|error| panic!("{position} with the resource live: {error}"));
+        }
+    }
+
+    #[test]
+    fn missing_resources_are_rejected_in_group_effects_like_native_actions() {
+        let mut node = NativeNode::effect(13).unwrap();
+        node.bytes[16..20].copy_from_slice(&DEAD_RESOURCE.to_le_bytes());
+        let graph = Graph::read(&node.bytes, 0, nodes::effect(13).unwrap().class).unwrap();
+        assert!(
+            referenced_resources(&graph)
+                .unwrap()
+                .iter()
+                .any(|(_, tag)| *tag == DEAD_RESOURCE)
+        );
+        let as_action = Program {
+            trigger: Trigger::Always,
+            actions: vec![Action::Native { node: node.clone() }],
+            ..Program::default()
+        };
+        let as_group_effect = Program {
+            trigger: Trigger::Always,
+            actions: vec![Action::native(43).unwrap()],
+            additional_groups: vec![NativeGroup {
+                effects: vec![node],
+                ..NativeGroup::default()
+            }],
+            ..Program::default()
+        };
+        for (position, program) in [("actions", as_action), ("group effects", as_group_effect)] {
+            let error = prepare_native_nodes(&mut program.clone(), &mut Synthetic::new(&[]))
+                .expect_err(position);
+            assert!(error.contains("0x8ABC0001"), "{position}: {error}");
+            prepare_native_nodes(&mut program.clone(), &mut Synthetic::new(&[DEAD_RESOURCE]))
+                .unwrap_or_else(|error| panic!("{position}: {error}"));
+        }
+    }
+
+    #[test]
+    fn native_nodes_reach_every_verbatim_position() {
+        let condition = NativeNode::condition(KILL).unwrap();
+        let effect = NativeNode::effect(43).unwrap();
+        let program = Program {
+            trigger: Trigger::Native,
+            native_trigger: Some(condition.clone()),
+            native_removal: Some(condition.clone()),
+            native_rearm: Some(condition.clone()),
+            alternative_triggers: vec![condition.clone()],
+            alternative_removals: vec![condition.clone()],
+            alternative_rearms: vec![condition.clone()],
+            actions: vec![Action::Native {
+                node: effect.clone(),
+            }],
+            additional_groups: vec![NativeGroup {
+                activation: vec![condition.clone()],
+                effects: vec![effect.clone()],
+                removal: vec![condition.clone()],
+                rearm: vec![condition.clone()],
+            }],
+            ..Program::default()
+        };
+        let (conditions, effects): (Vec<_>, Vec<_>) = program
+            .native_nodes()
+            .partition(|(condition, _)| *condition);
+        assert_eq!(conditions.len(), 9);
+        assert_eq!(effects.len(), 2);
+        assert!(conditions.iter().all(|(_, node)| **node == condition));
+        assert!(effects.iter().all(|(_, node)| **node == effect));
+    }
 
     fn attach_node(action: &Action) -> Vec<u8> {
         let mut out = Payload::new();
@@ -1024,6 +1498,63 @@ mod tests {
         assert!(json.contains("\"trigger\":\"native\""), "{json}");
         assert!(json.contains("\"bytes\":\"0x2B000000FC66E25E\""), "{json}");
         assert_eq!(serde_json::from_str::<Program>(&json).unwrap(), program);
+    }
+
+    /// The retained byte belongs to the effect kind, not to the authored action: every stock
+    /// node of a kind agrees on it. The compiler writes it from `Action::retained`, so each
+    /// typed action has to agree with the captured stock template of the kind it compiles to.
+    /// A disagreement makes the compiled node unlike every stock one, and makes the decompile
+    /// that reproduces the kind refuse every stock node of it, which is how `TransmatContext`
+    /// became unreachable while still compiling.
+    #[test]
+    fn every_typed_action_writes_the_stock_retained_byte() {
+        let asset = || Asset {
+            graph: 0x80BC_2F21,
+            path: String::new(),
+            values: Vec::new(),
+        };
+        let kill = Activation::Kill {
+            trigger: Trigger::WeaponKill,
+            labels: &[],
+            mask: [0; 40],
+            chance: 10_000,
+        };
+        let typed = [
+            Action::Spawn {
+                asset: asset(),
+                position: Position::default(),
+            },
+            Action::attach(asset()),
+            Action::Pattern { asset: asset() },
+            Action::ExtendTimers {
+                extend_ms: 5_000,
+                cap_ms: 5_000,
+            },
+            Action::property(0x5EE2_66FC),
+            Action::adjust_component(0),
+            Action::update_accumulator(1.0),
+            Action::ability_property(0),
+            Action::transmat_context(0x1234_5678),
+            Action::override_host_key(0x1234_5678),
+            Action::set_damage_type(1),
+            Action::weapon_reference_count(0),
+            Action::add_rounds(1),
+            Action::add_fraction(0.5),
+        ];
+        for action in typed {
+            let mut out = Payload::new();
+            let at = out.action(&action, Some(&kill)).unwrap();
+            let kind = out.bytes[at];
+            let stock = crate::sandbox_perk::action::native::template(false, kind)
+                .and_then(|template| template.get(1).copied())
+                .unwrap_or_else(|| panic!("{} has no stock template", action.label()));
+            assert_eq!(
+                out.bytes[at + 1],
+                stock,
+                "{} (effect kind {kind}) writes a retained byte no stock node of the kind carries",
+                action.label()
+            );
+        }
     }
 
     #[test]

@@ -201,6 +201,111 @@ fn library_entry_matches(entry: &RecipeLibraryEntry, details: &str, query: &str)
         .all(|term| searchable.contains(term))
 }
 
+/// Height a vertical `egui::Separator` allocates for itself.
+const SEPARATOR_HEIGHT: f32 = 6.0;
+
+/// Height a footer pinned under a windowed list needs, so the list can claim everything else:
+/// a gap, the separator's own row, another gap, and the row of controls.
+fn pinned_footer_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().item_spacing.y * 2.0 + SEPARATOR_HEIGHT + super::style::list_row_height(ui)
+}
+
+/// The build selection adds an error line above its buttons when a commit fails.
+fn build_selection_footer_height(ui: &egui::Ui, error: &Option<String>) -> f32 {
+    pinned_footer_height(ui)
+        + if error.is_some() {
+            ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y
+        } else {
+            0.0
+        }
+}
+
+/// Height a windowed list should claim so its footer lands just under the last row. A window
+/// sizes itself as though it sat at the top of the screen, so its own available height can
+/// reach past the bottom edge: take whichever limit is nearer, leaving room for the bottom
+/// margin and border the window frame draws below the contents.
+fn windowed_list_height(ui: &egui::Ui, footer_height: f32) -> f32 {
+    let style = ui.ctx().style();
+    let frame_bottom =
+        f32::from(style.spacing.window_margin.bottom) + style.visuals.window_stroke.width;
+    let room_on_screen = ui.ctx().screen_rect().bottom() - ui.cursor().top() - frame_bottom;
+    (ui.available_height() - footer_height)
+        .min(room_on_screen - footer_height)
+        .max(120.0)
+}
+
+/// One checkbox covering every row the search shows, the same bulk control Sundial uses for
+/// Collections and Triumphs: checked when they are all selected, mixed when only some are.
+fn draw_select_all_shown<'a>(
+    ui: &mut egui::Ui,
+    shown: impl Iterator<Item = &'a PathBuf> + Clone,
+    selected: &mut BTreeSet<PathBuf>,
+) {
+    let total = shown.clone().count();
+    let count = shown
+        .clone()
+        .filter(|path| selected.contains(*path))
+        .count();
+    let mut all = count == total && count > 0;
+    let response = ui
+        .add_enabled(
+            total > 0,
+            egui::Checkbox::new(&mut all, "Select all shown")
+                .indeterminate(count > 0 && count < total),
+        )
+        .on_hover_text("Selects or clears every recipe this search shows.");
+    if response.changed() {
+        for path in shown {
+            if all {
+                selected.insert(path.clone());
+            } else {
+                selected.remove(path);
+            }
+        }
+    }
+}
+
+/// The search and sort row shared by the library and the build selection.
+///
+/// Both browse the same recipes, so they offer the same controls and the same wording. The sort
+/// order is one setting: changing it in either place changes what the other shows.
+fn draw_recipe_search(
+    ui: &mut egui::Ui,
+    id: &str,
+    query: &mut String,
+    sort: &mut SortOrder,
+    focus: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        let search = named_control(
+            ui.add(
+                egui::TextEdit::singleline(query)
+                    .hint_text("Search Recipes…")
+                    .desired_width((ui.available_width() - 175.0).max(100.0)),
+            ),
+            "Search recipes",
+        )
+        .on_hover_text("Search by name, weapon type, element or ammo.");
+        if std::mem::take(focus) {
+            search.request_focus();
+        }
+        egui::ComboBox::from_id_salt(id)
+            .width(155.0)
+            .selected_text(format!(
+                "Sort: {}",
+                match *sort {
+                    SortOrder::RecentlyModified => "Recent",
+                    order => order.label(),
+                }
+            ))
+            .show_ui(ui, |ui| {
+                for order in SortOrder::ALL {
+                    ui.selectable_value(sort, order, order.label());
+                }
+            });
+    });
+}
+
 /// Both library navigation and build selection use the authored weapon preview.
 fn draw_library_row(
     ui: &mut egui::Ui,
@@ -218,7 +323,7 @@ fn draw_library_row(
         let body_size = egui::TextStyle::Body.resolve(ui.style()).size;
         let name_size = (body_size + 2.0).max(16.0);
         let detail_size = body_size.max(14.0);
-        let row_height = (name_size + detail_size + 24.0).max(64.0);
+        let row_height = (name_size + detail_size + 14.0).max(52.0);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
@@ -244,8 +349,8 @@ fn draw_library_row(
         };
         ui.painter().rect_filled(rect, visuals.corner_radius, fill);
         let icon_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 6.0, rect.center().y - 22.0),
-            egui::vec2(44.0, 44.0),
+            egui::pos2(rect.left() + 6.0, rect.center().y - 20.0),
+            egui::vec2(40.0, 40.0),
         );
         match icons.previews.get(&entry.path) {
             Some(AuthoredIconPreview::Ready { texture, key })
@@ -269,8 +374,8 @@ fn draw_library_row(
             }
         }
         let text_rect = egui::Rect::from_min_max(
-            rect.min + egui::vec2(58.0, 4.0),
-            rect.max - egui::vec2(8.0, 4.0),
+            rect.min + egui::vec2(54.0, 3.0),
+            rect.max - egui::vec2(8.0, 3.0),
         );
         let mut menu_action = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
@@ -593,49 +698,28 @@ impl PackageAuthoringApp {
             .resizable(true)
             .show(ctx, |ui| {
                 workbench_style(ui);
-                ui.label("Choose the weapons to build together.");
                 draw_bundled_recipe_selection(ui, &self.recipe_entries, &mut draft);
-                let search = named_control(
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.build_selection_query)
-                            .hint_text("Search name, weapon type, element or ammo…")
-                            .desired_width(f32::INFINITY),
-                    ),
-                    "Search weapons for this build",
+                draw_recipe_search(
+                    ui,
+                    "build-selection-sort",
+                    &mut self.build_selection_query,
+                    &mut self.library_state.sort,
+                    &mut self.recipe_search_focus_pending,
                 );
-                if std::mem::take(&mut self.recipe_search_focus_pending) {
-                    search.request_focus();
-                }
                 let query = self.build_selection_query.trim().to_lowercase();
-                let shown = self.library_state.matching_entries(
+                let mut shown = self.library_state.matching_entries(
                     &self.recipe_entries,
                     &self.donor_summaries,
                     &query,
                 );
-                ui.horizontal_wrapped(|ui| {
-                    let all_selected = shown.iter().all(|(entry, _)| draft.contains(&entry.path));
-                    let any_selected = shown.iter().any(|(entry, _)| draft.contains(&entry.path));
-                    if ui
-                        .add_enabled(!all_selected, egui::Button::new("Select All"))
-                        .on_hover_text("Select all recipes shown by this search.")
-                        .clicked()
-                    {
-                        draft.extend(shown.iter().map(|(entry, _)| entry.path.clone()));
-                    }
-                    if ui
-                        .add_enabled(any_selected, egui::Button::new("Clear All"))
-                        .on_hover_text("Clear all recipes shown by this search.")
-                        .clicked()
-                    {
-                        for (entry, _) in &shown {
-                            draft.remove(&entry.path);
-                        }
-                    }
-                });
+                self.library_state
+                    .sort_entries(&mut shown, &self.donor_summaries);
                 ui.separator();
+                draw_select_all_shown(ui, shown.iter().map(|(entry, _)| &entry.path), &mut draft);
+                let footer_height = build_selection_footer_height(ui, &self.build_selection_error);
                 egui::ScrollArea::vertical()
                     .id_salt("build-selection-results")
-                    .max_height((ui.available_height() - 75.0).max(120.0))
+                    .max_height(windowed_list_height(ui, footer_height))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for (entry, details) in &shown {
@@ -663,15 +747,6 @@ impl PackageAuthoringApp {
                             ui.label("No matching recipes. Try a different search.");
                         }
                     });
-                let footer_height = ui.spacing().interact_size.y
-                    + ui.spacing().item_spacing.y * 2.0
-                    + 1.0
-                    + if self.build_selection_error.is_some() {
-                        ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y
-                    } else {
-                        0.0
-                    };
-                ui.add_space((ui.available_height() - footer_height).max(0.0));
                 ui.separator();
                 if let Some(error) = &self.build_selection_error {
                     ui.colored_label(ui.visuals().error_fg_color, error);

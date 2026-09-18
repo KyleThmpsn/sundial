@@ -83,7 +83,7 @@ fn runtime_format_checks_cover_both_directions_and_every_settings_location() {
 
         let database = crate::persistence::investment_path(&app.settings_path);
         crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
-        app.document = WorkspaceDocument::load(sunrise_v18(), &app.settings_path);
+        app.document = WorkspaceDocument::load(sunrise_v18(), &app.settings_path, false);
         app.persisted_document = app.document.clone();
         add_inventory_item(&mut app.document, 0, NewInventoryItem::single(42, 10)).unwrap();
         assert!(app.document.account_changed_from(&app.persisted_document));

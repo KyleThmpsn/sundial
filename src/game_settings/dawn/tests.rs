@@ -144,6 +144,7 @@ fn draw_page(
                         dawn: runtime.as_deref_mut(),
                         tab,
                         key_bindings: &mut Default::default(),
+                        runtime_capabilities: Default::default(),
                     },
                 );
                 changed |= edits.json_changed;

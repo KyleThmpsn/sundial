@@ -23,7 +23,7 @@ pub mod layout;
 pub mod native;
 mod roles;
 mod summary;
-pub use roles::component_target;
+pub use roles::{ability_slot, component_target};
 pub use summary::{ActionSummary, GroupSummary, SummaryLine};
 #[cfg(test)]
 mod tests;
@@ -43,7 +43,12 @@ pub const AUXILIARY_ROW_CLASS: u32 = 0x8080_4083;
 
 pub(crate) const GROUP_SIZE: usize = 0x48;
 pub(crate) const PRIMARY_GROUP: usize = 0x20;
-const ADDITIONAL_GROUPS: usize = 0x68;
+pub(crate) const ADDITIONAL_GROUPS: usize = 0x68;
+/// Row class of the additional group array, and of the compiled routing records beside it.
+pub(crate) const GROUP_ROW_CLASS: u32 = 0x8080_407D;
+pub(crate) const GROUP_ROUTING_CLASS: u32 = 0x8080_407B;
+pub(crate) const GROUP_ROUTING: usize = 0xA8;
+pub(crate) const GROUP_ROUTING_SIZE: usize = 32;
 pub(crate) const AUXILIARY_RECORDS: usize = 0x10;
 pub(crate) const POLICY_CONFIGURATION: usize = 0x78;
 pub(crate) const ROOT_KEY: usize = 0x80;
@@ -462,7 +467,7 @@ fn auxiliary_records(payload: &[u8]) -> Result<Vec<DecodedRecord>, String> {
 
 fn additional_groups(payload: &[u8]) -> Result<Vec<usize>, String> {
     let (count, rows, class) = optional_array(payload, ADDITIONAL_GROUPS)?;
-    if count != 0 && class != 0x8080_407D {
+    if count != 0 && class != GROUP_ROW_CLASS {
         return Err(format!("Action group list has class 0x{class:08X}"));
     }
     if count > MAX_LIST {

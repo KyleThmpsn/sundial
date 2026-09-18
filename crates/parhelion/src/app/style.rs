@@ -19,9 +19,12 @@ pub(super) fn success_color(visuals: &egui::Visuals) -> egui::Color32 {
 
 pub(crate) fn workbench_style(ui: &mut egui::Ui) {
     let style = ui.style_mut();
-    style.spacing.interact_size.y = 24.0;
-    style.spacing.button_padding = egui::vec2(7.0, 3.0);
-    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    // Rows carry one line of text, so the control only needs room for that line and a
+    // little around it. The earlier 24 high button with 3 of vertical padding added a
+    // visible band of nothing to every row, and a dense page stacks dozens of them.
+    style.spacing.interact_size.y = 20.0;
+    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 4.0);
     if style.visuals.dark_mode {
         style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
         style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);
@@ -37,6 +40,15 @@ pub(crate) fn compact_controls(ui: &mut egui::Ui) {
     ui.spacing_mut().interact_size.y = 20.0;
     ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
     ui.spacing_mut().item_spacing.x = 4.0;
+}
+
+/// A block inside a card. The card owns the only outline on the page, so a block set off by
+/// a faint fill reads as part of it rather than as another card of equal weight.
+pub(crate) fn block(style: &egui::Style) -> egui::Frame {
+    egui::Frame::new()
+        .fill(style.visuals.faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .corner_radius(4)
 }
 
 /// The one action a page leads to, in the accent fill Build & Stage uses. Build it here and
@@ -74,6 +86,34 @@ pub(crate) fn card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> 
 /// competes with it.
 pub(crate) fn hint(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).wrap())
+}
+
+/// Paints the checkerboard that makes transparent artwork readable behind a preview.
+///
+/// Artwork that will be composited in game, over a rarity plate or as a silhouette, has to show
+/// where it is clear. Against a flat panel a transparent pixel and a dark opaque one look alike.
+pub(crate) fn transparency_backdrop(ui: &egui::Ui, rect: egui::Rect) {
+    const CHECK: f32 = 8.0;
+    let painter = ui.painter().with_clip_rect(rect);
+    // Both checks have to read against the panel, so pair the darkest fill with the inactive
+    // widget fill rather than the faint row tint, which is nearly the same color.
+    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+    let light = ui.visuals().widgets.inactive.bg_fill;
+    let columns = (rect.width() / CHECK).ceil() as usize;
+    let rows = (rect.height() / CHECK).ceil() as usize;
+    for row in 0..rows {
+        for column in 0..columns {
+            if (row + column) % 2 == 0 {
+                continue;
+            }
+            let min = rect.min + egui::vec2(column as f32 * CHECK, row as f32 * CHECK);
+            painter.rect_filled(
+                egui::Rect::from_min_size(min, egui::Vec2::splat(CHECK)).intersect(rect),
+                0.0,
+                light,
+            );
+        }
+    }
 }
 
 /// A virtualized row must allocate exactly the height passed to `show_rows`.

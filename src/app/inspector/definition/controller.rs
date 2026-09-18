@@ -205,6 +205,7 @@ fn apply_inspector_progression_edit(
                     format!("Unlock Flag Definition #{definition_index} is unavailable")
                 })?;
             set_collection_flag(document, definition_index, definition, set)
+                .changed()
                 .then(|| {
                     format!(
                         "{} {}",
@@ -235,6 +236,7 @@ fn apply_inspector_progression_edit(
                     format!("Unlock Value Definition #{definition_index} is unavailable")
                 })?;
             set_collection_value(document, definition_index, definition, value)
+                .changed()
                 .then(|| {
                     format!(
                         "{} set to {value}",

@@ -2,6 +2,8 @@
 use super::*;
 use sundial::package_authoring::{WeaponDyeColors, load_weapon_dye_colors};
 
+pub(super) mod ornaments;
+
 const DYE_ARRAY_NAMES: [&str; 3] = ["Custom Dyes", "Default Dyes", "Locked Dyes"];
 
 type DyeColorResults = BTreeMap<u16, Result<WeaponDyeColors, String>>;
@@ -403,11 +405,7 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: selected_summary.map(|donor| donor.hash),
                     selected_label: &selected_text,
-                    header_label: Some(if override_index.is_some() {
-                        "Custom runtime source"
-                    } else {
-                        "Follows base weapon"
-                    }),
+                    header_label: None,
                     action_label: "Swap Runtime",
                     selected_icon_override: None,
                     secondary_action_label: None,
@@ -544,9 +542,7 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: selected_summary.map(|donor| donor.hash),
                     selected_label: &selected_text,
-                    header_label: override_index
-                        .is_none()
-                        .then_some("Inherited from gameplay donor"),
+                    header_label: None,
                     action_label: "Swap scaling",
                     selected_icon_override: None,
                     secondary_action_label: None,
@@ -680,7 +676,7 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: displayed_hash,
                     selected_label: &selected_text,
-                    header_label: inherits_appearance.then_some("Uses weapon appearance"),
+                    header_label: None,
                     action_label: "Change Colors",
                     selected_icon_override: None,
                     secondary_action_label: None,
@@ -744,6 +740,8 @@ impl PackageAuthoringApp {
                 .iter()
                 .find(|donor| donor.hash == item_hash)
                 .map(|donor| donor.name.clone())
+                // An ornament lends its icon without being an authoring donor.
+                .or_else(|| catalog.item_display_name(item_hash).map(str::to_owned))
                 .unwrap_or_else(|| format!("Weapon 0x{item_hash:08X}"));
             Some((item_hash, donor_name, TagHash(container_tag)))
         });
@@ -766,7 +764,7 @@ impl PackageAuthoringApp {
                 WeaponDonorPickerOptions {
                     selected_hash: displayed_hash,
                     selected_label: &selected_text,
-                    header_label: inherits_appearance.then_some("Uses weapon appearance"),
+                    header_label: None,
                     action_label: "Change Icon",
                     selected_icon_override: authored_icon_override.as_ref(),
                     secondary_action_label: icon_editor_target.as_ref().map(|_| "Edit Icon…"),
@@ -825,18 +823,15 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_donor_section(&mut self, ui: &mut egui::Ui) {
-        if ui.available_width() >= 780.0 {
+        let donor = self.current_donor();
+        if donor_section_column_count(ui.available_width()) >= 2 {
             ui.columns(2, |columns| {
                 self.draw_donor_picker(&mut columns[0]);
-                let donor = self.current_donor();
                 self.draw_presentation_donor_picker(&mut columns[1], donor.as_ref());
             });
         } else {
             self.draw_donor_picker(ui);
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-            let donor = self.current_donor();
+            draw_stacked_section_break(ui);
             self.draw_presentation_donor_picker(ui, donor.as_ref());
         }
     }
@@ -1002,11 +997,7 @@ impl PackageAuthoringApp {
                     WeaponDonorPickerOptions {
                         selected_hash: displayed_hash,
                         selected_label: &selected_text,
-                        header_label: if current_reference.is_none() {
-                            Some("Uses base weapon appearance")
-                        } else {
-                            None
-                        },
+                        header_label: None,
                         action_label: "Change Appearance",
                         selected_icon_override: None,
                         secondary_action_label: None,
@@ -1083,5 +1074,179 @@ impl PackageAuthoringApp {
                 ),
             );
         }
+        self.draw_appearance_ornament_button(ui);
     }
+}
+
+/// The behaviors this base weapon can borrow, leaving out the element switch that the Variable
+/// damage type applies and the weapon's own behavior.
+pub(super) fn unique_behavior_sources(
+    gameplay_donor: Option<&WeaponDonor>,
+) -> Vec<&'static crate::weapon_behavior::Behavior> {
+    let Some(gameplay_donor) = gameplay_donor else {
+        return Vec::new();
+    };
+    crate::weapon_behavior::catalog_for_type(&gameplay_donor.summary.type_name)
+        .filter(|entry| !entry.switches_element())
+        .filter(|entry| entry.source_item_hash != gameplay_donor.summary.hash)
+        .collect()
+}
+
+/// Shown when the weapon keeps its own behavior.
+const NO_BEHAVIOR: &str = "None";
+
+/// The behavior currently borrowed, if any.
+fn selected_unique_behavior(
+    overrides: &crate::recipe::WeaponRecipeOverrides,
+) -> Option<&'static crate::weapon_behavior::Behavior> {
+    use crate::weapon_behavior::ELEMENT_SWITCH;
+    overrides
+        .additional_behaviors
+        .iter()
+        .find(|chosen| chosen.behavior != ELEMENT_SWITCH)
+        .and_then(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
+}
+
+/// Copies another weapon's built-in behavior onto this one.
+///
+/// This sits with the damage type and the other weapon-wide choices, so it is one line: a label
+/// and a list. What the choice brings with it is drawn under the row instead.
+pub(super) fn draw_unique_behavior_control(
+    ui: &mut egui::Ui,
+    overrides: &mut crate::recipe::WeaponRecipeOverrides,
+    sources: &[&'static crate::weapon_behavior::Behavior],
+) {
+    use crate::app::style::workbench_style;
+    use crate::recipe::AdditionalBehaviorRecipe;
+    use crate::weapon_behavior::ELEMENT_SWITCH;
+    ui.horizontal(|ui| {
+        ui.label("Unique Weapon Behavior");
+        draw_authoring_info_icon(
+            ui,
+            "Copies another weapon's built-in behavior onto this one, including onto a different weapon type. Some Exotics keep half of what makes them special in the weapon rather than in a perk. Test the combination in game.",
+        );
+    });
+    // One entry per source weapon, in the order a reader would look for them.
+    let mut offered: Vec<&'static crate::weapon_behavior::Behavior> = Vec::new();
+    for entry in sources {
+        if !offered
+            .iter()
+            .any(|kept| kept.source_item_hash == entry.source_item_hash)
+        {
+            offered.push(entry);
+        }
+    }
+    offered.sort_by_key(|entry| entry.source_name);
+    let selected = selected_unique_behavior(overrides);
+    let selected_text = selected.map_or_else(
+        || NO_BEHAVIOR.to_owned(),
+        |entry| entry.source_name.to_owned(),
+    );
+    ui.add_enabled_ui(!offered.is_empty(), |ui| {
+        egui::ComboBox::from_id_salt("recipe_unique_behavior")
+            .selected_text(selected_text)
+            .truncate()
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                workbench_style(ui);
+                if ui
+                    .selectable_label(selected.is_none(), NO_BEHAVIOR)
+                    .on_hover_text("Keep only this weapon's own behavior.")
+                    .clicked()
+                {
+                    if selected.is_some_and(crate::weapon_behavior::source_switches_element) {
+                        overrides.variable_damage = None;
+                    }
+                    overrides
+                        .additional_behaviors
+                        .retain(|entry| entry.behavior == ELEMENT_SWITCH);
+                }
+                for entry in offered {
+                    let chosen = selected.is_some_and(|current| current.id == entry.id);
+                    if ui
+                        .selectable_label(chosen, entry.source_name)
+                        .on_hover_text(entry.summary)
+                        .clicked()
+                        && !chosen
+                    {
+                        overrides
+                            .additional_behaviors
+                            .retain(|kept| kept.behavior == ELEMENT_SWITCH);
+                        overrides
+                            .additional_behaviors
+                            .push(AdditionalBehaviorRecipe {
+                                behavior: entry.id.to_owned(),
+                            });
+                        // Hard Light and Borealis switch damage as well as fire differently, so
+                        // choosing them turns that on rather than leaving it to be found.
+                        if crate::weapon_behavior::source_switches_element(entry) {
+                            overrides.variable_damage =
+                                Some(crate::recipe::VariableDamageRecipe::all());
+                        }
+                    }
+                }
+            });
+    });
+}
+
+/// What the borrowed behavior brings with it, drawn under the row of weapon-wide choices where
+/// there is width for a caution and for the controls that only apply once something is chosen.
+pub(super) fn draw_unique_behavior_details(
+    ui: &mut egui::Ui,
+    overrides: &mut crate::recipe::WeaponRecipeOverrides,
+) {
+    let Some(entry) = selected_unique_behavior(overrides) else {
+        return;
+    };
+    if let Some(caution) = entry.caution {
+        ui.colored_label(ui.visuals().warn_fg_color, caution);
+    }
+    let mut with_perks = !overrides.skip_behavior_perks;
+    if ui
+        .checkbox(&mut with_perks, "Include Its Perks")
+        .on_hover_text(
+            "Pins the source weapon's own intrinsic and trait into this weapon's sockets. Several exotics keep half of their behavior there.",
+        )
+        .changed()
+    {
+        overrides.skip_behavior_perks = !with_perks;
+    }
+    if entry.carries_firing_graph() {
+        draw_unique_behavior_projectile_speed(ui, overrides);
+    }
+    ui.weak(entry.summary);
+}
+
+/// Raises the borrowed projectiles' launch speed, up to the figure set here.
+///
+/// The field is a multiplier on the weapon's own launch speed, so a weapon that fires instantly
+/// supplies almost nothing to multiply and the borrowed rounds crawl. A source whose own
+/// multiplier already exceeds this figure came from a frame that supplies nothing either, so it
+/// is left alone.
+fn draw_unique_behavior_projectile_speed(
+    ui: &mut egui::Ui,
+    overrides: &mut crate::recipe::WeaponRecipeOverrides,
+) {
+    let mut boost = overrides.behavior_projectile_speed_bits.map_or(
+        crate::weapon_behavior::DEFAULT_PROJECTILE_SPEED_BOOST,
+        f32::from_bits,
+    );
+    ui.horizontal(|ui| {
+        ui.label("Projectile Speed Multiplier");
+        let response = ui.add_sized(
+            [100.0, ui.spacing().interact_size.y],
+            egui::DragValue::new(&mut boost)
+                .speed(0.05)
+                .max_decimals(3)
+                .range(1.0..=9_998.0)
+                .suffix(" \u{d7}"),
+        );
+        let changed = response.changed();
+        crate::app::style::named_control(response, "Projectile Speed Multiplier").on_hover_text(
+            "Multiplies the launch speed of anything the behavior fires, and stops at this figure. It applies only when the behavior launches something and this weapon normally fires instantly. A behavior that already launches faster than this keeps its own speed, so raise the number past that speed to move it as well. No safe maximum has been established, so raise it a little at a time and test in game.",
+        );
+        if changed {
+            overrides.behavior_projectile_speed_bits = Some(boost.to_bits());
+        }
+    });
 }

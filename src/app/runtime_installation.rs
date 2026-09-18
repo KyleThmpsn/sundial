@@ -382,7 +382,12 @@ impl SundialApp {
                     super::persistence_compatibility::PersistenceCompatibility::inspect(
                         &self.install_path,
                     );
-                self.replace_loaded_document(WorkspaceDocument::load(json, &self.settings_path));
+                let dawn = self.dawn_account_runtime();
+                self.replace_loaded_document(WorkspaceDocument::load(
+                    json,
+                    &self.settings_path,
+                    dawn,
+                ));
                 self.runtime_choice.open = false;
                 self.runtime_choice.error = None;
                 let preference_error = self.save_preferences().err();

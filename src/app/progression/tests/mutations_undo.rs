@@ -31,17 +31,12 @@ fn flag_mutations_split_and_rejoin_runs_without_touching_unknown_fields() {
         }
     });
 
-    assert!(set_unlock_flag(
-        &mut document,
-        "account_flag_runs",
-        2,
-        false
-    ));
+    assert!(set_unlock_flag(&mut document, "account_flag_runs", 2, false).changed());
     assert_eq!(
         document.pointer("/state/unlocks/account_flag_runs"),
         Some(&json!([[1, 1], [3, 1]]))
     );
-    assert!(set_unlock_flag(&mut document, "account_flag_runs", 2, true));
+    assert!(set_unlock_flag(&mut document, "account_flag_runs", 2, true).changed());
     assert_eq!(
         document.pointer("/state/unlocks/account_flag_runs"),
         Some(&json!([[1, 3]]))
@@ -58,18 +53,18 @@ fn indexed_flag_and_value_mutations_are_sorted_and_removable() {
         "state": {"unlocks": {"character_flags": [9, 3], "objective_values": [[8, 1]]}}
     });
 
-    assert!(set_unlock_flag(&mut document, "character_flags", 5, true));
+    assert!(set_unlock_flag(&mut document, "character_flags", 5, true).changed());
     assert_eq!(
         document.pointer("/state/unlocks/character_flags"),
         Some(&json!([3, 5, 9]))
     );
-    assert!(set_unlock_value(&mut document, "objective_values", 4, -7));
-    assert!(set_unlock_value(&mut document, "objective_values", 8, 12));
+    assert!(set_unlock_value(&mut document, "objective_values", 4, -7).changed());
+    assert!(set_unlock_value(&mut document, "objective_values", 8, 12).changed());
     assert_eq!(
         document.pointer("/state/unlocks/objective_values"),
         Some(&json!([[4, -7], [8, 12]]))
     );
-    assert!(remove_unlock_value(&mut document, "objective_values", 4));
+    assert!(remove_unlock_value(&mut document, "objective_values", 4).changed());
     assert_eq!(
         document.pointer("/state/unlocks/objective_values"),
         Some(&json!([[8, 12]]))
@@ -83,33 +78,14 @@ fn progression_mutations_are_sorted_updated_and_removable() {
         "state": {"unlocks": {"future_unlock": ["preserved"]}}
     });
 
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        5,
-        [1, 2, 3],
-    ));
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        2,
-        [-1, 0, 9],
-    ));
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        5,
-        [4, 5, 6],
-    ));
+    assert!(set_progression_value(&mut document, "account_progressions", 5, [1, 2, 3],).changed());
+    assert!(set_progression_value(&mut document, "account_progressions", 2, [-1, 0, 9],).changed());
+    assert!(set_progression_value(&mut document, "account_progressions", 5, [4, 5, 6],).changed());
     assert_eq!(
         document.pointer("/state/unlocks/account_progressions"),
         Some(&json!([[2, -1, 0, 9], [5, 4, 5, 6]]))
     );
-    assert!(remove_progression_value(
-        &mut document,
-        "account_progressions",
-        2,
-    ));
+    assert!(remove_progression_value(&mut document, "account_progressions", 2,).changed());
     assert_eq!(
         document.pointer("/state/unlocks/account_progressions"),
         Some(&json!([[5, 4, 5, 6]]))
@@ -133,12 +109,7 @@ fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
     });
     let mut state = UiState::default();
 
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        23,
-        [9, 8, 7],
-    ));
+    assert!(set_progression_value(&mut document, "account_progressions", 23, [9, 8, 7],).changed());
     state.record_progression_change("account_progressions", 23, Some([1, 2, 3]), Some([9, 8, 7]));
     assert!(state.progression_changed("account_progressions", 23));
     assert!(undo_progression_change(&mut document, &mut state));
@@ -148,12 +119,7 @@ fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
     );
     assert!(!state.progression_changed("account_progressions", 23));
 
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        24,
-        [0; 3],
-    ));
+    assert!(set_progression_value(&mut document, "account_progressions", 24, [0; 3],).changed());
     state.record_progression_change("account_progressions", 24, None, Some([0; 3]));
     assert!(undo_progression_change(&mut document, &mut state));
     assert_eq!(
@@ -167,18 +133,12 @@ fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
 fn family5_overrides_add_edit_and_remove_the_selected_definition() {
     let mut document = json!({"state": {"investment": {}}});
 
-    assert!(set_investment_override(
-        &mut document,
-        InvestmentTable::FlagOverrides,
-        2003,
-        2
-    ));
-    assert!(set_investment_override(
-        &mut document,
-        InvestmentTable::ValueOverrides,
-        3510,
-        -5
-    ));
+    assert!(
+        set_investment_override(&mut document, InvestmentTable::FlagOverrides, 2003, 2).changed()
+    );
+    assert!(
+        set_investment_override(&mut document, InvestmentTable::ValueOverrides, 3510, -5).changed()
+    );
     assert_eq!(
         document.pointer("/state/investment/family5_flag_overrides"),
         Some(&json!([[2003, 2]]))
@@ -187,11 +147,9 @@ fn family5_overrides_add_edit_and_remove_the_selected_definition() {
         document.pointer("/state/investment/family5_value_overrides"),
         Some(&json!([[3510, -5]]))
     );
-    assert!(remove_investment_override(
-        &mut document,
-        InvestmentTable::FlagOverrides,
-        2003
-    ));
+    assert!(
+        remove_investment_override(&mut document, InvestmentTable::FlagOverrides, 2003).changed()
+    );
     assert_eq!(
         document.pointer("/state/investment/family5_flag_overrides"),
         Some(&json!([]))
@@ -246,25 +204,14 @@ fn mutations_update_the_effective_last_duplicate() {
         }
     });
 
-    assert!(set_investment_override(
-        &mut document,
-        InvestmentTable::FlagOverrides,
-        2003,
-        0
-    ));
-    assert!(set_investment_override(
-        &mut document,
-        InvestmentTable::ValueOverrides,
-        3510,
-        10
-    ));
-    assert!(set_unlock_value(&mut document, "objective_values", 8, 7));
-    assert!(set_progression_value(
-        &mut document,
-        "account_progressions",
-        23,
-        [7, 8, 9]
-    ));
+    assert!(
+        set_investment_override(&mut document, InvestmentTable::FlagOverrides, 2003, 0).changed()
+    );
+    assert!(
+        set_investment_override(&mut document, InvestmentTable::ValueOverrides, 3510, 10).changed()
+    );
+    assert!(set_unlock_value(&mut document, "objective_values", 8, 7).changed());
+    assert!(set_progression_value(&mut document, "account_progressions", 23, [7, 8, 9]).changed());
 
     assert_eq!(
         document.pointer("/state/investment/family5_flag_overrides"),
@@ -290,17 +237,12 @@ fn reserved_character_objective_values_cannot_be_changed_or_removed() {
         "state": {"unlocks": {"character_objective_values": [[443, -1], [502, -1]]}}
     });
 
-    assert!(!set_unlock_value(
-        &mut document,
-        "character_object_objective_values",
-        443,
-        0
-    ));
-    assert!(!remove_unlock_value(
-        &mut document,
-        "character_object_objective_values",
-        502
-    ));
+    assert!(
+        !set_unlock_value(&mut document, "character_object_objective_values", 443, 0).changed()
+    );
+    assert!(
+        !remove_unlock_value(&mut document, "character_object_objective_values", 502).changed()
+    );
     assert_eq!(
         document.pointer("/state/unlocks/character_objective_values"),
         Some(&json!([[443, -1], [502, -1]]))
@@ -341,8 +283,8 @@ fn collection_mutations_update_an_existing_family5_override_instead_of_hidden_co
         ..UnlockDefinition::default()
     };
 
-    assert!(set_collection_flag(&mut document, 10, &flag, true));
-    assert!(set_collection_value(&mut document, 11, &value, 123));
+    assert!(set_collection_flag(&mut document, 10, &flag, true).changed());
+    assert!(set_collection_value(&mut document, 11, &value, 123).changed());
     assert_eq!(
         document.pointer("/state/investment/family5_flag_overrides"),
         Some(&json!([[10, 2]]))

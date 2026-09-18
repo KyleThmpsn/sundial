@@ -12,12 +12,12 @@ pub(crate) fn unlocks_object_mut(document: &mut Value) -> Option<&mut Map<String
         .as_object_mut()
 }
 
-pub(crate) fn write_unlock_array(document: &mut Value, key: &str, rows: Vec<Value>) -> bool {
+pub(crate) fn write_unlock_array(document: &mut Value, key: &str, rows: Vec<Value>) -> Write {
     let Some(unlocks) = unlocks_object_mut(document) else {
-        return false;
+        return Write::Refused;
     };
     unlocks.insert(key.to_owned(), Value::Array(rows));
-    true
+    Write::Wrote
 }
 
 pub(crate) fn investment_object_mut(document: &mut Value) -> Option<&mut Map<String, Value>> {
@@ -32,12 +32,12 @@ pub(crate) fn investment_object_mut(document: &mut Value) -> Option<&mut Map<Str
         .as_object_mut()
 }
 
-pub(crate) fn write_investment_array(document: &mut Value, key: &str, rows: Vec<Value>) -> bool {
+pub(crate) fn write_investment_array(document: &mut Value, key: &str, rows: Vec<Value>) -> Write {
     let Some(investment) = investment_object_mut(document) else {
-        return false;
+        return Write::Refused;
     };
     investment.insert(key.to_owned(), Value::Array(rows));
-    true
+    Write::Wrote
 }
 
 pub(crate) fn set_investment_override(
@@ -45,9 +45,9 @@ pub(crate) fn set_investment_override(
     table: InvestmentTable,
     definition_index: usize,
     value: i32,
-) -> bool {
+) -> Write {
     let Ok(policy) = parse_investment(document.pointer("/state/investment")) else {
-        return false;
+        return Write::Refused;
     };
     let hidden_count = super::native::hidden_count(document, table);
     match table {
@@ -55,7 +55,7 @@ pub(crate) fn set_investment_override(
             if definition_index > FAMILY5_FLAG_SLOT_MAXIMUM
                 || !(0..=i32::from(FAMILY5_FLAG_VALUE_MAXIMUM)).contains(&value)
             {
-                return false;
+                return Write::Refused;
             }
             let mut rows = policy.flag_overrides;
             if let Some(row) = rows
@@ -64,12 +64,12 @@ pub(crate) fn set_investment_override(
                 .find(|row| row.definition_index == definition_index)
             {
                 if i32::from(row.value) == value {
-                    return false;
+                    return Write::Unchanged;
                 }
                 row.value = value as u8;
             } else {
                 if rows.len() + hidden_count >= FAMILY5_OVERRIDE_CAPACITY {
-                    return false;
+                    return Write::Refused;
                 }
                 rows.push(FlagOverride {
                     definition_index,
@@ -87,7 +87,7 @@ pub(crate) fn set_investment_override(
         }
         InvestmentTable::ValueOverrides => {
             if definition_index > FAMILY5_VALUE_SLOT_MAXIMUM {
-                return false;
+                return Write::Refused;
             }
             let mut rows = policy.value_overrides;
             if let Some(row) = rows
@@ -96,12 +96,12 @@ pub(crate) fn set_investment_override(
                 .find(|row| row.definition_index == definition_index)
             {
                 if row.value == value {
-                    return false;
+                    return Write::Unchanged;
                 }
                 row.value = value;
             } else {
                 if rows.len() + hidden_count >= FAMILY5_OVERRIDE_CAPACITY {
-                    return false;
+                    return Write::Refused;
                 }
                 rows.push(ValueOverride {
                     definition_index,
@@ -124,9 +124,9 @@ pub(crate) fn remove_investment_override(
     document: &mut Value,
     table: InvestmentTable,
     definition_index: usize,
-) -> bool {
+) -> Write {
     let Ok(policy) = parse_investment(document.pointer("/state/investment")) else {
-        return false;
+        return Write::Refused;
     };
     match table {
         InvestmentTable::FlagOverrides => {
@@ -134,7 +134,7 @@ pub(crate) fn remove_investment_override(
             let prior_len = rows.len();
             rows.retain(|row| row.definition_index != definition_index);
             if rows.len() == prior_len {
-                return false;
+                return Write::Unchanged;
             }
             write_investment_array(
                 document,
@@ -149,7 +149,7 @@ pub(crate) fn remove_investment_override(
             let prior_len = rows.len();
             rows.retain(|row| row.definition_index != definition_index);
             if rows.len() == prior_len {
-                return false;
+                return Write::Unchanged;
             }
             write_investment_array(
                 document,
@@ -198,20 +198,20 @@ pub(crate) fn set_progression_value(
     id: &str,
     definition_index: usize,
     lanes: [i32; 3],
-) -> bool {
+) -> Write {
     let Some(key) = progression_table_key(id) else {
-        return false;
+        return Write::Refused;
     };
     if definition_index >= PROGRESSION_DEFINITION_CAPACITY {
-        return false;
+        return Write::Refused;
     }
     let Ok(current) = parse_document_unlocks(document) else {
-        return false;
+        return Write::Refused;
     };
     let mut values = match id {
         "account_progressions" => current.account_progressions,
         "character_progressions" => current.character_progressions,
-        _ => return false,
+        _ => return Write::Refused,
     };
     if let Some(row) = values
         .iter_mut()
@@ -219,7 +219,7 @@ pub(crate) fn set_progression_value(
         .find(|row| row.definition_index == definition_index)
     {
         if row.lanes == lanes {
-            return false;
+            return Write::Unchanged;
         }
         row.lanes = lanes;
     } else {
@@ -250,22 +250,22 @@ pub(crate) fn remove_progression_value(
     document: &mut Value,
     id: &str,
     definition_index: usize,
-) -> bool {
+) -> Write {
     let Some(key) = progression_table_key(id) else {
-        return false;
+        return Write::Refused;
     };
     let Ok(current) = parse_document_unlocks(document) else {
-        return false;
+        return Write::Refused;
     };
     let mut values = match id {
         "account_progressions" => current.account_progressions,
         "character_progressions" => current.character_progressions,
-        _ => return false,
+        _ => return Write::Refused,
     };
     let prior_len = values.len();
     values.retain(|row| row.definition_index != definition_index);
     if values.len() == prior_len {
-        return false;
+        return Write::Unchanged;
     }
     write_unlock_array(
         document,
@@ -284,15 +284,15 @@ pub(crate) fn remove_progression_value(
     )
 }
 
-pub(crate) fn set_unlock_flag(document: &mut Value, id: &str, slot: usize, set: bool) -> bool {
+pub(crate) fn set_unlock_flag(document: &mut Value, id: &str, slot: usize, set: bool) -> Write {
     let Some((key, capacity, uses_runs)) = flag_table_key(id) else {
-        return false;
+        return Write::Refused;
     };
     if slot >= capacity {
-        return false;
+        return Write::Refused;
     }
     let Ok(current) = parse_document_unlocks(document) else {
-        return false;
+        return Write::Refused;
     };
     let mut slots = match id {
         "account_flag_runs" => expanded_flag_slots(&current.account_flag_runs, capacity),
@@ -305,7 +305,7 @@ pub(crate) fn set_unlock_flag(document: &mut Value, id: &str, slot: usize, set: 
         "character_object_flag_runs" => {
             expanded_flag_slots(&current.character_object_flag_runs, capacity)
         }
-        _ => return false,
+        _ => return Write::Refused,
     };
     slots.sort_unstable();
     slots.dedup();
@@ -314,7 +314,7 @@ pub(crate) fn set_unlock_flag(document: &mut Value, id: &str, slot: usize, set: 
             slots.remove(index);
         }
         Err(index) if set => slots.insert(index, slot),
-        _ => return false,
+        _ => return Write::Unchanged,
     }
     let rows = if uses_runs {
         compress_flag_slots(&slots)
@@ -332,9 +332,9 @@ pub(crate) fn set_collection_flag(
     definition_index: usize,
     definition: &UnlockDefinition,
     set: bool,
-) -> bool {
+) -> Write {
     let Ok(investment) = parse_investment(document.pointer("/state/investment")) else {
-        return false;
+        return Write::Refused;
     };
     if investment
         .flag_overrides
@@ -361,7 +361,7 @@ pub(crate) fn set_collection_flag(
         PROFILE_FLAG_BANK => "profile_flag_runs",
         CHARACTER_OBJECT_FLAG_BANK => "character_object_flag_runs",
         CHARACTER_FLAG_BANK => "character_flags",
-        _ => return false,
+        _ => return Write::Refused,
     };
     set_unlock_flag(document, table, slot, set)
 }
@@ -389,18 +389,18 @@ pub(crate) fn remove_authored_collection_state(
             usize::from(unlock.slot),
             false,
         );
-        changed += usize::from(removed_override || removed_flag);
+        changed += usize::from(removed_override.changed() || removed_flag.changed());
     }
     validate(document)?;
     Ok(changed)
 }
 
-pub(crate) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, value: i32) -> bool {
+pub(crate) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, value: i32) -> Write {
     let Some((key, capacity)) = value_table_key(id) else {
-        return false;
+        return Write::Refused;
     };
     if slot >= capacity {
-        return false;
+        return Write::Refused;
     }
     if document.get("_native_progression").is_none()
         && id == "character_object_objective_values"
@@ -408,19 +408,19 @@ pub(crate) fn set_unlock_value(document: &mut Value, id: &str, slot: usize, valu
             .iter()
             .any(|(reserved, expected)| *reserved == slot && *expected != value)
     {
-        return false;
+        return Write::Refused;
     }
     let Ok(current) = parse_document_unlocks(document) else {
-        return false;
+        return Write::Refused;
     };
     let mut values = match id {
         "objective_values" => current.objective_values,
         "character_object_objective_values" => current.character_objective_values,
-        _ => return false,
+        _ => return Write::Refused,
     };
     if let Some(row) = values.iter_mut().rev().find(|row| row.index == slot) {
         if row.value == value {
-            return false;
+            return Write::Unchanged;
         }
         row.value = value;
     } else {
@@ -442,9 +442,9 @@ pub(crate) fn set_collection_value(
     definition_index: usize,
     definition: &UnlockDefinition,
     value: i32,
-) -> bool {
+) -> Write {
     let Ok(investment) = parse_investment(document.pointer("/state/investment")) else {
-        return false;
+        return Write::Refused;
     };
     if investment
         .value_overrides
@@ -469,14 +469,14 @@ pub(crate) fn set_collection_value(
     let table = match definition.bank() {
         ACCOUNT_OBJECTIVE_BANK => "objective_values",
         CHARACTER_OBJECTIVE_BANK => "character_object_objective_values",
-        _ => return false,
+        _ => return Write::Refused,
     };
     set_unlock_value(document, table, slot, value)
 }
 
-pub(crate) fn remove_unlock_value(document: &mut Value, id: &str, slot: usize) -> bool {
+pub(crate) fn remove_unlock_value(document: &mut Value, id: &str, slot: usize) -> Write {
     let Some((key, _)) = value_table_key(id) else {
-        return false;
+        return Write::Refused;
     };
     if document.get("_native_progression").is_none()
         && id == "character_object_objective_values"
@@ -484,20 +484,20 @@ pub(crate) fn remove_unlock_value(document: &mut Value, id: &str, slot: usize) -
             .iter()
             .any(|(reserved, _)| *reserved == slot)
     {
-        return false;
+        return Write::Refused;
     }
     let Ok(current) = parse_document_unlocks(document) else {
-        return false;
+        return Write::Refused;
     };
     let mut values = match id {
         "objective_values" => current.objective_values,
         "character_object_objective_values" => current.character_objective_values,
-        _ => return false,
+        _ => return Write::Refused,
     };
     let prior_len = values.len();
     values.retain(|row| row.index != slot);
     if values.len() == prior_len {
-        return false;
+        return Write::Unchanged;
     }
     write_unlock_array(
         document,

@@ -56,6 +56,7 @@ fn native_component_values_compile_into_private_owners_and_reject_stale_paths() 
                 &mut entity,
                 &edits,
                 &[],
+                &[],
                 allocator,
                 &mut tags,
             )
@@ -95,6 +96,7 @@ fn native_component_values_compile_into_private_owners_and_reject_stale_paths() 
                     &manager,
                     &mut source.clone(),
                     &stale,
+                    &[],
                     &[],
                     allocator,
                     &mut Vec::new()
@@ -183,6 +185,7 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
         &mut entity,
         &[],
         &patches,
+        &[],
         allocator,
         &mut tags,
     )
@@ -236,6 +239,7 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
             &mut stock_graph.clone(),
             &[],
             &[stale],
+            &[],
             allocator,
             &mut Vec::new()
         )

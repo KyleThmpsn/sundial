@@ -38,7 +38,8 @@ fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_conte
         settings_layout: "bin_x64",
         sunrise_version: "test",
         settings_schema: Some(8),
-        account_source: &WorkspaceDocument::load(json!({"version": 8}), &settings).source_info(),
+        account_source: &WorkspaceDocument::load(json!({"version": 8}), &settings, false)
+            .source_info(),
         catalog: CatalogSummary {
             cache_path: &directory.0.join("catalog.json"),
             loaded_from_cache: true,
@@ -147,7 +148,7 @@ fn account_paths_follow_loaded_json_sqlite_and_blocked_sources() {
                 serde_json::to_vec(&json!({"version": version})).unwrap(),
             )
             .unwrap();
-            let workspace = WorkspaceDocument::load(json!({"version": version}), &settings);
+            let workspace = WorkspaceDocument::load(json!({"version": version}), &settings, false);
             let source = workspace.source_info();
             assert_eq!(source.kind, kind);
             let mut report = String::new();
@@ -164,7 +165,7 @@ fn account_paths_follow_loaded_json_sqlite_and_blocked_sources() {
         }
         let missing_settings = settings_path_for_install(&directory.0.join("missing"), layout);
         let blocked =
-            WorkspaceDocument::load(json!({"version": 18}), &missing_settings).source_info();
+            WorkspaceDocument::load(json!({"version": 18}), &missing_settings, false).source_info();
         assert_eq!(blocked.kind, AccountSourceKind::Blocked);
         let mut report = String::new();
         append_path_section(

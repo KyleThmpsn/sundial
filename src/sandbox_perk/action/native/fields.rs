@@ -2,6 +2,7 @@
 use super::{Block, schema};
 use crate::sandbox_perk::{action::layout, nodes};
 
+pub mod fixed_values;
 pub mod keys;
 pub mod scripts;
 pub mod stock_values;
@@ -60,6 +61,21 @@ pub fn name(class: u32) -> String {
         0x80804C83 => "Target Filter",
         0x80802F18 => "Program Value",
         0x80802F1A => "Event Value Pair",
+        // Names the client itself uses. Recovered 2026-09-17 by scanning the running offline
+        // client's memory for identifier strings and matching their FNV-1 hashes against the
+        // member-name hashes the perk schema declares. The on-disk binary is VMProtect packed
+        // so the strings exist only once the loader has unpacked them. `filter` and `trigger`
+        // were already known and served as the controls, and every match sits where its name
+        // makes sense: bytecode beside constant_buffer is the value program the decompiler
+        // already models as instructions plus a constant pool.
+        0x808073F4 => "Compiled Expression",
+        0x80809419 => "Expression Binding",
+        // Program Value's `function` points here and its own member is `m_data`, so this is
+        // the function's payload record. Recovered from the client's UTF-16 strings.
+        0x80809CC6 => "Function Data",
+        0x80804D78 => "Faction Filter",
+        0x80809312 => "Filter List",
+        0x80809316 => "Filter Entry",
         _ => return format!("Native Record 0x{class:08X}"),
     }
     .to_owned()
@@ -137,7 +153,11 @@ pub fn describe(class: u32) -> Result<Vec<Field>, String> {
             at += 1;
             continue;
         }
-        let width = (1..=4.min(covered.len() - at))
+        // Native records are word aligned, so a gap is chunked on four-byte boundaries. A
+        // gap that opens after a packed byte first takes the bytes up to the next boundary,
+        // otherwise every later chunk would straddle two real fields.
+        let to_boundary = 4 - at % 4;
+        let width = (1..=to_boundary.min(covered.len() - at))
             .take_while(|width| !covered[at + width - 1])
             .last()
             .unwrap_or(1);
@@ -146,15 +166,16 @@ pub fn describe(class: u32) -> Result<Vec<Field>, String> {
         } else {
             Format::Bytes
         };
-        insert(
-            &mut fields,
-            &mut covered,
-            at,
-            width,
-            format,
-            &format!("Native Value +0x{at:02X}"),
-            true,
-        );
+        // A byte range every stock node of the class stores identically is locked at that
+        // value and labelled as fixed. Its role is still unresolved, but a reader can tell it
+        // apart from a setting that varies.
+        let fixed = fixed_values::fixed(class, at).is_some_and(|value| value.len() == width);
+        let label = if fixed {
+            format!("Fixed Native Value +0x{at:02X}")
+        } else {
+            format!("Native Value +0x{at:02X}")
+        };
+        insert(&mut fields, &mut covered, at, width, format, &label, !fixed);
         at += width;
     }
     fields.sort_by_key(|field| field.offset);
@@ -195,6 +216,22 @@ fn insert(
 }
 
 fn headers(class: u32, fields: &mut Vec<Field>, covered: &mut [bool]) {
+    // A subgroup row stores the event mask of its own conditions and their children, right
+    // after the condition list it summarises. Checked against every stock subgroup: 21 of 22
+    // rows equal the mask over their listed conditions, and the one that differs carries the
+    // extra bit of a nested General Predicate, which is what the root masks also fold in.
+    // The compiler derives it, so it is not editable.
+    if class == 0x8080_3E06 {
+        insert(
+            fields,
+            covered,
+            0x18,
+            4,
+            Format::Mask32,
+            "Nested Event Mask",
+            false,
+        );
+    }
     if class == 0x808040B5 {
         for (offset, width, format, label, editable) in [
             (0, 8, Format::Bytes, "Compiled Size", false),
@@ -220,6 +257,19 @@ fn headers(class: u32, fields: &mut Vec<Field>, covered: &mut [bool]) {
         }
     } else if nodes::EFFECTS.iter().any(|node| node.class == class) {
         insert(fields, covered, 0, 1, Format::Byte, "Effect Kind", false);
+        // Extend Timers carries the event mask of its nested conditions, which the compiler
+        // derives in `metadata::rebuild` the way it derives the root masks.
+        if class == 0x80803E3B {
+            insert(
+                fields,
+                covered,
+                0x20,
+                8,
+                Format::Bytes,
+                "Nested Event Mask",
+                false,
+            );
+        }
         insert(
             fields,
             covered,
@@ -287,20 +337,41 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
             (2, 1, Byte, "Spawn Position"),
             (4, 4, Unsigned, "Count"),
             (8, 4, Float, "Value"),
+            (0x18, 4, Tag, "Orb Entity"),
         ],
         0x80803DE5 => vec![
+            (0xA9, 1, Flag, "Second Filter Flag"),
             (0x110, 4, Float, "Minimum Value"),
             (0x114, 4, Float, "Maximum Value"),
             (0x118, 1, Flag, "Requires Owning Weapon"),
             (0x11C, 4, Key, "Weapon Key"),
         ],
+        // The byte at +0x98 is one bit per ability slot, `1 << slot` of the Component Value
+        // Adjustment targets: 1 Grenade, 2 Super, 4 Melee. Grenade perks set 1 (Chaotic
+        // Exchanger, Oppressive Darkness, Overload Grenades), super perks set 2 (Horns of
+        // Doom), melee perks set 4 (Impact Induction, Enhanced Impact Induction).
+        // The two lanes at +A4 and +A7 move independently across the stock rows, which is what
+        // the four value combinations of the word covering them show, so each is read as its
+        // own flag rather than one opaque word. +99 sits beside the ability slot mask and
+        // splits 96 to 67, so it is a setting rather than padding.
         0x80802F5F => vec![
+            (0x98, 1, Byte, "Ability Slot Mask"),
+            (0x99, 1, Flag, "Ability Slot Flag"),
             (0x9C, 4, Key, "Named Key"),
             (0xA0, 4, Float, "Value Threshold"),
+            (0xA4, 1, Flag, "First Object Flag"),
+            (0xA5, 1, Flag, "Second Object Flag"),
+            (0xA6, 1, Flag, "Third Object Flag"),
+            (0xA7, 1, Flag, "Fourth Object Flag"),
             (0xA8, 1, Byte, "Object Filter Selector"),
+            (0xC0, 1, Flag, "First Source Flag"),
             (0xC1, 1, Byte, "Source Mask"),
+            (0xC2, 1, Flag, "Second Source Flag"),
         ],
+        // +9C and +9D move independently across the stock rows, so each is its own flag.
         0x80803DDC => vec![
+            (0x9C, 1, Flag, "First Distance Flag"),
+            (0x9D, 1, Flag, "Second Distance Flag"),
             (0x98, 4, Float, "Value Threshold"),
             (0xA0, 4, Key, "Named Key"),
             (0xA4, 4, Float, "Maximum Distance"),
@@ -318,24 +389,87 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // Across 1613 stock actions every keyed row keeps +D8 at or below +DC (298 of 298) and
         // unkeyed rows sit at (1, 1). A second selector byte at +80 takes five stock values and
         // is not named yet (see the template field map under docs).
-        0x80803DCE | 0x80803DCC => vec![
-            (0x18, 4, Float, "Health Value 1"),
-            (0x1C, 4, Float, "Health Value 2"),
-            (0x20, 4, Float, "Health Value 3"),
-            (0x24, 4, Float, "Health Value 4"),
-            (0x38, 1, Byte, "Player State"),
-            (0x81, 1, Byte, "Weapon State"),
-            (0xD4, 4, Key, "Named Key"),
-            (0xD8, 4, Float, "Minimum Value"),
-            (0xDC, 4, Float, "Maximum Value"),
-            (0xE0, 4, Float, "Hold Duration"),
-            (0xF8, 1, Flag, "Invert Result"),
-        ],
+        //
+        // These fields cover both predicate kinds, so the counts below are over all 537 stock
+        // rows: 293 of the plain kind and 244 of the nested one.
+        //
+        // A second float pair sits at +10 and +14. Both hold -1 in 532 of the 537 rows, which
+        // reads as no bound. Five rows set them, holding three distinct pairs, and in each the
+        // first stays at or below the second: (0, 0.3) twice and (80, 100) once in the plain
+        // kind, (0, 40) twice in the nested one.
+        //
+        // From +88 to +BC the node carries seven float pairs at a stride of eight. The first
+        // of every pair defaults to 1 and the second to 0, the identities of multiplication
+        // and addition, so each pair reads as a factor and a term. The defaults are near
+        // universal rather than absolute: +B0 and +B8 hold them in all 537 rows, and the rest
+        // move in between one and six rows each. Which quantity each pair scales is not
+        // resolved, so the labels number them.
+        0x80803DCE | 0x80803DCC => {
+            let mut fields = vec![
+                (0x10, 4, Float, "Second Range Minimum"),
+                (0x14, 4, Float, "Second Range Maximum"),
+                (0x18, 4, Float, "Health Value 1"),
+                (0x1C, 4, Float, "Health Value 2"),
+                (0x20, 4, Float, "Health Value 3"),
+                (0x24, 4, Float, "Health Value 4"),
+                (0x38, 1, Byte, "Player State"),
+                (0x81, 1, Byte, "Weapon State"),
+                (0xD4, 4, Key, "Named Key"),
+                (0xD8, 4, Float, "Minimum Value"),
+                (0xDC, 4, Float, "Maximum Value"),
+                (0xE0, 4, Float, "Hold Duration"),
+                (0xF8, 1, Flag, "Invert Result"),
+            ];
+            const PAIRS: [(usize, &str, &str); 8] = [
+                // The same identity defaults appear once below the run of seven.
+                (0x2C, "Health Factor", "Health Term"),
+                (0x88, "Pair 1 Factor", "Pair 1 Term"),
+                (0x90, "Pair 2 Factor", "Pair 2 Term"),
+                (0x98, "Pair 3 Factor", "Pair 3 Term"),
+                (0xA0, "Pair 4 Factor", "Pair 4 Term"),
+                (0xA8, "Pair 5 Factor", "Pair 5 Term"),
+                (0xB0, "Pair 6 Factor", "Pair 6 Term"),
+                (0xB8, "Pair 7 Factor", "Pair 7 Term"),
+            ];
+            for (offset, factor, term) in PAIRS {
+                fields.push((offset, 4, Float, factor));
+                fields.push((offset + 4, 4, Float, term));
+            }
+            fields
+        }
         0x80803DFC => vec![(0x158, 1, Flag, "Scan Related Player State")],
         // The accumulator's +18 word is a bit set: every stock value is a sum of single bits and
         // perk families share them (catalysts 0x04, the Scavenger perks 0x40).
+        // Ability Filter, inline in Object and Numeric Event Filter (+0x78), Kill Event
+        // (+0x120), Event Numeric Modifier (+0x98) and Register Host Modifier (+0x80). The
+        // mask is one bit per damage type, `1 << mode` of the Set Host Mode damage byte: 1
+        // Kinetic, 2 Solar, 4 Arc, 8 Void. Stock witnesses agree across all four owners: void
+        // perks set 8 (Abyssal Extractors, Horns of Doom, Oppressive Darkness), arc perks set
+        // 4 (Conduction Tines, Volatile Conduction, Trinity Ghoul Catalyst), solar perks set
+        // 2 (Bring the Heat, Helium Spirals, Solar Rampart, Solar Plexus), and 0x0E is every
+        // element. The flag at +0x18 is 1 in exactly the rows whose mask is 0, in every owner.
+        //
+        // The filter carries a second mask and flag on the same pattern. The flag at +0x19 is
+        // set in exactly the nodes whose word at +0x04 is zero, with no exception in any of the
+        // 610 stock nodes across the three owners that carry them: Event Numeric Modifier 169
+        // against 169, Register Host Modifier 42 against 42, Kill Event 395 against 395. Which
+        // axis the second mask restricts is not resolved, so the labels say only that it is the
+        // filter's second one. Its non-zero values are 0x02 and 0x1B, one node each.
+        0x80804C81 => vec![
+            (0x00, 4, Mask32, "Damage Type Mask"),
+            (0x04, 4, Mask32, "Second Filter Mask"),
+            (0x18, 1, Flag, "Any Damage Type"),
+            (0x19, 1, Flag, "Any Second Filter"),
+        ],
+        // Runtime Label Predicate, inline in the Ability Filter at +8 and in Kill Event at
+        // +0x58. The word takes -1, 0 and 1 in stock perks. Its role is not resolved, so the
+        // name says only what it is: the predicate's mode word.
+        0x808094A8 => vec![(0x00, 4, Integer, "Predicate Mode")],
+        // The mask spans both words. Condition kinds run past 31, so an event mask needs a
+        // full 64 bits here as it does at the action root and on Extend Timers, and the high
+        // word carries exactly the single bits that reading predicts.
         0x80803E30 => vec![
-            (0x18, 4, Mask32, "Source Event Mask"),
+            (0x18, 8, Bytes, "Source Event Mask"),
             (0x20, 4, Float, "Trigger Threshold"),
             (0x24, 4, Float, "Reset Threshold"),
             (0x28, 4, Float, "Minimum Value"),
@@ -343,7 +477,26 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         ],
         // Register Host Modifier names its modifier table by the tag at +A8 and selects the row
         // by this offset. Every stock value is a multiple of eight, an eight byte stride.
-        0x80803E3C => vec![(0xB0, 4, Unsigned, "Modifier Row Offset")],
+        0x80803E3C => vec![
+            (0xA8, 4, Tag, "Modifier Table"),
+            (0xB0, 4, Unsigned, "Modifier Row Offset"),
+        ],
+        // The entity or resource each spawning kind references, which is the reference
+        // `effect_reference` already reads and `Action::asset` carries. The schema types the
+        // lane and the kind's traced behavior says what it points at, so the label names that
+        // rather than leaving a bare Resource.
+        0x80803E45 => vec![(0x10, 4, Tag, "Spawned Entity")],
+        // +2 and +3 move independently, so each is its own byte rather than one opaque word.
+        0x80803E43 => vec![
+            (2, 1, Byte, "Spawn Mode"),
+            (3, 1, Flag, "Spawn Flag"),
+            (0x10, 4, Tag, "Spawned Entity"),
+        ],
+        0x80803E46 => vec![
+            (2, 1, Byte, "Target Selection"),
+            (0x10, 4, Tag, "Applied Resource"),
+        ],
+        0x80803E12 => vec![(0x10, 4, Tag, "Projectile Pattern")],
         0x80803E32 => vec![
             (8, 1, Byte, "Success Operation"),
             (9, 1, Flag, "Success Uses Event Value"),
@@ -362,19 +515,31 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
             (8, 1, Byte, "Stat Selector"),
         ],
         0x80803E44 => vec![
+            (2, 1, Byte, "Attachment Mode"),
+            (0x10, 4, Tag, "Spawned Entity"),
             (0x50, 1, Byte, "Input Source"),
             (0x51, 1, Flag, "Normalize Input"),
         ],
-        0x80803E46 => vec![(2, 1, Byte, "Target Selection")],
         // The three weighted categories are the ammo types, established by the stock perks
         // that weight exactly one: Snapload Finisher ("generate Primary ammo") the first,
         // Special Finisher, Extra Reserves and Swift Charge ("Special ammo") the second, and
         // Heavy Finisher, Giving Hand and the Voltaic Ammo Collectors ("Heavy ammo") the third.
+        // Each category is a twelve byte triple ending in its weight, so the two floats before
+        // a weight belong to the same ammo type. The triple naming follows the one kind 11
+        // already uses. Their roles inside the triple are not resolved, so the labels say only
+        // the category and the position.
         0x80803E47 => vec![
             (3, 1, Flag, "Owner Path"),
             (4, 1, Flag, "Related Player Path"),
+            (0x10, 4, Tag, "Spawned Resource"),
+            (0x18, 4, Float, "Primary Ammo Value 1"),
+            (0x1C, 4, Float, "Primary Ammo Value 2"),
             (0x20, 4, Float, "Primary Ammo Weight"),
+            (0x24, 4, Float, "Special Ammo Value 1"),
+            (0x28, 4, Float, "Special Ammo Value 2"),
             (0x2C, 4, Float, "Special Ammo Weight"),
+            (0x30, 4, Float, "Heavy Ammo Value 1"),
+            (0x34, 4, Float, "Heavy Ammo Value 2"),
             (0x38, 4, Float, "Heavy Ammo Weight"),
         ],
         // The same traced lanes read by component_value_adjustment_facts.
@@ -402,13 +567,66 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // (see `values.rs`): the event's damage type and the target's enemy faction.
         0x80806B02 => vec![(0, 1, Byte, "Damage Type")],
         0x80806829 => vec![(0, 1, Byte, "Enemy Faction")],
+        // The client's own member names for these lanes, from the live memory scan described
+        // above `name`. Each is the array or record the named member points at.
+        0x808073F4 => vec![
+            (0x00, 8, Pointer, "Bytecode"),
+            (0x10, 8, Pointer, "Constant Buffer"),
+        ],
+        0x80809419 => vec![
+            (0x00, 8, Pointer, "Inputs"),
+            (0x10, 8, Pointer, "Expression"),
+        ],
+        0x80804D78 => vec![(0x00, 8, Pointer, "Factions")],
+        0x80809312 => vec![(0x08, 8, Pointer, "Filters")],
+        0x80809316 => vec![(0x08, 8, Pointer, "Filter")],
+        // Lanes whose role is unresolved but whose shape the stock values settle, so the
+        // workbench renders a checkbox or a number instead of four hex bytes. Each label
+        // states the position and the shape, never a meaning this project has not recovered.
+        //
+        // Event Numeric Modifier: +B8 splits 100 to 71 across its rows, a setting not padding.
+        0x80802F16 => vec![(0xB8, 1, Flag, "Applies After Filters")],
+        // Two Objects and Event State: +78 is set in one row of 43.
+        0x808029E0 => vec![(0x78, 1, Flag, "Second Object Flag")],
+        // Add Event Labels: every stock value at these three lanes is a single bit, so each
+        // reads as a mask rather than a count.
+        0x80803E1A => vec![
+            (0xA8, 4, Mask32, "First Label Mask"),
+            (0xC8, 4, Mask32, "Second Label Mask"),
+            (0xCC, 4, Mask32, "Third Label Mask"),
+        ],
+        // The record is 0xA8 bytes, so it has no lane at 0xA8: a third mask was named there
+        // and silently dropped, because the bytes it pointed at belong to the array header
+        // that follows the node. Its two real masks are below.
+        0x8080281C => vec![
+            (0x78, 4, Mask32, "Object Filter Mask"),
+            (0x9C, 4, Mask32, "Label Mask"),
+        ],
         _ => Vec::new(),
     };
     if let Some(node) = nodes::CONDITIONS.iter().find(|node| node.class == class) {
         result.extend(match node.kind {
-            2 => vec![(0x141, 1, Flag, "Requires Owning Weapon")],
+            // The lanes around and after the inline ability filter, which ends at +140. Their
+            // roles are unresolved, so the labels state only the shape the stock values prove,
+            // measured over the 396 stock Kill Event nodes: +A8 takes 0 and 4, +A9 is a flag
+            // set in 5, +140 is mostly single bits (1, 2 and 4) with one node at 0x87 so it is
+            // read as a plain byte, +141 is set in 72, +142 is a flag set in 7, +14C counts 0
+            // through 2, and +150 is a float that 61 rows set to 0.01 and the rest leave at
+            // zero. +143 never moves, so it stays an unnamed byte.
+            2 => vec![
+                (0xA8, 1, Byte, "Event Source Bits"),
+                (0xA9, 1, Flag, "Event Source Flag"),
+                (0x140, 1, Byte, "Source Bits"),
+                (0x141, 1, Flag, "Requires Owning Weapon"),
+                (0x142, 1, Flag, "Source Flag"),
+                (0x14C, 4, Unsigned, "Source Selector"),
+                (0x150, 4, Float, "Source Threshold"),
+            ],
             9 | 28 => vec![(8, 4, Mask32, "Selected Bits")],
-            10 | 11 => vec![(0x10, 4, Key, "Event Key")],
+            // The schema declares a resource reference at +10 and every stock value is a tag,
+            // so the lane is read as one. It was declared a key before, which did not match
+            // the resource format the describer already assigns and so never took effect.
+            10 | 11 => vec![(0x10, 4, Tag, "Referenced Resource")],
             34 => vec![
                 (0x10, 4, Key, "Event Key"),
                 (0x18, 4, Float, "First Range Minimum"),
@@ -416,20 +634,27 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
                 (0x20, 4, Float, "Second Range Minimum"),
                 (0x24, 4, Float, "Second Range Maximum"),
             ],
+            // The slot mask is one bit per weapon slot: 1 Kinetic, 2 Energy, 4 Power. Mecha
+            // Holster's hand cannon nodes set 1 and 2, Lucent Blade's sword nodes set 4, and
+            // Cobra Totemic and Move to Survive, which apply to every weapon, set 7.
             13..=19 => {
-                let mut fields = vec![
-                    (8, 1, Flag, "Requires Owning Weapon"),
-                    (0x0B, 1, Byte, "Slot Mask"),
-                ];
+                let mut fields = vec![(8, 1, Flag, "Requires Owning Weapon")];
                 if node.kind == 19 {
                     // The event's own byte selects which of these two flags must be set.
                     // Every stock perk with +9 set reads as reloading, from Kill Clip
                     // starting to Under Pressure ending, 18 perks in all. The perks with
                     // +A set (Ravenous Beast, Gathering Light, Revolution, Gift of the
                     // Traveler) share no description, so that event keeps a plain name.
+                    // The restriction is a window in seconds: 3.5 for Kill Clip and Memento
+                    // Mori, 3 for Rat King, 5 for Ambitious Assassin and Impetus.
                     fields.push((9, 1, Flag, "On Reload"));
                     fields.push((0x0A, 1, Flag, "On Second Weapon Event"));
-                    fields.push((0x0C, 1, Byte, "Time Restriction"));
+                    fields.push((0x0B, 1, Byte, "Slot Mask"));
+                    fields.push((0x0C, 4, Float, "Time Restriction"));
+                } else {
+                    // Without the two flags the slot mask follows the owning-weapon flag.
+                    // Stock draw, holster and weapon event filter nodes keep +0x0B zero.
+                    fields.push((9, 1, Byte, "Slot Mask"));
                 }
                 fields
             }
@@ -608,5 +833,134 @@ impl Field {
             .ok_or("The native field exceeds its record.")?
             .copy_from_slice(bytes);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A declared field whose bytes fall outside the record is dropped by `insert` without a
+    /// word, so a name recovered for a lane that does not exist never reaches the workbench
+    /// and reads as an unmapped byte instead. Every entry `known` returns has to land inside
+    /// the record it names, and inside every object that inlines that record.
+    #[test]
+    fn every_declared_field_lands_inside_its_record() {
+        type Encoded = (
+            u32,
+            usize,
+            u32,
+            bool,
+            Vec<(usize, u32, u32)>,
+            Vec<(usize, u32)>,
+        );
+        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
+            .expect("native perk declarations parse");
+        let mut checked = 0;
+        for (class, size, ..) in &rows {
+            for (offset, width, _, label) in known(*class) {
+                checked += 1;
+                assert!(
+                    offset + width <= *size,
+                    "0x{class:08X} names \"{label}\" at +0x{offset:X} width {width},                      past the end of its {size} byte record"
+                );
+            }
+            // The same fields are applied again wherever the record is inlined, at the owner's
+            // offset, so they have to fit there too.
+            for (base, child, _) in schema::inline(*class).expect("inline declarations") {
+                if child == *class {
+                    continue;
+                }
+                for (offset, width, _, label) in known(child) {
+                    assert!(
+                        base + offset + width <= *size,
+                        "0x{class:08X} inlines 0x{child:08X} at +0x{base:X}, putting \"{label}\"                          past the end of its {size} byte record"
+                    );
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} fields were checked");
+    }
+
+    /// The module's contract: every byte of a record belongs to exactly one field, so the
+    /// workbench can show a node completely and an edit can never land between fields. The
+    /// gap pass is what makes it hold, and it has to hold for every declared record, not only
+    /// the node kinds.
+    #[test]
+    fn describe_covers_every_byte_of_every_record_exactly_once() {
+        type Encoded = (
+            u32,
+            usize,
+            u32,
+            bool,
+            Vec<(usize, u32, u32)>,
+            Vec<(usize, u32)>,
+        );
+        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
+            .expect("native perk declarations parse");
+        for (class, size, ..) in &rows {
+            let described =
+                describe(*class).unwrap_or_else(|e| panic!("0x{class:08X} has no field view: {e}"));
+            let mut covered = vec![0_u32; *size];
+            for field in &described {
+                assert!(field.width > 0, "0x{class:08X} has a zero width field");
+                for byte in field.offset..field.offset + field.width {
+                    let seen = covered.get_mut(byte).unwrap_or_else(|| {
+                        panic!("0x{class:08X} describes byte {byte} past {size}")
+                    });
+                    *seen += 1;
+                }
+            }
+            if let Some(byte) = covered.iter().position(|seen| *seen != 1) {
+                panic!(
+                    "0x{class:08X} covers byte 0x{byte:X} {} times, not once",
+                    covered[byte]
+                );
+            }
+        }
+    }
+
+    /// `insert` keeps the first field to claim a byte, so a second entry overlapping it is
+    /// dropped as quietly as an out-of-range one. A width that disagrees with the format is
+    /// the same kind of slip: `Field::write` refuses a float that is not four bytes wide, so
+    /// the control would be built and then reject every edit.
+    #[test]
+    fn declared_fields_do_not_overlap_and_match_their_format_width() {
+        type Encoded = (
+            u32,
+            usize,
+            u32,
+            bool,
+            Vec<(usize, u32, u32)>,
+            Vec<(usize, u32)>,
+        );
+        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
+            .expect("native perk declarations parse");
+        for (class, ..) in &rows {
+            let declared = known(*class);
+            for (index, (offset, width, format, label)) in declared.iter().enumerate() {
+                let natural = match format {
+                    Format::Byte | Format::Flag => Some(1),
+                    Format::Float
+                    | Format::Integer
+                    | Format::Unsigned
+                    | Format::Mask32
+                    | Format::Key
+                    | Format::Tag => Some(4),
+                    Format::Pointer => Some(8),
+                    Format::Bytes => None,
+                };
+                assert!(
+                    natural.is_none_or(|natural| natural == *width),
+                    "0x{class:08X} names \"{label}\" as {format:?} but {width} bytes wide"
+                );
+                for (other, other_width, _, other_label) in &declared[index + 1..] {
+                    assert!(
+                        offset + width <= *other || other + other_width <= *offset,
+                        "0x{class:08X} declares \"{label}\" at +0x{offset:X} and \"{other_label}\"                          at +0x{other:X} over the same bytes; only the first survives"
+                    );
+                }
+            }
+        }
     }
 }

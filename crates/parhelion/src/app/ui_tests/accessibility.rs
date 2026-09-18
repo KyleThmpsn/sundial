@@ -34,7 +34,7 @@ fn core_fields_and_build_selection_expose_accessible_names() {
     assert!(
         tree.nodes
             .iter()
-            .any(|(_, node)| node.label() == Some("Search weapons for this build"))
+            .any(|(_, node)| node.label() == Some("Search recipes"))
     );
     let checkboxes: Vec<_> = tree
         .nodes

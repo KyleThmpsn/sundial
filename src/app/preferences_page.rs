@@ -486,7 +486,9 @@ impl SundialApp {
                 ui.colored_label(
                     match account_source.kind {
                         AccountSourceKind::Json => ui.visuals().text_color(),
-                        AccountSourceKind::Sqlite => ui.visuals().hyperlink_color,
+                        AccountSourceKind::Sqlite | AccountSourceKind::Dawn => {
+                            ui.visuals().hyperlink_color
+                        }
                         AccountSourceKind::Blocked => ui.visuals().error_fg_color,
                     },
                     account_source.label,

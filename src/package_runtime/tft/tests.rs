@@ -62,38 +62,62 @@ fn asset_folders_drop_the_filename_and_the_content_root() {
 }
 
 #[test]
-fn entity_words_skip_class_handles_and_the_resource_itself() {
+fn entity_evidence_skips_class_handles_and_the_resource_itself() {
     let bytes = fixture();
+    let known_lane = |lane: u64| lane == 0x1234_5678_9ABC_DEF0;
     let targets = EntityTargets {
         tags: HashSet::from([0x8152_82E1, 0x8080_9C0F, 0x0000_0007]),
         lanes: HashMap::new(),
     };
-    assert_eq!(
-        entity_words(&bytes, 0x8152_82E1, &targets),
-        Vec::<u32>::new()
+    // The resource's own tag is not evidence of a reference.
+    assert!(
+        EntityEvidence::gather(&bytes, 0x8152_82E1, 0, &known_lane)
+            .words
+            .is_empty()
     );
-    assert_eq!(entity_words(&bytes, 7, &targets), vec![0x8152_82E1]);
+    let evidence = EntityEvidence::gather(&bytes, 7, 8, &known_lane);
+    assert_eq!(evidence.words, vec![0x8152_82E1]);
+    assert_eq!(evidence.lanes, vec![0x1234_5678_9ABC_DEF0]);
+    assert_eq!(evidence.resolve(&targets), vec![0x8152_82E1]);
+    // Evidence is gathered whether or not any graph is live, and resolves to nothing
+    // until one is.
     let none = EntityTargets {
         tags: HashSet::new(),
         lanes: HashMap::new(),
     };
-    assert!(entity_words(&bytes, 7, &none).is_empty());
+    assert!(evidence.resolve(&none).is_empty());
     // The fixture's second lane is a 64-bit hash. It names its graph only through the
-    // lane table, and the digest changes when that table does.
+    // lane table, and follows that table when it changes.
     let with_lane = EntityTargets {
         tags: HashSet::from([0x8152_82E1, 0x80BB_0001]),
         lanes: HashMap::from([(0x1234_5678_9ABC_DEF0, 0x80BB_0001)]),
     };
-    assert_eq!(
-        entity_words(&bytes, 7, &with_lane),
-        vec![0x80BB_0001, 0x8152_82E1]
-    );
-    assert_ne!(with_lane.key(), targets.key());
-    let same = EntityTargets {
-        tags: HashSet::from([7, 0x8080_9C0F, 0x8152_82E1]),
-        lanes: HashMap::new(),
+    assert_eq!(evidence.resolve(&with_lane), vec![0x80BB_0001, 0x8152_82E1]);
+    let remapped = EntityTargets {
+        tags: HashSet::from([0x80BB_0001, 0x80BB_0002]),
+        lanes: HashMap::from([(0x1234_5678_9ABC_DEF0, 0x80BB_0002)]),
     };
-    assert_eq!(same.key(), targets.key());
+    assert_eq!(evidence.resolve(&remapped), vec![0x80BB_0002]);
+    // A lane that maps back to the resource itself is not a reference either.
+    let to_self = EntityTargets {
+        tags: HashSet::from([7]),
+        lanes: HashMap::from([(0x1234_5678_9ABC_DEF0, 7)]),
+    };
+    assert!(evidence.resolve(&to_self).is_empty());
+    // A window that is not in the lane table is noise, as is a word whose package id no
+    // live tag can have: the fixture's negative pointer and a plain negative float.
+    assert!(
+        EntityEvidence::gather(&bytes, 7, 8, &|_| false)
+            .lanes
+            .is_empty()
+    );
+    let mut noise = bytes.clone();
+    noise[40..44].copy_from_slice(&(-1.0_f32).to_bits().to_le_bytes());
+    assert_eq!(
+        EntityEvidence::gather(&noise, 7, 8, &known_lane).words,
+        vec![0x8152_82E1]
+    );
+    assert!(!evidence.is_empty());
 }
 
 #[test]

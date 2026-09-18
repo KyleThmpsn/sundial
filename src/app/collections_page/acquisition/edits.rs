@@ -471,7 +471,9 @@ fn apply_collection_state_edits(
                 set_collection_value(&mut candidate, definition_index, definition, value)
             }
         };
-        if !applied {
+        // An edit the account already satisfies is not a failure; the status check below
+        // is what decides whether the requested acquisition state was actually reached.
+        if applied.refused() {
             return Err("The referenced Sunrise state could not be updated".into());
         }
     }

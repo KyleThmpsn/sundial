@@ -852,12 +852,17 @@ fn climb(
                                 .map(|item| context(String::new(), Some(item), None)),
                         );
                     }
+                    // A perk is fallback context, not a name, so the climb continues past it
+                    // the way it does past a Destiny 1 symbol above. Without this the walk
+                    // stopped on the branch and never reached the native ancestors the
+                    // function exists to find.
                     Some(Named::Perks(perks)) => {
                         fallback.extend(
                             perks
                                 .into_iter()
                                 .map(|perk| context(String::new(), None, Some(perk))),
                         );
+                        next.push(up);
                     }
                     None => next.push(up),
                 }

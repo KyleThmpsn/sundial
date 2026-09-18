@@ -100,7 +100,7 @@ impl SundialApp {
         let sqlite_receipt = source_receipt.sqlite;
         let sqlite_checkpoint_warning = sqlite_receipt
             .as_ref()
-            .and_then(|receipt| receipt.checkpoint_warning.as_deref());
+            .and_then(super::account_workspace::AccountSaveReceipt::checkpoint_warning);
         let sqlite_checkpoint_failed = sqlite_checkpoint_warning.is_some();
         let sqlite_checkpoint_note = sqlite_checkpoint_warning
             .map_or_else(String::new, |warning| {
@@ -147,9 +147,10 @@ impl SundialApp {
         }
         if let Some(receipt) = &sqlite_receipt {
             backups.push(format!(
-                "investment.sqlite3 backup: {}",
+                "{} backup: {}",
+                receipt.label(),
                 receipt
-                    .backup
+                    .backup()
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()

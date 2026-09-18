@@ -18,6 +18,7 @@ fn ingredient_rows_identify_operations_and_keep_undecoded_actions_explicit() {
             headline: String::new(),
             support: nodes::Support::Authorable,
             editable: true,
+            program: None,
             condition_kinds: vec![8],
             effect_kinds: vec![2],
             details: Vec::new(),

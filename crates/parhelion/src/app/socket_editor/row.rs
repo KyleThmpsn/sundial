@@ -101,6 +101,7 @@ enum RowCommand {
     Activate,
     EditChoice { index: usize, hash: Option<u32> },
     MakeDefault(usize),
+    MoveChoice { from: usize, to: usize },
     EditPerk(usize),
 }
 

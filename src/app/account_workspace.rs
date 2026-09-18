@@ -32,6 +32,9 @@ use super::inventory::{
     ProfileItemAction, ProfileItemLocation, ProfileItemSnapshot,
 };
 use super::{account_settings, character_metadata};
+use crate::persistence::dawn_account::{
+    self as dawn_persistence, DawnAccountDocument, DawnAccountDocumentLoad,
+};
 use crate::persistence::json_account::{
     JsonCharacterAdapter, ensure_schema_v8_preferences, setting_group_name,
 };
@@ -43,6 +46,8 @@ use crate::persistence::sqlite_account::{
 pub(super) enum AccountSourceKind {
     Json,
     Sqlite,
+    /// A Dawn runtime keeps its account in player-state.db beside the settings file.
+    Dawn,
     Blocked,
 }
 
@@ -50,6 +55,7 @@ pub(super) enum AccountSourceKind {
 enum AccountDocument {
     Json,
     Sqlite(Box<SqliteAccountDocument>),
+    Dawn(Box<DawnAccountDocument>),
     Blocked(String),
 }
 
@@ -67,6 +73,16 @@ pub(super) struct AccountSourceInfo {
     pub detail: String,
     pub database_path: PathBuf,
     pub contract: &'static str,
+}
+
+impl super::SundialApp {
+    /// True when the installed runtime is Dawn, which keeps its account in player-state.db.
+    pub(super) fn dawn_account_runtime(&self) -> bool {
+        self.runtime_choice
+            .inspection
+            .launch_copy()
+            .is_some_and(|copy| copy.dawn)
+    }
 }
 
 impl WorkspaceDocument {
@@ -98,6 +114,9 @@ impl WorkspaceDocument {
             AccountDocument::Sqlite(document) => document
                 .apply_progression_view(index, &value)
                 .map_err(|e| e.to_string()),
+            AccountDocument::Dawn(_) => {
+                Err("Progression editing is not available for a Dawn account yet.".to_owned())
+            }
             AccountDocument::Json => {
                 self.json = value;
                 Ok(())
@@ -106,7 +125,39 @@ impl WorkspaceDocument {
         }
     }
 
-    pub(super) fn load(mut json: Value, settings_path: &Path) -> Self {
+    fn load_dawn(json: Value, settings_path: &Path) -> Self {
+        let database_path = crate::persistence::dawn_path(settings_path);
+        let account = match dawn_persistence::load(&database_path) {
+            Ok(DawnAccountDocumentLoad::Loaded(document)) => AccountDocument::Dawn(document),
+            Ok(DawnAccountDocumentLoad::Missing) => AccountDocument::Blocked(
+                "Dawn has not created player-state.db yet. Start Dawn once to import settings.json, then reload.".into(),
+            ),
+            Ok(DawnAccountDocumentLoad::Empty) => AccountDocument::Blocked(
+                "player-state.db is empty or uninitialized. Start Dawn to initialize it, then reload.".into(),
+            ),
+            Ok(DawnAccountDocumentLoad::Incompatible(reason)) => AccountDocument::Blocked(format!(
+                "{reason}. Reload after Dawn or Sundial is updated."
+            )),
+            Err(error) => AccountDocument::Blocked(format!(
+                "Sundial could not safely read player-state.db: {error}"
+            )),
+        };
+        Self {
+            json,
+            database_path,
+            account,
+        }
+    }
+
+    /// Selects the account source once, from positive runtime detection rather than from JSON.
+    ///
+    /// A Dawn install keeps its account in player-state.db beside settings.json, so the settings
+    /// schema alone cannot choose the source. Dawn creates that database on its first boot by
+    /// importing settings.json, and Sundial never creates or seeds it.
+    pub(super) fn load(mut json: Value, settings_path: &Path, dawn: bool) -> Self {
+        if dawn {
+            return Self::load_dawn(json, settings_path);
+        }
         let database_path = crate::persistence::investment_path(settings_path);
         let account = if !requires_sqlite(&json) {
             AccountDocument::Json
@@ -216,6 +267,7 @@ impl WorkspaceDocument {
         match self.account {
             AccountDocument::Json => AccountSourceKind::Json,
             AccountDocument::Sqlite(_) => AccountSourceKind::Sqlite,
+            AccountDocument::Dawn(_) => AccountSourceKind::Dawn,
             AccountDocument::Blocked(_) => AccountSourceKind::Blocked,
         }
     }
@@ -236,6 +288,14 @@ impl WorkspaceDocument {
                 database_path: self.database_path.clone(),
                 contract: "SQLite · Schema 2",
             },
+            AccountDocument::Dawn(_) => AccountSourceInfo {
+                kind: AccountSourceKind::Dawn,
+                label: "player-state.db",
+                detail: "This install runs Dawn, which keeps characters, inventory, equipment and preferences in player-state.db beside settings.json. Player identity and runtime configuration use settings.json.".to_owned(),
+                database_path: self.database_path.clone(),
+                contract: "SQLite · Dawn schema 1",
+            },
+
             AccountDocument::Blocked(reason) => AccountSourceInfo {
                 kind: AccountSourceKind::Blocked,
                 label: "Account Editing Blocked",
@@ -274,10 +334,44 @@ impl WorkspaceDocument {
             AccountDocument::Sqlite(document) => {
                 sqlite_persistence::save_document(document).map_err(|error| error.to_string())
             }
+            AccountDocument::Dawn(_) => {
+                Err("internal error: a Dawn account is saved through player-state.db".to_owned())
+            }
             AccountDocument::Json => {
                 Err("internal error: the selected account source is settings.json".to_owned())
             }
             AccountDocument::Blocked(reason) => Err(reason.clone()),
+        }
+    }
+
+    /// Writes the edited account through the adapter that owns its file.
+    pub(super) fn save_account(&mut self) -> Result<AccountSaveReceipt, String> {
+        match &self.account {
+            AccountDocument::Dawn(_) => self.save_dawn().map(AccountSaveReceipt::Dawn),
+            _ => self.save_sqlite().map(AccountSaveReceipt::Sqlite),
+        }
+    }
+
+    /// Puts back whichever account file the matching save wrote.
+    pub(super) fn rollback_account_save(&self, receipt: &AccountSaveReceipt) -> Result<(), String> {
+        match receipt {
+            AccountSaveReceipt::Sqlite(receipt) => self.rollback_sqlite_save(receipt),
+            AccountSaveReceipt::Dawn(receipt) => {
+                dawn_persistence::restore_backup(&self.database_path, &receipt.backup)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    /// Writes an edited Dawn account back to player-state.db.
+    pub(super) fn save_dawn(&mut self) -> Result<dawn_persistence::DawnSaveReceipt, String> {
+        match &mut self.account {
+            AccountDocument::Dawn(document) => {
+                dawn_persistence::save(document).map_err(|error| error.to_string())
+            }
+            _ => {
+                Err("internal error: the selected account source is not player-state.db".to_owned())
+            }
         }
     }
 
@@ -344,6 +438,7 @@ pub(super) fn character_count(document: &WorkspaceDocument) -> usize {
             .and_then(Value::as_array)
             .map_or(0, Vec::len),
         AccountDocument::Sqlite(sqlite) => sqlite.characters().characters().len(),
+        AccountDocument::Dawn(dawn) => dawn.characters().characters().len(),
         AccountDocument::Blocked(_) => 0,
     }
 }
@@ -369,6 +464,7 @@ pub(super) fn character_metadata(
                 .ok_or_else(|| format!("Character {} metadata was not loaded", character_index + 1))
         }
         AccountDocument::Sqlite(document) => sqlite::character_metadata(document, character_index),
+        AccountDocument::Dawn(document) => sqlite::character_metadata(document, character_index),
         AccountDocument::Blocked(_) => Err(blocked_string(document)),
     }
 }
@@ -379,6 +475,7 @@ pub(super) fn class_armor_default_characters(document: &WorkspaceDocument) -> Ha
             super::equipment::collect_class_armor_default_characters(&document.json)
         }
         AccountDocument::Sqlite(document) => sqlite::class_armor_default_characters(document),
+        AccountDocument::Dawn(document) => sqlite::class_armor_default_characters(document),
         AccountDocument::Blocked(_) => HashMap::new(),
     }
 }
@@ -396,6 +493,9 @@ pub(super) fn apply_character_updates(
             sqlite::apply_character_updates(document, character_index, updates)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
+        AccountDocument::Dawn(document) => {
+            sqlite::apply_character_updates(document, character_index, updates)
+        }
     }
 }
 
@@ -406,6 +506,7 @@ pub(super) fn apply_account_settings(
     match &mut document.account {
         AccountDocument::Json => account_settings::apply_commands(&mut document.json, commands),
         AccountDocument::Sqlite(document) => sqlite::apply_account_settings(document, commands),
+        AccountDocument::Dawn(document) => sqlite::apply_account_settings(document, commands),
         AccountDocument::Blocked(reason) => Err(reason.clone()),
     }
 }
@@ -421,6 +522,7 @@ pub(super) fn account_settings_map(
             .cloned()
             .ok_or_else(|| "This settings.json has no state.account.settings object.".to_owned()),
         AccountDocument::Sqlite(document) => Ok(settings_map(document.settings().values())),
+        AccountDocument::Dawn(document) => Ok(settings_map(document.settings().values())),
         AccountDocument::Blocked(reason) => Err(reason.clone()),
     }
 }
@@ -428,7 +530,10 @@ pub(super) fn account_settings_map(
 pub(super) fn named_key_bindings_editable(document: &WorkspaceDocument) -> bool {
     match &document.account {
         AccountDocument::Json => crate::game_settings::key_bindings_editable(&document.json),
-        AccountDocument::Sqlite(_) | AccountDocument::Blocked(_) => false,
+        // Dawn stores key bindings by numeric action, the same as a native Sunrise account.
+        AccountDocument::Sqlite(_) | AccountDocument::Dawn(_) | AccountDocument::Blocked(_) => {
+            false
+        }
     }
 }
 
@@ -442,6 +547,7 @@ pub(super) fn can_mutate_equipment(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).can_mutate_equipment()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -452,6 +558,7 @@ pub(super) fn can_mutate_character_inventory(document: &WorkspaceDocument) -> bo
             super::inventory::schema_mode(&document.json).can_mutate_character_inventory()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -462,6 +569,7 @@ pub(super) fn can_mutate_equipment_flags(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).can_mutate_equipment_flags()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -476,6 +584,12 @@ pub(super) fn character_soid(document: &WorkspaceDocument, character_index: usiz
             .and_then(|character| character.get("soid"))
             .and_then(crate::hash::parse_unsigned_value),
         AccountDocument::Sqlite(document) => document
+            .characters()
+            .characters()
+            .get(character_index)
+            .and_then(|character| character.soid)
+            .map(sundial_account::InstanceSoid::get),
+        AccountDocument::Dawn(document) => document
             .characters()
             .characters()
             .get(character_index)
@@ -500,6 +614,7 @@ pub(super) fn profile_items_editable(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).can_mutate_profile_items()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -518,6 +633,7 @@ pub(super) fn dismantle_rewards_available(document: &WorkspaceDocument) -> bool 
             mode.supports_dismantle_rewards() && !mode.is_future()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -528,6 +644,7 @@ pub(super) fn dismantle_rewards_editable(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).can_mutate_dismantle_rewards()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -545,6 +662,7 @@ pub(super) fn filtered_dismantle_rewards(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).supports_filtered_dismantle_rewards()
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -555,6 +673,7 @@ pub(super) fn account_collection_ready(document: &WorkspaceDocument) -> bool {
             super::inventory::profile_item_target_exists(&document.json).unwrap_or(false)
         }
         AccountDocument::Sqlite(_) => true,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -621,3 +740,35 @@ fn setting_value(value: &AccountSettingValue) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+/// One account write, from whichever adapter owns the file.
+pub(super) enum AccountSaveReceipt {
+    Sqlite(SqliteSaveReceipt),
+    Dawn(dawn_persistence::DawnSaveReceipt),
+}
+
+impl AccountSaveReceipt {
+    /// The verified copy this write took first.
+    pub(super) fn backup(&self) -> &Path {
+        match self {
+            Self::Sqlite(receipt) => &receipt.backup,
+            Self::Dawn(receipt) => &receipt.backup,
+        }
+    }
+
+    /// The account file this write landed in, for a message the user reads.
+    pub(super) const fn label(&self) -> &'static str {
+        match self {
+            Self::Sqlite(_) => "investment.sqlite3",
+            Self::Dawn(_) => "player-state.db",
+        }
+    }
+
+    /// Dawn commits inside one transaction and never leaves a checkpoint to warn about.
+    pub(super) fn checkpoint_warning(&self) -> Option<&str> {
+        match self {
+            Self::Sqlite(receipt) => receipt.checkpoint_warning.as_deref(),
+            Self::Dawn(_) => None,
+        }
+    }
+}

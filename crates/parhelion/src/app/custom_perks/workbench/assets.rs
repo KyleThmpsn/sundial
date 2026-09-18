@@ -292,10 +292,22 @@ impl Browser<'_> {
             // The type, sort and visibility controls do not fit one line beside the search
             // box in a narrow window. Wrapping keeps every control usable.
             .horizontal_wrapped(|ui| {
+                // A combo takes the width of its selected text unless something bounds it,
+                // so each one below is drawn inside an allocation of its own width and
+                // truncates to that, with the full reading on hover. The search box takes
+                // what those widths leave rather than a hand-added total that goes stale
+                // the moment one of them changes.
+                const TYPE_WIDTH: f32 = 150.0;
+                const ORDER_WIDTH: f32 = 150.0;
+                const SHOW_ALL_WIDTH: f32 = 90.0;
+                const COUNT_WIDTH: f32 = 86.0;
+                let gap = ui.spacing().item_spacing.x;
+                // Sort, Show All and the result count always follow the search box. The
+                // type filter joins them everywhere but the projectile picker.
                 let reserved = if scope == AssetScope::Projectiles {
-                    380.0
+                    ORDER_WIDTH + SHOW_ALL_WIDTH + COUNT_WIDTH + gap * 3.0
                 } else {
-                    520.0
+                    ORDER_WIDTH + SHOW_ALL_WIDTH + COUNT_WIDTH + TYPE_WIDTH + gap * 4.0
                 };
                 let width = (ui.available_width() - reserved).max(160.0);
                 search_changed |= pickers::search(ui, query, reset, width);
@@ -308,38 +320,48 @@ impl Browser<'_> {
                         (4, "Pickups"),
                         (5, "World Objects"),
                     ];
-                    egui::ComboBox::from_id_salt("asset-type-filter")
-                        .width(130.0)
-                        .selected_text(
-                            types
-                                .iter()
-                                .find(|(value, _)| *value == filter)
-                                .map_or("All Types", |(_, label)| *label),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (value, name) in types {
-                                if value != 3 || scope == AssetScope::Any {
-                                    ui.selectable_value(&mut filter, value, name);
+                    let chosen = types
+                        .iter()
+                        .find(|(value, _)| *value == filter)
+                        .map_or("All Types", |(_, label)| *label);
+                    controls::sized(ui, TYPE_WIDTH, |ui| {
+                        egui::ComboBox::from_id_salt("asset-type-filter")
+                            .width(TYPE_WIDTH)
+                            .truncate()
+                            .selected_text(chosen)
+                            .show_ui(ui, |ui| {
+                                for (value, name) in types {
+                                    if value != 3 || scope == AssetScope::Any {
+                                        ui.selectable_value(&mut filter, value, name);
+                                    }
                                 }
-                            }
-                        });
-                    pickers::name_combo(ui, "asset-type-filter", "Asset Type");
+                            })
+                            .response
+                            .on_hover_text(format!("Asset Type: {chosen}"));
+                        pickers::name_combo(ui, "asset-type-filter", "Asset Type");
+                    });
                 }
-                egui::ComboBox::from_id_salt("asset-order")
-                    .width(120.0)
-                    .selected_text(format!("Sort: {}", order.label()))
-                    .show_ui(ui, |ui| {
-                        for choice in Order::ALL {
-                            ui.selectable_value(&mut order, choice, choice.label())
-                                .on_hover_text(choice.hint());
-                        }
-                    })
-                    .response
-                    .on_hover_text("Order the results. Sorting never hides a result.");
-                pickers::name_combo(ui, "asset-order", "Sort Order");
+                let sort = format!("Sort: {}", order.label());
+                controls::sized(ui, ORDER_WIDTH, |ui| {
+                    egui::ComboBox::from_id_salt("asset-order")
+                        .width(ORDER_WIDTH)
+                        .truncate()
+                        .selected_text(sort.clone())
+                        .show_ui(ui, |ui| {
+                            for choice in Order::ALL {
+                                ui.selectable_value(&mut order, choice, choice.label())
+                                    .on_hover_text(choice.hint());
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!(
+                            "{sort}\nOrder the results. Sorting never hides a result."
+                        ));
+                    pickers::name_combo(ui, "asset-order", "Sort Order");
+                });
                 visibility = pickers::show_all(ui);
                 ui.allocate_exact_size(
-                    egui::vec2(86.0, ui.spacing().interact_size.y),
+                    egui::vec2(COUNT_WIDTH, ui.spacing().interact_size.y),
                     egui::Sense::hover(),
                 )
                 .0

@@ -9,6 +9,8 @@ pub(in crate::weapon::build) struct Payloads {
     pub weapon_tags: Vec<NewTagSpec>,
     pub private_perk_tags: Vec<NewTagSpec>,
     pub private_perk_append_start: usize,
+    /// Behavior graphs grafted into component owners, whose prerequisites still need enrolling.
+    pub grafted_graphs: Vec<u32>,
     weapon_allocator: AppendedTagAllocator,
     private_perk_allocator: AppendedTagAllocator,
 }
@@ -81,6 +83,14 @@ pub(in crate::weapon::build) fn author(
             private_perk_append_start: private_perk_runtime_append_start,
             weapon_allocator: weapon_runtime_tag_allocator,
             private_perk_allocator: private_perk_runtime_tag_allocator,
+            grafted_graphs: resolved
+                .iter()
+                .flat_map(|weapon| {
+                    crate::weapon_behavior::requested_graphs(
+                        &weapon.weapon.overrides.additional_behaviors,
+                    )
+                })
+                .collect(),
         },
         custom_payloads,
     ))
@@ -93,7 +103,10 @@ impl Payloads {
         assets: &assets::Plan,
         entity_assignment_tag: TagHash,
     ) -> AuthoringResult<Option<Vec<u8>>> {
-        if self.private_perk_tags.is_empty() && self.weapon_tags.is_empty() {
+        if self.private_perk_tags.is_empty()
+            && self.weapon_tags.is_empty()
+            && self.grafted_graphs.is_empty()
+        {
             return Ok(None);
         }
         let root_entry = manager
@@ -155,6 +168,7 @@ impl Payloads {
                 ),
                 (self.weapon_allocator, self.weapon_tags.as_slice()),
             ],
+            &self.grafted_graphs,
         )?);
         Ok(Some(
             crate::shared_tag_dependency_index::enroll_dependencies(

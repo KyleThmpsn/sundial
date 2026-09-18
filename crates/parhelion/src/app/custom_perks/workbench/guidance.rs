@@ -164,33 +164,54 @@ pub(super) fn effect_sort_key(
     }
 }
 
+/// Width of one filter in a browser toolbar.
+///
+/// A combo takes the width of its selected text, and `ComboBox::width` only sets a floor,
+/// so a filter is drawn inside an allocation of this width and truncates to it, with the
+/// full reading on hover. This is the width at which the everyday choices still read in
+/// full. A toolbar that places these filters reserves the same number for each of them.
+pub(super) const FILTER_WIDTH: f32 = 150.0;
+
 pub(super) fn filters(
     ui: &mut egui::Ui,
     purpose: &mut Purpose,
     editing: &mut EditingFilter,
     width: f32,
 ) -> bool {
+    // A caller may offer more room than the shared width, never less: below it these
+    // choices elide to a few letters and the toolbar stops saying what it filters by.
+    let width = width.max(FILTER_WIDTH);
     let before = (*purpose, *editing);
-    egui::ComboBox::from_id_salt("behavior-purpose")
-        .width(width)
-        .truncate()
-        .selected_text(purpose.label())
-        .show_ui(ui, |ui| {
-            for value in Purpose::ALL {
-                ui.selectable_value(purpose, value, value.label());
-            }
-        });
-    pickers::name_combo(ui, "behavior-purpose", "Behavior Purpose");
-    egui::ComboBox::from_id_salt("behavior-editing")
-        .width(width)
-        .truncate()
-        .selected_text(editing.label())
-        .show_ui(ui, |ui| {
-            for value in EditingFilter::ALL {
-                ui.selectable_value(editing, value, value.label());
-            }
-        });
-    pickers::name_combo(ui, "behavior-editing", "Editing Support");
+    let purpose_text = purpose.label();
+    controls::sized(ui, width, |ui| {
+        egui::ComboBox::from_id_salt("behavior-purpose")
+            .width(width)
+            .truncate()
+            .selected_text(purpose_text)
+            .show_ui(ui, |ui| {
+                for value in Purpose::ALL {
+                    ui.selectable_value(purpose, value, value.label());
+                }
+            })
+            .response
+            .on_hover_text(format!("Behavior Purpose: {purpose_text}"));
+        pickers::name_combo(ui, "behavior-purpose", "Behavior Purpose");
+    });
+    let editing_text = editing.label();
+    controls::sized(ui, width, |ui| {
+        egui::ComboBox::from_id_salt("behavior-editing")
+            .width(width)
+            .truncate()
+            .selected_text(editing_text)
+            .show_ui(ui, |ui| {
+                for value in EditingFilter::ALL {
+                    ui.selectable_value(editing, value, value.label());
+                }
+            })
+            .response
+            .on_hover_text(format!("Editing Support: {editing_text}"));
+        pickers::name_combo(ui, "behavior-editing", "Editing Support");
+    });
     before != (*purpose, *editing)
 }
 

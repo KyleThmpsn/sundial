@@ -133,6 +133,7 @@ fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
         &mut entity,
         &[],
         &patches,
+        &[],
         allocator,
         &mut tags,
     )

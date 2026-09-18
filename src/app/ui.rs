@@ -75,26 +75,86 @@ pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui:
     ui.horizontal_wrapped(add_contents).inner
 }
 
+/// A modal for an edit that is prepared, reviewed and then applied. The body is
+/// laid out directly: a review scrolls itself through `review_body` so that its
+/// action row stays pinned, and a progress message is short enough not to need it.
 pub(super) fn edit_modal<R>(
     ui: &mut egui::Ui,
     id: &'static str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
     let available = ui.ctx().available_rect().size();
-    let height = (available.y - 80.0).max(160.0);
     let response = egui::Modal::new(id.into()).show(ui.ctx(), |ui| {
         ui.set_width((available.x - 48.0).clamp(240.0, 560.0));
         // A preparation message can be much shorter than the subsequent review.
-        // Let the scroll viewport grow beyond the area's previous frame size.
-        ui.set_max_height(height);
-        egui::ScrollArea::vertical()
-            .id_salt((id, "content"))
-            .max_height(height)
-            .show(ui, add_contents)
-            .inner
+        // Let the body grow beyond the modal's previous frame size.
+        ui.set_max_height((available.y - 80.0).max(160.0));
+        add_contents(ui)
     });
     let close = response.should_close();
     (response.inner, close)
+}
+
+/// Progress for the preparation pass of an edit modal. Returns whether it was cancelled.
+pub(super) fn modal_progress(ui: &mut egui::Ui, title: &str, done: usize, total: usize) -> bool {
+    ui.strong(title);
+    ui.horizontal(|ui| {
+        ui.label(format!("{done} / {total}"));
+        ui.button("Cancel").clicked()
+    })
+    .inner
+}
+
+/// Title and counts above a review body. Muted counts describe what will not change.
+pub(super) fn review_header(ui: &mut egui::Ui, title: &str, counts: &[(bool, String)]) {
+    ui.strong(title);
+    if !counts.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (muted, text) in counts {
+                if *muted {
+                    ui.weak(text.as_str());
+                } else {
+                    ui.label(text.as_str());
+                }
+            }
+        });
+    }
+    ui.separator();
+}
+
+/// The scrolling part of a review. It stops short of the action row below it, so a
+/// long list of skipped entries can never push Apply out of the modal.
+pub(super) fn review_body<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let reserved = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 4.0;
+    let height = (ui.available_height() - reserved).max(120.0);
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(height)
+        .show(ui, add_contents)
+        .inner
+}
+
+/// The action row that closes a review. Returns whether Apply and Cancel were clicked.
+pub(super) fn review_actions(
+    ui: &mut egui::Ui,
+    apply: &str,
+    enabled: bool,
+    disabled_hint: &str,
+) -> (bool, bool) {
+    ui.separator();
+    ui.horizontal(|ui| {
+        (
+            ui.add_enabled(enabled, egui::Button::new(apply))
+                .on_disabled_hover_text(disabled_hint)
+                .clicked(),
+            ui.button("Cancel").clicked(),
+        )
+    })
+    .inner
 }
 
 pub(super) fn hierarchy_selection_cell<R>(

@@ -14,6 +14,30 @@ pub(crate) const CHARACTER_FLAG_CAPACITY: usize = 256;
 pub(crate) const OBJECTIVE_VALUE_CAPACITY: usize = 6_200;
 pub(crate) const CHARACTER_OBJECT_FLAG_CAPACITY: usize = 4_096;
 pub(crate) const CHARACTER_OBJECT_VALUE_CAPACITY: usize = 768;
+/// What a mutation did to the document. A refused write and a write that changes nothing are
+/// different outcomes: only the first one is a failure the caller should report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum Write {
+    /// The document changed.
+    Wrote,
+    /// The document already held the requested state.
+    Unchanged,
+    /// Rejected: out of range, out of capacity, reserved, or an unreadable document.
+    Refused,
+}
+
+impl Write {
+    /// The document changed. Use this for change counts and undo bookkeeping.
+    pub(crate) fn changed(self) -> bool {
+        matches!(self, Self::Wrote)
+    }
+    /// The write was rejected. Use this, not `!settled()`, when raising an error.
+    pub(crate) fn refused(self) -> bool {
+        matches!(self, Self::Refused)
+    }
+}
+
 pub(crate) const RESERVED_CHARACTER_OBJECTIVE_VALUES: [(usize, i32); 2] = [(443, -1), (502, -1)];
 pub(crate) const PROGRESSION_DEFINITION_CAPACITY: usize = 256;
 pub(crate) const FAMILY5_OVERRIDE_CAPACITY: usize = 100;

@@ -47,10 +47,7 @@ use sundial::package_authoring::{
 use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
-use crate::capabilities::{
-    VariableDamageAppearance, reconcile_variable_damage, variable_damage_appearance,
-    variable_damage_resting_type,
-};
+use crate::capabilities::{variable_damage_resting_type, variable_damage_supported};
 use crate::icon_edit::{WeaponIconEditor, WeaponIconEditorAction, render_weapon_icon_preview};
 use crate::install::{
     InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
@@ -438,6 +435,7 @@ struct PackageAuthoringApp {
     authored_icon_preview: Option<AuthoredIconPreview>,
     library_icons: library_view::LibraryIcons,
     dye_colors: donor_view::DyeColors,
+    appearance_ornaments: donor_view::ornaments::Ornaments,
     pending_recipe_action: Option<PendingRecipeAction>,
     scroll_recipe_to_top: bool,
     workbench_page: WorkbenchPage,
@@ -549,6 +547,7 @@ impl Default for PackageAuthoringApp {
             authored_icon_preview: None,
             library_icons: library_view::LibraryIcons::default(),
             dye_colors: donor_view::DyeColors::default(),
+            appearance_ornaments: donor_view::ornaments::Ornaments::default(),
             pending_recipe_action: None,
             scroll_recipe_to_top: true,
             workbench_page: WorkbenchPage::default(),
@@ -717,6 +716,7 @@ impl PackageAuthoringApp {
         self.presentation_editor = crate::presentation::ui::Editor::default();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
+        self.appearance_ornaments = donor_view::ornaments::Ornaments::default();
         self.catalog = None;
         self.donor_summaries.clear();
         self.library_state.refresh_donors(&self.donor_summaries);
@@ -1425,6 +1425,10 @@ fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
             "Advanced: runtime resource patches",
         ),
         (
+            !overrides.additional_behaviors.is_empty(),
+            "Additional behavior",
+        ),
+        (
             !overrides.raw_payload_patches.is_empty(),
             "Advanced: raw payload patches",
         ),
@@ -1511,6 +1515,18 @@ struct SocketPickerContext<'a> {
     perk_request: &'a mut Option<crate::app::custom_perks::workbench::Request>,
     donor: &'a WeaponDonor,
     log: &'a mut ActivityLog,
+}
+
+/// The spacing and rule between two stacked workbench sections.
+fn draw_stacked_section_break(ui: &mut egui::Ui) {
+    ui.add_space(3.0);
+    ui.separator();
+    ui.add_space(3.0);
+}
+
+/// Gameplay and Appearance sit side by side when there is room, and stack when there is not.
+fn donor_section_column_count(available_width: f32) -> usize {
+    if available_width >= 780.0 { 2 } else { 1 }
 }
 
 fn core_profile_column_count(available_width: f32) -> usize {
@@ -1698,7 +1714,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 use style::named_control;
-pub(crate) use style::workbench_style;
+pub(crate) use style::{transparency_backdrop, workbench_style};
 mod build_status;
 mod collections_view;
 mod custom_perks;

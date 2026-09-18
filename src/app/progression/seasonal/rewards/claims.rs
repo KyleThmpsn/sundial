@@ -172,12 +172,14 @@ fn claim(
     let items = deliveries(document, catalog, reward)?;
     let mut candidate = document.clone();
     super::super::super::rewards::queue(&mut candidate, catalog, items)?;
-    if !super::super::super::mutations::set_unlock_flag(
+    if super::super::super::mutations::set_unlock_flag(
         &mut candidate,
         "account_flag_runs",
         usize::from(slot),
         true,
-    ) {
+    )
+    .refused()
+    {
         return Err("The reward claim flag could not be saved".into());
     }
     super::super::super::validate(&candidate)?;

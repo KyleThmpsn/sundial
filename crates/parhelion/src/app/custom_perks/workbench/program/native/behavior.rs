@@ -1,6 +1,7 @@
 //! Gameplay controls over the existing allocation graph. Unknown bytes stay in that graph.
 use super::super::super::canvas;
 use super::*;
+use crate::app::custom_perks::workbench::controls::{cell, cell_width, sized};
 use sundial::package_authoring::sandbox_perk::action::{self, DecodedCondition};
 
 mod labels;
@@ -9,11 +10,16 @@ mod trigger;
 
 use sundial::package_authoring::sandbox_perk::activation::site_labels as activation_site_labels;
 
+/// Room for the longest engine variable a comparison can name.
+const VARIABLE_WIDTH: f32 = 230.0;
+/// A comparison operator is one or two characters, so it takes only what it needs.
+const OPERATION_WIDTH: f32 = 80.0;
+
 pub(super) fn draw_node(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     if graph.blocks[index].class == 0x80803DE7 {
         trigger::draw(ui, graph, index)?;
     }
-    controls(ui, graph, index, FieldView::Primary)
+    controls(ui, graph, index, FieldView::Primary, false)
 }
 
 pub(super) fn draw(
@@ -46,14 +52,20 @@ pub(super) fn draw(
                 |ui| {
                     for (number, effect) in group.effects.iter().enumerate() {
                         let index = block_at(&blocks, effect.offset)?;
-                        egui::Frame::group(ui.style())
+                        crate::app::style::block(ui.style())
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 ui.push_id(index, |ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         let title = super::super::native_action_label(effect.kind, &graph.blocks[index].bytes);
                                         ui.label(format!("{}. {title}", number + 1));
-                                        sundial::investment::draw_authoring_info_icon(ui, effect.description());
+                                        sundial::investment::draw_authoring_info_icon(
+                                            ui,
+                                            super::super::native_action_reading(
+                                                effect.kind,
+                                                &effect.description(),
+                                            ),
+                                        );
                                         if let Some(tag) = effect.referenced_tag.filter(|tag| labels.contains_key(tag)) {
                                             let label = labels.get(&tag).cloned().unwrap_or_else(|| format!("Asset 0x{tag:08X}"));
                                             if ui.button(label).on_hover_text(format!("Edit this action's components.\nAsset 0x{tag:08X}")).clicked() {
@@ -61,12 +73,32 @@ pub(super) fn draw(
                                             }
                                         }
                                     });
-                                    controls(ui, graph, index, FieldView::Primary)?;
+                                    controls(ui, graph, index, FieldView::Primary, true)?;
                                     advanced(ui, graph, index)?;
                                     if !effect.conditions.is_empty() {
-                                        canvas::row(ui, "Trigger", "Checks for this action only. The effect's main trigger keeps its own settings.", |ui| {
-                                            condition_rows(ui, graph, &blocks, "Matching Conditions", &effect.conditions, pick)
-                                        })?;
+                                        // A timer extension carries a copy of the trigger that
+                                        // started the timers: the compiler re-emits it as the
+                                        // nested list, which is the shape Outlaw and the other
+                                        // stock kill perks use. Drawn open it restated the whole
+                                        // trigger, filter column and all, a few rows under the
+                                        // trigger itself. It stays reachable, since a hand
+                                        // authored program may have changed it.
+                                        let repeats = effect.conditions.iter().all(|condition| {
+                                            group.activation.iter().any(|trigger| trigger.native == condition.native)
+                                        });
+                                        if repeats {
+                                            egui::CollapsingHeader::new("Repeats the Effect's Trigger")
+                                                .id_salt("extension-trigger")
+                                                .show(ui, |ui| {
+                                                    condition_rows(ui, graph, &blocks, "Matching Conditions", &effect.conditions, pick)
+                                                })
+                                                .body_returned
+                                                .transpose()?;
+                                        } else {
+                                            canvas::row(ui, "Trigger", "Checks for this action only. The effect's main trigger keeps its own settings.", |ui| {
+                                                condition_rows(ui, graph, &blocks, "Matching Conditions", &effect.conditions, pick)
+                                            })?;
+                                        }
                                     }
                                     Ok::<_, String>(())
                                 })
@@ -130,6 +162,9 @@ fn condition_rows(
         let index = block_at(blocks, condition.offset)?;
         ui.push_id((title, index), |ui| {
             let mut replacement = None;
+            // A kill condition draws a column of filters. Its picker would sit beside that
+            // column and leave the height of it as empty space, so it goes underneath.
+            let stacked = condition.kind == 2;
             ui.horizontal_wrapped(|ui| {
                 if number > 0 {
                     ui.label("Or");
@@ -146,12 +181,21 @@ fn condition_rows(
                         .ok_or("The timer duration field is missing.")?;
                     super::scalar(ui, &field, &mut graph.blocks[index], 0)?;
                 } else {
-                    ui.label(condition.description());
+                    ui.label(super::super::native_condition_reading(
+                        condition.kind,
+                        &condition.description(),
+                    ));
                 }
-                replacement = pick(ui);
+                if !stacked {
+                    replacement = pick(ui);
+                }
                 Ok::<_, String>(())
             })
             .inner?;
+            if stacked {
+                replacement =
+                    crate::app::custom_perks::workbench::controls::cell(ui, "", "", |ui| pick(ui));
+            }
             if let Some(node) = replacement {
                 let class = nodes::condition(node.kind)
                     .ok_or("Unknown condition kind.")?
@@ -163,7 +207,7 @@ fn condition_rows(
                 return Ok::<_, String>(());
             }
             if condition.kind != 1 {
-                controls(ui, graph, index, FieldView::Primary)?;
+                controls(ui, graph, index, FieldView::Primary, true)?;
             }
             advanced(ui, graph, index)?;
             if !condition.children.is_empty() {
@@ -205,7 +249,7 @@ fn advanced(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), St
     egui::CollapsingHeader::new("Advanced")
         .id_salt(("node-advanced", index))
         .show(ui, |ui| {
-            controls(ui, graph, index, FieldView::Details)?;
+            controls(ui, graph, index, FieldView::Details, true)?;
             nested(ui, graph, index)
         })
         .body_returned
@@ -323,6 +367,12 @@ fn primary(field: &fields::Field, ability: bool) -> bool {
 }
 
 fn primary_for(field: &fields::Field, block: &native::Block, ability: bool) -> bool {
+    // Reading the chance literally is what 255 means, and it is what every stock condition
+    // does, so the row repeated down a card saying what the Chance control beside it already
+    // said. It leads only once it names some other source.
+    if field.label == "Probability Source" && block.bytes.get(field.offset) == Some(&255) {
+        return false;
+    }
     if matches!(block.class, 0x80803E3F | 0x80803E3E) {
         return matches!(field.offset, 0x68 | 0x6C..=0x84);
     }
@@ -438,20 +488,33 @@ fn comparison_editor(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Resu
         "Compared Value",
         "The engine variable this condition compares. Each choice is one the game's own perks compare, named from the client's compiled source string.",
         |ui| {
-            egui::ComboBox::from_id_salt("predicate-variable")
-                .width(230.0)
-                .selected_text(known.map_or_else(|| raw.clone(), |v| v.plain.to_owned()))
-                .show_ui(ui, |ui| {
-                    for candidate in predicate::VARIABLES {
-                        ui.selectable_value(
-                            &mut variable,
-                            candidate.name.to_owned(),
-                            candidate.plain,
-                        )
-                        .on_hover_text(candidate.evidence);
-                    }
-                });
-            pickers::name_combo(ui, "predicate-variable", "Compared Value");
+            let selected = known.map_or_else(|| raw.clone(), |v| v.plain.to_owned());
+            // A combo takes the width of its selected text and `width` only sets a floor, so
+            // the longest variable name would run to the edge of the pane. The allocation
+            // bounds it and the evidence for the choice stays on hover.
+            let hover = known.map_or_else(
+                || format!("{selected}\nNo stock perk compares this variable."),
+                |v| format!("{selected}\n{}", v.evidence),
+            );
+            sized(ui, VARIABLE_WIDTH, |ui| {
+                egui::ComboBox::from_id_salt("predicate-variable")
+                    .width(VARIABLE_WIDTH)
+                    .truncate()
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for candidate in predicate::VARIABLES {
+                            ui.selectable_value(
+                                &mut variable,
+                                candidate.name.to_owned(),
+                                candidate.plain,
+                            )
+                            .on_hover_text(candidate.evidence);
+                        }
+                    })
+                    .response
+                    .on_hover_text(hover);
+                pickers::name_combo(ui, "predicate-variable", "Compared Value");
+            });
             Ok::<(), String>(())
         },
     )?;
@@ -460,15 +523,23 @@ fn comparison_editor(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Resu
         "Comparison",
         "How the value is compared with the threshold. These are the four operations the stock predicates compile.",
         |ui| {
-            egui::ComboBox::from_id_salt("predicate-operation")
-                .width(80.0)
-                .selected_text(operation)
-                .show_ui(ui, |ui| {
-                    for (name, _) in predicate::OPERATIONS {
-                        ui.selectable_value(&mut operation, name, name);
-                    }
-                });
-            pickers::name_combo(ui, "predicate-operation", "Comparison");
+            // The four operations are all one or two characters, so this control keeps its
+            // own small width and leaves the row's remaining room to the threshold.
+            let hover = format!("Comparison: {operation}");
+            sized(ui, OPERATION_WIDTH, |ui| {
+                egui::ComboBox::from_id_salt("predicate-operation")
+                    .width(OPERATION_WIDTH)
+                    .truncate()
+                    .selected_text(operation)
+                    .show_ui(ui, |ui| {
+                        for (name, _) in predicate::OPERATIONS {
+                            ui.selectable_value(&mut operation, name, name);
+                        }
+                    })
+                    .response
+                    .on_hover_text(hover);
+                pickers::name_combo(ui, "predicate-operation", "Comparison");
+            });
             let threshold_drag = ui.add(egui::DragValue::new(&mut threshold).speed(0.1));
             pickers::name_response(ui, &threshold_drag, "Threshold");
             Ok::<(), String>(())
@@ -486,16 +557,22 @@ fn controls(
     graph: &mut Graph,
     index: usize,
     view: FieldView,
+    // Whether this caller also draws an Advanced pass. A node drawn on its own has nowhere
+    // to put a demoted row, so demoting there would hide the control rather than move it.
+    demotes: bool,
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
-    if matches!(view, FieldView::Primary)
-        && nodes::CONDITIONS.iter().any(|kind| kind.class == class)
+    if nodes::CONDITIONS.iter().any(|kind| kind.class == class)
         && graph.blocks[index].bytes.get(4) == Some(&255)
     {
         let bytes = &mut graph.blocks[index].bytes;
         let chance =
             f32::from_le_bytes(bytes[..4].try_into().map_err(|_| "Missing chance value.")?);
-        if (0.0..=1.0).contains(&chance) {
+        // A condition that always passes says nothing by repeating so on every card, and a
+        // card can hold three of them. Certainty waits under Advanced, anything else leads.
+        let certain = demotes && (chance - 1.0).abs() < f32::EPSILON;
+        let leads = matches!(view, FieldView::Primary) != certain;
+        if leads && (0.0..=1.0).contains(&chance) {
             let mut percent = chance * 100.0;
             super::super::super::properties::field(
                 ui,
@@ -520,34 +597,58 @@ fn controls(
     }
     let ability = class == 0x80803E4D;
     let fields = fields::describe(class)?;
-    for field in fields.iter().filter(|field| visible(field, class)) {
-        if !match view {
-            FieldView::Primary => primary_for(field, &graph.blocks[index], ability),
-            FieldView::Details => !primary_for(field, &graph.blocks[index], ability),
-        } {
-            continue;
-        }
-        ui.push_id(field.offset, |ui| {
-            let label = if ability && field.offset == 2 {
-                "Ability"
-            } else {
-                super::plain_field_label(class, &field.label)
-            };
-            super::super::super::properties::field(
-                ui,
-                label,
-                fields::contract(class, field).description,
-                |ui| {
-                    if ability && field.offset == 2 {
-                        super::ability_target(ui, &mut graph.blocks[index].bytes[2]);
-                        Ok(())
+    // Two fields fit side by side once the pane affords two cells. Each row measures its own
+    // label column against the whole line, so however wide the pane grew a card of short
+    // fields ran down a single column with the rest of every line empty. A narrow pane keeps
+    // the rows: a cell cannot shrink, and one placed in a pane too small for it pushes the
+    // card wider than the window that holds it.
+    let wide = ui.available_width() >= cell_width(ui) * 2.0;
+    let mut failed = None;
+    let mut draw_fields = |ui: &mut egui::Ui| {
+        for field in fields.iter().filter(|field| visible(field, class)) {
+            if !match view {
+                FieldView::Primary => primary_for(field, &graph.blocks[index], ability),
+                FieldView::Details => !primary_for(field, &graph.blocks[index], ability),
+            } {
+                continue;
+            }
+            let drawn = ui
+                .push_id(field.offset, |ui| {
+                    let label = if ability && field.offset == 2 {
+                        "Ability"
                     } else {
-                        super::scalar(ui, field, &mut graph.blocks[index], 0)
+                        super::plain_field_label(class, &field.label)
+                    };
+                    let hint = fields::contract(class, field).description;
+                    let content = |ui: &mut egui::Ui| {
+                        if ability && field.offset == 2 {
+                            super::ability_target(ui, &mut graph.blocks[index].bytes[2]);
+                            Ok(())
+                        } else {
+                            super::scalar(ui, field, &mut graph.blocks[index], 0)
+                        }
+                    };
+                    if wide {
+                        cell(ui, label, hint, content)
+                    } else {
+                        super::super::super::properties::field(ui, label, hint, content)
                     }
-                },
-            )
-        })
-        .inner?;
+                })
+                .inner;
+            if let Err(error) = drawn
+                && failed.is_none()
+            {
+                failed = Some(error);
+            }
+        }
+    };
+    if wide {
+        ui.horizontal_wrapped(&mut draw_fields);
+    } else {
+        draw_fields(ui);
+    }
+    if let Some(error) = failed {
+        return Err(error);
     }
     let mut inline = schema::inline(class)?;
     inline.sort_by_key(|(offset, _, _)| *offset);

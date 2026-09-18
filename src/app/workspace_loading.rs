@@ -28,7 +28,8 @@ impl SundialApp {
     pub(super) fn reload(&mut self) -> bool {
         match load_workspace_json(&self.settings_path) {
             Ok(json) => {
-                let doc = WorkspaceDocument::load(json, &self.settings_path);
+                let dawn = self.dawn_account_runtime();
+                let doc = WorkspaceDocument::load(json, &self.settings_path, dawn);
                 self.install_reloaded_document(doc, false);
                 true
             }
@@ -86,7 +87,8 @@ impl SundialApp {
                 return;
             }
         };
-        let document = WorkspaceDocument::load(json, &self.settings_path);
+        let dawn = self.dawn_account_runtime();
+        let document = WorkspaceDocument::load(json, &self.settings_path, dawn);
         self.workspace_refresh_pending = false;
         if document != self.persisted_document {
             self.install_reloaded_document(document, true);
@@ -266,7 +268,8 @@ impl SundialApp {
         self.hash_inspection.close();
         self.progression_ui.reset_navigation();
         self.collections_ui.reset_navigation();
-        let document = WorkspaceDocument::load(document, &self.settings_path);
+        let dawn = self.dawn_account_runtime();
+        let document = WorkspaceDocument::load(document, &self.settings_path, dawn);
         let warning = validate_workspace_document(&document).err();
         self.selected_character = 0;
         self.replace_loaded_document(document);

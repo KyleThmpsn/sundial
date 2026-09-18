@@ -1,6 +1,8 @@
 //! Editable backend for an authored program. The canvas calls one block at a time.
 use super::assets::{AssetScope, draw_attach_technical_fields};
-use super::controls::{bytes, float_field, hex_key, numbers, seconds};
+use super::controls::{
+    COLUMN_WIDTH, NARROW_COLUMN, bytes, column, float_field, hex_key, numbers, seconds, sized,
+};
 use super::*;
 use sundial::package_authoring::sandbox_perk::{
     action::{
@@ -136,6 +138,15 @@ pub(super) fn draw_trigger_block(
             "Execution Policy {}, carried from the stock perk. Its behavior has no controls yet.",
             policy.selector
         ));
+    }
+    if !program.additional_groups.is_empty() {
+        ui.small(format!(
+            "{} further program(s) carried from the stock perk without controls.",
+            program.additional_groups.len()
+        ));
+    }
+    if let Some(hint) = program.authoring_hint() {
+        ui.weak(hint);
     }
 }
 
@@ -416,22 +427,32 @@ impl Workbench {
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         let mut ends_on_key = program.removal_key.is_some();
-                        egui::ComboBox::from_id_salt("always-removal")
-                            .selected_text(if ends_on_key {
-                                "On an Event Key"
-                            } else {
-                                "When the Perk Is Removed"
-                            })
-                            .show_ui(ui, |ui| {
-                                crate::app::style::workbench_style(ui);
-                                ui.selectable_value(
-                                    &mut ends_on_key,
-                                    false,
-                                    "When the Perk Is Removed",
-                                );
-                                ui.selectable_value(&mut ends_on_key, true, "On an Event Key");
-                            });
-                        pickers::name_combo(ui, "always-removal", "Effect Removal");
+                        let reading = if ends_on_key {
+                            "On an Event Key"
+                        } else {
+                            "When the Perk Is Removed"
+                        };
+                        // A combo takes the width of its selected text, and this row wraps,
+                        // so it is held to the shared value column with its full reading on
+                        // hover rather than running to the edge of the pane.
+                        column(ui, |ui| {
+                            egui::ComboBox::from_id_salt("always-removal")
+                                .width(COLUMN_WIDTH)
+                                .truncate()
+                                .selected_text(reading)
+                                .show_ui(ui, |ui| {
+                                    crate::app::style::workbench_style(ui);
+                                    ui.selectable_value(
+                                        &mut ends_on_key,
+                                        false,
+                                        "When the Perk Is Removed",
+                                    );
+                                    ui.selectable_value(&mut ends_on_key, true, "On an Event Key");
+                                })
+                                .response
+                                .on_hover_text(format!("Effect Removal: {reading}"));
+                            pickers::name_combo(ui, "always-removal", "Effect Removal");
+                        });
                         match (ends_on_key, program.removal_key) {
                             (false, Some(_)) => select_ending_key(program, None),
                             (true, None) => {
@@ -755,6 +776,29 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
                 f32::from_bits(*value_bits)
             )
         }
+        Action::AdjustComponent {
+            scale_bits,
+            value_bits,
+            ..
+        } => format!(
+            "{}: scale {} by {}",
+            action.label(),
+            f32::from_bits(*scale_bits),
+            f32::from_bits(*value_bits)
+        ),
+        Action::UpdateAccumulator { value_bits, .. } => {
+            format!("{}: {}", action.label(), f32::from_bits(*value_bits))
+        }
+        Action::AbilityProperty { key, option, .. } => {
+            format!("{}: 0x{key:08X} index {option}", action.label())
+        }
+        Action::TransmatContext { key } | Action::OverrideHostKey { key, .. } => {
+            format!("{}: 0x{key:08X}", action.label())
+        }
+        Action::SetDamageType { .. } => action.label().to_owned(),
+        Action::WeaponReferenceCount { selector } => {
+            format!("{}: operation {selector}", action.label())
+        }
         Action::AddRounds {
             rounds,
             target,
@@ -820,6 +864,27 @@ fn action_description(action: &Action) -> &'static str {
         }
         Action::Property { .. } => {
             "Sets a native property to a constant while the effect is active. The keys are not mapped."
+        }
+        Action::AdjustComponent { .. } => {
+            "Scales the selected ability's energy by the value. The ability follows the target selector, established from eleven stock perks."
+        }
+        Action::UpdateAccumulator { .. } => {
+            "Writes the accumulator that this program's Accumulator condition counts toward its threshold."
+        }
+        Action::AbilityProperty { .. } => {
+            "Changes one named property inside the selected ability's bank. The ability follows the selector, established from the stock exotics that set each slot. The property key and index are carried as the game stores them."
+        }
+        Action::TransmatContext { .. } => {
+            "Plays the transmat effect the key names. What consumes the key is not resolved, so it is carried as the game stores it."
+        }
+        Action::OverrideHostKey { .. } => {
+            "Replaces a key on the weapon or player while the effect is active. The selector bytes are carried as the game stores them."
+        }
+        Action::SetDamageType { .. } => {
+            "Changes the weapon's element. The mode byte is the damage type, established from the element perks that each name their own."
+        }
+        Action::WeaponReferenceCount { .. } => {
+            "Holds a weapon reference count while the effect is active. What the operation byte selects is not resolved."
         }
         Action::AddRounds { .. } => {
             "Adds whole rounds when the effect starts, the way Triple Tap returns a round."
@@ -1062,8 +1127,63 @@ pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
 
 /// The condition title a reader sees: the plain one where it exists, otherwise the engine's
 /// own traced name.
+/// Whether a decoded reading is the engine's own fallback rather than a real description.
+///
+/// `describe_condition` and `describe_effect` end by handing back the node's catalogue
+/// summary, or its name when it has none. When that is what came back, the reading says
+/// nothing the plain table cannot say better, and the plain table is what a player reads.
+fn fell_back(summary: Option<&'static str>, name: String, decoded: &str) -> bool {
+    summary.is_some_and(|text| text == decoded) || name == decoded
+}
+
+/// A condition's reading for a card, in plain words where the engine had none of its own.
+pub(super) fn native_condition_reading(kind: u8, decoded: &str) -> String {
+    let catalogued = nodes::condition(kind).map(|node| node.summary);
+    if fell_back(catalogued, nodes::condition_name(kind), decoded) {
+        if let Some(plain) = plain_condition_summary(kind) {
+            return plain.to_owned();
+        }
+        if let Some(plain) = plain_condition_title(kind) {
+            return plain.to_owned();
+        }
+    }
+    decoded.to_owned()
+}
+
+/// An effect's reading for a card, on the same rule.
+pub(super) fn native_action_reading(kind: u8, decoded: &str) -> String {
+    let catalogued = nodes::effect(kind).map(|node| node.summary);
+    if fell_back(catalogued, nodes::effect_name(kind), decoded)
+        && let Some(plain) = plain_action_summary(kind)
+    {
+        return plain.to_owned();
+    }
+    decoded.to_owned()
+}
+
 pub(super) fn native_condition_title(kind: u8) -> String {
     plain_condition_title(kind).map_or_else(|| nodes::condition_name(kind), str::to_owned)
+}
+
+/// The engine effect kind a typed action compiles to, so the two name themselves alike.
+pub(super) fn action_kind(action: &Action) -> u8 {
+    match action {
+        Action::Attach { .. } => 1,
+        Action::Spawn { .. } => 3,
+        Action::Pattern { .. } => 26,
+        Action::ExtendTimers { .. } => 32,
+        Action::Property { .. } => 10,
+        Action::AdjustComponent { .. } => 8,
+        Action::UpdateAccumulator { .. } => 42,
+        Action::AbilityProperty { .. } => 7,
+        Action::TransmatContext { .. } => 47,
+        Action::OverrideHostKey { .. } => 35,
+        Action::SetDamageType { .. } => 6,
+        Action::WeaponReferenceCount { .. } => 30,
+        Action::AddRounds { .. } => 14,
+        Action::AddFraction { .. } => 15,
+        Action::Native { node } => node.kind,
+    }
 }
 
 pub(super) fn native_action_title(kind: u8) -> &'static str {
@@ -1083,12 +1203,23 @@ pub(super) fn native_action_label(kind: u8, bytes: &[u8]) -> String {
     native_action_title(kind).to_owned()
 }
 
+/// What a placed action calls itself on its card. The picker's offers are checked against
+/// this, so the name that places an action and the name it then carries are one string.
+pub(super) fn action_title(action: &Action) -> String {
+    match action {
+        Action::Native { node } => native_action_label(node.kind, &node.bytes),
+        // Every typed action is one of the engine's effect kinds, so it takes the plain name
+        // that kind already has. Falling back to the engine label put "Named Property" and
+        // "Update Accumulator" on a card while the picker offered the same thing in plain
+        // words.
+        other => native_action_title(action_kind(other)).to_owned(),
+    }
+}
+
 /// Effect kinds offered as guided actions in their own right, beyond the ones the workbench
 /// composes as typed `Action` variants. Each has a plain title and sentence, and the tests
 /// assert that every one of them actually produces an editable node.
-pub(super) const PROMOTED_NATIVE_ACTIONS: [u8; 17] = [
-    2, 4, 6, 7, 8, 11, 13, 16, 18, 35, 37, 40, 42, 47, 48, 53, 54,
-];
+pub(super) const PROMOTED_NATIVE_ACTIONS: [u8; 10] = [2, 4, 11, 13, 16, 18, 37, 40, 48, 53];
 
 /// One guided condition per engine variable the stock perks compare: a general predicate
 /// composed from the stock template with that variable's own comparison. The variable
@@ -1176,6 +1307,41 @@ pub(super) fn common_actions(
                 .first()
                 .map_or_else(|| Action::property(EMPTY_KEY), Action::property_from),
         ),
+        (
+            native_action_title(8),
+            "Grant or drain grenade, melee, super or class ability energy, as Ashes to Assets and Bomber do.",
+            Action::adjust_component(0),
+        ),
+        (
+            native_action_title(42),
+            "Write the value the program's Accumulator condition counts toward its threshold.",
+            Action::update_accumulator(1.0),
+        ),
+        (
+            native_action_title(7),
+            "Change a named property of one ability, as And Another Thing grants an extra grenade charge and Jump Jets improves the jump.",
+            Action::ability_property(0),
+        ),
+        (
+            "Change Damage Type",
+            "Change the weapon's element, the way The Fundamentals and the element mods do.",
+            Action::set_damage_type(1),
+        ),
+        (
+            "Set Transmat Effect",
+            "Play a chosen transmat effect. The effect is named by a key.",
+            Action::transmat_context(EMPTY_KEY),
+        ),
+        (
+            native_action_title(35),
+            "Replace a key on the weapon or the player while the effect is active, as the firing mode perks do.",
+            Action::override_host_key(EMPTY_KEY),
+        ),
+        (
+            native_action_title(30),
+            "Hold a weapon reference count while the effect is active.",
+            Action::weapon_reference_count(0),
+        ),
     ];
     // A native kind is offered as a guided action once its traced behavior supports a plain
     // sentence and its fields already carry names. Each of these keeps its complete native
@@ -1242,13 +1408,7 @@ impl Workbench {
                     egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
-                        let title = match action {
-                            Action::Spawn { .. } => native_action_title(3).to_owned(),
-                            Action::Attach { .. } => native_action_title(1).to_owned(),
-                            Action::Pattern { .. } => native_action_title(26).to_owned(),
-                            Action::Native { node } => native_action_label(node.kind, &node.bytes),
-                            _ => action.label().to_owned(),
-                        };
+                        let title = action_title(action);
                         ui.strong(format!("{}. {}", index + 1, title))
                             .on_hover_text(action_description(action));
                         if let Some(asset) = action.asset_mut() {
@@ -1275,6 +1435,115 @@ impl Workbench {
                 }
             }
             Action::Property { .. } => self.draw_property_action(ui, action),
+            Action::AdjustComponent {
+                target,
+                scale_bits,
+                value_bits,
+                ..
+            } => {
+                properties::field(ui, "Ability", "Which ability's energy is adjusted.", |ui| {
+                    draw_component_target(ui, target);
+                });
+                properties::field(
+                    ui,
+                    "Scale",
+                    "Multiplies the value before it is applied. Stock energy perks use 1.",
+                    |ui| {
+                        let control = float_field(ui, scale_bits);
+                        pickers::name_response(ui, &control, "Scale");
+                    },
+                );
+                properties::field(
+                    ui,
+                    "Value",
+                    "The constant the value program pushes.",
+                    |ui| {
+                        let control = float_field(ui, value_bits);
+                        pickers::name_response(ui, &control, "Value");
+                    },
+                );
+            }
+            Action::UpdateAccumulator { value_bits, .. } => {
+                properties::field(
+                    ui,
+                    "Value",
+                    "The value written to the program's accumulator.",
+                    |ui| {
+                        let control = float_field(ui, value_bits);
+                        pickers::name_response(ui, &control, "Value");
+                    },
+                );
+            }
+            Action::SetDamageType { mode, .. } => {
+                properties::field(ui, "Element", "The weapon's damage type.", |ui| {
+                    let reading = match mode {
+                        0 => "Kinetic",
+                        1 => "Solar",
+                        2 => "Arc",
+                        _ => "Void",
+                    };
+                    // Four fixed words, so a narrow column holds the whole vocabulary.
+                    sized(ui, NARROW_COLUMN, |ui| {
+                        egui::ComboBox::from_id_salt("damage-type")
+                            .width(ui.available_width())
+                            .truncate()
+                            .selected_text(reading)
+                            .show_ui(ui, |ui| {
+                                crate::app::style::workbench_style(ui);
+                                for (value, name) in
+                                    [(0, "Kinetic"), (1, "Solar"), (2, "Arc"), (3, "Void")]
+                                {
+                                    ui.selectable_value(mode, value, name);
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!("Element: {reading}"));
+                        pickers::name_combo(ui, "damage-type", "Element");
+                    });
+                });
+            }
+            Action::TransmatContext { key } => {
+                properties::field(ui, "Effect Key", "The transmat effect at +0x04.", |ui| {
+                    let control = hex_key(ui, "transmat-key", key);
+                    pickers::name_response(ui, &control, "Effect Key");
+                });
+            }
+            Action::OverrideHostKey { key, .. } => {
+                properties::field(
+                    ui,
+                    "Replacement Key",
+                    "The key written in place of the host's own, at +0x04.",
+                    |ui| {
+                        let control = hex_key(ui, "override-host-key", key);
+                        pickers::name_response(ui, &control, "Replacement Key");
+                    },
+                );
+            }
+            Action::WeaponReferenceCount { selector } => {
+                properties::field(
+                    ui,
+                    "Operation",
+                    "Byte +0x02. Its values are not resolved.",
+                    |ui| {
+                        let control = ui.add(egui::DragValue::new(selector).range(0..=255));
+                        pickers::name_response(ui, &control, "Operation");
+                    },
+                );
+            }
+            Action::AbilityProperty { target, key, .. } => {
+                properties::field(ui, "Ability", "Which ability's property changes.", |ui| {
+                    draw_ability_slot(ui, target);
+                });
+                properties::field(
+                    ui,
+                    "Property Key",
+                    "The property key at +0x04. Pick an installed key or enter one.",
+                    |ui| {
+                        let control = hex_key(ui, "ability-property-key", key);
+                        pickers::name_response(ui, &control, "Property Key");
+                    },
+                );
+            }
             Action::AddRounds {
                 rounds,
                 target,
@@ -1286,12 +1555,16 @@ impl Workbench {
                     "Rounds",
                     "Whole rounds. Negative removes rounds.",
                     |ui| {
-                        let control = ui.add_sized(
-                            [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
-                            egui::DragValue::new(rounds).range(-999..=999),
-                        );
-                        pickers::name_response(ui, &control, "Rounds");
-                        draw_ammunition_target(ui, target, store);
+                        // An amount, a destination and a store do not fit one line beside
+                        // the label column in a narrow pane, so this value wraps.
+                        ui.horizontal_wrapped(|ui| {
+                            let control = ui.add_sized(
+                                [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
+                                egui::DragValue::new(rounds).range(-999..=999),
+                            );
+                            pickers::name_response(ui, &control, "Rounds");
+                            draw_ammunition_target(ui, target, store);
+                        });
                     },
                 );
             }
@@ -1306,19 +1579,22 @@ impl Workbench {
                     "Share",
                     "A percentage of the chosen capacity. 50% of the magazine capacity is half a magazine.",
                     |ui| {
-                        let mut percent = f32::from_bits(*fraction_bits) * 100.0;
-                        let control = ui.add_sized(
-                            [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
-                            egui::DragValue::new(&mut percent)
-                                .range(-10_000.0..=10_000.0)
-                                .max_decimals(2)
-                                .suffix("%"),
-                        );
-                        pickers::name_response(ui, &control, "Share");
-                        if control.changed() && percent.is_finite() {
-                            *fraction_bits = (percent / 100.0).to_bits();
-                        }
-                        draw_ammunition_target(ui, target, store);
+                        // Same three controls as Rounds, so the value wraps the same way.
+                        ui.horizontal_wrapped(|ui| {
+                            let mut percent = f32::from_bits(*fraction_bits) * 100.0;
+                            let control = ui.add_sized(
+                                [controls::CONTROL_WIDTH, ui.spacing().interact_size.y],
+                                egui::DragValue::new(&mut percent)
+                                    .range(-10_000.0..=10_000.0)
+                                    .max_decimals(2)
+                                    .suffix("%"),
+                            );
+                            pickers::name_response(ui, &control, "Share");
+                            if control.changed() && percent.is_finite() {
+                                *fraction_bits = (percent / 100.0).to_bits();
+                            }
+                            draw_ammunition_target(ui, target, store);
+                        });
                     },
                 );
             }
@@ -1335,6 +1611,73 @@ impl Workbench {
                     float_bits,
                     ..
                 } => draw_attach_technical_fields(ui, mode, keys, float_bits),
+                Action::AdjustComponent {
+                    flag,
+                    option,
+                    limit_bits,
+                    input,
+                    ..
+                } => draw_component_technical_fields(ui, flag, option, limit_bits, input),
+                Action::SetDamageType {
+                    keep_after_removal, ..
+                } => {
+                    properties::field(
+                        ui,
+                        "Keep After Removal",
+                        "Byte +0x03. The element stays changed once the effect ends.",
+                        |ui| {
+                            let control = ui.checkbox(keep_after_removal, "");
+                            pickers::name_response(ui, &control, "Keep After Removal");
+                        },
+                    );
+                }
+                Action::OverrideHostKey {
+                    target,
+                    interface,
+                    apply_to_player,
+                    ..
+                } => {
+                    for (label, value, hint) in [
+                        ("Target Selector", target, "Byte +0x02."),
+                        ("Interface Selector", interface, "Byte +0x03."),
+                    ] {
+                        properties::field(ui, label, hint, |ui| {
+                            let control = ui.add(egui::DragValue::new(value).range(0..=255));
+                            pickers::name_response(ui, &control, label);
+                        });
+                    }
+                    properties::field(
+                        ui,
+                        "Apply to Player",
+                        "Byte +0x08. The replacement applies to the player rather than the weapon.",
+                        |ui| {
+                            let control = ui.checkbox(apply_to_player, "");
+                            pickers::name_response(ui, &control, "Apply to Player");
+                        },
+                    );
+                }
+                Action::AbilityProperty { option, .. } => {
+                    properties::field(
+                        ui,
+                        "Property Index",
+                        "Byte +0x08, which selects the property of that ability. Stock nodes store 26 distinct values and none of them is named.",
+                        |ui| {
+                            let control = ui.add(egui::DragValue::new(option).range(0..=255));
+                            pickers::name_response(ui, &control, "Property Index");
+                        },
+                    );
+                }
+                Action::UpdateAccumulator { mode, .. } => {
+                    properties::field(
+                        ui,
+                        "Mode",
+                        "Byte +0x02, which selects the supplied value. Every stock node stores 1.",
+                        |ui| {
+                            let control = ui.add(egui::DragValue::new(mode).range(0..=255));
+                            pickers::name_response(ui, &control, "Mode");
+                        },
+                    );
+                }
                 Action::Property {
                     target,
                     operation_byte,
@@ -1387,6 +1730,8 @@ impl Workbench {
                 Action::Spawn { .. }
                 | Action::Pattern { .. }
                 | Action::ExtendTimers { .. }
+                | Action::TransmatContext { .. }
+                | Action::WeaponReferenceCount { .. }
                 | Action::Native { .. } => {}
             }
             if let Some(asset) = action.asset() {
@@ -1502,31 +1847,144 @@ fn has_technical_fields(action: &Action) -> bool {
             | Action::AddRounds { .. }
             | Action::AddFraction { .. }
             | Action::Property { .. }
+            | Action::AdjustComponent { .. }
+            | Action::UpdateAccumulator { .. }
+            | Action::AbilityProperty { .. }
+            | Action::SetDamageType { .. }
+            | Action::OverrideHostKey { .. }
     )
+}
+
+/// The ability whose property changes, from the slots stock perks witness. Other selector
+/// values stay a number, since no stock perk names them.
+fn draw_ability_slot(ui: &mut egui::Ui, target: &mut u8) {
+    use sundial::package_authoring::sandbox_perk::action::ability_slot;
+    let current = ability_slot(*target).map_or_else(|| format!("Selector {target}"), str::to_owned);
+    let hover = format!("Ability: {current}");
+    // Five ability names are a short vocabulary, and an unmapped selector keeps its own
+    // spinner beside the control, so this one stays in a narrow column.
+    sized(ui, NARROW_COLUMN, |ui| {
+        egui::ComboBox::from_id_salt("ability-slot")
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                crate::app::style::workbench_style(ui);
+                for selector in [0_u8, 1, 2, 3, 7] {
+                    if let Some(role) = ability_slot(selector) {
+                        ui.selectable_value(target, selector, role);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(hover);
+        pickers::name_combo(ui, "ability-slot", "Ability");
+    });
+    if ability_slot(*target).is_none() {
+        ui.add(egui::DragValue::new(target).range(0..=255))
+            .on_hover_text("Native selector. Other values have no identified ability role.");
+    }
+}
+
+/// The ability an adjustment targets, from the roles eleven stock perks establish. Other
+/// selector values are kept as a number, since no stock perk names them.
+fn draw_component_target(ui: &mut egui::Ui, target: &mut u8) {
+    use sundial::package_authoring::sandbox_perk::action::component_target;
+    let current =
+        component_target(*target, 0, 0).map_or_else(|| format!("Selector {target}"), str::to_owned);
+    let hover = format!("Ability: {current}");
+    // Four named energies and a numeric selector are a short vocabulary.
+    sized(ui, NARROW_COLUMN, |ui| {
+        egui::ComboBox::from_id_salt("component-target")
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                crate::app::style::workbench_style(ui);
+                for selector in [0_u8, 1, 2, 7] {
+                    if let Some(role) = component_target(selector, 0, 0) {
+                        ui.selectable_value(target, selector, role);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(hover);
+        pickers::name_combo(ui, "component-target", "Ability");
+    });
+}
+
+/// The bytes of a Component Value Adjustment whose role is not mapped, edited as numbers.
+fn draw_component_technical_fields(
+    ui: &mut egui::Ui,
+    flag: &mut u8,
+    option: &mut u8,
+    limit_bits: &mut u32,
+    input: &mut u8,
+) {
+    egui::CollapsingHeader::new("Advanced")
+        .id_salt("component-technical-fields")
+        .show(ui, |ui| {
+            for (label, value, hint) in [
+                ("Flag Byte", flag, "Byte +0x03. Stock nodes store 0 and 1."),
+                (
+                    "Option Byte",
+                    option,
+                    "Byte +0x04. Stock nodes store 0 and 1.",
+                ),
+                (
+                    "Input Selector",
+                    input,
+                    "Byte +0x48. Stock nodes store 255 in 106 of 179 cases, otherwise 0, 6 or 11.",
+                ),
+            ] {
+                properties::field(ui, label, hint, |ui| {
+                    let control = ui.add(egui::DragValue::new(value).range(0..=255));
+                    pickers::name_response(ui, &control, label);
+                });
+            }
+            properties::field(
+                ui,
+                "Limit",
+                "Float +0x0C. When non-zero, movement toward it is limited.",
+                |ui| {
+                    let control = float_field(ui, limit_bits);
+                    pickers::name_response(ui, &control, "Limit");
+                },
+            );
+        });
 }
 
 /// The position selector of a spawn action. The event position needs a kill trigger.
 fn draw_spawn_position(ui: &mut egui::Ui, kill_trigger: bool, position: &mut Position) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Spawn Location");
-        egui::ComboBox::from_id_salt("spawn-position")
-            .selected_text(position_label(kill_trigger, *position))
-            .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
-                ui.selectable_value(
-                    position,
-                    Position::Owner,
-                    position_label(kill_trigger, Position::Owner),
-                );
-                ui.add_enabled_ui(kill_trigger, |ui| {
+        let reading = position_label(kill_trigger, *position);
+        // The longest reading is a short sentence, so the control keeps the shared value
+        // column instead of taking the width of that sentence.
+        column(ui, |ui| {
+            egui::ComboBox::from_id_salt("spawn-position")
+                .width(COLUMN_WIDTH)
+                .truncate()
+                .selected_text(reading)
+                .show_ui(ui, |ui| {
+                    crate::app::style::workbench_style(ui);
                     ui.selectable_value(
                         position,
-                        Position::Event,
-                        position_label(kill_trigger, Position::Event),
+                        Position::Owner,
+                        position_label(kill_trigger, Position::Owner),
                     );
-                });
-            });
-        pickers::name_combo(ui, "spawn-position", "Spawn Location");
+                    ui.add_enabled_ui(kill_trigger, |ui| {
+                        ui.selectable_value(
+                            position,
+                            Position::Event,
+                            position_label(kill_trigger, Position::Event),
+                        );
+                    });
+                })
+                .response
+                .on_hover_text(format!("Spawn Location: {reading}"));
+            pickers::name_combo(ui, "spawn-position", "Spawn Location");
+        });
     });
 }
 
@@ -1545,31 +2003,43 @@ fn draw_ammunition_target(
     target: &mut AmmunitionTarget,
     store: &mut AmmunitionStore,
 ) {
-    ui.label("To").on_hover_text(
-        "This weapon, a weapon slot or an ammo type. The client traces the slot and type positions without naming them.",
-    );
-    egui::ComboBox::from_id_salt("ammunition-target")
-        .selected_text(target.label())
-        .show_ui(ui, |ui| {
-            crate::app::style::workbench_style(ui);
-            for choice in AmmunitionTarget::ALL {
-                ui.selectable_value(target, choice, choice.label());
-            }
-        });
-    pickers::name_combo(ui, "ammunition-target", "Ammunition Target");
-    egui::ComboBox::from_id_salt("ammunition-store")
-        .selected_text(store.label())
-        .show_ui(ui, |ui| {
-            crate::app::style::workbench_style(ui);
-            for choice in AmmunitionStore::ALL {
-                ui.selectable_value(store, choice, choice.label());
-            }
-        })
-        .response
-        .on_hover_text(
-            "Read from stock use: Triple Tap returns rounds to the magazine through this byte, and the ammo pickup perks add to reserves.",
-        );
-    pickers::name_combo(ui, "ammunition-store", "Ammunition Store");
+    let destination = "This weapon, a weapon slot or an ammo type. The client traces the slot and type positions without naming them.";
+    let held = "Read from stock use: Triple Tap returns rounds to the magazine through this byte, and the ammo pickup perks add to reserves.";
+    ui.label("To").on_hover_text(destination);
+    let chosen = target.label();
+    // Both vocabularies are a handful of short names, and they share a row with the amount,
+    // so each keeps a narrow column rather than growing to its selected text.
+    sized(ui, NARROW_COLUMN, |ui| {
+        egui::ComboBox::from_id_salt("ammunition-target")
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(chosen)
+            .show_ui(ui, |ui| {
+                crate::app::style::workbench_style(ui);
+                for choice in AmmunitionTarget::ALL {
+                    ui.selectable_value(target, choice, choice.label());
+                }
+            })
+            .response
+            .on_hover_text(format!("{chosen}\n{destination}"));
+        pickers::name_combo(ui, "ammunition-target", "Ammunition Target");
+    });
+    let stored = store.label();
+    sized(ui, NARROW_COLUMN, |ui| {
+        egui::ComboBox::from_id_salt("ammunition-store")
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(stored)
+            .show_ui(ui, |ui| {
+                crate::app::style::workbench_style(ui);
+                for choice in AmmunitionStore::ALL {
+                    ui.selectable_value(store, choice, choice.label());
+                }
+            })
+            .response
+            .on_hover_text(format!("{stored}\n{held}"));
+        pickers::name_combo(ui, "ammunition-store", "Ammunition Store");
+    });
 }
 
 /// The flags of an ammunition node, kept under a disclosure since stock perks rarely set them.
@@ -1592,20 +2062,30 @@ fn draw_ammunition_technical_fields(
                     .on_hover_text("Byte +0x6A. The ammo pickup perks set it on their ammo type amounts.");
             }
             if let Some(capacity) = capacity {
-                properties::field(ui, "Capacity", "Byte +0x6A. Which capacity the share scales. Stock nodes match it to the destination.", |ui| {
-                    egui::ComboBox::from_id_salt("ammunition-capacity")
-                        .selected_text(format!("{} Capacity", capacity.label()))
-                        .show_ui(ui, |ui| {
-                            crate::app::style::workbench_style(ui);
-                            for choice in AmmunitionStore::ALL {
-                                ui.selectable_value(
-                                    capacity,
-                                    choice,
-                                    format!("{} Capacity", choice.label()),
-                                );
-                            }
-                        });
-                    pickers::name_combo(ui, "ammunition-capacity", "Capacity Basis");
+                let basis = "Byte +0x6A. Which capacity the share scales. Stock nodes match it to the destination.";
+                properties::field(ui, "Capacity", basis, |ui| {
+                    let reading = format!("{} Capacity", capacity.label());
+                    let hover = format!("{reading}\n{basis}");
+                    // Two readings, both two words, so a narrow column carries them.
+                    sized(ui, NARROW_COLUMN, |ui| {
+                        egui::ComboBox::from_id_salt("ammunition-capacity")
+                            .width(ui.available_width())
+                            .truncate()
+                            .selected_text(reading)
+                            .show_ui(ui, |ui| {
+                                crate::app::style::workbench_style(ui);
+                                for choice in AmmunitionStore::ALL {
+                                    ui.selectable_value(
+                                        capacity,
+                                        choice,
+                                        format!("{} Capacity", choice.label()),
+                                    );
+                                }
+                            })
+                            .response
+                            .on_hover_text(hover);
+                        pickers::name_combo(ui, "ammunition-capacity", "Capacity Basis");
+                    });
                 });
             }
             ui.checkbox(action_scaled, "Scale by Action Value")

@@ -200,6 +200,34 @@ pub fn draw_authoring_info_icon(
     crate::ui_help::info(ui, tooltip)
 }
 
+/// Opens a menu from a compact trigger showing an installed item's artwork beside its label.
+///
+/// The trigger deliberately leaves out the stock watermark and foreground overlay: it stands for
+/// the appearance an authored item takes, not for the stock item that lends it.
+pub(crate) fn draw_catalog_menu_button<R>(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    icon_hash: Option<u32>,
+    cleared_color: Option<[u8; 3]>,
+    label: &str,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let icon_size = ui.spacing().interact_size.y - 2.0 * ui.spacing().button_padding.y;
+    let button = icon_hash
+        .and_then(|hash| catalog.icon_texture_artwork(ui.ctx(), u64::from(hash), cleared_color))
+        .map_or_else(
+            || egui::Button::new(label),
+            |texture| {
+                egui::Button::image_and_text(
+                    egui::Image::new((texture.id(), egui::vec2(icon_size, icon_size)))
+                        .bg_fill(super::ui::package_icon_backdrop(ui)),
+                    label,
+                )
+            },
+        );
+    egui::menu::menu_custom_button(ui, button.truncate(), contents)
+}
+
 pub(crate) enum InvestmentWeaponPickerAction {
     Select(u64),
     Clear,
@@ -223,17 +251,38 @@ pub(crate) fn draw_weapon_donor_header_picker(
     let hash_text = options
         .selected_hash
         .map(|hash| format_hash_hex(u64::from(hash)));
-    let definition = match (selected, hash_text.as_deref()) {
-        (Some(item), Some(hash_text)) => super::item_editor::DefinitionSummary::Known {
-            name: &item.name,
-            hash_display_text: hash_text,
-            type_name: &item.type_name,
-        },
-        (None, Some(hash_text)) => super::item_editor::DefinitionSummary::Unknown {
-            hash_display_text: hash_text,
-        },
-        (_, None) => super::item_editor::DefinitionSummary::Empty,
-    };
+    // Ornaments and other plugs are named installed items without a socketed item definition.
+    // Describing them from the catalog's name and type maps keeps a selected appearance source
+    // readable instead of reporting it as missing.
+    let plug = options
+        .selected_hash
+        .filter(|_| selected.is_none())
+        .and_then(|hash| {
+            let hash = u64::from(hash);
+            let name = catalog.display_name(hash)?;
+            Some((name, catalog.plug_type_name(hash).unwrap_or_default()))
+        });
+    let definition =
+        match (selected, hash_text.as_deref()) {
+            (Some(item), Some(hash_text)) => super::item_editor::DefinitionSummary::Known {
+                name: &item.name,
+                hash_display_text: hash_text,
+                type_name: &item.type_name,
+            },
+            (None, Some(hash_text)) => {
+                super::item_editor::DefinitionSummary::from_name_and_type(hash_text, plug)
+            }
+            // Nothing selected: name the choice that leads here rather than the generic Empty, so a
+            // header like Unique Weapon Behavior does not read as two ways of saying nothing.
+            (_, None) => options.clear.as_ref().map_or(
+                super::item_editor::DefinitionSummary::Empty,
+                |choice| super::item_editor::DefinitionSummary::Known {
+                    name: choice.label,
+                    hash_display_text: "",
+                    type_name: "",
+                },
+            ),
+        };
     let header = ItemHeader {
         label: options.header_label,
         soid: None,
@@ -244,7 +293,7 @@ pub(crate) fn draw_weapon_donor_header_picker(
                 .and_then(|hash| catalog.icon_texture(ui.ctx(), u64::from(hash)))
         }),
         fill: muted_item_header_fill(ui),
-        valid: options.selected_hash.is_none() || selected.is_some(),
+        valid: options.selected_hash.is_none() || selected.is_some() || plug.is_some(),
         invalid_message: "Not in the loaded catalog",
     };
     let mut action_button = None;
@@ -352,16 +401,17 @@ fn weapon_donor_choices(
             )
         })
         .collect::<Vec<_>>();
-    if !query.is_empty() {
-        matches.sort_by_cached_key(|donor| {
-            (
-                !donor.collection_backed,
-                Reverse(query.name_match_count(&donor.name)),
-                donor.name.to_lowercase(),
-                donor.hash,
-            )
-        });
-    }
+    // One list. Whether a weapon has a Collections row changes how it is built, not how it is
+    // browsed, so ordering follows the search, then the weapon type and name. An empty query
+    // scores every candidate zero and falls through to that ordering.
+    matches.sort_by_cached_key(|donor| {
+        (
+            Reverse(query.name_match_count(&donor.name)),
+            donor.type_name.to_lowercase(),
+            donor.name.to_lowercase(),
+            donor.hash,
+        )
+    });
     DefinitionPickerChoices {
         definitions: matches
             .into_iter()
@@ -369,14 +419,7 @@ fn weapon_donor_choices(
                 hash: u64::from(donor.hash),
                 name: donor.name.clone(),
                 type_name: donor.type_name.clone(),
-                group: Some(
-                    if donor.collection_backed {
-                        "Weapons in Collections"
-                    } else {
-                        "Weapons without a Collections row"
-                    }
-                    .to_owned(),
-                ),
+                group: None,
             })
             .collect(),
         existing_inventory: Vec::new(),

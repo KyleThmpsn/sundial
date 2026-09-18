@@ -59,6 +59,7 @@ pub(super) fn author_entities(
                 || donor.weapon.overrides.ammo_type.is_some()
                 || !donor.weapon.overrides.runtime_values.is_empty()
                 || !donor.weapon.overrides.runtime_resource_patches.is_empty()
+                || !donor.weapon.overrides.additional_behaviors.is_empty()
                 || runtime_entity_patches;
             if !has_runtime_edits {
                 let stock_entity_tag = weapon_entity_assignment(
@@ -108,11 +109,16 @@ pub(super) fn author_entities(
                 .collect::<Vec<_>>();
             graft_weapon_component_bindings(&mut pattern_entity, &component_grafts)
                 .map_err(invalid)?;
+            let content_group = donor
+                .gear_art_pattern_source
+                .or(donor.runtime_pattern_source)
+                .map(|source| source.weapon_content_group_hash);
             author_runtime_edits(
                 manager,
                 &mut pattern_entity,
                 &donor.weapon.overrides,
                 hud_key,
+                content_group,
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
             )?;

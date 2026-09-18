@@ -643,7 +643,7 @@ impl WeaponInventorySlot {
 /// Existing inventory instances retain their saved selections. Because authored collection items
 /// are curated, an inherited randomized donor lane is automatically fixed to its native default
 /// and embedded choices.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponCloneOverrides {
     pub collection_destination: Option<crate::collection::Destination>,
     pub exclude_from_sunrise_badge: bool,
@@ -676,6 +676,13 @@ pub struct WeaponCloneOverrides {
     /// Reload-hold element switching. Compilation pins The Fundamentals into the first trait
     /// socket, and [`Self::modern_damage_type`] is then the element the weapon rests on.
     pub variable_damage: Option<WeaponVariableDamage>,
+    /// Catalogue identifiers of exotic behavior records grafted onto this weapon's variant block.
+    pub additional_behaviors: Vec<String>,
+    /// Leave each grafted behavior's own intrinsic and trait plugs out of the graft.
+    pub skip_behavior_perks: bool,
+    /// Raises a grafted projectile's launch speed on a weapon that fires none of its own, and
+    /// caps how far it is raised.
+    pub behavior_projectile_speed: Option<f32>,
     pub power_cap_group: Option<u16>,
     /// Complete ordered native version-group values. Mutually exclusive with
     /// [`Self::power_cap_group`] and required to match the donor row count.
@@ -817,6 +824,22 @@ pub struct WeaponRuntimeResourcePatch {
     pub graph_values: Vec<WeaponRuntimeValueOverride>,
 }
 
+/// Adds a self-contained record to the end of a component owner and points slots at it.
+///
+/// A patch can only overwrite bytes that already exist, so a weapon whose family has no record of
+/// its own needs one appended. Every relative pointer inside the added bytes is self relative, and
+/// appending never moves existing data, so the rest of the payload stays valid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeaponRuntimeResourceAppend {
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    /// Bytes added at the end of the owner payload.
+    pub bytes: Vec<u8>,
+    /// Slots to fill in, as the slot's resource-relative offset, the offset inside `bytes` it
+    /// should reach, and the count written in the following eight bytes.
+    pub slots: Vec<(u32, usize, i64)>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WeaponArtArrangementOverride {
     pub character_class: i8,
@@ -948,7 +971,7 @@ pub struct WeaponRuntimeComponentDonorReference {
 /// identities, localized text, presentation assets and Collections placement, and fixes inherited
 /// randomized socket lanes to their native defaults. Explicit donors and overrides replace their
 /// corresponding fields.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WeaponCloneSpec {
     pub namespace: String,
     pub donor_item_hash: u32,
@@ -1031,7 +1054,7 @@ pub struct NewWeaponPlan {
 
 /// A coherent project compiled into five investment overlays, one standalone asset package,
 /// and any recipe-selected runtime overlays. The build manifest owns the exact output set.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WeaponProjectSpec {
     pub weapons: Vec<WeaponCloneSpec>,
 }

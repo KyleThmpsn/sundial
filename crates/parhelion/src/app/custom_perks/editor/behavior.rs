@@ -68,7 +68,9 @@ fn draw_convertible(
         Err(error) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                format!("The program model fits, but it could not be compiled: {error}"),
+                format!(
+                    "The conversion could not be checked against the stock action, so it is not offered. {error}"
+                ),
             );
             return None;
         }

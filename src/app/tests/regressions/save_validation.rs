@@ -137,7 +137,7 @@ fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     let mut original = defaults();
     original["version"] = json!(18);
     original["core"]["logging"]["debugger_sink"] = json!("invalid");
-    app.document = WorkspaceDocument::load(original, &app.settings_path);
+    app.document = WorkspaceDocument::load(original, &app.settings_path, false);
     assert!(!app.document.uses_json_account());
     app.persisted_document = app.document.clone();
     account_workspace::apply_account_settings(
@@ -169,7 +169,7 @@ fn sqlite_only_save_rechecks_the_settings_source_on_disk() {
     let mut app = app(directory.0.clone());
     let mut source = defaults();
     source["version"] = json!(18);
-    app.document = WorkspaceDocument::load(source.clone(), &app.settings_path);
+    app.document = WorkspaceDocument::load(source.clone(), &app.settings_path, false);
     app.persisted_document = app.document.clone();
     account_workspace::apply_account_settings(
         &mut app.document,

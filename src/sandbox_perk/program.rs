@@ -15,6 +15,15 @@ pub use properties::{KeyCatalog, KeyEvidence};
 /// The empty FNV-1 hash. A native key holds this value when nothing is named.
 pub const EMPTY_KEY: u32 = 0x811C_9DC5;
 
+/// The input selector value most stock Component Value Adjustment nodes store.
+const fn no_input() -> u8 {
+    0xFF
+}
+
+fn is_no_input(input: &u8) -> bool {
+    *input == no_input()
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
@@ -450,6 +459,102 @@ pub enum Action {
         #[serde(default = "one", skip_serializing_if = "is_one")]
         flag: u8,
     },
+    /// Scales an ability's energy component, the way stock perks grant grenade, melee, super
+    /// or class ability energy.
+    ///
+    /// Every field mirrors a byte of the native Component Value Adjustment node. The target
+    /// selector names the ability (see `action::component_target`). The flag, option and
+    /// input bytes are a separate axis whose role is not mapped, so the workbench shows them
+    /// as technical controls and the compiler writes them verbatim.
+    AdjustComponent {
+        /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2 and 7.
+        target: u8,
+        /// The flag byte at `+0x03`.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        flag: u8,
+        /// The option byte at `+0x04`.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        option: u8,
+        /// The scale at `+0x08`, kept as a bit pattern so recipe equality stays exact.
+        #[serde(with = "float_bit")]
+        scale_bits: u32,
+        /// The limit at `+0x0C`, kept as a bit pattern. Zero means no limit is applied.
+        #[serde(default, skip_serializing_if = "is_zero", with = "float_bit")]
+        limit_bits: u32,
+        /// The constant the value program pushes, kept as a bit pattern.
+        #[serde(with = "float_bit")]
+        value_bits: u32,
+        /// The input selector byte at `+0x48`. Stock nodes store 0xFF in 106 of 179 cases.
+        #[serde(default = "no_input", skip_serializing_if = "is_no_input")]
+        input: u8,
+    },
+    /// Changes a named property inside one ability's bank, the way stock exotics grant an
+    /// extra grenade charge or improve a jump.
+    ///
+    /// The ability follows the target selector (see `action::ability_slot`). The property key
+    /// and the option byte that selects which property of that ability changes are carried
+    /// verbatim, since their meanings are not resolved.
+    AbilityProperty {
+        /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2, 3, 4 and 7.
+        target: u8,
+        /// The property key at `+0x04`, a 32-bit hash.
+        #[serde(with = "hex_key")]
+        key: u32,
+        /// The property index at `+0x08`. Stock nodes store 26 distinct values.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        option: u8,
+    },
+    /// Sets the transmat effect a weapon plays. The key names the effect and its consumer is
+    /// not resolved, so the key is carried verbatim.
+    TransmatContext {
+        /// The effect key at `+0x04`, a 32-bit hash.
+        #[serde(with = "hex_key")]
+        key: u32,
+    },
+    /// Replaces a key on the host while the effect is active, the way stock perks swap a
+    /// weapon firing mode.
+    OverrideHostKey {
+        /// The target selector byte at `+0x02`.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        target: u8,
+        /// The interface selector byte at `+0x03`.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        interface: u8,
+        /// The key written in place of the host's own, at `+0x04`.
+        #[serde(with = "hex_key")]
+        key: u32,
+        /// Whether the replacement applies to the player rather than the weapon, at `+0x08`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        apply_to_player: bool,
+    },
+    /// Changes the weapon's damage type, which is what The Fundamentals and the element mods
+    /// do. The mode is the element: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
+    SetDamageType {
+        /// The damage type byte at `+0x02`.
+        mode: u8,
+        /// Whether the change survives the effect ending, at `+0x03`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        keep_after_removal: bool,
+    },
+    /// Counts a weapon reference while the effect is active. The operation byte selects what
+    /// the count does, and its values are not resolved.
+    WeaponReferenceCount {
+        /// The operation byte at `+0x02`. Named `selector` because the enum is serde-tagged
+        /// on `operation`.
+        #[serde(default, skip_serializing_if = "is_zero_byte")]
+        selector: u8,
+    },
+    /// Writes the program's accumulator, the value an Accumulator condition counts toward
+    /// its threshold.
+    UpdateAccumulator {
+        /// The mode byte at `+0x02`, which selects the supplied value. Every stock node
+        /// stores 1.
+        #[serde(default = "one", skip_serializing_if = "is_one")]
+        mode: u8,
+        /// The value at `+0x04`, kept as a bit pattern.
+        #[serde(with = "float_bit")]
+        value_bits: u32,
+    },
     /// Adds a whole number of rounds when the effect starts. The native Fixed Ammunition
     /// Adjustment node, kind 14, the one Triple Tap returns its round through.
     AddRounds {
@@ -670,6 +775,67 @@ impl Action {
     }
 
     /// An add-rounds action shaped like Triple Tap's: one round into this weapon's magazine.
+    /// An adjustment of the given ability's energy, with the scale and value stock energy
+    /// perks use most.
+    #[must_use]
+    pub const fn adjust_component(target: u8) -> Self {
+        Self::AdjustComponent {
+            target,
+            flag: 0,
+            option: 0,
+            scale_bits: 0x3F80_0000,
+            limit_bits: 0,
+            value_bits: 0x3F80_0000,
+            input: no_input(),
+        }
+    }
+
+    #[must_use]
+    pub const fn transmat_context(key: u32) -> Self {
+        Self::TransmatContext { key }
+    }
+
+    #[must_use]
+    pub const fn override_host_key(key: u32) -> Self {
+        Self::OverrideHostKey {
+            target: 0,
+            interface: 0,
+            key,
+            apply_to_player: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn set_damage_type(mode: u8) -> Self {
+        Self::SetDamageType {
+            mode,
+            keep_after_removal: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn weapon_reference_count(selector: u8) -> Self {
+        Self::WeaponReferenceCount { selector }
+    }
+
+    /// A property change on the given ability, starting from the grenade bank.
+    #[must_use]
+    pub const fn ability_property(target: u8) -> Self {
+        Self::AbilityProperty {
+            target,
+            key: EMPTY_KEY,
+            option: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn update_accumulator(value: f32) -> Self {
+        Self::UpdateAccumulator {
+            mode: 1,
+            value_bits: value.to_bits(),
+        }
+    }
+
     #[must_use]
     pub const fn add_rounds(rounds: i32) -> Self {
         Self::AddRounds {
@@ -712,6 +878,36 @@ impl Action {
             Self::Pattern { .. } => "Override Weapon Pattern",
             Self::ExtendTimers { .. } => "Extend Timers",
             Self::Property { .. } => "Named Property",
+            Self::AdjustComponent { target, .. } => {
+                match crate::sandbox_perk::action::component_target(*target, 0, 0) {
+                    Some("Grenade Energy") => "Adjust Grenade Energy",
+                    Some("Super Energy") => "Adjust Super Energy",
+                    Some("Melee Energy") => "Adjust Melee Energy",
+                    Some("Class Ability Energy") => "Adjust Class Ability Energy",
+                    _ => "Adjust Component Value",
+                }
+            }
+            Self::AbilityProperty { target, .. } => {
+                match crate::sandbox_perk::action::ability_slot(*target) {
+                    Some("Grenade") => "Change a Grenade Property",
+                    Some("Super") => "Change a Super Property",
+                    Some("Melee") => "Change a Melee Property",
+                    Some("Jump") => "Change a Jump Property",
+                    Some("Class Ability") => "Change a Class Ability Property",
+                    _ => "Change an Ability Property",
+                }
+            }
+            Self::TransmatContext { .. } => "Set Transmat Effect",
+            Self::OverrideHostKey { .. } => "Override a Host Key",
+            Self::SetDamageType { mode, .. } => match mode {
+                0 => "Change Damage Type to Kinetic",
+                1 => "Change Damage Type to Solar",
+                2 => "Change Damage Type to Arc",
+                3 => "Change Damage Type to Void",
+                _ => "Change Damage Type",
+            },
+            Self::WeaponReferenceCount { .. } => "Count a Weapon Reference",
+            Self::UpdateAccumulator { .. } => "Update Accumulator",
             Self::AddRounds { .. } => "Add Rounds",
             Self::AddFraction { .. } => "Add Ammunition Fraction",
             Self::Native { node } => crate::sandbox_perk::nodes::effect(node.kind)
@@ -728,6 +924,13 @@ impl Action {
             }
             Self::ExtendTimers { .. }
             | Self::Property { .. }
+            | Self::AdjustComponent { .. }
+            | Self::UpdateAccumulator { .. }
+            | Self::AbilityProperty { .. }
+            | Self::TransmatContext { .. }
+            | Self::OverrideHostKey { .. }
+            | Self::SetDamageType { .. }
+            | Self::WeaponReferenceCount { .. }
             | Self::AddRounds { .. }
             | Self::AddFraction { .. }
             | Self::Native { .. } => None,
@@ -741,6 +944,13 @@ impl Action {
             }
             Self::ExtendTimers { .. }
             | Self::Property { .. }
+            | Self::AdjustComponent { .. }
+            | Self::UpdateAccumulator { .. }
+            | Self::AbilityProperty { .. }
+            | Self::TransmatContext { .. }
+            | Self::OverrideHostKey { .. }
+            | Self::SetDamageType { .. }
+            | Self::WeaponReferenceCount { .. }
             | Self::AddRounds { .. }
             | Self::AddFraction { .. }
             | Self::Native { .. } => None,
@@ -753,10 +963,22 @@ impl Action {
     #[must_use]
     pub fn retained(&self) -> bool {
         match self {
+            // Every stock Component Value Adjustment, Accumulator Update and Transmat Context
+            // node clears the retained byte: 179, 147 and 104 of them respectively, with no
+            // exception in the captured survey.
             Self::Spawn { .. }
             | Self::ExtendTimers { .. }
             | Self::AddRounds { .. }
-            | Self::AddFraction { .. } => false,
+            | Self::AddFraction { .. }
+            | Self::AdjustComponent { .. }
+            | Self::UpdateAccumulator { .. }
+            | Self::TransmatContext { .. } => false,
+            // Every stock Ability Property node sets the retained byte, as Named Property does.
+            // The three kinds below keep it set too, since each holds state until the effect ends.
+            Self::AbilityProperty { .. }
+            | Self::OverrideHostKey { .. }
+            | Self::SetDamageType { .. }
+            | Self::WeaponReferenceCount { .. } => true,
             Self::Native { node } => node.bytes.get(1).is_some_and(|byte| *byte != 0),
             _ => true,
         }
@@ -812,6 +1034,51 @@ pub struct Program {
     /// Further rearm conditions beside the primary one, carried verbatim.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_rearms: Vec<NativeNode>,
+    /// Further programs a stock action runs beside this one, carried verbatim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_groups: Vec<NativeGroup>,
+}
+
+/// One further program of a stock action: its four condition lists and its effects, each
+/// node carried verbatim in native list order. Only the primary program has typed controls.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeGroup {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activation: Vec<NativeNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<NativeNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removal: Vec<NativeNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rearm: Vec<NativeNode>,
+}
+
+impl NativeGroup {
+    /// Every condition of the group, then every effect, for checks and reservations.
+    pub fn conditions(&self) -> impl Iterator<Item = &NativeNode> {
+        self.activation
+            .iter()
+            .chain(&self.removal)
+            .chain(&self.rearm)
+    }
+
+    /// Every node of the group, conditions flagged `true` and effects `false`.
+    pub fn nodes(&self) -> impl Iterator<Item = (bool, &NativeNode)> {
+        self.conditions()
+            .map(|node| (true, node))
+            .chain(self.effects.iter().map(|node| (false, node)))
+    }
+
+    /// Every node of the group for editing, conditions flagged `true` and effects `false`.
+    pub fn nodes_mut(&mut self) -> impl Iterator<Item = (bool, &mut NativeNode)> {
+        self.activation
+            .iter_mut()
+            .chain(&mut self.removal)
+            .chain(&mut self.rearm)
+            .map(|node| (true, node))
+            .chain(self.effects.iter_mut().map(|node| (false, node)))
+    }
 }
 
 mod native;
@@ -916,11 +1183,55 @@ impl Default for Program {
             alternative_removals: Vec::new(),
             native_rearm: None,
             alternative_rearms: Vec::new(),
+            additional_groups: Vec::new(),
         }
     }
 }
 
 impl Program {
+    /// Every native node the compiler carries verbatim, conditions flagged `true` and
+    /// effects `false`: the trigger and ending, every alternative and rearm condition, the
+    /// native actions, and the conditions and effects of every further group. Any pass that
+    /// must reach every native node, such as compiling label masks against the current
+    /// registry or proving referenced resources are live, walks this list so a new position
+    /// cannot be left out.
+    pub fn native_nodes(&self) -> impl Iterator<Item = (bool, &NativeNode)> {
+        self.native_trigger
+            .iter()
+            .chain(&self.alternative_triggers)
+            .chain(&self.native_removal)
+            .chain(&self.alternative_removals)
+            .chain(&self.native_rearm)
+            .chain(&self.alternative_rearms)
+            .map(|node| (true, node))
+            .chain(self.actions.iter().filter_map(|action| match action {
+                Action::Native { node } => Some((false, node)),
+                _ => None,
+            }))
+            .chain(self.additional_groups.iter().flat_map(NativeGroup::nodes))
+    }
+
+    /// The same nodes as [`Self::native_nodes`], for passes that rewrite them.
+    pub fn native_nodes_mut(&mut self) -> impl Iterator<Item = (bool, &mut NativeNode)> {
+        self.native_trigger
+            .iter_mut()
+            .chain(&mut self.alternative_triggers)
+            .chain(&mut self.native_removal)
+            .chain(&mut self.alternative_removals)
+            .chain(&mut self.native_rearm)
+            .chain(&mut self.alternative_rearms)
+            .map(|node| (true, node))
+            .chain(self.actions.iter_mut().filter_map(|action| match action {
+                Action::Native { node } => Some((false, node)),
+                _ => None,
+            }))
+            .chain(
+                self.additional_groups
+                    .iter_mut()
+                    .flat_map(NativeGroup::nodes_mut),
+            )
+    }
+
     /// Kill-event capabilities come from the native event kind, regardless of
     /// whether the condition was authored from defaults or copied from a perk.
     pub fn has_kill_trigger(&self) -> bool {
@@ -949,6 +1260,7 @@ impl Program {
                 || !self.alternative_removals.is_empty()
                 || self.native_rearm.is_some()
                 || !self.alternative_rearms.is_empty()
+                || !self.additional_groups.is_empty()
                 || self.trigger != defaults.trigger
                 || self.duration_ms != defaults.duration_ms
                 || self.cooldown_ms != defaults.cooldown_ms
@@ -1016,11 +1328,27 @@ impl Program {
             .chain(&self.alternative_removals)
             .chain(&self.native_rearm)
             .chain(&self.alternative_rearms)
+            .chain(
+                self.additional_groups
+                    .iter()
+                    .flat_map(NativeGroup::conditions),
+            )
         {
             node.check(
                 "Condition",
                 layout::condition_size(node.kind),
                 layout::condition_layout(node.kind).is_some(),
+            )?;
+        }
+        for node in self
+            .additional_groups
+            .iter()
+            .flat_map(|group| &group.effects)
+        {
+            node.check(
+                "Effect",
+                layout::effect_size(node.kind),
+                layout::effect_layout(node.kind).is_some(),
             )?;
         }
         if self.chance_permyriad > 10_000
@@ -1060,6 +1388,32 @@ impl Program {
                         );
                     }
                 }
+                Action::AdjustComponent {
+                    scale_bits,
+                    limit_bits,
+                    value_bits,
+                    ..
+                } => {
+                    if [*scale_bits, *limit_bits, *value_bits]
+                        .iter()
+                        .any(|bits| !f32::from_bits(*bits).is_finite())
+                    {
+                        return Err("Component adjustments need finite numbers.".into());
+                    }
+                }
+                Action::UpdateAccumulator { value_bits, .. } => {
+                    if !f32::from_bits(*value_bits).is_finite() {
+                        return Err("The accumulator value needs a finite number.".into());
+                    }
+                }
+                Action::AbilityProperty { .. } => {}
+                // These four write every byte they carry verbatim, so any stock value round
+                // trips. Refusing an odd one here would stop a stock perk opening, which is
+                // worse than letting the workbench guide the author toward a sensible one.
+                Action::TransmatContext { .. }
+                | Action::OverrideHostKey { .. }
+                | Action::SetDamageType { .. }
+                | Action::WeaponReferenceCount { .. } => {}
                 Action::Property {
                     key,
                     value_bits,
@@ -1116,45 +1470,57 @@ impl Program {
             crate::sandbox_perk::action::decode(&native.graph.emit()?)?;
             return Ok(());
         }
-        if self.actions.is_empty() {
-            return Err("Add an action to the custom effect.".into());
-        }
-        if self.has_kill_trigger() && self.duration_ms == 0 && self.native_removal.is_none() {
-            return Err(
-                "An event effect needs a duration greater than zero before it can be ready again."
-                    .into(),
-            );
-        }
-        if self.trigger == Trigger::Native
-            && self.duration_ms == 0
-            && self.native_removal.is_none()
-            && self.actions.iter().any(Action::retained)
-        {
-            return Err(
-                "A native-triggered effect with retained actions needs a duration or a native ending condition."
-                    .into(),
-            );
-        }
         for action in &self.actions {
             if let Some(asset) = action.asset()
                 && (asset.graph == 0 || asset.graph == u32::MAX)
             {
                 return Err("Choose an asset for every action.".into());
             }
-            if matches!(
-                action,
-                Action::Spawn {
-                    position: Position::Event,
-                    ..
-                }
-            ) && !self.has_kill_trigger()
-            {
-                return Err("Event Position requires a kill trigger.".into());
-            }
             if matches!(action, Action::ExtendTimers { .. }) && !self.has_kill_trigger() {
                 return Err("Extend Timers requires a kill trigger.".into());
             }
         }
         Ok(())
+    }
+
+    /// Advice before building. Stock perks use each of these shapes, so they compile, but a
+    /// hand-authored program rarely intends them.
+    pub fn authoring_hint(&self) -> Option<&'static str> {
+        if self.native.is_some() {
+            return None;
+        }
+        if self.actions.is_empty() && self.additional_groups.is_empty() {
+            return Some("Add an action to the custom effect.");
+        }
+        let never_ends = self.duration_ms == 0 && self.native_removal.is_none();
+        if self.has_kill_trigger() && never_ends {
+            return Some(
+                "An event effect without a duration or ending condition stays active until the perk is removed.",
+            );
+        }
+        if self.trigger == Trigger::Native
+            && never_ends
+            && self.actions.iter().any(Action::retained)
+        {
+            return Some(
+                "A native-triggered effect with retained actions and no ending stays active until the perk is removed.",
+            );
+        }
+        if !self.has_kill_trigger()
+            && self.actions.iter().any(|action| {
+                matches!(
+                    action,
+                    Action::Spawn {
+                        position: Position::Event,
+                        ..
+                    }
+                )
+            })
+        {
+            return Some(
+                "Event Position spawns at the triggering event, which only kill triggers supply.",
+            );
+        }
+        None
     }
 }

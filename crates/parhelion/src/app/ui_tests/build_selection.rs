@@ -174,12 +174,14 @@ fn filtered_build_selection_changes_only_the_draft_and_cancel_discards_it() {
             let _ = ctx.run(click, |ctx| app.draw_library_windows(ctx));
         }
     };
-    click_label(&mut app, "Select All");
+    // One checkbox covers the search: ticking it adds every shown recipe, clearing it removes
+    // them, and a recipe the search hides keeps its membership either way.
+    click_label(&mut app, "Select all shown");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([shown.clone(), hidden.clone()])
     );
-    click_label(&mut app, "Clear All");
+    click_label(&mut app, "Select all shown");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([hidden.clone()])
@@ -390,4 +392,52 @@ fn build_selection_is_explicit_and_failed_commits_do_not_change_it() {
             .is_empty()
     );
     assert_eq!(app.recipe.clone(), recipe_before);
+}
+
+#[test]
+fn a_long_build_selection_pins_its_footer_to_the_bottom_of_the_window() {
+    let directory = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+    for index in 0..40 {
+        let mut recipe = WeaponRecipe::every_end();
+        recipe
+            .rename_authored_item(format!("Footer fit weapon {index:02}"))
+            .unwrap();
+        library.save_new(&recipe).unwrap();
+    }
+    let entries = library.scan().unwrap().entries;
+    let mut app = PackageAuthoringApp {
+        recipe_library: Some(library.clone()),
+        recipe_entries: entries,
+        ..Default::default()
+    };
+    app.open_build_selection();
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(902.0, 760.0));
+    let input = egui::RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = ctx.run(input.clone(), |ctx| app.draw_library_windows(ctx));
+    }
+    // The list claims exactly the height the footer leaves behind: more recipes than fit can
+    // neither push the buttons off the bottom of the screen nor strand them under a blank band.
+    let window = ctx
+        .memory(|memory| memory.area_rect(egui::Id::new("Weapons in This Build")))
+        .expect("the build selection window must be on screen");
+    assert!(
+        window.bottom() <= screen.bottom(),
+        "window bottom {} ran past the screen at {}",
+        window.bottom(),
+        screen.bottom()
+    );
+    let apply = text_origin(&output, "Apply Selection");
+    assert!(
+        apply.y > window.bottom() - 48.0,
+        "the footer sat at {} instead of just above the window bottom {}",
+        apply.y,
+        window.bottom()
+    );
 }

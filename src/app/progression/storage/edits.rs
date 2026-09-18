@@ -21,9 +21,9 @@ pub(super) fn apply(
             InvestmentTable::ValueOverrides
         };
         let changed = if let Some(value) = requested {
-            set_investment_override(document, table, slot, value)
+            set_investment_override(document, table, slot, value).changed()
         } else {
-            remove_investment_override(document, table, slot)
+            remove_investment_override(document, table, slot).changed()
         };
         if changed {
             state.last_investment_change = Some(if row.key.bank == 0 {
@@ -41,12 +41,12 @@ pub(super) fn apply(
         return changed;
     }
     match row.kind {
-        Kind::Unlock => set_unlock_flag(document, field, slot, requested == Some(2)),
+        Kind::Unlock => set_unlock_flag(document, field, slot, requested == Some(2)).changed(),
         Kind::Counter => {
             if let Some(value) = requested {
-                set_unlock_value(document, field, slot, value)
+                set_unlock_value(document, field, slot, value).changed()
             } else {
-                remove_unlock_value(document, field, slot)
+                remove_unlock_value(document, field, slot).changed()
             }
         }
         Kind::RankProgress | Kind::RankData => {
@@ -64,7 +64,7 @@ pub(super) fn apply(
                 return false;
             };
             *value = requested.unwrap_or(0);
-            let changed = set_progression_value(document, field, slot, lanes);
+            let changed = set_progression_value(document, field, slot, lanes).changed();
             if changed {
                 state.record_progression_change(field, slot, previous, Some(lanes));
             }

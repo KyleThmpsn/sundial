@@ -68,6 +68,13 @@ fn action_family(action: &Action) -> Family {
         Action::Pattern { .. } => 26,
         Action::ExtendTimers { .. } => 32,
         Action::Property { .. } => 10,
+        Action::AdjustComponent { .. } => 8,
+        Action::UpdateAccumulator { .. } => 42,
+        Action::AbilityProperty { .. } => 7,
+        Action::TransmatContext { .. } => 47,
+        Action::OverrideHostKey { .. } => 35,
+        Action::SetDamageType { .. } => 6,
+        Action::WeaponReferenceCount { .. } => 30,
         Action::AddRounds { .. } => 14,
         Action::AddFraction { .. } => 15,
         Action::Native { node } => return effect_family(node.kind, &node.bytes),
@@ -377,6 +384,7 @@ fn comparison_rows() -> Vec<Row> {
                 name: title.clone(),
             }),
             enabled: true,
+            reason: "",
             search: format!("{title} {detail}"),
             title,
             detail,
@@ -392,10 +400,40 @@ fn index_of<T: PartialEq>(all: &[T], value: &T) -> u8 {
 struct Row {
     family: Family,
     enabled: bool,
+    /// Why the row cannot be used, shown when it is disabled. Empty when it is enabled.
+    reason: &'static str,
     title: String,
     detail: String,
     search: String,
     choice: Choice,
+}
+
+/// The most actions one program can hold, which `Program::validate` also enforces. The
+/// picker disables every action row at the cap so the limit is met before the build, not
+/// reported after it.
+const ACTION_LIMIT: usize = 16;
+
+/// Why this action cannot be added to this program, or an empty string when it can. Every
+/// rule here mirrors one the compiler or `Program::validate` enforces, so the picker refuses
+/// exactly what a build would refuse.
+fn action_reason(program: &Program, action: &Action) -> &'static str {
+    if program.actions.len() >= ACTION_LIMIT {
+        return "This effect already holds the most actions a program can run.";
+    }
+    match action {
+        Action::Pattern { .. }
+            if program
+                .actions
+                .iter()
+                .any(|current| matches!(current, Action::Pattern { .. })) =>
+        {
+            "This effect already changes the fired projectile."
+        }
+        Action::ExtendTimers { .. } if !program.has_kill_trigger() => {
+            "Extend Timers needs a kill trigger, since it extends the timers a kill started."
+        }
+        _ => "",
+    }
 }
 
 impl Family {
@@ -493,6 +531,7 @@ impl Picker {
                 Row {
                     family: Family::Condition(trigger_family(trigger)),
                     enabled: true,
+                    reason: "",
                     search: format!("{title} {detail}"),
                     title,
                     detail: detail.to_owned(),
@@ -509,6 +548,7 @@ impl Picker {
             &format!("{label} {}", egui_phosphor::regular::CARET_DOWN),
             Purpose::Trigger,
             rows,
+            "",
         )
     }
 
@@ -527,6 +567,7 @@ impl Picker {
             "Change Condition…",
             Purpose::Condition,
             comparison_rows(),
+            "",
         )? {
             Selection::Condition(node) => Some(node),
             _ => None,
@@ -542,18 +583,19 @@ impl Picker {
         program: &Program,
         keys: &sundial::package_authoring::sandbox_perk::program::properties::KeyCatalog,
     ) -> Option<Action> {
+        // At the cap every action row is refused, including the native kinds the picker
+        // builds itself, so the limit is visible before a build rather than after one.
+        let blocked = if program.actions.len() >= ACTION_LIMIT {
+            "This effect already holds the most actions a program can run."
+        } else {
+            ""
+        };
         let rows = program::common_actions(program, keys)
             .into_iter()
             .map(|(title, detail, action)| Row {
                 family: action_family(&action),
-                enabled: match &action {
-                    Action::Pattern { .. } => !program
-                        .actions
-                        .iter()
-                        .any(|current| matches!(current, Action::Pattern { .. })),
-                    Action::ExtendTimers { .. } => program.has_kill_trigger(),
-                    _ => true,
-                },
+                reason: action_reason(program, &action),
+                enabled: action_reason(program, &action).is_empty(),
                 title: title.to_owned(),
                 detail: detail.to_owned(),
                 search: format!("{title} {detail}"),
@@ -568,6 +610,7 @@ impl Picker {
             "Add Action…",
             Purpose::Action,
             rows,
+            blocked,
         )? {
             Selection::Action(action) => Some(action),
             _ => None,
@@ -618,6 +661,7 @@ impl Picker {
         label: &str,
         purpose: Purpose,
         basic: Vec<Row>,
+        blocked: &'static str,
     ) -> Option<Selection> {
         self.load(ui, discovery);
         let title = match purpose {
@@ -659,6 +703,22 @@ impl Picker {
                 // Six controls do not fit one line in a narrow window. Wrapping keeps every
                 // control usable instead of clipping the search box.
                 ui.horizontal_wrapped(|ui| {
+                    // A combo takes the width of its selected text, so each filter below is
+                    // drawn inside an allocation of this width and truncates to it, with the
+                    // full reading on hover. One width serves all four: it is the width at
+                    // which every everyday choice still reads in full, and a row of equal
+                    // controls reads as one toolbar.
+                    const FILTER_WIDTH: f32 = 150.0;
+                    const SHOW_ALL_WIDTH: f32 = 90.0;
+                    // Room for the result count, which the list draws under this toolbar.
+                    const COUNT_WIDTH: f32 = 115.0;
+                    // The search box takes what the rest of the line leaves. Summing the
+                    // same widths the controls use keeps that true when one of them changes,
+                    // which a hand-added total does not.
+                    let reserved = FILTER_WIDTH * 4.0
+                        + SHOW_ALL_WIDTH
+                        + COUNT_WIDTH
+                        + ui.spacing().item_spacing.x * 6.0;
                     // A combo box places itself at the cursor without asking the wrapping
                     // layout, so one that would run past the edge starts the next line
                     // instead. The remaining width on the line is `available_rect_before_wrap`:
@@ -674,71 +734,89 @@ impl Picker {
                         ui,
                         query,
                         opened,
-                        (ui.available_width() - 830.0).max(160.0),
+                        (ui.available_width() - reserved).max(160.0),
                         "Search Behaviors",
                     );
-                    fit(ui, 190.0);
+                    fit(ui, FILTER_WIDTH);
                     let category_before = category;
-                    egui::ComboBox::from_id_salt("behavior-category")
-                        .width(150.0)
-                        .selected_text(category.label())
-                        .show_ui(ui, |ui| {
-                            for choice in &categories {
-                                ui.selectable_value(&mut category, *choice, choice.label())
-                                    .on_hover_text(choice.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Show one category of behavior, read off each row's plain title.",
-                        );
-                    pickers::name_combo(ui, "behavior-category", "Category");
-                    fit(ui, 170.0);
+                    let category_text = category.label();
+                    controls::sized(ui, FILTER_WIDTH, |ui| {
+                        egui::ComboBox::from_id_salt("behavior-category")
+                            .width(FILTER_WIDTH)
+                            .truncate()
+                            .selected_text(category_text)
+                            .show_ui(ui, |ui| {
+                                for choice in &categories {
+                                    ui.selectable_value(&mut category, *choice, choice.label())
+                                        .on_hover_text(choice.hint());
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!(
+                                "{category_text}\nShow one category of behavior, read off each row's plain title."
+                            ));
+                        pickers::name_combo(ui, "behavior-category", "Category");
+                    });
+                    fit(ui, FILTER_WIDTH);
                     let detail_before = detail;
-                    egui::ComboBox::from_id_salt("behavior-detail")
-                        .width(130.0)
-                        .selected_text(detail.label())
-                        .show_ui(ui, |ui| {
-                            for choice in Detail::ALL {
-                                ui.selectable_value(&mut detail, choice, choice.label())
-                                    .on_hover_text(choice.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Advanced adds the behaviors named only by their engine operation.",
-                        );
-                    pickers::name_combo(ui, "behavior-detail", "Detail");
-                    fit(ui, 195.0);
+                    let detail_text = detail.label();
+                    controls::sized(ui, FILTER_WIDTH, |ui| {
+                        egui::ComboBox::from_id_salt("behavior-detail")
+                            .width(FILTER_WIDTH)
+                            .truncate()
+                            .selected_text(detail_text)
+                            .show_ui(ui, |ui| {
+                                for choice in Detail::ALL {
+                                    ui.selectable_value(&mut detail, choice, choice.label())
+                                        .on_hover_text(choice.hint());
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!(
+                                "{detail_text}\nAdvanced adds the behaviors named only by their engine operation."
+                            ));
+                        pickers::name_combo(ui, "behavior-detail", "Detail");
+                    });
+                    fit(ui, FILTER_WIDTH);
                     let before = stock;
-                    egui::ComboBox::from_id_salt("behavior-stock")
-                        .width(155.0)
-                        .selected_text(stock.label())
-                        .show_ui(ui, |ui| {
-                            for choice in StockUse::ALL {
-                                ui.selectable_value(&mut stock, choice, choice.label())
-                                    .on_hover_text(choice.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Filter by whether the game's own perks configure the behavior.",
-                        );
-                    pickers::name_combo(ui, "behavior-stock", "Stock Use");
-                    fit(ui, 165.0);
+                    let stock_text = stock.label();
+                    controls::sized(ui, FILTER_WIDTH, |ui| {
+                        egui::ComboBox::from_id_salt("behavior-stock")
+                            .width(FILTER_WIDTH)
+                            .truncate()
+                            .selected_text(stock_text)
+                            .show_ui(ui, |ui| {
+                                for choice in StockUse::ALL {
+                                    ui.selectable_value(&mut stock, choice, choice.label())
+                                        .on_hover_text(choice.hint());
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!(
+                                "{stock_text}\nFilter by whether the game's own perks configure the behavior."
+                            ));
+                        pickers::name_combo(ui, "behavior-stock", "Stock Use");
+                    });
+                    fit(ui, FILTER_WIDTH);
                     let order_before = order;
-                    egui::ComboBox::from_id_salt("behavior-order")
-                        .width(125.0)
-                        .selected_text(format!("Sort: {}", order.label()))
-                        .show_ui(ui, |ui| {
-                            for choice in Order::ALL {
-                                ui.selectable_value(&mut order, choice, choice.label())
-                                    .on_hover_text(choice.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text("Order the results. Sorting never hides a behavior.");
-                    pickers::name_combo(ui, "behavior-order", "Sort Order");
+                    let order_text = format!("Sort: {}", order.label());
+                    controls::sized(ui, FILTER_WIDTH, |ui| {
+                        egui::ComboBox::from_id_salt("behavior-order")
+                            .width(FILTER_WIDTH)
+                            .truncate()
+                            .selected_text(order_text.clone())
+                            .show_ui(ui, |ui| {
+                                for choice in Order::ALL {
+                                    ui.selectable_value(&mut order, choice, choice.label())
+                                        .on_hover_text(choice.hint());
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!(
+                                "{order_text}\nOrder the results. Sorting never hides a behavior."
+                            ));
+                        pickers::name_combo(ui, "behavior-order", "Sort Order");
+                    });
                     reset |= stock != before
                         || order != order_before
                         || detail != detail_before
@@ -751,7 +829,7 @@ impl Picker {
                     });
                     let id = ui.make_persistent_id("show-all-behaviors");
                     show_all = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-                    fit(ui, 90.0);
+                    fit(ui, SHOW_ALL_WIDTH);
                     reset |= ui
                         .checkbox(&mut show_all, "Show All")
                         .on_hover_text(
@@ -759,9 +837,9 @@ impl Picker {
                         )
                         .changed();
                     ui.data_mut(|data| data.insert_temp(id, show_all));
-                    fit(ui, 115.0);
+                    fit(ui, COUNT_WIDTH);
                     result_rect = ui
-                        .allocate_space(egui::vec2(115.0, ui.spacing().interact_size.y))
+                        .allocate_space(egui::vec2(COUNT_WIDTH, ui.spacing().interact_size.y))
                         .1;
                 });
                 let query = query
@@ -776,7 +854,8 @@ impl Picker {
                             let detail = asset_names(&effect.description, labels);
                             native_rows.push(Row {
                                 family: effect_family(effect.kind, &effect.bytes),
-                                enabled: true,
+                                enabled: purpose != Purpose::Action || blocked.is_empty(),
+                                reason: blocked,
                                 search: format!("{title} {detail}"),
                                 title,
                                 detail,
@@ -800,6 +879,7 @@ impl Picker {
                             native_rows.push(Row {
                                 family: Family::Condition(condition.family.clone()),
                                 enabled: true,
+                                reason: "",
                                 search: format!("{title} {detail}"),
                                 title,
                                 detail,
@@ -824,7 +904,8 @@ impl Picker {
                             } else {
                                 Family::Condition(ConditionFamily::Kind(kind.kind))
                             },
-                            enabled: true,
+                            enabled: purpose != Purpose::Action || blocked.is_empty(),
+                            reason: blocked,
                             title: bare_kind_title(purpose, kind),
                             detail: bare_kind_summary(purpose, kind),
                             search: format!("{:02} {} {}", kind.kind, kind.name, kind.summary),
@@ -891,14 +972,21 @@ impl Picker {
                     |ui, index| {
                         let group = &rows[index];
                         ui.heading(group.title);
-                        let row = configuration(ui, group, self.loaded.as_ref().and_then(|r| r.as_ref().ok()));
+                        let row = configuration(
+                            ui,
+                            group,
+                            self.loaded.as_ref().and_then(|r| r.as_ref().ok()),
+                        );
                         ui.label(&row.detail);
                         let command = match purpose {
                             Purpose::Trigger => "Use Trigger",
                             Purpose::Condition => "Use Condition",
                             Purpose::Action => "Add Action",
                         };
-                        let use_it = ui.add_enabled(row.enabled, egui::Button::new(command)).on_disabled_hover_text("This action needs a kill trigger, or the effect already changes the fired projectile.").clicked();
+                        let use_it = ui
+                            .add_enabled(row.enabled, egui::Button::new(command))
+                            .on_disabled_hover_text(row.reason)
+                            .clicked();
                         let catalog = self.loaded.as_ref().and_then(|result| result.as_ref().ok());
                         let mut selected = None;
                         match &row.choice {
@@ -1094,16 +1182,28 @@ fn configuration<'a>(
         .iter()
         .position(|row| row.key() == selected)
         .unwrap_or(0);
-    egui::ComboBox::from_id_salt(id.with("selector"))
-        .width(ui.available_width().min(340.0))
-        .selected_text(&labels[current])
-        .show_ui(ui, |ui| {
-            ui.set_max_width(440.0);
-            for (row, label) in group.rows.iter().zip(&labels) {
-                ui.selectable_value(&mut selected, row.key(), label);
-            }
-        }).response.on_hover_text("Complete native configurations of this behavior. Selecting one keeps its values and restrictions, which you can edit after adding it.");
-    pickers::name_combo(ui, id.with("selector"), "Configuration");
+    // A configuration is named by the values that tell it apart, so the reading runs long.
+    // A combo takes the width of its selected text and `width` only sets a floor, so the
+    // allocation is what holds it to the row. The whole reading stays on hover.
+    let width = ui.available_width().min(340.0);
+    let chosen = labels[current].clone();
+    controls::sized(ui, width, |ui| {
+        egui::ComboBox::from_id_salt(id.with("selector"))
+            .width(width)
+            .truncate()
+            .selected_text(&chosen)
+            .show_ui(ui, |ui| {
+                ui.set_max_width(440.0);
+                for (row, label) in group.rows.iter().zip(&labels) {
+                    ui.selectable_value(&mut selected, row.key(), label);
+                }
+            })
+            .response
+            .on_hover_text(format!(
+                "{chosen}\nComplete native configurations of this behavior. Selecting one keeps its values and restrictions, which you can edit after adding it."
+            ));
+        pickers::name_combo(ui, id.with("selector"), "Configuration");
+    });
     ui.data_mut(|data| data.insert_temp(id, selected));
     group
         .rows
@@ -1162,6 +1262,7 @@ mod tests {
             Row {
                 family: family.clone(),
                 enabled: true,
+                reason: "",
                 title: "On Weapon Kill".into(),
                 detail: String::new(),
                 search: "on weapon kill".into(),
@@ -1170,6 +1271,7 @@ mod tests {
             Row {
                 family,
                 enabled: true,
+                reason: "",
                 title: "A Kill from This Weapon".into(),
                 detail: String::new(),
                 search: "a kill from this weapon with extra restrictions".into(),
@@ -1178,6 +1280,7 @@ mod tests {
             Row {
                 family: Family::Condition(trigger_family(Trigger::AnyKill)),
                 enabled: true,
+                reason: "",
                 title: "On Any Credited Kill".into(),
                 detail: String::new(),
                 search: "on any credited kill".into(),
@@ -1225,6 +1328,7 @@ mod tests {
         Row {
             family: effect_family(kind, &[]),
             enabled: true,
+            reason: "",
             title: title.into(),
             detail: String::new(),
             search: title.to_lowercase(),
@@ -1355,6 +1459,7 @@ mod tests {
         let condition = |title: &str, kind: u8| Row {
             family: Family::Condition(ConditionFamily::Kind(kind)),
             enabled: true,
+            reason: "",
             title: title.into(),
             detail: String::new(),
             search: title.to_lowercase(),
@@ -1488,6 +1593,23 @@ mod tests {
             missing.is_empty(),
             "promoted kinds with no guided action: {missing:?}"
         );
+    }
+
+    /// A picker offer and the card it places are the same thing, so they read alike. They
+    /// were written out separately and drifted: the picker said "Update Accumulator" and
+    /// "Override a Host Key" where the card said "Set the Effect's Counter" and "Set a
+    /// Weapon Firing Mode", so choosing a row produced a card the reader had not asked for.
+    #[test]
+    fn every_guided_action_is_offered_under_the_name_its_card_carries() {
+        let program = Program::default();
+        for (title, _, action) in program::common_actions(&program, &Default::default()) {
+            assert_eq!(
+                title,
+                program::action_title(&action),
+                "effect kind {} is offered under a name its card does not carry",
+                program::action_kind(&action)
+            );
+        }
     }
 
     #[test]

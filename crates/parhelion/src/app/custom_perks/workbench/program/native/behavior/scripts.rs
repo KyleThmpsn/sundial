@@ -1,10 +1,14 @@
 //! The behavior script an effect of kind 48 runs, chosen by name from the ones stock perks ship.
 use super::*;
+use crate::app::custom_perks::workbench::controls::sized;
 use sundial::package_authoring::sandbox_perk::action::native::fields::scripts::{self, Script};
 
 pub(super) const CLASS: u32 = 0x80802D0A;
 const PATH: usize = 0x8;
 const TAG: usize = 0x10;
+/// A script reads by its file name, which is longer than the shared value column holds, so
+/// this control is given the extra room rather than eliding most of every name.
+const SCRIPT_WIDTH: f32 = 260.0;
 
 pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     let tag = current_tag(graph, index)?;
@@ -14,26 +18,40 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
         "Game Script",
         "One of the game's own scripts, named by its file. The stock perks that run it are listed beside each one.",
         |ui| {
-            egui::ComboBox::from_id_salt("behavior-script")
-                .width(260.0)
-                .selected_text(
-                    scripts::by_tag(tag)
-                        .map_or_else(|| format!("Script 0x{tag:08X}"), Script::title),
-                )
-                .show_ui(ui, |ui| {
-                    for script in scripts::SCRIPTS {
-                        ui.selectable_value(&mut chosen, script.tag, script.title())
-                            .on_hover_text(if script.perks.is_empty() {
-                                format!("{}\n{} stock perk nodes run it.", script.path, script.uses)
-                            } else {
-                                format!(
-                                    "{}\n{} stock perk nodes run it: {}.",
-                                    script.path, script.uses, script.perks
-                                )
-                            });
-                    }
-                });
-            pickers::name_combo(ui, "behavior-script", "Game Script");
+            let current = scripts::by_tag(tag);
+            let title = current.map_or_else(|| format!("Script 0x{tag:08X}"), Script::title);
+            // A combo takes the width of its selected text and `width` only sets a floor, so
+            // a long script name would run to the edge of the pane. The allocation bounds it
+            // and the file path stays on hover.
+            let hover = current.map_or_else(
+                || title.clone(),
+                |script| format!("{title}\n{}", script.path),
+            );
+            sized(ui, SCRIPT_WIDTH, |ui| {
+                egui::ComboBox::from_id_salt("behavior-script")
+                    .width(SCRIPT_WIDTH)
+                    .truncate()
+                    .selected_text(title)
+                    .show_ui(ui, |ui| {
+                        for script in scripts::SCRIPTS {
+                            ui.selectable_value(&mut chosen, script.tag, script.title())
+                                .on_hover_text(if script.perks.is_empty() {
+                                    format!(
+                                        "{}\n{} stock perk nodes run it.",
+                                        script.path, script.uses
+                                    )
+                                } else {
+                                    format!(
+                                        "{}\n{} stock perk nodes run it: {}.",
+                                        script.path, script.uses, script.perks
+                                    )
+                                });
+                        }
+                    })
+                    .response
+                    .on_hover_text(hover);
+                pickers::name_combo(ui, "behavior-script", "Game Script");
+            });
             Ok::<(), String>(())
         },
     )?;

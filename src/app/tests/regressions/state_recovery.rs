@@ -16,7 +16,7 @@ pub(super) fn for_source(directory: &TestDirectory, sqlite: bool) -> SundialApp 
         );
         source["version"] = json!(18);
     }
-    app.document = WorkspaceDocument::load(source, &app.settings_path);
+    app.document = WorkspaceDocument::load(source, &app.settings_path, false);
     app.persisted_document = app.document.clone();
     app.sync_raw_json();
     app
@@ -97,7 +97,7 @@ fn raw_json_cannot_change_the_active_account_source() {
                 "../../../../tests/fixtures/sunrise-v16-1120748-defaults.json"
             ))
             .unwrap();
-            app.document = WorkspaceDocument::load(source, &app.settings_path);
+            app.document = WorkspaceDocument::load(source, &app.settings_path, false);
             app.persisted_document = app.document.clone();
             app.sync_raw_json();
         }
@@ -137,7 +137,7 @@ fn native_runtime_projection_preserves_inactive_container_values() {
             if let Some(value) = container {
                 source[parent] = value;
             }
-            let mut document = WorkspaceDocument::load(source.clone(), &app.settings_path);
+            let mut document = WorkspaceDocument::load(source.clone(), &app.settings_path, false);
             let original = document.clone();
             let mut view = document.runtime_view();
             view["steam"]["user"]["persona_name"] = json!("After");
@@ -151,7 +151,7 @@ fn native_runtime_projection_preserves_inactive_container_values() {
             assert_eq!(document.json(), &source);
             app.document = document;
             app.document.save_sqlite().unwrap();
-            let reopened = WorkspaceDocument::load(source, &app.settings_path);
+            let reopened = WorkspaceDocument::load(source, &app.settings_path, false);
             assert_eq!(
                 reopened.runtime_view()["state"]["characters"][0]["level"],
                 42

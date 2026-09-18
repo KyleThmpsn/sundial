@@ -772,7 +772,30 @@ fn custom_choices_sharing_a_template_round_trip_while_duplicate_definitions_are_
 }
 
 #[test]
-fn variable_damage_round_trips_and_needs_a_carrier_appearance() {
+fn additional_behaviors_round_trip_and_stay_out_of_untouched_recipes() {
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.behavior").unwrap();
+    // The field is absent from a recipe that does not use it.
+    let bare = recipe.to_json_pretty().unwrap();
+    assert!(!bare.contains("additional_behaviors"), "{bare}");
+
+    recipe.overrides.additional_behaviors = vec![AdditionalBehaviorRecipe {
+        behavior: "graviton-lance".to_owned(),
+    }];
+    recipe.validate().unwrap();
+    let encoded = recipe.to_json_pretty().unwrap();
+    assert!(
+        encoded.contains(r#""additional_behaviors": ["#),
+        "{encoded}"
+    );
+    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
+
+    // Variable damage asks for the element switch by family rather than naming a carrier.
+    let spec = recipe.to_spec().unwrap();
+    assert_eq!(spec.overrides.additional_behaviors, ["graviton-lance"]);
+}
+
+#[test]
+fn variable_damage_round_trips_without_a_carrier_appearance() {
     use crate::weapon::variable_damage::HARD_LIGHT_ITEM_HASH;
     let mut recipe = WeaponRecipe::new_weapon("parhelion.variable").unwrap();
     recipe.overrides.variable_damage = Some(VariableDamageRecipe {
@@ -780,10 +803,11 @@ fn variable_damage_round_trips_and_needs_a_carrier_appearance() {
     });
     recipe.overrides.modern_damage_type = Some(RecipeDamageType::Arc);
 
-    // Nothing but Hard Light or Borealis carries the reload hold, and serialization validates.
-    let error = recipe.validate().unwrap_err();
-    assert!(format!("{error:?}").contains("Hard Light"), "{error:?}");
-    assert!(recipe.to_json_pretty().is_err());
+    // The reload hold is grafted from the weapon family's behavior record, so no carrier
+    // appearance is needed and the recipe is valid on its own.
+    recipe.validate().unwrap();
+
+    // Wearing a carrier stays valid and round-trips the same way.
     recipe.presentation_donor = Some(WeaponDonorReference {
         item_hash: HexHash::new(HARD_LIGHT_ITEM_HASH),
         expected_name: Some("Hard Light".to_owned()),

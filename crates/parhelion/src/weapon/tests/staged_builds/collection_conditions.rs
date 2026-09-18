@@ -114,41 +114,13 @@ fn affected_weapons(sources: &sources::ProjectSources) -> Vec<WeaponCloneSpec> {
     weapons
 }
 
-fn staged_view(packages: &Path, bundle: &NewWeaponProjectBundle) -> tempfile::TempDir {
-    let source_root = packages.parent().unwrap();
-    let view = tempfile::Builder::new()
-        .prefix(".parhelion-acquisition-test-")
-        .tempdir_in(source_root)
-        .unwrap();
-    let staged = view.path().join("packages");
-    fs::create_dir(&staged).unwrap();
-    for entry in fs::read_dir(packages).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().extension().and_then(|value| value.to_str()) == Some("pkg") {
-            fs::hard_link(entry.path(), staged.join(entry.file_name())).unwrap();
-        }
-    }
-    let bin = view.path().join("bin/x64");
-    fs::create_dir_all(&bin).unwrap();
-    fs::hard_link(
-        source_root.join("bin/x64/oo2core_3_win64.dll"),
-        bin.join("oo2core_3_win64.dll"),
-    )
-    .unwrap();
-    assert_eq!(
-        bundle.write_new(&staged).unwrap().len(),
-        bundle.artifacts.len()
-    );
-    view
-}
-
 fn verify_staged_collections(
     packages: &Path,
     sources: &sources::ProjectSources,
     project: &WeaponProjectSpec,
     bundle: &NewWeaponProjectBundle,
 ) {
-    let view = staged_view(packages, bundle);
+    let view = staged_view(packages, ".parhelion-acquisition-test-", bundle);
     let manager = open_manager(&view.path().join("packages")).unwrap();
     let collectibles = read_tag(
         &manager,

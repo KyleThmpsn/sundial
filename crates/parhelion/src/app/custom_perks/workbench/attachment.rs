@@ -311,16 +311,39 @@ impl Workbench {
                     ui,
                     "Apply to Weapon copies this perk into the chosen socket choice. Save the weapon recipe afterwards.",
                 );
-                let width = (ui.available_width() * 0.45).clamp(160.0, 340.0);
-                egui::ComboBox::from_id_salt("perk-destination").width(width)
-                    .selected_text(document.target.as_ref().map_or_else(|| "Select Socket and Choice".into(), |target| target.label(donor, catalog)))
-                    .show_ui(ui, |ui| {
-                        for target in targets(weapon, donor, true) {
-                            let label = target.label(donor, catalog);
-                            if ui.selectable_label(document.target.as_ref() == Some(&target), label).clicked() { document.target = Some(target); }
-                        }
-                    });
-                pickers::name_combo(ui, "perk-destination", "Destination Socket");
+                // A destination names a socket, a choice and the perk that sits there, so
+                // the reading runs long. A combo takes the width of its selected text, and
+                // an unbounded one here pushed the actions off the row. A fixed allocation
+                // plus truncation holds it, and the whole reading stays on hover. The floor
+                // is the width of the unset reading.
+                let width = (ui.available_width() * 0.45).clamp(200.0, 340.0);
+                let destination = document.target.as_ref().map_or_else(
+                    || "Select Socket and Choice".to_owned(),
+                    |target| target.label(donor, catalog),
+                );
+                controls::sized(ui, width, |ui| {
+                    egui::ComboBox::from_id_salt("perk-destination")
+                        .width(width)
+                        .truncate()
+                        .selected_text(destination.clone())
+                        .show_ui(ui, |ui| {
+                            for target in targets(weapon, donor, true) {
+                                let label = target.label(donor, catalog);
+                                if ui
+                                    .selectable_label(
+                                        document.target.as_ref() == Some(&target),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    document.target = Some(target);
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(destination);
+                    pickers::name_combo(ui, "perk-destination", "Destination Socket");
+                });
                 // The action and anything standing in its way sit together at the right.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ready = document.target.is_some() && issue.is_none();

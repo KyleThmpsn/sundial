@@ -54,6 +54,10 @@ impl Editor {
             if self.kind == Kind::Badge {
                 let width = ui.available_width().min(440.0);
                 let size = egui::vec2(width, width * 268.0 / 440.0);
+                crate::app::transparency_backdrop(
+                    ui,
+                    egui::Rect::from_min_size(ui.cursor().min, size),
+                );
                 let response = ui.add(
                     egui::Image::new(&texture)
                         .fit_to_exact_size(size)
@@ -67,6 +71,10 @@ impl Editor {
             } else {
                 ui.horizontal_top(|ui| {
                     let side = (ui.available_width() - 90.0).clamp(96.0, 220.0);
+                    crate::app::transparency_backdrop(
+                        ui,
+                        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(side, side)),
+                    );
                     let response = ui.add(
                         egui::Image::new(&texture)
                             .fit_to_exact_size(egui::vec2(side, side))
@@ -77,6 +85,10 @@ impl Editor {
                         egui::vec2(side * 27.0 / 96.0, side * 23.0 / 96.0),
                     );
                     ui.vertical(|ui| {
+                        crate::app::transparency_backdrop(
+                            ui,
+                            egui::Rect::from_min_size(ui.cursor().min, egui::Vec2::splat(64.0)),
+                        );
                         ui.add(
                             egui::Image::new(&texture).fit_to_exact_size(egui::vec2(64.0, 64.0)),
                         );

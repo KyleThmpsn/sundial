@@ -188,6 +188,25 @@ pub(super) fn draw_active(
     }
 }
 
+/// Identifies the choice being dragged. The plug travels with it so a drop on another socket
+/// can place it there, which a socket index alone could not express.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ChoiceDrag {
+    socket_index: usize,
+    choice_index: usize,
+    hash: u32,
+}
+
+/// Drag and drop identifiers must survive between frames, so they are built from the recipe
+/// rather than from `Ui::id`, which is derived from how many widgets came before it.
+fn choice_drag_id(donor_hash: u32, socket_index: usize, choice_index: usize) -> egui::Id {
+    egui::Id::new(("socket-choice-drag", donor_hash, socket_index, choice_index))
+}
+
+fn choice_drop_id(donor_hash: u32, socket_index: usize, choice_index: usize) -> egui::Id {
+    egui::Id::new(("socket-choice-drop", donor_hash, socket_index, choice_index))
+}
+
 fn draw_choice(
     ui: &mut egui::Ui,
     context: &mut SocketRowContext<'_>,
@@ -237,11 +256,50 @@ fn draw_choice(
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.set_min_width(f32::from(button_width));
             let remove_width = sundial::investment::authoring_button_width(ui, "×").ceil();
-            let picker_width = if removable {
-                button_width.saturating_sub(remove_width as u16)
-            } else {
-                button_width
-            };
+            let grip = egui_phosphor::regular::DOTS_SIX_VERTICAL;
+            // The bare glyph with no button padding, so the grip sits against its perk and takes
+            // as little width from the label as it can.
+            let grip_width = (sundial::investment::authoring_button_width(ui, grip)
+                - ui.spacing().button_padding.x * 2.0)
+                .ceil()
+                .max(1.0);
+            let picker_width = button_width
+                .saturating_sub(if removable { remove_width as u16 } else { 0 })
+                .saturating_sub(grip_width as u16);
+            {
+                let drag_id = choice_drag_id(donor.summary.hash, socket.index, choice_index);
+                ui.dnd_drag_source(
+                    drag_id,
+                    ChoiceDrag {
+                        socket_index: socket.index,
+                        choice_index,
+                        hash,
+                    },
+                    |ui| {
+                        ui.add_sized(
+                            [grip_width, ui.spacing().interact_size.y],
+                            egui::Label::new(grip).selectable(false),
+                        );
+                    },
+                )
+                .response
+                .on_hover_text(
+                    "Drag to reorder, or onto another socket to put this perk there. The first choice starts equipped.",
+                );
+                // The grip alone is too small to follow, so the perk trails the pointer instead.
+                if ui.ctx().is_being_dragged(drag_id)
+                    && let Some(pointer) = ui.ctx().pointer_interact_pos()
+                {
+                    egui::Area::new(drag_id.with("preview"))
+                        .order(egui::Order::Tooltip)
+                        .fixed_pos(pointer + egui::vec2(12.0, 8.0))
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.label(button_label.clone());
+                            });
+                        });
+                }
+            }
             match catalog.draw_supported_plug_choice_picker(
                 ui,
                 context.queries.entry(choice_index).or_default(),
@@ -298,6 +356,43 @@ fn draw_choice(
             }
         },
     );
+    let drop = ui.interact(
+        tile.response.rect,
+        choice_drop_id(donor.summary.hash, socket.index, choice_index),
+        egui::Sense::hover(),
+    );
+    let elsewhere = |dragged: &ChoiceDrag| {
+        dragged.socket_index != socket.index || dragged.choice_index != choice_index
+    };
+    // Show where the perk would land while a drag is in flight.
+    if drop
+        .dnd_hover_payload::<ChoiceDrag>()
+        .is_some_and(|dragged| elsewhere(&dragged))
+    {
+        ui.painter().rect_stroke(
+            tile.response.rect,
+            ui.visuals().widgets.active.corner_radius,
+            ui.visuals().widgets.active.fg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    if let Some(dragged) = drop.dnd_release_payload::<ChoiceDrag>()
+        && elsewhere(&dragged)
+    {
+        // Within a socket the order is what matters. Across sockets there is no shared order,
+        // so the perk is placed in the socket it was dropped on and the source keeps its own.
+        selection = Some(if dragged.socket_index == socket.index {
+            RowCommand::MoveChoice {
+                from: dragged.choice_index,
+                to: choice_index,
+            }
+        } else {
+            RowCommand::EditChoice {
+                index: choice_index,
+                hash: Some(dragged.hash),
+            }
+        });
+    }
     choice_menu(ui, &tile.response, choice_index).or(selection)
 }
 

@@ -17,17 +17,23 @@ mod tests {
         assert!(parse(&document).is_err());
         document["_native_progression"] = json!({});
         assert!(parse(&document).is_ok());
-        assert!(super::super::mutations::set_unlock_value(
-            &mut document,
-            "character_object_objective_values",
-            443,
-            8
-        ));
-        assert!(super::super::mutations::remove_unlock_value(
-            &mut document,
-            "character_object_objective_values",
-            502
-        ));
+        assert!(
+            super::super::mutations::set_unlock_value(
+                &mut document,
+                "character_object_objective_values",
+                443,
+                8
+            )
+            .changed()
+        );
+        assert!(
+            super::super::mutations::remove_unlock_value(
+                &mut document,
+                "character_object_objective_values",
+                502
+            )
+            .changed()
+        );
         assert_eq!(
             parse(&document).unwrap().unlocks.character_objective_values,
             vec![IndexedValue {
@@ -40,18 +46,24 @@ mod tests {
     #[test]
     fn hidden_native_rows_count_against_authoring_capacity() {
         let mut document = json!({"_native_progression":{"hidden_family_counts":[100,0]}});
-        assert!(!super::super::mutations::set_investment_override(
-            &mut document,
-            InvestmentTable::FlagOverrides,
-            10,
-            2
-        ));
-        assert!(super::super::mutations::set_investment_override(
-            &mut document,
-            InvestmentTable::ValueOverrides,
-            10,
-            42
-        ));
+        assert!(
+            !super::super::mutations::set_investment_override(
+                &mut document,
+                InvestmentTable::FlagOverrides,
+                10,
+                2
+            )
+            .changed()
+        );
+        assert!(
+            super::super::mutations::set_investment_override(
+                &mut document,
+                InvestmentTable::ValueOverrides,
+                10,
+                42
+            )
+            .changed()
+        );
     }
 
     #[test]

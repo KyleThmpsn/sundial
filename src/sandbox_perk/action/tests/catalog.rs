@@ -128,8 +128,9 @@ fn policy_and_program_shape_are_part_of_authoring_support() {
     action.policy = 1;
     assert_eq!(action.support(), Support::Authorable);
     action.policy = 0;
+    // Further programs are carried by the program, so they do not lower support either.
     action.groups.push(action.groups[0].clone());
-    assert_eq!(action.support(), Support::Readable);
+    assert_eq!(action.support(), Support::Authorable);
     action.groups.pop();
     action.groups[0].effects[0].kind = 255;
     assert_eq!(action.support(), Support::Unobserved);

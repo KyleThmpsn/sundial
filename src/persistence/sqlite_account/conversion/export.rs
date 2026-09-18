@@ -4,23 +4,69 @@ use sundial_account::{
     AccountSettingKey, AccountSettingValue, Character, ItemInstance, ItemPlugs, KeyBindingSlot,
 };
 
+/// Reports whether the installed build data can resolve one item definition.
+///
+/// Dawn rebuilds every character loadout from installed build data and abandons the whole snapshot
+/// when one item does not resolve, so an item it cannot place must not reach the converted account.
+pub(crate) type ItemSupport<'a> = &'a dyn Fn(u32) -> bool;
+
+/// Target-format limits and the running counts the conversion notes report.
+struct Export<'a> {
+    supported: ItemSupport<'a>,
+    /// False for a target below the schema that introduced the emote collection.
+    emote_collection: bool,
+    slotless: usize,
+    flags: usize,
+    unsupported: usize,
+}
+
+impl Export<'_> {
+    /// Accepts only items the target schema defines and the installed build data can resolve.
+    fn keeps(&mut self, item: &ItemInstance) -> bool {
+        let hash = item.definition_hash.get();
+        let usable = (self.supported)(hash)
+            && crate::account_contract::definition_available(hash.into(), self.emote_collection);
+        self.unsupported += usize::from(!usable);
+        usable
+    }
+}
+
 pub(crate) fn to_json(
     document: &SqliteAccountDocument,
     defaults: &Value,
     notes: &mut Vec<String>,
+    supported: ItemSupport<'_>,
 ) -> Result<Value, String> {
     let mut output = defaults.clone();
     let templates = defaults["state"]["characters"]
         .as_array()
         .ok_or("Dawn defaults have no characters.")?;
+    let schema = defaults["version"]
+        .as_u64()
+        .ok_or("The runtime defaults have no schema version.")?;
+    let mut export = Export {
+        supported,
+        emote_collection: crate::account_contract::supports_emote_collection(schema),
+        slotless: 0,
+        flags: 0,
+        unsupported: 0,
+    };
     let mut characters = Vec::new();
-    let mut moved = 0;
-    let mut flags = 0;
     for (index, character) in document.characters().characters().iter().enumerate() {
         characters.push(export_character(
-            document, index, character, templates, &mut moved, &mut flags,
+            document,
+            index,
+            character,
+            templates,
+            &mut export,
         )?);
     }
+    note(
+        notes,
+        export.unsupported,
+        "items the target format cannot store stay in the backup",
+    );
+    let (slotless, flags) = (export.slotless, export.flags);
     output["state"]["characters"] = json!(characters);
     output["state"]["account"]["primary_soid"] = json!(document.primary_soid());
     output["state"]["account"]["profile_items"] = json!(document.profile().profile_items().iter().map(|item| json!({"definition_hash":item.definition_hash.get(),"quantity":item.quantity})).collect::<Vec<_>>());
@@ -44,8 +90,8 @@ pub(crate) fn to_json(
     write_progression(document, &mut output, notes)?;
     note(
         notes,
-        moved,
-        "equipped items will move to inventory because v6 has no matching slot",
+        slotless,
+        "equipped items stay in the backup because the target format has no matching slot",
     );
     note(
         notes,
@@ -74,8 +120,7 @@ fn export_character(
     index: usize,
     character: &Character,
     templates: &[Value],
-    moved: &mut usize,
-    flags: &mut usize,
+    export: &mut Export<'_>,
 ) -> Result<Value, String> {
     let metadata = character
         .metadata
@@ -119,20 +164,24 @@ fn export_character(
     for value in equipment.values_mut() {
         *value = Value::Null;
     }
-    let mut inventory = character
-        .inventory
-        .iter()
-        .map(|item| export_item(item, flags))
-        .collect::<Vec<_>>();
-    for (slot, item) in &character.equipment {
-        let Some(item) = item else { continue };
-        let item = export_item(item, flags);
-        if let Some(value) = equipment.get_mut(slot.as_str()) {
-            *value = item;
-        } else {
-            inventory.push(item);
-            *moved += 1;
+    let mut inventory = Vec::new();
+    for item in &character.inventory {
+        if export.keeps(item) {
+            inventory.push(export_item(item, &mut export.flags));
         }
+    }
+    for (slot, item) in &character.equipment {
+        let Some(item) = item.as_ref() else { continue };
+        // A slot the target format does not define takes its item with it. Moving one into the
+        // inventory instead would store an item the target runtime has no bucket for.
+        if !equipment.contains_key(slot.as_str()) {
+            export.slotless += 1;
+            continue;
+        }
+        if !export.keeps(item) {
+            continue;
+        }
+        equipment[slot.as_str()] = export_item(item, &mut export.flags);
     }
     if inventory.len() > crate::account_contract::CHARACTER_INVENTORY_CAPACITY {
         return Err(format!(

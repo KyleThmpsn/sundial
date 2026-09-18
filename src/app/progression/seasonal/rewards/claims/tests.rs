@@ -190,7 +190,7 @@ fn season_pass_claims_persist_with_pending_rewards_in_the_native_account() {
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let dbpath = directory.0.join("data/investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&dbpath, 3);
-    let mut workspace = WorkspaceDocument::load(settings.clone(), &path);
+    let mut workspace = WorkspaceDocument::load(settings.clone(), &path, false);
     let mut view = workspace.progression_view(0);
     crate::app::progression::seasonal::apply(
         &mut view,
@@ -214,7 +214,7 @@ fn season_pass_claims_persist_with_pending_rewards_in_the_native_account() {
         workspace.native_account_mut().unwrap(),
         &directory.0.join("backup.sqlite3"),
     );
-    let reloaded = WorkspaceDocument::load(settings.clone(), &path);
+    let reloaded = WorkspaceDocument::load(settings.clone(), &path, false);
     assert_eq!(reloaded.json(), &settings);
     assert_eq!(
         reloaded.native_account().unwrap().pending_rewards(),

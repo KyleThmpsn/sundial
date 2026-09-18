@@ -116,12 +116,14 @@ fn authored_unlock_changes(
                 ));
             }
         }
-        if !crate::persistence::progression::mutations::set_collection_flag(
+        if crate::persistence::progression::mutations::set_collection_flag(
             &mut document,
             definition_index,
             &definition,
             true,
-        ) {
+        )
+        .refused()
+        {
             return Err(format!(
                 "Could not set authored unlock definition {definition_index} at bank {bank}, slot {slot}"
             ));

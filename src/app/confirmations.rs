@@ -96,7 +96,7 @@ impl SundialApp {
                     AccountSourceKind::Json => {
                         "This replaces the entire settings.json with the default bundled in your installed Project Sunrise version."
                     }
-                    AccountSourceKind::Sqlite | AccountSourceKind::Blocked => {
+                    AccountSourceKind::Sqlite | AccountSourceKind::Dawn | AccountSourceKind::Blocked => {
                         "This restores bundled settings.json defaults while preserving its inactive legacy /state/account and /state/characters data. It does not change investment.sqlite3."
                     }
                 });
@@ -195,6 +195,9 @@ impl SundialApp {
                     }
                     AccountSourceKind::Sqlite => {
                         "If an account edit prevents loading, use Preferences > Saving & Recovery to restore a verified account database backup. The current database is backed up first."
+                    }
+                    AccountSourceKind::Dawn => {
+                        "This install runs Dawn, so Sundial reads player-state.db and does not write it. Account edits are unavailable until Dawn account saving ships."
                     }
                     AccountSourceKind::Blocked => {
                         "Account editing is currently blocked, so Sundial will not write the incompatible investment.sqlite3."

@@ -158,7 +158,9 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         )
         .unwrap(),
         show_experimental_options: false,
-        plug_selection_mode: PlugSelectionMode::Supported,
+        // Compatible keeps the native pool, and an added socket type has none, so its picker
+        // is empty by design. This is the pool the supported plug sets report for one.
+        plug_selection_mode: PlugSelectionMode::SocketAndGearType,
         ..Default::default()
     };
     let original = app.recipe.clone();

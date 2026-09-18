@@ -18,6 +18,8 @@ pub(super) struct Job {
     current: CollectionStateSnapshot,
     definitions: Vec<CollectibleDef>,
     targets: Vec<usize>,
+    /// Targets that already hold the requested state, so the action row can be honest.
+    satisfied: usize,
     cursor: usize,
     acquired: bool,
     outcome: Outcome,
@@ -41,6 +43,7 @@ impl Job {
             initial,
             definitions,
             targets: Vec::new(),
+            satisfied: 0,
             cursor: 0,
             acquired,
             outcome: Outcome::default(),
@@ -60,7 +63,9 @@ impl Job {
             let definition = &self.definitions[self.cursor];
             if collectible_acquired_state(definition, &self.current, catalog) == Some(self.acquired)
             {
+                // Already in the requested state: supported, but it will not change anything.
                 self.targets.push(self.cursor);
+                self.satisfied += 1;
             } else {
                 match set_collectible_acquisition_state(
                     &mut self.candidate,
@@ -188,16 +193,12 @@ fn draw_job(
         state.bulk_ready = None;
     }
     if let Some(mut job) = state.bulk_job.take() {
-        let mut cancel = false;
-        ui.horizontal(|ui| {
-            ui.label(format!(
-                "Updating {} / {}…",
-                job.cursor,
-                job.definitions.len()
-            ));
-            cancel = ui.button("Cancel Bulk Edit").clicked();
-        });
-        if cancel {
+        if crate::app::ui::modal_progress(
+            ui,
+            "Updating Collections",
+            job.cursor,
+            job.definitions.len(),
+        ) {
             return false;
         }
         let result = match job.step(catalog, 8) {
@@ -207,7 +208,7 @@ fn draw_job(
                     && job
                         .review
                         .as_ref()
-                        .is_none_or(|review| review.related.is_empty()) =>
+                        .is_some_and(|review| review.related.is_empty()) =>
             {
                 job.finish(document, catalog)
             }
@@ -241,44 +242,61 @@ fn draw_job(
         }
     }
     if let Some(job) = &state.bulk_ready {
-        ui.strong("Review Changes");
-        if let Some(reason) = &job.conflict {
-            ui.colored_label(ui.visuals().error_fg_color, reason);
-        }
-        if let Some(review) = &job.review {
-            review.draw(ui);
+        let changing = job.targets.len().saturating_sub(job.satisfied);
+        let mut counts = vec![(false, format!("{changing} to Change"))];
+        if job.satisfied > 0 {
+            counts.push((true, format!("{} Already Set", job.satisfied)));
         }
         if !job.issues.is_empty() {
-            ui.label(format!("{} items could not be changed", job.issues.len()));
+            counts.push((true, format!("{} Skipped", job.issues.len())));
         }
-        egui::ScrollArea::vertical()
-            .id_salt("collection_edit_issues")
-            .max_height(160.0)
-            .show_rows(
-                ui,
-                TABLE_CELL_HEIGHT * 2.0,
-                job.issues.len(),
-                |ui, range| {
-                    for index in range {
-                        let (name, reason) = &job.issues[index];
-                        ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate());
-                        ui.add(egui::Label::new(reason).truncate())
-                            .on_hover_text(reason);
-                    }
-                },
-            );
-        let (apply, cancel) = ui
-            .horizontal(|ui| {
-                (
-                    ui.add_enabled(
-                        !job.targets.is_empty() && job.conflict.is_none(),
-                        egui::Button::new(format!("Apply {} Supported", job.targets.len())),
-                    )
-                    .clicked(),
-                    ui.button("Cancel").clicked(),
-                )
-            })
-            .inner;
+        crate::app::ui::review_header(ui, "Review Changes", &counts);
+        // The conflict is why Apply is disabled, so it stays out of the scrolling body.
+        if let Some(reason) = &job.conflict {
+            ui.colored_label(ui.visuals().error_fg_color, reason);
+            ui.separator();
+        }
+        crate::app::ui::review_body(ui, "collection_review_body", |ui| {
+            if !job.issues.is_empty() {
+                egui::CollapsingHeader::new(format!("{} Skipped Items", job.issues.len()))
+                    .id_salt("collection_review_skipped")
+                    .show(ui, |ui| {
+                        // The selection can cover a whole tree, so keep the rows virtualized.
+                        egui::ScrollArea::vertical()
+                            .id_salt("collection_edit_issues")
+                            .max_height(220.0)
+                            .show_rows(
+                                ui,
+                                TABLE_CELL_HEIGHT * 2.0,
+                                job.issues.len(),
+                                |ui, range| {
+                                    for index in range {
+                                        let (name, reason) = &job.issues[index];
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(name).strong())
+                                                .truncate(),
+                                        );
+                                        ui.add(egui::Label::new(reason).truncate())
+                                            .on_hover_text(reason);
+                                    }
+                                },
+                            );
+                    });
+            }
+            if let Some(review) = &job.review {
+                review.draw(ui);
+            }
+        });
+        let (apply, cancel) = crate::app::ui::review_actions(
+            ui,
+            "Apply Changes",
+            changing > 0 && job.conflict.is_none(),
+            if job.conflict.is_some() {
+                "Adjust the conflicting selection before applying."
+            } else {
+                "Every selected item already has this state."
+            },
+        );
         if cancel {
             state.bulk_ready = None;
         } else if apply {

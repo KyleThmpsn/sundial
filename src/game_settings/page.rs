@@ -33,6 +33,8 @@ pub(crate) struct PageContext<'a> {
     pub dawn: Option<&'a mut super::dawn::Runtime>,
     pub tab: &'a mut Tab,
     pub key_bindings: &'a mut KeyBindingUiState,
+    /// Which optional Sunrise controls the installed runtime still reads.
+    pub runtime_capabilities: super::Capabilities,
 }
 
 pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdits {
@@ -45,6 +47,7 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         dawn,
         tab,
         key_bindings,
+        runtime_capabilities,
     } = context;
     let runtime_available = super::runtime::available(json_document);
     if *tab == Tab::Sunrise && !runtime_available {
@@ -102,6 +105,7 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
                     ui,
                     json_document,
                     json_account || account_settings.is_ok(),
+                    runtime_capabilities,
                 ),
                 account_commands: Vec::new(),
             },

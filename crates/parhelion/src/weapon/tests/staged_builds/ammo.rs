@@ -38,6 +38,7 @@ fn real_native_ammo_clone_preserves_every_other_field() {
             &mut entity,
             &[],
             &patches,
+            &[],
             allocator,
             &mut tags,
         )

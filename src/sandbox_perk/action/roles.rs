@@ -34,6 +34,32 @@ pub fn component_target(selector: u8, flag: u8, option: u8) -> Option<&'static s
     }
 }
 
+/// Ability Property's target slots, which kind 7 witnesses on its own. Every stock perk that
+/// sets each value names that ability in its own text: slot 0 And Another Thing ("an
+/// additional grenade charge") and Bring the Heat ("Fusion Grenades"), slot 1 Actual Grandeur
+/// ("during Nova Bomb") and Beacons of Empowerment ("Sun Warrior"), slot 2 Biotic Enhancements
+/// ("melee lunge range") and Cobra Totemic ("Melee range is extended"), slot 7 Double Dodge
+/// ("a second dodge charge") and Alchemical Etchings ("Your Rifts"). Those four agree with
+/// the independent kind 8 census in `component_target`.
+///
+/// Slot 3 is the jump, and all three perks that set it say so: Jump Jets ("aerial
+/// maneuverability"), Hydraulic Boosters ("Improves High Jump") and Move to Survive ("Blink
+/// further"). Kind 8 never uses it, so it stays out of `component_target`.
+///
+/// Slot 4 stays unnamed. Its witnesses disagree: Linear Actuators and Hydraulic Boosters
+/// describe sprinting, Last Stand describes weapon performance and recovery.
+#[must_use]
+pub fn ability_slot(selector: u8) -> Option<&'static str> {
+    match selector {
+        0 => Some("Grenade"),
+        1 => Some("Super"),
+        2 => Some("Melee"),
+        3 => Some("Jump"),
+        7 => Some("Class Ability"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

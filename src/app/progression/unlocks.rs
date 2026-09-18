@@ -655,12 +655,13 @@ fn draw_entry(
                 },
                 row.index,
                 number,
-            ),
+            )
+            .changed(),
             Edit::Saved(number) if value => {
-                set_collection_value(context.document, row.index, definition, number)
+                set_collection_value(context.document, row.index, definition, number).changed()
             }
             Edit::Saved(number) => {
-                set_collection_flag(context.document, row.index, definition, number != 0)
+                set_collection_flag(context.document, row.index, definition, number != 0).changed()
             }
         };
         *context.feedback = (!changed).then(|| "This entry could not be changed. Check the saved value limits and the 100-entry override capacity in Details.".into());

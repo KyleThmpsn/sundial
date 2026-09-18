@@ -19,6 +19,8 @@ pub(super) struct Job {
     cursor: usize,
     complete: bool,
     accepted: Vec<usize>,
+    /// Accepted records that actually change something, counted once the job completes.
+    changing: usize,
     pub issues: Vec<Issue>,
     pub review: Option<super::super::impact::Review>,
     excluded: HashSet<usize>,
@@ -34,6 +36,7 @@ impl Job {
             cursor: 0,
             complete,
             accepted: Vec::new(),
+            changing: 0,
             issues: Vec::new(),
             review: None,
             excluded: HashSet::new(),
@@ -45,6 +48,10 @@ impl Job {
     }
     pub fn supported_count(&self) -> usize {
         self.accepted.len()
+    }
+    /// Accepted records whose state the edit will really alter.
+    pub fn changing_count(&self) -> usize {
+        self.changing
     }
     pub fn direct_count(&self) -> usize {
         super::super::rewards::direct_count(&self.source, &self.candidate)
@@ -114,6 +121,13 @@ impl Job {
                     self.issues.clear();
                     return false;
                 }
+                self.changing = self
+                    .accepted
+                    .iter()
+                    .filter(|index| {
+                        verify(&before, catalog, &self.records[**index], self.complete).is_err()
+                    })
+                    .count();
                 self.review = Some(super::super::impact::Review::build(
                     &before,
                     &after,
@@ -393,6 +407,8 @@ pub(super) fn apply_record(
     }
     for ((value, index), target) in assigned {
         let refreshed;
+        // A native target reads the compact lane, which overrides cannot mask, so the snapshot
+        // taken before this record is enough — and avoids a full parse per target in a batch.
         let snapshot = if target.native {
             &initial
         } else {
@@ -402,7 +418,7 @@ pub(super) fn apply_record(
         };
         let actual = target.actual(snapshot, catalog);
         if target.native {
-            remove_investment_override(
+            let _ = remove_investment_override(
                 &mut candidate,
                 if value {
                     InvestmentTable::ValueOverrides
@@ -433,7 +449,7 @@ pub(super) fn apply_record(
                     .compact_slot
                     .ok_or("This record field has no saved account slot")?,
             );
-            remove_investment_override(
+            let _ = remove_investment_override(
                 &mut candidate,
                 if value {
                     InvestmentTable::ValueOverrides
@@ -458,7 +474,7 @@ pub(super) fn apply_record(
                 .ok_or("The completion flag definition is unavailable")?;
             set_collection_flag(&mut candidate, index, definition, requested != 0)
         };
-        if !applied {
+        if applied.refused() {
             return Err(format!(
                 "{} cannot be edited in this account",
                 labels::unlock(catalog, index, value).text
@@ -514,6 +530,17 @@ fn earned_score(
         .sum())
 }
 
+/// The Triumph score every record's saved state implies, for repairing a total that the running
+/// delta cannot explain. A record whose score cannot be read contributes nothing.
+fn rebuilt_score(catalog: &Catalog, snapshot: &CollectionStateSnapshot) -> i64 {
+    catalog.records().map_or(0, |records| {
+        records
+            .iter()
+            .map(|record| earned_score(record, snapshot, catalog).unwrap_or(0))
+            .sum()
+    })
+}
+
 fn update_score(
     document: &mut Value,
     catalog: &Catalog,
@@ -527,12 +554,26 @@ fn update_score(
     }
     // Sunrise records::kTriumphScoreValueIndex. Preserve score from records outside this edit.
     let previous = i64::from(before.values.get(&(1, 2115)).copied().unwrap_or(0));
-    let score = i32::try_from((previous + delta).max(0))
-        .map_err(|_| "The resulting Triumph score exceeds the saved range")?;
-    if let Some((index, _)) = catalog.unlock_value_for_state(1, 2115) {
-        remove_investment_override(document, InvestmentTable::ValueOverrides, index);
+    let mut total = previous + delta;
+    if total < 0 {
+        // The slot was never a running total, which is normal on an imported account where the
+        // game tracked score elsewhere. Rebuild it from every record instead of clamping to zero.
+        total = rebuilt_score(catalog, after);
     }
-    if !set_unlock_value(document, "objective_values", 2115, score) {
+    let score = i32::try_from(total.max(0))
+        .map_err(|_| "The resulting Triumph score exceeds the saved range")?;
+    // One slot can back several definitions, and an override on any of them keeps masking it.
+    for index in before.value_overrides.keys() {
+        if catalog
+            .unlock_value_definition(*index)
+            .is_some_and(|definition| {
+                definition.bank() == 1 && definition.compact_slot == Some(2115)
+            })
+        {
+            let _ = remove_investment_override(document, InvestmentTable::ValueOverrides, *index);
+        }
+    }
+    if set_unlock_value(document, "objective_values", 2115, score).refused() {
         return Err("The Triumph score could not be saved".into());
     }
     Ok(())

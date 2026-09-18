@@ -35,7 +35,6 @@ pub(crate) use icons::scan_item_icon_containers;
 use items::PowerCapDefinition;
 #[cfg(test)]
 pub(crate) use items::SocketDef;
-pub(crate) use items::is_authorable_weapon_item;
 pub(crate) use items::{
     AbilityChoice, AbilityOptions, InventoryDefinition, InventoryMetadata, InventoryScope,
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemDef, ItemInvestmentStat,
@@ -48,6 +47,7 @@ use items::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
     intern_socket_pools, sort_plug_options,
 };
+pub(crate) use items::{is_authorable_weapon_item, is_weapon_ornament_type_name};
 use package::install_fingerprint;
 pub(crate) use package::validate_install;
 pub(crate) use package_access::PackageInspectionAccess;
@@ -785,6 +785,16 @@ impl Catalog {
     pub(crate) fn plug_label(&self, hash: u64, include_hash: bool) -> String {
         let name = self.names.get(&hash).map_or("Unknown plug", String::as_str);
         format_plug_label(name, hash, include_hash)
+    }
+
+    /// Returns whether an installed hash resolves to a weapon ornament plug.
+    ///
+    /// Ornaments carry no sockets, so they never become [`ItemDef`] rows. Their type name is the
+    /// only decoded marker available, and it is shared with the donor filter.
+    pub(crate) fn is_weapon_ornament(&self, hash: u64) -> bool {
+        self.plug_type_name(hash)
+            .or_else(|| self.package_item_type_name(hash))
+            .is_some_and(is_weapon_ornament_type_name)
     }
 
     pub(crate) fn plug_type_name(&self, hash: u64) -> Option<&str> {

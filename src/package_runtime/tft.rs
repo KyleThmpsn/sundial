@@ -125,51 +125,112 @@ impl EntityTargets {
             .collect();
         Self { tags, lanes }
     }
-
-    /// A stable digest of the target set, so a cached shard scanned against a different
-    /// set of graphs or lanes is not reused.
-    pub(super) fn key(&self) -> u64 {
-        let mut sorted = self.tags.iter().copied().map(u64::from).collect::<Vec<_>>();
-        sorted.extend(self.lanes.keys().copied());
-        sorted.sort_unstable();
-        sorted
-            .iter()
-            .fold(0xCBF2_9CE4_8422_2325_u64, |hash, value| {
-                (hash ^ value).wrapping_mul(0x0100_0000_01B3)
-            })
-    }
 }
 
-/// Distinct entity graph tags found in `payload`, as aligned 32-bit words or as 64-bit
-/// lanes, excluding class handles and the resource's own tag.
-pub(super) fn entity_words(payload: &[u8], source: u32, targets: &EntityTargets) -> Vec<u32> {
-    if targets.tags.is_empty() {
-        return Vec::new();
+/// Whether a 64-bit value is a lane in the installation's tag table at all, whatever it
+/// points at today. Shared across scanning workers.
+pub(super) type KnownLane<'a> = &'a (dyn Fn(u64) -> bool + Sync);
+
+/// What one structured resource holds that could refer to an entity graph, before any
+/// graph set is consulted: the distinct aligned 32-bit words shaped like a package tag,
+/// and the distinct aligned 64-bit windows that are lanes in the tag table. Which graphs
+/// those point at is not decided here, so a row can be kept on disk per package and
+/// resolved against the current graphs on every load. `resolve` is the only way to turn it
+/// into references, for a fresh scan and a cached shard alike. The shard packs rows for disk.
+///
+/// The word evidence depends on nothing outside this package. The lane evidence is narrowed
+/// by `known_lane` at scan time, which is the one thing here that reads the installation
+/// rather than the package: a 64-bit window that becomes a tag lane only after the shard was
+/// written is not recorded, so its reference is missed until that package changes. The words
+/// are the overwhelming majority of the evidence, and a lane registered later is the narrow
+/// case of a stock resource naming an authored graph by hash. Closing it would mean keying
+/// the shard on the lane table, which is the cross-package key this layout exists to drop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct EntityEvidence {
+    pub source: u32,
+    pub source_class: u32,
+    pub words: Vec<u32>,
+    pub lanes: Vec<u64>,
+}
+
+impl EntityEvidence {
+    /// Reads the evidence in `payload`. Class handles, the resource's own tag and words
+    /// outside the package id range a live tag can have are left out: no graph set could
+    /// ever match them, and keeping every negative float would multiply the shard size.
+    pub(super) fn gather(
+        payload: &[u8],
+        source: u32,
+        source_class: u32,
+        known_lane: KnownLane<'_>,
+    ) -> Self {
+        let mut words = payload
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte chunk")))
+            .filter(|word| {
+                word & 0x8000_0000 != 0
+                    && word & 0xFFFF_0000 != 0x8080_0000
+                    && *word != source
+                    && super::is_valid_package_tag(TagHash(*word))
+            })
+            .collect::<Vec<_>>();
+        words.sort_unstable();
+        words.dedup();
+        let mut lanes = (0..payload.len().saturating_sub(7))
+            .step_by(4)
+            .map(|offset| {
+                u64::from_le_bytes(
+                    payload[offset..offset + 8]
+                        .try_into()
+                        .expect("eight-byte window"),
+                )
+            })
+            .filter(|lane| known_lane(*lane))
+            .collect::<Vec<_>>();
+        lanes.sort_unstable();
+        lanes.dedup();
+        Self {
+            source,
+            source_class,
+            words,
+            lanes,
+        }
     }
-    let mut found = payload
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte chunk")))
-        .filter(|word| {
-            word & 0x8000_0000 != 0
-                && word & 0xFFFF_0000 != 0x8080_0000
-                && *word != source
-                && targets.tags.contains(word)
-        })
-        .collect::<Vec<_>>();
-    if !targets.lanes.is_empty() {
-        found.extend(
-            (0..payload.len().saturating_sub(7))
-                .step_by(4)
-                .filter_map(|offset| {
-                    let lane = u64::from_le_bytes(payload[offset..offset + 8].try_into().ok()?);
-                    targets.lanes.get(&lane).copied()
-                })
-                .filter(|tag| *tag != source),
-        );
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.words.is_empty() && self.lanes.is_empty()
     }
-    found.sort_unstable();
-    found.dedup();
-    found
+
+    /// Distinct live entity graph tags this resource refers to, sorted, excluding the
+    /// resource's own tag. A lane resolves to whatever graph it maps to now.
+    pub(super) fn resolve(&self, targets: &EntityTargets) -> Vec<u32> {
+        let mut found = self
+            .words
+            .iter()
+            .filter(|word| targets.tags.contains(*word))
+            .copied()
+            .chain(
+                self.lanes
+                    .iter()
+                    .filter_map(|lane| targets.lanes.get(lane).copied())
+                    .filter(|tag| *tag != self.source),
+            )
+            .collect::<Vec<_>>();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// One reference row per distinct live graph this resource refers to.
+    pub(super) fn references(&self, targets: &EntityTargets) -> Vec<EntityReference> {
+        self.resolve(targets)
+            .into_iter()
+            .map(|target| EntityReference {
+                source: self.source,
+                source_class: self.source_class,
+                target,
+            })
+            .collect()
+    }
 }
 
 /// The game's filename, with its spelling, separators and extensions preserved.
@@ -290,6 +351,7 @@ fn references(
 pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize)) -> Index {
     let mut index = Index::default();
     let targets = EntityTargets::new(manager);
+    let known_lane = |lane: u64| manager.lookup.tag64_entries.contains_key(&lane);
     let total = manager
         .lookup
         .tag32_entries_by_pkg
@@ -320,13 +382,8 @@ pub fn inspect(manager: &PackageManager, mut progress: impl FnMut(usize, usize))
                 }
             };
             index.entity_references.extend(
-                entity_words(&payload, tag.0, &targets)
-                    .into_iter()
-                    .map(|target| EntityReference {
-                        source: tag.0,
-                        source_class: entry.reference,
-                        target,
-                    }),
+                EntityEvidence::gather(&payload, tag.0, entry.reference, &known_lane)
+                    .references(&targets),
             );
             index
                 .vocabulary
@@ -390,7 +447,7 @@ static CACHE: index_cache::Cache<Index> = index_cache::Cache::new();
 /// Opening a single effect must not trigger installation-wide name discovery.
 /// A missing full index is reported separately from missing native references.
 pub fn cached_only(packages: &Path) -> Result<Option<Arc<Index>>, String> {
-    index_cache::cached_only(packages, "native-names", "tft-v4", &CACHE)
+    index_cache::cached_only(packages, "native-names", "tft-v5", &CACHE)
 }
 
 /// Cache only names and evidence. Compilation always resolves live package tags.
@@ -402,7 +459,7 @@ pub fn cached(
     index_cache::cached(
         packages,
         "native-names",
-        "tft-v4",
+        "tft-v5",
         &CACHE,
         || shards::inspect(packages, manager, progress),
         // Read errors remain visible in the index. They must not force an

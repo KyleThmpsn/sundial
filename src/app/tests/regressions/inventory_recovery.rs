@@ -34,7 +34,7 @@ fn inventory_app(directory: &TestDirectory, sqlite: bool, stored: usize) -> Sund
         source["state"]["characters"][0]["inventory"] = json!([]);
         source
     };
-    app.document = WorkspaceDocument::load(source, &app.settings_path);
+    app.document = WorkspaceDocument::load(source, &app.settings_path, false);
     app.manifest = Manifest::for_test_with_inventory(
         vec![ItemDef {
             hash: 100,

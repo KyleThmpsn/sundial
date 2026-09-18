@@ -9,11 +9,9 @@
 //! predicate-gated Set Host Mode effects.
 use super::*;
 
-/// Hard Light, whose gear-art row carries the reload hold for auto rifles.
+/// Hard Light, the weapon whose record drives the reload hold.
+#[cfg(test)]
 pub(crate) const HARD_LIGHT_ITEM_HASH: u32 = 0xF5DE_4480;
-/// Borealis, the same row for sniper rifles. Its hold is expected to transfer to a foreign
-/// sniper body the same way, but that has not been tested in game.
-pub(crate) const BOREALIS_ITEM_HASH: u32 = 0xBB46_CCD3;
 /// Hard Light's Fundamentals plug: stock rows 462 (Arc), 463 (Solar) and 464 (Void).
 pub(crate) const FUNDAMENTALS_PLUG_HASH: u32 = 0x9C33_04DA;
 /// The native socket type of weapon trait sockets, the lane the plug is pinned into.
@@ -24,20 +22,6 @@ pub(crate) const SELECTOR_ORDER: [ModernDamageType; 3] = [
     ModernDamageType::Arc,
     ModernDamageType::Solar,
 ];
-
-/// The weapons whose appearance carries the hold, with the name shown to users.
-pub(crate) const CARRIERS: [(u32, &str); 2] = [
-    (HARD_LIGHT_ITEM_HASH, "Hard Light"),
-    (BOREALIS_ITEM_HASH, "Borealis"),
-];
-
-#[must_use]
-pub(crate) fn carrier_name(item_hash: u32) -> Option<&'static str> {
-    CARRIERS
-        .iter()
-        .find(|(hash, _)| *hash == item_hash)
-        .map(|(_, name)| *name)
-}
 
 /// The stock finished-perk row on the plug that sets one element.
 #[must_use]
@@ -98,14 +82,6 @@ pub(crate) fn validate_elements(elements: &[ModernDamageType]) -> AuthoringResul
     Ok(())
 }
 
-/// The item whose gear-art row the authored weapon shows.
-#[must_use]
-pub(crate) fn appearance_item_hash(spec: &WeaponCloneSpec) -> u32 {
-    spec.presentation_donor
-        .as_ref()
-        .map_or(spec.donor_item_hash, |donor| donor.item_hash)
-}
-
 pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
     let Some(variable) = &spec.overrides.variable_damage else {
         return Ok(());
@@ -118,11 +94,6 @@ pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
             "Variable damage rests on {}, which is not one of its elements.",
             element_label(resting)
         )));
-    }
-    if carrier_name(appearance_item_hash(spec)).is_none() {
-        return Err(invalid(
-            "Variable damage needs Hard Light (auto rifles) or Borealis (sniper rifles) as the appearance donor. The reload hold that steps the element lives on their gear-art rows.",
-        ));
     }
     Ok(())
 }
@@ -161,6 +132,18 @@ pub(crate) fn expand_overrides(
     let socket_index = u16::try_from(lane)
         .map_err(|_| invalid("Variable damage trait socket index does not fit 16 bits"))?;
     let mut expanded = overrides.clone();
+    // The reload hold is carried by a behavior record in the weapon family's shared content
+    // owner, not by the carrier's gear art. Request it by family so the compiler picks Hard
+    // Light's record for rifles and Borealis's for snipers.
+    if !expanded
+        .additional_behaviors
+        .iter()
+        .any(|id| id == crate::weapon_behavior::ELEMENT_SWITCH)
+    {
+        expanded
+            .additional_behaviors
+            .push(crate::weapon_behavior::ELEMENT_SWITCH.to_owned());
+    }
     if expanded.socket_columns.is_empty() {
         expanded.socket_columns = vec![None; socket_types.len()];
     }

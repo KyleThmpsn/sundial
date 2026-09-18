@@ -39,8 +39,11 @@ fn installation_and_recovery_offer_the_active_source_resets_without_writing() {
         let mut app = app(directory.0.clone());
         if sqlite {
             sqlite_account::tests::create_fixture(&directory.0.join("data/investment.sqlite3"), 3);
-            app.document =
-                WorkspaceDocument::load(serde_json::json!({"version":18}), &app.settings_path);
+            app.document = WorkspaceDocument::load(
+                serde_json::json!({"version":18}),
+                &app.settings_path,
+                false,
+            );
             app.persisted_document = app.document.clone();
         }
         let original = app.document.clone();
@@ -87,7 +90,8 @@ fn cancelling_account_reset_keeps_the_database_and_unsaved_edits() {
     let mut app = app(directory.0.clone());
     let database = directory.0.join("data/investment.sqlite3");
     sqlite_account::tests::create_fixture(&database, 3);
-    app.document = WorkspaceDocument::load(serde_json::json!({"version":18}), &app.settings_path);
+    app.document =
+        WorkspaceDocument::load(serde_json::json!({"version":18}), &app.settings_path, false);
     app.document.json_mut()["unsaved"] = serde_json::json!("keep");
     let original = app.document.clone();
     let disk = sqlite_account::snapshot::read(&database).unwrap();
@@ -129,7 +133,7 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
     app.settings_path = directory.0.join("settings.json");
     let database = directory.0.join("data/investment.sqlite3");
     sqlite_account::tests::create_fixture(&database, 3);
-    app.document = WorkspaceDocument::load(settings, &app.settings_path);
+    app.document = WorkspaceDocument::load(settings, &app.settings_path, false);
     let before = sqlite_account::snapshot::read(&database).unwrap();
     app.request_sqlite_defaults_reset();
     assert!(

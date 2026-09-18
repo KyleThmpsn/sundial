@@ -23,7 +23,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
         &directory.0.join("data/investment.sqlite3"),
         3,
     );
-    let mut workspace = WorkspaceDocument::load(settings.clone(), &path);
+    let mut workspace = WorkspaceDocument::load(settings.clone(), &path, false);
     let before = workspace.clone();
     let mut document = workspace.progression_view(0);
     let original = document.clone();
@@ -119,7 +119,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
         undo.native_account_mut().unwrap(),
         &directory.0.join("undo.sqlite3"),
     );
-    let reloaded = WorkspaceDocument::load(settings, &path);
+    let reloaded = WorkspaceDocument::load(settings, &path, false);
     assert_eq!(reloaded.progression_view(0), original);
 }
 
@@ -315,10 +315,16 @@ fn assert_runtime_round_trip(native: bool, interval: bool) {
             3,
         );
     }
-    let mut workspace = WorkspaceDocument::load(json.clone(), &path);
+    let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
     let mut view = workspace.progression_view(0);
-    crate::app::progression::mutations::set_unlock_value(&mut view, "objective_values", 10, 91);
-    crate::app::progression::mutations::set_unlock_value(&mut view, "objective_values", 2115, 100);
+    let _ =
+        crate::app::progression::mutations::set_unlock_value(&mut view, "objective_values", 10, 91);
+    let _ = crate::app::progression::mutations::set_unlock_value(
+        &mut view,
+        "objective_values",
+        2115,
+        100,
+    );
     workspace.apply_progression_view(0, view).unwrap();
     for (step, complete) in [true, true, false, false].into_iter().enumerate() {
         let mut view = workspace.progression_view(0);
@@ -336,6 +342,7 @@ fn assert_runtime_round_trip(native: bool, interval: bool) {
         workspace = WorkspaceDocument::load(
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
             &path,
+            false,
         );
         let snapshot = collection_state_snapshot(&workspace.progression_view(0)).unwrap();
         assert_eq!(
@@ -376,7 +383,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let dbpath = directory.0.join("data/investment.sqlite3");
     crate::persistence::sqlite_account::tests::create_fixture(&dbpath, 3);
-    let mut workspace = WorkspaceDocument::load(settings.clone(), &path);
+    let mut workspace = WorkspaceDocument::load(settings.clone(), &path, false);
     let before = workspace.clone();
     let record = &catalog.records().unwrap()[0];
     for _ in 0..2 {
@@ -393,7 +400,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
         workspace.native_account_mut().unwrap(),
         &directory.0.join("claimed.sqlite3"),
     );
-    let loaded = WorkspaceDocument::load(settings.clone(), &path);
+    let loaded = WorkspaceDocument::load(settings.clone(), &path, false);
     assert_eq!(loaded.native_account().unwrap().pending_rewards().len(), 1);
     assert_eq!(
         rows(
@@ -410,7 +417,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
         undo.native_account_mut().unwrap(),
         &directory.0.join("undo.sqlite3"),
     );
-    let loaded = WorkspaceDocument::load(settings, &path);
+    let loaded = WorkspaceDocument::load(settings, &path, false);
     assert!(
         loaded
             .native_account()
@@ -448,6 +455,77 @@ fn clearing_a_claim_preserves_unrelated_score_and_overflow_rolls_back() {
             .contains("score")
     );
     assert_eq!(document, before);
+}
+
+#[test]
+fn a_reset_commits_when_the_saved_score_already_matches() {
+    let catalog = runtime_catalog(false);
+    let record = &catalog.records().unwrap()[0];
+    // An imported account can hold a completed record whose points never reached slot 2115.
+    let mut document = json!({"state":{"unlocks":{"account_flag_runs":[[4,1]],"objective_values":[[2746,5],[2115,0]]}}});
+    edit::apply_record(&mut document, &catalog, record, false).unwrap();
+    let snapshot = collection_state_snapshot(&document).unwrap();
+    assert!(!snapshot.flags.contains(&(1, 4)));
+    assert_eq!(snapshot.values.get(&(1, 2746)), Some(&0));
+    assert_eq!(snapshot.values.get(&(1, 2115)), Some(&0));
+}
+
+#[test]
+fn an_impossible_total_is_rebuilt_from_every_record() {
+    let base = runtime_catalog(false);
+    let first = base.records().unwrap()[0].clone();
+    let mut flags = base.unlock_flag_definitions().to_vec();
+    flags.push(UnlockDefinition {
+        code: 1,
+        compact_slot: Some(5),
+        ..Default::default()
+    });
+    let values = base.unlock_value_definitions().to_vec();
+    let mut second = first.clone();
+    second.hash = 200;
+    second.name = "Second Victory".into();
+    second.completion_flag = Some(1);
+    let runtime = second.runtime.as_mut().unwrap();
+    runtime.score = 40;
+    runtime.progress = Vec::new();
+    let catalog = base
+        .with_test_progression(flags, values, vec![])
+        .with_test_records(vec![first.clone(), second]);
+    // Both records are complete, but the saved slot never tracked their score.
+    let mut document = json!({"state":{"unlocks":{"account_flag_runs":[[4,2]],"objective_values":[[2746,5],[2115,0]]}}});
+    edit::apply_record(&mut document, &catalog, &first, false).unwrap();
+    let snapshot = collection_state_snapshot(&document).unwrap();
+    assert!(!snapshot.flags.contains(&(1, 4)));
+    assert!(snapshot.flags.contains(&(1, 5)));
+    // Clamping to zero would lose the record that is still complete.
+    assert_eq!(snapshot.values.get(&(1, 2115)), Some(&40));
+}
+
+#[test]
+fn every_override_on_the_score_slot_is_cleared() {
+    let base = runtime_catalog(false);
+    let record = base.records().unwrap()[0].clone();
+    let flags = base.unlock_flag_definitions().to_vec();
+    let mut values = base.unlock_value_definitions().to_vec();
+    // A second definition backed by the same compact slot as the score.
+    values.push(UnlockDefinition {
+        code: 1,
+        compact_slot: Some(2115),
+        ..Default::default()
+    });
+    let catalog = base
+        .with_test_progression(flags, values, vec![])
+        .with_test_records(vec![record.clone()]);
+    let mut document =
+        json!({"state":{"unlocks":{},"investment":{"family5_value_overrides":[[3,900],[5,800]]}}});
+    edit::apply_record(&mut document, &catalog, &record, true).unwrap();
+    let snapshot = collection_state_snapshot(&document).unwrap();
+    assert!(
+        snapshot.value_overrides.is_empty(),
+        "a stale override still masks the score: {:?}",
+        snapshot.value_overrides
+    );
+    assert_eq!(snapshot.values.get(&(1, 2115)), Some(&25));
 }
 
 #[test]

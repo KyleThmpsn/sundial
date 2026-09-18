@@ -8,6 +8,7 @@ use std::{
 use tiger_pkg::{DestinyVersion, GameVersion};
 use tiger_pkg::{PackageManager, TagHash};
 
+pub(crate) mod cache_file;
 pub(crate) mod index_cache;
 pub(crate) mod installation;
 pub mod labels;
@@ -96,6 +97,29 @@ pub(crate) fn normalize_sunrise_version(version: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join("."),
     )
+}
+
+/// Compares a normalized runtime version against a minimum, component by component.
+/// Absent components read as zero, so "0.5" meets a 0.5.0 minimum. An unparsable version is
+/// treated as older, which keeps every optional control visible when detection fails.
+pub(crate) fn runtime_version_at_least(version: &str, minimum: &[u64]) -> bool {
+    let Some(normalized) = normalize_sunrise_version(version) else {
+        return false;
+    };
+    let Ok(components) = normalized
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    for (index, floor) in minimum.iter().enumerate() {
+        let component = components.get(index).copied().unwrap_or(0);
+        if component != *floor {
+            return component > *floor;
+        }
+    }
+    true
 }
 
 pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), String> {

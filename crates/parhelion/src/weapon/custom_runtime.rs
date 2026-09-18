@@ -26,6 +26,7 @@ pub(crate) fn preflight_runtime_edits(
     entity: &[u8],
     overrides: &WeaponCloneOverrides,
     hud_key: Option<u32>,
+    content_group: Option<u32>,
 ) -> AuthoringResult<()> {
     let start = manager
         .lookup
@@ -39,6 +40,7 @@ pub(crate) fn preflight_runtime_edits(
         &mut entity.to_vec(),
         overrides,
         hud_key,
+        content_group,
         allocator,
         &mut Vec::new(),
     )
@@ -49,6 +51,7 @@ pub(super) fn author_runtime_edits(
     entity: &mut [u8],
     overrides: &WeaponCloneOverrides,
     hud_key: Option<u32>,
+    content_group: Option<u32>,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -56,6 +59,17 @@ pub(super) fn author_runtime_edits(
     if let Some(key) = hud_key {
         patches.extend(crate::hud_icon::runtime::patches(manager, entity, key)?);
     }
+    let grafts = crate::weapon_behavior::patches(
+        manager,
+        entity,
+        content_group,
+        &overrides.additional_behaviors,
+        overrides
+            .behavior_projectile_speed
+            .unwrap_or(crate::weapon_behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
+    )?;
+    let appends = grafts.appends;
+    patches.extend(grafts.patches);
     if let Some(ammo) = overrides.ammo_type {
         patches.extend(crate::weapon_ammo::patches(manager, entity, ammo)?);
     }
@@ -64,6 +78,7 @@ pub(super) fn author_runtime_edits(
         entity,
         &overrides.runtime_values,
         &patches,
+        &appends,
         allocator,
         tags,
     )?;
@@ -123,6 +138,7 @@ pub(super) fn append_patched_runtime_resource_owners(
     entity: &mut [u8],
     values: &[WeaponRuntimeValueOverride],
     patches: &[WeaponRuntimeResourcePatch],
+    appends: &[WeaponRuntimeResourceAppend],
     runtime_tag_allocator: AppendedTagAllocator,
     runtime_new_tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -262,6 +278,55 @@ pub(super) fn append_patched_runtime_resource_owners(
                 "Runtime component owner {owner_tag} has an inconsistent file-size field"
             )));
         }
+        // Growth first, so the slots that point into the new bytes are ordinary patches from here.
+        let mut grown = Vec::new();
+        for append in appends {
+            let bindings =
+                weapon_component_bindings(entity, append.binding_hash).map_err(invalid)?;
+            let Some(binding) = bindings.get(usize::from(append.resource_index)) else {
+                return Err(invalid(format!(
+                    "Appended record selects resource {} of component binding 0x{:08X}, which has {}",
+                    append.resource_index,
+                    append.binding_hash,
+                    bindings.len()
+                )));
+            };
+            if binding.owner_tag != owner_tag.0 {
+                continue;
+            }
+            let resource = usize::try_from(binding.resource_offset)
+                .map_err(|_| invalid("Appended record resource offset does not fit"))?;
+            let at = owner_payload.len();
+            owner_payload.extend_from_slice(&append.bytes);
+            for (slot, target, count) in &append.slots {
+                let slot = resource
+                    .checked_add(usize::try_from(*slot).unwrap_or(usize::MAX))
+                    .ok_or_else(|| invalid("Appended record slot offset overflows"))?;
+                let target = at
+                    .checked_add(*target)
+                    .filter(|target| *target <= owner_payload.len())
+                    .ok_or_else(|| invalid("Appended record target is outside the added bytes"))?;
+                let relative = i64::try_from(target)
+                    .and_then(|target| i64::try_from(slot).map(|slot| target - slot))
+                    .map_err(|_| invalid("Appended record pointer overflows"))?;
+                let mut bytes = relative.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&count.to_le_bytes());
+                grown.push(ResolvedRuntimeResourcePatch {
+                    label: format!("appended record at 0x{at:X}"),
+                    binding_hash: append.binding_hash,
+                    resource_index: usize::from(append.resource_index),
+                    start: slot,
+                    end: slot + bytes.len(),
+                    bytes,
+                });
+            }
+        }
+        if !grown.is_empty() {
+            let length = u64::try_from(owner_payload.len())
+                .map_err(|_| invalid("Grown component owner is too large"))?;
+            owner_payload[..8].copy_from_slice(&length.to_le_bytes());
+            owner_patches.extend(grown);
+        }
         owner_patches.sort_by_key(|patch| (patch.start, patch.end, patch.label.clone()));
         for pair in owner_patches.windows(2) {
             if pair[1].start < pair[0].end {
@@ -344,7 +409,15 @@ fn append_private_referenced_graph(
             })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    append_patched_runtime_resource_owners(manager, &mut graph, &values, &[], allocator, tags)?;
+    append_patched_runtime_resource_owners(
+        manager,
+        &mut graph,
+        &values,
+        &[],
+        &[],
+        allocator,
+        tags,
+    )?;
     validate_weapon_entity(&graph).map_err(invalid)?;
     let authored =
         allocator.assigned_tag(tags.len(), "Private referenced graph", "runtime graph")?;
@@ -790,6 +863,7 @@ pub(super) fn clone_private_sandbox_perk_runtime(
             manager,
             &mut authored_graph,
             &graph_values,
+            &[],
             &[],
             runtime_tag_allocator,
             runtime_new_tags,

@@ -89,29 +89,10 @@ fn section_title(heading: &str) -> &str {
 }
 
 fn draw_fields(ui: &mut egui::Ui, fields: &[String]) {
-    let width = ui.available_width();
     for field in fields {
-        ui.horizontal_top(|ui| {
-            let (name, value) = field.split_once(": ").unwrap_or(("", field));
-            let label_width = (width * 0.43).min(185.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(label_width, 16.0),
-                egui::Layout::right_to_left(egui::Align::Min),
-                |ui| {
-                    ui.set_min_width(label_width);
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(name).weak())
-                            .halign(egui::Align::Max)
-                            .wrap(),
-                    );
-                },
-            );
-            ui.allocate_ui(
-                egui::vec2((width - label_width - 12.0).max(60.0), 16.0),
-                |ui| {
-                    ui.add(egui::Label::new(value).wrap());
-                },
-            );
+        let (name, value) = field.split_once(": ").unwrap_or(("", field));
+        properties::row(ui, name, "", properties::Emphasis::Weak, |ui| {
+            ui.add(egui::Label::new(value).wrap());
         });
     }
     ui.add_space(6.0);
@@ -161,6 +142,60 @@ fn overview_lines(section: &DetailSection, labels: &BTreeMap<u32, String>) -> Ve
 }
 
 /// The decoded operation and activation belong above native field storage details.
+/// A stock reading laid out in the canvas rows, so a stock effect and an authored one have
+/// the same shape and the same label column. `trigger_command` is drawn inside the trigger
+/// row, where an authored program keeps its own trigger control.
+pub(super) fn rows(
+    ui: &mut egui::Ui,
+    behavior: &Behavior,
+    labels: &BTreeMap<u32, String>,
+    activation: Option<&str>,
+    mut trigger_command: Option<&mut dyn FnMut(&mut egui::Ui)>,
+) {
+    let mut last_group = "";
+    let grouped = behavior.details.iter().any(|section| {
+        behavior
+            .details
+            .first()
+            .is_some_and(|first| first.group != section.group)
+    });
+    for section in &behavior.details {
+        if grouped && section.group != last_group {
+            ui.add_space(4.0);
+            ui.strong(&section.group);
+            last_group = &section.group;
+        }
+        let hint = match section.heading.as_str() {
+            "Starts When" => canvas::ACTIVATION_HINT,
+            "Then" => canvas::EFFECTS_HINT,
+            "Ends When" => canvas::REMOVAL_HINT,
+            "Ready Again When" => canvas::REARM_HINT,
+            _ => "",
+        };
+        let trigger = section.heading == "Starts When";
+        canvas::row(ui, section_title(&section.heading), hint, |ui| {
+            // A chosen activation replaces the stock trigger rather than reading beside it,
+            // since the compiled effect starts on the choice and not on both.
+            match activation.filter(|_| trigger) {
+                Some(chosen) => {
+                    ui.add(egui::Label::new(chosen).wrap());
+                }
+                None => {
+                    for (depth, text) in overview_lines(section, labels) {
+                        ui.horizontal_top(|ui| {
+                            ui.add_space(depth as f32 * 12.0);
+                            ui.add(egui::Label::new(text).wrap());
+                        });
+                    }
+                }
+            }
+            if trigger && let Some(command) = trigger_command.as_deref_mut() {
+                command(ui);
+            }
+        });
+    }
+}
+
 pub(super) fn overview(ui: &mut egui::Ui, behavior: &Behavior, labels: &BTreeMap<u32, String>) {
     let mut last_group = "";
     let multiple_groups = behavior.details.iter().any(|section| {

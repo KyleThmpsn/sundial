@@ -128,7 +128,7 @@ fn installed_progression_coverage_and_frame_cost() {
                 .unlock_value_definition(usize::from(index))
                 .and_then(|definition| definition.compact_slot)
             {
-                super::super::mutations::set_unlock_value(
+                let _ = super::super::mutations::set_unlock_value(
                     &mut native,
                     "objective_values",
                     usize::from(slot),

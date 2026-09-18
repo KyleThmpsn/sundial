@@ -132,6 +132,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                     Some(&donor),
                     true,
                     false,
+                    false,
                 );
                 draw_combat_profile_control(
                     ui,
@@ -139,13 +140,9 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                     Some(&donor),
                     false,
                     false,
+                    false,
                 );
-                draw_combat_profile_diagnostics(
-                    ui,
-                    &app.recipe.overrides,
-                    Some(&donor),
-                    VariableDamageAppearance::Unavailable,
-                );
+                draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
             });
             assert!(text(&output).contains("Experimental slot and damage combination"));
             assert!(!text(&output).contains("Reset it before building"));
@@ -158,14 +155,23 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
         let donor = app.current_donor().unwrap();
         let before = app.recipe.clone();
         let (profile, _) = render(900.0, |ui| {
-            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), true, false);
-            draw_combat_profile_control(ui, &mut app.recipe.overrides, Some(&donor), false, false);
-            draw_combat_profile_diagnostics(
+            draw_combat_profile_control(
                 ui,
-                &app.recipe.overrides,
+                &mut app.recipe.overrides,
                 Some(&donor),
-                VariableDamageAppearance::Unavailable,
+                true,
+                false,
+                false,
             );
+            draw_combat_profile_control(
+                ui,
+                &mut app.recipe.overrides,
+                Some(&donor),
+                false,
+                false,
+                false,
+            );
+            draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
         });
         assert!(
             !text(&profile).contains("Unsupported recipe combination"),
@@ -318,8 +324,12 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
     let donor = app.current_donor().unwrap();
     let stats_before = app.recipe.clone();
     for width in [480.0, 900.0, 1320.0] {
+        // The raw value is a framed DragValue, so its text sits one button padding inside the
+        // column its header starts at. Read the padding rather than pinning today's number.
+        let mut value_inset = 0.0;
         let (output, overflow) = render(width, |ui| {
-            app.draw_investment_stats_panel(ui, Some(&donor))
+            value_inset = ui.spacing().button_padding.x;
+            app.draw_investment_stats_panel(ui, Some(&donor));
         });
         assert!(overflow < 1.0);
         let stat_x = text_origin(&output, "Stat").x;
@@ -338,7 +348,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
             .iter()
             .find(|stat| !is_internal_weapon_stat(stat.definition_index))
             .unwrap();
-        let raw_x = text_origin(&output, "Raw Value").x + 7.0;
+        let raw_x = text_origin(&output, "Raw Value").x + value_inset;
         let preview_x = text_origin(&output, "Preview").x;
         assert!(
             text_origins(&output, &first.value.to_string())
@@ -442,4 +452,61 @@ fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides(
             );
         }
     }
+}
+
+/// The donor section holds three source pickers, so it has to fold from three columns to one
+/// without any of them running past the panel.
+#[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
+fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
+    use crate::weapon_behavior::CATALOG;
+    /// Bygones, a pulse rifle in the owner that also holds Hard Light's records.
+    const BYGONES: u32 = 0xA1A9_9205;
+    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let mut app = PackageAuthoringApp::default();
+    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let donor = catalog.weapon_donor(BYGONES).unwrap();
+    app.donor_summaries = catalog.weapon_donors();
+    app.catalog = Some(catalog);
+    app.packages = packages;
+    app.recipe =
+        WeaponRecipe::new_weapon_for_donor("parhelion.behavior-layout", BYGONES, "Bygones")
+            .unwrap();
+
+    for width in [560.0, 900.0, 1320.0] {
+        // The behavior control belongs with the damage type, not with the donor pickers.
+        let (output, overflow) = render(width, |ui| app.draw_donor_section(ui));
+        let rendered = text(&output);
+        assert!(!rendered.contains("Unique Weapon Behavior"), "{rendered}");
+        assert!(
+            overflow < 1.0,
+            "donor section width={width}, overflow={overflow}"
+        );
+
+        let (output, overflow) = render(width, |ui| app.draw_definition_panel(ui, Some(&donor)));
+        let rendered = text(&output);
+        assert!(rendered.contains("Unique Weapon Behavior"), "{rendered}");
+        assert!(rendered.contains("Damage Type"), "{rendered}");
+        // One line like its neighbours: a label and a list, not a donor card.
+        assert!(rendered.contains("Rarity"), "{rendered}");
+        assert!(!rendered.contains("Change Behavior"), "{rendered}");
+        assert!(
+            overflow < 1.0,
+            "definition panel width={width}, overflow={overflow}"
+        );
+    }
+
+    // Choosing a behavior records it and shows what it brings with it.
+    let source = CATALOG
+        .iter()
+        .find(|entry| entry.id == "graviton-lance")
+        .unwrap();
+    app.recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
+        behavior: source.id.to_owned(),
+    }];
+    let (output, overflow) = render(900.0, |ui| app.draw_definition_panel(ui, Some(&donor)));
+    let rendered = text(&output);
+    assert!(rendered.contains("Graviton Lance"), "{rendered}");
+    assert!(rendered.contains("Include Its Perks"), "{rendered}");
+    assert!(overflow < 1.0);
 }

@@ -1,7 +1,8 @@
 //! Kill-filter editing on a single native condition, independent of its source perk.
-use super::labels::{draw_labels, set_labels};
+use super::labels::{Fold, draw_site_group, set_labels, site_caption, unset_operations};
 use super::*;
-use sundial::package_authoring::sandbox_perk::activation::{self, PerkActivation};
+use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, cell};
+use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
 
 pub(super) const CLASS: u32 = 0x80803DE7;
 /// The kill's own labels, such as precision or shotgun.
@@ -12,18 +13,34 @@ const VICTIM: usize = 8;
 const WEAPON: usize = 0x141;
 
 pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
+    // Each filter is its own labelled row. Left in the caller's horizontal flow they ran
+    // side by side across the pane, spread by their label columns, and the last one clipped
+    // at the edge. A column of its own keeps them stacked and whole at any width.
+    ui.vertical(|ui| rows(ui, graph, index)).inner
+}
+
+fn rows(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     let lists = native::labels::source(graph, index, LABELS)?;
     let owning = graph.blocks[index].bytes[WEAPON] != 0;
     let selected = PerkActivation::from_filter(&lists[0], owning);
     let mut choice = selected;
-    egui::ComboBox::from_id_salt("kill-trigger")
-        .selected_text(choice.map_or("Custom Kill Filter", PerkActivation::label))
-        .show_ui(ui, |ui| {
-            for option in PerkActivation::ALL {
-                ui.selectable_value(&mut choice, Some(option), option.label());
-            }
-        }).response.on_hover_text("Changes this condition's kill category and weapon requirement. Other conditions and effects keep their own settings.");
-    pickers::name_combo(ui, "kill-trigger", "Kill Trigger");
+    // The preset leads the filters it writes, in the same label column and at the same
+    // width, so the row reads as the summary of the ones below it.
+    let hint = "Changes this condition's kill category and weapon requirement. Other conditions and effects keep their own settings.";
+    cell(ui, "Kill Trigger", hint, |ui| {
+        egui::ComboBox::from_id_salt("kill-trigger")
+            .width(COLUMN_WIDTH)
+            .truncate()
+            .selected_text(choice.map_or("Custom Kill Filter", PerkActivation::label))
+            .show_ui(ui, |ui| {
+                for option in PerkActivation::ALL {
+                    ui.selectable_value(&mut choice, Some(option), option.label());
+                }
+            })
+            .response
+            .on_hover_text(hint);
+        pickers::name_combo(ui, "kill-trigger", "Kill Trigger");
+    });
     if choice != selected
         && let Some(choice) = choice
     {
@@ -34,23 +51,33 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
     // touch one of this node's eight label lists. The node filters on the kill's own labels
     // at +0xD0 and on what was killed at +8, each through four set operations, so every list
     // is editable here from the vocabulary the game uses at that exact site.
-    for binding in [LABELS, VICTIM] {
+    // Both sites fold together, so the node offers one way to reach every empty operation
+    // rather than one beside each site.
+    let fold = Fold::of(ui, index, 0);
+    let mut unset = 0;
+    for (group, binding) in [LABELS, VICTIM].into_iter().enumerate() {
+        // The preset and the two sites are three separate readings. Run together they read
+        // as one list of nine near identical rows, so a site stands off from the one before
+        // it by more than the gap between its own rows.
+        ui.add_space(if group == 0 { 2.0 } else { 10.0 });
         let lists = native::labels::source(graph, index, binding)?;
-        for (operation, name, hint) in activation::LABEL_OPERATIONS {
-            if let Some(labels) = draw_labels(
-                ui,
-                graph.blocks[index].class,
-                binding,
-                operation,
-                name,
-                hint,
-                &lists[operation],
-            )? {
-                set_labels(graph, index, binding, operation, &labels)?;
-                return Ok(());
-            }
+        // Both sites offer the same four set operations, so the operation alone names two
+        // rows the same. The site's own word leads, as it does on every other node.
+        let caption = site_caption(graph.blocks[index].class, binding);
+        unset += unset_operations(&lists);
+        if let Some((operation, labels)) = draw_site_group(
+            ui,
+            graph.blocks[index].class,
+            binding,
+            &caption,
+            &lists,
+            fold.unfolded,
+        )? {
+            set_labels(graph, index, binding, operation, &labels)?;
+            return Ok(());
         }
     }
+    fold.draw(ui, unset);
     Ok(())
 }
 
@@ -90,6 +117,7 @@ fn set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::activation;
 
     #[test]
     fn changing_a_kill_filter_preserves_shared_siblings_and_other_requirements() {

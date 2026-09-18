@@ -133,9 +133,11 @@ impl SundialApp {
             Ok(result) => {
                 let size_note = settings_save_note(&result);
                 let (retention_note, retention_failed) = self.apply_backup_retention();
+                let dawn = self.dawn_account_runtime();
                 self.replace_loaded_document(account::WorkspaceDocument::load(
                     default_document,
                     &self.settings_path,
+                    dawn,
                 ));
                 self.set_status(
                     format!(

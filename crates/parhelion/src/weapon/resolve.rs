@@ -162,6 +162,19 @@ pub(super) fn resolve_project_weapons_with_progress(
         // socket overrides.
         let expanded = variable_damage::expand_spec(weapon, &definition)?;
         let weapon = expanded.as_ref().unwrap_or(weapon);
+        // A grafted behavior brings its source weapon's own plugs, because several exotics keep
+        // half of the behavior in a perk. Expanded here so later stages see plain socket columns.
+        let with_behavior_perks = if weapon.overrides.additional_behaviors.is_empty() {
+            None
+        } else {
+            let mut expanded = weapon.clone();
+            expanded.overrides = crate::weapon_behavior::expand_socket_columns(
+                &weapon.overrides,
+                &weapon_socket_types(&definition)?,
+            )?;
+            Some(expanded)
+        };
+        let weapon = with_behavior_perks.as_ref().unwrap_or(weapon);
         let donor_icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
         validate_reused_stock_item_icon(stock_item_icons, &strings, donor_icon_index)?;
         let donor_icon_container =

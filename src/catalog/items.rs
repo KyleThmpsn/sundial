@@ -65,11 +65,14 @@ const WEAPON_ORNAMENT_TYPE_NAME: &str = "Weapon Ornament";
 
 /// Weapon ornaments occupy weapon buckets but do not contain an authorable weapon definition.
 pub(crate) fn is_authorable_weapon_item(item: &ItemDef) -> bool {
-    is_weapon_bucket(item.bucket_hash)
-        && !item
-            .type_name
-            .trim()
-            .eq_ignore_ascii_case(WEAPON_ORNAMENT_TYPE_NAME)
+    is_weapon_bucket(item.bucket_hash) && !is_weapon_ornament_type_name(&item.type_name)
+}
+
+/// Returns whether a resolved item type name marks a weapon ornament plug.
+pub(crate) fn is_weapon_ornament_type_name(type_name: &str) -> bool {
+    type_name
+        .trim()
+        .eq_ignore_ascii_case(WEAPON_ORNAMENT_TYPE_NAME)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

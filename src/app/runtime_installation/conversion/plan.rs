@@ -22,6 +22,7 @@ pub(super) fn supported(document: &WorkspaceDocument, runtime: &RuntimeCopy) -> 
 }
 
 impl Plan {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         install: &Path,
         settings_path: &Path,
@@ -30,6 +31,7 @@ impl Plan {
         target: RuntimeCopy,
         defaults: Value,
         native_defaults: Option<&AccountDefaults>,
+        item_supported: native::conversion::ItemSupport<'_>,
     ) -> Result<Self, String> {
         if !supported(document, &target) {
             return Err("Conversion supports Dawn v6 and Sunrise v18.".into());
@@ -104,6 +106,7 @@ impl Plan {
                     .ok_or("The SQLite account is unavailable.")?,
                 &defaults,
                 &mut notes,
+                item_supported,
             )?
         };
         copy_settings(&mut converted, document.json());

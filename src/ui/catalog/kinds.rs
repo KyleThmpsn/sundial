@@ -400,6 +400,7 @@ mod tests {
                 headline: String::new(),
                 support: Support::Readable,
                 editable: true,
+                program: None,
                 condition_kinds: conditions.to_vec(),
                 effect_kinds: effects.to_vec(),
                 details: Vec::new(),

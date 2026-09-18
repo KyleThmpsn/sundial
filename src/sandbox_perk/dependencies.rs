@@ -66,6 +66,12 @@ pub struct Behavior {
     pub support: super::nodes::Support,
     /// Whether the action lies inside the shape the program compiler can emit.
     pub editable: bool,
+    /// The program recovered from the action, when one could be recovered.
+    ///
+    /// Recovering it is how `editable` is decided, so keeping the result costs nothing and
+    /// lets a reader see the effect's real structure without converting it first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<super::program::Program>,
     /// Distinct condition kinds, ascending.
     pub condition_kinds: Vec<u8>,
     /// Distinct effect kinds, ascending.
@@ -80,6 +86,7 @@ impl Behavior {
         let decoded = super::action::decode(payload).ok()?;
         let summary = super::action::ActionSummary::new(&decoded);
         let details = reading::sections(&summary);
+        let program = super::program::Program::from_native(payload, "Custom Effect").ok();
         let mut condition_kinds = decoded
             .conditions()
             .into_iter()
@@ -96,7 +103,8 @@ impl Behavior {
         Some(Self {
             headline: summary.headline,
             support: summary.support,
-            editable: super::program::Program::from_native(payload, "Custom Effect").is_ok(),
+            editable: program.is_some(),
+            program,
             condition_kinds,
             effect_kinds,
             details,
@@ -165,7 +173,7 @@ pub fn cached(
         crate::sandbox_perk::CACHE_DIRECTORY,
         // Bumped when the decoded behavior digest changes shape or wording, since the
         // headline, support and editability of every perk are cached here.
-        "dependencies-v15",
+        "dependencies-v16",
         &CACHE,
         || inspect(manager, progress),
         |_| true,

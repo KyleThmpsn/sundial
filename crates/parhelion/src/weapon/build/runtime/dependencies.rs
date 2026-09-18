@@ -7,6 +7,7 @@ use sundial::package_authoring::sandbox_perk::{
 pub(super) fn native_prerequisites<'a>(
     manager: &PackageManager,
     groups: impl IntoIterator<Item = (AppendedTagAllocator, &'a [NewTagSpec])>,
+    grafted_graphs: &[u32],
 ) -> AuthoringResult<Vec<TagHash>> {
     let groups = groups.into_iter().collect::<Vec<_>>();
     let mut authored = BTreeSet::new();
@@ -20,6 +21,22 @@ pub(super) fn native_prerequisites<'a>(
         }
     }
     let mut graphs = BTreeSet::new();
+    // A grafted behavior graph is named by a tag written into a component owner, which no
+    // authored tag walk reaches, so its prerequisites are enrolled from the request itself.
+    for graph in grafted_graphs {
+        if matches!(*graph, 0 | u32::MAX | 0x811C_9DC5) {
+            continue;
+        }
+        let entry = manager
+            .get_entry(TagHash(*graph))
+            .ok_or_else(|| invalid(format!("Grafted behavior graph 0x{graph:08X} is not live")))?;
+        if entry.reference != WEAPON_ENTITY_CLASS {
+            return Err(invalid(format!(
+                "Grafted behavior graph 0x{graph:08X} is not a weapon entity graph"
+            )));
+        }
+        graphs.insert(*graph);
+    }
     for (_, tags) in groups {
         for tag in tags {
             let source = manager
@@ -107,7 +124,7 @@ mod tests {
                 payload: compiled.payload,
                 storage: crate::NewTagStorageMode::InheritTemplate,
             }];
-            let additions = native_prerequisites(&manager, [(allocator, tags.as_slice())])
+            let additions = native_prerequisites(&manager, [(allocator, tags.as_slice())], &[])
                 .unwrap()
                 .into_iter()
                 .map(|tag| tag.0)

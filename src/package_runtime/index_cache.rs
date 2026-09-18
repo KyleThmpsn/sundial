@@ -40,7 +40,7 @@ pub(crate) fn cached_only<T: Serialize + DeserializeOwned>(
         .join(format!("{version}-{}.json", snapshot.key()?));
     let saved = std::fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Saved<T>>(&bytes).ok())
+        .and_then(|bytes| super::cache_file::read::<Saved<T>>(&bytes).ok())
         .filter(|saved| saved.snapshot == snapshot);
     let Some(saved) = saved else {
         return Ok(None);
@@ -78,7 +78,7 @@ pub(crate) fn cached<T: Serialize + DeserializeOwned>(
     let saved = path
         .as_deref()
         .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Saved<T>>(&bytes).ok())
+        .and_then(|bytes| super::cache_file::read::<Saved<T>>(&bytes).ok())
         .filter(|saved| saved.snapshot == snapshot);
     let (index, fresh) = match saved {
         Some(saved) => (saved.index, false),
@@ -115,18 +115,34 @@ pub(crate) fn cached<T: Serialize + DeserializeOwned>(
 /// once the current one is on disk. Keep the newest few so switching package directories
 /// does not rebuild every time. Runs on load as well as on write, so leftovers from an
 /// older build go the first time the current index is used.
+///
+/// A file of an older format version can never be read again, whatever its snapshot, so it
+/// is removed outright rather than held as one of the kept few. Only the current version
+/// keeps spares, which is what makes switching between two package directories cheap.
 fn prune_family(path: &Path) {
     let Some(parent) = path.parent() else {
         return;
     };
-    if let Some(family) = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.split_once("-v"))
-        .map(|(kind, _)| format!("{kind}-v"))
-    {
-        super::tft::shards::prune_siblings(parent, path, |name| name.starts_with(&family));
+    // `{kind}-v{version}-{key}.json`, and the key carries no dash of its own.
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let (Some((kind, _)), Some((version, _))) = (name.split_once("-v"), name.rsplit_once('-'))
+    else {
+        return;
+    };
+    let (family, version) = (format!("{kind}-v"), format!("{version}-"));
+    for entry in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&family) && !name.starts_with(&version))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
+    super::tft::shards::prune_siblings(parent, path, |name| name.starts_with(&version));
+    super::tft::shards::sweep_stray_temporaries(parent);
 }
 
 fn write<T: Serialize>(path: &Path, snapshot: &Snapshot, index: &T) -> Result<(), String> {
@@ -136,18 +152,15 @@ fn write<T: Serialize>(path: &Path, snapshot: &Snapshot, index: &T) -> Result<()
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    // Buffered, so a large index is a few big writes rather than one syscall per token.
-    let mut writer = std::io::BufWriter::new(temporary.as_file_mut());
-    serde_json::to_writer(
-        &mut writer,
+    // Deflated and buffered, so a large index is a few big writes rather than one syscall
+    // per token. A plain file an older build wrote is still read, so this costs no rebuild.
+    super::cache_file::write(
+        temporary.as_file_mut(),
         &Saved {
             snapshot: snapshot.clone(),
             index,
         },
-    )
-    .map_err(|error| error.to_string())?;
-    std::io::Write::flush(&mut writer).map_err(|error| error.to_string())?;
-    drop(writer);
+    )?;
     temporary.persist(path).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -160,6 +173,48 @@ mod tests {
     struct PartialIndex {
         entries: Vec<u32>,
         errors: Vec<String>,
+    }
+
+    /// A file of an older format version can never be read again, so it goes at once rather
+    /// than holding one of the slots the current version keeps for switching between two
+    /// package directories. A temporary file an interrupted write left behind goes too, but
+    /// only once it is old enough that no write can still be holding it.
+    #[test]
+    fn pruning_drops_dead_versions_and_abandoned_temporaries() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in [
+            "tft-v5-aaaa.json",
+            "tft-v5-bbbb.json",
+            "tft-v4-cccc.json",
+            "other-v5-dddd.json",
+            ".tmpfresh",
+            ".tmpstale",
+        ] {
+            std::fs::write(directory.path().join(name), b"{}").unwrap();
+        }
+        let stale = std::fs::File::options()
+            .write(true)
+            .open(directory.path().join(".tmpstale"))
+            .unwrap();
+        stale
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24),
+            )
+            .unwrap();
+        drop(stale);
+
+        prune_family(&directory.path().join("tft-v5-aaaa.json"));
+
+        let present = |name: &str| directory.path().join(name).exists();
+        assert!(present("tft-v5-aaaa.json"), "the current index went");
+        assert!(present("tft-v5-bbbb.json"), "the spare snapshot went");
+        assert!(present("other-v5-dddd.json"), "another index family went");
+        assert!(present(".tmpfresh"), "a write in flight was removed");
+        assert!(
+            !present("tft-v4-cccc.json"),
+            "the dead format version stayed"
+        );
+        assert!(!present(".tmpstale"), "an abandoned temporary stayed");
     }
 
     #[test]

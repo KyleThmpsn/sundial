@@ -270,14 +270,8 @@ fn requires_weapon(condition: &DecodedCondition) -> bool {
 }
 
 pub(super) fn describe_condition(condition: &DecodedCondition) -> String {
-    if condition.kind == 20
-        && let Ok(graph) = super::native::Graph::read(&condition.native, 0, condition.class)
-        && let Some(name) = super::native::predicate::describe(&graph)
-    {
-        return name;
-    }
     if matches!(condition.kind, 20 | 35)
-        && let Some(name) = state_description(condition.class, &condition.native)
+        && let Some(name) = predicate_description(condition)
     {
         return name;
     }
@@ -307,7 +301,11 @@ pub(super) fn describe_condition(condition: &DecodedCondition) -> String {
         15 => "The weapon is detached".to_owned(),
         16 => "The weapon is drawn".to_owned(),
         17 => "The weapon is holstered".to_owned(),
-        26 => "A counter built from the rows below reaches its threshold".to_owned(),
+        // The threshold is a named field, so the reading says the number the counter needs.
+        26 => match fact_value(&condition.facts, "Trigger Threshold") {
+            Some(value) => format!("A counter from the rows below reaches {}", value.render()),
+            None => "A counter built from the rows below reaches its threshold".to_owned(),
+        },
         31 => "Every requirement below is met".to_owned(),
         35 => "A predicate passes and its nested condition also passes".to_owned(),
         _ => condition
@@ -319,6 +317,76 @@ pub(super) fn describe_condition(condition: &DecodedCondition) -> String {
 /// A general predicate read as the state it checks: the named key at +D4, inverted by the
 /// flag at +F8, and the equipped weapon labels of any weapon record it carries. Both are
 /// named from the stock perks that use them, so a node with neither keeps its traced name.
+/// A predicate in plain words: a compiled comparison when the node carries one, otherwise the
+/// state it checks. The nested kind also says what its nested condition requires.
+fn predicate_description(condition: &DecodedCondition) -> Option<String> {
+    let own = super::native::Graph::read(&condition.native, 0, condition.class)
+        .ok()
+        .and_then(|graph| super::native::predicate::describe(&graph))
+        .or_else(|| state_description(condition.class, &condition.native))
+        .or_else(|| empty_predicate_description(condition.class, &condition.native))
+        .or_else(|| unnamed_state_description(&condition.native))?;
+    if condition.kind != 35 {
+        return Some(own);
+    }
+    let nested = condition
+        .children
+        .iter()
+        .chain(
+            condition
+                .subgroups
+                .iter()
+                .flat_map(|subgroup| &subgroup.conditions),
+        )
+        .map(DecodedCondition::description)
+        .collect::<Vec<_>>();
+    Some(if nested.is_empty() {
+        own
+    } else if own == "Always" {
+        // An empty wrapper adds nothing, so the nested condition is the whole meaning.
+        nested.join(" and ")
+    } else {
+        format!("{own}, and {}", nested.join(" and "))
+    })
+}
+
+/// A predicate on a named key the key table does not know. The hash is what is known, so the
+/// text says exactly that instead of the kind's generic sentence.
+fn unnamed_state_description(native: &[u8]) -> Option<String> {
+    let key = native
+        .get(0xD4..0xD8)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))?;
+    if key == crate::sandbox_perk::program::EMPTY_KEY || key == 0 {
+        return None;
+    }
+    Some(if native.get(0xF8) == Some(&1) {
+        format!("While not in the unnamed state 0x{key:08X}")
+    } else {
+        format!("While in the unnamed state 0x{key:08X}")
+    })
+}
+
+/// A predicate with no key, no player or weapon state and no labels checks nothing, so it
+/// passes, or never passes when inverted. Stock always-active perks are built this way: an
+/// empty activation with an inverted empty removal, so the effect lasts until the perk goes.
+fn empty_predicate_description(class: u32, native: &[u8]) -> Option<String> {
+    let key = native
+        .get(0xD4..0xD8)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))?;
+    if key != crate::sandbox_perk::program::EMPTY_KEY
+        || native.get(0x38) != Some(&0)
+        || native.get(0x81) != Some(&0)
+        || !equipped_weapon_labels(class, native).is_empty()
+    {
+        return None;
+    }
+    Some(if native.get(0xF8) == Some(&1) {
+        "Never".to_owned()
+    } else {
+        "Always".to_owned()
+    })
+}
+
 pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
     let key = native
         .get(0xD4..0xD8)
@@ -336,7 +404,17 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
                 Some(8) => Some("Sprinting"),
                 _ => None,
             };
-            let weapon = (native.get(0x81) == Some(&4)).then_some("Aiming Down Sights");
+            // The weapon byte is a bit set. Bit 4 is aiming down sights. Bit 1 holds in every
+            // weapon perk and weapon mod whose effect applies while that weapon is in hand
+            // (Anti-Barrier Rounds, Celerity, Eye of the Storm, Black Talon Catalyst) and
+            // combines with 4 in Split Electron, whose text says "aiming down sights".
+            let weapon_bits = native.get(0x81).copied().unwrap_or(0);
+            let weapon = match (weapon_bits & 1 != 0, weapon_bits & 4 != 0) {
+                (true, true) => Some("Holding the Weapon and Aiming Down Sights"),
+                (true, false) => Some("Holding the Weapon"),
+                (false, true) => Some("Aiming Down Sights"),
+                (false, false) => None,
+            };
             match (player, weapon) {
                 (Some(player), Some(weapon)) => Some(format!("{player} and {weapon}")),
                 (Some(one), None) | (None, Some(one)) => Some(one.to_owned()),

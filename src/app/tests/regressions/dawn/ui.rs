@@ -39,6 +39,7 @@ fn runtime_preferences_show_dawn_and_the_v18_account_mismatch() {
                 ))
                 .unwrap(),
                 &app.settings_path,
+                false,
             );
             app.runtime_choice.inspection = inspection;
             let before = app.document.clone();

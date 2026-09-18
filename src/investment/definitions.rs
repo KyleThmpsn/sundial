@@ -358,6 +358,54 @@ pub struct WeaponDyeReference {
     pub dye_reference_index: u16,
 }
 
+/// One ornament offered by an installed weapon's own sockets.
+///
+/// Ornaments are plug items, not authoring donors. They carry the translation-art rows that
+/// select the equipped model and their own inventory icon, which is why an appearance donor can
+/// lend either of them without changing the weapon it is attached to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeaponOrnament {
+    pub hash: u32,
+    pub name: String,
+    pub rarity: WeaponRarity,
+    /// Donor socket that offers this ornament.
+    pub socket_index: usize,
+    /// Complete ordered native translation-art rows carried by the ornament item.
+    pub art_arrangements: Vec<WeaponArtArrangement>,
+    /// Installed icon container tag selected by the ornament's item-string row.
+    pub icon_container_tag: Option<u32>,
+    /// Complete ordered custom, default, and locked dye-reference rows carried by the ornament.
+    pub render_dye_rows: [Vec<WeaponDyeReference>; 3],
+}
+
+/// Flat color of the decorative plate painted into exotic ornament icon artwork.
+const EXOTIC_ORNAMENT_PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
+/// The same plate on legendary ornament artwork.
+const LEGENDARY_ORNAMENT_PLATE: [u8; 3] = [0x8C, 0x45, 0xA7];
+
+impl WeaponOrnament {
+    /// Returns whether this ornament replaces the model of a weapon with the given art rows.
+    #[must_use]
+    pub fn changes_model(&self, weapon_art_arrangements: &[WeaponArtArrangement]) -> bool {
+        !self.art_arrangements.is_empty() && self.art_arrangements != weapon_art_arrangements
+    }
+
+    /// Returns the flat color of the decorative plate baked into this ornament's icon artwork.
+    ///
+    /// Ornament icons draw their weapon over one of two flat colors, one per rarity, at a range
+    /// of alpha values. Both were derived from the pixels a large group of installed ornament
+    /// icons share, and neither appears anywhere in an installed weapon's own icon artwork, so
+    /// clearing the color removes the plate and cannot touch a weapon's art.
+    #[must_use]
+    pub const fn icon_plate_color(&self) -> Option<[u8; 3]> {
+        match self.rarity {
+            WeaponRarity::Exotic => Some(EXOTIC_ORNAMENT_PLATE),
+            WeaponRarity::Legendary => Some(LEGENDARY_ORNAMENT_PLATE),
+            _ => None,
+        }
+    }
+}
+
 /// One sandbox-perk index declared by an installed item or plug, with a display representative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeaponSandboxPerkChoice {

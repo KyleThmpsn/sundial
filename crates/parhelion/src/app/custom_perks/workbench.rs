@@ -375,7 +375,13 @@ impl Workbench {
             .id(egui::Id::new("global-custom-perk-workbench"))
             .open(&mut open)
             .collapsible(false)
-            .default_size(egui::vec2(1020.0, 720.0))
+            // Open into the room that is actually there. A fixed 720 high window left most
+            // of a tall screen empty and cut the editor off mid effect, and the size is
+            // remembered once a reader drags it, so this only sets where they start.
+            .default_size(egui::vec2(
+                (ctx.screen_rect().width() - 80.0).clamp(700.0, 1600.0),
+                (ctx.screen_rect().height() - 120.0).clamp(480.0, 1200.0),
+            ))
             .min_width(700.0_f32.min((ctx.screen_rect().width() - 40.0).max(320.0)))
             .max_width((ctx.screen_rect().width() - 40.0).max(320.0))
             .max_height((ctx.screen_rect().height() - 64.0).max(360.0))

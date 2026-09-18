@@ -8,6 +8,7 @@ mod build_flow;
 mod build_selection;
 mod library;
 mod operation_lock;
+mod ornaments;
 mod preferences;
 mod recipe_editing;
 mod reports;
@@ -127,7 +128,8 @@ fn assert_private_window_survives_tab_changes(app: &mut PackageAuthoringApp) {
             "window missing on {page:?}"
         );
         assert!(text(&output).contains("Apply to Weapon"));
-        assert!(text(&output).contains("This Weapon"));
+        // The weapon's own sockets sit beside the editor under this header on every page.
+        assert!(text(&output).contains("Current Weapon Perks"));
         assert!(app.perk_workbench.open);
         assert_eq!(
             app.recipe, before,

@@ -1,7 +1,7 @@
 //! Explicit experimental account conversion. Callers stage output and keep the source backup.
 mod export;
 mod import;
-pub(crate) use export::to_json;
+pub(crate) use export::{ItemSupport, to_json};
 pub(crate) use import::from_json;
 
 use super::{AccountDefaults, SqliteAccountDocument};

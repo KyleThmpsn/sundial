@@ -176,7 +176,7 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
                 db.execute_batch(sql).unwrap();
             }
             db.execute_batch("COMMIT").unwrap();
-            app.document = WorkspaceDocument::load(json, &app.settings_path);
+            app.document = WorkspaceDocument::load(json, &app.settings_path, false);
             assert_eq!(
                 app.document.source_kind(),
                 account::AccountSourceKind::Sqlite

@@ -47,7 +47,7 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     .unwrap();
     let encoded = serde_json::to_vec(&json).unwrap();
     fs::write(&settings, &encoded).unwrap();
-    let persisted = WorkspaceDocument::load(json, &settings);
+    let persisted = WorkspaceDocument::load(json, &settings, false);
     assert_eq!(persisted.source_kind(), AccountSourceKind::Sqlite);
     assert_eq!(
         persisted.progression_view(0)["state"]["unlocks"]["account_flag_runs"],
@@ -94,6 +94,7 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     let reopened = WorkspaceDocument::load(
         serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap(),
         &settings,
+        false,
     );
     assert_eq!(reopened.json(), edited.json());
     assert_saved_domains(&db, &reopened);

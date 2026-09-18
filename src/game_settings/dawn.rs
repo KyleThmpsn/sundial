@@ -2,8 +2,10 @@
 mod page;
 pub(crate) use page::draw;
 
+use crate::hash::parse_unsigned_value;
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -27,6 +29,44 @@ const OMEGA_FLAGS: [(&str, &str); 9] = [
 const CLIENT_FLAGS: [(&str, &str); 2] = [
     ("roster_force_authored", "Force Authored Roster"),
     ("seed_authored_sensors", "Seed Authored Sensors"),
+];
+
+/// Limits a Dawn runtime compiles in, mirrored from its account and inventory state headers.
+const CHARACTER_CAPACITY: usize = 3;
+const CHARACTER_ITEM_CAPACITY: usize = 135;
+const PLUG_CAPACITY: usize = 12;
+/// The engine no-definition hash cannot identify an authored item or plug.
+const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
+/// The 16 named equipment slots, in the order Dawn's EquipmentSlot enum declares them.
+const EQUIPMENT_SLOTS: [&str; 16] = [
+    "kinetic",
+    "energy",
+    "heavy",
+    "helmet",
+    "gauntlets",
+    "chest",
+    "legs",
+    "class_item",
+    "ghost",
+    "vehicle",
+    "ship",
+    "subclass",
+    "clan_banner",
+    "emblem",
+    "emote",
+    "finisher",
+];
+/// Character fields Dawn range checks when it reads them back, with each inclusive maximum.
+const CHARACTER_RANGES: [(&str, u8); 9] = [
+    ("race", 2),
+    ("gender", 1),
+    ("class", 2),
+    ("level", 255),
+    ("movement_ability", 255),
+    ("grenade_ability", 255),
+    ("super_ability", 255),
+    ("melee_ability", 255),
+    ("class_ability", 255),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,7 +160,120 @@ pub(crate) fn settings_issues(json: &Value) -> Vec<String> {
             }
         }
     }
+    issues.append(&mut account_issues(json));
     issues
+}
+
+/// Reports account data a Dawn runtime imports but then refuses to resolve.
+///
+/// Dawn imports settings.json once and never reads it again, so a shape it accepts at import but
+/// rejects while preparing a loadout leaves the client waiting through investment sign-in until it
+/// times out. These checks mirror the limits Dawn compiles in.
+pub(crate) fn account_issues(json: &Value) -> Vec<String> {
+    let mut issues = Vec::new();
+    let Some(characters) = json.pointer("/state/characters").and_then(Value::as_array) else {
+        return issues;
+    };
+    if characters.len() > CHARACTER_CAPACITY {
+        issues.push(format!(
+            "Dawn supports {CHARACTER_CAPACITY} characters and this account has {}.",
+            characters.len()
+        ));
+    }
+    let mut instances: BTreeMap<u64, usize> = BTreeMap::new();
+    for (index, character) in characters.iter().enumerate() {
+        let label = format!("Character {}", index + 1);
+        for (field, limit) in CHARACTER_RANGES {
+            if let Some(value) = character.get(field).and_then(Value::as_i64)
+                && (value < 0 || value > i64::from(limit))
+            {
+                issues.push(format!(
+                    "{label} has {field} {value}, outside 0 to {limit}."
+                ));
+            }
+        }
+        if let Some(inventory) = character.get("inventory").and_then(Value::as_array) {
+            if inventory.len() > CHARACTER_ITEM_CAPACITY {
+                issues.push(format!(
+                    "{label} holds {} unequipped items and Dawn stores {CHARACTER_ITEM_CAPACITY}.",
+                    inventory.len()
+                ));
+            }
+            for item in inventory {
+                item_issues(
+                    item,
+                    &label,
+                    "an inventory item",
+                    &mut instances,
+                    &mut issues,
+                );
+            }
+        }
+        let Some(equipment) = character.get("equipment").and_then(Value::as_object) else {
+            continue;
+        };
+        for (slot, item) in equipment {
+            if !EQUIPMENT_SLOTS.contains(&slot.as_str()) {
+                issues.push(format!("{label} has unknown equipment slot {slot}."));
+            }
+            item_issues(item, &label, slot, &mut instances, &mut issues);
+        }
+    }
+    for (soid, count) in instances {
+        if count > 1 {
+            issues.push(format!(
+                "Instance {soid} appears {count} times. Dawn requires one owner per instance."
+            ));
+        }
+    }
+    issues
+}
+
+fn item_issues(
+    item: &Value,
+    label: &str,
+    slot: &str,
+    instances: &mut BTreeMap<u64, usize>,
+    issues: &mut Vec<String>,
+) {
+    if !item.is_object() {
+        return;
+    }
+    // Hashes reach this validator the way settings.json stores them, which for everything
+    // Sundial writes is a `0x` string rather than a number. Reading them as numbers alone made
+    // both checks below silently pass everything, and made every authored plug fail.
+    if let Some(soid) = item.get("instance_soid").and_then(parse_unsigned_value) {
+        *instances.entry(soid).or_default() += 1;
+    }
+    if item.get("definition_hash").and_then(parse_unsigned_value)
+        == Some(u64::from(NO_DEFINITION_HASH))
+    {
+        issues.push(format!("{label} {slot} has no usable definition hash."));
+    }
+    match item.get("plugs") {
+        None | Some(Value::Null) => {}
+        // An empty lane list is how Dawn's own defaults express a socket-less item such as a
+        // subclass or an emblem, so it is not a problem on its own.
+        Some(Value::Array(plugs)) if plugs.is_empty() => {}
+        Some(Value::Array(plugs)) => {
+            if plugs.len() > PLUG_CAPACITY {
+                issues.push(format!(
+                    "{label} {slot} lists {} socket lanes and Dawn accepts {PLUG_CAPACITY}.",
+                    plugs.len()
+                ));
+            }
+            for plug in plugs {
+                if !plug.is_null()
+                    && parse_unsigned_value(plug).is_none_or(|hash| {
+                        hash > u64::from(u32::MAX) || hash == u64::from(NO_DEFINITION_HASH)
+                    })
+                {
+                    issues.push(format!("{label} {slot} has an unusable plug hash."));
+                }
+            }
+        }
+        Some(_) => issues.push(format!("{label} {slot} plugs must be null or a list.")),
+    }
 }
 
 fn dotted(path: &str) -> String {

@@ -35,7 +35,7 @@ fn forward(existing_database: bool) -> (tempfile::TempDir, plan::Plan) {
     if existing_database {
         native::tests::create_fixture(&crate::persistence::investment_path(&path), 3);
     }
-    let document = WorkspaceDocument::load(dawn(), &path);
+    let document = WorkspaceDocument::load(dawn(), &path, false);
     let mut target = RuntimeInspection::inspect(root).copies.remove(0);
     target.bundled_schema = Some(18);
     let plan = plan::Plan::prepare(
@@ -46,6 +46,7 @@ fn forward(existing_database: bool) -> (tempfile::TempDir, plan::Plan) {
         target,
         sunrise(),
         Some(&native::tests::default_resources()),
+        &|_| true,
     )
     .unwrap();
     (directory, plan)
@@ -85,7 +86,7 @@ fn explicit_conversion_and_restore_handle_new_and_existing_sqlite_accounts() {
         let backup = plan.apply(|| Ok(())).unwrap();
         let after = settings::load_workspace_json(&target).unwrap();
         assert_eq!(after["version"], 18);
-        let loaded = WorkspaceDocument::load(after, &target);
+        let loaded = WorkspaceDocument::load(after, &target, false);
         assert!(loaded.native_account().is_some());
         settings::validate_workspace_document(&loaded).unwrap();
         assert_eq!(
@@ -168,15 +169,25 @@ fn conversion_to_dawn_preserves_native_source_and_validates_generated_json() {
     let path = root.join("Sunrise/settings.json");
     let database = crate::persistence::investment_path(&path);
     let before = native::snapshot::read(&database).unwrap();
-    let document = WorkspaceDocument::load(settings::load_workspace_json(&path).unwrap(), &path);
+    let document =
+        WorkspaceDocument::load(settings::load_workspace_json(&path).unwrap(), &path, false);
     let mut target = RuntimeInspection::inspect(root).copies.remove(0);
     target.bundled_schema = Some(6);
     target.dawn = true;
     target.dawn_runtime = Some(crate::game_settings::dawn::Runtime::inspect(
         &target.dll_path,
     ));
-    let plan =
-        plan::Plan::prepare(root, &path, &document, &document, target, dawn(), None).unwrap();
+    let plan = plan::Plan::prepare(
+        root,
+        &path,
+        &document,
+        &document,
+        target,
+        dawn(),
+        None,
+        &|_| true,
+    )
+    .unwrap();
     let backup = plan.apply(|| Ok(())).unwrap();
     let result = settings::load_workspace_json(&path).unwrap();
     assert_eq!(result["version"], 6);
@@ -209,6 +220,7 @@ fn conversion_includes_unsaved_changes_and_preserves_unknown_source_fields_in_ba
         target,
         sunrise(),
         Some(&native::tests::default_resources()),
+        &|_| true,
     )
     .unwrap();
     let backup = plan.apply(|| Ok(())).unwrap();
@@ -293,7 +305,7 @@ fn conversion_uses_the_dll_settings_folder_and_restores_a_previously_missing_tar
         let source = root.join("settings.json");
         let bytes = serde_json::to_vec(&dawn()).unwrap();
         fs::write(&source, &bytes).unwrap();
-        let document = WorkspaceDocument::load(dawn(), &source);
+        let document = WorkspaceDocument::load(dawn(), &source, false);
         let mut target = RuntimeInspection::inspect(root).copies.remove(0);
         target.bundled_schema = Some(18);
         let plan = plan::Plan::prepare(
@@ -304,6 +316,7 @@ fn conversion_uses_the_dll_settings_folder_and_restores_a_previously_missing_tar
             target,
             sunrise(),
             Some(&native::tests::default_resources()),
+            &|_| true,
         )
         .unwrap();
         let backup = plan.apply(|| Ok(())).unwrap();

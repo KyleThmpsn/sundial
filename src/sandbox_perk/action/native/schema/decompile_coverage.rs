@@ -90,6 +90,19 @@ fn kind_name(condition: bool, kind: u8) -> String {
     )
 }
 
+/// Per carried native kind: actions carrying it, nodes carried, and the action tags.
+type KindTally = BTreeMap<(bool, u8), (usize, usize, BTreeSet<u32>)>;
+/// The native nodes one opened action carries, as (condition, kind).
+type Carried = Vec<(bool, u8)>;
+
+/// One exotic perk in the report: its actions, the kinds they carry, its in-game text.
+#[derive(Default)]
+struct ExoticRow {
+    tags: BTreeSet<u32>,
+    carried: BTreeSet<(bool, u8)>,
+    description: String,
+}
+
 #[derive(Default)]
 struct Reasons(BTreeMap<String, (usize, BTreeSet<u32>)>);
 
@@ -119,8 +132,10 @@ struct Coverage {
     typed: usize,
     with_native: usize,
     /// Per carried kind: actions carrying it, nodes carried, example tags.
-    native_kinds: BTreeMap<(bool, u8), (usize, usize, BTreeSet<u32>)>,
+    native_kinds: KindTally,
     triggers: BTreeMap<&'static str, usize>,
+    /// Per opened action: the native nodes it carries, for the per-perk views.
+    opened: BTreeMap<u32, Carried>,
     context: Context,
 }
 
@@ -135,6 +150,7 @@ impl Coverage {
             Outcome::Unsupported(message) => self.unsupported.add(normalize(&message), tag),
             Outcome::Opened { trigger, native } => {
                 *self.triggers.entry(trigger.label()).or_default() += 1;
+                self.opened.insert(tag, native.clone());
                 if native.is_empty() {
                     self.typed += 1;
                     return;
@@ -306,6 +322,7 @@ fn report_stock_perk_decompile_coverage() {
         &coverage,
     );
     write_native_kinds(&mut out, &coverage);
+    write_exotic_study(&mut out, &coverage);
     write_auxiliary_study(&mut out, &coverage.context);
     write_policy_study(&mut out, &coverage.context);
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(REPORT);
@@ -320,6 +337,153 @@ fn report_stock_perk_decompile_coverage() {
         coverage.with_native,
         coverage.native_kinds.len(),
         path.display()
+    );
+}
+
+/// The exotic intrinsics: which of their actions open fully typed, which native kinds they
+/// carry and how many opaque bytes each of those kinds still shows, then every exotic perk
+/// with its carried kinds. This is the focused work list for naming.
+fn write_exotic_study(out: &mut String, coverage: &Coverage) {
+    let context = &coverage.context;
+    if context.exotic.is_empty() {
+        return;
+    }
+    // Exotic actions: every captured tag whose perks include an exotic intrinsic.
+    let exotic_tags: BTreeSet<u32> = context
+        .perks
+        .iter()
+        .filter(|(_, perks)| perks.iter().any(|perk| context.exotic.contains(perk)))
+        .map(|(tag, _)| *tag)
+        .collect();
+    let opened: Vec<(&u32, &Carried)> = exotic_tags
+        .iter()
+        .filter_map(|tag| coverage.opened.get(tag).map(|native| (tag, native)))
+        .collect();
+    let typed = opened
+        .iter()
+        .filter(|(_, native)| native.is_empty())
+        .count();
+    let _ = writeln!(out, "\n## Exotic Intrinsics\n");
+    let _ = writeln!(
+        out,
+        "Perks granted by an intrinsic or armor perk that only exotic items carry: {} perks \
+         behind {} captured actions. {} open fully typed, {} carry native nodes, {} do not open.\n",
+        context.exotic.len(),
+        exotic_tags.len(),
+        typed,
+        opened.len() - typed,
+        exotic_tags.len() - opened.len()
+    );
+    // Kinds carried by exotic actions, with the opaque bytes their templates still show.
+    let opaque = opaque_bytes_by_kind();
+    let mut kinds = KindTally::new();
+    for (tag, native) in &opened {
+        let distinct: BTreeSet<(bool, u8)> = native.iter().copied().collect();
+        for kind in native.iter() {
+            kinds.entry(*kind).or_default().1 += 1;
+        }
+        for kind in distinct {
+            let entry = kinds.entry(kind).or_default();
+            entry.0 += 1;
+            entry.2.insert(**tag);
+        }
+    }
+    let mut ranked: Vec<_> = kinds.iter().collect();
+    ranked.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+    let _ = writeln!(
+        out,
+        "| Kind | Exotic actions | Nodes | Opaque bytes | Exotic perks |\n|---|---|---|---|---|"
+    );
+    for ((condition, kind), (actions, nodes, tags)) in ranked {
+        let _ = writeln!(
+            out,
+            "| {} | {actions} | {nodes} | {} | {} |",
+            kind_name(*condition, *kind),
+            opaque
+                .get(&(*condition, *kind))
+                .map_or_else(|| "unmapped".to_owned(), ToString::to_string),
+            context.describe(tags)
+        );
+    }
+    // Every exotic perk, with its in-game text and the kinds its actions carry.
+    let mut rows: BTreeMap<String, ExoticRow> = BTreeMap::new();
+    for (tag, native) in &opened {
+        let Some(perks) = context.perks.get(tag) else {
+            continue;
+        };
+        for perk in perks.iter().filter(|perk| context.exotic.contains(perk)) {
+            let name = context
+                .names
+                .get(perk)
+                .and_then(|names| names.iter().next().cloned())
+                .unwrap_or_else(|| format!("perk {perk}"));
+            let entry = rows.entry(name).or_default();
+            entry.tags.insert(**tag);
+            entry.carried.extend(native.iter().copied());
+            if entry.description.is_empty() {
+                entry.description = context.description(*perk);
+            }
+        }
+    }
+    let _ = writeln!(
+        out,
+        "\n| Exotic perk | In-game text | Actions | Carried kinds |\n|---|---|---|---|"
+    );
+    for (name, row) in &rows {
+        let (tags, description) = (&row.tags, &row.description);
+        let carried = if row.carried.is_empty() {
+            "fully typed".to_owned()
+        } else {
+            row.carried
+                .iter()
+                .map(|(condition, kind)| format!("{}{kind}", if *condition { "c" } else { "e" }))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let _ = writeln!(
+            out,
+            "| {name} | {} | {} | {carried} |",
+            description.replace('|', "/").replace('\n', " "),
+            tags.len()
+        );
+    }
+}
+
+/// Floors for stock perk coverage, raised as shapes are carried. Every captured stock action
+/// opens in the workbench today, so a refusal reappearing is a regression rather than drift.
+/// Lowering one means a stock perk stopped opening, which needs a deliberate decision.
+const OPENS_FLOOR: usize = 1613;
+const TYPED_FLOOR: usize = 671;
+
+/// Checked only when the captured stock survey is available locally.
+#[test]
+fn stock_perk_decompile_coverage_does_not_regress() {
+    let Some(coverage) = run() else {
+        return;
+    };
+    let refusals = |reasons: &Reasons| {
+        reasons
+            .ranked()
+            .iter()
+            .map(|(reason, (count, _))| format!("{count} x {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    assert!(
+        coverage.unsupported.total() == 0 && coverage.undecodable.total() == 0,
+        "stock actions stopped opening: {} {}",
+        refusals(&coverage.unsupported),
+        refusals(&coverage.undecodable)
+    );
+    assert!(
+        coverage.opened() >= OPENS_FLOOR,
+        "opened stock actions fell to {} (floor {OPENS_FLOOR})",
+        coverage.opened()
+    );
+    assert!(
+        coverage.typed >= TYPED_FLOOR,
+        "fully typed stock actions fell to {} (floor {TYPED_FLOOR})",
+        coverage.typed
     );
 }
 

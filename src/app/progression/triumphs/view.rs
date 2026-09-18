@@ -48,6 +48,14 @@ fn jobs(
     changed
 }
 
+fn draw_issues(ui: &mut egui::Ui, issues: &[edit::Issue]) {
+    for issue in issues {
+        ui.label(destiny_text(ui, &issue.name).strong());
+        ui.label(destiny_text(ui, &issue.reason).weak());
+        ui.add_space(6.0);
+    }
+}
+
 fn draw_job(
     ui: &mut egui::Ui,
     document: &mut Value,
@@ -61,12 +69,7 @@ fn draw_job(
     }
     if let Some(mut job) = state.job.take() {
         let (done, total) = job.progress();
-        let cancel = ui
-            .horizontal(|ui| {
-                ui.label(format!("Updating {done} / {total}…"));
-                ui.button("Cancel").clicked()
-            })
-            .inner;
+        let cancel = crate::app::ui::modal_progress(ui, "Updating Triumphs", done, total);
         if !cancel {
             if job.step(catalog) {
                 if job.issues.is_empty()
@@ -75,7 +78,7 @@ fn draw_job(
                     && job
                         .review
                         .as_ref()
-                        .is_none_or(|review| review.related.is_empty())
+                        .is_some_and(|review| review.related.is_empty())
                 {
                     return finish(job, document, catalog, state);
                 }
@@ -87,70 +90,50 @@ fn draw_job(
         }
     }
     if let Some(job) = &state.ready {
-        ui.strong("Review Changes");
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{} Supported", job.supported_count()));
-            let skipped = job.issues.len() + job.conflicts.len();
-            if skipped > 0 {
-                ui.weak(format!("{skipped} Skipped"));
+        let skipped = job.issues.len() + job.conflicts.len();
+        let changing = job.changing_count();
+        let settled = job.supported_count().saturating_sub(changing);
+        let mut counts = vec![(false, format!("{changing} to Change"))];
+        if settled > 0 {
+            counts.push((true, format!("{settled} Already Set")));
+        }
+        if skipped > 0 {
+            counts.push((true, format!("{skipped} Skipped")));
+        }
+        if job.queued_count() > 0 {
+            counts.push((true, format!("{} Pending Rewards", job.queued_count())));
+        }
+        crate::app::ui::review_header(ui, "Review Changes", &counts);
+        crate::app::ui::review_body(ui, "triumph_review_body", |ui| {
+            if !job.conflicts.is_empty() {
+                ui.label("Conflicting Triumphs will be skipped. Their rewards are excluded.");
+                egui::CollapsingHeader::new(format!("{} Conflicts", job.conflicts.len()))
+                    .id_salt("triumph_review_conflicts")
+                    .show(ui, |ui| draw_issues(ui, &job.conflicts));
             }
-            if job.queued_count() > 0 {
-                ui.weak(format!("{} Pending Rewards", job.queued_count()));
+            job.draw_consumables(ui, catalog);
+            if !job.issues.is_empty() {
+                egui::CollapsingHeader::new(format!("{} Skipped Triumphs", job.issues.len()))
+                    .id_salt("triumph_review_skipped")
+                    .show(ui, |ui| draw_issues(ui, &job.issues));
+            }
+            if let Some(review) = &job.review {
+                review.draw(ui);
             }
         });
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("triumph_review_body")
-            .max_height((ui.ctx().available_rect().height() - 230.0).clamp(100.0, 460.0))
-            .show(ui, |ui| {
-                if !job.conflicts.is_empty() {
-                    ui.label("Conflicting Triumphs will be skipped. Their rewards are excluded.");
-                    egui::CollapsingHeader::new(format!("{} Conflicts", job.conflicts.len()))
-                        .id_salt("triumph_review_conflicts")
-                        .show(ui, |ui| {
-                            for issue in &job.conflicts {
-                                ui.label(destiny_text(ui, &issue.name).strong());
-                                ui.label(destiny_text(ui, &issue.reason).weak());
-                                ui.add_space(4.0);
-                            }
-                        });
-                }
-                job.draw_consumables(ui, catalog);
-                if !job.issues.is_empty() {
-                    egui::CollapsingHeader::new(format!("{} Skipped Triumphs", job.issues.len()))
-                        .id_salt("triumph_review_skipped")
-                        .show(ui, |ui| {
-                            for issue in &job.issues {
-                                ui.label(destiny_text(ui, &issue.name).strong());
-                                ui.label(destiny_text(ui, &issue.reason).weak());
-                                ui.add_space(6.0);
-                            }
-                        });
-                }
-                if let Some(review) = &job.review {
-                    review.draw(ui);
-                }
-            });
-        ui.separator();
-        let (apply, cancel) = ui
-            .horizontal(|ui| {
-                (
-                    ui.add_enabled(
-                        job.supported_count() > 0,
-                        egui::Button::new(if !job.conflicts.is_empty() {
-                            "Apply & Skip Conflicts".into()
-                        } else if job.direct_count() > 0 {
-                            "Apply Anyway".into()
-                        } else {
-                            format!("Apply {} Supported", job.supported_count())
-                        }),
-                    )
-                    .on_disabled_hover_text("No supported changes to apply.")
-                    .clicked(),
-                    ui.button("Cancel").clicked(),
-                )
-            })
-            .inner;
+        let apply_label = if !job.conflicts.is_empty() {
+            "Apply & Skip Conflicts"
+        } else if job.direct_count() > 0 {
+            "Apply Anyway"
+        } else {
+            "Apply Changes"
+        };
+        let (apply, cancel) = crate::app::ui::review_actions(
+            ui,
+            apply_label,
+            changing > 0,
+            "Every supported Triumph already has this state.",
+        );
         if apply {
             return finish(
                 state.ready.take().expect("ready edit"),

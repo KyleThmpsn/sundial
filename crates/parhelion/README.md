@@ -4,6 +4,20 @@ Parhelion is an **experimental** custom investment global package builder bundle
 
 Weapons are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test your weapons in-game after installing them.
 
+## Contents
+
+- [Getting Started](#getting-started)
+- [Making Weapons](#making-weapons)
+  - [Stats and Power](#stats-and-power)
+  - [Perks and Custom Perks](#perks-and-custom-perks)
+  - [Unique Weapon Behavior](#unique-weapon-behavior)
+  - [Ornaments, Icons and Shaders](#ornaments-icons-and-shaders)
+  - [Collections Placement](#collections-placement)
+- [Recipes and Sharing](#recipes-and-sharing)
+- [Generated Packages](#generated-packages)
+- [Backups and Recovery](#backups-and-recovery)
+- [FAQ](#faq)
+
 ## Getting Started
 
 1. In Sundial, open **Preferences > Editing**. Under **Experimental**, turn on **Enable Parhelion Weapon Workbench**, then click **Open Parhelion**.
@@ -33,25 +47,62 @@ Changing an Exotic base weapon to a non-exotic rarity removes its exotic equip r
 
 Installing unlocks your weapons in Collections and adds them to the **Project Sunrise badge**. Get a copy from Collections to add it to your inventory.
 
+### Stats and Power
+
+**Weapon Stats** lists the values saved on your weapon. **Raw Value** is what gets written. **Preview** shows how the game presents it, such as rounds per minute. A stat you add only shows up in-game if the weapon and its stat group support that stat, so check the preview rather than assuming. A raw value of 30 on a rate of fire stat, for example, is not 30 rounds per minute. The preview shows what the game will actually display.
+
+**Stat Options** holds the less common controls. **Show Internal Stats** reveals package-level rows such as Attack and Power along with unnamed ones. Hidden rows are kept either way, so turning it off doesn't discard anything. Use the reset command to put every value back to the base weapon.
+
+**Power Cap** sets the weapon's infusion limit. Current Power is a separate thing and is edited in Sundial, not here.
+
 ### Perks and Custom Perks
 
-A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Put your default first. Only one choice per socket is active at a time.
+A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Put your default first. Only one choice per socket is active at a time. Drag a choice by its handle to reorder it, since the first choice is the one that starts equipped. Drag it onto a different socket to put that perk there instead, which replaces what the socket held and leaves the perk you dragged where it was.
 
 Use a socket's **… > Remove Socket** command to remove its choices and custom perk assignments. Other sockets keep their positions. For a removed base socket, click **Restore Socket** to bring back the base weapon's choices and role. Added sockets must be removed from last to first.
 
-Custom perk authoring is in early development and unavailable in this release. The only prebuilt custom perk in this release is **Micro-Missile Frame**, an intrinsic version of Micro-Missile for experimenting with other weapon types, including Sidearms and Shotguns. Build and install a weapon that uses it, then test the combination in-game. Once packages are refreshed, it will appear like any other plug in Sundial's plug picker. As usual, which plugs appear depends on the socket filters you've selected.
+A **custom perk** is one you author yourself rather than borrow from another weapon. Click **Use Custom Perk…** above the socket list to open the **Custom Perk Workbench**, where **Create Custom Perk…** starts a new one and an existing perk can be reopened for editing.
 
-Existing custom perks still load, save, and build with their recipes.
+Custom perk authoring is still in early development. Build one weapon at a time and test it in-game, since a perk that looks right in the editor can still do nothing or crash the game.
+
+A prebuilt example ships with Parhelion. **Micro-Missile Frame** is an intrinsic version of Micro-Missile for experimenting with other weapon types, including Sidearms and Shotguns. Build and install a weapon that uses it, then test the combination in-game. Once packages are refreshed, it appears like any other plug in Sundial's plug picker. As usual, which plugs appear depends on the socket filters you've selected.
 
 To add a saved custom perk to another weapon:
 
-1. Open the weapon you want to edit, then choose **Custom Perks… > Use Existing Custom Perk…**.
+1. Open the weapon you want to edit, then choose **Use Custom Perk…**.
 2. Select the socket, then choose a perk. It replaces that socket's first choice.
 3. Save the recipe.
 
 The perk's settings are copied into this recipe. The original recipe isn't changed and doesn't need to be included in the build.
 
-### Icons and Shaders
+A perk can only do what the weapon it sits on supports. If a perk depends on a reload, a magazine, or a firing behavior your weapon doesn't have, it does nothing. [Unique Weapon Behavior](#unique-weapon-behavior) covers the other half of that problem, where the behavior lives in the weapon rather than the perk.
+
+### Unique Weapon Behavior
+
+Some Exotics keep part of what makes them special in the weapon itself rather than in a perk. Hard Light's bouncing rounds, Malfeasance's embedded rounds, and Borealis's damage switching all work this way. **Unique Weapon Behavior** on **Weapon** copies that half onto the weapon you are building. It sits with the damage type and the other weapon-wide choices.
+
+Pick a source the same way you pick an appearance donor. The list shows the Exotics your weapon can borrow from, with a note where the result has not been confirmed in-game yet. Choose **None** to go back to your weapon's own behavior.
+
+**Include Its Perks** is on by default. It puts the source weapon's intrinsic and Exotic trait into your weapon's matching sockets, because several Exotics keep the other half of the behavior there. Those sockets are filled when the weapon is built, so they do not appear in the perks section while you edit. Turn it off to take the weapon half on its own, for example to get bouncing rounds without the perk that comes with them. If you have already chosen your own perk for one of those sockets, Parhelion tells you rather than replacing your choice.
+
+A behavior can go on any weapon, including a different weapon type than the Exotic it came from. The picker warns you where a source is known to land badly, such as a frame that expects its own ammo or a perk that reads a scope the host weapon does not have.
+
+Damage switching is set by the damage type rather than here. Choose **Variable (Hold Reload)** and your weapon gets The Fundamentals and the behavior that drives it, while keeping its own appearance. Choosing Hard Light or Borealis as a Unique Weapon Behavior does the same and locks the damage type, since those two switch damage as well as fire differently.
+
+If a behavior launches something and your weapon normally fires instantly, Parhelion raises the launch speed so the shots travel a useful distance. Without that they crawl, because a weapon that fires instantly supplies almost no speed for them to inherit. **Projectile Speed Multiplier** sets how much, and the raise stops at that figure. A behavior that already launches faster keeps its own speed, so Skyburner's Oath, Lord of Wolves, Devil's Ruin, Bastion, Legend of Acrius, Tractor Cannon and Symmetry come out unchanged at the default. A behavior that launches slower than most, like Trinity Ghoul, stays slower after the raise. Raise the number past a source's own speed to move that one too. The default is a starting point rather than a measured figure, so change it a little at a time and test in game.
+
+For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
+
+1. Start a recipe with the Hand Cannon you want as the base weapon.
+2. On **Weapon**, open **Unique Weapon Behavior** and choose **Malfeasance**.
+3. Leave **Include Its Perks** on. Malfeasance keeps the detonation in its perk, so the weapon half alone will not finish the job.
+4. Save, build, install, and get a copy from Collections.
+
+This is new and most combinations have not been tested, so treat it as experimental. Build one weapon at a time and test it in-game before committing to a larger build.
+
+### Ornaments, Icons and Shaders
+
+**Use Ornament** lists the stock ornaments your chosen appearance can wear. Picking one takes that ornament's model, its own colors, and its inventory icon. Everything it sets stays editable afterwards, and **Default Appearance** puts it back. The button sits beside the appearance picker on **Weapon** as well as on **Appearance**, and it only appears when the appearance you chose has ornaments.
 
 On **Appearance**, use **Change Icon** to choose another weapon's icon. Use **Edit Icon…** to import an image, adjust or replace colors, rotate, or flip it. Use PNG for transparent artwork. Imported images are saved in the recipe, so you don't need to share them separately.
 
@@ -60,6 +111,14 @@ The background follows your weapon's rarity. Icon edits don't recolor the 3D wea
 Adding a shader choice lets it recolor supported dye channels, including channels normally locked by an Exotic appearance. The original colors remain when no shader is selected. Explicit render-dye overrides in Advanced Gameplay take precedence.
 
 To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Import HUD PNG…** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
+
+### Collections Placement
+
+**Collections** chooses where your weapon appears in the game's Collections. By default it uses the stock page for the base weapon's family, which adds no new pages. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
+
+Custom pages come out of a limited budget. The tab shows how many nodes you have used and how many remain, and it tells you when a build would go over. Remove a custom badge or an added page to get back under the limit.
+
+Placement is presentation only. It does not change ammo, stats, or gameplay.
 
 ## Recipes and Sharing
 
@@ -133,7 +192,7 @@ With Destiny closed, open **Preferences… > Builds & Backups** and choose **Rec
 
 ### Why Doesn't This Perk Work on My Weapon?
 
-Perks can depend on a specific reload action, magazine size, or weapon behavior. Some perks won't work if your weapon doesn't have those mechanics.
+Perks can depend on a specific reload action, magazine size, or weapon behavior. Some perks won't work if your weapon doesn't have those mechanics. When the missing piece is the weapon rather than the perk, [Unique Weapon Behavior](#unique-weapon-behavior) can copy it across.
 
 ### Why Aren't My Changes Showing?
 
@@ -146,6 +205,10 @@ Existing weapons may keep their selected perks. Get a fresh copy from Collection
 Enable them under **Preferences… > Editor & Library**, then open **Advanced Gameplay**. Advanced controls are not yet recommended for normal use, as some combinations may freeze or crash the game. Please use with caution.
 
 Turning them off hides the controls without removing your saved changes.
+
+### Why Doesn't the Borrowed Behavior Do Anything?
+
+Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. The list marks which sources have been confirmed in-game.
 
 ### What Should I Include in a Bug Report?
 

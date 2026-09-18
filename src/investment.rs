@@ -33,8 +33,9 @@ pub use controls::{
 pub use definitions::{
     PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
     WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference,
-    WeaponInventorySlot, WeaponInvestmentStat, WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket,
-    WeaponSocketTypeChoice, WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
+    WeaponInventorySlot, WeaponInvestmentStat, WeaponOrnament, WeaponRarity,
+    WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice, WeaponStatDisplayPoint,
+    WeaponSupportedPlugSet, WeaponTraitChoice,
 };
 pub use perk_patterns::PerkPatternUse;
 
@@ -151,6 +152,12 @@ impl InvestmentCatalog {
             .map(str::to_owned)
     }
 
+    /// Returns the localized display name of any installed item, including plugs.
+    #[must_use]
+    pub fn item_display_name(&self, hash: u32) -> Option<&str> {
+        self.catalog.display_name(u64::from(hash))
+    }
+
     /// Native definition identity for authoring clients that need to distinguish generated plugs.
     #[must_use]
     pub fn item_definition_tag(&self, hash: u32) -> Option<u32> {
@@ -204,6 +211,65 @@ impl InvestmentCatalog {
             )
         });
         donors
+    }
+
+    /// Lists the ornaments offered by an installed weapon's own sockets.
+    ///
+    /// Only the weapon's own socket pools are consulted, so this is the set a player could apply
+    /// to that weapon in game, not every ornament shipped for its frame. Ornaments that carry no
+    /// translation-art rows are still listed because they can lend their icon.
+    #[must_use]
+    pub fn weapon_ornaments(&self, item_hash: u32) -> Vec<WeaponOrnament> {
+        let Some(item) = self.catalog.item(u64::from(item_hash)) else {
+            return Vec::new();
+        };
+        let mut ornaments = BTreeMap::new();
+        for (socket_index, socket) in item.sockets.iter().enumerate() {
+            for plug in self.catalog.socket_options(socket) {
+                if !self.catalog.is_weapon_ornament(*plug) {
+                    continue;
+                }
+                let Ok(hash) = u32::try_from(*plug) else {
+                    continue;
+                };
+                let metadata = self.catalog.item_package_metadata(u64::from(hash));
+                ornaments.entry(hash).or_insert_with(|| WeaponOrnament {
+                    hash,
+                    name: self.catalog.plug_label(u64::from(hash), false),
+                    rarity: metadata
+                        .map_or(WeaponRarity::Unknown, |metadata| metadata.rarity.into()),
+                    socket_index,
+                    art_arrangements: metadata
+                        .into_iter()
+                        .flat_map(|metadata| &metadata.art_arrangements)
+                        .map(|row| WeaponArtArrangement {
+                            character_class: row.character_class,
+                            arrangement: row.arrangement,
+                        })
+                        .collect(),
+                    icon_container_tag: metadata.and_then(|metadata| metadata.icon_container_tag),
+                    render_dye_rows: std::array::from_fn(|stage| {
+                        metadata
+                            .into_iter()
+                            .flat_map(|metadata| &metadata.translation_dye_rows[stage])
+                            .map(|row| WeaponDyeReference {
+                                channel_index: row.key,
+                                dye_reference_index: row.value,
+                            })
+                            .collect()
+                    }),
+                });
+            }
+        }
+        let mut ornaments = ornaments.into_values().collect::<Vec<_>>();
+        ornaments.sort_by_cached_key(|ornament| {
+            (
+                ornament.socket_index,
+                ornament.name.to_lowercase(),
+                ornament.hash,
+            )
+        });
+        ornaments
     }
 
     /// Returns the installed icon-container tag selected by a weapon's item-string row.

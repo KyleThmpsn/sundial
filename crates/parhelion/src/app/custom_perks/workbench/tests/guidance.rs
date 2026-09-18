@@ -32,6 +32,7 @@ fn discovery_matches_displayed_behavior_and_operation_names() {
         headline: "Spawns a projectile on a precision kill".into(),
         support: Support::Authorable,
         editable: true,
+        program: None,
         condition_kinds: vec![2],
         effect_kinds: vec![3],
         details: Vec::new(),

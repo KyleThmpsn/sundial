@@ -48,6 +48,7 @@ mod tag_payload;
 mod watermark;
 mod weapon;
 mod weapon_ammo;
+pub mod weapon_behavior;
 mod workflow;
 
 pub use app::Parhelion;

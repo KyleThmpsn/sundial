@@ -179,7 +179,8 @@ pub(super) fn draw_add_investment_window(
         state.investment_table,
         definition_index,
         state.add_value,
-    );
+    )
+    .changed();
     if changed {
         state.last_investment_change = Some(match state.investment_table {
             InvestmentTable::FlagOverrides => InvestmentUndo::Flag {

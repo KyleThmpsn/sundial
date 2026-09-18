@@ -244,6 +244,29 @@ impl InvestmentCatalog {
         }
     }
 
+    /// Opens a menu from a compact trigger carrying an installed item's artwork and label.
+    ///
+    /// The artwork is drawn without the stock plate, watermark or foreground overlay, and
+    /// `cleared_color` removes one flat color from the artwork itself, so the trigger shows the
+    /// appearance rather than the stock item's presentation.
+    pub fn draw_item_menu_button<R>(
+        &self,
+        ui: &mut egui::Ui,
+        icon_hash: Option<u32>,
+        cleared_color: Option<[u8; 3]>,
+        label: &str,
+        contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<Option<R>> {
+        authoring_bridge::draw_catalog_menu_button(
+            ui,
+            &self.catalog,
+            icon_hash,
+            cleared_color,
+            label,
+            contents,
+        )
+    }
+
     /// Renders Sundial's native item header as the trigger for the searchable donor browser.
     /// Each browser owns its filters so one selection cannot silently hide another's candidates.
     pub fn draw_weapon_donor_header_picker<'a>(

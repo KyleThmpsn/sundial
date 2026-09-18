@@ -377,13 +377,15 @@ fn weapon_event_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<Fact>
         "Requires Owning Weapon",
         FactValue::Flag(flag(payload, node, 8)?),
     )];
+    // Kind 19 carries two event flags before its slot mask and a window in seconds after it.
+    // The other weapon events keep the slot mask right after the owning-weapon flag.
     if kind == 19 {
         facts.push(Fact::new(
             "Time Restriction",
-            FactValue::Selector(byte(payload, node, 0x0C)?),
+            FactValue::Seconds(float(payload, node, 0x0C)?),
         ));
     }
-    let slot_mask = byte(payload, node, 0x0B)?;
+    let slot_mask = byte(payload, node, if kind == 19 { 0x0B } else { 0x09 })?;
     if slot_mask != 0 {
         facts.push(Fact::new("Slot Mask", FactValue::Mask(slot_mask.into())));
     }
