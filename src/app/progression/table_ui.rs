@@ -15,7 +15,7 @@ pub(super) fn table_link(
                 egui::Button::new(text)
                     .frame(false)
                     .truncate()
-                    .min_size(egui::vec2(width, TABLE_CELL_HEIGHT)),
+                    .min_size(egui::vec2(0.0, TABLE_CELL_HEIGHT)),
             )
         },
     )
@@ -50,59 +50,6 @@ pub(super) fn table_drag_value_ranged(
     .inner
 }
 
-pub(super) fn draw_definition_index_cell(
-    ui: &mut egui::Ui,
-    width: f32,
-    definition_index: usize,
-    definition: Option<&UnlockDefinition>,
-    metadata_selection: MetadataSelection,
-    state: &mut UiState,
-) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, TABLE_CELL_HEIGHT),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
-            let label = egui::RichText::new(format!("#{definition_index}")).monospace();
-            if let Some(definition) = definition {
-                let response = ui
-                    .add(
-                        egui::Button::new(label)
-                            .frame(false)
-                            .truncate()
-                            .min_size(egui::vec2(width, TABLE_CELL_HEIGHT)),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(definition_metadata_tooltip(definition));
-                if response.clicked() {
-                    state.metadata_inspector.open(metadata_selection);
-                }
-            } else {
-                ui.add(egui::Label::new(label.weak()).truncate());
-            }
-        },
-    );
-}
-
-pub(super) fn draw_definition_hash_hex_cell(
-    ui: &mut egui::Ui,
-    width: f32,
-    definition: Option<&UnlockDefinition>,
-) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, TABLE_CELL_HEIGHT),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
-            if let Some(definition) = definition {
-                draw_hash_link(ui, definition.hash, definition_hash_hex_text(definition));
-            } else {
-                ui.label(egui::RichText::new("-").weak());
-            }
-        },
-    );
-}
-
 pub(super) fn draw_remove_cell(
     ui: &mut egui::Ui,
     width: f32,
@@ -119,15 +66,40 @@ pub(super) fn draw_remove_cell(
         .on_hover_text(accessible_label)
 }
 
-pub(super) fn metadata_click(
-    response: egui::Response,
-    accessible_label: &'static str,
-) -> egui::Response {
-    let response = response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
+pub(super) fn sortable_table_header(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    columns: &[(f32, &str)],
+    default: TableSort,
+    state: &mut UiState,
+) -> TableSort {
+    let mut sort = state.table_sorts.get(id).copied().unwrap_or(default);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = TABLE_COLUMN_GAP;
+        for (column, (width, label)) in columns.iter().enumerate() {
+            if label.is_empty() {
+                ui.allocate_space(egui::vec2(*width, TABLE_CELL_HEIGHT));
+                continue;
+            }
+            let marker = if sort.column == column {
+                if sort.descending {
+                    Some(Glyph::ChevronDown)
+                } else {
+                    Some(Glyph::ChevronUp)
+                }
+            } else {
+                None
+            };
+            let response = sortable_header_cell(ui, *width, label, marker).on_hover_text("Sort");
+            if response.clicked() {
+                if sort.column == column {
+                    sort.descending = !sort.descending;
+                } else {
+                    sort = TableSort::ascending(column);
+                }
+            }
+        }
     });
-    response
+    state.table_sorts.insert(id, sort);
+    sort
 }

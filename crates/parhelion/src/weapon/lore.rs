@@ -13,18 +13,20 @@ pub(super) struct Plan {
     pub strings: ReplacementSpec,
 }
 
+/// Appends one lore definition and display row per weapon with custom lore and links it from
+/// the item's lore block. Nothing else references the lore row: in particular the collectible
+/// row's `+0x2C` is the inventory item index, and writing the lore index there repointed the
+/// Collections entry at whichever stock item shared that index.
 pub(super) fn author(
     manager: &PackageManager,
     globals: &[u8],
     weapons: &[WeaponCloneSpec],
     items: &mut [NewTagSpec],
-    collectibles: &mut [u8],
-    placements: &[ProjectAuthoredRow],
 ) -> AuthoringResult<Option<Plan>> {
     if weapons.iter().all(|weapon| weapon.overrides.lore.is_none()) {
         return Ok(None);
     }
-    if items.len() < weapons.len() || placements.len() != weapons.len() {
+    if items.len() < weapons.len() {
         return Err(invalid("Lore authoring does not match the weapon rows"));
     }
     let root = read_tag(manager, globals_child_tag(globals, 0)?, "investment root")?;
@@ -33,7 +35,6 @@ pub(super) fn author(
     let mut definitions = read_tag(manager, definition_tag, "lore definitions")?;
     let mut strings = read_tag(manager, display_tag, "lore display")?;
     validate_tables(&definitions, &strings, STOCK_COUNT)?;
-    let (_, _, collectible_rows, _) = array_at(collectibles, 8)?;
     let mut count = STOCK_COUNT;
     for (ordinal, weapon) in weapons.iter().enumerate() {
         if weapon.overrides.lore.is_none() {
@@ -79,9 +80,6 @@ pub(super) fn author(
         strings.extend_from_slice(&row);
         set_array_count(&mut strings, 8, header, count + 1)?;
         set_item_lore(&mut items[ordinal].payload, index)?;
-        let collectible = collectible_rows
-            + placements[ordinal].authored_collectible_index * COLLECTIBLE_ROW_SIZE;
-        write_u16(collectibles, collectible + 0x2C, index)?;
         count += 1;
     }
     validate_tables(&definitions, &strings, count)?;

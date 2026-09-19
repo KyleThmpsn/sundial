@@ -69,12 +69,12 @@ pub(crate) fn build_weapon_icon_edit_plan(
         let height = usize::from(read_u16(&header, 0x10)?);
         edit.apply_to_rgba8_sized(&mut data, width, height)?;
 
-        let data_ordinal = checked_ordinal(
+        let data_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             new_tags.len(),
             "weapon icon texture data",
         )?;
-        let header_ordinal = checked_ordinal(
+        let header_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             new_tags.len() + 1,
             "weapon icon texture header",
@@ -127,7 +127,7 @@ pub(crate) fn build_weapon_icon_edit_plan(
         .collect::<AuthoringResult<Vec<_>>>()?;
     validate_layer_patch(manager, donor_layer_tag, &donor_layer, &patched_offsets)?;
 
-    let layer_ordinal = checked_ordinal(
+    let layer_ordinal = AppendedTagAllocator::checked_ordinal(
         appended_ordinal_base,
         new_tags.len(),
         "weapon icon primary layer",
@@ -444,8 +444,13 @@ fn validate_plan(
     }
     let pair_count = (new_tags.len() - 1) / 2;
     for pair_index in 0..pair_count {
-        let data_ordinal = checked_ordinal(ordinal_base, pair_index * 2, "texture data")?;
-        let header_ordinal = checked_ordinal(ordinal_base, pair_index * 2 + 1, "texture header")?;
+        let data_ordinal =
+            AppendedTagAllocator::checked_ordinal(ordinal_base, pair_index * 2, "texture data")?;
+        let header_ordinal = AppendedTagAllocator::checked_ordinal(
+            ordinal_base,
+            pair_index * 2 + 1,
+            "texture header",
+        )?;
         if new_tags[pair_index * 2].storage != NewTagStorageMode::InheritTemplate
             || new_tags[pair_index * 2 + 1].storage != NewTagStorageMode::InheritTemplate
             || overrides.get(pair_index * 2)
@@ -476,10 +481,6 @@ fn validate_plan(
         ));
     }
     Ok(())
-}
-
-fn checked_ordinal(base: usize, local: usize, description: &str) -> AuthoringResult<usize> {
-    AppendedTagAllocator::checked_ordinal(base, local, description)
 }
 
 fn assigned_tag(

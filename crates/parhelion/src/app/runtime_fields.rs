@@ -34,9 +34,10 @@ pub(super) fn draw_runtime_value_override_field(
         });
         return;
     }
-    let current_value = override_index
-        .map(|index| overrides[index].value.clone())
-        .unwrap_or_else(|| field.value.clone());
+    let current_value = override_index.map_or_else(
+        || field.value.clone(),
+        |index| overrides[index].value.clone(),
+    );
     let compatible = encode_weapon_runtime_value(&field.kind, &current_value).is_ok();
     let shown_value = if compatible {
         current_value
@@ -126,21 +127,7 @@ pub(super) fn draw_runtime_value_override_field(
     }
 }
 
-pub(super) fn runtime_value_kind_label(kind: &WeaponRuntimeValueKind) -> String {
-    match kind {
-        WeaponRuntimeValueKind::Boolean => "Boolean".to_owned(),
-        WeaponRuntimeValueKind::SignedInteger { bits } => format!("Signed {bits}-bit integer"),
-        WeaponRuntimeValueKind::UnsignedInteger { bits } => {
-            format!("Unsigned {bits}-bit integer")
-        }
-        WeaponRuntimeValueKind::Enum { bits } => format!("{bits}-bit enum"),
-        WeaponRuntimeValueKind::BitFlags { bits } => format!("{bits}-bit flags"),
-        WeaponRuntimeValueKind::HexIdentifier { bits } => format!("{bits}-bit identifier"),
-        WeaponRuntimeValueKind::Float32 => "32-bit float".to_owned(),
-        WeaponRuntimeValueKind::Vector4Float32 => "Four 32-bit floats".to_owned(),
-        WeaponRuntimeValueKind::FixedBytes { size } => format!("{size} exact bytes"),
-    }
-}
+pub(super) use sundial::package_authoring::weapon_runtime::presentation::kind_label as runtime_value_kind_label;
 
 pub(super) fn draw_runtime_value_editor(
     ui: &mut egui::Ui,
@@ -270,7 +257,7 @@ fn draw_runtime_value_editor_contents(
             if parsed.is_none() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    "Invalid identifier; not applied",
+                    "Invalid identifier. Not applied",
                 );
             }
             response
@@ -278,6 +265,9 @@ fn draw_runtime_value_editor_contents(
                 .then_some(parsed)
                 .flatten()
                 .map(WeaponRuntimeValue::Unsigned)
+        }
+        (WeaponRuntimeValueKind::Float64, WeaponRuntimeValue::Float64Bits(current)) => {
+            draw_runtime_double(ui, locator, *current, text_state)
         }
         (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(current)) => {
             let edited_bits = draw_runtime_float_decimal(ui, *current);
@@ -292,14 +282,14 @@ fn draw_runtime_value_editor_contents(
                     .font(egui::TextStyle::Monospace)
                     .desired_width(98.0),
             );
-            response
-                .clone()
-                .on_hover_text("Exact IEEE-754 bits written to the package");
+            response.clone().on_hover_text(
+                "Exact IEEE-754 value bits. Native storage encoding is applied when required.",
+            );
             let parsed = parse_runtime_hex_u64(text).and_then(|bits| u32::try_from(bits).ok());
             if parsed.is_none() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    "Invalid 32-bit value; not applied",
+                    "Invalid 32-bit value. Not applied",
                 );
             }
             let raw_bits = response.changed().then_some(parsed).flatten();
@@ -352,7 +342,7 @@ fn draw_runtime_value_editor_contents(
             if invalid_bits {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    "Invalid vector bits; invalid components were not applied",
+                    "Invalid vector bits. Invalid components were not applied",
                 );
             }
             changed.then_some(WeaponRuntimeValue::Vector4Float32Bits(bits))
@@ -371,7 +361,7 @@ fn draw_runtime_value_editor_contents(
             if parsed.is_none() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    format!("Expected exactly {size} bytes; not applied"),
+                    format!("Expected exactly {size} bytes. Not applied"),
                 );
             }
             response
@@ -409,6 +399,53 @@ pub(super) fn runtime_field_is_editable(field: &WeaponRuntimeField) -> bool {
     field.locator.is_buildable()
         && encode_weapon_runtime_value(&field.kind, &field.value)
             .is_ok_and(|bytes| bytes.len() == field.locator.byte_size as usize)
+}
+
+fn draw_runtime_double(
+    ui: &mut egui::Ui,
+    locator: &WeaponRuntimeFieldLocator,
+    current: u64,
+    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+) -> Option<WeaponRuntimeValue> {
+    let mut value = f64::from_bits(current);
+    let edited = if value.is_finite() {
+        ui.add(
+            egui::DragValue::new(&mut value)
+                .speed(0.01)
+                .clamp_existing_to_range(false)
+                .custom_formatter(|value, _| format!("{value:?}")),
+        )
+        .changed()
+    } else {
+        ui.monospace(value.to_string())
+            .on_hover_text("Non-finite donor value. Edit the exact IEEE-754 bits to change it.");
+        false
+    };
+    let text = text_state
+        .entry((locator.clone(), 0))
+        .or_insert_with(|| format!("0x{current:016X}"));
+    if edited && value.is_finite() {
+        *text = format!("0x{:016X}", value.to_bits());
+    }
+    let response = ui.add(
+        egui::TextEdit::singleline(text)
+            .font(egui::TextStyle::Monospace)
+            .desired_width(154.0),
+    );
+    let parsed = parse_runtime_hex_u64(text);
+    if parsed.is_none() {
+        ui.colored_label(
+            ui.visuals().error_fg_color,
+            "Invalid 64-bit float. Not applied",
+        );
+    }
+    if response.changed() {
+        parsed.map(WeaponRuntimeValue::Float64Bits)
+    } else if edited && value.is_finite() {
+        Some(WeaponRuntimeValue::Float64Bits(value.to_bits()))
+    } else {
+        None
+    }
 }
 
 pub(super) fn runtime_field_is_in_editor_scope(
@@ -465,55 +502,7 @@ pub(super) fn private_perk_runtime_field_is_visible(
         })
 }
 
-fn runtime_field_tooltip(field: &WeaponRuntimeField) -> String {
-    let source = match field.source {
-        WeaponRuntimeFieldSource::GeneratedSchema => "generated package schema",
-        WeaponRuntimeFieldSource::NativeMember => "named native member",
-        WeaponRuntimeFieldSource::OpaqueNativeType => "unnamed native fixed-size type",
-    };
-    let path = field
-        .locator
-        .path
-        .iter()
-        .map(|element| {
-            format!(
-                "0x{:08X}:0x{:08X}@+0x{:X}",
-                element.name_hash, element.type_handle, element.byte_offset
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" / ");
-    let generated_kind = field
-        .generated_kind
-        .map_or_else(|| "N/A".to_owned(), |kind| format!("0x{kind:02X}"));
-    format!(
-        "{}\nSource: {source}\nValue Type: {}\nOriginal: {}\nBinding: 0x{:08X}, resource index {} (zero-based)\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
-        field.name,
-        runtime_value_kind_label(&field.kind),
-        original_value(&field.value),
-        field.locator.binding_hash,
-        field.locator.resource_index,
-        field.locator.root.label(),
-        field.locator.root_schema,
-        field.locator.type_handle,
-        field.locator.value_offset,
-        field.owner_offset,
-        field.locator.byte_size,
-    )
-}
-
-fn original_value(value: &WeaponRuntimeValue) -> String {
-    match value {
-        WeaponRuntimeValue::Boolean(value) => value.to_string(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => value.to_string(),
-        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!("{:?}", bits.map(f32::from_bits)),
-        WeaponRuntimeValue::Bytes(bytes) => {
-            format!("{} bytes (Reset restores the package value)", bytes.len())
-        }
-    }
-}
+use sundial::package_authoring::weapon_runtime::presentation::field_tooltip as runtime_field_tooltip;
 
 pub(super) fn parse_runtime_hex_u64(value: &str) -> Option<u64> {
     let digits = value

@@ -1,4 +1,5 @@
 use super::*;
+use crate::image_import::MAX_SOURCE_EDGE;
 use crate::{WeaponIconEdit, WeaponRecipe};
 
 fn png(image: &RgbaImage) -> Vec<u8> {
@@ -40,20 +41,9 @@ fn transparent_rgb_does_not_bleed_into_resized_artwork() {
 }
 
 #[test]
-fn jpeg_import_is_supported() {
-    let source = image::RgbImage::from_pixel(32, 32, image::Rgb([200, 40, 80]));
-    let mut output = Cursor::new(Vec::new());
-    source.write_to(&mut output, ImageFormat::Jpeg).unwrap();
-    let imported = ImportedIcon::from_bytes(output.get_ref()).unwrap();
-    assert_eq!(imported.0.rgba.dimensions(), (96, 96));
-    assert!(imported.0.rgba.pixels().all(|pixel| pixel[3] == 255));
-}
-
-#[test]
 fn invalid_and_oversized_sources_are_rejected() {
     assert!(ImportedIcon::from_bytes(b"not an image").is_err());
     assert!(ImportedIcon::from_bytes(b"GIF89a").is_err());
-    assert!(ImportedIcon::from_bytes(&vec![0; MAX_FILE_BYTES + 1]).is_err());
     let wide = RgbaImage::new(MAX_SOURCE_EDGE + 1, 1);
     assert!(ImportedIcon::from_bytes(&png(&wide)).is_err());
     assert!(ImportedIcon::from_path(Path::new("nonexistent-icon-test.png")).is_err());

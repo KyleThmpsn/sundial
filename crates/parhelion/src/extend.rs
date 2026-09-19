@@ -847,7 +847,7 @@ fn resolve_appended_metadata(
                     .try_into()
                     .expect("entry type metadata has exactly four bytes"),
             );
-            let type_info = resolve_storage_mode(spec.storage, template_type_info)?;
+            let type_info = resolve_storage_mode(spec.storage, template_type_info);
             prefix[4..].copy_from_slice(&type_info.to_le_bytes());
             Ok(AppendedEntryMetadata {
                 prefix,
@@ -999,9 +999,9 @@ fn validate_shared_tag_enrollments(
     Ok(())
 }
 
-fn resolve_storage_mode(mode: NewTagStorageMode, template_type_info: u32) -> AuthoringResult<u32> {
+fn resolve_storage_mode(mode: NewTagStorageMode, template_type_info: u32) -> u32 {
     match mode {
-        NewTagStorageMode::InheritTemplate => Ok(template_type_info),
+        NewTagStorageMode::InheritTemplate => template_type_info,
     }
 }
 
@@ -1551,8 +1551,7 @@ mod tests {
     #[test]
     fn storage_mode_preserves_the_template_selector() {
         let type16 = 0x0000_2019;
-        let resolved = resolve_storage_mode(NewTagStorageMode::InheritTemplate, type16)
-            .expect("the template selector should be preserved");
+        let resolved = resolve_storage_mode(NewTagStorageMode::InheritTemplate, type16);
 
         assert_eq!(resolved, type16);
     }

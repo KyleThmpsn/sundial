@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod card;
+mod claims;
 mod pass;
 
 pub(super) use pass::draw as draw_pass;

@@ -47,8 +47,7 @@ impl SundialApp {
     }
 
     pub(super) fn mark_inventory_changed(&mut self, status: &str) {
-        self.dirty = true;
-        self.set_status(format!("{status}. Click Save to write it"), false);
+        self.report_edit(status);
     }
 }
 pub(super) fn bucket_picker_open_request_key(picker_key: &str) -> String {
@@ -79,7 +78,7 @@ pub(super) fn draw_character_transfer_destinations(
     ui.separator();
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = TRANSFER_DESTINATION_ROW_SPACING;
-        ui.label(egui::RichText::new("Move to another character").strong());
+        ui.strong("Move to Another Character");
         for destination in destinations {
             let response = draw_character_transfer_destination(ui, destination)
                 .on_hover_text(&destination.tooltip);

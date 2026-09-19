@@ -5,6 +5,8 @@ use std::{
 };
 
 mod inventory;
+mod metadata;
+mod rewards;
 
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use sundial_account::{
@@ -123,7 +125,31 @@ impl SqliteAccountDocument {
     }
 
     pub(crate) fn progression_view(&self, index: usize) -> serde_json::Value {
-        self.progression.view(index)
+        let mut view = self.progression.view(index);
+        view["_reward_context"] = serde_json::json!({"character":index,"character_count":self.characters.characters().len(),"class":self.characters.characters().get(index).and_then(|character|character.metadata).map(|metadata|metadata.class_type),"pending":self.pending_rewards()});
+        view["_reward_context"]["consumables"] = serde_json::json!(self.character_stacks(index).iter().map(|item| {
+            serde_json::json!({"definition_hash":item.definition_hash,"quantity":item.quantity,"mutation_serial":item.mutation_serial})
+        }).collect::<Vec<_>>());
+        if let Some(character) = self.characters.characters().get(index) {
+            view["_reward_context"]["inventory"] = serde_json::json!(
+                character
+                    .inventory
+                    .iter()
+                    .map(|item| (item.id.get(), item.definition_hash.get(), item.quantity))
+                    .collect::<Vec<_>>()
+            );
+            view["_reward_context"]["equipment"] = serde_json::json!(
+                character
+                    .equipment
+                    .values()
+                    .flatten()
+                    .map(|item| (item.id.get(), item.definition_hash.get(), item.quantity))
+                    .collect::<Vec<_>>()
+            );
+            view["_reward_context"]["next_serial"] =
+                serde_json::json!(self.next_inventory_serial(character.id).ok());
+        }
+        view
     }
     pub(crate) fn account_flag_is_set(&self, definition_index: u16, slot: u16) -> bool {
         self.progression.account_flag_is_set(definition_index, slot)
@@ -144,7 +170,47 @@ impl SqliteAccountDocument {
         index: usize,
         value: &serde_json::Value,
     ) -> Result<(), SqliteAccountError> {
-        self.progression.apply(index, value)
+        if value.get("_progression_rewards").is_none()
+            && value.get("_progression_consumables").is_none()
+        {
+            return self.progression.apply(index, value);
+        }
+        let invalid = |message: &str| SqliteAccountError::invalid_data("pending_rewards", message);
+        if value.get("_reward_context") != self.progression_view(index).get("_reward_context") {
+            return Err(invalid(
+                "The selected character, inventory or pending rewards changed. Prepare the progression edit again.",
+            ));
+        }
+        let mut candidate = self.clone();
+        candidate.progression.apply(index, value)?;
+        let empty = Vec::new();
+        let rewards = match value.get("_progression_rewards") {
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| invalid("The progression reward plan is invalid"))?,
+            None => &empty,
+        };
+        for reward in rewards {
+            let kind = reward
+                .get("kind")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u8::try_from(value).ok())
+                .ok_or_else(|| invalid("The reward kind is invalid"))?;
+            let hash = reward
+                .get("hash")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| invalid("The reward definition is invalid"))?;
+            let quantity = reward
+                .get("quantity")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or_else(|| invalid("The reward quantity is invalid"))?;
+            candidate.add_pending_reward(index, kind, hash, quantity)?;
+        }
+        candidate.apply_consumable_rewards(index, value)?;
+        *self = candidate;
+        Ok(())
     }
     pub(super) fn save_progression(&self, db: &Connection) -> Result<(), SqliteAccountError> {
         self.progression.save(db)
@@ -467,8 +533,9 @@ fn load_in_transaction(
         SqliteAccountLoad::Loaded(snapshot) => snapshot,
     };
     let revision = database_revision(connection)?;
-    let (profile_persistence, character_persistence, item_persistence) =
-        load_persistence(connection, &snapshot)?;
+    let profile_persistence = metadata::profile(connection, &snapshot)?;
+    let character_persistence = metadata::characters(connection, &snapshot)?;
+    let item_persistence = metadata::items(connection, &snapshot)?;
     Ok(SqliteAccountDocumentLoad::Loaded(Box::new(
         SqliteAccountDocument {
             inventory_state: super::inventory_state::InventoryState::load(connection)?,
@@ -502,173 +569,6 @@ fn load_in_transaction(
             pending_item_abilities: BTreeMap::new(),
         },
     )))
-}
-
-#[allow(clippy::type_complexity)]
-fn load_persistence(
-    connection: &Connection,
-    snapshot: &SqliteAccountSnapshot,
-) -> Result<
-    (
-        BTreeMap<EntityId, ProfilePersistence>,
-        BTreeMap<EntityId, CharacterPersistence>,
-        BTreeMap<EntityId, ItemPersistence>,
-    ),
-    SqliteAccountError,
-> {
-    let mut profile_persistence = BTreeMap::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT position, instance_soid, mutation_serial FROM profile_items \
-             ORDER BY position;",
-        )
-        .map_err(|error| SqliteAccountError::sqlite("read profile metadata from", error))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| SqliteAccountError::sqlite("read profile metadata from", error))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("read profile metadata from", error))?
-    {
-        let position: usize = row
-            .get(0)
-            .map_err(|error| SqliteAccountError::sqlite("read profile metadata from", error))?;
-        let item = snapshot
-            .profile
-            .profile_items()
-            .get(position)
-            .ok_or_else(|| {
-                SqliteAccountError::invalid_data(
-                    "profile_items.position",
-                    "metadata position does not identify a loaded profile item",
-                )
-            })?;
-        profile_persistence.insert(
-            item.id,
-            ProfilePersistence {
-                instance_soid: row.get::<_, i64>(1).map_err(|error| {
-                    SqliteAccountError::sqlite("read profile metadata from", error)
-                })? as u64,
-                mutation_serial: row.get(2).map_err(|error| {
-                    SqliteAccountError::sqlite("read profile metadata from", error)
-                })?,
-            },
-        );
-    }
-
-    let mut character_persistence = BTreeMap::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT row_number() OVER (ORDER BY slot)-1, next_inventory_serial FROM characters ORDER BY slot;",
-        )
-        .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?
-    {
-        let position: usize = row
-            .get(0)
-            .map_err(|error| SqliteAccountError::sqlite("read character metadata from", error))?;
-        let character = snapshot
-            .characters
-            .characters()
-            .get(position)
-            .ok_or_else(|| {
-                SqliteAccountError::invalid_data(
-                    "characters.position",
-                    "metadata position does not identify a loaded character",
-                )
-            })?;
-        character_persistence.insert(
-            character.id,
-            CharacterPersistence {
-                next_inventory_serial: row.get(1).map_err(|error| {
-                    SqliteAccountError::sqlite("read character metadata from", error)
-                })?,
-            },
-        );
-    }
-
-    let mut item_persistence = BTreeMap::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT (SELECT count(*) FROM characters WHERE slot < items.character_slot), location, position, mutation_serial, \
-             movement_ability, grenade_ability, super_ability, \
-             melee_ability, class_ability FROM items ORDER BY character_slot, location, position;",
-        )
-        .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?
-    {
-        let character_position: usize = row
-            .get(0)
-            .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
-        let location: i64 = row
-            .get(1)
-            .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
-        let position: usize = row
-            .get(2)
-            .map_err(|error| SqliteAccountError::sqlite("read item metadata from", error))?;
-        let character = snapshot
-            .characters
-            .characters()
-            .get(character_position)
-            .ok_or_else(|| {
-                SqliteAccountError::invalid_data(
-                    "character_items.character_position",
-                    "metadata does not identify a loaded character",
-                )
-            })?;
-        let item = match location {
-            0 => EQUIPMENT_SLOTS.get(position).and_then(|slot| {
-                character
-                    .equipment
-                    .get(&EquipmentSlot::new(*slot))
-                    .and_then(Option::as_ref)
-            }),
-            1 => character.inventory.get(position),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            SqliteAccountError::invalid_data(
-                "character_items.position",
-                "metadata does not identify a loaded item",
-            )
-        })?;
-        item_persistence.insert(
-            item.id,
-            ItemPersistence {
-                mutation_serial: row.get(3).map_err(|error| {
-                    SqliteAccountError::sqlite("read item metadata from", error)
-                })?,
-                abilities: CharacterAbilities {
-                    movement: row.get(4).map_err(|error| {
-                        SqliteAccountError::sqlite("read item metadata from", error)
-                    })?,
-                    grenade: row.get(5).map_err(|error| {
-                        SqliteAccountError::sqlite("read item metadata from", error)
-                    })?,
-                    super_ability: row.get(6).map_err(|error| {
-                        SqliteAccountError::sqlite("read item metadata from", error)
-                    })?,
-                    melee: row.get(7).map_err(|error| {
-                        SqliteAccountError::sqlite("read item metadata from", error)
-                    })?,
-                    class_ability: row.get(8).map_err(|error| {
-                        SqliteAccountError::sqlite("read item metadata from", error)
-                    })?,
-                },
-            },
-        );
-    }
-    Ok((profile_persistence, character_persistence, item_persistence))
 }
 
 pub(super) fn database_revision(
@@ -763,8 +663,49 @@ fn load_preserved_rows(
         "dismantle_rewards",
         "entitlements",
         "character_stacks",
+        "pending_rewards",
     ]
     .into_iter()
     .map(|table| Ok((table.into(), super::writer::rows(db, table)?)))
     .collect()
+}
+
+impl crate::persistence::native_account::NativeAccountDocument for SqliteAccountDocument {
+    const LABEL: &'static str = "investment.sqlite3";
+    fn profile(&self) -> &ProfileState {
+        Self::profile(self)
+    }
+    fn profile_mut(&mut self) -> &mut ProfileState {
+        Self::profile_mut(self)
+    }
+    fn characters(&self) -> &CharacterState {
+        Self::characters(self)
+    }
+    fn characters_mut(&mut self) -> &mut CharacterState {
+        Self::characters_mut(self)
+    }
+    fn settings(&self) -> &AccountSettingsState {
+        Self::settings(self)
+    }
+    fn settings_mut(&mut self) -> &mut AccountSettingsState {
+        Self::settings_mut(self)
+    }
+    fn next_entity_id(&self) -> Result<EntityId, String> {
+        Self::next_entity_id(self).map_err(|error| error.to_string())
+    }
+    fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
+        Self::persisted_item_abilities(self, id)
+    }
+    fn set_persisted_item_abilities(&mut self, id: EntityId, abilities: CharacterAbilities) {
+        Self::set_persisted_item_abilities(self, id, abilities);
+    }
+    fn profile_capabilities() -> ProfileCapabilities {
+        Self::profile_capabilities()
+    }
+    fn character_capabilities() -> CharacterCapabilities {
+        Self::character_capabilities()
+    }
+    fn settings_capabilities() -> AccountSettingsCapabilities {
+        Self::settings_capabilities()
+    }
 }

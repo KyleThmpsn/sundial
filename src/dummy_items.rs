@@ -144,12 +144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_dummy_and_real_tommys_matchbook_are_distinct() {
-        assert!(contains(0xC13D_CD47));
-        assert!(!contains(0x2E43_BDEE));
-    }
-
-    #[test]
     fn dummy_hashes_remain_sorted_and_unique() {
         assert!(HASHES.windows(2).all(|pair| pair[0] < pair[1]));
     }

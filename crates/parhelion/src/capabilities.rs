@@ -13,12 +13,13 @@ use sundial::investment::{
     WeaponInventorySlot, authored_socket_choice_limit,
 };
 
+use crate::ModernDamageType;
 use crate::recipe::{RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides};
+use crate::weapon::variable_damage::resting_element;
 
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthoringField {
-    Donor,
     InventorySlot,
     DamageProfile,
     InvestmentStat { definition_index: u16 },
@@ -28,7 +29,6 @@ pub enum AuthoringField {
 /// A stable, machine-readable explanation for an authoring diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthoringDiagnosticCode {
-    CollectionsBackingRequired,
     MissingInventorySlot,
     MissingEquipmentSlot,
     EquipmentSlotMismatch,
@@ -195,10 +195,10 @@ pub(crate) fn appearance_compatibility(
     use sundial::package_authoring::native_weapon::{
         AnimationCompatibility, animation_compatibility,
     };
-    if !candidate.collection_backed {
-        return AppearanceCompatibility::Blocked("Appearance has no Collections entry");
-    }
-    if candidate.type_name != base.type_name {
+    if !candidate.type_name.trim().is_empty()
+        && !base.type_name.trim().is_empty()
+        && candidate.type_name != base.type_name
+    {
         return AppearanceCompatibility::Blocked("Different weapon family");
     }
     if candidate.inventory_slot != Some(target)
@@ -272,6 +272,26 @@ pub(crate) fn reconcile_presentation_donor(
     }
 }
 
+/// Whether this base weapon's family can graft the reload-hold element switch. The compiler
+/// resolves the record for real and reports a clear error when a family has none.
+#[must_use]
+pub(crate) fn variable_damage_supported(gameplay_donor: &WeaponDonorSummary) -> bool {
+    crate::weapon_behavior::switches_element_for_type(&gameplay_donor.type_name)
+}
+
+/// The element a variable-damage weapon rests on: the first chosen one in selector order.
+#[must_use]
+pub(crate) fn variable_damage_resting_type(
+    elements: &[RecipeDamageType],
+) -> Option<RecipeDamageType> {
+    let elements = elements
+        .iter()
+        .copied()
+        .map(ModernDamageType::from)
+        .collect::<Vec<_>>();
+    resting_element(&elements).map(RecipeDamageType::from)
+}
+
 const fn recipe_inventory_slot(value: RecipeInventorySlot) -> WeaponInventorySlot {
     match value {
         RecipeInventorySlot::Kinetic => WeaponInventorySlot::Kinetic,
@@ -290,7 +310,7 @@ pub(crate) const fn recipe_inventory_slot_from_catalog(
     }
 }
 
-const fn recipe_damage_type(value: RecipeDamageType) -> WeaponDamageType {
+pub(crate) const fn recipe_damage_type(value: RecipeDamageType) -> WeaponDamageType {
     match value {
         RecipeDamageType::Kinetic => WeaponDamageType::Kinetic,
         RecipeDamageType::Arc => WeaponDamageType::Arc,
@@ -382,16 +402,6 @@ pub fn weapon_summary_authoring_capabilities(
     donor: &WeaponDonorSummary,
 ) -> WeaponAuthoringCapabilities {
     let mut diagnostics = Vec::new();
-    if !donor.collection_backed {
-        diagnostics.push(AuthoringDiagnostic {
-            field: AuthoringField::Donor,
-            code: AuthoringDiagnosticCode::CollectionsBackingRequired,
-            message: format!(
-                "{} is not backed by a Collections definition, so Parhelion cannot safely author from it",
-                donor.name
-            ),
-        });
-    }
 
     let Some(slot) = donor.inventory_slot else {
         diagnostics.push(AuthoringDiagnostic {
@@ -617,6 +627,22 @@ pub fn validate_socket_column_overrides_with_socket_types(
     socket_types: &[Option<u16>],
     supported_plug_sets: &[SupportedPlugSet],
 ) -> Vec<AuthoringDiagnostic> {
+    validate_socket_column_overrides_with_labels(
+        donor,
+        overrides,
+        socket_types,
+        supported_plug_sets,
+        &|hash| format!("0x{hash:08X}"),
+    )
+}
+
+pub(crate) fn validate_socket_column_overrides_with_labels(
+    donor: &WeaponDonor,
+    overrides: &[Option<Vec<u32>>],
+    socket_types: &[Option<u16>],
+    supported_plug_sets: &[SupportedPlugSet],
+    plug_label: &dyn Fn(u32) -> String,
+) -> Vec<AuthoringDiagnostic> {
     let mut diagnostics = Vec::new();
     if overrides.is_empty() {
         return diagnostics;
@@ -657,6 +683,7 @@ pub fn validate_socket_column_overrides_with_socket_types(
             socket_types.get(socket_index).copied().flatten(),
             plug_sets.get(&socket_index).copied(),
             &mut diagnostics,
+            plug_label,
         );
     }
     diagnostics
@@ -715,6 +742,7 @@ fn validate_socket_column(
     socket_type_override: Option<u16>,
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
+    plug_label: &dyn Fn(u32) -> String,
 ) {
     let field = AuthoringField::SocketColumn { socket_index };
     let socket = donor.sockets.get(socket_index);
@@ -776,7 +804,7 @@ fn validate_socket_column(
             ),
         });
     }
-    validate_socket_choice_values(socket_index, choices, supported, diagnostics);
+    validate_socket_choice_values(socket_index, choices, supported, diagnostics, plug_label);
 }
 
 fn validate_socket_choice_values(
@@ -784,6 +812,7 @@ fn validate_socket_choice_values(
     choices: &[u32],
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
+    plug_label: &dyn Fn(u32) -> String,
 ) {
     let field = AuthoringField::SocketColumn { socket_index };
     let mut seen = BTreeSet::new();
@@ -826,7 +855,7 @@ fn validate_socket_choice_values(
             field,
             code: AuthoringDiagnosticCode::UnsupportedPlug,
             message: format!(
-                "Plug 0x{hash:08X} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game."
+                "Plug {} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game.", plug_label(hash)
             ),
         });
     }

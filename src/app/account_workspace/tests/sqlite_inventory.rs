@@ -14,8 +14,9 @@ fn sqlite_document(document: &WorkspaceDocument) -> &SqliteAccountDocument {
 
 fn load_fixture(directory: &TestDirectory) -> WorkspaceDocument {
     WorkspaceDocument::load(
-        json!({"version": 8, "state": {}}),
+        json!({"version": 18, "state": {}}),
         &settings_path(directory),
+        false,
     )
 }
 

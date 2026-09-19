@@ -8,39 +8,34 @@ use std::{
 pub(crate) mod plug_selection;
 pub use plug_selection::PlugSelectionMode;
 
-pub(crate) mod account_sync;
-mod client_settings;
-pub use client_settings::{AuthoredClientSettings, preview_authored_client_settings};
 mod controls;
 mod definitions;
 mod lore;
 pub(crate) mod titles;
 pub use lore::{LoreEntry, load_item_lore};
 mod perk_patterns;
+mod perk_sources;
+pub use perk_sources::{PerkSource, PerkSources};
+mod ingredients;
+pub mod native_content;
+pub use ingredients::{IngredientCatalog, IngredientSource};
 pub(crate) mod seasonal;
-pub use account_sync::{
-    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredItemMove, AuthoredMoveOutcome,
-    AuthoredProfileSyncReport, AuthoredSlotChange, AuthoredSlotReplacement, AuthoredSocketChange,
-    preview_authored_account_cleanup, preview_authored_account_replacement,
-    preview_authored_account_replacement_with_slots, read_authored_account_source,
-    replace_authored_account_source, synchronize_authored_collection_unlocks,
-    validate_authored_cleanup_backend,
-};
 pub use controls::{
-    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton, PlugSelection,
-    WeaponDonorPickerAction, WeaponDonorPickerClearChoice, WeaponDonorPickerOptions,
-    authoring_button_width, authoring_choice_row_height, authoring_socket_label_width,
-    authoring_socket_reset_width, configure_authoring_fonts, default_plug_selection_mode,
-    draw_asset_choice_row, draw_authoring_info_icon, draw_authoring_socket_label,
-    draw_authoring_socket_reset, draw_authoring_toolbar, draw_catalog_loading_view,
-    draw_plug_safety_selector, draw_plug_safety_warning, progress_bar, show_plug_safety_warnings,
-    tooltip_title,
+    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton,
+    PlugChoicePickerOptions, PlugSelection, PlugTooltip, WeaponDonorPickerAction,
+    WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, authoring_button_width,
+    authoring_choice_row_height, authoring_socket_label_width, authoring_socket_reset_width,
+    configure_authoring_fonts, default_plug_selection_mode, draw_asset_choice_row,
+    draw_authoring_info_icon, draw_authoring_socket_label, draw_authoring_socket_reset,
+    draw_authoring_toolbar, draw_catalog_loading_view, draw_plug_safety_selector,
+    draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
     PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
     WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference,
-    WeaponInventorySlot, WeaponInvestmentStat, WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket,
-    WeaponSocketTypeChoice, WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
+    WeaponInventorySlot, WeaponInvestmentStat, WeaponOrnament, WeaponRarity,
+    WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice, WeaponStatDisplayPoint,
+    WeaponSupportedPlugSet, WeaponTraitChoice,
 };
 pub use perk_patterns::PerkPatternUse;
 
@@ -49,9 +44,6 @@ use crate::{
     hash::parse_hash_hex,
     paths,
 };
-
-#[cfg(test)]
-use crate::catalog::is_weapon_bucket;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatalogLoadProgress {
@@ -149,6 +141,23 @@ impl InvestmentCatalog {
         self.catalog.plug_label(u64::from(hash), include_hash)
     }
 
+    /// The localized item type of a weapon or plug, such as "Hand Cannon", when the
+    /// installation names one.
+    #[must_use]
+    pub fn item_type_name(&self, hash: u32) -> Option<String> {
+        let hash = u64::from(hash);
+        self.catalog
+            .plug_type_name(hash)
+            .or_else(|| self.catalog.package_item_type_name(hash))
+            .map(str::to_owned)
+    }
+
+    /// Returns the localized display name of any installed item, including plugs.
+    #[must_use]
+    pub fn item_display_name(&self, hash: u32) -> Option<&str> {
+        self.catalog.display_name(u64::from(hash))
+    }
+
     /// Native definition identity for authoring clients that need to distinguish generated plugs.
     #[must_use]
     pub fn item_definition_tag(&self, hash: u32) -> Option<u32> {
@@ -204,6 +213,65 @@ impl InvestmentCatalog {
         donors
     }
 
+    /// Lists the ornaments offered by an installed weapon's own sockets.
+    ///
+    /// Only the weapon's own socket pools are consulted, so this is the set a player could apply
+    /// to that weapon in game, not every ornament shipped for its frame. Ornaments that carry no
+    /// translation-art rows are still listed because they can lend their icon.
+    #[must_use]
+    pub fn weapon_ornaments(&self, item_hash: u32) -> Vec<WeaponOrnament> {
+        let Some(item) = self.catalog.item(u64::from(item_hash)) else {
+            return Vec::new();
+        };
+        let mut ornaments = BTreeMap::new();
+        for (socket_index, socket) in item.sockets.iter().enumerate() {
+            for plug in self.catalog.socket_options(socket) {
+                if !self.catalog.is_weapon_ornament(*plug) {
+                    continue;
+                }
+                let Ok(hash) = u32::try_from(*plug) else {
+                    continue;
+                };
+                let metadata = self.catalog.item_package_metadata(u64::from(hash));
+                ornaments.entry(hash).or_insert_with(|| WeaponOrnament {
+                    hash,
+                    name: self.catalog.plug_label(u64::from(hash), false),
+                    rarity: metadata
+                        .map_or(WeaponRarity::Unknown, |metadata| metadata.rarity.into()),
+                    socket_index,
+                    art_arrangements: metadata
+                        .into_iter()
+                        .flat_map(|metadata| &metadata.art_arrangements)
+                        .map(|row| WeaponArtArrangement {
+                            character_class: row.character_class,
+                            arrangement: row.arrangement,
+                        })
+                        .collect(),
+                    icon_container_tag: metadata.and_then(|metadata| metadata.icon_container_tag),
+                    render_dye_rows: std::array::from_fn(|stage| {
+                        metadata
+                            .into_iter()
+                            .flat_map(|metadata| &metadata.translation_dye_rows[stage])
+                            .map(|row| WeaponDyeReference {
+                                channel_index: row.key,
+                                dye_reference_index: row.value,
+                            })
+                            .collect()
+                    }),
+                });
+            }
+        }
+        let mut ornaments = ornaments.into_values().collect::<Vec<_>>();
+        ornaments.sort_by_cached_key(|ornament| {
+            (
+                ornament.socket_index,
+                ornament.name.to_lowercase(),
+                ornament.hash,
+            )
+        });
+        ornaments
+    }
+
     /// Returns the installed icon-container tag selected by a weapon's item-string row.
     #[must_use]
     pub fn weapon_icon_container(&self, item_hash: u32) -> Option<u32> {
@@ -236,6 +304,36 @@ impl InvestmentCatalog {
 
     /// Lists effect sources from accepted native item-definition tags. Authoring clients can
     /// exclude generated items whose private effect indices are absent from their build source.
+    /// Every sandbox-perk index an installed item references, including declaration-only rows.
+    ///
+    /// [`Self::weapon_sandbox_perk_choices_from`] is the authoring choice set and is active-only.
+    /// This is the wider "does the installed catalog know this index at all" set. Stock ships
+    /// inactive rows on real plugs, such as 479 on Hard Light's intrinsic, so a validation guard
+    /// that rejects them is stricter than the shipped data.
+    pub fn referenced_sandbox_perk_indices(
+        &self,
+        include_definition: impl Fn(u32) -> bool,
+    ) -> std::collections::BTreeSet<u16> {
+        let hashes = self
+            .catalog
+            .items
+            .iter()
+            .map(|item| item.hash)
+            .chain(self.catalog.all_plug_options().iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut indices = std::collections::BTreeSet::new();
+        for item_hash in hashes {
+            let Some(metadata) = self.catalog.item_package_metadata(item_hash) else {
+                continue;
+            };
+            if !include_definition(metadata.definition_tag) {
+                continue;
+            }
+            indices.extend(metadata.sandbox_perks.iter().map(|perk| perk.perk_index));
+        }
+        indices
+    }
+
     pub fn weapon_sandbox_perk_choices_from(
         &self,
         include_definition: impl Fn(u32) -> bool,
@@ -260,7 +358,10 @@ impl InvestmentCatalog {
             if !include_definition(metadata.definition_tag) {
                 continue;
             }
-            for perk in &metadata.sandbox_perks {
+            // This list is the authoring choice set, and its contract is active rows only.
+            // Declaration-only rows such as 479 stay in `item_sandbox_perk_indices`, which
+            // reports what an item carries rather than what the producer will run.
+            for perk in metadata.sandbox_perks.iter().filter(|perk| perk.active) {
                 let name = self
                     .catalog
                     .display_name(item_hash)
@@ -539,6 +640,13 @@ impl InvestmentCatalog {
     #[must_use]
     pub fn perk_description(&self, hash: u32) -> Option<&str> {
         self.catalog.description(u64::from(hash))
+    }
+
+    /// Localized description attached to this exact finished perk row.
+    /// Item text can describe an entire mod or subclass and is not interchangeable.
+    #[must_use]
+    pub fn perk_component_description(&self, index: u16) -> Option<&str> {
+        self.catalog.perk_description(index)
     }
 
     fn weapon_investment_stat(
@@ -953,14 +1061,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_all_three_weapon_buckets() {
-        assert!(is_weapon_bucket(1_498_876_634));
-        assert!(is_weapon_bucket(2_465_295_065));
-        assert!(is_weapon_bucket(953_998_645));
-        assert!(!is_weapon_bucket(0));
-    }
-
-    #[test]
     fn donor_rarity_mapping_and_labels_are_stable_for_external_tools() {
         let mappings = [
             (ItemRarity::Unknown, WeaponRarity::Unknown, "Unknown"),
@@ -975,14 +1075,5 @@ mod tests {
             assert_eq!(rarity, expected);
             assert_eq!(rarity.label(), label);
         }
-    }
-
-    #[test]
-    fn parhelion_recipe_library_is_below_sundial_data() {
-        let expected_suffix = std::path::Path::new("parhelion").join("recipes");
-        let directory = crate::package_authoring::parhelion_recipe_library_directory()
-            .expect("the test platform should expose a per-user data directory");
-
-        assert!(directory.ends_with(expected_suffix));
     }
 }

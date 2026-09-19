@@ -32,6 +32,7 @@ fn runtime_graph() -> WeaponRuntimeGraph {
                     owner_offset: 0,
                     byte_size: 4,
                     generated_schema: true,
+                    structure: Default::default(),
                     fields: vec![field(
                         WeaponRuntimeValueKind::Float32,
                         WeaponRuntimeValue::Float32Bits(1.0_f32.to_bits()),

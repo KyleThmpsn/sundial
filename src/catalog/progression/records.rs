@@ -1,12 +1,13 @@
 use super::*;
+mod runtime;
 
-pub(in crate::catalog) fn scan_record_objective_owners(
+pub(in crate::catalog) fn scan_records(
     package: &mut ProgressionPackageData<'_>,
     presentation_nodes: &[PresentationNodeDef],
     objectives: &mut [ObjectiveDef],
     flag_definitions: &mut [UnlockDefinition],
     value_definitions: &mut [UnlockDefinition],
-) -> Result<(), String> {
+) -> Result<Vec<RecordDefinition>, String> {
     let ProgressionPackageData {
         manager,
         root,
@@ -32,6 +33,9 @@ pub(in crate::catalog) fn scan_record_objective_owners(
         return Err("The installed record definition and string tables do not match".into());
     }
 
+    let mut records = Vec::with_capacity(definition_count);
+    let mut progress_slot = 2746_usize;
+    let value_indices = unlock_state_indices(value_definitions);
     for index in 0..definition_count {
         let definition = definition_rows + index * RECORD_DEFINITION_ROW_SIZE;
         let string = string_rows + index * RECORD_STRING_ROW_SIZE;
@@ -89,18 +93,28 @@ pub(in crate::catalog) fn scan_record_objective_owners(
             "Record category flag",
             &context,
         )?;
-        attach_direct_reference(
-            flag_definitions,
-            u16_at(&definitions, definition + 100)?,
-            "Record completion flag",
-            &context,
-        )?;
-        attach_direct_reference(
-            value_definitions,
-            u16_at(&definitions, definition + 82)?,
-            "Redeemed interval count",
-            &context,
-        )?;
+        let flag = u16_at(&definitions, definition + 100)?;
+        if flag != 0 {
+            attach_direct_reference(flag_definitions, flag, "Record completion flag", &context)?;
+        }
+        let interval_count = usize::try_from(u64_at(
+            &definitions,
+            definition + RECORD_INTERVAL_OBJECTIVE_LIST_OFFSET,
+        )?)
+        .map_err(|_| format!("Record {index} interval count is too large"))?;
+        let claimed = if interval_count > 0 {
+            u16_at(&definitions, definition + 82)?
+        } else {
+            u16::MAX
+        };
+        if claimed != 0 {
+            attach_direct_reference(
+                value_definitions,
+                claimed,
+                "Redeemed interval count",
+                &context,
+            )?;
+        }
         attach_condition_context(
             flag_definitions,
             value_definitions,
@@ -108,9 +122,51 @@ pub(in crate::catalog) fn scan_record_objective_owners(
             &context,
         );
 
-        for objective_index in record_objective_indices(&definitions, definition, objectives.len())
-            .map_err(|error| format!("Record {index}: {error}"))?
+        let objective_indices =
+            record_objective_indices(&definitions, definition, objectives.len())
+                .map_err(|error| format!("Record {index}: {error}"))?;
+        let completion_flag = u16_at(&definitions, definition + 100)?;
+        let redeemed_intervals = claimed;
+        let runtime = runtime::read(
+            &definitions,
+            definition,
+            &strings,
+            string,
+            objectives,
+            &mut progress_slot,
+        )
+        .map_err(|error| format!("Record {index}: {error}"))?;
+        let claimed_slot = value_definitions
+            .get(usize::from(redeemed_intervals))
+            .and_then(|definition| definition.compact_slot);
+        for progress in runtime
+            .progress
+            .iter()
+            .filter(|progress| Some(progress.slot) != claimed_slot)
         {
+            if let Some(&value_index) = value_indices.get(&(1, progress.slot)) {
+                attach_direct_reference(
+                    value_definitions,
+                    value_index as u16,
+                    "Triumph progress",
+                    &context,
+                )?;
+            }
+        }
+        records.push(RecordDefinition {
+            index,
+            hash: u64::from(hash),
+            name: name.clone(),
+            paths: paths.clone(),
+            objectives: objective_indices.clone(),
+            completion_flag: (completion_flag != 0 && completion_flag != u16::MAX)
+                .then_some(completion_flag),
+            redeemed_intervals: (redeemed_intervals != 0 && redeemed_intervals != u16::MAX)
+                .then_some(redeemed_intervals),
+            interval_count,
+            runtime: Some(runtime),
+        });
+        for objective_index in objective_indices {
             add_objective_owner(
                 objectives,
                 objective_index,
@@ -126,7 +182,7 @@ pub(in crate::catalog) fn scan_record_objective_owners(
             );
         }
     }
-    Ok(())
+    Ok(records)
 }
 
 pub(super) fn record_objective_indices(

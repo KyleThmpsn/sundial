@@ -2,7 +2,7 @@ use eframe::egui;
 use serde_json::Value;
 
 use crate::{
-    catalog::Catalog,
+    catalog::{Catalog, CollectibleDef, CollectionConditionDef},
     hash::{format_hash_hex, format_hash_hex_and_decimal},
 };
 
@@ -47,6 +47,275 @@ pub(super) fn draw_collection_metadata_workspace(
         "collection_inspection_workspace_compact",
         |ui, _placement| draw_collection_metadata_panel(ui, document, catalog, snapshot, state),
     )
+}
+
+/// Draws the collectible, item and material-requirement-set indices and hashes.
+fn draw_collection_identifiers(ui: &mut egui::Ui, definition: &CollectibleDef) {
+    egui::CollapsingHeader::new("Definition Identifiers")
+        .id_salt(("collection_definition_identifiers", definition.index))
+        .show(ui, |ui| {
+            egui::Grid::new(("collection_metadata_identifiers", definition.index))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    collection_metadata_field(
+                        ui,
+                        "Collectible index",
+                        definition.index.to_string(),
+                    );
+                    collection_hash_field(ui, "Collectible hash", definition.hash);
+                    collection_metadata_field(
+                        ui,
+                        "Item definition index",
+                        if definition.item_definition_index == u16::MAX {
+                            "<unavailable>".into()
+                        } else {
+                            definition.item_definition_index.to_string()
+                        },
+                    );
+                    collection_hash_field(ui, "Item definition hash", definition.item_hash);
+                    collection_metadata_field(
+                        ui,
+                        "Material requirement set index",
+                        definition
+                            .material_requirement_set_index
+                            .map_or_else(|| "<unavailable>".into(), |index| index.to_string()),
+                    );
+                    collection_hash_field(
+                        ui,
+                        "Material requirement set hash",
+                        definition.material_requirement_set_hash,
+                    );
+                });
+        });
+}
+
+/// Draws material requirements as a wide table, one row per requirement.
+fn draw_material_requirement_table(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    definition: &CollectibleDef,
+) {
+    egui::Grid::new(("collection_material_requirement_rows", definition.index))
+        .num_columns(7)
+        .spacing([16.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("Index");
+            ui.strong("Hash");
+            ui.strong("Name");
+            ui.strong("Quantity");
+            ui.strong("Delete").on_hover_text("Delete on Action");
+            ui.strong("Omit").on_hover_text("Omit from Requirements");
+            ui.strong("Condition");
+            ui.end_row();
+            for requirement in &definition.material_requirements {
+                ui.monospace(requirement.item_definition_index.to_string());
+                collection_hash_cell(ui, 104.0, requirement.item_hash);
+                item_definition_name_cell(ui, catalog, requirement.item_hash, 190.0);
+                ui.monospace(requirement.quantity.to_string());
+                ui.label(if requirement.delete_on_action {
+                    "True"
+                } else {
+                    "False"
+                });
+                ui.label(if requirement.omit_from_requirements {
+                    "True"
+                } else {
+                    "False"
+                });
+                ui.monospace(format!("0x{:04X}", requirement.condition));
+                ui.end_row();
+            }
+        });
+}
+
+/// Draws material requirements as stacked cards for narrow panels.
+fn draw_material_requirement_cards(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    definition: &CollectibleDef,
+) {
+    for (requirement_index, requirement) in definition.material_requirements.iter().enumerate() {
+        if requirement_index > 0 {
+            ui.add_space(4.0);
+        }
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.strong(format!(
+                    "Item definition #{}",
+                    requirement.item_definition_index
+                ));
+                collection_hash_cell(ui, 104.0, requirement.item_hash);
+            });
+            egui::Grid::new((
+                "collection_material_requirement_compact",
+                definition.index,
+                requirement_index,
+            ))
+            .num_columns(2)
+            .spacing([16.0, 3.0])
+            .show(ui, |ui| {
+                ui.weak("Name");
+                item_definition_name_cell(ui, catalog, requirement.item_hash, 190.0);
+                ui.end_row();
+                ui.weak("Quantity");
+                ui.monospace(requirement.quantity.to_string());
+                ui.end_row();
+                ui.weak("Condition");
+                ui.monospace(format!("0x{:04X}", requirement.condition));
+                ui.end_row();
+                ui.weak("Delete on Action");
+                ui.label(yes_no(requirement.delete_on_action));
+                ui.end_row();
+                ui.weak("Omit from Requirements");
+                ui.label(yes_no(requirement.omit_from_requirements));
+                ui.end_row();
+            });
+        });
+    }
+}
+
+fn draw_material_requirements(ui: &mut egui::Ui, catalog: &Catalog, definition: &CollectibleDef) {
+    if definition.material_requirements.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new(format!(
+        "Material requirements ({})",
+        definition.material_requirements.len()
+    ))
+    .id_salt(("collection_material_requirements", definition.index))
+    .default_open(true)
+    .show(ui, |ui| {
+        if ui.available_width() >= WIDE_PANEL_WIDTH {
+            draw_material_requirement_table(ui, catalog, definition);
+        } else {
+            draw_material_requirement_cards(ui, catalog, definition);
+        }
+    });
+}
+
+fn draw_package_paths(ui: &mut egui::Ui, definition: &CollectibleDef) {
+    if definition.paths.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new(format!("Package paths ({})", definition.paths.len()))
+        .id_salt(("collection_package_paths", definition.index))
+        .show(ui, |ui| {
+            for path in &definition.paths {
+                ui.weak(root_first_path(path).join(" > "));
+            }
+        });
+}
+
+/// Draws one condition's tokens as a wide table.
+fn draw_condition_token_table(
+    ui: &mut egui::Ui,
+    condition: &CollectionConditionDef,
+    snapshot: &CollectionStateSnapshot,
+    catalog: &Catalog,
+) {
+    egui::Grid::new(("collection_condition_tokens", condition.field))
+        .num_columns(5)
+        .spacing([16.0, 3.0])
+        .show(ui, |ui| {
+            ui.strong("#");
+            ui.strong("Operation");
+            ui.strong("Operand");
+            ui.strong("Referenced Entry");
+            ui.strong("Current State");
+            ui.end_row();
+            for (token_index, token) in condition.tokens.iter().enumerate() {
+                ui.monospace((token_index + 1).to_string());
+                ui.label(condition_token_label(token.kind));
+                ui.monospace(token.operand.to_string());
+                draw_condition_token_metadata(ui, token, catalog);
+                ui.label(condition_token_state(token, snapshot, catalog));
+                ui.end_row();
+            }
+        });
+}
+
+/// Draws one condition's tokens as stacked cards for narrow panels.
+fn draw_condition_token_cards(
+    ui: &mut egui::Ui,
+    condition: &CollectionConditionDef,
+    snapshot: &CollectionStateSnapshot,
+    catalog: &Catalog,
+) {
+    for (token_index, token) in condition.tokens.iter().enumerate() {
+        if token_index > 0 {
+            ui.add_space(4.0);
+        }
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.strong(format!(
+                "{}. {}",
+                token_index + 1,
+                condition_token_label(token.kind)
+            ));
+            egui::Grid::new((
+                "collection_condition_token_compact",
+                condition.field,
+                token_index,
+            ))
+            .num_columns(4)
+            .spacing([16.0, 3.0])
+            .show(ui, |ui| {
+                ui.weak("Operand");
+                ui.monospace(token.operand.to_string());
+                ui.weak("Current State");
+                ui.label(condition_token_state(token, snapshot, catalog));
+                ui.end_row();
+                if !condition_token_metadata(token, catalog).is_empty() {
+                    ui.weak("Referenced Entry");
+                    draw_condition_token_metadata(ui, token, catalog);
+                    ui.end_row();
+                }
+            });
+        });
+    }
+}
+
+fn draw_collection_conditions(
+    ui: &mut egui::Ui,
+    definition: &CollectibleDef,
+    snapshot: &CollectionStateSnapshot,
+    catalog: &Catalog,
+) {
+    for condition in &definition.conditions {
+        ui.add_space(6.0);
+        let result = evaluate_expression(&condition.tokens, snapshot, catalog)
+            .map_or("Unknown", |value| if value { "True" } else { "False" });
+        egui::CollapsingHeader::new(format!(
+            "{} · {result}",
+            condition_field_label(condition.field)
+        ))
+        .id_salt(("collection_condition", condition.field))
+        .default_open(
+            definition.conditions.len() == 1 || condition.field == ACQUISITION_CONDITION_FIELD,
+        )
+        .show(ui, |ui| {
+            if ui.available_width() >= WIDE_PANEL_WIDTH {
+                draw_condition_token_table(ui, condition, snapshot, catalog);
+            } else {
+                draw_condition_token_cards(ui, condition, snapshot, catalog);
+            }
+            egui::CollapsingHeader::new("Raw Package Program")
+                .id_salt(("collection_raw_condition", condition.field))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(condition_program(condition)).monospace(),
+                        )
+                        .wrap(),
+                    );
+                });
+        });
+    }
 }
 
 fn draw_collection_metadata_panel(
@@ -116,231 +385,10 @@ fn draw_collection_metadata_panel(
             changed |= draw_collection_acquisition_action(
                 ui, document, definition, snapshot, catalog, state,
             );
-            egui::CollapsingHeader::new("Definition identifiers")
-                .id_salt(("collection_definition_identifiers", definition.index))
-                .show(ui, |ui| {
-                    egui::Grid::new(("collection_metadata_identifiers", definition.index))
-                        .num_columns(2)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            collection_metadata_field(
-                                ui,
-                                "Collectible index",
-                                definition.index.to_string(),
-                            );
-                            collection_hash_field(ui, "Collectible hash", definition.hash);
-                            collection_metadata_field(
-                                ui,
-                                "Item definition index",
-                                if definition.item_definition_index == u16::MAX {
-                                    "<unavailable>".into()
-                                } else {
-                                    definition.item_definition_index.to_string()
-                                },
-                            );
-                            collection_hash_field(ui, "Item definition hash", definition.item_hash);
-                            collection_metadata_field(
-                                ui,
-                                "Material requirement set index",
-                                definition.material_requirement_set_index.map_or_else(
-                                    || "<unavailable>".into(),
-                                    |index| index.to_string(),
-                                ),
-                            );
-                            collection_hash_field(
-                                ui,
-                                "Material requirement set hash",
-                                definition.material_requirement_set_hash,
-                            );
-                        });
-                });
-            if !definition.material_requirements.is_empty() {
-                ui.add_space(6.0);
-                egui::CollapsingHeader::new(format!(
-                    "Material requirements ({})",
-                    definition.material_requirements.len()
-                ))
-                .id_salt(("collection_material_requirements", definition.index))
-                .default_open(true)
-                .show(ui, |ui| {
-                    if ui.available_width() >= 700.0 {
-                        egui::Grid::new(("collection_material_requirement_rows", definition.index))
-                            .num_columns(7)
-                            .spacing([16.0, 3.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.strong("Index");
-                                ui.strong("Hash");
-                                ui.strong("Name");
-                                ui.strong("Quantity");
-                                ui.strong("Delete").on_hover_text("Delete on action");
-                                ui.strong("Omit").on_hover_text("Omit from requirements");
-                                ui.strong("Condition");
-                                ui.end_row();
-                                for requirement in &definition.material_requirements {
-                                    ui.monospace(requirement.item_definition_index.to_string());
-                                    collection_hash_cell(ui, 104.0, requirement.item_hash);
-                                    item_definition_name_cell(
-                                        ui,
-                                        catalog,
-                                        requirement.item_hash,
-                                        190.0,
-                                    );
-                                    ui.monospace(requirement.quantity.to_string());
-                                    ui.label(if requirement.delete_on_action {
-                                        "True"
-                                    } else {
-                                        "False"
-                                    });
-                                    ui.label(if requirement.omit_from_requirements {
-                                        "True"
-                                    } else {
-                                        "False"
-                                    });
-                                    ui.monospace(format!("0x{:04X}", requirement.condition));
-                                    ui.end_row();
-                                }
-                            });
-                    } else {
-                        for (requirement_index, requirement) in
-                            definition.material_requirements.iter().enumerate()
-                        {
-                            if requirement_index > 0 {
-                                ui.add_space(4.0);
-                            }
-                            ui.group(|ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.strong(format!(
-                                        "Item definition #{}",
-                                        requirement.item_definition_index
-                                    ));
-                                    collection_hash_cell(ui, 104.0, requirement.item_hash);
-                                });
-                                egui::Grid::new((
-                                    "collection_material_requirement_compact",
-                                    definition.index,
-                                    requirement_index,
-                                ))
-                                .num_columns(2)
-                                .spacing([16.0, 3.0])
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Name").weak());
-                                    item_definition_name_cell(
-                                        ui,
-                                        catalog,
-                                        requirement.item_hash,
-                                        190.0,
-                                    );
-                                    ui.end_row();
-                                    ui.label(egui::RichText::new("Quantity").weak());
-                                    ui.monospace(requirement.quantity.to_string());
-                                    ui.end_row();
-                                    ui.label(egui::RichText::new("Condition").weak());
-                                    ui.monospace(format!("0x{:04X}", requirement.condition));
-                                    ui.end_row();
-                                    ui.label(egui::RichText::new("Delete on action").weak());
-                                    ui.label(yes_no(requirement.delete_on_action));
-                                    ui.end_row();
-                                    ui.label(egui::RichText::new("Omit from requirements").weak());
-                                    ui.label(yes_no(requirement.omit_from_requirements));
-                                    ui.end_row();
-                                });
-                            });
-                        }
-                    }
-                });
-            }
-            if !definition.paths.is_empty() {
-                ui.add_space(4.0);
-                egui::CollapsingHeader::new(format!("Package paths ({})", definition.paths.len()))
-                    .id_salt(("collection_package_paths", definition.index))
-                    .show(ui, |ui| {
-                        for path in &definition.paths {
-                            ui.label(egui::RichText::new(root_first_path(path).join(" > ")).weak());
-                        }
-                    });
-            }
-            for condition in &definition.conditions {
-                ui.add_space(6.0);
-                let result = evaluate_expression(&condition.tokens, snapshot, catalog)
-                    .map_or("Unknown", |value| if value { "True" } else { "False" });
-                egui::CollapsingHeader::new(format!(
-                    "{} · {result}",
-                    condition_field_label(condition.field)
-                ))
-                .id_salt(("collection_condition", condition.field))
-                .default_open(
-                    definition.conditions.len() == 1
-                        || condition.field == ACQUISITION_CONDITION_FIELD,
-                )
-                .show(ui, |ui| {
-                    if ui.available_width() >= 700.0 {
-                        egui::Grid::new(("collection_condition_tokens", condition.field))
-                            .num_columns(5)
-                            .spacing([16.0, 3.0])
-                            .show(ui, |ui| {
-                                ui.strong("#");
-                                ui.strong("Operation");
-                                ui.strong("Operand");
-                                ui.strong("Referenced entry");
-                                ui.strong("Current State");
-                                ui.end_row();
-                                for (token_index, token) in condition.tokens.iter().enumerate() {
-                                    ui.monospace((token_index + 1).to_string());
-                                    ui.label(condition_token_label(token.kind));
-                                    ui.monospace(token.operand.to_string());
-                                    draw_condition_token_metadata(ui, token, catalog);
-                                    ui.label(condition_token_state(token, snapshot, catalog));
-                                    ui.end_row();
-                                }
-                            });
-                    } else {
-                        for (token_index, token) in condition.tokens.iter().enumerate() {
-                            if token_index > 0 {
-                                ui.add_space(4.0);
-                            }
-                            ui.group(|ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.strong(format!(
-                                    "{}. {}",
-                                    token_index + 1,
-                                    condition_token_label(token.kind)
-                                ));
-                                egui::Grid::new((
-                                    "collection_condition_token_compact",
-                                    condition.field,
-                                    token_index,
-                                ))
-                                .num_columns(4)
-                                .spacing([16.0, 3.0])
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Operand").weak());
-                                    ui.monospace(token.operand.to_string());
-                                    ui.label(egui::RichText::new("Current State").weak());
-                                    ui.label(condition_token_state(token, snapshot, catalog));
-                                    ui.end_row();
-                                    if !condition_token_metadata(token, catalog).is_empty() {
-                                        ui.label(egui::RichText::new("Referenced entry").weak());
-                                        draw_condition_token_metadata(ui, token, catalog);
-                                        ui.end_row();
-                                    }
-                                });
-                            });
-                        }
-                    }
-                    egui::CollapsingHeader::new("Raw package program")
-                        .id_salt(("collection_raw_condition", condition.field))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(condition_program(condition)).monospace(),
-                                )
-                                .wrap(),
-                            );
-                        });
-                });
-            }
+            draw_collection_identifiers(ui, definition);
+            draw_material_requirements(ui, catalog, definition);
+            draw_package_paths(ui, definition);
+            draw_collection_conditions(ui, definition, snapshot, catalog);
         });
     if close {
         state.metadata_index = None;
@@ -348,12 +396,14 @@ fn draw_collection_metadata_panel(
     changed
 }
 
+const WIDE_PANEL_WIDTH: f32 = 700.0;
+
 const fn yes_no(value: bool) -> &'static str {
     if value { "Yes" } else { "No" }
 }
 
 fn collection_hash_field(ui: &mut egui::Ui, label: &str, hash: u64) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.weak(label);
     if hash == 0 {
         ui.label(egui::RichText::new("<not present>").weak().italics());
         ui.end_row();
@@ -373,7 +423,7 @@ fn collection_hash_field(ui: &mut egui::Ui, label: &str, hash: u64) {
 }
 
 fn collection_metadata_field(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
-    ui.label(egui::RichText::new(label).weak());
+    ui.weak(label);
     let value = value.into();
     ui.label(if value.trim().is_empty() {
         egui::RichText::new("<not present>").weak()

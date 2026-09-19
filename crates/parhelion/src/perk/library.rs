@@ -2,8 +2,8 @@
 use super::PerkRecipe;
 use fs2::FileExt;
 use std::{
+    collections::BTreeSet,
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -66,31 +66,24 @@ impl Library {
         Ok(scan)
     }
 
-    fn materialize_bundled(&self) -> Result<(), String> {
-        for encoded in super::bundled::RECIPES {
-            let recipe: PerkRecipe = serde_json::from_str(encoded)
-                .map_err(|error| format!("Could not read a bundled custom perk: {error}"))?;
-            recipe.validate()?;
+    /// Adds the bundled examples the library does not hold yet, except ones the reader
+    /// deleted on purpose.
+    pub(crate) fn materialize_bundled(&self) -> Result<(), String> {
+        let removed = self.removed_bundled()?;
+        for (encoded, recipe) in bundled_recipes()? {
             let path = self.root.join(format!("{}.perk.json", recipe.id));
-            if path.try_exists().map_err(|error| error.to_string())? {
+            if removed.contains(&recipe.id.to_string())
+                || path.try_exists().map_err(|error| error.to_string())?
+            {
                 continue;
             }
-            let mut temporary =
-                tempfile::NamedTempFile::new_in(&self.root).map_err(|error| error.to_string())?;
-            temporary
-                .write_all(encoded.as_bytes())
-                .map_err(|error| error.to_string())?;
-            temporary
-                .as_file()
-                .sync_all()
-                .map_err(|error| error.to_string())?;
-            match temporary.persist_noclobber(&path) {
+            match sundial::storage::create_file(&path, encoded.as_bytes()) {
                 Ok(_) => {}
-                Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(format!(
                         "Could not add {} to My Perks: {}",
-                        recipe.name, error.error
+                        recipe.name, error
                     ));
                 }
             }
@@ -127,6 +120,70 @@ impl Library {
         self.save_checked(&self.root.join("workbench-drafts.json"), bytes, expected)
     }
 
+    /// Removes a saved perk. The file must still hold `expected`, so a copy edited outside
+    /// the workbench is preserved rather than deleted. A file that is already gone counts as
+    /// deleted. A bundled example stays deleted when the library is opened again.
+    pub fn delete(&self, recipe: &PerkRecipe, expected: &[u8]) -> Result<(), String> {
+        let path = self.root.join(format!("{}.perk.json", recipe.id));
+        let _lock = self.lock()?;
+        match fs::read(&path) {
+            Ok(current) if current == expected => {
+                fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "{} changed outside the workbench. The existing file was preserved.",
+                    path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if bundled_recipes()?
+            .iter()
+            .any(|(_, bundled)| bundled.id == recipe.id)
+        {
+            let mut removed = self.removed_bundled()?;
+            if removed.insert(recipe.id.to_string()) {
+                let listing = removed.into_iter().collect::<Vec<_>>().join("\n");
+                fs::write(self.removed_bundled_path(), listing)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn removed_bundled_path(&self) -> PathBuf {
+        self.root.join("removed-bundled.txt")
+    }
+
+    /// The ids of bundled examples the reader deleted, one per line.
+    fn removed_bundled(&self) -> Result<BTreeSet<String>, String> {
+        match fs::read_to_string(self.removed_bundled_path()) {
+            Ok(listing) => Ok(listing
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn lock(&self) -> Result<fs::File, String> {
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.root.join("library.lock"))
+            .map_err(|error| error.to_string())?;
+        lock.try_lock_exclusive()
+            .map_err(|_| "Another custom perk save is in progress")?;
+        Ok(lock)
+    }
+
     pub fn export(&self, recipe: &PerkRecipe, path: &Path) -> Result<(), String> {
         use sundial::package_authoring::{path_is_within, resolve_path_for_comparison};
 
@@ -146,15 +203,7 @@ impl Library {
         bytes: &[u8],
         expected: Option<&[u8]>,
     ) -> Result<(), String> {
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.root.join("library.lock"))
-            .map_err(|error| error.to_string())?;
-        lock.try_lock_exclusive()
-            .map_err(|_| "Another custom perk save is in progress")?;
+        let _lock = self.lock()?;
         let current = match fs::read(path) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -169,4 +218,17 @@ impl Library {
         sundial::package_authoring::replace_authoring_file(path, bytes)
             .map_err(|error| error.to_string())
     }
+}
+
+/// The bundled examples as shipped, each with its validated recipe.
+fn bundled_recipes() -> Result<Vec<(&'static str, PerkRecipe)>, String> {
+    super::bundled::RECIPES
+        .iter()
+        .map(|encoded| {
+            let recipe: PerkRecipe = serde_json::from_str(encoded)
+                .map_err(|error| format!("Could not read a bundled custom perk: {error}"))?;
+            recipe.validate()?;
+            Ok((*encoded, recipe))
+        })
+        .collect()
 }

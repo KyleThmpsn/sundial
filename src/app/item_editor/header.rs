@@ -8,6 +8,18 @@ const ITEM_HEADER_TRAILING_MIN_WIDTH: f32 = 120.0;
 const ITEM_HEADER_TRAILING_MAX_WIDTH: f32 = 160.0;
 const ITEM_HEADER_TRAILING_WIDTH_FRACTION: f32 = 0.36;
 
+pub(crate) fn draw_item_card<R>(
+    ui: &mut egui::Ui,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::ZERO)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            contents(ui)
+        })
+}
+
 pub(crate) fn muted_item_header_fill(ui: &egui::Ui) -> egui::Color32 {
     let [red, green, blue, _] = ui.visuals().panel_fill.to_srgba_unmultiplied();
     egui::Color32::from_rgb(
@@ -17,19 +29,29 @@ pub(crate) fn muted_item_header_fill(ui: &egui::Ui) -> egui::Color32 {
     )
 }
 
-pub(crate) fn draw_item_header_with_trailing(
-    ui: &mut egui::Ui,
-    header: ItemHeader<'_>,
-    trailing: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
-    draw_item_header_with_trailing_at_icon_size(ui, header, ITEM_HEADER_ICON_SIZE, 0.0, trailing)
-}
-
 pub(crate) fn draw_item_header_with_trailing_at_icon_size(
     ui: &mut egui::Ui,
     header: ItemHeader<'_>,
     icon_size: f32,
     minimum_trailing_width: f32,
+    trailing: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    draw_header(
+        ui,
+        header,
+        icon_size,
+        minimum_trailing_width,
+        None,
+        trailing,
+    )
+}
+
+fn draw_header(
+    ui: &mut egui::Ui,
+    header: ItemHeader<'_>,
+    icon_size: f32,
+    minimum_trailing_width: f32,
+    badge: Option<&str>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let fill = header.fill;
@@ -49,6 +71,7 @@ pub(crate) fn draw_item_header_with_trailing_at_icon_size(
                 icon_size,
                 true,
                 minimum_trailing_width,
+                badge,
                 trailing,
             )
         })
@@ -71,12 +94,7 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
         .filter(|_| ui.is_rect_visible(header_rect))
         .and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
     let badge = item_header_badge(hash);
-    let response = draw_item_header_with_trailing(ui, header, |ui| {
-        if let Some(badge) = badge {
-            draw_item_badge(ui, badge).on_hover_text("Display-only dummy definition");
-        }
-        trailing(ui);
-    });
+    let response = draw_header(ui, header, ITEM_HEADER_ICON_SIZE, 0.0, badge, trailing);
     let Some(hash) = hash else {
         return response;
     };
@@ -109,7 +127,7 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
             egui::Sense::click(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Inspect definition");
+        .on_hover_text("Inspect Definition");
     if hash_response.clicked() {
         if let Some(context) = inspection_context {
             request_hash_inspection_with_context(ui.ctx(), hash, context);
@@ -145,6 +163,7 @@ fn draw_item_header_contents(
     icon_size: f32,
     has_trailing: bool,
     minimum_trailing_width: f32,
+    badge: Option<&str>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let body_font = egui::TextStyle::Body.resolve(ui.style());
@@ -231,7 +250,7 @@ fn draw_item_header_contents(
             append_header_text(
                 &mut title_job,
                 &mut title_text,
-                "Unknown item",
+                "Invalid Item",
                 0.0,
                 title_error,
             );
@@ -312,9 +331,21 @@ fn draw_item_header_contents(
         } else {
             0.0
         };
+        let badge_width = badge.map_or(0.0, |text| {
+            ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(
+                        text.to_owned(),
+                        egui::FontId::proportional(11.0),
+                        text_color,
+                    )
+                    .size()
+                    .x
+            }) + 14.0
+        });
         item_header_trailing_width(
             ui.available_width(),
-            layout_job_width(ui, &title_hash_job).max(minimum_trailing_width),
+            (layout_job_width(ui, &title_hash_job) + badge_width).max(minimum_trailing_width),
             main_leading_width,
         )
     } else {
@@ -339,11 +370,18 @@ fn draw_item_header_contents(
                     |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         if !title_hash_job.text.is_empty() {
-                            ui.add(
-                                egui::Label::new(title_hash_job)
-                                    .truncate()
-                                    .halign(egui::Align::RIGHT),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(egui::Label::new(title_hash_job).truncate());
+                                        if let Some(badge) = badge {
+                                            draw_item_badge(ui, badge)
+                                                .on_hover_text("Display-only dummy definition");
+                                        }
+                                    },
+                                );
+                            });
                         }
                         trailing(ui);
                     },
@@ -541,31 +579,4 @@ fn append_header_text(
     }
     full_text.push_str(text);
     job.append(text, leading_space, format);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dummy_badges_follow_the_canonical_dummy_hash_set() {
-        assert_eq!(item_header_badge(Some(0xC13D_CD47)), Some("Dummy"));
-        assert_eq!(item_header_badge(Some(0x2E43_BDEE)), None);
-        assert_eq!(item_header_badge(None), None);
-    }
-
-    #[test]
-    fn trailing_actions_fit_after_the_leading_content() {
-        for (available, content, leading) in [
-            (320.0_f32, 104.0, 56.0),
-            (600.0, 104.0, 56.0),
-            (400.0, 152.0, 56.0),
-            (150.0, 152.0, 56.0),
-            (40.0, 80.0, 56.0),
-        ] {
-            let remaining = (available - leading).max(0.0);
-            let width = item_header_trailing_width(available, content, leading);
-            assert!((content.min(remaining)..=remaining).contains(&width));
-        }
-    }
 }

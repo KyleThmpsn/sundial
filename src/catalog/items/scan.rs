@@ -989,7 +989,7 @@ fn find_record(item: &[u8], class: u32, start: usize, end: usize) -> Option<usiz
         .find(|offset| u32_at(item, *offset).ok() == Some(class))
 }
 
-pub(in crate::catalog) fn item_scan_progress_stride(item_count: usize) -> usize {
+fn item_scan_progress_stride(item_count: usize) -> usize {
     item_count.div_ceil(MAX_ITEM_SCAN_PROGRESS_UPDATES).max(64)
 }
 

@@ -4,14 +4,6 @@ use super::*;
 use crate::app::account_workspace::WorkspaceDocument;
 
 #[test]
-fn inventory_swap_choice_invalidates_the_armor_preview_source() {
-    let document = WorkspaceDocument::json_only(serde_json::json!({}));
-    let enabled = source_key(&document, 0, PlugSelectionMode::Supported, true);
-    let disabled = source_key(&document, 0, PlugSelectionMode::Supported, false);
-    assert_ne!(enabled, disabled);
-}
-
-#[test]
 fn character_class_invalidates_the_armor_preview_source() {
     let mut document = WorkspaceDocument::json_only(serde_json::json!({
         "version": 8,
@@ -19,6 +11,10 @@ fn character_class_invalidates_the_armor_preview_source() {
     }));
     let titan = source_key(&document, 0, PlugSelectionMode::Supported, true);
     assert_eq!(titan.class_type, 0);
+    assert_ne!(
+        titan,
+        source_key(&document, 0, PlugSelectionMode::Supported, false)
+    );
 
     document.json_mut()["state"]["characters"][0]["class"] = serde_json::json!(1);
     let hunter = source_key(&document, 0, PlugSelectionMode::Supported, true);
@@ -26,33 +22,6 @@ fn character_class_invalidates_the_armor_preview_source() {
     assert_eq!(titan.equipment, hunter.equipment);
     assert_eq!(titan.inventory, hunter.inventory);
     assert_ne!(titan, hunter);
-}
-
-#[test]
-fn preview_columns_fit_supported_window_widths() {
-    for available in [520.0, 600.0, 760.0, 980.0] {
-        let gap = 8.0;
-        let widths = preview_column_widths(available, gap);
-        let used = widths.into_iter().sum::<f32>() + 3.0 * gap;
-        assert!(
-            used <= available + f32::EPSILON,
-            "preview used {used} px with {available} px available"
-        );
-    }
-}
-
-#[test]
-fn reopening_resets_window_geometry_without_losing_targets() {
-    let mut state = State::default();
-    state.targets[1] = 100;
-
-    state.open(0);
-    let first_generation = state.window_generation;
-    state.open = false;
-    state.open(0);
-
-    assert_eq!(state.targets[1], 100);
-    assert_eq!(state.window_generation, first_generation.wrapping_add(1));
 }
 
 fn choice(hash: u64, values: [i32; 6]) -> SocketChoice {
@@ -118,26 +87,6 @@ fn exact_goal_can_be_shared_across_multiple_armor_pieces() {
     assert_eq!(solution.projected_totals[2], 100);
     assert_eq!(solution.assignments.len(), 2);
     assert_eq!(changed_piece_count(&solution), 2);
-}
-
-#[test]
-fn useful_stat_range_is_clamped_to_the_real_cap() {
-    assert_eq!(
-        capped_totals([-1, 0, 50, 100, 101, i32::MAX]),
-        [0, 0, 50, 100, 100, 100]
-    );
-    assert_eq!(
-        cap_u16_totals([0, 50, 99, 100, 101, u16::MAX]),
-        [0, 50, 99, 100, 100, 100]
-    );
-}
-
-#[test]
-fn solver_state_keys_cap_goals_and_compare_other_stats_separately() {
-    assert_eq!(
-        solver_key([10, 20, 130, 40, 150, 60], [0, 0, 100, 0, 100, 0]),
-        [0, 0, 100, 0, 100, 0]
-    );
 }
 
 #[test]

@@ -1,4 +1,5 @@
 //! Boxed action scalars: bounded structural discovery, never guessed gameplay semantics.
+use super::super::workbench::Workbench;
 use super::*;
 use crate::WeaponSandboxPerkActionFloatRecipe;
 use sundial::package_authoring::sandbox_perk::sandbox_perk_action_boxed_value_offset;
@@ -31,9 +32,8 @@ pub(super) fn source_bits(
     Ok(u32::from_le_bytes(
         payload
             .get(offset..offset + 4)
-            .ok_or("Action scalar is truncated")?
-            .try_into()
-            .unwrap(),
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or("Action scalar is truncated")?,
     ))
 }
 
@@ -105,15 +105,9 @@ impl PerkEditor {
                 let mut value = existing.map_or(source.clone(), |index| self.action_draft[index].clone());
                 let original = source_bits(&loaded.action_payload, &source);
                 let valid_source = original.as_ref().is_ok_and(|bits| *bits == value.expected_bits);
-                ui.horizontal_wrapped(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(144.0, ui.spacing().interact_size.y),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_min_width(144.0);
-                            ui.label(format!("Action Scalar {}", index + 1)).on_hover_text(format!("Node {} · occurrence {} · member +0x{:X} · boxed type {}", source.node_type_handle, source.node_occurrence, source.value_pointer_offset, source.value_type_handle));
-                        },
-                    );
+                let label = format!("Action Scalar {}", index + 1);
+                let hint = format!("Node {} · occurrence {} · member +0x{:X} · boxed type {}", source.node_type_handle, source.node_occurrence, source.value_pointer_offset, source.value_type_handle);
+                Workbench::property_row(ui, &label, &hint, |ui| {
                     let mut number = f32::from_bits(value.value_bits);
                     if ui.add_enabled(experimental && valid_source, egui::DragValue::new(&mut number).speed(0.01)).changed() {
                         value.value_bits = number.to_bits();
@@ -130,7 +124,7 @@ impl PerkEditor {
             });
         }
         if !experimental {
-            ui.label("Enable experimental controls in Preferences to change action scalars. Saved edits are preserved and can be reset here.");
+            ui.small("Turn on Experimental Features in Preferences to change action scalars. Saved edits stay and can be reset here.");
         }
     }
 }

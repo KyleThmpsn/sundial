@@ -77,7 +77,7 @@ impl Window {
         current: &WeaponRecipe,
     ) {
         egui::ScrollArea::vertical().id_salt("community-share").show(ui, |ui| {
-            ui.heading("Share A Recipe");
+            ui.heading("Share a Recipe");
             ui.label("Submit a snapshot of your weapon for community review. Your local recipe stays in your library.");
             if ui.add_enabled(self.worker.is_none(), egui::Button::new("Use Current Workbench Recipe")).clicked() {
                 self.prepare_share(current);
@@ -92,8 +92,8 @@ impl Window {
                 ui.small("Separate tags with commas, for example auto-rifle, solar, experimental.");
                 field(ui, "Sundial Version", &mut self.share.sundial);
                 field(ui, "Sunrise Version", &mut self.share.sunrise);
-                ui.checkbox(&mut self.share.tested, "Tested In Game");
-                ui.label("Gameplay Notes And Known Issues");
+                ui.checkbox(&mut self.share.tested, "Tested in Game");
+                ui.label("Gameplay Notes and Known Issues");
                 ui.add(egui::TextEdit::multiline(&mut self.share.notes).desired_rows(3).desired_width(f32::INFINITY));
                 ui.checkbox(&mut self.share.permission, "I Have Permission To Share This Contribution Under GPL-3.0-only");
                 ui.small("Include credit and permission for any custom artwork. The submission includes the recipe and the information shown here.");

@@ -20,7 +20,7 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
             ui,
             build.weapons.len(),
             build.artifacts.len(),
-            "Ready For Review",
+            "Ready for Review",
         );
         ui.add_space(6.0);
         egui::CollapsingHeader::new("Included Weapons")

@@ -205,6 +205,7 @@ fn apply_inspector_progression_edit(
                     format!("Unlock Flag Definition #{definition_index} is unavailable")
                 })?;
             set_collection_flag(document, definition_index, definition, set)
+                .changed()
                 .then(|| {
                     format!(
                         "{} {}",
@@ -235,6 +236,7 @@ fn apply_inspector_progression_edit(
                     format!("Unlock Value Definition #{definition_index} is unavailable")
                 })?;
             set_collection_value(document, definition_index, definition, value)
+                .changed()
                 .then(|| {
                     format!(
                         "{} set to {value}",
@@ -377,7 +379,7 @@ fn draw_hash_inspector_contents(
             action.navigate_forward = true;
         }
         ui.separator();
-        ui.label(egui::RichText::new("Inspect Hash").strong());
+        ui.strong("Inspect Hash");
         let response = ui.add(
             egui::TextEdit::singleline(lookup)
                 .hint_text("0x00000000")
@@ -430,7 +432,7 @@ fn draw_hash_inspector_contents(
         if *error {
             ui.colored_label(ui.visuals().error_fg_color, message);
         } else {
-            ui.label(egui::RichText::new(message).weak());
+            ui.weak(message);
         }
     }
     ui.separator();
@@ -502,10 +504,7 @@ fn draw_hash_inspector_contents(
             }
             if *match_count == 0 {
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("No directly indexed package entity uses this hash.")
-                        .weak(),
-                );
+                ui.weak("No directly indexed package entity uses this hash.");
             }
         });
 }
@@ -568,7 +567,7 @@ fn draw_hash_answer_layer(ui: &mut egui::Ui, content: &HashInspectorContent<'_>)
             }
             if let Some(context) = content.source_context {
                 ui.add_space(5.0);
-                ui.label(egui::RichText::new(format!("Opened from {}", context.source)).weak());
+                ui.weak(format!("Opened from {}", context.source));
             } else if content.match_count == 0 {
                 ui.add_space(5.0);
                 ui.label(
@@ -833,7 +832,7 @@ fn draw_related_catalog_records(ui: &mut egui::Ui, content: &HashInspectorConten
             .striped(true)
             .show(ui, |ui| {
                 for record in records {
-                    ui.label(egui::RichText::new(record.kind).weak());
+                    ui.weak(record.kind);
                     draw_named_catalog_hash_link(ui, content.catalog, record.hash, record.label);
                     draw_catalog_hash_link(
                         ui,
@@ -846,7 +845,7 @@ fn draw_related_catalog_records(ui: &mut egui::Ui, content: &HashInspectorConten
                             ui.label(format!("Current: {}", state.text))
                                 .on_hover_text(state.tooltip);
                         } else {
-                            ui.label(egui::RichText::new("-").weak());
+                            ui.weak("-");
                         }
                     }
                     ui.end_row();

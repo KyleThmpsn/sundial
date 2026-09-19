@@ -7,7 +7,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult,
     error::{invalid, validation},
-    tag_payload::{read_u16, read_u32, read_u64, relative_target, write_i64, write_u64},
+    tag_payload::{write_i64, write_u64},
 };
 
 const MARKER: u32 = 0x8080_9FBD;
@@ -20,113 +20,16 @@ const GROUP_SIZE: usize = 0x28;
 pub(crate) mod partition;
 pub(crate) mod scoped;
 
-#[derive(Clone, Debug, Default)]
-struct Group {
-    bitmap: Vec<u32>,
-    indices: Vec<u16>,
-}
-
-fn array(
-    payload: &[u8],
-    descriptor: usize,
-    class: u64,
-    stride: usize,
-    max: usize,
-) -> AuthoringResult<Vec<u8>> {
-    let count = usize::try_from(read_u64(payload, descriptor)?)
-        .map_err(|_| invalid("Dependency array count overflow"))?;
-    let relative = read_u64(payload, descriptor + 8)?;
-    if count == 0 {
-        if relative != 0 {
-            return Err(invalid("Empty dependency array has a non-null pointer"));
-        }
-        return Ok(Vec::new());
-    }
-    if count > max {
-        return Err(invalid(
-            "Dependency array exceeds its native entry-index limit",
-        ));
-    }
-    let header = relative_target(payload, descriptor + 8)?;
-    if header < 4
-        || read_u32(payload, header - 4)? != MARKER
-        || read_u64(payload, header)? != count as u64
-        || read_u64(payload, header + 8)? != class
-    {
-        return Err(invalid(
-            "Dependency array marker, class, or repeated count is invalid",
-        ));
-    }
-    let start = header
-        .checked_add(16)
-        .ok_or_else(|| invalid("Dependency array offset overflow"))?;
-    let end = start
-        .checked_add(count * stride)
-        .ok_or_else(|| invalid("Dependency array size overflow"))?;
-    payload
-        .get(start..end)
-        .map(<[u8]>::to_vec)
-        .ok_or_else(|| invalid("Dependency array exits payload"))
-}
+use sundial::package_authoring::loading_index::{Group, entries as indexed_dependencies};
 
 fn parse(
     payload: &[u8],
     companion: TagHash,
     owner: TagHash,
 ) -> AuthoringResult<BTreeMap<u16, Group>> {
-    if payload.len() < GROUP_START
-        || read_u64(payload, 0)? != payload.len() as u64
-        || read_u32(payload, 8)? != companion.0
-        || read_u32(payload, 12)? != owner.0
-        || payload[0x20..0x3C].iter().any(|b| *b != 0)
-    {
-        return Err(invalid(
-            "Shared dependency index identity or fixed envelope is invalid",
-        ));
-    }
-    let rows = array(payload, 0x10, GROUP_CLASS, GROUP_SIZE, 4096)?;
-    if rows.is_empty() || relative_target(payload, 0x18)? != 0x40 {
-        return Err(invalid(
-            "Shared dependency index has no canonical package-group table",
-        ));
-    }
-    let mut groups = BTreeMap::new();
-    let mut previous = None;
-    for index in 0..rows.len() / GROUP_SIZE {
-        let row = GROUP_START + index * GROUP_SIZE;
-        let package = u16::try_from(read_u64(payload, row)?)
-            .map_err(|_| invalid("Dependency package id exceeds u16"))?;
-        // Stock indexes retain groups outside the installed/header-authoring window (for
-        // example 0x0E06..0x0EC0). Preserve those encoded dependencies; do not prune them.
-        if package > 0x1FFF || previous.is_some_and(|p| package <= p) {
-            return Err(invalid(
-                "Dependency package groups are invalid or not strictly sorted",
-            ));
-        }
-        previous = Some(package);
-        let bitmap = array(payload, row + 8, BITMAP_CLASS, 4, 256)?
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes(b.try_into().expect("word")))
-            .collect::<Vec<_>>();
-        let sparse = array(payload, row + 0x18, INDEX_CLASS, 2, 8192)?;
-        let indices = (0..sparse.len() / 2)
-            .map(|i| read_u16(&sparse, i * 2))
-            .collect::<AuthoringResult<Vec<_>>>()?;
-        if indices.iter().any(|i| *i >= 8192)
-            || !indices.windows(2).all(|w| w[0] < w[1])
-            || indices.iter().any(|i| {
-                bitmap
-                    .get(*i as usize / 32)
-                    .is_some_and(|word| word & (1 << (*i % 32)) != 0)
-            })
-        {
-            return Err(invalid(
-                "Dependency indices are invalid, duplicated, or unsorted",
-            ));
-        }
-        groups.insert(package, Group { bitmap, indices });
-    }
-    // Prove every array, padding byte and relative pointer was understood before editing.
+    let groups = sundial::package_authoring::loading_index::decode(payload, companion.0, owner.0)
+        .map_err(invalid)?;
+    // Editing requires every padding byte and relative pointer to round-trip unchanged.
     if encode(payload, &groups)? != payload {
         return Err(invalid(
             "Dependency index is not in the supported native layout",
@@ -164,7 +67,7 @@ fn append_array(
     Ok(())
 }
 
-fn encode(template: &[u8], groups: &BTreeMap<u16, Group>) -> AuthoringResult<Vec<u8>> {
+pub(crate) fn encode(template: &[u8], groups: &BTreeMap<u16, Group>) -> AuthoringResult<Vec<u8>> {
     let mut payload = template[..0x30].to_vec();
     write_u64(&mut payload, 0x10, groups.len() as u64)?;
     write_i64(&mut payload, 0x18, 0x28)?;
@@ -246,21 +149,6 @@ pub(crate) fn enroll_dependencies(
     additions: &[TagHash],
 ) -> AuthoringResult<Vec<u8>> {
     enroll_inherited_dependencies(payload, companion, owner, additions, &[])
-}
-
-fn indexed_dependencies(groups: &BTreeMap<u16, Group>) -> BTreeSet<(u16, u16)> {
-    let mut entries = BTreeSet::new();
-    for (&package, group) in groups {
-        for (word_index, word) in group.bitmap.iter().enumerate() {
-            for bit in 0..32 {
-                if word & (1 << bit) != 0 {
-                    entries.insert((package, (word_index * 32 + bit) as u16));
-                }
-            }
-        }
-        entries.extend(group.indices.iter().map(|&entry| (package, entry)));
-    }
-    entries
 }
 
 /// Reads validated native package and entry indices without narrowing package IDs.

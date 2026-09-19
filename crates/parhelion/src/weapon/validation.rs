@@ -460,7 +460,7 @@ pub(super) fn validate_socket_column_programs(
     }
 }
 
-pub(super) fn validate_socket_plug_variant_shapes(
+pub(crate) fn validate_socket_plug_variant_shapes(
     variants: &[WeaponSocketPlugVariantOverride],
 ) -> AuthoringResult<()> {
     let mut positions = BTreeSet::new();
@@ -488,7 +488,10 @@ pub(super) fn validate_socket_plug_variant_shapes(
         if let Some(name) = &variant.name {
             validate_localized_text("Private socket-plug name", name)?;
         }
-        if let Some(description) = &variant.description {
+        // An explicit empty string clears the donor description. None inherits it.
+        if let Some(description) = &variant.description
+            && !description.is_empty()
+        {
             validate_localized_text("Private socket-plug description", description)?;
         }
         if variant.additional_sandbox_perks.len() > 64
@@ -530,8 +533,8 @@ pub(super) fn validate_socket_plug_variant_shapes(
                         "A custom effect program cannot also contain stock action overrides.",
                     ));
                 }
-                for action in &program.actions {
-                    validate_runtime_value_override_shapes(&action.asset().values)?;
+                for asset in program.assets() {
+                    validate_runtime_value_override_shapes(&asset.values)?;
                 }
             }
             if perk.activation.is_some()
@@ -790,6 +793,7 @@ pub(crate) fn validate_catalog_with_progress<'a>(
         .into_iter()
         .filter(|spec| {
             spec.presentation_donor.is_some()
+                || spec.overrides.variable_damage.is_some()
                 || !spec.overrides.investment_stats.is_empty()
                 || !spec.overrides.removed_investment_stats.is_empty()
                 || spec.overrides.base_sandbox_perks.is_some()
@@ -813,11 +817,12 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     })
     .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
     let installed_donors = catalog.weapon_donors();
-    let installed_sandbox_perks = catalog
-        .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)
-        .into_iter()
-        .map(|choice| choice.perk_index)
-        .collect::<BTreeSet<_>>();
+    // The base-item array may carry declaration-only rows: stock puts 479, whose metadata
+    // liveness byte is zero and which has no runtime action, on Hard Light's intrinsic plug.
+    // Requiring the active-only choice set here was stricter than the shipped data, so the
+    // guard checks that the installed catalog knows the index at all.
+    let installed_sandbox_perks =
+        catalog.referenced_sandbox_perk_indices(crate::package_profile::is_stock_item_definition);
     let installed_trait_indices = catalog
         .weapon_trait_choices()
         .into_iter()

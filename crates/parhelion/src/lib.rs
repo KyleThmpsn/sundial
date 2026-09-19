@@ -27,6 +27,7 @@ mod extend;
 mod format;
 pub mod hud_icon;
 mod icon_edit;
+mod image_import;
 mod install;
 mod manifest;
 mod package_profile;
@@ -47,6 +48,7 @@ mod tag_payload;
 mod watermark;
 mod weapon;
 mod weapon_ammo;
+pub mod weapon_behavior;
 mod workflow;
 
 pub use app::Parhelion;
@@ -81,7 +83,7 @@ pub use install::{
     preview_uninstall_with_account_cleanup, prune_package_backups, uninstall_custom_packages,
 };
 #[cfg(test)]
-pub(crate) use recipe::{ARC_LOGIC_DONOR_HASH, RecipeCollectionPlacement};
+pub(crate) use recipe::ARC_LOGIC_DONOR_HASH;
 pub(crate) use recipe::{
     HexHash, RecipeAmmoType, RecipeRarity, RecipeRawPayloadTarget, WeaponArtArrangementRecipe,
     WeaponDonorReference, WeaponDyeReferenceRecipe, WeaponLocaleTextRecipe,
@@ -103,6 +105,7 @@ pub(crate) use weapon::{
     WeaponRenderGearDonorReference, WeaponRuntimeComponentDonorReference,
     WeaponRuntimeResourcePatch, WeaponSandboxPerkActionFloatOverride,
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
 };
 pub use workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildProgress, BuildReport,

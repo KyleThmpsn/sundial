@@ -151,7 +151,7 @@ impl PackageAuthoringApp {
             ui.weak("Turning off optional text also removes its translations.");
             let mut custom_type = self.recipe.type_name.is_some();
             if ui
-                .checkbox(&mut custom_type, "Custom item-type label")
+                .checkbox(&mut custom_type, "Custom Item-Type Label")
                 .on_hover_text(
                     "Writes the independent item-type localization reference at item-string offset 0x90. Disable this to preserve the gameplay donor's label.",
                 )
@@ -177,7 +177,7 @@ impl PackageAuthoringApp {
             ui.separator();
             let mut inventory_hint = self.recipe.inventory_hint.is_some();
             if ui
-                .checkbox(&mut inventory_hint, "Inventory acquisition hint")
+                .checkbox(&mut inventory_hint, "Inventory Acquisition Hint")
                 .on_hover_text(
                     "Optional inventory tooltip acquisition text, separate from Collections Source. This is display text only: authored weapons can be reacquired from Collections.",
                 )
@@ -202,9 +202,26 @@ impl PackageAuthoringApp {
             });
 
         ui.add_space(4.0);
+        // A behavior copied from Hard Light or Borealis owns the damage type.
+        let damage_locked = self
+            .recipe
+            .overrides
+            .additional_behaviors
+            .iter()
+            .filter_map(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
+            .any(crate::weapon_behavior::source_switches_element);
+        let variable_available =
+            donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
         let mut inventory_slot_changed = false;
+        let mut damage_changed = false;
+        let behaviors = crate::app::donor_view::unique_behavior_sources(donor);
         let column_count = core_profile_column_count(ui.available_width());
-        for fields in [0, 1, 2, 3, 4].chunks(column_count) {
+        let fields: &[usize] = if behaviors.is_empty() {
+            &[0, 1, 2, 3, 4]
+        } else {
+            &[0, 1, 2, 3, 4, 5]
+        };
+        for fields in fields.chunks(column_count) {
             ui.columns(column_count, |columns| {
                 for (&field, column) in fields.iter().zip(columns) {
                     match field {
@@ -214,17 +231,35 @@ impl PackageAuthoringApp {
                                 &mut self.recipe.overrides,
                                 donor,
                                 field == 0,
+                                variable_available,
+                                damage_locked,
                             );
                             inventory_slot_changed |= field == 0 && changed;
+                            damage_changed |= field == 1 && changed;
                         }
                         2 => draw_ammo_type_control(column, &mut self.recipe.overrides, donor),
                         3 => draw_rarity_control(column, &mut self.recipe.overrides, donor),
-                        _ => draw_power_cap_control(
+                        4 => draw_power_cap_control(
                             column,
                             &mut self.recipe.overrides,
                             donor,
                             self.catalog.as_ref(),
                         ),
+                        _ => {
+                            crate::app::donor_view::draw_unique_behavior_control(
+                                column,
+                                &mut self.recipe.overrides,
+                                &behaviors,
+                                self.catalog.as_ref(),
+                            );
+                            // What the choice brings with it belongs under the choice. Drawn
+                            // below the whole row it started at the panel's left edge, a column
+                            // or two away from the list it was describing.
+                            crate::app::donor_view::draw_unique_behavior_details(
+                                column,
+                                &mut self.recipe.overrides,
+                            );
+                        }
                     }
                 }
             });
@@ -456,6 +491,7 @@ impl PackageAuthoringApp {
         ui.heading("Icon & Colors");
         ui.label("These follow the appearance on the Weapon tab unless you choose another source.");
         ui.add_space(8.0);
+        self.draw_appearance_ornaments(ui);
         if ui.available_width() >= 880.0 {
             ui.columns(2, |columns| {
                 self.draw_icon_donor_picker(&mut columns[0]);
@@ -816,22 +852,29 @@ impl PackageAuthoringApp {
         donor: Option<&WeaponDonor>,
     ) {
         if let Some(donor) = donor {
+            // A chosen behavior claims its sockets here rather than at build time, so the list
+            // below is the weapon that gets built.
+            super::socket_editor::sync_behavior_socket_pins(
+                &mut self.recipe,
+                &mut self.behavior_pins,
+                donor,
+            );
             let show_experimental_options = self.show_experimental_options;
             let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
                 || !self.recipe.overrides.socket_plug_variants.is_empty();
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Perks & Sockets");
+                draw_authoring_info_icon(ui,
+                    "The first choice starts equipped. Right-click an extra choice to make it the default. Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
                 if ui
                     .button("Use Custom Perk…")
-                    .on_hover_text("Add a saved custom perk to this weapon.")
+                    .on_hover_text("Create a custom perk, or add one you already saved, to this weapon.")
                     .clicked()
                 {
                     self.perk_workbench.open = true;
                 }
                 self.draw_socket_options(ui, has_authored_columns);
             });
-            ui.label("First choice starts equipped. Right-click an extra choice to make it default.")
-                .on_hover_text("Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
             }
@@ -844,7 +887,7 @@ impl PackageAuthoringApp {
                 plug_selection_mode,
                 show_plug_safety_warnings,
                 show_technical_socket_rows,
-                private_perk_socket,
+                perk_request,
                 log,
                 ..
             } = self;
@@ -861,7 +904,7 @@ impl PackageAuthoringApp {
                         show_plug_safety_warnings: *show_plug_safety_warnings,
                         show_experimental_options,
                         show_technical_rows: show_technical_socket_rows,
-                        private_perk_socket,
+                        perk_request,
                         donor,
                         log,
                     },
@@ -890,7 +933,7 @@ impl PackageAuthoringApp {
                         .clicked() {
                         self.recipe.overrides.socket_columns.clear();
                         self.recipe.overrides.socket_plug_variants.clear();
-                        self.private_perk_socket = None;
+                        self.perk_request = None;
                         self.plug_queries.clear();
                         ui.close_menu();
                     }

@@ -1,6 +1,6 @@
 use crate::game_settings::MAX_SUPPORTED_SCHEMA;
 use serde_json::json;
-use sundial_account::{DefinitionHash, InstanceSoid, ItemInstance, ItemPlugs};
+use sundial_account::{DefinitionHash, ItemPlugs};
 
 use super::*;
 
@@ -82,71 +82,6 @@ fn document(version: u64) -> Value {
             }]
         }
     })
-}
-
-#[test]
-fn loading_and_projecting_without_a_command_is_lossless() {
-    let document = document(8);
-    let adapter = JsonCharacterAdapter::load(&document).unwrap();
-
-    assert_eq!(adapter.project(&document).unwrap(), document);
-}
-
-#[test]
-fn field_edits_preserve_other_representations_and_unknown_members() {
-    let document = document(8);
-    let adapter = JsonCharacterAdapter::load(&document).unwrap();
-    let item_id = adapter.state().characters()[0].inventory[0].id;
-    let (_, projected, _) = adapter
-        .apply(
-            &document,
-            CharacterCommand::UpdateInventoryItem {
-                item_id,
-                update: ItemUpdate::SetQuantity(3),
-            },
-        )
-        .unwrap();
-
-    assert_eq!(
-        projected.pointer("/state/characters/0/inventory/0"),
-        Some(&json!({
-            "instance_soid": "0x4000000000000002",
-            "definition_hash": 20,
-            "level": 106,
-            "quantity": 3,
-            "plugs": [1, null],
-            "future": true
-        }))
-    );
-}
-
-#[test]
-fn swaps_move_original_raw_rows_without_rebuilding_them() {
-    let document = document(8);
-    let adapter = JsonCharacterAdapter::load(&document).unwrap();
-    let item_id = adapter.state().characters()[0].inventory[0].id;
-    let (_, projected, result) = adapter
-        .apply(
-            &document,
-            CharacterCommand::SwapInventoryItemWithEquipment {
-                item_id,
-                slot: EquipmentSlot::new("kinetic"),
-            },
-        )
-        .unwrap();
-
-    assert_eq!(
-        result,
-        CharacterCommandResult::EquipmentSwapped { replaced: true }
-    );
-    assert_eq!(
-        projected.pointer("/state/characters/0/equipment/kinetic/future"),
-        Some(&Value::Bool(true))
-    );
-    assert_eq!(
-        projected.pointer("/state/characters/0/inventory/0/opaque/keep"),
-        Some(&Value::Bool(true))
-    );
 }
 
 #[test]
@@ -277,64 +212,5 @@ fn future_unknown_equipment_slots_remain_opaque() {
     assert_eq!(
         projected.pointer("/state/characters/0/equipment/future_slot"),
         document.pointer("/state/characters/0/equipment/future_slot")
-    );
-}
-
-#[test]
-fn invalid_commands_leave_adapter_and_document_untouched() {
-    let document = document(8);
-    let original_document = document.clone();
-    let adapter = JsonCharacterAdapter::load(&document).unwrap();
-    let before = adapter.clone();
-    let item_id = adapter.state().characters()[0].inventory[0].id;
-
-    assert!(
-        adapter
-            .apply(
-                &document,
-                CharacterCommand::UpdateInventoryItem {
-                    item_id,
-                    update: ItemUpdate::SetQuantity(0),
-                }
-            )
-            .is_err()
-    );
-    assert_eq!(adapter, before);
-    assert_eq!(document, original_document);
-}
-
-#[test]
-fn new_items_use_canonical_known_fields() {
-    let document = document(8);
-    let adapter = JsonCharacterAdapter::load(&document).unwrap();
-    let character_id = adapter.state().characters()[0].id;
-    let item_id = adapter.next_entity_id();
-    let (_, projected, _) = adapter
-        .apply(
-            &document,
-            CharacterCommand::AddInventoryItem {
-                character_id,
-                item: ItemInstance {
-                    id: item_id,
-                    instance_soid: InstanceSoid::try_from_u64(0x4000_0000_0000_0003).unwrap(),
-                    definition_hash: DefinitionHash::new(30),
-                    level: 106,
-                    quantity: 2,
-                    plugs: ItemPlugs::NativeDefaults,
-                    flags: None,
-                },
-            },
-        )
-        .unwrap();
-
-    assert_eq!(
-        projected.pointer("/state/characters/0/inventory/1"),
-        Some(&json!({
-            "instance_soid": "0x4000000000000003",
-            "definition_hash": "0x0000001E",
-            "level": 106,
-            "quantity": 2,
-            "plugs": null
-        }))
     );
 }

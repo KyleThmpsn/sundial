@@ -24,6 +24,7 @@ mod history;
 mod json_workspace;
 mod preferences_page;
 mod recovery;
+mod runtime_installation;
 mod saving;
 mod shortcuts;
 mod update;
@@ -86,7 +87,7 @@ mod account_validation;
 
 mod character_metadata;
 
-mod inventory;
+use crate::persistence::json_account::inventory;
 
 pub(crate) mod components;
 
@@ -111,7 +112,7 @@ const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
 const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
-const WEAPON_SLOTS: &[&str] = &["kinetic", "energy", "heavy"];
+use crate::account_contract::WEAPON_SLOTS;
 const ITEM_PICKER_MIN_HEIGHT: f32 = 320.0;
 const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
@@ -281,6 +282,7 @@ fn should_open_json_editor_window_on_selection(
 enum ProgressionSection {
     #[default]
     Collections,
+    Triumphs,
     Unlocks,
     Investment,
     Seasonal,
@@ -294,6 +296,7 @@ enum ConfirmationDialog {
     DeleteEquipment,
     Reload,
     RestoreSqliteBackup,
+    ResetSqliteDefaults,
     ResetDefaults,
     Exit,
 }
@@ -320,6 +323,7 @@ struct PendingFutureSchemaLoad {
 }
 
 struct SundialApp {
+    runtime_choice: runtime_installation::RuntimeChoice,
     settings_path: PathBuf,
     settings_layout: SettingsLayout,
     install_path: PathBuf,
@@ -366,12 +370,14 @@ struct SundialApp {
     pending_save_action: Option<SaveAction>,
     pending_equipment_delete: Option<PendingEquipmentDelete>,
     pending_sqlite_restore: Option<PathBuf>,
+    pending_sqlite_reset: Option<crate::persistence::sqlite_account::ResetPlan>,
     exit_confirmed: bool,
     dirty: bool,
     undo_history: Vec<DocumentHistoryEntry>,
     account_details: account_details::State,
     redo_history: Vec<DocumentHistoryEntry>,
-    suppress_history_record: bool,
+    edit_baseline: Option<WorkspaceDocument>,
+    document_repaint_pending: bool,
     status: String,
     status_is_error: bool,
     activity_log: activity_log::ActivityLog,
@@ -417,7 +423,14 @@ impl SundialApp {
         let cache = catalog_path().ok_or("Could not locate Sundial's local catalog folder")?;
         let manifest = Manifest::load_or_scan_with_progress(&install_path, cache, false, report)?;
         let sunrise_version = detect_sunrise_version(&install_path);
-        let document = WorkspaceDocument::load(json_document, &settings_path);
+        // The installed DLL decides the account source. A Dawn runtime keeps its account in
+        // player-state.db, which the settings schema alone cannot tell us.
+        let runtime_choice = runtime_installation::RuntimeChoice::inspect(&install_path);
+        let dawn = runtime_choice
+            .inspection
+            .launch_copy()
+            .is_some_and(|copy| copy.dawn);
+        let document = WorkspaceDocument::load(json_document, &settings_path, dawn);
         let source_warning = validate_workspace_document(&document).err();
         let persistence_compatibility = PersistenceCompatibility::inspect(&install_path);
         let class_armor_defaults = account::class_armor_default_characters(&document);
@@ -427,6 +440,7 @@ impl SundialApp {
         preferences.normalize_for_runtime();
         let default_plug_selection_mode = preferences.default_plug_selection_mode;
         let mut app = Self {
+            runtime_choice,
             settings_path,
             settings_layout,
             install_path,
@@ -473,12 +487,14 @@ impl SundialApp {
             pending_save_action: None,
             pending_equipment_delete: None,
             pending_sqlite_restore: None,
+            pending_sqlite_reset: None,
             exit_confirmed: false,
             dirty: false,
             undo_history: Vec::new(),
             account_details: account_details::State::default(),
             redo_history: Vec::new(),
-            suppress_history_record: false,
+            edit_baseline: None,
+            document_repaint_pending: false,
             status: source_warning.as_ref().map_or_else(
                 || {
                     if persistence_compatibility.detected() {
@@ -602,10 +618,7 @@ impl SundialApp {
             settings_layout: self.settings_layout.preference_value(),
             sunrise_version: &self.sunrise_version,
             settings_schema: game_settings::schema_version(&self.document),
-            account_source: account_source.label,
-            account_contract: account_source.contract,
-            account_detail: &account_source.detail,
-            account_database_path: &account_source.database_path,
+            account_source: &account_source,
             catalog: diagnostics::CatalogSummary {
                 cache_path: &self.manifest.cache_path,
                 loaded_from_cache: self.manifest.loaded_from_cache,
@@ -820,6 +833,10 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind)
             "Account Data",
             "As of schema v18, most account data is stored in investment.sqlite3. Some settings, including player identity and runtime configuration, are still read from settings.json.",
         ),
+        AccountSourceKind::Dawn => (
+            "Dawn Account Data",
+            "This install runs Dawn, so account data lives in player-state.db beside settings.json. Dawn reads settings.json once when it first creates that database and never again, so edits made here are written to player-state.db.",
+        ),
         AccountSourceKind::Blocked => (
             "Account Database Unavailable",
             "Sundial couldn't load investment.sqlite3. Database-backed account editing is unavailable.",
@@ -873,7 +890,7 @@ impl SundialApp {
                         | ViewMode::Progression
                 )
             {
-                ui.heading("Finish the JSON edit");
+                ui.heading("Finish the JSON Edit");
                 ui.label(
                     "The detached editor has unapplied changes. Resolve its validation errors or reset it before using guided settings.",
                 );
@@ -892,12 +909,9 @@ impl SundialApp {
                                 self.draw_character_fields(ui, index, character_editable)
                             });
                             if !character_editable {
-                                ui.label(
-                                    egui::RichText::new(
+                                ui.weak(
                                         "Character and equipment controls are disabled for this settings schema.",
-                                    )
-                                    .weak(),
-                                );
+                                    );
                             }
                             self.draw_equipment(ui, index);
                         });
@@ -905,6 +919,17 @@ impl SundialApp {
                 ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
                 ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
+                    // Read the launch copy before the Dawn borrow below takes the same inspection.
+                    let runtime_capabilities = {
+                        let launch = self.runtime_choice.inspection.launch_copy();
+                        game_settings::Capabilities::detect(
+                            launch.and_then(|copy| copy.version.as_deref()),
+                            launch.is_some_and(|copy| copy.dawn),
+                        )
+                    };
+                    let dawn = self.runtime_choice.inspection.copies.iter_mut()
+                        .find(|copy| copy.settings_path == self.settings_path)
+                        .and_then(|copy| copy.dawn_runtime.as_mut());
                     let account_settings = account::account_settings_map(&self.document);
                     let bindings_editable = account::named_key_bindings_editable(&self.document);
                     let json_account = self.document.uses_json_account();
@@ -917,8 +942,10 @@ impl SundialApp {
                             bindings_editable,
                             json_account,
                             extended_fov: self.preferences.experimental_extended_fov,
+                            dawn,
                             tab: &mut self.game_settings_tab,
                             key_bindings: &mut self.key_binding_ui,
+                            runtime_capabilities,
                         },
                     );
                     if edits.json_changed && let Err(error)=self.document.apply_runtime_view(runtime_document) {
@@ -940,7 +967,7 @@ impl SundialApp {
                             }
                         };
                     if edits.json_changed || account_changed {
-                        self.dirty = true;
+                        self.record_edit("Game Setting Updated");
                         self.set_status("Game setting updated. Click Save to write it", false);
                     }
                 }
@@ -955,7 +982,7 @@ impl SundialApp {
                         }
                     } else {
                         self.sync_raw_json_if_stale();
-                        draw_json_account_source_notice(ui, self.document.source_info().kind);
+                        draw_json_account_source_notice(ui, self.document.source_kind());
                         let response = json_editor::draw(
                             ui,
                             &mut self.raw_json,
@@ -1016,28 +1043,29 @@ impl SundialApp {
             let context = inspector::take_definition_context(ctx, hash);
             self.hash_inspection.open_with_context(hash, context);
         }
-        let mut inspector_document = self.document.progression_view(self.selected_character);
-        let inspector_changed = inspector::draw_catalog_hash_window(
-            ctx,
-            &self.manifest,
-            Some(&mut inspector_document),
-            self.preferences.experimental_progression
-                && self.document.account_editing_blocked().is_none()
-                && !self.json_editor.has_unapplied_changes(),
-            &mut self.hash_inspection,
-            "global",
-        );
-        if inspector_changed {
-            if let Err(error) = self
-                .document
-                .apply_progression_view(self.selected_character, inspector_document)
-            {
-                self.set_status(error, true);
-                return;
+        if self.hash_inspection.is_open() {
+            let mut inspector_document = self.document.progression_view(self.selected_character);
+            let inspector_changed = inspector::draw_catalog_hash_window(
+                ctx,
+                &self.manifest,
+                Some(&mut inspector_document),
+                self.preferences.experimental_progression
+                    && self.document.account_editing_blocked().is_none()
+                    && !self.json_editor.has_unapplied_changes(),
+                &mut self.hash_inspection,
+                "global",
+            );
+            if inspector_changed {
+                if let Err(error) = self
+                    .document
+                    .apply_progression_view(self.selected_character, inspector_document)
+                {
+                    self.set_status(error, true);
+                    return;
+                }
+                self.record_edit("Progression Updated in Inspector");
+                self.set_status("Progression state updated. Click Save to write it", false);
             }
-            self.dirty = true;
-            self.progression_ui.invalidate_document();
-            self.set_status("Progression state updated. Click Save to write it", false);
         }
 
         self.draw_json_editor_window(ctx);
@@ -1051,7 +1079,6 @@ impl SundialApp {
 
 impl eframe::App for SundialApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let document_before_frame = self.document.clone();
         let available_update = self.prepare_frame(ctx);
 
         self.draw_app_chrome(ctx, available_update.as_deref());
@@ -1063,6 +1090,8 @@ impl eframe::App for SundialApp {
         self.draw_future_schema_confirmation(ctx);
 
         self.draw_reset_defaults_confirmation(ctx);
+        self.draw_runtime_choice(ctx);
+        self.draw_sqlite_reset_confirmation(ctx);
         self.draw_sqlite_restore_confirmation(ctx);
         self.draw_parhelion_confirmation(ctx);
         self.draw_unsafe_mode_confirmation(ctx);
@@ -1072,7 +1101,10 @@ impl eframe::App for SundialApp {
         self.draw_exit_confirmation(ctx);
 
         self.handle_workspace_shortcuts(ctx);
-        self.record_document_change(document_before_frame);
+        if std::mem::take(&mut self.document_repaint_pending) {
+            // Counts and availability may have been drawn before the mutation in this frame.
+            ctx.request_repaint();
+        }
         self.draw_update_window(ctx);
     }
 }
@@ -1082,7 +1114,7 @@ fn encode_settings_for_editor(document: &Value) -> Result<String, String> {
 }
 
 fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLoad) {
-    ui.heading("Newer Sunrise settings detected");
+    ui.heading("Newer Sunrise Settings Detected");
     ui.add_space(6.0);
     ui.label(format!(
         "This settings.json uses schema version {}, which this Sundial release has not been tested with.",
@@ -1117,6 +1149,9 @@ fn check_install(selection: InstallSelection) -> Result<String, String> {
     };
     let app = SundialApp::new(settings_path, settings_layout, install_path)?;
     validate_for_check(&app.document)?;
+    if let Some(warning) = app.validation_warning_for_write(&app.document)? {
+        return Err(warning);
+    }
     let prepared = prepare_settings(&app.document)?;
     let size_note = if prepared.compacted {
         " (compacted from Sunrise's readable layout)".to_owned()
@@ -1145,7 +1180,7 @@ fn validate_for_check(document: &WorkspaceDocument) -> Result<(), String> {
     validate_workspace_document(document).map_err(|error| format!("Invalid settings: {error}"))
 }
 
-pub(crate) fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
+pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
     let update_startup = crate::updates::startup()
         .map_err(|error| eframe::Error::AppCreation(Box::new(std::io::Error::other(error))))?;
     let (install, check_only, loaded_preferences) = parse_args();

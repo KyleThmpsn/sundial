@@ -64,15 +64,10 @@ impl SundialApp {
                         return false;
                     }
                 };
-                let changed = document != *self.document.json();
                 self.raw_json_document = document.clone();
                 self.document.replace_json(document);
-                self.progression_ui.invalidate_document();
-                self.selected_character = self
-                    .selected_character
-                    .min(self.character_count().saturating_sub(1));
+                self.record_edit("Advanced JSON Applied");
                 self.clear_picker_state();
-                self.dirty |= changed;
                 if report_status {
                     if let Some(warning) = compatibility_warning {
                         self.set_status(
@@ -144,7 +139,7 @@ impl SundialApp {
         }
 
         self.sync_raw_json_if_stale();
-        let account_source_kind = self.document.source_info().kind;
+        let account_source_kind = self.document.source_kind();
         let (response, close_requested) = ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of((
                 "sundial_json_editor",

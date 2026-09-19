@@ -68,7 +68,7 @@ fn cross_rarity_icons_keep_art_and_rebuild_exact_resource_dependencies() {
             container.tag.0,
             container.companion_tag.0,
         ]);
-        let actual = crate::shared_tag_memory::validate_icon_companion_payload(
+        let actual = crate::shared_tag_memory::validate_shared_tag_companion_payload(
             &plan.new_tags[container.companion_ordinal].payload,
             container.companion_tag,
             container.tag,
@@ -107,7 +107,7 @@ fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
         assert!(output.pixels().any(|pixel| pixel[3] == 0));
         assert!(output.pixels().any(|pixel| pixel[3] >= 200));
         let source = decode_authored_texture(index, width, height).unwrap();
-        let reduced = crate::icon_edit::fit_rgba_image(&output, width, height);
+        let reduced = crate::image_import::fit(&output, width, height);
         // Resampling may soften an edge slightly, but must not replace or reposition the
         // mark. Compare premultiplied channels so invisible RGB does not skew the check.
         let error: f64 = source
@@ -412,7 +412,7 @@ fn assert_watermarked_container(
     expected_dependencies.insert(u32::from(container.tag));
     expected_dependencies.insert(u32::from(container.companion_tag));
     assert_eq!(
-        crate::shared_tag_memory::validate_icon_companion_payload(
+        crate::shared_tag_memory::validate_shared_tag_companion_payload(
             &plan.new_tags[companion_index].payload,
             container.companion_tag,
             container.tag,
@@ -569,7 +569,7 @@ fn assert_private_container_graph(
         plan.watermark_layer_tag
     );
 
-    let companion_dependencies = crate::shared_tag_memory::validate_icon_companion_payload(
+    let companion_dependencies = crate::shared_tag_memory::validate_shared_tag_companion_payload(
         &plan.new_tags[container_local + 1].payload,
         authored_container.companion_tag,
         authored_container.tag,

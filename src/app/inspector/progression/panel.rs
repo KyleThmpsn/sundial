@@ -204,12 +204,7 @@ fn draw_metadata_panel(
                     }
                     metadata_section(ui, "Definition and Dependencies", |ui| {
                         draw_unlock_definition_metadata(
-                            ui,
-                            selection.definition_index(),
-                            definition,
-                            catalog,
-                            snapshot,
-                            state,
+                            ui, selection, definition, catalog, snapshot, state,
                         );
                     });
                     for (objective_index, objective) in objectives.iter().enumerate() {
@@ -226,7 +221,7 @@ fn draw_metadata_panel(
                         });
                     }
                     if objectives.is_empty() && selection.is_value() {
-                        ui.label(egui::RichText::new("No objective uses this value.").weak());
+                        ui.weak("No objective uses this value.");
                     }
                 });
         });
@@ -318,14 +313,11 @@ fn draw_effective_state_summary(
         );
     });
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(evaluation_coverage).weak());
-    ui.label(
-        egui::RichText::new(format!(
-            "Source: {}",
-            selection_provenance(selection, definition)
-        ))
-        .weak(),
-    );
+    ui.weak(evaluation_coverage);
+    ui.weak(format!(
+        "Source: {}",
+        selection_provenance(selection, definition)
+    ));
 
     ui.add_space(8.0);
     egui::Grid::new(("progression_effective_summary", selection))
@@ -380,7 +372,7 @@ fn objective_completion_summary(
         return "Objective value is not available in the current save".into();
     };
     if objectives.is_empty() {
-        return format!("Current value is {current}; no completion target is linked");
+        return format!("Current value is {current}. No completion target is linked");
     }
     let complete = objectives
         .iter()
@@ -398,7 +390,7 @@ fn objective_completion_summary(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Current value {current}; {complete}/{} linked objectives complete (targets: {targets})",
+        "Current value {current}. {complete}/{} linked objectives complete (targets: {targets})",
         objectives.len()
     )
 }
@@ -450,7 +442,7 @@ fn selection_provenance(
         }
         MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => definition
             .map_or_else(
-                || "package definition; storage location unresolved".into(),
+                || "package definition. Storage location unresolved".into(),
                 |definition| {
                     definition.compact_slot.map_or_else(
                         || "package definition · unbanked Family 5 slot".into(),

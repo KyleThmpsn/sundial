@@ -75,8 +75,9 @@ impl InventoryState {
         &self,
         db: &rusqlite::Transaction<'_>,
         old: &[super::writer::NativeRow],
+        old_rewards: &[super::writer::NativeRow],
     ) -> Result<(), SqliteAccountError> {
-        rewards::save(db, &self.rewards)?;
+        rewards::save(db, &self.rewards, old_rewards)?;
         // Keep unknown columns with the row that owned them, even after a removal compacts it.
         db.execute("DELETE FROM character_stacks", [])
             .map_err(sql)?;

@@ -65,13 +65,7 @@ impl PackageAuthoringApp {
                     );
                 } else {
                     if let Some(progress) = &self.build_progress {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Elapsed {}",
-                                format_elapsed(progress.elapsed)
-                            ))
-                            .weak(),
-                        );
+                        ui.weak(format!("Elapsed {}", format_elapsed(progress.elapsed)));
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("parhelion-build-status-report")
@@ -163,7 +157,7 @@ impl PackageAuthoringApp {
             .show(ui, |ui| {
                 reports::draw_summary(ui, build.weapons.len(), build.artifacts.len(),
                     match &self.replacement_review {
-                        Some(Ok(_)) if self.replacement_receiver.is_none() => "Ready To Install",
+                        Some(Ok(_)) if self.replacement_receiver.is_none() => "Ready to Install",
                         Some(Err(_)) => "Needs Attention",
                         _ => "Checking Account Changes",
                     });
@@ -269,13 +263,13 @@ impl PackageAuthoringApp {
                 movement.source_label()
             );
             match movement.outcome {
-                sundial::investment::AuthoredMoveOutcome::MovedToInventory => {
+                sundial::package_authoring::account::AuthoredMoveOutcome::MovedToInventory => {
                     ui.label(format!(
                         "Move {name} from {location} to {} inventory.",
                         movement.destination_label()
                     ));
                 }
-                sundial::investment::AuthoredMoveOutcome::DeletedInventoryFull => {
+                sundial::package_authoring::account::AuthoredMoveOutcome::DeletedInventoryFull => {
                     ui.colored_label(ui.visuals().error_fg_color, format!("Delete {name} from {location}. There is no room in inventory for its new {} slot.", movement.destination_label()));
                 }
             }

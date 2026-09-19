@@ -58,6 +58,10 @@ impl Budget {
                 .checked_add(added.blocks)
                 .is_some_and(|n| n <= MAX_BLOCK_COUNT)
     }
+
+    fn within_capacity(self) -> bool {
+        self.entries <= MAX_PACKAGE_ENTRY_COUNT && self.blocks <= MAX_BLOCK_COUNT
+    }
 }
 
 impl AssetPackages {
@@ -81,13 +85,7 @@ impl AssetPackages {
         lengths: impl IntoIterator<Item = usize>,
     ) -> AuthoringResult<usize> {
         let added = Budget::for_lengths(lengths)?;
-        if added.entries == 0
-            || !(Budget {
-                entries: 0,
-                blocks: 0,
-            })
-            .fits(added)
-        {
+        if added.entries == 0 || !added.within_capacity() {
             return Err(invalid(
                 "A resource group exceeds one native asset package's entry or block capacity",
             ));
@@ -117,11 +115,7 @@ impl AssetPackages {
             let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
             if package.id as usize != PARHELION_ASSET_PACKAGE_ID as usize + index
                 || budget.entries == 0
-                || !(Budget {
-                    entries: 0,
-                    blocks: 0,
-                })
-                .fits(budget)
+                || !budget.within_capacity()
             {
                 return Err(validation(
                     "Linked assets exceeded their reserved package capacity",

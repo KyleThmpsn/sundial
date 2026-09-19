@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::validation::{validate_authored_definition_hash, validate_positive_quantity};
-use crate::{AccountError, AccountResult, DefinitionHash, EntityId, EntityKind};
+use crate::{AccountError, AccountResult, DefinitionHash, EntityId, EntityKind, InstanceSoid};
 
 /// Adapter-derived rules for the loaded account format.
 ///
@@ -254,6 +254,12 @@ pub struct ProfileItem {
     pub id: EntityId,
     pub definition_hash: DefinitionHash,
     pub quantity: i32,
+    /// The durable instance SOID a runtime keeps for this stack, where it has one.
+    ///
+    /// A stack the user adds has none until its adapter allocates one. Position cannot stand in
+    /// for it: adding or removing a stack renumbers every later position, so a save keyed on
+    /// position would shuffle durable identities onto the wrong stacks.
+    pub instance_soid: Option<InstanceSoid>,
 }
 
 /// A mutation of profile-scoped material stacks.
@@ -292,7 +298,8 @@ impl DismantleRarity {
         Self::Exotic,
     ];
 
-    const fn bit(self) -> u8 {
+    /// The bit representing this rarity in a dismantle filter.
+    pub const fn bit(self) -> u8 {
         match self {
             Self::Common => 1 << 1,
             Self::Uncommon => 1 << 2,
@@ -502,6 +509,7 @@ mod tests {
             id: id(id_value),
             definition_hash: DefinitionHash::new(hash),
             quantity,
+            instance_soid: None,
         }
     }
 

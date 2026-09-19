@@ -24,6 +24,7 @@ pub(super) fn load(db: &Connection) -> Result<Vec<PendingReward>, SqliteAccountE
 pub(super) fn save(
     db: &rusqlite::Transaction<'_>,
     rewards: &[PendingReward],
+    preserved: &[super::super::writer::NativeRow],
 ) -> Result<(), SqliteAccountError> {
     // The caller holds an immediate transaction and has checked the source revision.
     let mut original: BTreeMap<_, _> = load(db)?
@@ -56,10 +57,17 @@ pub(super) fn save(
                 .map_err(sql)?;
             }
         } else {
-            db.execute(
-                "INSERT INTO pending_rewards(id, character_slot, kind, definition_hash, quantity) VALUES(?, ?, ?, ?, ?)",
-                params![reward.id, reward.character_slot, reward.kind, reward.definition_hash, reward.quantity],
-            ).map_err(sql)?;
+            let mut row = super::matching(preserved, &[("id", reward.id)]);
+            for (key, value) in [
+                ("id", reward.id),
+                ("character_slot", reward.character_slot as i64),
+                ("kind", i64::from(reward.kind)),
+                ("definition_hash", i64::from(reward.definition_hash)),
+                ("quantity", i64::from(reward.quantity)),
+            ] {
+                super::put(&mut row, key, value);
+            }
+            super::insert(db, "pending_rewards", row)?;
         }
     }
     for id in original.keys() {

@@ -259,6 +259,7 @@ fn load_profile_items(
             id: entity_ids.next()?,
             definition_hash: DefinitionHash::new(definition_hash),
             quantity,
+            instance_soid: None,
         });
     }
     if items.len() != expected_count {
@@ -323,10 +324,7 @@ fn load_dismantle_rewards(
         }
         let rarities = DismantleRarity::ALL
             .into_iter()
-            .enumerate()
-            .filter_map(|(rarity_index, rarity)| {
-                (tier_mask & (1 << (rarity_index + 1)) != 0).then_some(rarity)
-            })
+            .filter(|rarity| tier_mask & rarity.bit() != 0)
             .collect();
         let class_mask = row_u8(row, 4, &format!("dismantle_rewards[{index}].class_mask"))?;
         let gear_class = match class_mask {

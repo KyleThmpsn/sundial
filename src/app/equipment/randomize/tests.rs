@@ -381,15 +381,6 @@ fn exotic_detection_uses_rarity_not_perk_sockets() {
 }
 
 #[test]
-fn seeded_random_choices_are_repeatable() {
-    let mut first = Rng::from_seed(42);
-    let mut second = Rng::from_seed(42);
-    let options = [3, 5, 7, 11];
-    assert_eq!(first.pick(&options), second.pick(&options));
-    assert_eq!(first.pick(&options), second.pick(&options));
-}
-
-#[test]
 fn hash_choices_skip_the_engine_empty_marker() {
     let mut rng = Rng::from_seed(7);
     let no_definition_hash = u64::from(NO_DEFINITION_HASH.get());

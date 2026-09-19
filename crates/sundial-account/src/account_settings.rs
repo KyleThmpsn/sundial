@@ -465,7 +465,11 @@ pub fn is_supported_key_binding_action(action: &str) -> bool {
     KEY_BINDING_ACTIONS.contains(&action)
 }
 
-const NAMED_INPUTS: &[&str] = &[
+/// Every named keyboard input that current Project Sunrise accounts accept.
+///
+/// This is the single source for the input catalog. The application key-binding
+/// editor re-exports it instead of keeping a parallel copy.
+pub const NAMED_INPUTS: &[&str; 120] = &[
     "escape",
     "f1",
     "f2",
@@ -588,7 +592,8 @@ const NAMED_INPUTS: &[&str] = &[
     "right ctrl",
 ];
 
-const MODIFIER_INPUTS: &[&str] = &[
+/// Every modifier accepted on the left side of a modified key binding.
+pub const MODIFIER_INPUTS: &[&str; 12] = &[
     "left shift",
     "right shift",
     "shift",
@@ -603,7 +608,9 @@ const MODIFIER_INPUTS: &[&str] = &[
     "alt",
 ];
 
-fn matches_input_name(candidate: &str, names: &[&str]) -> bool {
+/// Reports whether a candidate input matches one of the given names, ignoring ASCII case.
+#[must_use]
+pub fn matches_input_name(candidate: &str, names: &[&str]) -> bool {
     names
         .iter()
         .any(|name| candidate.eq_ignore_ascii_case(name))

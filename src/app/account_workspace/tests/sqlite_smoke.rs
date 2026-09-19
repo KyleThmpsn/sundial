@@ -3,7 +3,7 @@ use super::*;
 use crate::app::workspace_save::{
     WorkspaceSaveError, WorkspaceSaveReceipt, save_changed_sources_with_json,
 };
-use crate::persistence::sqlite_account::package;
+use crate::persistence::sqlite_account::snapshot;
 
 // Use the same coordinator and real writers with an injected closed game for disposable files.
 fn save_changed_sources(
@@ -47,13 +47,13 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     .unwrap();
     let encoded = serde_json::to_vec(&json).unwrap();
     fs::write(&settings, &encoded).unwrap();
-    let persisted = WorkspaceDocument::load(json, &settings);
-    assert_eq!(persisted.source_info().kind, AccountSourceKind::Sqlite);
+    let persisted = WorkspaceDocument::load(json, &settings, false);
+    assert_eq!(persisted.source_kind(), AccountSourceKind::Sqlite);
     assert_eq!(
         persisted.progression_view(0)["state"]["unlocks"]["account_flag_runs"],
         json!([])
     );
-    let before = package::read(&database).unwrap();
+    let before = snapshot::read(&database).unwrap();
     let mut edited = persisted.clone();
     account::apply_profile_item_action(
         &mut edited,
@@ -83,7 +83,7 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
         .err()
         .unwrap();
     assert_eq!(error.sqlite_rollback, Some(Ok(())), "{}", error.message);
-    assert_eq!(package::read(&database).unwrap(), before);
+    assert_eq!(snapshot::read(&database).unwrap(), before);
     assert_eq!(fs::read(&settings).unwrap(), external);
     assert!(edited.account_changed_from(&persisted));
 
@@ -94,13 +94,14 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     let reopened = WorkspaceDocument::load(
         serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap(),
         &settings,
+        false,
     );
     assert_eq!(reopened.json(), edited.json());
     assert_saved_domains(&db, &reopened);
-    let before_repeat = package::read(&database).unwrap();
+    let before_repeat = snapshot::read(&database).unwrap();
     let mut repeat = reopened.clone();
     save_changed_sources(&mut repeat, &reopened, &settings, false, true).unwrap();
-    assert_eq!(package::read(&database).unwrap(), before_repeat);
+    assert_eq!(snapshot::read(&database).unwrap(), before_repeat);
     if let Some(path) = std::env::var_os("SUNDIAL_SQLITE_SMOKE_EXPORT") {
         db.backup(rusqlite::MAIN_DB, std::path::Path::new(&path), None)
             .unwrap();

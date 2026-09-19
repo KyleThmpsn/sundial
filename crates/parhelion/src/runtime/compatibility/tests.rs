@@ -228,7 +228,14 @@ fn missing_selected_binding_is_not_silently_assessed_as_compatible() {
 fn native_candidate_scan_preserves_stock_and_rejects_structural_conflicts() {
     let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap();
     let packages = Path::new(&packages);
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let catalog = InvestmentCatalog::load_with_cache_path(
+        packages.parent().unwrap(),
+        &cache.path().join("catalog.json"),
+        false,
+        |_| {},
+    )
+    .unwrap();
     let all = catalog.weapon_donors();
     let hashes = [0x4CE3_CE93, 0xEE06_B019]; // Breachlight and The Mountaintop.
     let donors = all

@@ -73,7 +73,8 @@ pub(in crate::app) fn apply(
 
 fn reconcile_overrides(document: &mut Value, definition: &Definition, overrides: &[(usize, u8)]) {
     for &(index, _) in overrides {
-        mutations::remove_investment_override(document, InvestmentTable::FlagOverrides, index);
+        let _ =
+            mutations::remove_investment_override(document, InvestmentTable::FlagOverrides, index);
     }
     // Match Sunrise's seed once, preserving the effective ownership of every character.
     // The selected character's requested final ownership is published below.
@@ -166,25 +167,43 @@ fn publish(
             .find(|row| row.definition_index == index)
             .map_or([0; 3], |row| row.lanes);
         lanes[0] = total;
-        mutations::set_progression_value(document, "account_progressions", index, lanes);
+        if mutations::set_progression_value(document, "account_progressions", index, lanes)
+            .refused()
+        {
+            return Err(format!("Season rank counter {index} could not be saved"));
+        }
     }
     for entry in &definition.mods {
-        mutations::set_unlock_flag(
+        if mutations::set_unlock_flag(
             document,
             "character_object_flag_runs",
             usize::from(entry.character_slot),
             mask & entry.bit() != 0,
-        );
+        )
+        .refused()
+        {
+            return Err("An artifact mod flag could not be saved".into());
+        }
     }
     let used = mask.count_ones();
-    mutations::set_unlock_value(
+    if mutations::set_unlock_value(
         document,
         "character_object_objective_values",
         rules::USED_CHARACTER_SLOT,
         used as i32,
-    );
+    )
+    .refused()
+    {
+        return Err("The unlocked mod count could not be saved".into());
+    }
     for (index, value) in experience.values(used) {
-        mutations::set_investment_override(document, InvestmentTable::ValueOverrides, index, value);
+        // Checked below: that message names the capacity cause better than a refusal here.
+        let _ = mutations::set_investment_override(
+            document,
+            InvestmentTable::ValueOverrides,
+            index,
+            value,
+        );
     }
     // A bounded mutation can decline a write. Verify all outputs before exposing the clone.
     let after = parse(document)?;

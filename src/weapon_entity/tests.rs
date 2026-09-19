@@ -45,6 +45,41 @@ fn sandbox_pattern_identity_decodes_runtime_and_gear_art_groups() {
 }
 
 #[test]
+fn sandbox_pattern_lookups_reject_malformed_arrays_consistently() {
+    let mut valid = vec![0; 0x70];
+    write_array_descriptor(&mut valid, 0x08, 0x30, 1, SANDBOX_PATTERN_ROW_CLASS);
+    let mut wrong_class = valid.clone();
+    wrong_class[0x38..0x3C].copy_from_slice(&0_u32.to_le_bytes());
+    let mut mismatched_count = valid.clone();
+    mismatched_count[0x30..0x38].copy_from_slice(&2_u64.to_le_bytes());
+    let mut excessive_count = valid.clone();
+    excessive_count[0x08..0x10].copy_from_slice(&u64::MAX.to_le_bytes());
+    excessive_count[0x30..0x38].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut before_payload = valid.clone();
+    before_payload[0x10..0x18].copy_from_slice(&i64::MIN.to_le_bytes());
+    for malformed in [
+        wrong_class,
+        mismatched_count,
+        excessive_count,
+        before_payload,
+        valid[..0x3C].to_vec(),
+        valid[..0x6F].to_vec(),
+    ] {
+        let by_hash = sandbox_pattern_identity(&malformed, 0).unwrap_err();
+        assert_eq!(
+            sandbox_pattern_identity_at(&malformed, 0).unwrap_err(),
+            by_hash
+        );
+        assert_eq!(
+            sandbox_pattern_identity_at(&malformed, usize::MAX).unwrap_err(),
+            by_hash
+        );
+    }
+    assert_eq!(sandbox_pattern_identity(&valid, 1), Ok(None));
+    assert_eq!(sandbox_pattern_identity_at(&valid, usize::MAX), Ok(None));
+}
+
+#[test]
 fn assignment_insert_preserves_sort_order_and_auxiliary_data() {
     let mut data = vec![0; 0x88];
     data[0x28..0x30].copy_from_slice(&[0, 0, 0, 0, 0xBD, 0x9F, 0x80, 0x80]);
@@ -134,6 +169,242 @@ fn two_resource_weapon_entity() -> Vec<u8> {
     data[0xE0..0xE4].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
     data[0xE4..0xE8].copy_from_slice(&0x0002_0000_u32.to_le_bytes());
     data
+}
+
+#[test]
+fn coupled_groups_follow_multi_resource_bridges_and_preserve_independent_groups() {
+    let entity = aliased_weapon_entity(&[(1, 0x0001_0000), (2, 0x0002_0000), (3, 0x0001_0001)], 1);
+    assert_eq!(
+        coupled_weapon_component_bindings(&entity, 1).unwrap(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        coupled_weapon_component_bindings(&entity, 3).unwrap(),
+        vec![1, 2, 3]
+    );
+    let entity = aliased_weapon_entity(&[(1, 0x0001_0000), (3, 0x0001_0001)], 1);
+    assert_eq!(
+        coupled_weapon_component_bindings(&entity, 1).unwrap(),
+        vec![1]
+    );
+    assert!(coupled_weapon_component_bindings(&entity, 2).is_err());
+}
+
+fn event_entity(flavor: u32) -> (Vec<u8>, usize) {
+    let mut entity = aliased_weapon_entity(&[(1, 0x0001_0000), (2, 0x0001_0001)], flavor);
+    // Same resource interfaces at donor-specific owner offsets.
+    for index in 0..2 {
+        write_u32(
+            &mut entity,
+            0x120 + index * 0x28 + 0x0C,
+            0x8080_1000 + index as u32,
+        )
+        .unwrap();
+        write_u32(
+            &mut entity,
+            0x190 + index * 0x18 + 4,
+            0x8080_1000 + index as u32,
+        )
+        .unwrap();
+    }
+    let header = entity.len();
+    let size = header + 16 + 0x48;
+    entity.resize(size, 0);
+    write_u64(&mut entity, 0, size as u64).unwrap();
+    write_array_descriptor(&mut entity, 0x20, header, 1, 0x8080_9BC9);
+    let row = header + 16;
+    write_u32(&mut entity, row, 0xABCD).unwrap();
+    for (binding, offset) in [(1, row + 8), (2, row + 0x28)] {
+        let resource = weapon_component_binding(&entity, binding).unwrap();
+        write_u32(&mut entity, offset, resource.owner_tag).unwrap();
+        write_u32(&mut entity, offset + 4, resource.concrete_class).unwrap();
+        write_u64(&mut entity, offset + 8, resource.resource_offset).unwrap();
+    }
+    (entity, row)
+}
+
+#[test]
+fn component_graft_remaps_proven_event_endpoints_and_preserves_the_other_endpoint() {
+    let (mut target, row) = event_entity(1);
+    let (donor, donor_row) = event_entity(2);
+    let untouched = target[row + 0x28..row + 0x38].to_vec();
+    graft_weapon_component_bindings(&mut target, &[(1, &donor)]).unwrap();
+    assert_eq!(
+        target[row + 8..row + 0x18],
+        donor[donor_row + 8..donor_row + 0x18]
+    );
+    assert_eq!(target[row + 0x28..row + 0x38], untouched);
+    assert_eq!(read_u32(&target, row).unwrap(), 0xABCD);
+}
+
+#[test]
+fn component_batch_plans_both_event_endpoints_against_the_original_entity() {
+    let (mut target, row) = event_entity(1);
+    let (first, first_row) = event_entity(2);
+    let (second, second_row) = event_entity(3);
+    graft_weapon_component_bindings(&mut target, &[(1, &first), (2, &second)]).unwrap();
+    assert_eq!(
+        target[row + 8..row + 0x18],
+        first[first_row + 8..first_row + 0x18]
+    );
+    assert_eq!(
+        target[row + 0x28..row + 0x38],
+        second[second_row + 0x28..second_row + 0x38]
+    );
+}
+
+#[test]
+fn incompatible_or_unmapped_event_connections_reject_the_entire_swap_atomically() {
+    let (target, _) = event_entity(1);
+    for modification in 0..3 {
+        let (mut donor, row) = event_entity(2);
+        match modification {
+            0 => write_u32(&mut donor, row, 0xFFFF).unwrap(),
+            1 => write_u64(&mut donor, row + 16, 0x9999).unwrap(),
+            _ => write_u64(&mut donor, 0x20, 0).unwrap(),
+        }
+        let mut authored = target.clone();
+        let error = graft_weapon_component_bindings(&mut authored, &[(1, &donor)]).unwrap_err();
+        assert!(error.contains("event connection"), "{error}");
+        assert_eq!(authored, target);
+    }
+}
+
+#[test]
+fn entity_validation_checks_event_array_bounds_and_class() {
+    let (entity, _) = event_entity(1);
+    let mut malformed = entity.clone();
+    write_u32(&mut malformed, 0x1E8, 0x8080_1234).unwrap();
+    assert!(validate_weapon_entity(&malformed).is_err());
+    let mut truncated = entity;
+    truncated.pop();
+    let len = truncated.len() as u64;
+    write_u64(&mut truncated, 0, len).unwrap();
+    assert!(validate_weapon_entity(&truncated).is_err());
+}
+
+fn system_entity_without_resources() -> Vec<u8> {
+    let mut entity = vec![0; 0xE8];
+    write_u64(&mut entity, 0, 0xE8).unwrap();
+    entity[0x96] = 28;
+    write_array_descriptor(
+        &mut entity,
+        0x10,
+        0xB0,
+        1,
+        WEAPON_ENTITY_COMPONENT_ROW_CLASS,
+    );
+    write_u32(&mut entity, 0xC0, 0x80BF_DDC9).unwrap();
+    write_array_descriptor(
+        &mut entity,
+        0x48,
+        0xD0,
+        1,
+        WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
+    );
+    write_u32(&mut entity, 0xE0, u32::MAX).unwrap();
+    entity
+}
+
+#[test]
+fn system_entities_allow_omitted_resource_tables_but_not_active_unresolved_bindings() {
+    let entity = system_entity_without_resources();
+    validate_weapon_entity(&entity).unwrap();
+    assert!(weapon_component_binding_hashes(&entity).unwrap().is_empty());
+    let mut active = entity.clone();
+    write_u32(&mut active, 0xE0, WEAPON_BARREL_COMPONENT_KEY).unwrap();
+    write_u32(&mut active, 0xE4, 0x0001_0000).unwrap();
+    assert!(
+        validate_weapon_entity(&active)
+            .unwrap_err()
+            .contains("outside its resource tables")
+    );
+    let mut truncated = entity;
+    truncated.truncate(0x70);
+    write_u64(&mut truncated, 0, 0x70).unwrap();
+    assert!(validate_weapon_entity(&truncated).is_err());
+}
+
+#[test]
+fn allocated_resource_tables_still_require_correct_classes_and_counts() {
+    let mut entity = system_entity_without_resources();
+    entity.resize(0x128, 0);
+    write_u64(&mut entity, 0, 0x128).unwrap();
+    write_array_descriptor(&mut entity, 0x58, 0xE8, 0, 0);
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("resource-map array has class")
+    );
+    write_array_descriptor(
+        &mut entity,
+        0x58,
+        0xE8,
+        1,
+        WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
+    );
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("counts disagree")
+    );
+    write_u64(&mut entity, 0xE8, 2).unwrap();
+    assert!(
+        validate_weapon_entity(&entity)
+            .unwrap_err()
+            .contains("count mismatch")
+    );
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+fn installed_entity_graphs_all_validate_including_omitted_tables() {
+    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages");
+    let manager =
+        crate::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&packages))
+            .unwrap();
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for (tag, entry) in manager.get_all_by_reference(WEAPON_ENTITY_CLASS) {
+        if entry.file_type != 8 {
+            continue;
+        }
+        checked += 1;
+        match manager.read_tag(tag) {
+            Ok(payload) => {
+                if let Err(error) = validate_weapon_entity(&payload) {
+                    failures.push(format!("{tag}: {error}"));
+                }
+            }
+            Err(error) => failures.push(format!("{tag}: {error}")),
+        }
+    }
+    assert!(checked > 0);
+    failures.sort();
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} entity graphs failed: {}",
+        failures.len(),
+        failures.join("\n")
+    );
+    println!("All {checked} entity graphs validated");
+}
+
+#[test]
+fn shared_owner_grafts_keep_identical_nested_events_but_reject_different_programs() {
+    let (mut target, row) = event_entity(1);
+    write_u64(&mut target, row + 16, 0x9999).unwrap();
+    let original = target.clone();
+    graft_weapon_component_bindings(&mut target, &[(1, &original)]).unwrap();
+    assert_eq!(target, original);
+    let mut donor = original.clone();
+    write_u32(&mut donor, row, 0x5678).unwrap();
+    assert!(
+        graft_weapon_component_bindings(&mut target, &[(1, &donor)])
+            .unwrap_err()
+            .contains("event connections")
+    );
+    assert_eq!(target, original);
 }
 
 fn aliased_weapon_entity(definitions: &[(u32, u32)], flavor: u32) -> Vec<u8> {

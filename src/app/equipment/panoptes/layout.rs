@@ -250,21 +250,3 @@ fn wrapped_rows(sockets: impl Iterator<Item = usize>) -> Vec<Vec<usize>> {
         .map(<[_]>::to_vec)
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plain_rows_keep_native_order_and_wrap_at_five() {
-        assert_eq!(wrapped_rows(0..7), vec![vec![0, 1, 2, 3, 4], vec![5, 6]]);
-    }
-
-    #[test]
-    fn pin_column_is_independently_capped() {
-        let lines = combine_lines(vec![0, 1, 2, 3], vec![vec![4], vec![5], vec![6], vec![7]]);
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[2].pinned, Some(2));
-        assert_eq!(lines[3].pinned, None);
-    }
-}

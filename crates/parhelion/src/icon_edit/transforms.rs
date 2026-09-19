@@ -1,4 +1,6 @@
 //! Deterministic pixel transforms shared by preview rendering and package emission.
+use sundial::image_processing::clear_color_region;
+
 use super::{IconColorReplacement, WeaponIconEdit, color_selection};
 use crate::{AuthoringResult, error::input as invalid};
 
@@ -16,14 +18,20 @@ impl WeaponIconEdit {
             .iter()
             .all(IconColorReplacement::is_identity)
             && self.imported_image.is_none()
+            && self.cleared_color.is_none()
             && self.rotation_quarter_turns == 0
             && !self.flip_horizontal
             && !self.flip_vertical
             && self.color_is_default()
     }
 
+    pub(super) fn levels_are_default(&self) -> bool {
+        self.black_point == 0 && self.white_point == u8::MAX
+    }
+
     pub(super) fn color_is_default(&self) -> bool {
-        self.hue_shift_degrees == 0
+        self.levels_are_default()
+            && self.hue_shift_degrees == 0
             && self.saturation == 0
             && self.brightness == 0
             && self.contrast == 0
@@ -44,6 +52,8 @@ impl WeaponIconEdit {
         self.blue_balance = 0;
         self.invert = false;
         self.opacity_percent = 100;
+        self.black_point = 0;
+        self.white_point = u8::MAX;
     }
 
     pub fn validate(&self) -> AuthoringResult<()> {
@@ -138,6 +148,10 @@ impl WeaponIconEdit {
             }
             pixels.copy_from_slice(imported.fit_to(width as u32, height as u32).as_raw());
         }
+        // Clearing runs before every color edit so a cleared region cannot be recolored back in.
+        if let Some(cleared) = self.cleared_color {
+            clear_color_region(pixels, width, height, cleared);
+        }
         for pixel in pixels.chunks_exact_mut(4) {
             let alpha = pixel[3];
             let source_rgb = [pixel[0], pixel[1], pixel[2]];
@@ -153,6 +167,9 @@ impl WeaponIconEdit {
             }
             if self.contrast != 0 {
                 rgb = adjust_contrast(rgb, self.contrast);
+            }
+            if !self.levels_are_default() {
+                rgb = apply_levels(rgb, self.black_point, self.white_point);
             }
             if self.red_balance != 0 || self.green_balance != 0 || self.blue_balance != 0 {
                 rgb = adjust_channel_balance(
@@ -293,6 +310,19 @@ fn adjust_contrast(rgb: [u8; 3], contrast: i16) -> [u8; 3] {
     let factor = i32::from(100 + contrast);
     rgb.map(|channel| {
         (128 + div_round_signed((i32::from(channel) - 128) * factor, 100)).clamp(0, 255) as u8
+    })
+}
+
+/// Remaps the input range between two levels onto the full output range.
+///
+/// A white point at or below the black point would divide by zero or invert the image, so the
+/// span is clamped to at least one level and the result stays a straight stretch.
+fn apply_levels(rgb: [u8; 3], black_point: u8, white_point: u8) -> [u8; 3] {
+    let black = i32::from(black_point);
+    let span = (i32::from(white_point) - black).max(1);
+    rgb.map(|channel| {
+        let value = (i32::from(channel) - black).clamp(0, span);
+        div_round_positive(value * 255, span) as u8
     })
 }
 

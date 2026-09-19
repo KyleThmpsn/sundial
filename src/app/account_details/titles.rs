@@ -99,7 +99,11 @@ impl Titles {
             self.source = Some(source.clone());
             self.result = None;
         }
-        if self.job.as_ref().is_some_and(|job| job.is_finished()) {
+        if self
+            .job
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
             self.result = Some(
                 self.job
                     .take()

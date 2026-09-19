@@ -41,20 +41,12 @@ impl HashInspectionState {
         if self.current == Some(hash) && (context.is_none() || context == self.source_context) {
             return;
         }
-        if let Some(current) = self.current {
-            self.history.push(InspectionTarget {
-                hash: current,
-                context: self.source_context.take(),
-            });
+        if let Some(current) = self.take_current() {
+            self.history.push(current);
             trim_navigation_stack(&mut self.history);
         }
         self.forward.clear();
-        self.current = Some(hash);
-        self.match_index = None;
-        self.lookup = format_hash_hex(hash);
-        self.lookup_error = false;
-        self.source_context = context;
-        self.mutation_feedback = None;
+        self.select(InspectionTarget { hash, context });
     }
 
     pub(in crate::app) const fn is_open(&self) -> bool {
@@ -63,37 +55,21 @@ impl HashInspectionState {
 
     pub(super) fn back(&mut self) {
         if let Some(previous) = self.history.pop() {
-            if let Some(current) = self.current {
-                self.forward.push(InspectionTarget {
-                    hash: current,
-                    context: self.source_context.take(),
-                });
+            if let Some(current) = self.take_current() {
+                self.forward.push(current);
                 trim_navigation_stack(&mut self.forward);
             }
-            self.current = Some(previous.hash);
-            self.match_index = None;
-            self.lookup = format_hash_hex(previous.hash);
-            self.lookup_error = false;
-            self.source_context = previous.context;
-            self.mutation_feedback = None;
+            self.select(previous);
         }
     }
 
     pub(super) fn forward(&mut self) {
         if let Some(next) = self.forward.pop() {
-            if let Some(current) = self.current {
-                self.history.push(InspectionTarget {
-                    hash: current,
-                    context: self.source_context.take(),
-                });
+            if let Some(current) = self.take_current() {
+                self.history.push(current);
                 trim_navigation_stack(&mut self.history);
             }
-            self.current = Some(next.hash);
-            self.match_index = None;
-            self.lookup = format_hash_hex(next.hash);
-            self.lookup_error = false;
-            self.source_context = next.context;
-            self.mutation_feedback = None;
+            self.select(next);
         }
     }
 
@@ -106,14 +82,22 @@ impl HashInspectionState {
             .history
             .pop()
             .expect("selected history entry remains after splitting newer entries");
-        if let Some(current) = self.current {
-            self.forward.push(InspectionTarget {
-                hash: current,
-                context: self.source_context.take(),
-            });
+        if let Some(current) = self.take_current() {
+            self.forward.push(current);
         }
         self.forward.extend(newer_history.into_iter().rev());
         trim_navigation_stack(&mut self.forward);
+        self.select(target);
+    }
+
+    fn take_current(&mut self) -> Option<InspectionTarget> {
+        self.current.take().map(|hash| InspectionTarget {
+            hash,
+            context: self.source_context.take(),
+        })
+    }
+
+    fn select(&mut self, target: InspectionTarget) {
         self.current = Some(target.hash);
         self.match_index = None;
         self.lookup = format_hash_hex(target.hash);

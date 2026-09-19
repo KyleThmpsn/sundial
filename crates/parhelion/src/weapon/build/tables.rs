@@ -226,7 +226,7 @@ impl WeaponTables {
             std::mem::take(&mut self.dense),
             donor.icon_template_item_index,
             context.stock_item_count + ordinal,
-            donor.donor_icon_container,
+            donor.icon_template_container,
             authored_icon_container,
         )?;
         let dense_arrays = dense_item_presentation_arrays(&self.dense)?;
@@ -261,7 +261,7 @@ impl WeaponTables {
             &self.dense,
             donor.icon_template_item_index,
             context.stock_item_count + ordinal + 1,
-            donor.donor_icon_container,
+            donor.icon_template_container,
             authored_icon_container,
         )?;
         metadata::append(
@@ -460,7 +460,7 @@ impl WeaponTables {
         };
         self.collectibles = append_collectible(
             std::mem::take(&mut self.collectibles),
-            donor.donor_collectible_index,
+            donor.collectible_template_index,
             AuthoredCollectibleSpec {
                 collectible_hash: identity.collectible_hash,
                 item_index,
@@ -497,7 +497,7 @@ impl WeaponTables {
         }
         self.collectible_displays = append_collectible_display(
             std::mem::take(&mut self.collectible_displays),
-            donor.donor_collectible_index,
+            donor.collectible_display_template_index,
             collectible_identity,
             authored_icon_index,
             LOCALIZATION_DONOR_TABLE_INDEX as u32,

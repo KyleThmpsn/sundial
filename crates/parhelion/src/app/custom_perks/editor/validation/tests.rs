@@ -42,6 +42,18 @@ fn unsigned_64_bit_decimal_drafts_require_an_exact_in_range_integer() {
 #[test]
 fn exact_hex_and_finite_float_validation_keep_their_existing_rules() {
     assert!(valid_runtime_text(
+        &WeaponRuntimeValueKind::Float64,
+        "0x3FF0000000000001"
+    ));
+    assert!(!valid_runtime_text(
+        &WeaponRuntimeValueKind::Float64,
+        "0x7FF8000000000001"
+    ));
+    assert!(!valid_runtime_text(
+        &WeaponRuntimeValueKind::Float64,
+        "0x7FF0000000000000"
+    ));
+    assert!(valid_runtime_text(
         &WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
         "0xFFFFFFFF"
     ));

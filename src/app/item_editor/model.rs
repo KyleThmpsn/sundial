@@ -51,6 +51,22 @@ pub(crate) enum DefinitionSummary<'a> {
     },
 }
 
+impl<'a> DefinitionSummary<'a> {
+    pub(crate) fn from_name_and_type(
+        hash_display_text: &'a str,
+        definition: Option<(&'a str, &'a str)>,
+    ) -> Self {
+        match definition {
+            Some((name, type_name)) => Self::Known {
+                name,
+                hash_display_text,
+                type_name,
+            },
+            None => Self::Unknown { hash_display_text },
+        }
+    }
+}
+
 pub(crate) struct ItemHeader<'a> {
     pub label: Option<&'a str>,
     pub soid: Option<&'a str>,

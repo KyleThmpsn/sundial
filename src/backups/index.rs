@@ -1,7 +1,7 @@
 //! Ownership metadata for readable backup files kept directly in the backup folder.
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Write};
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Record {
@@ -90,14 +90,12 @@ impl Store {
             crate::storage::replace_file_if_unchanged(&self.path, &bytes, original)
                 .map_err(|error| format!("Could not update the backup index: {error}"))?;
         } else {
-            let mut file = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&self.path)
+            // Published from a temporary beside it rather than written in place. A write
+            // interrupted in place would leave a half-written index, and `open` refuses to
+            // parse one, which locks the folder out of every later backup. `create_file`
+            // refuses an existing destination the same way `create_new` did.
+            crate::storage::create_file(&self.path, &bytes)
                 .map_err(|error| format!("Could not create the backup index: {error}"))?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| format!("Could not write the backup index: {error}"))?;
         }
         self.original = Some(bytes);
         Ok(())

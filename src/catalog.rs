@@ -35,9 +35,6 @@ pub(crate) use icons::scan_item_icon_containers;
 use items::PowerCapDefinition;
 #[cfg(test)]
 pub(crate) use items::SocketDef;
-pub(crate) use items::is_authorable_weapon_item;
-#[cfg(test)]
-pub(crate) use items::is_weapon_bucket;
 pub(crate) use items::{
     AbilityChoice, AbilityOptions, InventoryDefinition, InventoryMetadata, InventoryScope,
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemDef, ItemInvestmentStat,
@@ -50,6 +47,7 @@ use items::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
     intern_socket_pools, sort_plug_options,
 };
+pub(crate) use items::{is_authorable_weapon_item, is_weapon_ornament_type_name};
 use package::install_fingerprint;
 pub(crate) use package::validate_install;
 pub(crate) use package_access::PackageInspectionAccess;
@@ -57,8 +55,8 @@ use progression::unlock_state_indices;
 pub(crate) use progression::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
-    ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope, UnlockDefinition,
-    UnlockWriter,
+    ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope, RecordDefinition,
+    RecordProgress, RecordRuntime, UnlockDefinition, UnlockWriter,
 };
 use scan::scan_packages;
 
@@ -152,6 +150,7 @@ pub(crate) struct Catalog {
     package_item_names: HashMap<u64, String>,
     package_item_type_names: HashMap<u64, String>,
     descriptions: HashMap<u64, String>,
+    perk_descriptions: HashMap<u16, String>,
     icon_containers: HashMap<u64, u32>,
     item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     item_stat_definitions: Vec<ItemStatDefinition>,
@@ -168,6 +167,7 @@ pub(crate) struct Catalog {
     icon_runtime: Mutex<IconRuntime>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     objectives: Vec<ObjectiveDef>,
+    records: Option<Vec<RecordDefinition>>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
     collectibles: Vec<CollectibleDef>,
@@ -380,9 +380,39 @@ impl Catalog {
         values: Vec<UnlockDefinition>,
         progressions: Vec<ProgressionDefinition>,
     ) -> Self {
+        self.unlock_flag_state_indices = unlock_state_indices(&flags);
+        self.unlock_value_state_indices = unlock_state_indices(&values);
         self.unlock_flag_definitions = flags;
         self.unlock_value_definitions = values;
         self.progression_definitions = progressions;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_objectives(mut self, objectives: Vec<ObjectiveDef>) -> Self {
+        self.objectives_by_unlock_value = objectives_by_unlock_value(&objectives);
+        self.objectives = objectives;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_collectibles(mut self, collectibles: Vec<CollectibleDef>) -> Self {
+        self.collectibles = collectibles;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_seasonal(
+        mut self,
+        definition: crate::investment::seasonal::Definition,
+    ) -> Self {
+        self.seasonal = Some(definition);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_records(mut self, records: Vec<RecordDefinition>) -> Self {
+        self.records = Some(records);
         self
     }
 
@@ -404,6 +434,10 @@ impl Catalog {
             .expect("test socket pools must be valid");
         Self::finish(
             CatalogContents {
+                names: items
+                    .iter()
+                    .map(|item| (item.hash, item.name.clone()))
+                    .collect(),
                 items,
                 item_package_metadata: metadata,
                 inventory_metadata,
@@ -505,6 +539,7 @@ impl Catalog {
             package_item_names,
             package_item_type_names,
             descriptions,
+            perk_descriptions,
             icon_containers,
             item_package_metadata,
             item_stat_definitions,
@@ -516,6 +551,7 @@ impl Catalog {
             package_names,
             inventory_metadata,
             objectives,
+            records,
             unlock_flag_definitions,
             unlock_value_definitions,
             collectibles,
@@ -580,12 +616,21 @@ impl Catalog {
         let bucket_item_indices = bucket_item_indices(&items);
         let unlock_flag_state_indices = unlock_state_indices(&unlock_flag_definitions);
         let unlock_value_state_indices = unlock_state_indices(&unlock_value_definitions);
-        let progression_names = progression_names(
+        let mut progression_names = progression_names(
             &objectives,
             &unlock_flag_definitions,
             &unlock_value_definitions,
             &collectibles,
         );
+        for record in records
+            .iter()
+            .flatten()
+            .filter(|record| !record.name.trim().is_empty())
+        {
+            progression_names
+                .entry(record.hash)
+                .or_insert_with(|| record.name.clone());
+        }
         let objectives_by_unlock_value = objectives_by_unlock_value(&objectives);
         Self {
             items: items.into_iter().map(Arc::new).collect(),
@@ -594,6 +639,7 @@ impl Catalog {
             package_item_names,
             package_item_type_names,
             descriptions,
+            perk_descriptions,
             icon_containers,
             item_package_metadata,
             item_stat_definitions,
@@ -610,6 +656,7 @@ impl Catalog {
             icon_runtime: Mutex::new(IconRuntime::default()),
             inventory_metadata,
             objectives,
+            records,
             unlock_flag_definitions,
             unlock_value_definitions,
             collectibles,
@@ -740,6 +787,16 @@ impl Catalog {
         format_plug_label(name, hash, include_hash)
     }
 
+    /// Returns whether an installed hash resolves to a weapon ornament plug.
+    ///
+    /// Ornaments carry no sockets, so they never become [`ItemDef`] rows. Their type name is the
+    /// only decoded marker available, and it is shared with the donor filter.
+    pub(crate) fn is_weapon_ornament(&self, hash: u64) -> bool {
+        self.plug_type_name(hash)
+            .or_else(|| self.package_item_type_name(hash))
+            .is_some_and(is_weapon_ornament_type_name)
+    }
+
     pub(crate) fn plug_type_name(&self, hash: u64) -> Option<&str> {
         self.type_names
             .get(&hash)
@@ -763,6 +820,14 @@ impl Catalog {
 
     pub(crate) fn item_package_metadata(&self, hash: u64) -> Option<&ItemPackageMetadata> {
         self.item_package_metadata.get(&hash)
+    }
+
+    pub(crate) fn item_hash_for_index(&self, index: usize) -> Option<u64> {
+        self.item_package_metadata
+            .iter()
+            .find_map(|(hash, metadata)| {
+                (metadata.definition_index as usize == index).then_some(*hash)
+            })
     }
 
     pub(crate) fn install_path(&self) -> &Path {
@@ -821,6 +886,10 @@ impl Catalog {
 
     pub(crate) fn description(&self, hash: u64) -> Option<&str> {
         self.descriptions.get(&hash).map(String::as_str)
+    }
+
+    pub(crate) fn perk_description(&self, index: u16) -> Option<&str> {
+        self.perk_descriptions.get(&index).map(String::as_str)
     }
 }
 

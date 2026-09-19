@@ -48,6 +48,25 @@ impl WeaponIconEditorLayout {
     }
 }
 
+/// What a click on the source artwork picks.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum PickTarget {
+    /// Adds a replacement rule starting from the picked color.
+    #[default]
+    Replacement,
+    /// Erases the picked color, and the edge where it fades into the art, to transparency.
+    Erase,
+}
+
+impl PickTarget {
+    const fn source_label(self) -> &'static str {
+        match self {
+            Self::Replacement => "Source · click to pick a color",
+            Self::Erase => "Source · click the color to erase",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum IconEditorTab {
     Preview,
@@ -76,6 +95,7 @@ pub(crate) struct WeaponIconEditor {
     image_import: import_ui::ImageImport,
     tab: IconEditorTab,
     color_page: usize,
+    pick_target: PickTarget,
 }
 
 impl WeaponIconEditor {
@@ -102,6 +122,7 @@ impl WeaponIconEditor {
             image_import: import_ui::ImageImport::default(),
             tab: IconEditorTab::default(),
             color_page: 0,
+            pick_target: PickTarget::default(),
         }
     }
 
@@ -212,12 +233,16 @@ impl WeaponIconEditor {
             IconEditorTab::Preview => {
                 self.draw_preview_section(ui, true, layout.preview_size, layout.rules_per_page)
             }
-            IconEditorTab::Recolor => color_selection::draw_controls(
-                ui,
-                &mut self.draft.color_replacements,
-                &mut self.color_page,
-                layout.rules_per_page,
-            ),
+            IconEditorTab::Recolor => {
+                let erased = self.draw_erase_control(ui);
+                erased
+                    | color_selection::draw_controls(
+                        ui,
+                        &mut self.draft.color_replacements,
+                        &mut self.color_page,
+                        layout.rules_per_page,
+                    )
+            }
             IconEditorTab::Adjust => self.draw_color_controls(ui),
             IconEditorTab::Image => {
                 ui.strong("Artwork Source");
@@ -250,10 +275,11 @@ impl WeaponIconEditor {
                             preview,
                             &self.draft,
                             size,
+                            self.pick_target,
                         );
                         draw_preview(
                             &mut columns[1],
-                            "Final composited icon",
+                            "Final icon",
                             self.edited_texture.as_ref(),
                             size,
                         );
@@ -265,6 +291,7 @@ impl WeaponIconEditor {
                         preview,
                         &self.draft,
                         size,
+                        self.pick_target,
                     );
                     ui.add_space(8.0);
                     draw_preview(ui, "Final icon", self.edited_texture.as_ref(), size);
@@ -286,20 +313,70 @@ impl WeaponIconEditor {
                 );
             }
         }
-        if let Some(color) = picked
-            && self.draft.color_replacements.len() < color_selection::MAX_REPLACEMENTS
-        {
-            self.draft.color_replacements.push(IconColorReplacement {
-                source: color,
-                replacement: color,
-                ..Default::default()
-            });
-            self.color_page = (self.draft.color_replacements.len() - 1) / rules_per_page;
-            self.tab = IconEditorTab::Recolor;
-            true
-        } else {
-            false
+        let Some(color) = picked else {
+            return false;
+        };
+        match self.pick_target {
+            PickTarget::Erase => {
+                self.draft.cleared_color = Some(color);
+                self.pick_target = PickTarget::Replacement;
+                self.tab = IconEditorTab::Recolor;
+                true
+            }
+            PickTarget::Replacement
+                if self.draft.color_replacements.len() < color_selection::MAX_REPLACEMENTS =>
+            {
+                self.draft.color_replacements.push(IconColorReplacement {
+                    source: color,
+                    replacement: color,
+                    ..Default::default()
+                });
+                self.color_page = (self.draft.color_replacements.len() - 1) / rules_per_page;
+                self.tab = IconEditorTab::Recolor;
+                true
+            }
+            PickTarget::Replacement => false,
         }
+    }
+
+    /// Draws the erased-color row: the color removed from the artwork, and how to choose it.
+    fn draw_erase_control(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Erase Color").on_hover_text(
+                "Clears one flat color to transparency, including where it fades into the art. Stock ornament artwork paints its plate this way.",
+            );
+            match &mut self.draft.cleared_color {
+                Some(color) => {
+                    changed |= ui
+                        .color_edit_button_srgb(color)
+                        .on_hover_text(format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]))
+                        .changed();
+                    if ui.small_button("Remove").clicked() {
+                        self.draft.cleared_color = None;
+                        changed = true;
+                    }
+                }
+                None => {
+                    let picking = self.pick_target == PickTarget::Erase;
+                    if ui
+                        .selectable_label(picking, "Pick from Artwork")
+                        .on_hover_text(
+                            "Then click the color in the source artwork. Its edge goes with it.",
+                        )
+                        .clicked()
+                    {
+                        self.pick_target = if picking {
+                            PickTarget::Replacement
+                        } else {
+                            PickTarget::Erase
+                        };
+                    }
+                }
+            }
+        });
+        ui.add_space(4.0);
+        changed
     }
 
     fn draw_transform_controls(&mut self, ui: &mut egui::Ui) -> bool {
@@ -340,7 +417,7 @@ impl WeaponIconEditor {
     fn draw_color_controls(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.horizontal_wrapped(|ui| {
-            ui.strong("All artwork colors");
+            ui.strong("All Artwork Colors");
             let grayscale = ui
                 .add_enabled(
                     self.draft.saturation != WeaponIconEdit::MIN_COLOR_ADJUSTMENT,
@@ -404,13 +481,55 @@ impl WeaponIconEditor {
                     "%",
                 );
                 ui.end_row();
+
+                ui.label("Levels").on_hover_text(
+                    "Maps this input range onto the full range. Raise black to deepen shadows, lower white to lift highlights.",
+                );
+                ui.horizontal(|ui| {
+                    let black = &mut self.draft.black_point;
+                    changed |= ui
+                        .add(egui::DragValue::new(black).range(0..=254).prefix("Black "))
+                        .changed();
+                    let black = *black;
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.draft.white_point)
+                                .range(black.saturating_add(1)..=u8::MAX)
+                                .prefix("White "),
+                        )
+                        .changed();
+                });
+                if ui
+                    .add_enabled(!self.draft.levels_are_default(), egui::Button::new("Reset"))
+                    .clicked()
+                {
+                    self.draft.black_point = 0;
+                    self.draft.white_point = u8::MAX;
+                    changed = true;
+                }
+                ui.end_row();
+
+                ui.label("Balance")
+                    .on_hover_text("Shifts each channel on its own, after the adjustments above.");
+                ui.horizontal(|ui| {
+                    changed |= draw_compact_icon_adjustment(ui, "R", &mut self.draft.red_balance);
+                    changed |= draw_compact_icon_adjustment(ui, "G", &mut self.draft.green_balance);
+                    changed |= draw_compact_icon_adjustment(ui, "B", &mut self.draft.blue_balance);
+                });
+                let balanced = self.draft.red_balance != 0
+                    || self.draft.green_balance != 0
+                    || self.draft.blue_balance != 0;
+                if ui
+                    .add_enabled(balanced, egui::Button::new("Reset"))
+                    .clicked()
+                {
+                    self.draft.red_balance = 0;
+                    self.draft.green_balance = 0;
+                    self.draft.blue_balance = 0;
+                    changed = true;
+                }
+                ui.end_row();
             });
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            changed |= draw_compact_icon_adjustment(ui, "Red", &mut self.draft.red_balance);
-            changed |= draw_compact_icon_adjustment(ui, "Green", &mut self.draft.green_balance);
-            changed |= draw_compact_icon_adjustment(ui, "Blue", &mut self.draft.blue_balance);
-        });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             changed |= ui
@@ -549,14 +668,39 @@ fn draw_source_preview(
     preview: &LoadedIconPreview,
     edit: &WeaponIconEdit,
     size: f32,
+    target: PickTarget,
 ) -> Option<[u8; 3]> {
-    let response = draw_preview(ui, "Source · click to pick", texture, size)?
+    let response = draw_preview(ui, target.source_label(), texture, size)?
         .on_hover_cursor(egui::CursorIcon::Crosshair);
+    let source = preview.source_primary(edit);
+    let at = |position: egui::Pos2| {
+        color_selection::sample(
+            &source,
+            (position - response.rect.min) / response.rect.size(),
+        )
+    };
+    // Sampling is per pixel, so show which color is under the cursor before it is committed.
+    if let Some(hovered) = response.hover_pos().and_then(at) {
+        response.clone().on_hover_ui(|ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    3.0,
+                    egui::Color32::from_rgb(hovered[0], hovered[1], hovered[2]),
+                );
+                ui.label(format!(
+                    "#{:02X}{:02X}{:02X}",
+                    hovered[0], hovered[1], hovered[2]
+                ));
+            });
+        });
+    }
     if !response.clicked() {
         return None;
     }
-    let uv = (response.interact_pointer_pos()? - response.rect.min) / response.rect.size();
-    color_selection::sample(&preview.source_primary(edit), uv)
+    at(response.interact_pointer_pos()?)
 }
 
 fn draw_preview(
@@ -568,6 +712,11 @@ fn draw_preview(
     ui.vertical(|ui| {
         ui.strong(label);
         if let Some(texture) = texture {
+            let backdrop = ui.cursor().min;
+            crate::app::transparency_backdrop(
+                ui,
+                egui::Rect::from_min_size(backdrop, egui::vec2(size, size)),
+            );
             let response = ui.add(
                 egui::Image::new(texture)
                     .fit_to_exact_size(egui::vec2(size, size))

@@ -1,12 +1,7 @@
 use super::*;
 
 pub(crate) fn collection_unlock_index(data: &[u8], row: usize) -> AuthoringResult<usize> {
-    let layout = numeric_program_layout(data, row + COLLECTIBLE_CONDITION_OFFSET)?;
-    let flags = layout
-        .tokens
-        .iter()
-        .filter_map(|(opcode, operand)| (*opcode == NUMERIC_FLAG_INSTRUCTION).then_some(*operand))
-        .collect::<BTreeSet<_>>();
+    let flags = collection_unlock_flags(data, row)?;
     let flags = flags.into_iter().collect::<Vec<_>>();
     let [flag] = flags.as_slice() else {
         return Err(AuthoringError::InvalidInput(
@@ -15,6 +10,56 @@ pub(crate) fn collection_unlock_index(data: &[u8], row: usize) -> AuthoringResul
         ));
     };
     Ok(usize::from(*flag))
+}
+
+fn collection_unlock_flags(data: &[u8], row: usize) -> AuthoringResult<BTreeSet<u16>> {
+    let descriptor = row + COLLECTIBLE_CONDITION_OFFSET;
+    if read_u64(data, descriptor)? == 0 && read_u64(data, descriptor + 8)? == 0 {
+        return Ok(BTreeSet::new());
+    }
+    let layout = numeric_program_layout(data, row + COLLECTIBLE_CONDITION_OFFSET)?;
+    Ok(layout
+        .tokens
+        .iter()
+        .filter_map(|(opcode, operand)| (*opcode == NUMERIC_FLAG_INSTRUCTION).then_some(*operand))
+        .collect())
+}
+
+/// Keep ordinary donor templates, but use the validated destination exemplar when
+/// acquisition is absent, empty, constant, indirect, or depends on multiple stock flags.
+/// The authored weapon still receives its own collectible and account unlock.
+pub(crate) fn collectible_clone_template(
+    data: &[u8],
+    gameplay_index: Option<usize>,
+    placement_index: usize,
+    unlock_count: usize,
+) -> AuthoringResult<(usize, usize)> {
+    let (count, _, rows, class) = array_at(data, 8)?;
+    if class != COLLECTIBLE_DEFINITION_ROW_CLASS
+        || gameplay_index.is_some_and(|index| index >= count)
+        || placement_index >= count
+    {
+        return Err(invalid("Collectible template index is outside the table"));
+    }
+    let flags = gameplay_index
+        .map(|index| collection_unlock_flags(data, rows + index * COLLECTIBLE_ROW_SIZE))
+        .transpose()?
+        .unwrap_or_default();
+    if flags.iter().any(|flag| usize::from(*flag) >= unlock_count) {
+        return Err(invalid(
+            "Donor collectible references an unavailable unlock",
+        ));
+    }
+    let template = gameplay_index
+        .filter(|_| flags.len() == 1)
+        .unwrap_or(placement_index);
+    let unlock = collection_unlock_index(data, rows + template * COLLECTIBLE_ROW_SIZE)?;
+    if unlock >= unlock_count {
+        return Err(invalid(
+            "Collectible template references an unavailable unlock",
+        ));
+    }
+    Ok((template, unlock))
 }
 
 pub(crate) fn template_presentation_parents(
@@ -312,7 +357,8 @@ pub(super) fn collectible_nested_clones(
         if matches!(
             field,
             COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET | COLLECTIBLE_SOCKET_OVERRIDES_OFFSET
-        ) {
+        ) || COLLECTIBLE_SECONDARY_CONDITION_OFFSETS.contains(&field)
+        {
             continue;
         }
         let descriptor = template_row + field;
@@ -327,27 +373,14 @@ pub(super) fn collectible_nested_clones(
                 ))
             })?;
         let mut retargeted_source_flags = 0usize;
-        if class == NUMERIC_PROGRAM_ROW_CLASS {
-            if field == COLLECTIBLE_CONDITION_OFFSET {
-                bytes = canonical_single_flag_program(
-                    &bytes,
-                    nested_count,
-                    source_unlock_index,
-                    unlock_index,
-                )?;
-                retargeted_source_flags = 1;
-            } else {
-                for index in 0..nested_count {
-                    let row = 16 + index * NUMERIC_INSTRUCTION_ROW_SIZE;
-                    let instruction = NumericInstruction::read(&bytes, row)?;
-                    if instruction.opcode == NUMERIC_FLAG_INSTRUCTION
-                        && instruction.operand == source_unlock_index
-                    {
-                        write_u16(&mut bytes, row + 4, unlock_index)?;
-                        retargeted_source_flags += 1;
-                    }
-                }
-            }
+        if class == NUMERIC_PROGRAM_ROW_CLASS && field == COLLECTIBLE_CONDITION_OFFSET {
+            bytes = canonical_single_flag_program(
+                &bytes,
+                nested_count,
+                source_unlock_index,
+                unlock_index,
+            )?;
+            retargeted_source_flags = 1;
         }
         if field == COLLECTIBLE_CONDITION_OFFSET
             && (class != NUMERIC_PROGRAM_ROW_CLASS || retargeted_source_flags != 1)
@@ -391,6 +424,13 @@ pub(crate) fn validate_authored_collectible_nested_isolation(
         )
         .ok_or_else(|| validation("Collectible fixed-row range overflowed"))?;
     let authored_row = rows + authored_collectible_index * COLLECTIBLE_ROW_SIZE;
+    for field in COLLECTIBLE_SECONDARY_CONDITION_OFFSETS {
+        if data.get(authored_row + field..authored_row + field + 16) != Some(&[0; 16]) {
+            return Err(validation(format!(
+                "Authored collectible retains a donor condition at 0x{field:X}"
+            )));
+        }
+    }
     if data.get(
         authored_row + COLLECTIBLE_SOCKET_OVERRIDES_OFFSET
             ..authored_row + COLLECTIBLE_SOCKET_OVERRIDES_OFFSET + 16,
@@ -413,7 +453,7 @@ pub(crate) fn validate_authored_collectible_nested_isolation(
     }
     let source_unlock_index = u16::try_from(source_unlock_index)
         .map_err(|_| validation("Donor acquired-flag index does not fit 16 bits"))?;
-    let mut acquired_flag_matches = 0usize;
+    let mut acquired_flag_is_private = false;
     for (field, target) in authored_targets {
         if target_owners
             .get(&target)
@@ -437,16 +477,12 @@ pub(crate) fn validate_authored_collectible_nested_isolation(
             )));
         }
         if field == COLLECTIBLE_CONDITION_OFFSET {
-            acquired_flag_matches = layout
-                .tokens
-                .iter()
-                .filter(|token| **token == (NUMERIC_FLAG_INSTRUCTION, unlock_index))
-                .count();
+            acquired_flag_is_private = layout.tokens == [(NUMERIC_FLAG_INSTRUCTION, unlock_index)];
         }
     }
-    if acquired_flag_matches != 1 {
+    if !acquired_flag_is_private {
         return Err(validation(
-            "Authored collectible acquired condition does not contain exactly one authored flag",
+            "Authored collectible acquisition must depend only on its private unlock flag",
         ));
     }
     Ok(())
@@ -551,6 +587,12 @@ pub(crate) fn append_collectible(
         rebase_row_pointers(&mut data, row, rows_end, COLLECTIBLE_ROW_SIZE)?;
     }
     data[rows_end..rows_end + COLLECTIBLE_ROW_SIZE].copy_from_slice(&template);
+    // Secondary stock account conditions belong to the source collectible.
+    // Authored entries use native empty secondary descriptors and their
+    // own acquisition flag so no donor account state gates their Collections entry.
+    for field in COLLECTIBLE_SECONDARY_CONDITION_OFFSETS {
+        data[rows_end + field..rows_end + field + 16].fill(0);
+    }
     // Random-roll donors can force placeholder perks/shaders in Collections. Those overrides
     // apply by socket type (including both trait columns), not by authored lane or selected plug.
     // Fixed authored rolls must instead use their item-definition defaults, as stock fixed rolls do.

@@ -1,6 +1,7 @@
 //! Sunrise settings organized into focused subtabs.
 
 use super::{
+    Capabilities,
     fields::{FIELDS, Field, Kind},
     optional_value, set_field, write_value,
 };
@@ -46,12 +47,42 @@ impl Tab {
             Self::Advanced => "Advanced",
         }
     }
+
+    /// A tab whose every control the installed runtime retired is hidden, not shown empty.
+    /// Destinations keeps its default-destination half on every runtime, and the account-backed
+    /// tabs carry no runtime fields at all.
+    fn available(self, capabilities: Capabilities) -> bool {
+        match self {
+            Self::Profile => group_populated("Profile & Catalysts", capabilities),
+            Self::Presentation => group_populated("Presentation", capabilities),
+            Self::Activities => {
+                group_populated("Activities & Scripting", capabilities)
+                    || group_populated("Server Activation", capabilities)
+            }
+            Self::Networking => {
+                group_populated("External Server", capabilities)
+                    || group_populated("Server Networking", capabilities)
+            }
+            Self::Logging => group_populated("Logging", capabilities),
+            Self::Advanced => group_populated("Advanced Runtime", capabilities),
+            Self::Destinations | Self::Characters | Self::Entitlements => true,
+        }
+    }
+}
+
+/// True while at least one control in the group survives on the installed runtime.
+fn group_populated(group: &str, capabilities: Capabilities) -> bool {
+    FIELDS
+        .iter()
+        .chain(super::services::FIELDS)
+        .any(|field| field.group == group && capabilities.supports(field.path))
 }
 
 pub(in crate::game_settings) fn draw(
     ui: &mut egui::Ui,
     document: &mut Value,
     account_available: bool,
+    capabilities: Capabilities,
 ) -> bool {
     if !super::available(document) {
         return false;
@@ -60,8 +91,14 @@ pub(in crate::game_settings) fn draw(
     let mut tab = ui
         .data_mut(|data| data.get_temp::<Tab>(id))
         .unwrap_or_default();
+    if !tab.available(capabilities) {
+        tab = Tab::ALL
+            .into_iter()
+            .find(|candidate| candidate.available(capabilities))
+            .unwrap_or_default();
+    }
     ui.horizontal_wrapped(|ui| {
-        for candidate in Tab::ALL {
+        for candidate in Tab::ALL.into_iter().filter(|c| c.available(capabilities)) {
             ui.selectable_value(&mut tab, candidate, candidate.label());
         }
     });
@@ -69,29 +106,70 @@ pub(in crate::game_settings) fn draw(
     ui.separator();
     ui.add_space(8.0);
     let changed = match tab {
-        Tab::Profile => draw_group(ui, document, "Profile & Catalysts", account_available),
-        Tab::Presentation => draw_group(ui, document, "Presentation", account_available),
+        Tab::Profile => draw_group(
+            ui,
+            document,
+            "Profile & Catalysts",
+            account_available,
+            capabilities,
+        ),
+        Tab::Presentation => draw_group(
+            ui,
+            document,
+            "Presentation",
+            account_available,
+            capabilities,
+        ),
         Tab::Activities => {
-            draw_group(ui, document, "Activities & Scripting", account_available)
-                | draw_group(ui, document, "Server Activation", account_available)
+            draw_group(
+                ui,
+                document,
+                "Activities & Scripting",
+                account_available,
+                capabilities,
+            ) | draw_group(
+                ui,
+                document,
+                "Server Activation",
+                account_available,
+                capabilities,
+            )
         }
-        Tab::Destinations => super::activity_page::draw(ui, document),
+        Tab::Destinations => super::activity_page::draw(ui, document, capabilities),
         Tab::Networking => {
             ui.strong("External Server");
-            let mut changed = draw_group(ui, document, "External Server", account_available);
+            let mut changed = draw_group(
+                ui,
+                document,
+                "External Server",
+                account_available,
+                capabilities,
+            );
             ui.add_space(12.0);
             ui.strong("Server Networking");
-            changed |= draw_group(ui, document, "Server Networking", account_available);
+            changed |= draw_group(
+                ui,
+                document,
+                "Server Networking",
+                account_available,
+                capabilities,
+            );
             changed
         }
-        Tab::Logging => draw_group(ui, document, "Logging", account_available),
+        Tab::Logging => draw_group(ui, document, "Logging", account_available, capabilities),
         Tab::Characters => super::character_page::draw(ui, document, account_available),
         Tab::Entitlements if account_available => super::entitlements::draw(ui, document),
         Tab::Entitlements => {
             ui.label("The active account is unavailable.");
             false
         }
-        Tab::Advanced => draw_group(ui, document, "Advanced Runtime", account_available),
+        Tab::Advanced => draw_group(
+            ui,
+            document,
+            "Advanced Runtime",
+            account_available,
+            capabilities,
+        ),
     };
     if let Err(error) = super::services::validate(document, account_available) {
         ui.colored_label(ui.visuals().error_fg_color, error);
@@ -104,12 +182,13 @@ fn draw_group(
     document: &mut Value,
     group: &str,
     account_available: bool,
+    capabilities: Capabilities,
 ) -> bool {
     let mut changed = false;
     for &field in FIELDS
         .iter()
         .chain(super::services::FIELDS)
-        .filter(|field| field.group == group)
+        .filter(|field| field.group == group && capabilities.supports(field.path))
     {
         ui.push_id(field.path, |ui| {
             ui.add_enabled_ui(account_available || !field.account_owned(), |ui| {

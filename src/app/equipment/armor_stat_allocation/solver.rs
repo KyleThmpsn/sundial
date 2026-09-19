@@ -29,6 +29,7 @@ pub(super) fn solve(
     let mut best_available = current.to_vec();
     let mut reason = None;
     let mut failed = false;
+    let fixed_totals = fixed_non_allocation_values(catalog, item, current);
 
     for group in AllocationGroup::ALL {
         let indices = group.indices();
@@ -37,7 +38,7 @@ pub(super) fn solve(
             continue;
         }
 
-        let fixed_values = fixed_group_values(catalog, item, current, group);
+        let fixed_values = indices.map(|index| fixed_totals[index]);
         let allocation_targets = remaining_targets(group_targets, fixed_values);
         if allocation_targets.iter().all(|target| *target == 0) {
             continue;
@@ -182,31 +183,59 @@ fn solve_cross_group(
     }
 }
 
-pub(super) fn solve_cross_group_plan(
+/// The two choice kinds differ only in how wide the stat vector they carry is.
+trait StatChoice<const N: usize> {
+    fn hash(&self) -> u64;
+    fn values(&self) -> [u16; N];
+}
+
+impl StatChoice<3> for Choice {
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+    fn values(&self) -> [u16; 3] {
+        self.values
+    }
+}
+
+impl StatChoice<6> for CrossGroupChoice {
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+    fn values(&self) -> [u16; 6] {
+        self.values
+    }
+}
+
+/// Every stat total these sockets can reach, each kept with the cheapest plan that reaches
+/// it: fewest changed sockets, then the lowest hashes, so one installation always picks the
+/// same plan out of a tie.
+///
+/// The per-group and cross-group solvers ran a copy of this each. They had already drifted
+/// apart in how they summed the vector while meaning the same thing, which is the way two
+/// copies of a search stop agreeing.
+fn reachable_plans<const N: usize, C: StatChoice<N>>(
     sockets: &[usize],
-    choice_sets: &[Vec<CrossGroupChoice>],
+    choice_sets: &[Vec<C>],
     current: &[Option<u64>],
-    fixed: [u16; 6],
-    targets: [u16; 6],
-) -> Result<CrossGroupSolution, CrossGroupFailure> {
+) -> HashMap<[u16; N], Plan> {
     let mut plans = HashMap::from([(
-        [0_u16; 6],
+        [0_u16; N],
         Plan {
             hashes: Vec::new(),
             changes: 0,
         },
     )]);
-
     for (socket_index, choices) in sockets.iter().copied().zip(choice_sets) {
-        let mut next = HashMap::<[u16; 6], Plan>::new();
+        let mut next = HashMap::<[u16; N], Plan>::new();
         for (total, plan) in &plans {
             for choice in choices {
+                let values = choice.values();
                 let combined =
-                    std::array::from_fn(|index| total[index].saturating_add(choice.values[index]));
+                    std::array::from_fn(|index| total[index].saturating_add(values[index]));
                 let mut candidate = plan.clone();
-                candidate.hashes.push(choice.hash);
-                candidate.changes += usize::from(current[socket_index] != Some(choice.hash));
-
+                candidate.hashes.push(choice.hash());
+                candidate.changes += usize::from(current[socket_index] != Some(choice.hash()));
                 match next.entry(combined) {
                     Entry::Vacant(entry) => {
                         entry.insert(candidate);
@@ -221,6 +250,17 @@ pub(super) fn solve_cross_group_plan(
         }
         plans = next;
     }
+    plans
+}
+
+pub(super) fn solve_cross_group_plan(
+    sockets: &[usize],
+    choice_sets: &[Vec<CrossGroupChoice>],
+    current: &[Option<u64>],
+    fixed: [u16; 6],
+    targets: [u16; 6],
+) -> Result<CrossGroupSolution, CrossGroupFailure> {
+    let plans = reachable_plans(sockets, choice_sets, current);
 
     let best_meeting = plans
         .iter()
@@ -281,41 +321,7 @@ pub(super) fn solve_group(
     current: &[Option<u64>],
     targets: [u16; 3],
 ) -> Result<GroupSolution, GroupFailure> {
-    let mut plans = HashMap::from([(
-        [0_u16; 3],
-        Plan {
-            hashes: Vec::new(),
-            changes: 0,
-        },
-    )]);
-
-    for (socket_index, choices) in sockets.iter().copied().zip(choice_sets) {
-        let mut next = HashMap::<[u16; 3], Plan>::new();
-        for (total, plan) in &plans {
-            for choice in choices {
-                let combined = [
-                    total[0].saturating_add(choice.values[0]),
-                    total[1].saturating_add(choice.values[1]),
-                    total[2].saturating_add(choice.values[2]),
-                ];
-                let mut candidate = plan.clone();
-                candidate.hashes.push(choice.hash);
-                candidate.changes += usize::from(current[socket_index] != Some(choice.hash));
-
-                match next.entry(combined) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(candidate);
-                    }
-                    Entry::Occupied(mut entry) => {
-                        if plan_tie_key(&candidate) < plan_tie_key(entry.get()) {
-                            entry.insert(candidate);
-                        }
-                    }
-                }
-            }
-        }
-        plans = next;
-    }
+    let plans = reachable_plans(sockets, choice_sets, current);
 
     let best_meeting = plans
         .iter()
@@ -515,15 +521,9 @@ pub(in crate::app::equipment) fn selected_totals(
     clamp_totals(totals)
 }
 
-/// Returns the stat contribution for a plug in one concrete socket. Allocation
-/// definitions sometimes expose partial package rows, so their display-name
-/// fallback is used independently of the destination socket's allocation group.
-pub(in crate::app::equipment) fn socket_stat_values(
-    catalog: &Catalog,
-    _item: &ItemDef,
-    _socket_index: usize,
-    hash: u64,
-) -> [i32; 6] {
+/// Returns a plug's stat contribution, using its display name as a fallback
+/// for allocation definitions with partial package rows.
+pub(in crate::app::equipment) fn plug_stat_values(catalog: &Catalog, hash: u64) -> [i32; 6] {
     if let Some((group, values)) = parse_allocation_hash(catalog, hash) {
         expand_allocation_values(group, values).map(i32::from)
     } else {
@@ -544,41 +544,11 @@ fn fixed_non_allocation_values(
         let Some(hash) = hash else {
             continue;
         };
-        for (total, value) in
-            totals
-                .iter_mut()
-                .zip(socket_stat_values(catalog, item, socket_index, hash))
-        {
+        for (total, value) in totals.iter_mut().zip(plug_stat_values(catalog, hash)) {
             *total = total.saturating_add(value);
         }
     }
     clamp_totals(totals)
-}
-
-fn fixed_group_values(
-    catalog: &Catalog,
-    item: &ItemDef,
-    plugs: &[Option<u64>],
-    group: AllocationGroup,
-) -> [u16; 3] {
-    let mut totals = catalog.armor_stat_values(item.hash);
-    for (socket_index, hash) in plugs.iter().copied().enumerate() {
-        if allocation_socket_group(catalog, item, socket_index).is_some() {
-            continue;
-        }
-        let Some(hash) = hash else {
-            continue;
-        };
-        for (total, value) in
-            totals
-                .iter_mut()
-                .zip(socket_stat_values(catalog, item, socket_index, hash))
-        {
-            *total = total.saturating_add(value);
-        }
-    }
-    let totals = clamp_totals(totals);
-    group.indices().map(|index| totals[index])
 }
 
 pub(super) fn remaining_targets(targets: [u16; 3], fixed: [u16; 3]) -> [u16; 3] {

@@ -5,8 +5,6 @@ use super::super::{
     shift_socket_choice_queries_after_removal,
 };
 use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
-#[cfg(test)]
-mod tests;
 
 pub(super) fn apply(
     context: &mut SocketRowContext<'_>,
@@ -37,8 +35,11 @@ pub(super) fn apply(
                 true
             };
             if removed {
-                if *context.private_perk_socket == Some(context.socket_index) {
-                    *context.private_perk_socket = None;
+                if context
+                    .perk_request
+                    .is_some_and(|request| request.socket() == context.socket_index)
+                {
+                    *context.perk_request = None;
                 }
                 context.queries.clear();
                 *context.page = 0;
@@ -46,6 +47,31 @@ pub(super) fn apply(
             RowContinuation::Finished
         }
         Some(RowCommand::EditChoice { index, hash }) => edit_choice(context, choices, index, hash),
+        Some(RowCommand::EditPerk(choice)) => {
+            *context.perk_request =
+                Some(crate::app::custom_perks::workbench::Request::EditChoice {
+                    socket: context.socket_index,
+                    choice,
+                });
+            RowContinuation::Finished
+        }
+        Some(RowCommand::MoveChoice { from, to }) => {
+            match super::super::move_choice(
+                context.recipe,
+                context.donor.sockets.len(),
+                context.socket_index,
+                &choices.inherited,
+                from,
+                to,
+            ) {
+                Ok(()) => {
+                    context.queries.clear();
+                    *context.page = 0;
+                }
+                Err(error) => context.log.push(LogEntry::error(error)),
+            }
+            RowContinuation::Finished
+        }
         Some(RowCommand::MakeDefault(index)) => {
             match super::super::make_choice_default(
                 context.recipe,

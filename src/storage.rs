@@ -1,9 +1,33 @@
+//! Durable file publication. Callers own document formats, locking, and transaction policy.
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Publishes a complete new file without replacing an existing destination.
+/// The temporary file lives on the destination filesystem and is flushed before publication.
+pub fn create_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination has no parent folder",
+        )
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(contents)?;
+    publish_new(temporary, path)
+}
+
+/// Publishes an already prepared same-filesystem temporary, including SQLite-native backups.
+pub(crate) fn publish_new(temporary: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
 
 /// Writes a complete file beside its destination, flushes it to disk, and then
 /// replaces the destination in one filesystem operation.
@@ -167,6 +191,53 @@ pub(crate) fn replace_path(source: &Path, destination: &Path) -> io::Result<()> 
 mod tests {
     use super::*;
     use crate::test_support::TestDirectory;
+
+    #[test]
+    fn racing_creators_publish_one_complete_file_and_remove_their_temporaries() {
+        let directory = TestDirectory::new("storage-create-race");
+        let destination = directory.0.join("document.json");
+        let barrier = std::sync::Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let spawn = |value| {
+                let destination = &destination;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    create_file(destination, &[value; 4096])
+                })
+            };
+            let a = spawn(1);
+            let b = spawn(2);
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results.into_iter().find_map(Result::err).unwrap().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let bytes = fs::read(&destination).unwrap();
+        assert!(bytes == [1; 4096] || bytes == [2; 4096]);
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_creation_preserves_the_destination_and_cleans_its_temporary() {
+        let directory = TestDirectory::new("storage-create-existing");
+        let destination = directory.0.join("document.json");
+        fs::write(&destination, b"existing").unwrap();
+        assert_eq!(
+            create_file(&destination, b"replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"existing");
+        let occupied = directory.0.join("folder");
+        fs::create_dir(&occupied).unwrap();
+        assert!(create_file(&occupied, b"replacement").is_err());
+        assert!(occupied.is_dir());
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 2);
+    }
 
     #[test]
     fn guarded_replacement_preserves_an_external_change_and_cleans_its_temporary() {

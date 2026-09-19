@@ -87,7 +87,8 @@ impl Lane {
         offset: u32,
     ) -> Option<Self> {
         let mut fields = root.fields.iter().filter(|field| {
-            field.locator.value_offset <= offset
+            field.source != crate::weapon_runtime::WeaponRuntimeFieldSource::NativeDeclaration
+                && field.locator.value_offset <= offset
                 && field
                     .locator
                     .value_offset
@@ -109,6 +110,9 @@ impl Lane {
 
     fn matches(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
         let native = &self.field.locator;
+        if matches!((locator.graph_tag, native.graph_tag), (Some(a), Some(b)) if a != b) {
+            return false;
+        }
         if (locator.binding_hash, locator.resource_index)
             != (native.binding_hash, native.resource_index)
             && !self
@@ -118,18 +122,26 @@ impl Lane {
             return false;
         }
         let mut normalized = locator.clone();
+        normalized.graph_tag = native.graph_tag;
         normalized.binding_hash = native.binding_hash;
         normalized.resource_index = native.resource_index;
         normalized == *native
     }
 
     fn bits(&self, draft: &[WeaponRuntimeValueOverride]) -> Result<u32, String> {
-        let mut entries = draft.iter().filter(|entry| self.matches(&entry.locator));
-        let value = entries
-            .next()
-            .map_or(&self.field.value, |entry| &entry.value);
+        let mut entries = draft
+            .iter()
+            .filter(|entry| self.matches(&entry.locator) || self.matches_scalar(&entry.locator));
+        let entry = entries.next();
+        let value = entry.map_or(&self.field.value, |entry| &entry.value);
         if entries.next().is_some() {
             return Err("Two edits target the same projectile field.".into());
+        }
+        if entry.is_some_and(|entry| self.matches_scalar(&entry.locator)) {
+            return match value {
+                WeaponRuntimeValue::Float32Bits(bits) => Ok(*bits),
+                _ => Err("Projectile scalar has an incompatible value type.".into()),
+            };
         }
         let WeaponRuntimeValue::Bytes(bytes) = value else {
             return Err("Projectile data has an incompatible value type.".into());
@@ -138,6 +150,38 @@ impl Lane {
             .get(self.offset..self.offset + 4)
             .ok_or("Projectile data is truncated.")?;
         Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn matches_scalar(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
+        let source = &self.field.locator;
+        if matches!((locator.graph_tag, source.graph_tag), (Some(a), Some(b)) if a != b) {
+            return false;
+        }
+        let pair = (locator.binding_hash, locator.resource_index);
+        if pair != (source.binding_hash, source.resource_index) && !self.aliases.contains(&pair) {
+            return false;
+        }
+        locator.root == source.root
+            && locator.root_schema == source.root_schema
+            && locator.byte_size == 4
+            && locator
+                .path
+                .first()
+                .is_some_and(|step| step.name_hash == 0x504E_5200)
+            && locator
+                .path
+                .last()
+                .is_some_and(|step| step.name_hash == 0x504E_5600)
+            && locator.path[1..locator.path.len().saturating_sub(1)]
+                .iter()
+                .all(|step| step.name_hash == 0x504E_4900)
+            && locator
+                .path
+                .iter()
+                .skip(1)
+                .map(|step| u64::from(step.byte_offset))
+                .sum::<u64>()
+                == u64::from(source.value_offset) + self.offset as u64
     }
 
     fn write(&self, draft: &mut Vec<WeaponRuntimeValueOverride>, bits: u32) -> Result<(), String> {
@@ -156,6 +200,7 @@ impl Lane {
         if let Some(index) = existing {
             draft.remove(index);
         }
+        draft.retain(|entry| !self.matches_scalar(&entry.locator));
         if entry.value != self.field.value {
             draft.push(entry);
         }
@@ -177,7 +222,19 @@ impl Parameter {
     }
 
     pub fn contains(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
-        self.instance.matches(locator) || self.definition.matches(locator)
+        self.instance.matches(locator)
+            || self.definition.matches(locator)
+            || self.instance.matches_scalar(locator)
+            || self.definition.matches_scalar(locator)
+    }
+
+    /// Identifies either paired native scalar by its resolved position in this owner.
+    pub fn targets_field(&self, owner: u32, field: &WeaponRuntimeField) -> bool {
+        self.owner_tag == owner
+            && field.locator.byte_size == 4
+            && [&self.instance, &self.definition].into_iter().any(|lane| {
+                lane.field.owner_offset.checked_add(lane.offset as u32) == Some(field.owner_offset)
+            })
     }
 
     pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {

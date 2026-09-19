@@ -1,5 +1,65 @@
 use super::*;
 
+/// Where a Custom Perks row comes from: an open document, or a saved perk not opened yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PerkSource {
+    Document(usize),
+    Entry(usize),
+}
+
+/// What the reader picked from a row's right-click menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowAction {
+    Duplicate,
+    Delete,
+}
+
+/// A perk the reader asked to delete, shown in a confirmation before anything is removed.
+#[derive(Clone, Debug)]
+pub(super) struct PendingDelete {
+    name: String,
+    source: PerkSource,
+}
+
+/// The name a row shows for a recipe, with a stand-in for an empty one.
+fn display_name(name: &str) -> &str {
+    if name.trim().is_empty() {
+        "Untitled Perk"
+    } else {
+        name
+    }
+}
+
+/// The right-click menu of one Custom Perks row.
+fn draw_row_menu(
+    response: &egui::Response,
+    source: PerkSource,
+    saved: bool,
+) -> Option<(PerkSource, RowAction)> {
+    let mut action = None;
+    response.context_menu(|ui| {
+        crate::app::style::workbench_style(ui);
+        if ui
+            .button("Duplicate")
+            .on_hover_text("Open a copy as a new draft. Save Perk keeps it in Custom Perks.")
+            .clicked()
+        {
+            action = Some((source, RowAction::Duplicate));
+            ui.close_menu();
+        }
+        let delete = if saved {
+            "Delete…"
+        } else {
+            "Delete Draft…"
+        };
+        if ui.button(delete).clicked() {
+            action = Some((source, RowAction::Delete));
+            ui.close_menu();
+        }
+    });
+    action
+}
+
 impl Workbench {
     pub(super) fn initialize(&mut self) {
         if self.initialized {
@@ -32,19 +92,29 @@ impl Workbench {
         }
     }
 
-    fn refresh_library(&mut self) {
+    pub(super) fn refresh_library(&mut self) {
+        let warnings = self.scan_library();
+        if !warnings.is_empty() {
+            self.error = Some(warnings.join("\n"));
+        }
+    }
+
+    /// A failed refresh must not offer stale saved versions as current library entries.
+    pub(super) fn scan_library(&mut self) -> Vec<String> {
         self.authored_templates = None;
+        self.entries.clear();
         let Some(library) = &self.library else {
-            return;
+            return vec![
+                "Custom Perks is unavailable. Workbench drafts and weapon recipes are still available."
+                    .into(),
+            ];
         };
         match library.scan() {
             Ok(scan) => {
                 self.entries = scan.entries;
-                if !scan.errors.is_empty() {
-                    self.error = Some(scan.errors.join("\n"));
-                }
+                scan.errors
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => vec![error],
         }
     }
 
@@ -73,95 +143,315 @@ impl Workbench {
     pub(super) fn add_document(&mut self, document: Document) {
         self.message = None;
         self.message_path = None;
+        self.query.clear();
         if let Some(index) = self
             .documents
             .iter()
             .position(|existing| existing.recipe.id == document.recipe.id)
         {
-            self.selected = index;
+            self.select_document(index);
         } else {
-            self.selected = self.documents.len();
+            let index = self.documents.len();
             self.documents.push(document);
+            self.select_document(index);
             self.persist_drafts();
         }
     }
 
-    pub(super) fn draw_library(&mut self, ui: &mut egui::Ui) {
-        ui.strong("My Perks");
+    pub(super) fn draw_library(
+        &mut self,
+        ui: &mut egui::Ui,
+        catalog: Option<&InvestmentCatalog>,
+        experimental: bool,
+    ) {
+        ui.horizontal(|ui| {
+            crate::app::style::compact_controls(ui);
+            ui.strong("Custom Perks");
+            self.draw_library_actions(ui, catalog, experimental);
+        });
         let response = ui.add(
             egui::TextEdit::singleline(&mut self.query)
-                .hint_text("Search My Perks")
+                .hint_text("Search Custom Perks")
                 .desired_width(f32::INFINITY),
         );
-        crate::app::style::named_control(response, "Search My Perks");
+        crate::app::style::named_control(response, "Search Custom Perks");
+        if !self.drafts_writable {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Draft autosave is paused. Use Save Perk or Export to keep your changes.",
+            );
+        }
         let query = self.query.trim().to_lowercase();
         let mut picked = None;
+        let mut selected = None;
+        let mut action = None;
         egui::ScrollArea::vertical()
             .id_salt("perk-library")
-            .max_height((ui.available_height() - 66.0).max(80.0))
+            .max_height(ui.available_height().max(80.0))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let mut visible = 0;
                 ui.add_enabled_ui(self.editor.is_none(), |ui| {
-                    for (index, document) in self.documents.iter().enumerate() {
+                    let mut document_order = (0..self.documents.len()).collect::<Vec<_>>();
+                    document_order.sort_by_key(|&index| {
+                        (
+                            self.documents[index].baseline.is_some(),
+                            std::cmp::Reverse(index),
+                        )
+                    });
+                    for index in document_order {
+                        let document = &self.documents[index];
                         if !document.recipe.name.to_lowercase().contains(&query) {
                             continue;
                         }
-                        let saved = document
+                        let unchanged = document
                             .baseline
                             .as_ref()
                             .and_then(|bytes| serde_json::from_slice::<PerkRecipe>(bytes).ok())
                             .is_some_and(|saved| saved == document.recipe);
-                        let name = if document.recipe.name.trim().is_empty() {
-                            "Untitled Perk"
-                        } else {
-                            &document.recipe.name
-                        };
-                        let label = format!("{name}{}", if saved { "" } else { " *" });
+                        let name = display_name(&document.recipe.name);
+                        let label = format!("{name}{}", if unchanged { "" } else { " · Draft" });
                         visible += 1;
-                        if crate::app::style::list_row(ui, self.selected == index, &label).clicked()
-                        {
-                            self.selected = index;
-                            self.page = Page::Effects;
-                            self.message = None;
-                            self.message_path = None;
+                        let response = perk_row(
+                            ui,
+                            catalog,
+                            &document.recipe,
+                            self.selected == index,
+                            &label,
+                        );
+                        if self.reveal_document && self.selected == index {
+                            response.scroll_to_me(Some(egui::Align::Min));
                         }
+                        if response.clicked() {
+                            selected = Some(index);
+                        }
+                        action = action.or(draw_row_menu(
+                            &response,
+                            PerkSource::Document(index),
+                            document.baseline.is_some(),
+                        ));
                     }
-                    let unloaded = self.entries.iter().filter(|entry| {
+                    let unloaded = self.entries.iter().enumerate().filter(|(_, entry)| {
                         !self
                             .documents
                             .iter()
                             .any(|document| document.recipe.id == entry.recipe.id)
                     });
-                    for entry in unloaded {
+                    for (index, entry) in unloaded {
                         if !entry.recipe.name.to_lowercase().contains(&query) {
                             continue;
                         }
                         visible += 1;
-                        if crate::app::style::list_row(ui, false, &entry.recipe.name).clicked() {
+                        let response =
+                            perk_row(ui, catalog, &entry.recipe, false, &entry.recipe.name);
+                        if response.clicked() {
                             picked = Some(Document::new(
                                 entry.recipe.clone(),
                                 Some(entry.baseline.clone()),
                             ));
                         }
+                        action =
+                            action.or(draw_row_menu(&response, PerkSource::Entry(index), true));
                     }
                 });
                 if visible == 0 {
-                    ui.weak("No matching perks.");
+                    ui.weak("No perks match this search.");
                 }
             });
+        self.reveal_document = false;
+        if let Some(index) = selected {
+            self.select_document(index);
+            self.page = Page::Effects;
+            self.message = None;
+            self.message_path = None;
+        }
         if let Some(document) = picked {
             self.add_document(document);
         }
-        ui.small(if self.drafts_writable {
-            "* Unsaved Changes"
-        } else {
-            "Draft autosave is paused. Use Save Perk or Export to keep your changes."
-        })
-        .on_hover_text("Drafts are kept automatically. Save Perk updates the copy in My Perks.");
-        if ui.button("Refresh Library").clicked() {
-            self.refresh_library();
+        match action {
+            Some((source, RowAction::Duplicate)) => self.duplicate(source),
+            Some((source, RowAction::Delete)) => {
+                self.confirm_delete(source);
+            }
+            None => {}
         }
+        self.draw_delete_confirmation(ui.ctx());
+    }
+
+    /// Compact actions alongside the Custom Perks heading.
+    fn draw_library_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        catalog: Option<&InvestmentCatalog>,
+        experimental: bool,
+    ) {
+        let editing = self.editor.is_some();
+        ui.add_enabled_ui(!editing, |ui| {
+            if ui
+                .button("New Perk")
+                .on_hover_text("Start an empty perk.")
+                .clicked()
+            {
+                let mut recipe = PerkRecipe::new();
+                if experimental {
+                    recipe.effects.push(program::new_effect(421));
+                }
+                self.add_document(Document::new(recipe, None));
+                self.page = Page::Effects;
+            }
+            if let Some(catalog) = catalog {
+                self.draw_templates(ui, catalog);
+            }
+            crate::app::style::more_menu(ui, |ui| {
+                crate::app::style::workbench_style(ui);
+                if ui.button("Import…").clicked() {
+                    self.import();
+                    ui.close_menu();
+                }
+                if ui.button("Export…").clicked() {
+                    self.export();
+                    ui.close_menu();
+                }
+                if ui.button("Refresh Library").clicked() {
+                    self.refresh_library();
+                    ui.close_menu();
+                }
+            });
+        });
+    }
+
+    fn recipe_at(&self, source: PerkSource) -> Option<&PerkRecipe> {
+        match source {
+            PerkSource::Document(index) => {
+                self.documents.get(index).map(|document| &document.recipe)
+            }
+            PerkSource::Entry(index) => self.entries.get(index).map(|entry| &entry.recipe),
+        }
+    }
+
+    /// Opens a copy of a perk as a new draft with its own id, so the original stays as it
+    /// is until the reader saves the copy.
+    pub(super) fn duplicate(&mut self, source: PerkSource) {
+        let Some(mut recipe) = self.recipe_at(source).cloned() else {
+            return;
+        };
+        recipe.id = PerkRecipe::new().id;
+        recipe.name = format!("{} Copy", display_name(&recipe.name));
+        let name = recipe.name.clone();
+        self.add_document(Document::new(recipe, None));
+        self.page = Page::Effects;
+        self.error = None;
+        self.message = Some(format!("Opened {name} as a new draft."));
+    }
+
+    pub(super) fn confirm_delete(&mut self, source: PerkSource) {
+        if let Some(recipe) = self.recipe_at(source) {
+            self.pending_delete = Some(PendingDelete {
+                name: display_name(&recipe.name).to_owned(),
+                source,
+            });
+        }
+    }
+
+    fn draw_delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_delete.clone() else {
+            return;
+        };
+        let saved = match pending.source {
+            PerkSource::Document(index) => self
+                .documents
+                .get(index)
+                .is_some_and(|document| document.baseline.is_some()),
+            PerkSource::Entry(_) => true,
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        let response = egui::Modal::new("perk-workbench-delete".into()).show(ctx, |ui| {
+            crate::app::style::workbench_style(ui);
+            ui.set_width(380.0);
+            ui.heading(if saved {
+                "Delete This Perk?"
+            } else {
+                "Delete This Draft?"
+            });
+            ui.strong(&pending.name);
+            ui.label(if saved {
+                "The saved copy in Custom Perks is removed. Weapon recipes that already carry this perk keep their own copy."
+            } else {
+                "This draft was never saved to Custom Perks, so it cannot be brought back."
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                confirm = ui.button("Delete").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        cancel |= response.should_close();
+        if confirm {
+            self.pending_delete = None;
+            self.delete(pending.source);
+        } else if cancel {
+            self.pending_delete = None;
+        }
+    }
+
+    /// Deletes a perk: its saved file when it has one, and its open document. A file that
+    /// changed outside the workbench is left alone and reported.
+    pub(super) fn delete(&mut self, source: PerkSource) {
+        let (recipe, baseline) = match source {
+            PerkSource::Document(index) => {
+                let Some(document) = self.documents.get(index) else {
+                    return;
+                };
+                (document.recipe.clone(), document.baseline.clone())
+            }
+            PerkSource::Entry(index) => {
+                let Some(entry) = self.entries.get(index) else {
+                    return;
+                };
+                (entry.recipe.clone(), Some(entry.baseline.clone()))
+            }
+        };
+        if let Some(baseline) = baseline {
+            let Some(library) = &self.library else {
+                self.error = Some(
+                    "Custom Perks is unavailable, so the saved copy cannot be deleted.".into(),
+                );
+                return;
+            };
+            if let Err(error) = library.delete(&recipe, &baseline) {
+                self.error = Some(error);
+                return;
+            }
+        }
+        if let PerkSource::Document(index) = source {
+            self.remove_document(index);
+        }
+        self.error = None;
+        self.message = Some(format!("Deleted {}.", display_name(&recipe.name)));
+        self.message_path = None;
+        self.refresh_library();
+    }
+
+    /// Closes a document. The list always keeps one perk open and selected.
+    fn remove_document(&mut self, index: usize) {
+        if index >= self.documents.len() {
+            return;
+        }
+        if self.selected == index {
+            self.retire_editor();
+            self.editing_effect = None;
+            self.editing_program_action = None;
+        }
+        self.documents.remove(index);
+        if self.documents.is_empty() {
+            self.documents.push(Document::new(PerkRecipe::new(), None));
+        }
+        if self.selected > index {
+            self.selected -= 1;
+        }
+        self.selected = self.selected.min(self.documents.len() - 1);
+        self.persist_drafts();
     }
 
     pub(super) fn save(&mut self, copy: bool) {
@@ -187,13 +477,13 @@ impl Workbench {
                 if copy {
                     self.documents
                         .push(Document::new(entry.recipe, Some(entry.baseline)));
-                    self.selected = self.documents.len() - 1;
+                    self.select_document(self.documents.len() - 1);
                 } else {
                     self.documents[self.selected].baseline = Some(entry.baseline);
                     self.documents[self.selected].origin = Some(recipe.clone());
                 }
                 self.error = None;
-                self.message = Some(format!("Saved {} to My Perks.", recipe.name));
+                self.message = Some(format!("Saved {} to Custom Perks.", recipe.name));
                 self.message_path = Some(entry.path);
                 self.persist_drafts();
                 self.refresh_library();
@@ -239,5 +529,31 @@ impl Workbench {
             }
             Err(error) => self.error = Some(error),
         }
+    }
+}
+
+fn perk_row(
+    ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
+    recipe: &PerkRecipe,
+    selected: bool,
+    label: &str,
+) -> egui::Response {
+    match catalog {
+        Some(catalog) => catalog.draw_perk_row(
+            ui,
+            recipe.template_plug.parse_u32().unwrap_or_default(),
+            label,
+            selected,
+            sundial::investment::PlugTooltip {
+                name: Some(display_name(&recipe.name)),
+                description: Some(&recipe.description),
+                classification_hash: recipe
+                    .classification
+                    .as_ref()
+                    .and_then(|hash| hash.parse_u32().ok()),
+            },
+        ),
+        None => crate::app::style::list_row(ui, selected, label),
     }
 }

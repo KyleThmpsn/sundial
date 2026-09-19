@@ -41,14 +41,14 @@ pub(super) fn draw_toolbar(
         if detached {
             response.save |= ui.button("Save").clicked();
             if state.modified || unsaved {
-                ui.label(egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color));
+                ui.label(egui::RichText::new("Unsaved Changes").color(ui.visuals().warn_fg_color));
             }
         }
         crate::ui_help::info(ui, "Edit JSON directly. Save validates and writes the account file.\n\nCtrl+S: Save\nCtrl+F: Find\nCtrl+H: Replace\nF3 / Shift+F3: Next / previous match\nCtrl+G: Go to path\nCtrl+Shift+F: Format JSON\nCtrl+Z / Ctrl+Y: Undo / redo text edits");
     });
     if state.reset_pending {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Discard the JSON draft and restore the current account?");
+            ui.label("Discard the JSON Draft and Restore the Current Account?");
             response.reset = ui
                 .button(egui::RichText::new("Discard Edits").color(ui.visuals().error_fg_color))
                 .clicked();
@@ -194,15 +194,12 @@ pub(super) fn draw_status(ui: &mut egui::Ui, text: &str, state: &mut JsonEditorS
             );
         }
         None => {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Valid JSON · {line_count} lines · {:.1} KiB · Ln {}, Col {}",
-                    text.len() as f64 / 1024.0,
-                    state.cursor_line,
-                    state.cursor_column
-                ))
-                .weak(),
-            );
+            ui.weak(format!(
+                "Valid JSON · {line_count} lines · {:.1} KiB · Ln {}, Col {}",
+                text.len() as f64 / 1024.0,
+                state.cursor_line,
+                state.cursor_column
+            ));
         }
         Some(error) => {
             ui.colored_label(

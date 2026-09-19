@@ -6,11 +6,9 @@ const EVENTS_DESCRIPTOR: usize = 0x20;
 const EVENT_ROW_CLASS: u32 = 0x8080_9BC9;
 const EVENT_ROW_SIZE: usize = 0x48;
 
-pub(super) fn event_owner_fields(entity: &[u8], owner_tag: u32) -> Result<BTreeSet<usize>, String> {
-    let mut fields = BTreeSet::new();
-    // Empty event lists can have a null descriptor instead of an array header.
+fn event_rows(entity: &[u8]) -> Result<Vec<usize>, String> {
     if read_u64(entity, EVENTS_DESCRIPTOR)? == 0 {
-        return Ok(fields);
+        return Ok(Vec::new());
     }
     let events = native_array(entity, EVENTS_DESCRIPTOR)?;
     if events.row_class != EVENT_ROW_CLASS {
@@ -20,8 +18,124 @@ pub(super) fn event_owner_fields(entity: &[u8], owner_tag: u32) -> Result<BTreeS
         ));
     }
     checked_rows_end(events, EVENT_ROW_SIZE, entity.len(), "Weapon entity event")?;
-    for index in 0..events.count {
-        let row = events.rows + index * EVENT_ROW_SIZE;
+    Ok((0..events.count)
+        .map(|index| events.rows + index * EVENT_ROW_SIZE)
+        .collect())
+}
+
+pub(super) fn validate_events(entity: &[u8]) -> Result<(), String> {
+    event_rows(entity).map(|_| ())
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Endpoint {
+    Resource(u32, Vec<(u32, usize)>),
+    External(u32, u32, u64),
+}
+
+fn endpoint(
+    entity: &[u8],
+    offset: usize,
+    replaced_owner: Option<u32>,
+    aliases: &[ComponentAlias],
+) -> Result<Endpoint, String> {
+    let tag = read_u32(entity, offset)?;
+    let class = read_u32(entity, offset + 4)?;
+    let position = read_u64(entity, offset + 8)?;
+    let identities = aliases
+        .iter()
+        .filter(|alias| {
+            alias.owner_tag == tag
+                && alias.concrete_class == class
+                && alias.resource_offset == position
+        })
+        .map(|alias| (alias.binding_hash, alias.resource_index))
+        .collect::<BTreeSet<_>>();
+    if !identities.is_empty() {
+        return Ok(Endpoint::Resource(class, identities.into_iter().collect()));
+    }
+    if Some(tag) == replaced_owner {
+        return Err("This component group has an event connection that cannot be mapped to the donor. Choose another donor or keep the baseline.".into());
+    }
+    Ok(Endpoint::External(tag, class, position))
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EventKey {
+    metadata: Vec<u8>,
+    source: Endpoint,
+    destination: Endpoint,
+}
+
+fn events_for_owner(
+    entity: &[u8],
+    owner: u32,
+    moving: bool,
+) -> Result<BTreeMap<EventKey, usize>, String> {
+    let rows = event_rows(entity)?;
+    if rows.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let aliases = weapon_component_aliases(entity)?;
+    let mut result = BTreeMap::new();
+    for row in rows {
+        if read_u32(entity, row + 8)? != owner && read_u32(entity, row + 0x28)? != owner {
+            continue;
+        }
+        let metadata = [
+            &entity[row..row + 8],
+            &entity[row + 0x18..row + 0x28],
+            &entity[row + 0x38..row + 0x48],
+        ]
+        .concat();
+        let key = EventKey {
+            metadata,
+            source: endpoint(entity, row + 8, moving.then_some(owner), &aliases)?,
+            destination: endpoint(entity, row + 0x28, moving.then_some(owner), &aliases)?,
+        };
+        if result.insert(key, row).is_some() {
+            return Err("This component group has duplicate event connections that cannot be matched unambiguously".into());
+        }
+    }
+    Ok(result)
+}
+
+/// Only rewrite endpoints proven to address corresponding bound resources. Nested objects and
+/// different event programs require explicit mappings, never a guessed owner-tag substitution.
+pub(super) fn graft_event_updates(
+    target: &[u8],
+    donor: &[u8],
+    target_owner: u32,
+    donor_owner: u32,
+) -> Result<Vec<(usize, [u8; 16])>, String> {
+    let moving = target_owner != donor_owner;
+    let target_events = events_for_owner(target, target_owner, moving)?;
+    let donor_events = events_for_owner(donor, donor_owner, moving)?;
+    if target_events.keys().ne(donor_events.keys()) {
+        return Err("This component group uses different event connections in the donor. Choose another donor or keep the baseline.".into());
+    }
+    let mut updates = Vec::new();
+    for (key, target_row) in target_events {
+        let donor_row = donor_events[&key];
+        for relative in [8, 0x28] {
+            if read_u32(target, target_row + relative)? == target_owner {
+                if read_u32(donor, donor_row + relative)? != donor_owner {
+                    return Err(
+                        "The donor event connection leaves the selected component group".into(),
+                    );
+                }
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&donor[donor_row + relative..donor_row + relative + 16]);
+                updates.push((target_row + relative, bytes));
+            }
+        }
+    }
+    Ok(updates)
+}
+
+pub(super) fn event_owner_fields(entity: &[u8], owner_tag: u32) -> Result<BTreeSet<usize>, String> {
+    let mut fields = BTreeSet::new();
+    for row in event_rows(entity)? {
         // Each endpoint wraps a 16-byte typed owner/absolute-offset reference.
         for offset in [row + 8, row + 0x28] {
             if read_u32(entity, offset)? == owner_tag {

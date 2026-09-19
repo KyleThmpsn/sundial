@@ -6,8 +6,8 @@ use super::background_tasks::{CatalogTask, CatalogTaskEvent, CatalogTaskKind, Pe
 use super::persistence_compatibility::PersistenceCompatibility;
 use super::preferences::{SettingsLayout, SettingsPathResolution};
 use super::settings::{
-    catalog_path, detect_sunrise_version, load_workspace_json, missing_settings_message,
-    resolve_settings_path, validate_workspace_document,
+    catalog_path, load_workspace_json, missing_settings_message, resolve_settings_path,
+    validate_workspace_document,
 };
 use super::{
     PendingFutureSchemaLoad, SundialApp, WORKSPACE_REFRESH_POLL_INTERVAL, equipment,
@@ -28,7 +28,8 @@ impl SundialApp {
     pub(super) fn reload(&mut self) -> bool {
         match load_workspace_json(&self.settings_path) {
             Ok(json) => {
-                let doc = WorkspaceDocument::load(json, &self.settings_path);
+                let dawn = self.dawn_account_runtime();
+                let doc = WorkspaceDocument::load(json, &self.settings_path, dawn);
                 self.install_reloaded_document(doc, false);
                 true
             }
@@ -86,10 +87,13 @@ impl SundialApp {
                 return;
             }
         };
-        let document = WorkspaceDocument::load(json, &self.settings_path);
+        let dawn = self.dawn_account_runtime();
+        let document = WorkspaceDocument::load(json, &self.settings_path, dawn);
         self.workspace_refresh_pending = false;
         if document != self.persisted_document {
             self.install_reloaded_document(document, true);
+        } else {
+            self.refresh_runtime_inspection();
         }
     }
 
@@ -110,7 +114,7 @@ impl SundialApp {
         } else if let Some(warning) = warning {
             self.set_status(
                 format!(
-                    "{action} with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON; a safety copy of the loaded source will be created beside settings.json"
+                    "{action} with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON. A safety copy of the loaded source will be created beside settings.json"
                 ),
                 true,
             );
@@ -124,12 +128,11 @@ impl SundialApp {
         }
     }
 
-    /// Loaded sources start a new history, including loads accepted midway through a frame.
+    /// Loaded sources start a new history.
     pub(super) fn replace_loaded_document(&mut self, document: WorkspaceDocument) {
         self.class_armor_defaults = account::class_armor_default_characters(&document);
         self.persisted_document = document.clone();
         self.document = document;
-        self.progression_ui.invalidate_document();
         self.refresh_sunrise_version();
         self.source_warning = validate_workspace_document(&self.document).err();
         self.selected_character = self
@@ -138,13 +141,11 @@ impl SundialApp {
         self.clear_picker_state();
         self.sync_raw_json();
         self.dirty = false;
-        self.undo_history.clear();
-        self.redo_history.clear();
-        self.suppress_history_record = true;
+        self.reset_document_history();
     }
 
     pub(super) fn refresh_sunrise_version(&mut self) {
-        self.sunrise_version = detect_sunrise_version(&self.install_path);
+        self.refresh_runtime_inspection();
     }
 
     pub(super) fn clear_picker_state(&mut self) {
@@ -166,6 +167,7 @@ impl SundialApp {
             return;
         }
         let Some(path) = rfd::FileDialog::new()
+            .set_title("Select Sunrise Install (Contains destiny2.exe)")
             .set_directory(&self.install_path)
             .pick_folder()
         else {
@@ -266,7 +268,8 @@ impl SundialApp {
         self.hash_inspection.close();
         self.progression_ui.reset_navigation();
         self.collections_ui.reset_navigation();
-        let document = WorkspaceDocument::load(document, &self.settings_path);
+        let dawn = self.dawn_account_runtime();
+        let document = WorkspaceDocument::load(document, &self.settings_path, dawn);
         let warning = validate_workspace_document(&document).err();
         self.selected_character = 0;
         self.replace_loaded_document(document);
@@ -274,14 +277,14 @@ impl SundialApp {
             Ok(()) => match warning {
                 Some(warning) => self.set_status(
                     format!(
-                        "Install loaded with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON; a safety copy of the loaded source will be created beside settings.json"
+                        "Install loaded with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON. A safety copy of the loaded source will be created beside settings.json"
                     ),
                     true,
                 ),
                 None if self.persistence_compatibility.detected() => {
                     self.set_status(persistence_compatibility::WARNING_MESSAGE, true);
                 }
-                None => self.set_status("Shadowkeep install and Sunrise settings loaded", false),
+                None => self.set_status("Sunrise install and settings loaded", false),
             },
             Err(error) => self.set_status(
                 format!("Install loaded, but its location could not be remembered: {error}"),

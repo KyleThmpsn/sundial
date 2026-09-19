@@ -133,7 +133,7 @@ impl CollectionStateSnapshot {
         Some(count)
     }
 
-    fn progression_rank(&self, definition: &ProgressionDefinition) -> Option<i32> {
+    pub(super) fn progression_rank(&self, definition: &ProgressionDefinition) -> Option<i32> {
         let rows = match definition.scope {
             ProgressionScope::Account => &self.account_progressions,
             ProgressionScope::Character => &self.character_progressions,

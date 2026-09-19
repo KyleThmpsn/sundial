@@ -51,9 +51,9 @@ impl fmt::Display for AuthoringError {
                 "Could not {operation} {}: {source}",
                 path.display()
             ),
-            Self::InvalidInput(message) => formatter.write_str(message),
-            Self::InvalidPackage(message) => formatter.write_str(message),
-            Self::Validation(message) => formatter.write_str(message),
+            Self::InvalidInput(message)
+            | Self::InvalidPackage(message)
+            | Self::Validation(message) => formatter.write_str(message),
         }
     }
 }

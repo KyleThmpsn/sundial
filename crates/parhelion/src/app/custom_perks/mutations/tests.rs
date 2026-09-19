@@ -4,6 +4,7 @@ use super::*;
 fn runtime_override(seed: u32) -> WeaponRuntimeValueOverride {
     WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: 0x1000_0000 | seed,
             resource_index: 0,
             root: sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::Instance,

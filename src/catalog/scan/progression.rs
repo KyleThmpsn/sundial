@@ -11,13 +11,13 @@ use crate::catalog::progression::{
     scan_collectible_condition_contexts, scan_collectible_item_paths, scan_context_writers,
     scan_destination_writers, scan_direct_tables, scan_location_condition_contexts,
     scan_metric_objective_owners, scan_milestone_objective_owners, scan_objectives,
-    scan_presentation_nodes, scan_progression_context_outputs, scan_record_objective_owners,
+    scan_presentation_nodes, scan_progression_context_outputs, scan_records,
     scan_trait_definitions, scan_unlock_flag_definitions, scan_unlock_flag_displays,
     scan_unlock_value_definitions,
 };
 use crate::catalog::{
     CatalogProgress, CollectionConditionTokenDef, ObjectiveDef, ObjectiveOwnerTraitDef,
-    UnlockDefinition,
+    RecordDefinition, UnlockDefinition,
 };
 use crate::investment_localization::LocalizedStringCache;
 use std::collections::HashMap;
@@ -27,6 +27,7 @@ pub(super) struct ProgressionScan {
     pub unlock_flag_definitions: Vec<UnlockDefinition>,
     pub unlock_value_definitions: Vec<UnlockDefinition>,
     pub objectives: Vec<ObjectiveDef>,
+    pub records: Option<Vec<RecordDefinition>>,
     pub trait_definitions: Vec<ObjectiveOwnerTraitDef>,
     pub collectible_item_paths: HashMap<usize, Vec<Vec<String>>>,
     pub collectible_condition_contexts: HashMap<usize, Vec<PendingProgressionContext>>,
@@ -120,6 +121,19 @@ pub(super) fn read(
         &mut unlock_value_definitions,
         &mut progression_package_errors,
     );
+    let records = match scan_records(
+        &mut progression_package,
+        &presentation_nodes,
+        &mut objectives,
+        &mut unlock_flag_definitions,
+        &mut unlock_value_definitions,
+    ) {
+        Ok(records) => Some(records),
+        Err(error) => {
+            progression_package_errors.push(format!("Triumph records: {error}"));
+            None
+        }
+    };
     if let Err(error) = scan_direct_tables(
         manager,
         root,
@@ -176,6 +190,7 @@ pub(super) fn read(
         unlock_flag_definitions,
         unlock_value_definitions,
         objectives,
+        records,
         trait_definitions,
         collectible_item_paths,
         collectible_condition_contexts,
@@ -205,15 +220,6 @@ fn enrich_links(
         trait_definitions,
     ) {
         errors.push(format!("Metric objective owners: {error}"));
-    }
-    if let Err(error) = scan_record_objective_owners(
-        progression_package,
-        presentation_nodes,
-        objectives,
-        unlock_flag_definitions,
-        unlock_value_definitions,
-    ) {
-        errors.push(format!("Record objective owners: {error}"));
     }
     let location_contexts = match scan_location_condition_contexts(progression_package) {
         Ok(locations) => locations,

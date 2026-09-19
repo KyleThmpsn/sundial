@@ -98,14 +98,12 @@ impl Plan {
 }
 
 fn item_index(sources: &sources::ProjectSources, hash: u32) -> AuthoringResult<usize> {
-    find_u32_row_key(
-        &sources.stock_item_table,
-        sources.item_rows,
-        sources.stock_item_count,
-        ITEM_ROW_SIZE,
-        hash,
-    )?
-    .ok_or_else(|| invalid(format!("Collections exemplar 0x{hash:08X} is missing")))
+    sources
+        .stock_item_rows_by_hash
+        .get(&hash)
+        .and_then(|rows| rows.first())
+        .copied()
+        .ok_or_else(|| invalid(format!("Collections exemplar 0x{hash:08X} is missing")))
 }
 
 fn stock_page(

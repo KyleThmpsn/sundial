@@ -19,9 +19,6 @@ impl PackageAuthoringApp {
                 self.draw_library_search(ui);
                 ui.separator();
                 let matches = self.draw_library_entries(ui, busy, &mut action);
-                ui.add_space(
-                    (ui.available_height() - ui.spacing().interact_size.y - 12.0).max(0.0),
-                );
                 ui.separator();
                 self.draw_library_footer(ui, busy, matches, &mut action);
             });
@@ -36,34 +33,13 @@ impl PackageAuthoringApp {
     }
 
     fn draw_library_search(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let search = named_control(
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.library_query)
-                        .hint_text("Search Recipes…")
-                        .desired_width((ui.available_width() - 175.0).max(100.0)),
-                ),
-                "Search recipes",
-            )
-            .on_hover_text("Search by name, weapon type, element or ammo.");
-            if std::mem::take(&mut self.recipe_search_focus_pending) {
-                search.request_focus();
-            }
-            egui::ComboBox::from_id_salt("library-sort")
-                .width(155.0)
-                .selected_text(format!(
-                    "Sort: {}",
-                    match self.library_state.sort {
-                        SortOrder::RecentlyModified => "Recent",
-                        order => order.label(),
-                    }
-                ))
-                .show_ui(ui, |ui| {
-                    for order in SortOrder::ALL {
-                        ui.selectable_value(&mut self.library_state.sort, order, order.label());
-                    }
-                });
-        });
+        super::draw_recipe_search(
+            ui,
+            "library-sort",
+            &mut self.library_query,
+            &mut self.library_state.sort,
+            &mut self.recipe_search_focus_pending,
+        );
     }
 
     fn draw_library_entries(
@@ -73,36 +49,29 @@ impl PackageAuthoringApp {
         action: &mut Option<LibraryAction>,
     ) -> usize {
         let query = self.library_query.trim().to_lowercase();
-        let mut shown =
-            matching_library_entries(&self.recipe_entries, &self.donor_summaries, &query);
+        let mut shown = self.library_state.matching_entries(
+            &self.recipe_entries,
+            &self.donor_summaries,
+            &query,
+        );
         self.library_state
             .sort_entries(&mut shown, &self.donor_summaries);
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
-                ui.strong("Choose Recipes To Export");
+                ui.strong("Choose Recipes to Export");
                 ui.add_enabled_ui(!busy, |ui| {
-                    if ui
-                        .small_button("Select All")
-                        .on_hover_text("Select all recipes shown by this search.")
-                        .clicked()
-                    {
-                        selected.extend(shown.iter().map(|(entry, _)| entry.path.clone()));
-                    }
-                    if ui
-                        .small_button("Clear All")
-                        .on_hover_text("Clear all recipes shown by this search.")
-                        .clicked()
-                    {
-                        for (entry, _) in &shown {
-                            selected.remove(&entry.path);
-                        }
-                    }
+                    super::draw_select_all_shown(
+                        ui,
+                        shown.iter().map(|(entry, _)| &entry.path),
+                        selected,
+                    );
                 });
             });
         }
+        let footer_height = super::pinned_footer_height(ui);
         egui::ScrollArea::vertical()
             .id_salt("recipe-library-results")
-            .max_height((ui.available_height() - 45.0).max(120.0))
+            .max_height(super::windowed_list_height(ui, footer_height))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (entry, details) in &shown {

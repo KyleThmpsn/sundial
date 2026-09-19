@@ -78,7 +78,7 @@ pub(super) fn dismantle_rarity_label(rarity: DismantleRarity) -> &'static str {
 
 pub(super) fn dismantle_rarity_summary(rarities: &[DismantleRarity]) -> String {
     match rarities {
-        [] => "Any rarity".to_owned(),
+        [] => "Any Rarity".to_owned(),
         [rarity] => dismantle_rarity_label(*rarity).to_owned(),
         rarities => format!("{} rarities", rarities.len()),
     }
@@ -86,18 +86,18 @@ pub(super) fn dismantle_rarity_summary(rarities: &[DismantleRarity]) -> String {
 
 pub(super) fn dismantle_class_label(gear_class: Option<DismantleGearClass>) -> &'static str {
     match gear_class {
-        None => "Any gear",
+        None => "Any Gear",
         Some(DismantleGearClass::Weapon) => "Weapon",
         Some(DismantleGearClass::Armor) => "Armor",
-        Some(DismantleGearClass::Both) => "Weapon + armor",
+        Some(DismantleGearClass::Both) => "Weapon + Armor",
     }
 }
 
 pub(super) fn dismantle_masterwork_label(masterworked: Option<bool>) -> &'static str {
     match masterworked {
-        None => "Any state",
+        None => "Any State",
         Some(true) => "Masterworked",
-        Some(false) => "Not masterworked",
+        Some(false) => "Not Masterworked",
     }
 }
 
@@ -124,19 +124,16 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             );
         }
         SchemaMode::PreInventory(version) if matches!(page, InventoryPageKind::Character) => {
-            ui.label(
-                egui::RichText::new(format!(
+            ui.weak(format!(
                     "Schema {version} supports profile inventory and equipped loadouts, but stored character inventory requires schema 6. Stored rows are never created or rewritten here."
-                ))
-                .weak(),
-            );
+                ));
         }
         SchemaMode::PreInventory(_) | SchemaMode::Inventory(_) => {}
         SchemaMode::Future(version) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "Schema {version} is newer than this Sundial release. Known item fields remain editable; unrecognized fields are preserved."
+                    "Schema {version} is newer than this Sundial release. Known item fields remain editable. Unrecognized fields are preserved."
                 ),
             );
         }
@@ -150,23 +147,17 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             }
         };
     if !editable {
-        ui.label(
-            egui::RichText::new(
-                "Guided controls are disabled; All settings (JSON) remains available for inspection.",
-            )
-            .weak(),
+        ui.weak(
+            "Guided controls are disabled. All Settings (JSON) remains available for inspection.",
         );
     }
 }
 
 pub(super) fn draw_section_error(ui: &mut egui::Ui, error: &str) {
     ui.colored_label(ui.visuals().error_fg_color, error);
-    ui.label(
-        egui::RichText::new(
+    ui.weak(
             "This section was left untouched. Repair it in All settings (JSON) before using guided controls.",
-        )
-        .weak(),
-    );
+        );
 }
 
 pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error: &str) {
@@ -174,17 +165,14 @@ pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error
         ui.visuals().error_fg_color,
         format!("{source} could not be read: {error}"),
     );
-    ui.label(
-        egui::RichText::new(
+    ui.weak(
             "The other inventory source remains visible, but additions are disabled until this is repaired in All settings (JSON).",
-        )
-        .weak(),
-    );
+        );
 }
 
 pub(super) fn draw_unresolved_bucket_warning(ui: &mut egui::Ui) {
     ui.colored_label(
         ui.visuals().warn_fg_color,
-        "At least one existing definition has no known bucket. Unknown rows are conservatively counted against each candidate bucket, so some additions or cross-bucket replacements may be hidden.",
+        "Some existing items have no known bucket. They are shown under Invalid Items. Their placement must be resolved before Sundial can confirm space in some buckets, even when the known item count is below the limit.",
     );
 }

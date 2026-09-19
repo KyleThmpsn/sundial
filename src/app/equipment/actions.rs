@@ -44,7 +44,7 @@ impl SundialApp {
             account::equip_definition(candidate, character, slot, item.hash, &item.default_plugs)
         }) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Equipment Changed");
                 self.set_status(format!("Equipped {}", item.name), false);
             }
             Err(error) => self.set_status(error, true),
@@ -114,12 +114,12 @@ impl SundialApp {
             self.preferences.experimental_cross_class_subclasses,
         ) {
             Ok(replaced_item) => {
-                self.dirty = true;
+                self.record_edit("Stored Item Equipped");
                 let slot_label = equipment_slot_label(slot);
                 self.set_status(
                 if replaced_item {
                     format!(
-                        "Equipped {item_name}; moved the previous {slot_label} item to inventory"
+                        "Equipped {item_name}. Moved the previous {slot_label} item to inventory"
                     )
                 } else {
                     format!("Equipped {item_name} in the empty {slot_label} slot")
@@ -160,7 +160,7 @@ impl SundialApp {
             )
         }) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Subclass Equipped");
                 self.set_status(format!("Equipped {}", item.name), false);
             }
             Err(error) => self.set_status(error, true),
@@ -173,7 +173,7 @@ impl SundialApp {
         }
         match account::set_weapon_slot_empty(&mut self.document, character, slot) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Weapon Slot Emptied");
                 self.set_status(
                     format!("Set the {} slot to empty", equipment_slot_label(slot)),
                     false,
@@ -209,7 +209,7 @@ impl SundialApp {
 
         match account::move_equipment_item_to_inventory(&mut self.document, character, slot) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Equipment Moved to Inventory");
                 self.set_status(
                     format!("Moved the {} item to inventory", equipment_slot_label(slot)),
                     false,
@@ -240,20 +240,25 @@ impl SundialApp {
             hash,
         ) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Equipment Plug Updated");
                 self.set_status(format!("Updated {slot} {socket_label}"), false);
             }
             Err(error) => self.set_status(error, true),
         }
     }
 
-    pub(super) fn select_equipment_level(&mut self, character: usize, slot: &str, level: i64) {
+    pub(in crate::app) fn select_equipment_level(
+        &mut self,
+        character: usize,
+        slot: &str,
+        level: i64,
+    ) {
         if !self.equipment_mutation_allowed() {
             return;
         }
         match account::set_equipment_item_level(&mut self.document, character, slot, level) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Equipment Power Updated");
                 self.set_status(
                     format!("Updated {} power", equipment_slot_label(slot)),
                     false,
@@ -274,7 +279,7 @@ impl SundialApp {
         }
         match account::set_equipment_item_flags(&mut self.document, character, slot, flags) {
             Ok(()) => {
-                self.dirty = true;
+                self.record_edit("Equipment Flags Updated");
                 self.set_status(
                     format!("Updated {} item state", equipment_slot_label(slot)),
                     false,

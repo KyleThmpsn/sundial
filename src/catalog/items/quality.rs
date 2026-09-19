@@ -78,6 +78,17 @@ fn decode_power_cap_definitions(data: &[u8]) -> Result<Vec<PowerCapDefinition>, 
 }
 
 impl Catalog {
+    pub(crate) fn item_has_power_stat(&self, hash: u64) -> bool {
+        self.item_package_metadata
+            .get(&hash)
+            .is_some_and(|metadata| {
+                metadata.investment_stats.iter().any(|stat| {
+                    self.item_stat_definition(stat.definition_index)
+                        .is_some_and(|definition| definition.hash == 1_935_470_627)
+                })
+            })
+    }
+
     pub(crate) fn power_cap_definitions(&self) -> &[PowerCapDefinition] {
         &self.power_cap_definitions
     }

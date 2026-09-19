@@ -260,8 +260,6 @@ fn compile_canonical(
             &sources.globals_data,
             weapons,
             &mut tables.definitions,
-            &mut tables.collectibles,
-            &tables.project_rows,
         )
     })?;
     let output = assembly::Output {

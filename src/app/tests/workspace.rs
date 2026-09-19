@@ -39,35 +39,6 @@ fn reopening_a_detached_window_uses_a_fresh_viewport_generation() {
 }
 
 #[test]
-fn focus_refresh_only_runs_on_a_clean_focus_transition() {
-    assert!(should_refresh_workspace_on_focus(false, true, false));
-    assert!(!should_refresh_workspace_on_focus(true, true, false));
-    assert!(!should_refresh_workspace_on_focus(false, false, false));
-    assert!(!should_refresh_workspace_on_focus(false, true, true));
-
-    assert!(should_poll_pending_workspace_refresh(true, false, true));
-    assert!(!should_poll_pending_workspace_refresh(false, false, true));
-    assert!(!should_poll_pending_workspace_refresh(true, true, true));
-    assert!(!should_poll_pending_workspace_refresh(true, false, false));
-}
-
-#[test]
-fn detached_json_editor_preference_only_applies_when_json_view_is_selected() {
-    assert!(should_open_json_editor_window_on_selection(
-        true,
-        ViewMode::AdvancedJson
-    ));
-    assert!(!should_open_json_editor_window_on_selection(
-        true,
-        ViewMode::Characters
-    ));
-    assert!(!should_open_json_editor_window_on_selection(
-        false,
-        ViewMode::AdvancedJson
-    ));
-}
-
-#[test]
 fn sqlite_default_restore_preserves_only_inactive_json_account_domains() {
     let mut defaults = serde_json::json!({
         "version": 8,
@@ -125,10 +96,11 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     );
     let compatible_document = WorkspaceDocument::load(
         serde_json::json!({
-            "version": 8,
+            "version": 18,
             "state": {"account": "stale", "characters": "stale"}
         }),
         &compatible_settings,
+        false,
     );
     assert_eq!(validate_for_check(&compatible_document), Ok(()));
 
@@ -141,7 +113,7 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     )
     .unwrap();
     let blocked_document =
-        WorkspaceDocument::load(serde_json::json!({"version": 8}), &blocked_settings);
+        WorkspaceDocument::load(serde_json::json!({"version": 18}), &blocked_settings, false);
     assert!(
         validate_for_check(&blocked_document)
             .unwrap_err()

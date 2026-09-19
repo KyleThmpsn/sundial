@@ -12,7 +12,7 @@ impl SundialApp {
     ) -> Value {
         let document = ui
             .horizontal_wrapped(|ui| {
-                self.draw_artifact_character_picker(ui);
+                self.draw_seasonal_character_picker(ui);
                 let document = self.document.progression_view(self.selected_character);
                 if let Some(definition) = self.manifest.seasonal()
                     && let Some(snapshot) = super::super::collection_state_snapshot(&document)
@@ -27,7 +27,10 @@ impl SundialApp {
         document
     }
 
-    fn draw_artifact_character_picker(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app::progression) fn draw_seasonal_character_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) {
         let characters: Vec<_> = (0..self.character_count())
             .map(|index| {
                 let class = account::character_metadata(&self.document, index)
@@ -36,7 +39,7 @@ impl SundialApp {
             })
             .collect();
         let before = self.selected_character;
-        egui::ComboBox::from_id_salt("artifact_character")
+        egui::ComboBox::from_id_salt("seasonal_character")
             .selected_text(
                 characters
                     .get(before)

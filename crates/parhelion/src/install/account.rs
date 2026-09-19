@@ -1,6 +1,6 @@
 //! Account bytes participate in the same durable journal as package replacement or removal.
 use super::*;
-use sundial::investment::{AuthoredAccountCleanup, AuthoredClientSettings};
+use sundial::package_authoring::account::{AuthoredAccountCleanup, AuthoredClientSettings};
 const BACKUP_NAME: &str = "account-settings.json";
 const CLIENT_SETTINGS_BACKUP: &str = "client-settings.json";
 
@@ -38,7 +38,9 @@ impl AccountCleanupRecord {
 
     fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
         match self.source {
-            Source::Account => sundial::investment::read_authored_account_source(path),
+            Source::Account => {
+                sundial::package_authoring::account::read_authored_account_source(path)
+            }
             Source::ClientSettings => fs::read(path).map_err(|error| error.to_string()),
         }
     }
@@ -46,7 +48,9 @@ impl AccountCleanupRecord {
     fn replace(&self, path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), String> {
         match self.source {
             Source::Account => {
-                sundial::investment::replace_authored_account_source(path, expected, updated)
+                sundial::package_authoring::account::replace_authored_account_source(
+                    path, expected, updated,
+                )
             }
             Source::ClientSettings => {
                 if self.read(path)? != expected {
@@ -66,14 +70,32 @@ fn digest(bytes: &[u8]) -> TransactionDigest {
     }
 }
 
+/// Every account file a runtime can own, relative to the game root.
+///
+/// A runtime keeps its settings in the folder named after it and its account beside them: Sunrise
+/// under `data/investment.sqlite3`, Dawn as `player-state.db`. The bare paths are the legacy
+/// game-root layout. This is built from the layout rather than listed by hand because the hand
+/// written list held only Sunrise's, which refused every uninstall record written on a Dawn
+/// install.
+fn supported_account_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("settings.json"),
+        PathBuf::from("data/investment.sqlite3"),
+    ];
+    for prefix in ["", "bin/x64/"] {
+        for (folder, account) in [
+            ("Sunrise", "data/investment.sqlite3"),
+            ("Dawn", "player-state.db"),
+        ] {
+            paths.push(PathBuf::from(format!("{prefix}{folder}/settings.json")));
+            paths.push(PathBuf::from(format!("{prefix}{folder}/{account}")));
+        }
+    }
+    paths
+}
+
 fn target_path(record: &AccountCleanupRecord, packages: &Path) -> Result<PathBuf, InstallError> {
-    if record.relative_path != Path::new("settings.json")
-        && record.relative_path != Path::new("Sunrise/settings.json")
-        && record.relative_path != Path::new("bin/x64/Sunrise/settings.json")
-        && record.relative_path != Path::new("data/investment.sqlite3")
-        && record.relative_path != Path::new("Sunrise/data/investment.sqlite3")
-        && record.relative_path != Path::new("bin/x64/Sunrise/data/investment.sqlite3")
-    {
+    if !supported_account_paths().contains(&record.relative_path) {
         return Err(InstallError::validation(
             "Uninstall account record has an unsupported settings path",
         ));
@@ -90,7 +112,7 @@ fn target_path(record: &AccountCleanupRecord, packages: &Path) -> Result<PathBuf
         ));
     }
     if record.source == Source::Account {
-        sundial::investment::validate_authored_cleanup_backend(&path)
+        sundial::package_authoring::account::validate_authored_cleanup_backend(&path)
             .map_err(InstallError::validation)?;
     } else if path.file_name().is_none_or(|name| name != "settings.json") {
         return Err(InstallError::validation(
@@ -358,11 +380,11 @@ mod tests {
         fs::create_dir(&backup).unwrap();
         let packages = fs::canonicalize(packages).unwrap();
         let path = directory.path().join("settings.json");
-        fs::write(&path, b"original").unwrap();
+        fs::write(&path, br#"{"version":8,"value":"original"}"#).unwrap();
         let proposal = AuthoredAccountCleanup {
             settings_path: path.clone(),
-            original_bytes: b"original".to_vec(),
-            cleaned_bytes: b"cleaned".to_vec(),
+            original_bytes: br#"{"version":8,"value":"original"}"#.to_vec(),
+            cleaned_bytes: br#"{"version":8,"value":"cleaned"}"#.to_vec(),
             removed_items: BTreeMap::new(),
             resized_items: BTreeMap::new(),
             slot_moves: vec![],
@@ -371,15 +393,65 @@ mod tests {
             removed_reward_rules: 0,
         };
         let record = prepare(&proposal, &packages, &backup).unwrap();
-        assert_eq!(fs::read(backup.join(BACKUP_NAME)).unwrap(), b"original");
-        fs::write(&path, b"concurrent edit").unwrap();
+        assert_eq!(
+            fs::read(backup.join(BACKUP_NAME)).unwrap(),
+            br#"{"version":8,"value":"original"}"#
+        );
+        fs::write(&path, br#"{"version":8,"value":"concurrent edit"}"#).unwrap();
         assert!(commit(&proposal, &record, &packages, &backup).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"concurrent edit");
-        fs::write(&path, b"original").unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"version":8,"value":"concurrent edit"}"#
+        );
+        fs::write(&path, br#"{"version":8,"value":"original"}"#).unwrap();
         commit(&proposal, &record, &packages, &backup).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"cleaned");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"version":8,"value":"cleaned"}"#
+        );
         let mut invalid = record;
         invalid.relative_path = PathBuf::from("../unrelated.json");
         assert!(target_path(&invalid, &packages).is_err());
+    }
+}
+
+#[cfg(test)]
+mod account_path_tests {
+    use super::*;
+
+    /// A runtime owns the folder named after it, so an uninstall record written on a Dawn install
+    /// names Dawn's settings or its player-state.db. The list held only Sunrise's six paths, so
+    /// every Dawn record was refused as an unsupported settings path.
+    #[test]
+    fn every_runtime_account_file_is_a_supported_uninstall_target() {
+        let supported = supported_account_paths();
+        for path in [
+            "settings.json",
+            "Sunrise/settings.json",
+            "bin/x64/Sunrise/settings.json",
+            "data/investment.sqlite3",
+            "Sunrise/data/investment.sqlite3",
+            "bin/x64/Sunrise/data/investment.sqlite3",
+            "Dawn/settings.json",
+            "bin/x64/Dawn/settings.json",
+            "Dawn/player-state.db",
+            "bin/x64/Dawn/player-state.db",
+        ] {
+            assert!(
+                supported.iter().any(|known| known == Path::new(path)),
+                "{path} must be a supported uninstall target"
+            );
+        }
+        // Nothing outside a runtime's own folder is writable by an uninstall record.
+        for path in [
+            "bin/x64/steam_api64.dll",
+            "Dawn/../settings.json",
+            "packages/w64_ui_0123_0.pkg",
+        ] {
+            assert!(
+                !supported.iter().any(|known| known == Path::new(path)),
+                "{path} must not be a supported uninstall target"
+            );
+        }
     }
 }

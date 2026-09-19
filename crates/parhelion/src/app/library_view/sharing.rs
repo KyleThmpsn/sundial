@@ -13,8 +13,8 @@ impl PackageAuthoringApp {
             return;
         };
         let Some(paths) = rfd::FileDialog::new()
-            .set_title("Import Recipes Or Bundles")
-            .add_filter("Parhelion Recipes And Bundles", &["json"])
+            .set_title("Import Recipes or Bundles")
+            .add_filter("Parhelion Recipes and Bundles", &["json"])
             .pick_files()
         else {
             return;

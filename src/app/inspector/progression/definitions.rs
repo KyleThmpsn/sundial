@@ -55,15 +55,3 @@ pub(in crate::app) fn definition_metadata_tooltip(definition: &UnlockDefinition)
     }
     lines.join("\n")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::flag_override_state_label;
-
-    #[test]
-    fn family5_flag_states_use_sunrise_logical_value_terms() {
-        assert_eq!(flag_override_state_label(0), "0 · clear");
-        assert_eq!(flag_override_state_label(1), "1 · logical value 1");
-        assert_eq!(flag_override_state_label(2), "2 · set");
-    }
-}

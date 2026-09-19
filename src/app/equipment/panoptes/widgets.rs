@@ -93,6 +93,10 @@ pub(super) fn draw_compact_item_header(
                         let hash_response =
                             ui.label(egui::RichText::new(hash_text).monospace().weak());
                         hash_rect = Some(hash_response.rect);
+                        if header.hash.is_some_and(crate::dummy_items::contains) {
+                            item_editor::draw_item_badge(ui, "Dummy")
+                                .on_hover_text("Display-only dummy definition");
+                        }
                     }
                 });
             });
@@ -106,23 +110,19 @@ pub(super) fn draw_compact_item_header(
                             ui.visuals().error_fg_color
                         }),
                 );
-                if header.hash.is_some_and(crate::dummy_items::contains) {
-                    item_editor::draw_item_badge(ui, "Dummy")
-                        .on_hover_text("Display-only dummy definition");
-                }
             });
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut drew_metadata = false;
                 if let Some(type_name) = header.type_name {
-                    ui.label(egui::RichText::new(type_name).weak());
+                    ui.weak(type_name);
                     drew_metadata = true;
                 }
                 if let Some(generation) = header.armor_generation {
                     if drew_metadata {
-                        ui.label(egui::RichText::new("·").weak());
+                        ui.weak("·");
                     }
-                    ui.label(egui::RichText::new(generation).weak());
+                    ui.weak(generation);
                 }
             });
             if !header.valid {
@@ -135,7 +135,7 @@ pub(super) fn draw_compact_item_header(
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
                     ui.next_widget_position(),
-                    egui::pos2(ui.max_rect().right() - 26.0, ui.max_rect().bottom()),
+                    egui::pos2(ui.max_rect().right() - 50.0, ui.max_rect().bottom()),
                 )),
                 trailing,
             );
@@ -231,15 +231,15 @@ pub(super) fn draw_socket_button(
     };
     if let Some(hash) = hash {
         response.context_menu(|ui| {
-            if ui.button("Inspect definition").clicked() {
+            if ui.button("Inspect Definition").clicked() {
                 request_definition(ui.ctx(), hash);
                 ui.close_menu();
             }
-            if ui.button("Copy hash (hex)").clicked() {
+            if ui.button("Copy Hash (Hex)").clicked() {
                 ui.ctx().copy_text(format_hash_hex(hash));
                 ui.close_menu();
             }
-            if ui.button("Copy hash (decimal)").clicked() {
+            if ui.button("Copy Hash (Decimal)").clicked() {
                 ui.ctx().copy_text(hash.to_string());
                 ui.close_menu();
             }

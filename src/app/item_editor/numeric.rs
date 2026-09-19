@@ -36,11 +36,11 @@ pub(crate) fn draw_level_and_quantity(
             }
             let tooltip = if fields.allow_power_above_cap {
                 format!(
-                    "Experimental unrestricted Power is enabled. This item's package-defined cap is {authored_power_max}. Destiny may display the item at its cap, but the stored value may still affect overall character Power. Sunrise stores one-tenth of the entered value; edits snap down to a multiple of 10."
+                    "Experimental unrestricted Power is enabled. This item's package-defined cap is {authored_power_max}. Destiny may display the item at its cap, but the stored value may still affect overall character Power. Sunrise stores one-tenth of the entered value. Edits snap down to a multiple of 10."
                 )
             } else {
                 format!(
-                    "This item supports up to {authored_power_max} Power. Sunrise stores one-tenth of the in-game value; edits snap down to a multiple of 10."
+                    "This item supports up to {authored_power_max} Power. Sunrise stores one-tenth of the in-game value. Edits snap down to a multiple of 10."
                 )
             };
             response.on_hover_text(tooltip);

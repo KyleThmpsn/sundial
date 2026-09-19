@@ -80,11 +80,13 @@ fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
             source: [240, 80, 100],
             replacement: [255, 0, 0],
             range_percent: 0,
+            hue_range_degrees: None,
         },
         IconColorReplacement {
             source: [20, 200, 100],
             replacement: [255, 128, 0],
             range_percent: 0,
+            hue_range_degrees: None,
         },
     ];
     edit.hue_shift_degrees = 120;
@@ -170,6 +172,7 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
                 image_import: Default::default(),
                 tab,
                 color_page: 0,
+                pick_target: PickTarget::default(),
             };
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             for page in [0, 15] {
@@ -280,6 +283,7 @@ fn editor_cancel_and_reset_do_not_modify_the_recipe_artwork() {
         image_import: Default::default(),
         tab: IconEditorTab::default(),
         color_page: 0,
+        pick_target: PickTarget::default(),
     };
     let context = egui::Context::default();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 420.0));

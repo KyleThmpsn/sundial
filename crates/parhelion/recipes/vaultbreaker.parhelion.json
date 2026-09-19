@@ -144,7 +144,7 @@
         "choice_index": 0,
         "source_plug_hash": "0xDD5CB37A",
         "name": "Micro-Missile Frame",
-        "classification_donor_hash": "0x6185084A",
+        "classification_donor_hash": "0xC68424BC",
         "description": "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.",
         "additional_sandbox_perks": [
           405

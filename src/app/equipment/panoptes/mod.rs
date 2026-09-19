@@ -10,6 +10,7 @@ use crate::app::account_workspace as account;
 mod editors;
 mod icons;
 mod layout;
+mod sockets;
 mod widgets;
 
 use eframe::egui;
@@ -114,7 +115,7 @@ impl SundialApp {
             let reason = self.document.account_editing_blocked().unwrap_or(
                 "Character inventory editing is unavailable for this settings.json schema.",
             );
-            ui.label(egui::RichText::new(format!("Stored items are read-only. {reason}")).weak());
+            ui.weak(format!("Stored items are read-only. {reason}"));
         }
         if let Some(error) = inventory_error {
             ui.colored_label(
@@ -132,24 +133,27 @@ impl SundialApp {
         let unmatched_count = inventory_items
             .iter()
             .filter(|item| {
-                !self
-                    .document
-                    .equipment_slots()
-                    .iter()
-                    .any(|(_, _, bucket_hash)| {
-                        self.manifest
-                            .item_handle_for_bucket(u64::from(item.definition_hash), *bucket_hash)
-                            .is_some()
-                    })
+                self.manifest
+                    .inventory_definition(u64::from(item.definition_hash))
+                    .is_some()
+                    && !self
+                        .document
+                        .equipment_slots()
+                        .iter()
+                        .any(|(_, _, bucket_hash)| {
+                            self.manifest
+                                .item_handle_for_bucket(
+                                    u64::from(item.definition_hash),
+                                    *bucket_hash,
+                                )
+                                .is_some()
+                        })
             })
             .count();
         if unmatched_count > 0 {
-            ui.label(
-                egui::RichText::new(format!(
+            ui.weak(format!(
                     "{unmatched_count} stored item(s) do not map to a loadout slot and remain available in Character inventory."
-                ))
-                .weak(),
-            );
+                ));
         }
         ui.add_space(8.0);
 

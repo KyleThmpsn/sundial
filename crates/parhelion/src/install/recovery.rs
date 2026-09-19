@@ -13,7 +13,7 @@ pub(super) fn recover_interrupted_install_locked(
     request: &RecoveryRequest,
 ) -> Result<RecoveryOutcome, InstallError> {
     let target_packages_directory =
-        canonical_directory(&request.target_packages_directory, "target packages")?;
+        canonical_packages_directory(&request.target_packages_directory)?;
     let journal_path = target_packages_directory.join(INSTALL_TRANSACTION_FILE_NAME);
     match fs::symlink_metadata(&journal_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

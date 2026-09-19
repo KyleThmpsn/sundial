@@ -1,7 +1,7 @@
 //! Cross-domain contract tests for game-settings editing and validation.
 
 use super::*;
-use super::{key_bindings::*, page::*, preferences::*, schema::*, validation::*, widgets::*};
+use super::{key_bindings::*, page::*, preferences::*, schema::*, validation::*};
 use crate::persistence::json_account::ensure_schema_v8_preferences;
 use serde_json::{Map, Value};
 
@@ -547,21 +547,6 @@ fn schema_v8_preferences_are_not_added_to_other_schemas() {
                 .is_none()
         );
     }
-}
-
-#[test]
-fn vertical_sync_intervals_show_the_effective_frame_rate() {
-    assert_eq!(nominal_refresh_rate_hz(119), 120);
-    assert_eq!(
-        vertical_sync_intervals(Some(120)),
-        vec![
-            (0, "Off (Default)".to_owned()),
-            (1, "Every refresh (120 FPS)".to_owned()),
-            (2, "Every 2 refreshes (60 FPS)".to_owned()),
-            (3, "Every 3 refreshes (40 FPS)".to_owned()),
-            (4, "Every 4 refreshes (30 FPS)".to_owned()),
-        ]
-    );
 }
 
 #[test]

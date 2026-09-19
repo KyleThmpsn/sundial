@@ -8,10 +8,10 @@ use super::{
     CollectibleDef, CollectionConditionTokenDef, InventoryMetadata, ItemDef,
     ItemMaterialRequirementSetIndices, ItemPackageMetadata, ItemStatDefinition, ItemStatGroup,
     MaterialRequirementSetDef, ObjectiveDef, ObjectiveOwnerTraitDef, ProgressionDefinition,
-    UnlockDefinition,
+    RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 110;
+pub(super) const CACHE_SCHEMA: u32 = 117;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +34,7 @@ pub(super) struct CatalogContents {
     pub(super) package_item_type_names: HashMap<u64, String>,
     #[serde(default)]
     pub(super) descriptions: HashMap<u64, String>,
+    pub(super) perk_descriptions: HashMap<u16, String>,
     #[serde(default)]
     pub(super) icon_containers: HashMap<u64, u32>,
     #[serde(default)]
@@ -53,6 +54,8 @@ pub(super) struct CatalogContents {
     #[serde(default)]
     pub(super) inventory_metadata: HashMap<u64, InventoryMetadata>,
     pub(super) objectives: Vec<ObjectiveDef>,
+    #[serde(default)]
+    pub(super) records: Option<Vec<RecordDefinition>>,
     pub(super) unlock_flag_definitions: Vec<UnlockDefinition>,
     pub(super) unlock_value_definitions: Vec<UnlockDefinition>,
     pub(super) collectibles: Vec<CollectibleDef>,

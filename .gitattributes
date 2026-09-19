@@ -1,1 +1,13 @@
+# Normalize text to LF in the repository. Working-tree endings still follow
+# each machine's core.autocrlf and core.eol settings, so no checkout is rewritten.
+* text=auto
+
+# Scripts that must keep a specific ending regardless of platform.
 *.sh text eol=lf
+*.ps1 text eol=crlf
+
+# Binary assets and fixtures. Never apply text conversion to these.
+*.png binary
+*.ico binary
+*.bin binary
+*.zip binary

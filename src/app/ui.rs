@@ -64,20 +64,117 @@ pub(super) fn destiny_text_font_family() -> egui::FontFamily {
 
 pub(super) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
     let mut font_id = egui::TextStyle::Body.resolve(ui.style());
-    font_id.family = destiny_text_font_family();
+    let family = destiny_text_font_family();
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        font_id.family = family;
+    }
     egui::RichText::new(text.into()).font(font_id)
 }
 
 pub(super) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::NONE
-        .fill(ui.visuals().faint_bg_color)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(add_contents).inner
-        })
+    ui.horizontal_wrapped(add_contents).inner
+}
+
+/// A modal for an edit that is prepared, reviewed and then applied. The body is
+/// laid out directly: a review scrolls itself through `review_body` so that its
+/// action row stays pinned, and a progress message is short enough not to need it.
+pub(super) fn edit_modal<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    let available = ui.ctx().available_rect().size();
+    let response = egui::Modal::new(id.into()).show(ui.ctx(), |ui| {
+        ui.set_width((available.x - 48.0).clamp(240.0, 560.0));
+        // A preparation message can be much shorter than the subsequent review.
+        // Let the body grow beyond the modal's previous frame size.
+        ui.set_max_height((available.y - 80.0).max(160.0));
+        add_contents(ui)
+    });
+    let close = response.should_close();
+    (response.inner, close)
+}
+
+/// Progress for the preparation pass of an edit modal. Returns whether it was cancelled.
+pub(super) fn modal_progress(ui: &mut egui::Ui, title: &str, done: usize, total: usize) -> bool {
+    ui.strong(title);
+    ui.horizontal(|ui| {
+        ui.label(format!("{done} / {total}"));
+        ui.button("Cancel").clicked()
+    })
+    .inner
+}
+
+/// Title and counts above a review body. Muted counts describe what will not change.
+pub(super) fn review_header(ui: &mut egui::Ui, title: &str, counts: &[(bool, String)]) {
+    ui.strong(title);
+    if !counts.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (muted, text) in counts {
+                if *muted {
+                    ui.weak(text.as_str());
+                } else {
+                    ui.label(text.as_str());
+                }
+            }
+        });
+    }
+    ui.separator();
+}
+
+/// The scrolling part of a review. It stops short of the action row below it, so a
+/// long list of skipped entries can never push Apply out of the modal.
+pub(super) fn review_body<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let reserved = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 4.0;
+    let height = (ui.available_height() - reserved).max(120.0);
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(height)
+        .show(ui, add_contents)
         .inner
+}
+
+/// The action row that closes a review. Returns whether Apply and Cancel were clicked.
+pub(super) fn review_actions(
+    ui: &mut egui::Ui,
+    apply: &str,
+    enabled: bool,
+    disabled_hint: &str,
+) -> (bool, bool) {
+    ui.separator();
+    ui.horizontal(|ui| {
+        (
+            ui.add_enabled(enabled, egui::Button::new(apply))
+                .on_disabled_hover_text(disabled_hint)
+                .clicked(),
+            ui.button("Cancel").clicked(),
+        )
+    })
+    .inner
+}
+
+pub(super) fn hierarchy_selection_cell<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    depth: usize,
+    add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
+) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, TABLE_CELL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let indent = depth as f32 * HIERARCHY_INDENT;
+            ui.add_space(indent);
+            add_contents(ui, (width - indent - 24.0).max(0.0))
+        },
+    )
+    .inner
 }
 
 pub(super) fn sortable_header_cell(
@@ -201,7 +298,7 @@ pub(super) fn hierarchy_branch_cell(
                     Glyph::ChevronRight
                 },
             );
-            ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
+            ui.add(egui::Label::new(destiny_text(ui, label).strong()).truncate());
         },
     );
     let response = cell.response.interact(if interactive {

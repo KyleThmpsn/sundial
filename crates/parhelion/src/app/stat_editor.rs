@@ -1,7 +1,12 @@
 //! Focused stat editor controls; recipe mutation occurs on user actions.
 use super::*;
+pub(crate) mod table;
 
-fn left_cell(ui: &mut egui::Ui, width: f32, widget: impl egui::Widget) -> egui::Response {
+pub(crate) fn left_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    widget: impl egui::Widget,
+) -> egui::Response {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::Center)
@@ -38,13 +43,9 @@ pub(super) fn draw_investment_stat_action(
             StatRowAction::RemoveDonor(definition_index),
         )
     };
-    ui.add_sized(
-        [action_width, ui.spacing().interact_size.y],
-        egui::Button::new(label).frame(false),
-    )
-    .on_hover_text(tooltip)
-    .clicked()
-    .then_some(action)
+    table::action(ui, action_width, label, tooltip)
+        .clicked()
+        .then_some(action)
 }
 
 pub(super) fn update_investment_stat_value(
@@ -120,49 +121,12 @@ pub(super) fn draw_investment_stats(
     added_rows.sort_by_key(|(stat, _, _)| stat.definition_index);
     rows.extend(added_rows);
 
-    let id_width = if show_internal_stats { 34.0 } else { 0.0 };
-    let value_width = 68.0;
-    let display_width = 86.0;
-    let action_width = 22.0;
-    let stat_width =
-        (ui.available_width() - id_width - value_width - display_width - action_width - 40.0)
-            .max(120.0);
+    let table = table::Table::new(ui, show_internal_stats, true);
+    let (id_width, stat_width, display_width, action_width) =
+        (table.id, table.name, table.preview, table.action);
     let mut row_action = None;
     let mut edited = false;
-    egui::Grid::new("dynamic_investment_stats")
-        .striped(true)
-        .num_columns(if show_internal_stats { 5 } else { 4 })
-        .min_col_width(0.0)
-        .spacing([8.0, 5.0])
-        .show(ui, |ui| {
-            if show_internal_stats {
-            left_cell(ui,
-                id_width,
-                egui::Label::new(egui::RichText::new("ID").strong()).halign(egui::Align::LEFT),
-            )
-            .on_hover_text("Investment stat definition index");
-            }
-            left_cell(ui,
-                stat_width,
-                egui::Label::new(egui::RichText::new("Stat").strong())
-                    .halign(egui::Align::LEFT),
-            );
-            left_cell(ui,
-                value_width,
-                egui::Label::new(egui::RichText::new("Raw Value").strong())
-                    .halign(egui::Align::LEFT),
-            )
-            .on_hover_text("Raw value stored in the weapon's investment block");
-            left_cell(ui,
-                display_width,
-                egui::Label::new(egui::RichText::new("Preview").strong())
-                    .halign(egui::Align::LEFT),
-            )
-            .on_hover_text(
-                    "Preview from the active decoded stat-display scaling; final client formatting may differ",
-            );
-            ui.allocate_space(egui::vec2(action_width, ui.spacing().interact_size.y));
-            ui.end_row();
+    table.show(ui, "dynamic_investment_stats", "Raw Value", "Raw value stored in the weapon's investment block", |ui| {
             for (stat, is_added, is_removed) in rows.iter().filter(|(stat, _, _)| {
                 show_internal_stats || !is_internal_weapon_stat(stat.definition_index)
             })
@@ -195,7 +159,7 @@ pub(super) fn draw_investment_stats(
                 );
                 if *is_added {
                     name_response.on_hover_text(
-                        "This definition is not present in the gameplay donor. Parhelion will append a canonical investment row; runtime behavior remains weapon-dependent.",
+                        "This definition is not present in the gameplay donor. Parhelion will append a canonical investment row. Runtime behavior remains weapon-dependent.",
                     );
                 }
                 let mut effective_value = values
@@ -203,27 +167,7 @@ pub(super) fn draw_investment_stats(
                     .find(|candidate| candidate.definition_index == stat.definition_index)
                     .map_or(stat.value, |value| value.value);
                 let value_range = stat.value_range();
-                let response = ui
-                    .allocate_ui_with_layout(
-                        egui::vec2(value_width, ui.spacing().interact_size.y),
-                        egui::Layout::left_to_right(egui::Align::Center)
-                            .with_main_align(egui::Align::Min),
-                        |ui| {
-                            // Native stat values can sit outside their display curve's bounds.
-                            // Only clamp a new user edit, never the value merely being rendered.
-                            let input = egui::DragValue::new(&mut effective_value)
-                                .clamp_existing_to_range(false);
-                            let input = match value_range {
-                                Some((minimum, maximum)) => input.range(minimum..=maximum),
-                                None => input,
-                            };
-                            ui.add_enabled_ui(!*is_removed, |ui| left_cell(ui,
-                                value_width,
-                                input,
-                            )).inner
-                        },
-                    )
-                    .inner
+                let response = table.value(ui, &mut effective_value, value_range, !*is_removed)
                     .on_hover_text(match (stat.minimum_value, stat.maximum_value) {
                         (Some(minimum), Some(maximum)) => format!("Direct package value. Native range {minimum}–{maximum}."),
                         (None, Some(maximum)) => format!("Direct package value. Native maximum {maximum}. No minimum is defined."),
@@ -246,13 +190,13 @@ pub(super) fn draw_investment_stats(
                     stat.in_game_display_label(effective_value)
                 };
                 let display_tooltip = if *is_added && stat.display_interpolation.is_empty() {
-                    "The active stat display scaling has no curve for this added definition; shown as the stored package value"
+                    "The active stat display scaling has no curve for this added definition. Shown as the stored package value"
                 } else if stat.display_interpolation.is_empty() {
-                    "No native display curve is defined; shown as the stored package value"
+                    "No native display curve is defined. Shown as the stored package value"
                 } else if stat.display_as_numeric {
                     "Previewed from the active decoded numeric display curve"
                 } else {
-                    "Previewed from the active decoded display curve; the game may render this as a bar"
+                    "Previewed from the active decoded display curve. The game may render this as a bar"
                 };
                 left_cell(ui,
                     display_width,

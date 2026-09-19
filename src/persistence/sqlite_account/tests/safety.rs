@@ -1,28 +1,59 @@
 use super::*;
 
 #[test]
+fn progression_and_pending_rewards_commit_together_and_reject_stale_queues() {
+    let dir = TestDirectory::new("progression-reward-atomicity");
+    let path = dir.0.join("investment.sqlite3");
+    create_fixture(&path, 3);
+    let mut doc = loaded(&path);
+    let before = doc.clone();
+    let mut view = doc.progression_view(0);
+    view["state"]["unlocks"]["account_flag_runs"] = serde_json::json!([[10, 1]]);
+    view["_progression_rewards"] =
+        serde_json::json!([{"kind":1,"hash":987,"quantity":2},{"kind":9,"hash":321,"quantity":1}]);
+    assert!(doc.apply_progression_view(0, &view).is_err());
+    assert_eq!(doc, before);
+    view["_progression_rewards"] = serde_json::json!([{"kind":1,"hash":987,"quantity":2}]);
+    doc.add_pending_reward(0, 0, 300, 1).unwrap();
+    let concurrent = doc.clone();
+    assert!(
+        doc.apply_progression_view(0, &view)
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    assert_eq!(doc, concurrent);
+    let mut fresh = doc.progression_view(0);
+    fresh["state"]["unlocks"]["account_flag_runs"] = serde_json::json!([[10, 1]]);
+    fresh["_progression_rewards"] = view["_progression_rewards"].clone();
+    doc.apply_progression_view(0, &fresh).unwrap();
+    assert_eq!(doc.pending_rewards().len(), 2);
+    assert!(doc.account_flag_is_set(10, 10));
+}
+
+#[test]
 fn guided_recovery_restores_schema_and_data_atomically_and_preserves_a_safety_snapshot() {
     let dir = TestDirectory::new("sqlite-guided-recovery");
     let path = dir.0.join("investment.sqlite3");
     create_fixture(&path, 3);
     let db = Connection::open(&path).unwrap();
     db.execute("INSERT INTO pending_rewards(character_slot,kind,definition_hash,quantity) VALUES(0,0,300,1)", []).unwrap();
-    let original = super::super::package::read(&path).unwrap();
+    let original = super::super::snapshot::read(&path).unwrap();
     let mut doc = loaded(&path);
     let receipt = writer::save_for_test(&mut doc, dir.0.join("backup.sqlite3")).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA user_version=99; CREATE TABLE future_data (value TEXT); INSERT INTO future_data VALUES('outside');").unwrap();
-    let outside = super::super::package::capture_path(&path).unwrap();
+    let outside = super::super::snapshot::capture_path(&path).unwrap();
     let restored = writer::restore_backup_safely(&path, &receipt.backup).unwrap();
-    assert_eq!(super::super::package::read(&path).unwrap(), original);
+    assert_eq!(super::super::snapshot::read(&path).unwrap(), original);
     assert_eq!(
-        super::super::package::capture_path(&restored.safety_backup).unwrap(),
+        super::super::snapshot::capture_path(&restored.safety_backup).unwrap(),
         outside
     );
     db.execute("UPDATE account SET profile_setup_completed=0", [])
         .unwrap();
-    let newer = super::super::package::capture_path(&path).unwrap();
-    assert!(super::super::package::restore(&path, &original, &receipt.backup).is_err());
-    assert_eq!(super::super::package::capture_path(&path).unwrap(), newer);
+    let newer = super::super::snapshot::capture_path(&path).unwrap();
+    assert!(super::super::snapshot::restore(&path, &original, &receipt.backup).is_err());
+    assert_eq!(super::super::snapshot::capture_path(&path).unwrap(), newer);
 }
 
 #[test]
@@ -32,10 +63,10 @@ fn unknown_cascading_relations_are_never_silently_discarded() {
     create_fixture(&path, 3);
     let db = Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE extension (item INTEGER REFERENCES items(instance_soid) ON DELETE CASCADE, value TEXT); INSERT INTO extension SELECT instance_soid,'keep' FROM items WHERE location=1;").unwrap();
-    let before = super::super::package::read(&path).unwrap();
+    let before = super::super::snapshot::read(&path).unwrap();
     let mut doc = loaded(&path);
     assert!(writer::save_for_test(&mut doc, dir.0.join("backup.sqlite3")).is_err());
-    assert_eq!(super::super::package::read(&path).unwrap(), before);
+    assert_eq!(super::super::snapshot::read(&path).unwrap(), before);
 }
 
 #[test]
@@ -175,9 +206,9 @@ fn deleted_source_is_not_recreated_and_invalid_backup_is_not_applied() {
     let mut doc = loaded(&path);
     let bad = dir.0.join("invalid.sqlite3");
     fs::write(&bad, b"invalid").unwrap();
-    let before = super::super::package::read(&path).unwrap();
+    let before = super::super::snapshot::read(&path).unwrap();
     assert!(writer::restore_backup_safely(&path, &bad).is_err());
-    assert_eq!(super::super::package::read(&path).unwrap(), before);
+    assert_eq!(super::super::snapshot::read(&path).unwrap(), before);
     fs::remove_file(&path).unwrap();
     assert!(writer::save_for_test(&mut doc, dir.0.join("backup.sqlite3")).is_err());
     assert!(!path.exists());
@@ -190,26 +221,26 @@ fn coordinated_rollback_restores_all_domains_and_refuses_outside_writes() {
     create_fixture(&path, 3);
     let db = Connection::open(&path).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE extension (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO extension VALUES(1,'keep');").unwrap();
-    let before = super::super::package::read(&path).unwrap();
+    let before = super::super::snapshot::read(&path).unwrap();
     let mut doc = loaded(&path);
     let mut runtime = doc.runtime().clone();
     runtime["account"]["profile_setup_completed"] = serde_json::json!(false);
     doc.set_runtime(runtime);
     let receipt = writer::save_for_test(&mut doc, dir.0.join("first.sqlite3")).unwrap();
-    assert_ne!(super::super::package::read(&path).unwrap(), before);
+    assert_ne!(super::super::snapshot::read(&path).unwrap(), before);
     writer::rollback_save(&path, &receipt).unwrap();
-    assert_eq!(super::super::package::read(&path).unwrap(), before);
+    assert_eq!(super::super::snapshot::read(&path).unwrap(), before);
     assert_eq!(
-        super::super::package::read(&receipt.backup).unwrap(),
+        super::super::snapshot::read(&receipt.backup).unwrap(),
         before
     );
     let mut doc = loaded(&path);
     let receipt = writer::save_for_test(&mut doc, dir.0.join("second.sqlite3")).unwrap();
     db.execute("UPDATE extension SET value='outside'", [])
         .unwrap();
-    let outside = super::super::package::read(&path).unwrap();
+    let outside = super::super::snapshot::read(&path).unwrap();
     assert!(writer::rollback_save(&path, &receipt).is_err());
-    assert_eq!(super::super::package::read(&path).unwrap(), outside);
+    assert_eq!(super::super::snapshot::read(&path).unwrap(), outside);
 }
 
 #[test]
@@ -245,4 +276,25 @@ fn save_then_undo_restores_deleted_rows_with_unknown_columns() {
             .unwrap(),
         "original"
     );
+}
+
+#[test]
+fn save_then_undo_restores_deleted_reward_extension_columns() {
+    let dir = TestDirectory::new("sqlite-undo-reward-extension");
+    let path = dir.0.join("investment.sqlite3");
+    create_fixture(&path, 3);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("ALTER TABLE pending_rewards ADD COLUMN future TEXT NOT NULL DEFAULT 'default'; INSERT INTO pending_rewards(id,character_slot,kind,definition_hash,quantity,future) VALUES(1,0,1,987,1,'original');").unwrap();
+    let mut original = loaded(&path);
+    let mut edited = original.clone();
+    edited.remove_pending_reward(1).unwrap();
+    save_fixture_document(&mut edited, &dir.0.join("deleted.sqlite3"));
+    original.adopt_revision_from(&edited);
+    save_fixture_document(&mut original, &dir.0.join("undone.sqlite3"));
+    let restored: String = db
+        .query_row("SELECT future FROM pending_rewards WHERE id=1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(restored, "original");
 }

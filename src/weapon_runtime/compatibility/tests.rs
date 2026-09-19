@@ -44,6 +44,7 @@ fn fixture() -> (Vec<u8>, WeaponRuntimeBinding, RuntimeRegistry) {
         RuntimeRegistry {
             records,
             names: BTreeMap::new(),
+            inferred: BTreeMap::new(),
         },
     )
 }

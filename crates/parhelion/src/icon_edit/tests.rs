@@ -60,37 +60,46 @@ fn validation_rejects_out_of_range_controls() {
 }
 
 #[test]
-fn fixed_hue_rotation_moves_primary_colors_by_exact_sectors() {
-    let mut pixels = [255, 0, 0, 7, 0, 255, 0, 9, 0, 0, 255, 11];
-    WeaponIconEdit {
-        hue_shift_degrees: 120,
-        ..WeaponIconEdit::default()
+fn color_transforms_preserve_exact_channels_and_operation_order() {
+    for (edit, source, expected) in [
+        (
+            WeaponIconEdit {
+                hue_shift_degrees: 120,
+                ..Default::default()
+            },
+            vec![255, 0, 0, 7, 0, 255, 0, 9, 0, 0, 255, 11],
+            vec![0, 255, 0, 7, 0, 0, 255, 9, 255, 0, 0, 11],
+        ),
+        (
+            WeaponIconEdit {
+                brightness: 50,
+                invert: true,
+                ..Default::default()
+            },
+            vec![10, 100, 200, 17],
+            vec![122, 77, 27, 17],
+        ),
+        (
+            WeaponIconEdit {
+                brightness: -100,
+                ..Default::default()
+            },
+            vec![10, 100, 200, 33],
+            vec![0, 0, 0, 33],
+        ),
+        (
+            WeaponIconEdit {
+                opacity_percent: 25,
+                ..Default::default()
+            },
+            vec![12, 34, 56, 200],
+            vec![12, 34, 56, 50],
+        ),
+    ] {
+        let mut pixels = source;
+        edit.apply_to_rgba8(&mut pixels).unwrap();
+        assert_eq!(pixels, expected, "{edit:?}");
     }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [0, 255, 0, 7, 0, 0, 255, 9, 255, 0, 0, 11]);
-}
-
-#[test]
-fn brightness_then_invert_has_stable_fixed_pixels() {
-    let mut pixels = [10, 100, 200, 17];
-    WeaponIconEdit {
-        brightness: 50,
-        invert: true,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [122, 77, 27, 17]);
-
-    let mut black = [10, 100, 200, 33];
-    WeaponIconEdit {
-        brightness: -100,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut black)
-    .unwrap();
-    assert_eq!(black, [0, 0, 0, 33]);
 }
 
 #[test]
@@ -111,18 +120,6 @@ fn color_operations_preserve_alpha_at_full_opacity() {
     .apply_to_rgba8(&mut pixels)
     .unwrap();
     assert_eq!([pixels[3], pixels[7], pixels[11]], alpha);
-}
-
-#[test]
-fn opacity_scales_alpha_without_changing_rgb() {
-    let mut pixels = [12, 34, 56, 200];
-    WeaponIconEdit {
-        opacity_percent: 25,
-        ..WeaponIconEdit::default()
-    }
-    .apply_to_rgba8(&mut pixels)
-    .unwrap();
-    assert_eq!(pixels, [12, 34, 56, 50]);
 }
 
 #[test]
@@ -165,4 +162,83 @@ fn malformed_rgba_payload_is_rejected_without_mutation() {
         .is_err()
     );
     assert_eq!(pixels, before);
+}
+
+#[test]
+fn clearing_a_color_removes_it_and_its_halo_but_not_separate_art() {
+    let plate = [0xF2, 0xE3, 0x70];
+    // Row 0: the plate and its darkened edge, which touch. Row 1: a similar colour that does not.
+    let mut pixels = vec![
+        plate[0], plate[1], plate[2], 255, //
+        0x79, 0x71, 0x38, 255, //
+        0x20, 0x40, 0x80, 255, //
+        0x79, 0x71, 0x38, 255,
+    ];
+    WeaponIconEdit {
+        cleared_color: Some(plate),
+        ..Default::default()
+    }
+    .apply_to_rgba8_sized(&mut pixels, 2, 2)
+    .expect("clearing a color should apply");
+
+    assert_eq!(&pixels[0..4], &[0, 0, 0, 0], "the plate is cleared");
+    assert_eq!(
+        &pixels[4..8],
+        &[0, 0, 0, 0],
+        "its darkened edge is cleared with it"
+    );
+    assert_eq!(
+        &pixels[8..12],
+        &[0x20, 0x40, 0x80, 255],
+        "unrelated artwork stays"
+    );
+    assert_eq!(
+        &pixels[12..16],
+        &[0, 0, 0, 0],
+        "art on the same ramp is cleared only where it touches the region"
+    );
+}
+
+#[test]
+fn levels_stretch_the_input_range_and_hue_rules_take_every_shade() {
+    // Levels: 64 becomes black, 192 becomes white, and the midpoint lands halfway.
+    let mut pixels = vec![
+        64, 128, 192, 255, //
+        0, 0, 0, 0, //
+        0, 0, 0, 0, //
+        0, 0, 0, 0,
+    ];
+    WeaponIconEdit {
+        black_point: 64,
+        white_point: 192,
+        ..Default::default()
+    }
+    .apply_to_rgba8_sized(&mut pixels, 2, 2)
+    .expect("levels should apply");
+    assert_eq!(&pixels[0..4], &[0, 128, 255, 255]);
+
+    // A hue rule claims a dark shade of its source that a color range never reaches.
+    let gold = [0xF2, 0xE3, 0x70];
+    let dark_gold = [0x79, 0x71, 0x38];
+    let by_range = IconColorReplacement {
+        source: gold,
+        replacement: [0x20, 0x40, 0x80],
+        range_percent: 20,
+        hue_range_degrees: None,
+    };
+    let by_hue = IconColorReplacement {
+        hue_range_degrees: Some(20),
+        ..by_range.clone()
+    };
+    assert_eq!(
+        by_range.weight(dark_gold),
+        0,
+        "range cannot reach the shade"
+    );
+    assert!(by_hue.weight(dark_gold) > 0, "hue takes the whole surface");
+    assert_eq!(
+        by_hue.weight([0x80, 0x80, 0x80]),
+        0,
+        "a grey has no hue to match"
+    );
 }

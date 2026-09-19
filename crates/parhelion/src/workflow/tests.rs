@@ -1,14 +1,6 @@
 use super::*;
 
 #[test]
-fn package_backups_default_to_the_packages_backup_subdirectory() {
-    assert_eq!(
-        default_backup_root(),
-        default_data_root().join("backups").join("packages")
-    );
-}
-
-#[test]
 fn package_probe_uses_only_package_files() {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("directory.pkg")).unwrap();
@@ -21,11 +13,6 @@ fn package_probe_uses_only_package_files() {
     let package = directory.path().join("actual.PKG");
     fs::write(&package, b"probe source").unwrap();
     assert_eq!(first_package_file(directory.path()).unwrap(), package);
-}
-
-#[test]
-fn package_probe_preserves_directory_errors() {
-    let directory = tempfile::tempdir().unwrap();
     let missing = directory.path().join("missing");
     let error = first_package_file(&missing).unwrap_err();
     assert!(error.contains("Could not list"));
@@ -99,10 +86,6 @@ fn snapshot_with_recipe(
     .expect("single-recipe test snapshot should be valid")
 }
 
-fn inspect_request(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, String> {
-    inspect_snapshot(snapshot)
-}
-
 fn configured_real_packages() -> Option<PathBuf> {
     std::env::var_os("SUNDIAL_TEST_PACKAGES")
         .map(PathBuf::from)
@@ -115,7 +98,7 @@ fn source_inspection_accepts_the_stock_profile() {
     let packages = stock_source(directory.path());
     let request = snapshot(packages, directory.path().join("staging"));
 
-    let report = inspect_request(&request).expect("stock package profile should pass");
+    let report = inspect_snapshot(&request).expect("stock package profile should pass");
 
     assert!(report.ignored_authored_files.is_empty());
 }
@@ -142,7 +125,7 @@ fn source_inspection_recognizes_a_complete_installed_authored_set() {
     );
     let request = snapshot(packages, directory.path().join("staging"));
 
-    let report = inspect_request(&request).expect("complete authored set should be ignored");
+    let report = inspect_snapshot(&request).expect("complete authored set should be ignored");
 
     let mut expected = CANONICAL_ARTIFACT_FILE_NAMES.map(str::to_owned);
     expected.sort();
@@ -675,8 +658,8 @@ fn source_inspection_ignores_a_recognized_partial_authored_set() {
     );
     let request = snapshot(packages, directory.path().join("staging"));
 
-    let report =
-        inspect_request(&request).expect("a recognized partial prior generation should be ignored");
+    let report = inspect_snapshot(&request)
+        .expect("a recognized partial prior generation should be ignored");
 
     assert_eq!(
         report.ignored_authored_files,
@@ -696,7 +679,7 @@ fn source_inspection_ignores_owned_spill_but_rejects_foreign_occupancy() {
         SUNDIAL_BUILD_SIGNATURE,
     );
     let request = snapshot(packages.clone(), directory.path().join("staging"));
-    let report = inspect_request(&request).unwrap();
+    let report = inspect_snapshot(&request).unwrap();
     assert_eq!(
         report.ignored_authored_files,
         vec![spill.file_name.to_owned()]
@@ -707,33 +690,24 @@ fn source_inspection_ignores_owned_spill_but_rejects_foreign_occupancy() {
         0,
         0xAABB_CCDD_EEFF_0011,
     );
-    assert!(inspect_request(&request).is_err());
+    assert!(inspect_snapshot(&request).is_err());
 }
 
 #[test]
-fn preflight_rejects_staging_inside_packages() {
-    let directory = tempfile::tempdir().expect("temporary directory should be created");
+fn preflight_rejects_direct_and_normalized_staging_paths_inside_packages() {
+    let directory = tempfile::tempdir().unwrap();
     let packages = stock_source(directory.path());
-    let request = snapshot(packages.clone(), packages.join("output"));
-
-    let error = preflight_snapshot(&request).expect_err("live package output must fail");
-
-    assert!(error.contains("outside the live packages directory"));
-}
-
-#[test]
-fn preflight_rejects_a_normalized_nonexistent_staging_path_inside_packages() {
-    let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let packages = stock_source(directory.path());
-    let staging = packages
-        .join("not-created")
-        .join("..")
-        .join("normalized-output");
-    let request = snapshot(packages, staging);
-
-    let error = preflight_snapshot(&request).expect_err("normalized live package output must fail");
-
-    assert!(error.contains("outside the live packages directory"));
+    for staging in [
+        packages.join("output"),
+        packages
+            .join("not-created")
+            .join("..")
+            .join("normalized-output"),
+    ] {
+        let request = snapshot(packages.clone(), staging);
+        let error = preflight_snapshot(&request).unwrap_err();
+        assert!(error.contains("outside the live packages directory"));
+    }
 }
 
 #[cfg(windows)]

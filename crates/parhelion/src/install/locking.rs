@@ -28,5 +28,6 @@ pub(super) fn lock_directory(directory: &Path, name: &str) -> Result<File, Insta
 }
 
 pub(super) fn lock_installation(target: &Path) -> Result<File, InstallError> {
-    lock_directory(target, ".parhelion-transaction.lock")
+    let target = canonical_packages_directory(target)?;
+    lock_directory(&target, ".parhelion-transaction.lock")
 }

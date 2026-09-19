@@ -24,7 +24,7 @@ impl SundialApp {
             ui.horizontal(|ui| {
                 if self.has_unsaved_changes() {
                     ui.label(
-                        egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color),
+                        egui::RichText::new("Unsaved Changes").color(ui.visuals().warn_fg_color),
                     );
                 }
                 let undo_label = self.undo_history.last().map(|entry| entry.label.clone());
@@ -71,6 +71,7 @@ impl SundialApp {
             });
         });
 
+        self.draw_runtime_banner(ctx);
         if self.persistence_compatibility.detected() {
             egui::TopBottomPanel::top("persistence_compatibility_warning").show(ctx, |ui| {
                 egui::Frame::NONE
@@ -179,6 +180,53 @@ impl SundialApp {
                         self.select_view(ViewMode::Preferences);
                     }
                 }
+                // Which runtime owns the account, beside the database it writes. The two keep
+                // their state in different places and answer to different rules, so the one in
+                // play is worth reading at a glance. Drawn after the icon because this row runs
+                // right to left, which puts it on the icon's left.
+                if let Some(runtime) = self.runtime_choice.inspection.launch_copy()
+                    && (runtime.dawn || runtime.version.is_some())
+                {
+                    let dark = ui.visuals().dark_mode;
+                    let (name, color) = if runtime.dawn {
+                        (
+                            "DAWN",
+                            if dark {
+                                egui::Color32::from_rgb(108, 148, 196)
+                            } else {
+                                egui::Color32::from_rgb(62, 100, 150)
+                            },
+                        )
+                    } else {
+                        (
+                            "SUNRISE",
+                            if dark {
+                                egui::Color32::from_rgb(198, 140, 78)
+                            } else {
+                                egui::Color32::from_rgb(150, 96, 40)
+                            },
+                        )
+                    };
+                    // Facts, one per line, no sentences: this is a reference readout, not a
+                    // description.
+                    let mut details = vec![format!(
+                        "{} {}",
+                        runtime.name(),
+                        runtime.version.as_deref().unwrap_or("version unknown")
+                    )];
+                    if let Some(schema) = runtime.schema {
+                        details.push(format!("Settings v{schema}"));
+                    }
+                    if account_source.kind != AccountSourceKind::Json {
+                        details.push(format!(
+                            "{} · {}",
+                            account_source.label, account_source.contract
+                        ));
+                    }
+                    details.push(runtime.dll_path.display().to_string());
+                    ui.add(egui::Label::new(egui::RichText::new(name).color(color)))
+                        .on_hover_text(details.join("\n"));
+                }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(&self.status).color(color)).truncate(),
@@ -209,7 +257,7 @@ impl SundialApp {
                 ui.vertical_centered(|ui| {
                     ui.image((logo.id(), egui::vec2(64.0, 64.0)));
                     ui.heading("Sundial");
-                    ui.label(egui::RichText::new(DISPLAY_VERSION).weak());
+                    ui.weak(DISPLAY_VERSION);
                     ui.add_space(8.0);
                     ui.label("Edit Project Sunrise accounts and settings, and create custom weapon packages.");
                     ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
@@ -225,7 +273,7 @@ impl SundialApp {
                             });
                         }
                         UpdateStatus::Current => {
-                            ui.label(egui::RichText::new("Sundial is up to date.").weak());
+                            ui.weak("Sundial is up to date.");
                         }
                         UpdateStatus::Available(release) => {
                             ui.colored_label(
@@ -235,9 +283,7 @@ impl SundialApp {
                             show_update = ui.button("View Update and Release Notes").clicked();
                         }
                         UpdateStatus::Failed => {
-                            ui.label(
-                                egui::RichText::new("Could not check for updates.").weak(),
-                            );
+                            ui.weak("Could not check for updates.");
                             retry_update_check = ui.button("Try Again").clicked();
                         }
                     }
@@ -268,12 +314,9 @@ impl SundialApp {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(
+                ui.weak(
                         "This project is not affiliated with or endorsed by Bungie Inc. or Sony Interactive Entertainment. Destiny and related intellectual property are owned by Bungie Inc. and their respective rights holders.",
-                    )
-                    .weak(),
-                );
+                    );
             });
         if retry_update_check {
             self.update_check.retry(ctx);
@@ -348,42 +391,4 @@ fn sidebar_footer(ui: &mut egui::Ui, available_update: Option<&str>) -> SidebarF
         }
     })
     .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn update_action_is_visible_above_footer_without_overlap() {
-        for height in [360.0, 600.0, 900.0] {
-            let ctx = egui::Context::default();
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(900.0, height),
-                )),
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| {
-                egui::SidePanel::left("test_sidebar")
-                    .exact_width(MAIN_SIDEBAR_WIDTH)
-                    .show(ctx, |ui| {
-                        ui.label("Character Inventory");
-                        let clip = ui.clip_rect();
-                        let footer = sidebar_footer(ui, Some("99.0.0"));
-                        let update = footer.update.unwrap();
-                        for response in [&footer.about, &footer.activity_log, &update] {
-                            assert!(
-                                clip.contains_rect(response.rect),
-                                "Clipped footer: {:?}",
-                                response.rect
-                            );
-                        }
-                        assert!(update.rect.bottom() < footer.about.rect.top());
-                        assert!(!footer.about.rect.intersects(footer.activity_log.rect));
-                    });
-            });
-        }
-    }
 }

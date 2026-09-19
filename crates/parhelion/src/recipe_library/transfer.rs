@@ -1,5 +1,5 @@
 //! Local recipe sharing and copies with independent weapon identities.
-use super::{BTreeSet, Path, PathBuf, RecipeLibrary, WeaponRecipe};
+use super::{Path, PathBuf, RecipeLibrary, WeaponRecipe};
 
 #[derive(Default)]
 pub(crate) struct ImportReport {
@@ -18,26 +18,9 @@ const BUNDLE_FORMAT: &str = "parhelion.recipe-bundle";
 
 impl RecipeLibrary {
     pub fn duplicate(&self, recipe: &WeaponRecipe) -> Result<PathBuf, String> {
-        let namespaces: BTreeSet<_> = self
-            .scan()?
-            .entries
-            .into_iter()
-            .map(|entry| entry.namespace.to_ascii_lowercase())
-            .collect();
-        for suffix in 1..=10_000 {
-            let name = if suffix == 1 {
-                format!("{} Copy", recipe.name)
-            } else {
-                format!("{} Copy {suffix}", recipe.name)
-            };
-            let mut copy = recipe.clone();
-            copy.rename_authored_item(&name)
-                .map_err(|error| format!("Could not duplicate recipe: {error}"))?;
-            if !namespaces.contains(&copy.namespace.to_ascii_lowercase()) {
-                return self.save_new(&copy);
-            }
-        }
-        Err("Could not allocate an unused recipe copy identity".into())
+        let scan = self.scan()?;
+        let copy = recipe.unused_copy(scan.entries.iter().map(|entry| entry.namespace.as_str()))?;
+        self.save_new(&copy)
     }
 
     pub fn export(&self, recipe: &WeaponRecipe, path: &Path) -> Result<(), String> {

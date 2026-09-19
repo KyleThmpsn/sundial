@@ -156,10 +156,10 @@ impl PackageAuthoringApp {
         }
         ui.add_enabled_ui(editable, |ui| {
             preference_heading(ui, "Build Files");
-            ui.label("Game packages · selected in Sundial");
+            ui.label("Game Packages · Selected in Sundial");
             draw_preference_path(ui, &self.packages);
             let mut changed = path_row(ui, "Staging Folder", &mut self.staging, "Each build creates a separate folder here. Staging does not install packages.");
-            changed |= ui.checkbox(&mut self.ignore_installed, "Build From a Temporary Stock Package View").changed();
+            changed |= ui.checkbox(&mut self.ignore_installed, "Build from a Temporary Stock Package View").changed();
             ui.label("Ignores recognized Parhelion overlays while building. Installed packages are not moved or changed.");
             ui.add_space(12.0);
             preference_heading(ui, "Package Backups");
@@ -190,6 +190,7 @@ impl PackageAuthoringApp {
                     && !self.has_background_work()
                     && !self.perk_workbench.editing()
                     && self.icon_editor.is_none()
+                    && !self.presentation_editor.editing()
                     && !self.build_status_open,
                 egui::Button::new("Uninstall Custom Packages…"),
             )

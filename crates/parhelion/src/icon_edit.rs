@@ -17,10 +17,9 @@ pub(crate) use authoring::build_weapon_icon_edit_plan;
 pub use color_selection::IconColorReplacement;
 pub(crate) use editor::{WeaponIconEditor, WeaponIconEditorAction};
 pub use imported::ImportedIcon;
-pub(crate) use imported::decode as decode_image;
-pub(crate) use imported::fit as fit_rgba_image;
 pub(crate) use preview::{
-    render_texture_preview, render_weapon_icon_preview, render_weapon_icon_preview_from_manager,
+    WatermarkPreview, render_texture_preview, render_weapon_icon_preview,
+    render_weapon_icon_preview_from_manager,
 };
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +48,12 @@ pub struct WeaponIconEdit {
     /// Optional embedded replacement, applied before color and orientation adjustments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imported_image: Option<ImportedIcon>,
+    /// Source color cleared to transparency before any other edit.
+    ///
+    /// Stock ornament artwork paints its decorative plate in one flat color behind the weapon,
+    /// so clearing that color leaves the weapon itself untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleared_color: Option<[u8; 3]>,
     /// Clockwise quarter-turns applied before flips.
     #[serde(skip_serializing_if = "is_default_value")]
     pub rotation_quarter_turns: u8,
@@ -70,6 +75,12 @@ pub struct WeaponIconEdit {
     pub green_balance: i16,
     #[serde(skip_serializing_if = "is_default_value")]
     pub blue_balance: i16,
+    /// Input level mapped to black, raising contrast in the shadows when lifted.
+    #[serde(skip_serializing_if = "is_default_value")]
+    pub black_point: u8,
+    /// Input level mapped to white, raising contrast in the highlights when lowered.
+    #[serde(skip_serializing_if = "is_full_level")]
+    pub white_point: u8,
     #[serde(skip_serializing_if = "is_default_value")]
     pub invert: bool,
     #[serde(skip_serializing_if = "is_full_opacity")]
@@ -82,12 +93,18 @@ fn is_default_value<T: Default + PartialEq>(value: &T) -> bool {
 fn is_full_opacity(value: &u8) -> bool {
     *value == 100
 }
+fn is_full_level(value: &u8) -> bool {
+    *value == u8::MAX
+}
 
 impl Default for WeaponIconEdit {
     fn default() -> Self {
         Self {
             color_replacements: Vec::new(),
             imported_image: None,
+            cleared_color: None,
+            black_point: 0,
+            white_point: u8::MAX,
             rotation_quarter_turns: 0,
             flip_horizontal: false,
             flip_vertical: false,

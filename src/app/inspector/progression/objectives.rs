@@ -1,15 +1,20 @@
 //! Objective labels and metadata semantics shared by progression inspectors and tables.
 
+#[cfg(test)]
+use crate::catalog::ObjectiveOwnerTraitDef;
+
 use crate::{
     catalog::{
-        Catalog, ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
-        ProgressionContextDef, ProgressionContextKind, UnlockDefinition,
+        Catalog, ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ProgressionContextDef,
+        ProgressionContextKind, UnlockDefinition,
     },
     hash::format_hash_hex,
 };
 
+#[cfg(test)]
 use crate::app::inspector::progression_context_kind_label;
 
+#[cfg(test)]
 use super::definitions::definition_name;
 
 pub(in crate::app) fn progression_type_label(type_name: &str) -> &str {
@@ -48,6 +53,7 @@ pub(in crate::app) fn objective_owner_label(owner: &ObjectiveOwnerDef) -> Option
     (!type_name.is_empty()).then_some(type_name)
 }
 
+#[cfg(test)]
 pub(in crate::app) fn objective_owner_trait_label(
     trait_definition: &ObjectiveOwnerTraitDef,
 ) -> String {
@@ -64,6 +70,7 @@ pub(in crate::app) fn objective_owner_display_label(owner: &ObjectiveOwnerDef) -
     Some(label.to_owned())
 }
 
+#[cfg(test)]
 pub(in crate::app) fn objective_traits_text(objective: &ObjectiveDef) -> Option<String> {
     let owner = preferred_objective_owner(objective)?;
     (!owner.traits.is_empty()).then(|| {
@@ -137,6 +144,7 @@ pub(in crate::app) fn meaningful_definition_contexts(
         .collect()
 }
 
+#[cfg(test)]
 pub(in crate::app) fn override_meaning_contexts(
     definition: &UnlockDefinition,
 ) -> Vec<&ProgressionContextDef> {
@@ -155,6 +163,7 @@ pub(in crate::app) fn override_meaning_contexts(
         .collect()
 }
 
+#[cfg(test)]
 pub(in crate::app) fn override_meaning(definition: &UnlockDefinition) -> String {
     if let Some(name) = definition_name(definition) {
         return name.trim().to_owned();
@@ -296,6 +305,7 @@ pub(in crate::app) fn objective_table_text(
     }
 }
 
+#[cfg(test)]
 pub(in crate::app) fn objective_details_tooltip(objective: &ObjectiveDef) -> String {
     let mut lines = vec![
         format!("Objective: {}", objective_description(objective)),

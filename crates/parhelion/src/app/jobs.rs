@@ -114,6 +114,7 @@ impl PackageAuthoringApp {
                         match *result {
                             Ok(catalog) => {
                                 self.donor_summaries = catalog.weapon_donors();
+                                self.library_state.refresh_donors(&self.donor_summaries);
                                 self.sandbox_perk_choices = catalog
                                     .weapon_sandbox_perk_choices_from(
                                         crate::package_profile::is_stock_item_definition,
@@ -331,6 +332,8 @@ impl PackageAuthoringApp {
         };
         let (sender, receiver) = mpsc::channel();
         let started = Instant::now();
+        self.build_invalidated = false;
+        self.observed_recipe.clone_from(&self.recipe);
         self.build_started = Some(started);
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
@@ -430,7 +433,14 @@ impl PackageAuthoringApp {
                         "Build complete: {}",
                         report.run_directory.display()
                     )));
-                    self.latest_build = Some(Ok(report));
+                    self.latest_build = Some(if std::mem::take(&mut self.build_invalidated) {
+                        let error = "Recipes or build options changed while this build was running. Build & Stage again before installing.".to_owned();
+                        self.build_activity.push(elapsed, error.clone());
+                        self.log.push(LogEntry::error(&error));
+                        Err(error)
+                    } else {
+                        Ok(report)
+                    });
                     self.build_started = None;
                     self.build_receiver = None;
                     return;
@@ -558,7 +568,7 @@ impl PackageAuthoringApp {
                 match &report.profile_sync {
                     Some(Ok(sync)) => {
                         self.log.push(LogEntry::info(format!(
-                            "Synchronized {}/{} authored collection unlocks in {}; backup: {}",
+                            "Synchronized {}/{} authored collection unlocks in {}. Backup: {}",
                             sync.newly_set_unlocks,
                             sync.total_unlocks,
                             sync.settings_path.display(),
@@ -581,13 +591,13 @@ impl PackageAuthoringApp {
                     |cache| {
                         if let Some(quarantine) = &cache.retained_quarantine_path {
                             format!(
-                                "Sunrise build-data cache invalidated; cache backup: {}; retained quarantine: {}",
+                                "Sunrise build-data cache invalidated. Cache backup: {}. Retained quarantine: {}",
                                 cache.backup_path.display(),
                                 quarantine.display()
                             )
                         } else {
                             format!(
-                                "Sunrise build-data cache invalidated; cache backup: {}",
+                                "Sunrise build-data cache invalidated. Cache backup: {}",
                                 cache.backup_path.display()
                             )
                         }
@@ -602,7 +612,7 @@ impl PackageAuthoringApp {
                     )
                 };
                 self.log.push(LogEntry::info(format!(
-                    "Installed {} authored packages to {}; backup: {}; {}; {}",
+                    "Installed {} authored packages to {}. Backup: {}. {}. {}",
                     report.artifacts.len(),
                     report.target_packages_directory.display(),
                     report.backup_directory.display(),
@@ -617,7 +627,7 @@ impl PackageAuthoringApp {
                 }
                 if !report.removed_obsolete_packages.is_empty() {
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} obsolete authored runtime package(s); originals are in the installation backup",
+                        "Removed {} obsolete authored runtime package(s). Originals are in the installation backup",
                         report.removed_obsolete_packages.len()
                     )));
                 }

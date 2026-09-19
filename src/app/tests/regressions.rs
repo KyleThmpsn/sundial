@@ -2,21 +2,44 @@
 mod account_smoke;
 mod character_fields;
 mod confirmation_layout;
+mod dawn;
+mod edit_tracking;
+mod inventory_recovery;
 mod loadout_safety;
 mod parhelion_confirmation;
+mod profile_editing;
 mod progression_access;
+mod recovery;
+mod runtime_selection;
 mod save_validation;
 mod schema_smoke;
 mod shortcuts;
+mod state_recovery;
 mod update;
 
 use crate::app::*;
 use crate::test_support::TestDirectory;
 
-fn app(install_path: PathBuf) -> SundialApp {
+const FIXTURES: [&str; 3] = [
+    include_str!("../../../tests/fixtures/sunrise-v6-4aebb148-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v13-a57dc9a9-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v16-1120748-defaults.json"),
+];
+
+fn with_document(path: PathBuf, json: Value) -> SundialApp {
+    let mut app = app(path);
+    app.document = WorkspaceDocument::json_only(json.clone());
+    app.persisted_document = app.document.clone();
+    app.raw_json = serde_json::to_string_pretty(&json).unwrap();
+    app.raw_json_document = json;
+    app
+}
+
+pub(in crate::app) fn app(install_path: PathBuf) -> SundialApp {
     let json = serde_json::json!({"version": 8, "state": {"characters": []}});
     let document = WorkspaceDocument::json_only(json.clone());
     SundialApp {
+        runtime_choice: runtime_installation::RuntimeChoice::inspect(&install_path),
         account_details: Default::default(),
         settings_path: install_path.join("settings.json"),
         settings_layout: SettingsLayout::GameRoot,
@@ -64,11 +87,13 @@ fn app(install_path: PathBuf) -> SundialApp {
         pending_save_action: None,
         pending_equipment_delete: None,
         pending_sqlite_restore: None,
+        pending_sqlite_reset: None,
         exit_confirmed: false,
         dirty: false,
         undo_history: Vec::new(),
         redo_history: Vec::new(),
-        suppress_history_record: false,
+        edit_baseline: None,
+        document_repaint_pending: false,
         status: String::new(),
         status_is_error: false,
         activity_log: Default::default(),
@@ -96,7 +121,7 @@ fn accepting_a_loaded_source_cannot_record_or_restore_the_previous_source() {
     let previous = app.document.clone();
     let entry = DocumentHistoryEntry {
         document: previous.clone(),
-        label: "Old account".into(),
+        label: "Old Account".into(),
     };
     app.undo_history.push(entry.clone());
     app.redo_history.push(entry);
@@ -104,7 +129,6 @@ fn accepting_a_loaded_source_cannot_record_or_restore_the_previous_source() {
         serde_json::json!({"version": 8, "state": {"characters": [], "sentinel": "new account"}}),
     );
     app.replace_loaded_document(next.clone());
-    app.record_document_change(previous);
     assert!(app.undo_history.is_empty());
     assert!(app.redo_history.is_empty());
     app.undo();

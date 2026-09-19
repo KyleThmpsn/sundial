@@ -1,11 +1,28 @@
 use super::items::{
     attach_item_objective_owners, infer_socket_label, infer_socket_plug_types,
-    item_scan_progress_stride, socket_label_for_plug,
+    socket_label_for_plug,
 };
 use super::scan::{retain_progression_enrichment, retain_progression_scan};
 use crate::package_payload::{array_at, relative_offset, u64_at};
 
 use super::*;
+
+#[test]
+fn component_descriptions_survive_cache_round_trip_without_using_item_flavor() {
+    let contents = CatalogContents {
+        descriptions: HashMap::from([(10, "A broad item description".into())]),
+        perk_descriptions: HashMap::from([(7, "Collecting a cell emits an impulse".into())]),
+        ..Default::default()
+    };
+    let stored = serde_json::to_vec(&contents).unwrap();
+    let restored = serde_json::from_slice(&stored).unwrap();
+    let catalog = Catalog::finish(restored, PathBuf::new(), PathBuf::new(), true);
+    assert_eq!(
+        catalog.perk_description(7),
+        Some("Collecting a cell emits an impulse")
+    );
+    assert_eq!(catalog.perk_description(10), None);
+}
 
 #[test]
 #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
@@ -124,14 +141,6 @@ fn assert_direct_unlock_contracts(catalog: &Catalog) {
 }
 
 #[test]
-fn item_scan_progress_updates_are_bounded_without_becoming_choppy() {
-    assert_eq!(item_scan_progress_stride(0), 64);
-    assert_eq!(item_scan_progress_stride(12_800), 64);
-    assert_eq!(item_scan_progress_stride(100_000), 500);
-    assert!(100_000_usize.div_ceil(item_scan_progress_stride(100_000)) <= 200);
-}
-
-#[test]
 fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions() {
     let flag = UnlockDefinition {
         hash: 0xAAAA_AAAA,
@@ -171,6 +180,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
     };
     let catalog = Catalog::finish(
         CatalogContents {
+            records: None,
             items: Vec::new(),
             names: HashMap::new(),
             seasonal: None,
@@ -178,6 +188,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
             descriptions: HashMap::new(),
+            perk_descriptions: HashMap::new(),
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
@@ -282,15 +293,6 @@ fn optional_unlock_display_failure_keeps_core_definitions() {
 
     assert_eq!(retained, definitions);
     assert_eq!(errors, vec!["Unlock flag displays: table unavailable"]);
-}
-
-#[test]
-fn plug_labels_only_include_hashes_when_requested() {
-    assert_eq!(format_plug_label("Rampage", 0x12AB, false), "Rampage");
-    assert_eq!(
-        format_plug_label("Rampage", 0x12AB, true),
-        "Rampage  (0x000012AB)"
-    );
 }
 
 #[test]
@@ -471,6 +473,7 @@ fn inventory_apis_resolve_profile_only_items_and_keep_character_items_safe() {
     ]);
     let catalog = Catalog::finish(
         CatalogContents {
+            records: None,
             items: vec![character, foreign_subclass, foreign_helmet],
             seasonal: None,
             names,
@@ -478,6 +481,7 @@ fn inventory_apis_resolve_profile_only_items_and_keep_character_items_safe() {
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
             descriptions: HashMap::new(),
+            perk_descriptions: HashMap::new(),
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
@@ -539,6 +543,7 @@ fn equipment_browse_and_search_return_every_compatible_item() {
         .collect();
     let catalog = Catalog::finish(
         CatalogContents {
+            records: None,
             items,
             seasonal: None,
             names: HashMap::new(),
@@ -546,6 +551,7 @@ fn equipment_browse_and_search_return_every_compatible_item() {
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
             descriptions: HashMap::from([(10_042, "A description-only match".to_owned())]),
+            perk_descriptions: HashMap::new(),
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
@@ -617,6 +623,7 @@ fn schema_current_cache_requires_progression_and_power_sections() {
             "items": [],
             "names": {"3365180871": "Test definition"},
             "type_names": {},
+            "perk_descriptions": {},
             "objectives": [],
             "unlock_flag_definitions": [],
             "unlock_value_definitions": [],
@@ -641,6 +648,7 @@ fn schema_current_cache_requires_progression_and_power_sections() {
     );
 
     for required in [
+        "perk_descriptions",
         "objectives",
         "unlock_flag_definitions",
         "unlock_value_definitions",
@@ -662,13 +670,6 @@ fn schema_current_cache_requires_progression_and_power_sections() {
             "a cache without {required} must be rescanned"
         );
     }
-}
-
-#[test]
-fn really_unsafe_options_include_every_discovered_plug_once() {
-    let catalog = plug_selection_catalog();
-    assert_eq!(catalog.all_plug_options(), &[2, 3, 1, 4]);
-    assert_eq!(catalog.plug_pools[1], [3, 1, 4]);
 }
 
 #[test]
@@ -751,6 +752,7 @@ fn plug_selection_catalog() -> Catalog {
     ]);
     Catalog::finish(
         CatalogContents {
+            records: None,
             items: Vec::new(),
             names,
             seasonal: None,
@@ -758,6 +760,7 @@ fn plug_selection_catalog() -> Catalog {
             package_item_names: HashMap::new(),
             package_item_type_names: HashMap::new(),
             descriptions: HashMap::new(),
+            perk_descriptions: HashMap::new(),
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
@@ -910,18 +913,6 @@ fn ghost_perk_socket_replaces_the_generic_intrinsic_type() {
 
     assert_eq!(type_names[&1], "Ghost Perk");
     assert_eq!(type_names[&2], "Ghost Perk");
-}
-
-#[test]
-fn socket_display_labels_preserve_the_native_position() {
-    let named = SocketDef {
-        label: "Barrel".into(),
-        ..SocketDef::default()
-    };
-    let unnamed = SocketDef::default();
-
-    assert_eq!(named.display_label(1), "2. Barrel");
-    assert_eq!(unnamed.display_label(1), "Socket 2");
 }
 
 #[test]

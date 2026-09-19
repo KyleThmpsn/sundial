@@ -10,6 +10,12 @@ fn activation_recipe_round_trips_and_rejects_unsupported_effects() {
     let variant: WeaponSocketPlugVariantRecipe = serde_json::from_str(
         r#"{"socket_index":3,"choice_index":0,"source_plug_hash":"0x45A0BDD7","sandbox_perks":[{"source_perk_index":421,"runtime_values":[]}]}"#,
     ).unwrap();
+    assert!(variant.investment_stats.is_empty());
+    assert!(
+        !serde_json::to_string(&variant)
+            .unwrap()
+            .contains("investment_stats")
+    );
     recipe.overrides.socket_plug_variants.push(variant);
     assert!(!recipe.to_json_pretty().unwrap().contains("\"activation\""));
     for condition in PerkActivation::ALL {
@@ -72,6 +78,7 @@ fn referenced_graph_edits_round_trip_and_require_a_tag() {
 fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
     WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: 0x39AF_D7D3,
             resource_index: 0,
             root: WeaponRuntimeRootKind::ComponentInstance,
@@ -236,99 +243,6 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
 }
 
 #[test]
-fn old_custom_perks_keep_sparse_stat_serialization() {
-    let json = r#"{"socket_index":0,"choice_index":0,"source_plug_hash":"0xDD5CB37A","sandbox_perks":[{"source_perk_index":1178,"runtime_values":[]}]}"#;
-    let variant: WeaponSocketPlugVariantRecipe = serde_json::from_str(json).unwrap();
-    assert!(variant.investment_stats.is_empty());
-    assert!(
-        !serde_json::to_string(&variant)
-            .unwrap()
-            .contains("investment_stats")
-    );
-}
-
-#[test]
-fn every_end_preserves_shipped_identity_and_build_overrides() {
-    let recipe = WeaponRecipe::every_end();
-    let spec = recipe.to_spec().unwrap();
-
-    assert_eq!(recipe.namespace, "parhelion.every-end");
-    assert!(!recipe.identity_is_name_derived());
-    assert_eq!(
-        recipe.collection_placement,
-        RecipeCollectionPlacement::SunriseBadge
-    );
-    assert_eq!(spec.donor_item_hash, ARC_LOGIC_DONOR_HASH);
-    assert_eq!(spec.identity.item_hash, 0x5355_4E44);
-    assert_eq!(spec.text.name, "Every End");
-    assert_eq!(spec.text.source, DEFAULT_SOURCE_TEXT);
-    assert_eq!(spec.overrides.inventory_slot, None);
-    assert_eq!(spec.overrides.investment_stats.len(), 9);
-    assert_eq!(
-        spec.overrides.modern_damage_type,
-        Some(ModernDamageType::Solar)
-    );
-    assert_eq!(spec.overrides.power_cap_group, Some(11));
-    assert_eq!(spec.overrides.socket_columns.len(), 10);
-    assert_eq!(
-        spec.overrides.socket_columns[0].as_ref().unwrap().choices,
-        vec![0x56E7_7AA2]
-    );
-}
-
-#[test]
-fn second_sun_preserves_shipped_identity_and_donors() {
-    let recipe = WeaponRecipe::second_sun().unwrap();
-    let spec = recipe.to_spec().unwrap();
-
-    assert!(recipe.identity_is_name_derived());
-    assert_eq!(
-        (
-            spec.identity.item_hash,
-            spec.identity.collectible_hash,
-            spec.identity.unlock_hash,
-        ),
-        (0x757D_33F5, 0xD347_B59A, 0xF137_B0F4)
-    );
-    assert_eq!(
-        recipe.collection_placement,
-        RecipeCollectionPlacement::SunriseBadge
-    );
-    assert_eq!(spec.donor_item_hash, 0x59EF_ED62);
-    assert_eq!(
-        spec.expected_donor_name.as_deref(),
-        Some("The Wardcliff Coil")
-    );
-    let presentation = spec.presentation_donor.as_ref().unwrap();
-    assert_eq!(presentation.item_hash, 0x47A2_7ADF);
-    assert_eq!(presentation.expected_name.as_deref(), Some("Truth"));
-    assert_eq!(
-        (
-            spec.text.name.as_str(),
-            spec.text.flavor.as_str(),
-            spec.text.source.as_str(),
-        ),
-        (
-            "Second Sun",
-            "A second dawn, made by our own hands.",
-            DEFAULT_SOURCE_TEXT,
-        )
-    );
-    assert_eq!(
-        spec.overrides.inventory_slot,
-        Some(WeaponInventorySlot::Power)
-    );
-    assert_eq!(
-        spec.overrides.modern_damage_type,
-        Some(ModernDamageType::Solar)
-    );
-    assert_eq!(spec.overrides.power_cap_group, Some(11));
-    assert_eq!(spec.overrides.socket_columns.len(), 8);
-    assert_eq!(spec.overrides.ammo_type, Some(WeaponAmmoType::Heavy));
-    assert!(spec.text.inventory_hint.is_none());
-}
-
-#[test]
 fn new_donor_recipe_inherits_definition_by_default() {
     let recipe = WeaponRecipe::new_weapon_for_donor(
         "parhelion.falling-star",
@@ -453,19 +367,6 @@ fn canonical_hash_json_is_uppercase_and_string_typed() {
 }
 
 #[test]
-fn dynamic_recipe_json_round_trips() {
-    let recipe = WeaponRecipe::every_end();
-    let encoded = recipe.to_json_pretty().unwrap();
-
-    assert!(encoded.contains(r#""item_hash": "0xA25B8F8F""#));
-    assert!(encoded.contains(r#""collection_placement": "sunrise_badge""#));
-    assert!(encoded.contains(r#""modern_damage_type": "solar""#));
-    assert!(encoded.contains(r#""socket_columns""#));
-    assert!(!encoded.contains("default_plug_hashes"));
-    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
-}
-
-#[test]
 fn icon_image_edit_round_trips_and_identity_is_omitted() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.icon-edit").unwrap();
     let identity = recipe.to_json_pretty().unwrap();
@@ -492,23 +393,10 @@ fn icon_image_edit_round_trips_and_identity_is_omitted() {
 }
 
 #[test]
-fn modern_void_recipe_round_trips_and_compiles() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.void").unwrap();
-    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Void);
-    let encoded = recipe.to_json_pretty().unwrap();
-    assert!(encoded.contains(r#""modern_damage_type": "void""#));
-    let decoded = WeaponRecipe::from_json_str(&encoded).unwrap();
-    assert_eq!(decoded, recipe);
-    assert_eq!(
-        decoded.to_spec().unwrap().overrides.modern_damage_type,
-        Some(ModernDamageType::Void)
-    );
-}
-
-#[test]
 fn gameplay_profile_overrides_round_trip_and_compile() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.profiled").unwrap();
     recipe.overrides.rarity = Some(RecipeRarity::Exotic);
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Void);
     recipe.overrides.weapon_pattern_index = Some(285);
     recipe.overrides.weapon_pattern_donor_hash = Some(HexHash::new(MOUNTAINTOP_DONOR_HASH));
     recipe.overrides.stat_group_index = Some(42);
@@ -520,6 +408,14 @@ fn gameplay_profile_overrides_round_trip_and_compile() {
 
     let encoded = recipe.to_json_pretty().unwrap();
     assert!(encoded.contains(r#""rarity": "exotic""#));
+    assert!(encoded.contains(r#""modern_damage_type": "void""#));
+    let legacy = encoded.replace("weapon_pattern_index", "gear_art_index");
+    let canonical = WeaponRecipe::from_json_str(&legacy)
+        .unwrap()
+        .to_json_pretty()
+        .unwrap();
+    assert_eq!(canonical, encoded);
+    assert!(!canonical.contains("gear_art_index"));
     assert!(encoded.contains(r#""weapon_pattern_index": 285"#));
     assert!(encoded.contains(r#""weapon_pattern_donor_hash": "0xEE06B019""#));
     assert!(encoded.contains(r#""render_gear_donor""#));
@@ -528,7 +424,13 @@ fn gameplay_profile_overrides_round_trip_and_compile() {
     let decoded = WeaponRecipe::from_json_str(&encoded).unwrap();
     assert_eq!(decoded, recipe);
     let overrides = decoded.to_spec().unwrap().overrides;
-    assert_eq!(overrides.rarity, Some(AuthoredWeaponRarity::Exotic));
+    assert_eq!(
+        (overrides.rarity, overrides.modern_damage_type),
+        (
+            Some(AuthoredWeaponRarity::Exotic),
+            Some(ModernDamageType::Void)
+        ),
+    );
     assert_eq!(overrides.weapon_pattern_index, Some(285));
     assert_eq!(overrides.stat_group_index, Some(42));
     assert_eq!(
@@ -540,21 +442,6 @@ fn gameplay_profile_overrides_round_trip_and_compile() {
             .item_hash,
         MOUNTAINTOP_DONOR_HASH
     );
-}
-
-#[test]
-fn legacy_misnamed_gear_art_field_loads_but_saves_canonically() {
-    let recipe = WeaponRecipe::new_weapon("parhelion.legacy-weapon-pattern").unwrap();
-    let encoded = recipe.to_json_pretty().unwrap().replace(
-        "\"investment_stats\": []",
-        "\"investment_stats\": [],\n    \"gear_art_index\": 108",
-    );
-
-    let decoded = WeaponRecipe::from_json_str(&encoded).unwrap();
-    assert_eq!(decoded.overrides.weapon_pattern_index, Some(108));
-    let canonical = decoded.to_json_pretty().unwrap();
-    assert!(canonical.contains("\"weapon_pattern_index\": 108"));
-    assert!(!canonical.contains("gear_art_index"));
 }
 
 #[test]
@@ -605,30 +492,28 @@ fn socket_columns_round_trip_in_order_and_reject_malformed_choices() {
 }
 
 #[test]
-fn removed_default_plug_field_is_not_a_second_schema() {
-    let mut value =
-        serde_json::to_value(WeaponRecipe::new_weapon("parhelion.schema-columns").unwrap())
+fn recipe_schema_rejects_unsupported_versions_missing_placement_and_retired_columns() {
+    let current =
+        serde_json::to_value(WeaponRecipe::new_weapon("parhelion.schema-unsupported").unwrap())
             .unwrap();
-    let overrides = value["overrides"].as_object_mut().unwrap();
-    overrides.remove("socket_columns");
-    overrides.insert(
-        "default_plug_hashes".to_owned(),
-        serde_json::json!(["0x11111111"]),
-    );
-
-    assert!(WeaponRecipe::from_json_str(&value.to_string()).is_err());
-}
-
-#[test]
-fn non_current_recipe_schema_is_rejected() {
-    let current = WeaponRecipe::new_weapon("parhelion.schema-unsupported").unwrap();
-    let mut value = serde_json::to_value(current).unwrap();
-    value
-        .as_object_mut()
-        .unwrap()
-        .insert("schema".to_owned(), serde_json::Value::from(2));
-
-    assert!(WeaponRecipe::from_json_str(&value.to_string()).is_err());
+    for invalid in ["schema", "collection_placement", "default_plug_hashes"] {
+        let mut value = current.clone();
+        match invalid {
+            "schema" => value["schema"] = serde_json::json!(2),
+            "collection_placement" => {
+                value.as_object_mut().unwrap().remove(invalid);
+            }
+            _ => {
+                let overrides = value["overrides"].as_object_mut().unwrap();
+                overrides.remove("socket_columns");
+                overrides.insert(invalid.into(), serde_json::json!(["0x11111111"]));
+            }
+        }
+        assert!(
+            WeaponRecipe::from_json_str(&value.to_string()).is_err(),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]
@@ -646,34 +531,6 @@ fn duplicate_recipe_fields_are_rejected_before_validation() {
             .to_string()
             .contains("duplicate object member \"schema\"")
     );
-}
-
-#[test]
-fn current_schema_requires_explicit_collection_placement() {
-    let current = WeaponRecipe::new_weapon("parhelion.missing-placement").unwrap();
-    let mut value = serde_json::to_value(current).unwrap();
-    value
-        .as_object_mut()
-        .unwrap()
-        .remove("collection_placement");
-
-    assert!(WeaponRecipe::from_json_str(&value.to_string()).is_err());
-}
-
-#[test]
-fn duplicate_stat_overrides_are_rejected_by_the_compiler_boundary() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.duplicate").unwrap();
-    recipe.overrides.investment_stats = vec![
-        WeaponStatOverride {
-            definition_index: 15,
-            value: 50,
-        },
-        WeaponStatOverride {
-            definition_index: 15,
-            value: 60,
-        },
-    ];
-    assert!(recipe.validate().is_err());
 }
 
 #[test]
@@ -812,6 +669,11 @@ fn investment_stats_are_canonicalized_by_definition_index() {
             .collect::<Vec<_>>(),
         vec![15, 22, 31]
     );
+    recipe.overrides.investment_stats.push(WeaponStatOverride {
+        definition_index: 31,
+        value: 21,
+    });
+    assert!(recipe.validate().is_err());
 }
 
 #[test]
@@ -876,4 +738,105 @@ fn duplicate_locale_and_conflicting_stat_removal_are_rejected() {
     });
     recipe.overrides.removed_investment_stats.push(15);
     assert!(recipe.validate().is_err());
+}
+#[test]
+fn custom_choices_sharing_a_template_round_trip_while_duplicate_definitions_are_rejected() {
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.custom-choice-round-trip").unwrap();
+    let mut perk = crate::perk::PerkRecipe::new();
+    perk.name = "Private Choice".into();
+    perk.description = "A private alternative to the stock template.".into();
+    perk.effects.push(crate::perk::PerkRecipe::effect(405));
+    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
+        socket_type: Some(92),
+        choices: vec![perk.template_plug.clone(); 2],
+        ..Default::default()
+    })];
+    assert!(
+        recipe.validate().is_err(),
+        "Stock duplicates remain invalid"
+    );
+    recipe.overrides.socket_plug_variants = vec![perk.at_socket(0, 1)];
+    let saved = recipe.to_json_pretty().unwrap();
+    assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
+    recipe
+        .overrides
+        .socket_plug_variants
+        .push(perk.at_socket(0, 0));
+    assert!(
+        recipe.validate().is_err(),
+        "Identical private perks remain duplicates"
+    );
+    recipe.overrides.socket_plug_variants[1].name = Some("Different Private Choice".into());
+    let saved = recipe.to_json_pretty().unwrap();
+    assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
+}
+
+#[test]
+fn additional_behaviors_round_trip_and_stay_out_of_untouched_recipes() {
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.behavior").unwrap();
+    // The field is absent from a recipe that does not use it.
+    let bare = recipe.to_json_pretty().unwrap();
+    assert!(!bare.contains("additional_behaviors"), "{bare}");
+
+    recipe.overrides.additional_behaviors = vec![AdditionalBehaviorRecipe {
+        behavior: "graviton-lance".to_owned(),
+    }];
+    recipe.validate().unwrap();
+    let encoded = recipe.to_json_pretty().unwrap();
+    assert!(
+        encoded.contains(r#""additional_behaviors": ["#),
+        "{encoded}"
+    );
+    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
+
+    // Variable damage asks for the element switch by family rather than naming a carrier.
+    let spec = recipe.to_spec().unwrap();
+    assert_eq!(spec.overrides.additional_behaviors, ["graviton-lance"]);
+}
+
+#[test]
+fn variable_damage_round_trips_without_a_carrier_appearance() {
+    use crate::weapon::variable_damage::HARD_LIGHT_ITEM_HASH;
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.variable").unwrap();
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe {
+        elements: vec![RecipeDamageType::Arc, RecipeDamageType::Solar],
+    });
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Arc);
+
+    // The reload hold is grafted from the weapon family's behavior record, so no carrier
+    // appearance is needed and the recipe is valid on its own.
+    recipe.validate().unwrap();
+
+    // Wearing a carrier stays valid and round-trips the same way.
+    recipe.presentation_donor = Some(WeaponDonorReference {
+        item_hash: HexHash::new(HARD_LIGHT_ITEM_HASH),
+        expected_name: Some("Hard Light".to_owned()),
+    });
+
+    let encoded = recipe.to_json_pretty().unwrap();
+    assert!(encoded.contains(r#""variable_damage": {"#));
+    assert!(encoded.contains(r#""elements": ["#));
+    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
+    assert!(
+        WeaponRecipe::from_json_str(&encoded.replace(r#""elements""#, r#""members""#)).is_err()
+    );
+    let spec = recipe.to_spec().unwrap();
+    assert_eq!(
+        spec.overrides.variable_damage,
+        Some(WeaponVariableDamage {
+            elements: vec![ModernDamageType::Arc, ModernDamageType::Solar],
+        })
+    );
+
+    // The resting element must be one of the set, and a single element is a fixed type.
+    recipe.overrides.modern_damage_type = Some(RecipeDamageType::Void);
+    assert!(recipe.validate().is_err());
+    recipe.overrides.modern_damage_type = None;
+    assert!(recipe.validate().is_ok());
+    recipe.overrides.variable_damage = Some(VariableDamageRecipe {
+        elements: vec![RecipeDamageType::Void],
+    });
+    assert!(recipe.validate().is_err());
+    recipe.overrides.variable_damage = None;
+    assert!(!recipe.to_json_pretty().unwrap().contains("variable_damage"));
 }

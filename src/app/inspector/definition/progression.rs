@@ -51,103 +51,146 @@ fn draw_progression_definitions(
     }
 }
 
+const REWARD_PROGRESSION_WIDTH: f32 = 220.0;
+const REWARD_HASH_WIDTH: f32 = 126.0;
+const REWARD_INDEX_WIDTH: f32 = 88.0;
+const REWARD_LEVEL_WIDTH: f32 = 72.0;
+const REWARD_QUANTITY_WIDTH: f32 = 88.0;
+
+/// Names a progression definition by index, adding its name when it has one.
+fn definition_label(index: usize, name: &str) -> String {
+    if name.trim().is_empty() {
+        format!("Definition #{index}")
+    } else {
+        format!("Definition #{index} · {name}")
+    }
+}
+
+fn draw_reward_reference_header(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        table_cell(
+            ui,
+            REWARD_PROGRESSION_WIDTH,
+            egui::RichText::new("Progression").strong(),
+        );
+        table_cell(ui, REWARD_HASH_WIDTH, egui::RichText::new("Hash").strong());
+        table_cell(
+            ui,
+            REWARD_INDEX_WIDTH,
+            egui::RichText::new("Reward Index").strong(),
+        );
+        table_cell(
+            ui,
+            REWARD_LEVEL_WIDTH,
+            egui::RichText::new("Level").strong(),
+        );
+        table_cell(
+            ui,
+            REWARD_QUANTITY_WIDTH,
+            egui::RichText::new("Quantity").strong(),
+        );
+    });
+}
+
+fn draw_reward_reference_row(
+    ui: &mut egui::Ui,
+    definition_index: usize,
+    definition: &ProgressionDefinition,
+    reward_index: usize,
+) {
+    let reward = &definition.reward_items[reward_index];
+    table_cell(
+        ui,
+        REWARD_PROGRESSION_WIDTH,
+        definition_label(definition_index, &definition.name),
+    );
+    draw_hash_hex_cell(ui, REWARD_HASH_WIDTH, Some(definition.hash));
+    table_cell(
+        ui,
+        REWARD_INDEX_WIDTH,
+        egui::RichText::new(reward_index.to_string()).monospace(),
+    );
+    table_cell(
+        ui,
+        REWARD_LEVEL_WIDTH,
+        egui::RichText::new(reward.rewarded_at_progression_level.to_string()).monospace(),
+    );
+    table_cell(
+        ui,
+        REWARD_QUANTITY_WIDTH,
+        egui::RichText::new(reward.quantity.to_string()).monospace(),
+    );
+    ui.end_row();
+}
+
 fn draw_reward_references(
     ui: &mut egui::Ui,
     inspected_hash: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
-    let progression_reward_matches = &matches.progression_reward_matches;
-    if !progression_reward_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!(
-                "Progression Reward References ({})",
-                progression_reward_matches.len()
-            ),
-            progression_reward_matches.len() <= 12,
-            |ui| {
-                let progression_width = 220.0;
-                let hash_width = 126.0;
-                let reward_index_width = 88.0;
-                let level_width = 72.0;
-                let quantity_width = 88.0;
-                ui.horizontal(|ui| {
-                    table_cell(
-                        ui,
-                        progression_width,
-                        egui::RichText::new("Progression").strong(),
-                    );
-                    table_cell(ui, hash_width, egui::RichText::new("Hash").strong());
-                    table_cell(
-                        ui,
-                        reward_index_width,
-                        egui::RichText::new("Reward Index").strong(),
-                    );
-                    table_cell(ui, level_width, egui::RichText::new("Level").strong());
-                    table_cell(ui, quantity_width, egui::RichText::new("Quantity").strong());
-                });
-                egui::ScrollArea::vertical()
-                    .id_salt(("hash_progression_reward_references", inspected_hash))
-                    .max_height(280.0)
-                    .auto_shrink([false, true])
-                    .show_rows(
-                        ui,
-                        TABLE_CELL_HEIGHT,
-                        progression_reward_matches.len(),
-                        |ui, range| {
-                            egui::Grid::new((
-                                "hash_progression_reward_reference_rows",
-                                inspected_hash,
-                            ))
-                            .num_columns(5)
-                            .striped(true)
-                            .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
-                            .show(ui, |ui| {
-                                for row in range {
-                                    let (definition_index, definition, reward_index) =
-                                        progression_reward_matches[row];
-                                    let reward = &definition.reward_items[reward_index];
-                                    table_cell(
-                                        ui,
-                                        progression_width,
-                                        if definition.name.trim().is_empty() {
-                                            format!("Definition #{definition_index}")
-                                        } else {
-                                            format!(
-                                                "Definition #{definition_index} · {}",
-                                                definition.name
-                                            )
-                                        },
-                                    );
-                                    draw_hash_hex_cell(ui, hash_width, Some(definition.hash));
-                                    table_cell(
-                                        ui,
-                                        reward_index_width,
-                                        egui::RichText::new(reward_index.to_string()).monospace(),
-                                    );
-                                    table_cell(
-                                        ui,
-                                        level_width,
-                                        egui::RichText::new(
-                                            reward.rewarded_at_progression_level.to_string(),
-                                        )
-                                        .monospace(),
-                                    );
-                                    table_cell(
-                                        ui,
-                                        quantity_width,
-                                        egui::RichText::new(reward.quantity.to_string())
-                                            .monospace(),
-                                    );
-                                    ui.end_row();
-                                }
-                            });
-                        },
-                    );
-            },
-        );
+    let reward_matches = &matches.progression_reward_matches;
+    if reward_matches.is_empty() {
+        return;
     }
+    ui.add_space(8.0);
+    hash_metadata_section(
+        ui,
+        &format!("Progression Reward References ({})", reward_matches.len()),
+        reward_matches.len() <= 12,
+        |ui| {
+            draw_reward_reference_header(ui);
+            egui::ScrollArea::vertical()
+                .id_salt(("hash_progression_reward_references", inspected_hash))
+                .max_height(280.0)
+                .auto_shrink([false, true])
+                .show_rows(ui, TABLE_CELL_HEIGHT, reward_matches.len(), |ui, range| {
+                    egui::Grid::new(("hash_progression_reward_reference_rows", inspected_hash))
+                        .num_columns(5)
+                        .striped(true)
+                        .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
+                        .show(ui, |ui| {
+                            for row in range {
+                                let (definition_index, definition, reward_index) =
+                                    reward_matches[row];
+                                draw_reward_reference_row(
+                                    ui,
+                                    definition_index,
+                                    definition,
+                                    reward_index,
+                                );
+                            }
+                        });
+                });
+        },
+    );
+}
+
+fn draw_faction_reference_row(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    definition_index: usize,
+    definition: &ProgressionDefinition,
+    faction: &ProgressionFactionDefinition,
+) {
+    ui.label(if faction.name.trim().is_empty() {
+        egui::RichText::new("-").weak()
+    } else {
+        egui::RichText::new(&faction.name)
+    });
+    let progression_name = if definition.name.trim().is_empty() {
+        format!("Definition #{definition_index}")
+    } else {
+        definition.name.clone()
+    };
+    draw_named_catalog_hash_link(ui, catalog, definition.hash, progression_name);
+    ui.monospace(definition_index.to_string());
+    draw_catalog_hash_link(
+        ui,
+        catalog,
+        definition.hash,
+        format_hash_hex(definition.hash),
+    );
+    ui.end_row();
 }
 
 fn draw_faction_references(
@@ -156,211 +199,193 @@ fn draw_faction_references(
     inspected_hash: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
-    let progression_faction_matches = &matches.progression_faction_matches;
-    if !progression_faction_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!(
-                "Faction Progression References ({})",
-                progression_faction_matches.len()
-            ),
-            true,
-            |ui| {
-                egui::Grid::new(("hash_progression_faction_references", inspected_hash))
-                    .num_columns(4)
-                    .striped(true)
-                    .spacing([16.0, 4.0])
-                    .show(ui, |ui| {
-                        ui.strong("Faction");
-                        ui.strong("Progression");
-                        ui.strong("Index");
-                        ui.strong("Hash");
-                        ui.end_row();
-                        for (definition_index, definition, _, faction) in
-                            progression_faction_matches
-                        {
-                            ui.label(if faction.name.trim().is_empty() {
-                                egui::RichText::new("-").weak()
-                            } else {
-                                egui::RichText::new(&faction.name)
-                            });
-                            let progression_name = if definition.name.trim().is_empty() {
-                                format!("Definition #{definition_index}")
-                            } else {
-                                definition.name.clone()
-                            };
-                            draw_named_catalog_hash_link(
-                                ui,
-                                catalog,
-                                definition.hash,
-                                progression_name,
-                            );
-                            ui.monospace(definition_index.to_string());
-                            draw_catalog_hash_link(
-                                ui,
-                                catalog,
-                                definition.hash,
-                                format_hash_hex(definition.hash),
-                            );
-                            ui.end_row();
-                        }
-                    });
-            },
-        );
+    let faction_matches = &matches.progression_faction_matches;
+    if faction_matches.is_empty() {
+        return;
     }
+    ui.add_space(8.0);
+    hash_metadata_section(
+        ui,
+        &format!("Faction Progression References ({})", faction_matches.len()),
+        true,
+        |ui| {
+            egui::Grid::new(("hash_progression_faction_references", inspected_hash))
+                .num_columns(4)
+                .striped(true)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    ui.strong("Faction");
+                    ui.strong("Progression");
+                    ui.strong("Index");
+                    ui.strong("Hash");
+                    ui.end_row();
+                    for (definition_index, definition, _, faction) in faction_matches {
+                        draw_faction_reference_row(
+                            ui,
+                            catalog,
+                            *definition_index,
+                            definition,
+                            faction,
+                        );
+                    }
+                });
+        },
+    );
+}
+
+fn draw_objective_detail_grid(ui: &mut egui::Ui, index: usize, objective: &ObjectiveDef) {
+    egui::Grid::new(("hash_objective", index))
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            hash_detail_field(ui, "Description", objective_description(objective), false);
+            hash_detail_field(
+                ui,
+                "Completion Value",
+                objective.completion_value.to_string(),
+                true,
+            );
+            hash_detail_field(ui, "Owners", objective.owners.len().to_string(), true);
+        });
 }
 
 fn draw_objective_matches(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
     let objectives = &matches.objectives;
-    if !objectives.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Objectives ({})", objectives.len()),
-            objectives.len() <= 3,
-            |ui| {
-                for (index, objective) in objectives {
-                    let name = if objective.name.trim().is_empty() {
-                        catalog.display_name(objective.hash)
-                    } else {
-                        Some(objective.name.as_str())
-                    };
-                    let heading = name.map_or_else(
-                        || format!("Objective #{index}"),
-                        |name| format!("{name} · Objective #{index}"),
-                    );
-                    metadata_subsection(ui, &heading, |ui| {
-                        egui::Grid::new(("hash_objective", *index))
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                hash_detail_field(
-                                    ui,
-                                    "Description",
-                                    objective_description(objective),
-                                    false,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Completion Value",
-                                    objective.completion_value.to_string(),
-                                    true,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Owners",
-                                    objective.owners.len().to_string(),
-                                    true,
-                                );
-                            });
-                        draw_hash_condition_programs(
-                            ui,
-                            egui::Id::new(("hash_objective_conditions", *index, objective.hash)),
-                            &objective.condition_programs,
-                            catalog,
-                        );
-                    });
-                }
-            },
-        );
+    if objectives.is_empty() {
+        return;
     }
+    ui.add_space(8.0);
+    hash_metadata_section(
+        ui,
+        &format!("Objectives ({})", objectives.len()),
+        objectives.len() <= 3,
+        |ui| {
+            for (index, objective) in objectives {
+                let name = if objective.name.trim().is_empty() {
+                    catalog.display_name(objective.hash)
+                } else {
+                    Some(objective.name.as_str())
+                };
+                let heading = name.map_or_else(
+                    || format!("Objective #{index}"),
+                    |name| format!("{name} · Objective #{index}"),
+                );
+                metadata_subsection(ui, &heading, |ui| {
+                    draw_objective_detail_grid(ui, *index, objective);
+                    draw_hash_condition_programs(
+                        ui,
+                        egui::Id::new(("hash_objective_conditions", *index, objective.hash)),
+                        &objective.condition_programs,
+                        catalog,
+                    );
+                });
+            }
+        },
+    );
+}
+
+fn objective_owner_heading(
+    catalog: &Catalog,
+    objective_index: usize,
+    owner: &ObjectiveOwnerDef,
+) -> String {
+    let name = if owner.name.trim().is_empty() {
+        catalog.display_name(owner.hash)
+    } else {
+        Some(owner.name.as_str())
+    };
+    name.map_or_else(
+        || {
+            format!(
+                "{} · Objective #{objective_index}",
+                objective_owner_kind_label(owner.kind)
+            )
+        },
+        |name| format!("{name} · {}", objective_owner_kind_label(owner.kind)),
+    )
+}
+
+fn draw_objective_owner_traits(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    detail_id: egui::Id,
+    traits: &[ObjectiveOwnerTraitDef],
+) {
+    if traits.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(format!("Traits ({})", traits.len()))
+        .id_salt(detail_id.with("traits"))
+        .default_open(traits.len() <= 4)
+        .show(ui, |ui| {
+            egui::Grid::new(detail_id.with("trait_rows"))
+                .num_columns(3)
+                .striped(true)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    ui.strong("Name");
+                    ui.strong("Hash");
+                    ui.strong("Description");
+                    ui.end_row();
+                    for trait_definition in traits {
+                        draw_named_catalog_hash_link(
+                            ui,
+                            catalog,
+                            trait_definition.hash,
+                            metadata_text(&trait_definition.name),
+                        );
+                        draw_catalog_hash_link(
+                            ui,
+                            catalog,
+                            trait_definition.hash,
+                            format_hash_hex(trait_definition.hash),
+                        );
+                        ui.label(metadata_text(&trait_definition.description));
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn draw_objective_owner_details(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    objective_index: usize,
+    objective: &ObjectiveDef,
+    owner: &ObjectiveOwnerDef,
+) {
+    egui::Grid::new(("hash_objective_owner", objective_index, owner.hash))
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            hash_detail_field(ui, "Objective", objective_description(objective), false);
+            hash_detail_field(ui, "Type", metadata_text(&owner.type_name), false);
+            hash_detail_field(ui, "Description", metadata_text(&owner.description), false);
+        });
+    let detail_id = egui::Id::new(("hash_objective_owner_detail", objective_index, owner.hash));
+    draw_hash_package_paths(ui, detail_id, &owner.paths);
+    draw_objective_owner_traits(ui, catalog, detail_id, &owner.traits);
 }
 
 fn draw_objective_owners(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
     let owner_matches = &matches.owner_matches;
-    if !owner_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Objective Owners ({})", owner_matches.len()),
-            owner_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
-            |ui| {
-                for (objective_index, objective, owner) in owner_matches {
-                    let name = if owner.name.trim().is_empty() {
-                        catalog.display_name(owner.hash)
-                    } else {
-                        Some(owner.name.as_str())
-                    };
-                    let heading = name.map_or_else(
-                        || {
-                            format!(
-                                "{} · Objective #{objective_index}",
-                                objective_owner_kind_label(owner.kind)
-                            )
-                        },
-                        |name| format!("{name} · {}", objective_owner_kind_label(owner.kind)),
-                    );
-                    metadata_subsection(ui, &heading, |ui| {
-                        egui::Grid::new(("hash_objective_owner", *objective_index, owner.hash))
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                hash_detail_field(
-                                    ui,
-                                    "Objective",
-                                    objective_description(objective),
-                                    false,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Type",
-                                    metadata_text(&owner.type_name),
-                                    false,
-                                );
-                                hash_detail_field(
-                                    ui,
-                                    "Description",
-                                    metadata_text(&owner.description),
-                                    false,
-                                );
-                            });
-                        let detail_id = egui::Id::new((
-                            "hash_objective_owner_detail",
-                            *objective_index,
-                            owner.hash,
-                        ));
-                        draw_hash_package_paths(ui, detail_id, &owner.paths);
-                        if !owner.traits.is_empty() {
-                            egui::CollapsingHeader::new(format!("Traits ({})", owner.traits.len()))
-                                .id_salt(detail_id.with("traits"))
-                                .default_open(owner.traits.len() <= 4)
-                                .show(ui, |ui| {
-                                    egui::Grid::new(detail_id.with("trait_rows"))
-                                        .num_columns(3)
-                                        .striped(true)
-                                        .spacing([16.0, 4.0])
-                                        .show(ui, |ui| {
-                                            ui.strong("Name");
-                                            ui.strong("Hash");
-                                            ui.strong("Description");
-                                            ui.end_row();
-                                            for trait_definition in &owner.traits {
-                                                draw_named_catalog_hash_link(
-                                                    ui,
-                                                    catalog,
-                                                    trait_definition.hash,
-                                                    metadata_text(&trait_definition.name),
-                                                );
-                                                draw_catalog_hash_link(
-                                                    ui,
-                                                    catalog,
-                                                    trait_definition.hash,
-                                                    format_hash_hex(trait_definition.hash),
-                                                );
-                                                ui.label(metadata_text(
-                                                    &trait_definition.description,
-                                                ));
-                                                ui.end_row();
-                                            }
-                                        });
-                                });
-                        }
-                    });
-                }
-            },
-        );
+    if owner_matches.is_empty() {
+        return;
     }
+    ui.add_space(8.0);
+    hash_metadata_section(
+        ui,
+        &format!("Objective Owners ({})", owner_matches.len()),
+        owner_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            for (objective_index, objective, owner) in owner_matches {
+                let heading = objective_owner_heading(catalog, *objective_index, owner);
+                metadata_subsection(ui, &heading, |ui| {
+                    draw_objective_owner_details(ui, catalog, *objective_index, objective, owner);
+                });
+            }
+        },
+    );
 }
 
 fn draw_objective_traits(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
@@ -643,12 +668,12 @@ fn draw_hash_progression_definition(
                                             .maintain_aspect_ratio(true),
                                     );
                                 } else {
-                                    ui.label(egui::RichText::new("-").weak());
+                                    ui.weak("-");
                                 }
                             }
                             ui.monospace(step_index.to_string());
                             if step.name.trim().is_empty() {
-                                ui.label(egui::RichText::new("-").weak());
+                                ui.weak("-");
                             } else {
                                 ui.label(&step.name);
                             }

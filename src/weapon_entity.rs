@@ -5,7 +5,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod groups;
 mod owner;
+pub use groups::coupled_weapon_component_bindings;
 
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG: u32 = 0x80EC_3F60;
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS: u32 = 0x8080_9780;
@@ -45,7 +47,6 @@ const ENTITY_DEFINITION_MAP_DESCRIPTOR: usize = 0x48;
 const ENTITY_RESOURCE_MAP_DESCRIPTOR: usize = 0x58;
 const ENTITY_RESOURCE_DESCRIPTORS_DESCRIPTOR: usize = 0x68;
 const ARRAY_TRAILER_SIZE: usize = 0x08;
-const ARRAY_HEADER_SIZE: usize = 0x10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SandboxPatternIdentity {
@@ -77,6 +78,7 @@ struct NativeArray {
     header: usize,
     rows: usize,
     row_class: u32,
+    omitted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -101,39 +103,11 @@ pub fn sandbox_pattern_identity(
     table: &[u8],
     item_hash: u32,
 ) -> Result<Option<SandboxPatternIdentity>, String> {
-    let array = native_array(table, 0x08)?;
-    if array.row_class != SANDBOX_PATTERN_ROW_CLASS {
-        return Err(format!(
-            "Sandbox-pattern table has row class 0x{:08X}, expected 0x{SANDBOX_PATTERN_ROW_CLASS:08X}",
-            array.row_class
-        ));
-    }
-    checked_rows_end(
-        array,
-        SANDBOX_PATTERN_ROW_SIZE,
-        table.len(),
-        "sandbox-pattern",
-    )?;
+    let array = sandbox_pattern_rows(table)?;
     for row_index in 0..array.count {
         let row_offset = array.rows + row_index * SANDBOX_PATTERN_ROW_SIZE;
         if read_u32(table, row_offset)? == item_hash {
-            return Ok(Some(SandboxPatternIdentity {
-                item_hash,
-                row_index,
-                row_offset,
-                pattern_global_id_hash: read_u32(
-                    table,
-                    row_offset + SANDBOX_PATTERN_GLOBAL_ID_OFFSET,
-                )?,
-                weapon_content_group_hash: read_u32(
-                    table,
-                    row_offset + SANDBOX_PATTERN_WEAPON_CONTENT_GROUP_HASH_OFFSET,
-                )?,
-                weapon_translation_group_hash: read_u32(
-                    table,
-                    row_offset + SANDBOX_PATTERN_WEAPON_TRANSLATION_GROUP_HASH_OFFSET,
-                )?,
-            }));
+            return decode_sandbox_pattern_row(table, row_index, row_offset).map(Some);
         }
     }
     Ok(None)
@@ -144,6 +118,15 @@ pub fn sandbox_pattern_identity_at(
     table: &[u8],
     row_index: usize,
 ) -> Result<Option<SandboxPatternIdentity>, String> {
+    let array = sandbox_pattern_rows(table)?;
+    if row_index >= array.count {
+        return Ok(None);
+    }
+    let row_offset = array.rows + row_index * SANDBOX_PATTERN_ROW_SIZE;
+    decode_sandbox_pattern_row(table, row_index, row_offset).map(Some)
+}
+
+fn sandbox_pattern_rows(table: &[u8]) -> Result<NativeArray, String> {
     let array = native_array(table, 0x08)?;
     if array.row_class != SANDBOX_PATTERN_ROW_CLASS {
         return Err(format!(
@@ -157,18 +140,15 @@ pub fn sandbox_pattern_identity_at(
         table.len(),
         "sandbox-pattern",
     )?;
-    if row_index >= array.count {
-        return Ok(None);
-    }
-    let row_offset = array
-        .rows
-        .checked_add(
-            row_index
-                .checked_mul(SANDBOX_PATTERN_ROW_SIZE)
-                .ok_or("Sandbox-pattern row offset overflowed")?,
-        )
-        .ok_or("Sandbox-pattern row offset overflowed")?;
-    Ok(Some(SandboxPatternIdentity {
+    Ok(array)
+}
+
+fn decode_sandbox_pattern_row(
+    table: &[u8],
+    row_index: usize,
+    row_offset: usize,
+) -> Result<SandboxPatternIdentity, String> {
+    Ok(SandboxPatternIdentity {
         item_hash: read_u32(table, row_offset)?,
         row_index,
         row_offset,
@@ -181,7 +161,7 @@ pub fn sandbox_pattern_identity_at(
             table,
             row_offset + SANDBOX_PATTERN_WEAPON_TRANSLATION_GROUP_HASH_OFFSET,
         )?,
-    }))
+    })
 }
 
 /// Resolves a sandbox-pattern global identity through the stock runtime entity map.
@@ -190,15 +170,12 @@ pub fn weapon_entity_assignment(
     pattern_global_id_hash: u32,
 ) -> Result<Option<u32>, String> {
     let array = assignment_rows(assignments)?;
-    let rows_end = checked_rows_end(
+    checked_rows_end(
         array,
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE,
         assignments.len(),
         "sandbox-pattern entity assignment",
     )?;
-    if rows_end > assignments.len() {
-        return Err("Sandbox-pattern entity assignments extend beyond their payload".into());
-    }
     let mut low = 0;
     let mut high = array.count;
     while low < high {
@@ -462,6 +439,21 @@ pub fn graft_weapon_component_bindings(
         }
     }
 
+    // Plan event endpoints against the original entity. Applying one owner first must not
+    // change the evidence used to match another owner's incoming or outgoing connections.
+    let mut event_updates = BTreeMap::new();
+    for (&target_owner_tag, plan) in &planned {
+        for (offset, bytes) in
+            owner::graft_event_updates(target, plan.donor, target_owner_tag, plan.donor_owner_tag)?
+        {
+            if event_updates
+                .insert(offset, bytes)
+                .is_some_and(|previous| previous != bytes)
+            {
+                return Err("Runtime component donors disagree about an event connection".into());
+            }
+        }
+    }
     let original_component_count = native_array(target, ENTITY_COMPONENTS_DESCRIPTOR)?.count;
     let mut authored = target.clone();
     for (target_owner_tag, plan) in planned {
@@ -472,6 +464,9 @@ pub fn graft_weapon_component_bindings(
             plan.donor_owner_tag,
             plan.requested_binding_hash,
         )?;
+    }
+    for (offset, bytes) in event_updates {
+        authored[offset..offset + bytes.len()].copy_from_slice(&bytes);
     }
     validate_weapon_entity(&authored)?;
     if native_array(&authored, ENTITY_COMPONENTS_DESCRIPTOR)?.count != original_component_count {
@@ -870,6 +865,7 @@ pub fn validate_weapon_entity(entity: &[u8]) -> Result<(), String> {
     let descriptors = native_array(entity, ENTITY_RESOURCE_DESCRIPTORS_DESCRIPTOR)?;
     validate_entity_arrays(entity, components, definitions, resource_map, descriptors)?;
     weapon_component_binding_hashes(entity)?;
+    owner::validate_events(entity)?;
     Ok(())
 }
 
@@ -1002,7 +998,7 @@ fn validate_entity_arrays(
             "resource-descriptor",
         ),
     ] {
-        if array.row_class != row_class {
+        if !array.omitted && array.row_class != row_class {
             return Err(format!(
                 "Weapon entity {label} array has class 0x{:08X}, expected 0x{row_class:08X}",
                 array.row_class
@@ -1017,26 +1013,27 @@ fn validate_entity_arrays(
 }
 
 fn native_array(data: &[u8], descriptor: usize) -> Result<NativeArray, String> {
-    let count = usize::try_from(read_u64(data, descriptor)?)
-        .map_err(|_| format!("Array at 0x{descriptor:X} has an excessive count"))?;
-    let pointer = descriptor
-        .checked_add(8)
-        .ok_or("Native array pointer offset overflowed")?;
-    let header = relative_target(pointer, read_i64(data, pointer)?)?;
-    if read_u64(data, header)?
-        != u64::try_from(count).map_err(|_| "Native array count does not fit u64")?
-    {
-        return Err(format!(
-            "Array descriptor and header counts disagree at 0x{descriptor:X}"
-        ));
+    // A zero count and zero relative pointer omit the array entirely. Native system
+    // entities use this form for empty resource tables, beside a sentinel definition.
+    // Do not interpret adjacent descriptor bytes as an allocated array header.
+    if crate::package_payload::bytes_at::<16>(data, descriptor)? == [0; 16] {
+        return Ok(NativeArray {
+            count: 0,
+            header: descriptor + 8,
+            rows: descriptor + 16,
+            row_class: 0,
+            omitted: true,
+        });
     }
+    let (count, header, rows, row_class) =
+        crate::package_payload::native_array_at(data, descriptor)
+            .map_err(|error| format!("Weapon-entity array at 0x{descriptor:X}: {error}"))?;
     Ok(NativeArray {
         count,
         header,
-        rows: header
-            .checked_add(ARRAY_HEADER_SIZE)
-            .ok_or("Native array row offset overflowed")?,
-        row_class: read_u32(data, header + 8)?,
+        rows,
+        row_class,
+        omitted: false,
     })
 }
 
@@ -1093,14 +1090,6 @@ fn copy_row(
     Ok(())
 }
 
-fn relative_target(pointer: usize, relative: i64) -> Result<usize, String> {
-    let pointer = i64::try_from(pointer).map_err(|_| "Relative pointer does not fit i64")?;
-    let target = pointer
-        .checked_add(relative)
-        .ok_or("Relative pointer overflowed")?;
-    usize::try_from(target).map_err(|_| "Relative pointer is negative".into())
-}
-
 fn write_relative_pointer(data: &mut [u8], pointer: usize, target: usize) -> Result<(), String> {
     let relative = i64::try_from(target)
         .and_then(|target| i64::try_from(pointer).map(|pointer| target - pointer))
@@ -1132,4 +1121,4 @@ fn write_array<const N: usize>(
 #[cfg(test)]
 mod tests;
 
-use crate::package_payload::{i64_at as read_i64, u32_at as read_u32, u64_at as read_u64};
+use crate::package_payload::{u32_at as read_u32, u64_at as read_u64};

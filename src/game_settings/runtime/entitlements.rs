@@ -51,7 +51,7 @@ fn validate_rows(document: &Value, native: bool) -> Result<(), String> {
                     || name.parse::<u32>().is_err()))
         {
             return Err(format!(
-                "Entitlement {} has invalid ownership; application ownership requires a decimal 32-bit application ID",
+                "Entitlement {} has invalid ownership. Application ownership requires a decimal 32-bit application ID",
                 index + 1
             ));
         }

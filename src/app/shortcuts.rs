@@ -15,7 +15,7 @@ impl SundialApp {
         }
 
         let editing_text = ctx
-            .memory(|memory| memory.focused())
+            .memory(eframe::egui::Memory::focused)
             .is_some_and(|id| egui::text_edit::TextEditState::load(ctx, id).is_some());
         if editing_text || self.json_editor.has_unapplied_changes() {
             return;

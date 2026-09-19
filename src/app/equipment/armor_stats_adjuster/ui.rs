@@ -310,7 +310,7 @@ fn draw_targets(ui: &mut egui::Ui, catalog: &Catalog, state: &mut State) -> bool
                         );
                         changed |= response.changed();
                         response.on_hover_text(format!(
-                            "Minimum overall {}. 0 ignores this stat; 100 is the useful cap.",
+                            "Minimum overall {}. 0 ignores this stat. 100 is the useful cap.",
                             armor_stat_allocation::STAT_NAMES[index]
                         ));
                     },
@@ -403,13 +403,13 @@ fn draw_controls(
         swap_setting_changed = ui
             .checkbox(
                 &mut allow_inventory_swaps,
-                "Use better armor from character inventory",
+                "Use Better Armor from Character Inventory",
             )
             .on_hover_text(
                 "When enabled, the preview may equip unlocked armor stored on this character. The currently equipped piece is moved back to inventory.",
             )
             .changed();
-        ui.label(egui::RichText::new("Locked armor is always preserved").weak());
+        ui.weak("Locked armor is always preserved");
         if !narrow {
             draw_control_actions(ui, has_targets, can_apply, clear_requested, apply_requested);
         }
@@ -439,7 +439,7 @@ fn draw_control_actions(
             *clear_requested = true;
         }
         if ui
-            .add_enabled(can_apply, egui::Button::new("Adjust armor"))
+            .add_enabled(can_apply, egui::Button::new("Adjust Armor"))
             .on_disabled_hover_text(if has_targets {
                 "The preview does not require any armor changes"
             } else {
@@ -454,7 +454,7 @@ fn draw_control_actions(
 
 fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
     ui.horizontal(|ui| {
-        ui.strong("Armor preview");
+        ui.strong("Armor Preview");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(solution) = &state.preview {
                 let pieces = changed_piece_count(solution);
@@ -472,7 +472,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         "{pieces} pieces · {swaps} swaps · {masterworks} masterworks · {plugs} plugs"
                     )
                 };
-                ui.label(egui::RichText::new(text).weak());
+                ui.weak(text);
             }
         });
     });
@@ -499,11 +499,11 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
             ui.strong("Armor");
         });
         preview_cell(ui, widths[2], |ui| {
-            ui.strong("Stat plugs");
+            ui.strong("Stat Plugs");
         });
         preview_cell(ui, widths[3], |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Stats · current");
+                ui.strong("Stats · Current");
                 crate::app::glyphs::inline_right_arrow(ui, ui.visuals().strong_text_color());
                 ui.strong("projected");
             });
@@ -639,7 +639,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         drew_line = true;
                     }
                     if !drew_line {
-                        ui.label(egui::RichText::new("No changes").weak());
+                        ui.weak("No changes");
                     }
                 });
 
@@ -658,21 +658,16 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
 
     ui.add_space(6.0);
     if let Some(solution) = &state.preview {
-        ui.label(
-            egui::RichText::new(format!(
-                "Projected: {}",
-                format_totals(solution.projected_totals)
-            ))
-            .weak(),
-        );
+        ui.weak(format!(
+            "Projected: {}",
+            format_totals(solution.projected_totals)
+        ));
     } else {
-        ui.label(
-            egui::RichText::new("Set a goal to preview the closest valid configuration.").weak(),
-        );
+        ui.weak("Set a goal to preview the closest valid configuration.");
     }
 }
 
-pub(super) fn preview_column_widths(available: f32, gap: f32) -> [f32; 4] {
+fn preview_column_widths(available: f32, gap: f32) -> [f32; 4] {
     let slot = if available >= 760.0 { 70.0 } else { 58.0 };
     let armor = (available * 0.22).clamp(125.0, 210.0);
     let stats = (available * 0.27).clamp(160.0, 300.0);
@@ -763,8 +758,8 @@ fn armor_stat_mod_plan(
             assignment.piece_index == piece_index && assignment.socket_index == socket_index
         })
         .map_or(previous, |assignment| assignment.selected);
-    let previous_label = armor_stat_mod_label(catalog, item, socket_index, previous);
-    let selected_label = armor_stat_mod_label(catalog, item, socket_index, selected);
+    let previous_label = armor_stat_mod_label(catalog, previous);
+    let selected_label = armor_stat_mod_label(catalog, selected);
     let changed = previous != selected;
     let empty = selected_label == "Empty";
     let text = if changed {
@@ -813,16 +808,11 @@ pub(super) fn is_armor_stat_mod_plug(catalog: &Catalog, hash: u64) -> bool {
         && single_stat_value(catalog.armor_stat_values(hash)).is_some()
 }
 
-fn armor_stat_mod_label(
-    catalog: &Catalog,
-    item: &ItemDef,
-    socket_index: usize,
-    hash: Option<u64>,
-) -> String {
+fn armor_stat_mod_label(catalog: &Catalog, hash: Option<u64>) -> String {
     let Some(hash) = hash else {
         return "Empty".to_owned();
     };
-    let values = armor_stat_allocation::socket_stat_values(catalog, item, socket_index, hash);
+    let values = armor_stat_allocation::plug_stat_values(catalog, hash);
     if let Some((index, value)) = single_stat_value(values) {
         return format!("{} {value:+}", armor_stat_allocation::STAT_NAMES[index]);
     }

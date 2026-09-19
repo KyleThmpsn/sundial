@@ -2,8 +2,10 @@
 
 mod activity;
 mod activity_page;
+mod capabilities;
 mod character_page;
 mod entitlements;
+pub(crate) use capabilities::Capabilities;
 pub(crate) use entitlements::validate_native as validate_native_entitlements;
 pub(crate) fn validate_native_details(document: &serde_json::Value) -> Result<(), String> {
     validate_native_entitlements(document)?;

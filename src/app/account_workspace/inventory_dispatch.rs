@@ -7,7 +7,8 @@ pub(in crate::app) fn profile_items(
 ) -> Result<Option<Vec<ProfileItemSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::profile_items(&document.json),
-        AccountDocument::Sqlite(document) => Ok(sqlite::profile_items(document)),
+        AccountDocument::Sqlite(document) => Ok(Some(sqlite::profile_items(document))),
+        AccountDocument::Dawn(document) => Ok(Some(sqlite::profile_items(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }
@@ -17,7 +18,8 @@ pub(in crate::app) fn dismantle_rewards(
 ) -> Result<Option<Vec<DismantleRewardSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::dismantle_rewards(&document.json),
-        AccountDocument::Sqlite(document) => Ok(sqlite::dismantle_rewards(document)),
+        AccountDocument::Sqlite(document) => Ok(Some(sqlite::dismantle_rewards(document))),
+        AccountDocument::Dawn(document) => Ok(Some(sqlite::dismantle_rewards(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }
@@ -31,6 +33,7 @@ pub(in crate::app) fn character_inventory(
             crate::app::inventory::character_inventory(&document.json, character_index)
         }
         AccountDocument::Sqlite(document) => sqlite::character_inventory(document, character_index),
+        AccountDocument::Dawn(document) => sqlite::character_inventory(document, character_index),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }
@@ -50,6 +53,9 @@ pub(in crate::app) fn add_profile_item(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::add_profile_item(document, definition_hash, quantity)
+        }
     }
 }
 
@@ -68,6 +74,9 @@ pub(in crate::app) fn apply_profile_item_action(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::apply_profile_item_action(document, location, action)
+        }
     }
 }
 
@@ -85,6 +94,7 @@ pub(in crate::app) fn add_dismantle_reward(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => sqlite::add_dismantle_reward(document, definition_hash),
     }
 }
 
@@ -105,6 +115,9 @@ pub(in crate::app) fn apply_dismantle_reward_action(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::apply_dismantle_reward_action(document, location, action)
+        }
     }
 }
 
@@ -123,6 +136,9 @@ pub(in crate::app) fn add_inventory_item(
         }
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
+        }
+        AccountDocument::Dawn(document) => {
+            sqlite::add_inventory_item(document, character_index, item)
         }
     }
 }
@@ -145,6 +161,9 @@ pub(in crate::app) fn apply_inventory_item_action(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::apply_inventory_item_action(document, location, action)
+        }
     }
 }
 
@@ -164,6 +183,9 @@ pub(in crate::app) fn remove_character_inventory_items(
         }
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
+        }
+        AccountDocument::Dawn(document) => {
+            sqlite::remove_character_inventory_items(document, character_index, item_indices)
         }
     }
 }
@@ -195,6 +217,9 @@ pub(in crate::app) fn swap_inventory_item_with_equipment(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::swap_inventory_item_with_equipment(document, location, slot)
+        }
     }
 }
 
@@ -209,6 +234,7 @@ pub(in crate::app) fn persisted_inventory_item_abilities(
     match &document.account {
         AccountDocument::Json | AccountDocument::Blocked(_) => None,
         AccountDocument::Sqlite(document) => sqlite::inventory_item_abilities(document, _location),
+        AccountDocument::Dawn(document) => sqlite::inventory_item_abilities(document, _location),
     }
 }
 
@@ -224,6 +250,11 @@ pub(in crate::app) fn move_inventory_item_to_character(
             destination_character_index,
         ),
         AccountDocument::Sqlite(document) => sqlite::move_inventory_item_to_character(
+            document,
+            location,
+            destination_character_index,
+        ),
+        AccountDocument::Dawn(document) => sqlite::move_inventory_item_to_character(
             document,
             location,
             destination_character_index,
@@ -251,19 +282,22 @@ pub(in crate::app) fn move_equipment_item_to_inventory(
         AccountDocument::Blocked(reason) => {
             Err(InventoryError::new("investment.sqlite3", reason.clone()))
         }
+        AccountDocument::Dawn(document) => {
+            sqlite::move_equipment_item_to_inventory(document, character_index, slot)
+        }
     }
 }
 
 fn require_definition(document: &WorkspaceDocument, hash: u32) -> Result<(), InventoryError> {
     if crate::account_contract::definition_available(
         u64::from(hash),
-        document.supports_v13_account(),
+        document.supports_emote_collection(),
     ) {
         Ok(())
     } else {
         Err(InventoryError::new(
             "definition_hash",
-            "The emote wheel requires a v13+ JSON account",
+            "The active account does not support the emote collection",
         ))
     }
 }

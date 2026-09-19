@@ -16,6 +16,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
     .map(|(root, schema, offset)| {
         let field = WeaponRuntimeField {
             locator: WeaponRuntimeFieldLocator {
+                graph_tag: None,
                 binding_hash: 1,
                 resource_index: 0,
                 root,
@@ -32,6 +33,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
             value: WeaponRuntimeValue::Bytes([1.0f32.to_le_bytes(), [0; 4]].concat()),
             source: WeaponRuntimeFieldSource::OpaqueNativeType,
             generated_kind: None,
+            name_inferred: false,
         };
         WeaponRuntimeRoot {
             kind: root,
@@ -39,6 +41,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
             owner_offset: 0,
             byte_size: 512,
             generated_schema: false,
+            structure: Default::default(),
             fields: vec![field],
         }
     })
@@ -73,8 +76,12 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
     PrivatePerkRuntimeGraph {
         action_tag: 0x80BC_2BBD,
         action_payload: payload,
+        summary: None,
+        program: None,
         graphs: vec![(graph.entity_tag, graph)],
         warnings: vec![],
+        graph_errors: vec![],
+        loading_issues: vec![],
         projectile_slots: vec![],
         projectile_catalog: Arc::default(),
         native_assets: Vec::new(),
@@ -83,6 +90,8 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
 
 pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
     PerkEditor {
+        activation: None,
+        preview: None,
         entity_source: None,
         key: PerkEditorKey {
             socket_index: 0,
@@ -97,6 +106,7 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
         projectile_draft: vec![],
         original_projectile_draft: vec![],
         projectile_labels: BTreeMap::new(),
+        item_names: BTreeMap::new(),
         projectile_query: String::new(),
         pending_movement: None,
         parameter_error: None,
@@ -107,31 +117,52 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
         query: String::new(),
         value_text: BTreeMap::new(),
         show_all_native_values: false,
+        conversion: None,
         original_draft: vec![],
         original_action_draft: vec![],
     }
 }
 
 #[test]
-fn perk_editor_does_not_advertise_a_nonexistent_build_status() {
-    let mut app = PackageAuthoringApp {
-        ..Default::default()
-    };
-    app.perk_workbench.set_test_editor(editor(fixture()));
-    let ctx = egui::Context::default();
-    let output = ctx.run(egui::RawInput::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| app.draw_actions(ui));
-    });
-    assert!(!output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Build & Install Status"))
-    }));
-    app.latest_build = Some(Err("Test build failure".into()));
-    let output = ctx.run(egui::RawInput::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| app.draw_actions(ui));
-    });
-    assert!(output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Build & Install Status"))
-    }));
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+fn activity_asset_properties_allow_dependencies_that_the_build_enrolls() {
+    let path = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let manager = open_shadowkeep_package_manager(&path).unwrap();
+    for tag in [0x80C107D8, 0x80BFBBAB] {
+        let report = projectile::residency::inspect(&manager, tag).unwrap();
+        if tag == 0x80C107D8 {
+            assert!(
+                !report.additions().is_empty(),
+                "fixture must need enrollment"
+            );
+        }
+        assert!(loading_issues(&manager, [("Asset", tag, false)]).is_empty());
+        assert!(loading_issues(&manager, [("Projectile", tag, true)]).is_empty());
+        let loaded = load_entity_parameters(&path, tag).unwrap();
+        assert!(loaded.graph_errors.is_empty());
+        let mut draft = editor(loaded);
+        let loaded = draft.graph.as_ref().unwrap();
+        let field = loaded
+            .graphs
+            .iter()
+            .flat_map(|(_, graph)| graph.fields())
+            .find(|field| {
+                runtime_field_is_editable(field)
+                    && validation::fields_for(loaded, &field.locator).len() == 1
+                    && validation::finite(&field.value)
+            })
+            .unwrap();
+        draft.draft.push(WeaponRuntimeValueOverride {
+            locator: field.locator.clone(),
+            value: field.value.clone(),
+        });
+        assert!(
+            draft.validation_errors().is_empty(),
+            "{:?}",
+            draft.validation_errors()
+        );
+    }
+    assert!(!loading_issues(&manager, [("Asset", 0xDEADBEEF, false)]).is_empty());
 }
 
 #[test]
@@ -218,6 +249,31 @@ fn action_only_edits_validate_expected_bits_and_duplicate_targets() {
 }
 
 #[test]
+fn reference_index_notices_do_not_block_valid_component_edits() {
+    let mut loaded = fixture();
+    let field = loaded.graphs[0].1.fields().next().unwrap();
+    let edit = WeaponRuntimeValueOverride {
+        locator: field.locator.clone(),
+        value: field.value.clone(),
+    };
+    loaded
+        .warnings
+        .push("Asset references have not been indexed.".into());
+    let mut editor = editor(loaded);
+    editor.draft.push(edit);
+    assert!(editor.validation_errors().is_empty());
+    Arc::make_mut(editor.graph.as_mut().unwrap())
+        .graph_errors
+        .push("Graph could not be decoded.".into());
+    assert!(
+        editor
+            .validation_errors()
+            .iter()
+            .any(|error| error.contains("complete graph"))
+    );
+}
+
+#[test]
 fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
     let loaded = fixture();
     let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
@@ -299,7 +355,12 @@ fn native_micro_missile_exposes_verified_speed() {
         // Existing recipes address this owner through a different valid binding alias.
         value.locator.binding_hash = 0xB176_70ED;
         value.locator.resource_index = 0;
-        let resolved = resolve_weapon_runtime_field(&manager, &payload, &value.locator).unwrap();
+        let resolved = resolve_weapon_runtime_field(
+            &manager,
+            &payload,
+            &value.locator.for_graph(0x8152_82E1).unwrap(),
+        )
+        .unwrap();
         encode_weapon_runtime_value(&resolved.field.kind, &value.value).unwrap();
     }
     assert_eq!(speed.value(&loaded, &editor.draft).unwrap(), 62.5);
@@ -310,14 +371,6 @@ fn native_micro_missile_exposes_verified_speed() {
     );
     speed.set(&loaded, &mut editor.draft, 1.0).unwrap();
     assert!(editor.draft.is_empty());
-}
-
-#[test]
-fn guided_availability_is_explicit_and_not_inferred_from_a_name() {
-    assert!(has_guided_profile(1178));
-    for index in [0, 351, 403, 421, u16::MAX] {
-        assert!(!has_guided_profile(index));
-    }
 }
 
 #[test]

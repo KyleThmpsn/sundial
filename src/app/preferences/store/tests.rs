@@ -13,7 +13,6 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
     ] {
         let preferences = Preferences {
             experimental_progression: true,
-            experimental_activity_state: true,
             experimental_power_above_cap: true,
             experimental_extended_fov: true,
             experimental_cross_class_subclasses: true,
@@ -29,7 +28,6 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
         };
         let expected = serde_json::json!({
             "experimental_progression": true,
-            "experimental_activity_state": true,
             "experimental_power_above_cap": true,
             "experimental_extended_fov": true,
             "experimental_cross_class_subclasses": true,
@@ -56,12 +54,30 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
 }
 
 #[test]
-fn missing_preferences_use_defaults_without_a_warning() {
-    let directory = TestDirectory::new("missing-preferences");
-    let loaded = load_from_paths(Some(&directory.0.join("preferences.json")), None);
+fn retired_activity_preference_is_preserved_as_unknown_data() {
+    let directory = TestDirectory::new("retired-activity-preference");
+    let path = directory.0.join("preferences.json");
+    let retired = serde_json::json!({"opaque": [1, 2, 3]});
+    fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "experimental_activity_state": retired,
+            "plug_defaults_version": 1
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let loaded = load_from_paths(Some(&path), None);
     assert!(loaded.warning.is_none());
-    assert!(loaded.preferences.install.is_none());
-    assert!(!loaded.preferences.experimental_activity_state);
+    assert!(
+        serde_json::to_value(&loaded.preferences)
+            .unwrap()
+            .get("experimental_activity_state")
+            .is_none()
+    );
+    save_preferences(&path, &loaded.preferences).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored["experimental_activity_state"], retired);
 }
 
 #[test]
@@ -98,12 +114,6 @@ fn malformed_current_preferences_warn_without_using_stale_legacy_values() {
     );
     assert!(loaded.preferences.install.is_none());
     assert_eq!(fs::read(&current).unwrap(), b"{broken");
-}
-
-#[test]
-fn invalid_legacy_preferences_also_warn() {
-    let directory = TestDirectory::new("invalid-legacy-preferences");
-    let legacy = directory.0.join("paths.json");
     fs::write(&legacy, b"invalid").unwrap();
     assert!(load_from_paths(None, Some(&legacy)).warning.is_some());
 }

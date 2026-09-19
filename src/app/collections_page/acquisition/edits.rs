@@ -16,6 +16,7 @@ use super::{
     expression::evaluate_expression_with,
     for_each_expression_token,
 };
+mod solver;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CollectionStateEdit {
@@ -124,22 +125,29 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
     let current = acquisition_status(definition, snapshot, catalog).state;
     let desired = match current {
         AcquisitionState::Acquired => false,
-        AcquisitionState::Missing => true,
-        AcquisitionState::Unknown => return false,
+        AcquisitionState::NotAcquired => true,
+        AcquisitionState::Unknown => {
+            let reason = collection_state_edits(definition, snapshot, catalog, true)
+                .err()
+                .unwrap_or_else(|| "Current acquisition state is unresolved".into());
+            ui.add_enabled(false, egui::Button::new("Unavailable"))
+                .on_disabled_hover_text(reason);
+            return false;
+        }
     };
     let edit_available =
         collectible_acquisition_edit_available(definition, snapshot, catalog, desired);
     let label = if desired {
-        "Set acquired"
+        "Acquire"
     } else {
-        "Set missing"
+        "Mark Not Acquired"
     };
     let response = ui
         .add_enabled(edit_available, egui::Button::new(label))
         .on_hover_text(if edit_available {
-            "Update the referenced Sunrise state and verify the local condition. Shared state can affect other content, and native progression may reassert some flags."
+            "Update the saved acquisition condition"
         } else {
-            "No supported edit was found within Sundial's bounded acquisition search"
+            "The acquisition condition cannot be changed from saved account state"
         });
     let mut changed = false;
     if response.clicked() {
@@ -147,7 +155,7 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
             set_collectible_acquisition_state(document, definition, snapshot, catalog, desired);
         match result {
             Ok(()) => {
-                let result = if desired { "Acquired" } else { "Missing" };
+                let result = if desired { "Acquired" } else { "Not Acquired" };
                 state.mutation_feedback =
                     Some((false, format!("Authored acquisition state set to {result}")));
                 changed = true;
@@ -159,7 +167,7 @@ pub(in crate::app::collections_page) fn draw_collection_acquisition_action(
         if *error {
             ui.colored_label(ui.visuals().error_fg_color, message);
         } else {
-            ui.label(egui::RichText::new(message).weak());
+            ui.weak(message);
         }
     }
     changed
@@ -191,7 +199,7 @@ pub(in crate::app) fn collectible_acquisition_edit_available(
                         .is_ok()
                 });
     }
-    collection_state_edits(definition, snapshot, catalog, desired).is_some()
+    collection_state_edits(definition, snapshot, catalog, desired).is_ok()
 }
 
 pub(in crate::app) fn set_collectible_acquisition_state(
@@ -219,10 +227,7 @@ pub(in crate::app) fn set_collectible_acquisition_state(
         )?;
         return Ok(());
     }
-    let edits =
-        collection_state_edits(definition, snapshot, catalog, desired).ok_or_else(|| {
-            "No supported edit was found within Sundial's bounded acquisition search".to_owned()
-        })?;
+    let edits = collection_state_edits(definition, snapshot, catalog, desired)?;
     apply_collection_state_edits(document, definition, catalog, desired, &edits)
 }
 
@@ -231,11 +236,12 @@ fn collection_state_edits(
     snapshot: &CollectionStateSnapshot,
     catalog: &Catalog,
     desired: bool,
-) -> Option<Vec<CollectionStateEdit>> {
+) -> Result<Vec<CollectionStateEdit>, String> {
     let condition = definition
         .conditions
         .iter()
-        .find(|condition| condition.field == ACQUISITION_CONDITION_FIELD)?;
+        .find(|condition| condition.field == ACQUISITION_CONDITION_FIELD)
+        .ok_or("No acquisition condition is stored for this item")?;
     if definition
         .conditions
         .iter()
@@ -243,27 +249,70 @@ fn collection_state_edits(
         .count()
         != 1
     {
-        return None;
+        return Err("Multiple acquisition conditions are stored for this item".into());
+    }
+    let mut unsupported = None;
+    let complete = for_each_expression_token(&condition.tokens, catalog, |token| {
+        if !super::expression::is_supported_instruction(token.kind) {
+            unsupported = Some(token.kind);
+        }
+    });
+    if !complete {
+        return Err("The acquisition condition has a missing or cyclic shared expression".into());
+    }
+    if let Some(kind) = unsupported {
+        return Err(format!("Condition instruction {kind} is not decoded"));
     }
 
     let references = collection_state_references(&condition.tokens, catalog);
-    if references.is_empty() || references.len() > 4 {
-        return None;
+    if references.is_empty() {
+        return Err("The condition has no saved flag or counter to change".into());
     }
-
+    if references.len() > 64 {
+        return Err(format!(
+            "The condition references {} inputs, exceeding the 64-input edit limit",
+            references.len()
+        ));
+    }
+    if let Some(edits) = solver::solve(&condition.tokens, snapshot, catalog, desired) {
+        return Ok(edits);
+    }
+    for (flag, index) in &references {
+        let definition = if *flag {
+            catalog.unlock_flag_definition(*index)
+        } else {
+            catalog.unlock_value_definition(*index)
+        }
+        .ok_or_else(|| {
+            format!(
+                "{} definition #{index} is unavailable",
+                if *flag { "Unlock" } else { "Counter" }
+            )
+        })?;
+        let writable = if *flag {
+            matches!(definition.bank(), 1 | 2 | 3 | 6)
+        } else {
+            matches!(definition.bank(), 1 | 2)
+        };
+        if definition.compact_slot.is_some() && !writable {
+            return Err(format!(
+                "{} #{index} uses bank {}, which has no saved edit path",
+                if *flag { "Unlock" } else { "Counter" },
+                definition.bank()
+            ));
+        }
+    }
     let value_candidates = collection_value_candidates(&condition.tokens, catalog);
-    let options = collection_edit_options(references, &value_candidates, snapshot, catalog)?;
-    if options
+    let options = collection_edit_options(references, &value_candidates, snapshot, catalog)
+        .ok_or("The condition references an unavailable saved value")?;
+    let exhaustive = options
         .iter()
         .map(Vec::len)
         .try_fold(1_usize, usize::checked_mul)
-        .is_none_or(|count| count > 256)
-    {
-        return None;
-    }
+        .is_some_and(|count| count <= 4096);
 
     let mut best = None::<Vec<CollectionStateEdit>>;
-    enumerate_collection_edits(&options, 0, &mut Vec::new(), &mut |candidate| {
+    let mut visit = |candidate: &[CollectionStateEdit]| {
         let result = evaluate_expression_with(
             &condition.tokens,
             catalog.shared_expression_pool(),
@@ -315,8 +364,36 @@ fn collection_state_edits(
         {
             best = Some(changed);
         }
-    });
-    best
+    };
+    if exhaustive {
+        enumerate_collection_edits(&options, 0, &mut Vec::new(), &mut visit);
+    } else {
+        // Try uniform states and one changed input without an exponential search.
+        // Every proposed edit still passes the complete expression and persistence checks.
+        for high in [false, true] {
+            let candidate = options
+                .iter()
+                .filter_map(|values| if high { values.last() } else { values.first() })
+                .copied()
+                .collect::<Vec<_>>();
+            visit(&candidate);
+        }
+        for values in &options {
+            for value in values {
+                visit(&[*value]);
+            }
+        }
+    }
+    best.ok_or_else(|| {
+        if exhaustive {
+            "No writable flag or counter values satisfied this condition".into()
+        } else {
+            format!(
+                "No verified change found for this {}-input condition",
+                options.len()
+            )
+        }
+    })
 }
 
 fn enumerate_collection_edits(
@@ -394,7 +471,9 @@ fn apply_collection_state_edits(
                 set_collection_value(&mut candidate, definition_index, definition, value)
             }
         };
-        if !applied {
+        // An edit the account already satisfies is not a failure; the status check below
+        // is what decides whether the requested acquisition state was actually reached.
+        if applied.refused() {
             return Err("The referenced Sunrise state could not be updated".into());
         }
     }
@@ -404,7 +483,7 @@ fn apply_collection_state_edits(
         != if desired {
             AcquisitionState::Acquired
         } else {
-            AcquisitionState::Missing
+            AcquisitionState::NotAcquired
         }
     {
         return Err("The acquisition condition did not reach the requested state".into());

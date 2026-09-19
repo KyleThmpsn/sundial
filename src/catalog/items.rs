@@ -35,9 +35,9 @@ pub(crate) use perks::ItemSandboxPerk;
 pub(in crate::catalog) use perks::scan_sandbox_perk_catalog;
 pub(crate) use quality::PowerCapDefinition;
 pub(in crate::catalog) use quality::{item_power_cap, scan_power_cap_definitions};
-pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 #[cfg(test)]
-pub(in crate::catalog) use scan::{attach_item_objective_owners, item_scan_progress_stride};
+pub(in crate::catalog) use scan::attach_item_objective_owners;
+pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
@@ -65,11 +65,14 @@ const WEAPON_ORNAMENT_TYPE_NAME: &str = "Weapon Ornament";
 
 /// Weapon ornaments occupy weapon buckets but do not contain an authorable weapon definition.
 pub(crate) fn is_authorable_weapon_item(item: &ItemDef) -> bool {
-    is_weapon_bucket(item.bucket_hash)
-        && !item
-            .type_name
-            .trim()
-            .eq_ignore_ascii_case(WEAPON_ORNAMENT_TYPE_NAME)
+    is_weapon_bucket(item.bucket_hash) && !is_weapon_ornament_type_name(&item.type_name)
+}
+
+/// Returns whether a resolved item type name marks a weapon ornament plug.
+pub(crate) fn is_weapon_ornament_type_name(type_name: &str) -> bool {
+    type_name
+        .trim()
+        .eq_ignore_ascii_case(WEAPON_ORNAMENT_TYPE_NAME)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

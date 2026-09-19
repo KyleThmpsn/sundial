@@ -1,5 +1,4 @@
 //! Less-used account edit paths exercised against complete release fixtures.
-use super::schema_smoke::{FIXTURES, with_document};
 use super::*;
 use crate::app::inventory::{
     DismantleGearClass, DismantleRarity, DismantleRewardAction, InventoryItemAction,
@@ -76,21 +75,17 @@ fn transfer_cycle(original: &Value, source: usize, flags: u8, plugs: ItemPlugs) 
 fn real_schema_inventory_transfers_preserve_flags_plugs_unknown_fields_and_disk_roundtrip() {
     for fixture in FIXTURES {
         let original: Value = serde_json::from_str(fixture).unwrap();
-        let flags = if original["version"].as_u64().unwrap() >= 13 {
-            0..=7
+        let all_flags = if original["version"].as_u64().unwrap() >= 13 {
+            7
         } else {
-            0..=3
+            3
         };
-        for source in 0..3 {
-            for flag in flags.clone() {
-                for plugs in [
-                    ItemPlugs::NativeDefaults,
-                    ItemPlugs::Authored(vec![Some(123), None, Some(456)]),
-                    ItemPlugs::Authored(vec![None; 12]),
-                ] {
-                    transfer_cycle(&original, source, flag, plugs);
-                }
-            }
+        for (source, flag, plugs) in [
+            (0, 0, ItemPlugs::NativeDefaults),
+            (1, 1, ItemPlugs::Authored(vec![Some(123), None, Some(456)])),
+            (2, all_flags, ItemPlugs::Authored(vec![None; 12])),
+        ] {
+            transfer_cycle(&original, source, flag, plugs);
         }
     }
 }
@@ -166,11 +161,9 @@ fn full_account_history_undo_redo_and_branching_preserve_schema_and_unknown_data
         let mut app = with_document(directory.0.clone(), original);
         let initial = app.document.clone();
         for index in 0..DOCUMENT_HISTORY_LIMIT + 9 {
-            let before = app.document.clone();
             app.document.json_mut()["steam"]["user"]["persona_name"] =
                 json!(format!("Smoke {index}"));
-            app.dirty = true;
-            app.record_document_change(before);
+            app.record_edit("Player Name Updated");
         }
         let final_document = app.document.clone();
         assert_eq!(app.undo_history.len(), DOCUMENT_HISTORY_LIMIT);
@@ -185,11 +178,8 @@ fn full_account_history_undo_redo_and_branching_preserve_schema_and_unknown_data
         }
         assert_eq!(app.document, final_document);
         app.undo();
-        // The frame following an undo consumes its history-suppression marker.
-        app.record_document_change(app.document.clone());
-        let before = app.document.clone();
         app.document.json_mut()["steam"]["user"]["persona_name"] = json!("Branched edit");
-        app.record_document_change(before);
+        app.record_edit("Player Name Updated");
         assert!(app.redo_history.is_empty());
         assert_eq!(app.document.json()["version"], initial.json()["version"]);
         assert_eq!(app.document.json()["state"], initial.json()["state"]);

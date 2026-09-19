@@ -6,7 +6,13 @@ cd "$repo_dir"
 
 version=${1:-}
 if [ -z "$version" ]; then
-    version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1 | tr -d '\r')
+    metadata=$(cargo metadata --no-deps --format-version 1 --locked)
+    version=$(printf '%s\n' "$metadata" | python3 -c '
+import json, sys
+metadata = json.load(sys.stdin)
+package, = [p for p in metadata["packages"] if p["name"] == "sundial" and p["id"] in metadata["workspace_members"]]
+sys.stdout.write(package["version"])
+')
 fi
 version=${version#v}
 case $version in

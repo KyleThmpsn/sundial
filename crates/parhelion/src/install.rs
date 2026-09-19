@@ -52,7 +52,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sundial::investment::{
+use sundial::package_authoring::account::{
     AuthoredCollectionUnlock, AuthoredProfileSyncReport, synchronize_authored_collection_unlocks,
 };
 use sundial::package_authoring::{path_is_within, paths_equal, resolve_path_for_comparison};
@@ -661,6 +661,8 @@ fn install_with_progress(
         return Err(InstallError::after_backup(error.message, &backup_directory));
     }
     if let Err(message) = check_game_immediately_before_commit(request).and_then(|()| {
+        (request.runtime_feature_check)(&validated.target_packages_directory)
+            .map_err(|error| format!("Runtime check failed before installation: {error}"))?;
         replacement::verify_account(
             &validated.target_packages_directory,
             validated.replacement_guard.as_ref(),
@@ -1158,10 +1160,8 @@ fn unique_token() -> String {
     format!("{nanos:032X}-{:08X}-{counter:016X}", process::id())
 }
 
+/// Best-effort cleanup. A missing file is already the desired state, and no other failure
+/// here is fatal for the caller.
 fn remove_file_if_present(path: &Path) {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => {}
-    }
+    let _ = fs::remove_file(path);
 }

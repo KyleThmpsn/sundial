@@ -27,7 +27,7 @@ pub(crate) fn rollback_save(
     path: &Path,
     receipt: &SqliteSaveReceipt,
 ) -> Result<(), SqliteAccountError> {
-    super::package::rollback(path, &receipt.committed, &receipt.before)
+    super::snapshot::rollback(path, &receipt.committed, &receipt.before)
         .map_err(SqliteAccountError::Backup)
 }
 
@@ -41,7 +41,7 @@ pub(crate) fn save(
     save_with_backup(document, None)
 }
 
-fn save_with_backup(
+pub(super) fn save_with_backup(
     document: &mut SqliteAccountDocument,
     backup: Option<PathBuf>,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
@@ -75,13 +75,13 @@ fn save_with_backup(
             create_verified_backup(document.path(), backup, document.revision())
         })?
     };
-    let before = super::package::capture(&transaction).map_err(SqliteAccountError::Backup)?;
+    let before = super::snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
     write_document(&transaction, &candidate)?;
     reader::load_connection(&transaction)?;
     let revision = document::database_revision(&transaction)?;
     candidate.capture_preserved_rows(&transaction)?;
-    let committed = super::package::capture(&transaction).map_err(SqliteAccountError::Backup)?;
-    super::package::verify_unedited_tables(
+    let committed = super::snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
+    super::snapshot::verify_unedited_tables(
         &before,
         &committed,
         &[
@@ -157,8 +157,8 @@ fn restore_backup_safely_with_path(
         })?
     };
     let expected =
-        super::package::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?;
-    super::package::restore(destination, &expected, backup).map_err(|error| {
+        super::snapshot::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?;
+    super::snapshot::restore(destination, &expected, backup).map_err(|error| {
         SqliteAccountError::Backup(format!(
             "Could not restore the database: {error}. The recovery snapshot is at {}",
             safety_backup.display()
@@ -177,7 +177,7 @@ fn compatible_backup_revision(backup: &Path) -> Result<SourceRevision, SqliteAcc
     }
 }
 
-fn create_integrity_checked_snapshot(
+pub(super) fn create_integrity_checked_snapshot(
     source_path: &Path,
     backup: &Path,
 ) -> Result<(), SqliteAccountError> {
@@ -291,7 +291,7 @@ fn finish_backup_attempt(
     }
 }
 
-fn indexed_backup(
+pub(super) fn indexed_backup(
     source: &Path,
     prefix: &str,
     automatic: bool,
@@ -310,7 +310,7 @@ fn indexed_backup(
 
 // Snapshot rows before replacing positional collections, so opaque columns follow their exact
 // item identity rather than being reset to defaults during an equip, move or removal.
-pub(super) type NativeRow = std::collections::BTreeMap<String, super::package::Cell>;
+pub(super) type NativeRow = std::collections::BTreeMap<String, super::snapshot::Cell>;
 
 pub(super) fn rows(
     connection: &Connection,
@@ -329,7 +329,7 @@ pub(super) fn rows(
             names
                 .iter()
                 .enumerate()
-                .map(|(i, name)| Ok((name.clone(), super::package::Cell::from_value(row.get(i)?))))
+                .map(|(i, name)| Ok((name.clone(), super::snapshot::Cell::from_value(row.get(i)?))))
                 .collect()
         })
         .map_err(|error| SqliteAccountError::sqlite("preserve native rows from", error))?;
@@ -342,14 +342,14 @@ pub(super) fn matching(rows: &[NativeRow], keys: &[(&str, i64)]) -> NativeRow {
     rows.iter()
         .find(|row| {
             keys.iter()
-                .all(|(key, value)| row.get(*key) == Some(&super::package::Cell::Integer(*value)))
+                .all(|(key, value)| row.get(*key) == Some(&super::snapshot::Cell::Integer(*value)))
         })
         .cloned()
         .unwrap_or_default()
 }
 
 pub(super) fn put(row: &mut NativeRow, name: &str, value: impl Into<rusqlite::types::Value>) {
-    row.insert(name.into(), super::package::Cell::from_value(value.into()));
+    row.insert(name.into(), super::snapshot::Cell::from_value(value.into()));
 }
 
 pub(super) fn insert(
@@ -366,7 +366,7 @@ pub(super) fn insert(
     connection
         .execute(
             &format!("INSERT INTO {table} ({names}) VALUES ({placeholders})"),
-            rusqlite::params_from_iter(row.values().map(super::package::Cell::value)),
+            rusqlite::params_from_iter(row.values().map(super::snapshot::Cell::value)),
         )
         .map_err(|error| SqliteAccountError::sqlite("write native rows to", error))?;
     Ok(())

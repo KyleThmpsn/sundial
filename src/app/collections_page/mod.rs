@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
 use serde_json::Value;
@@ -19,12 +19,16 @@ use super::{
     progression::{CollectionStateSnapshot, collection_state_snapshot},
     ui::{
         TABLE_CELL_HEIGHT, TABLE_COLUMN_GAP, glyph_button,
-        hierarchy_branch_cell as draw_branch_cell, hierarchy_leaf_cell as draw_leaf_cell,
+        hierarchy_branch_cell as draw_branch_cell, hierarchy_selection_cell,
         sortable_header_cell as header_cell, table_cell, toolbar as collection_toolbar,
     },
 };
 
 mod acquisition;
+mod bulk;
+#[cfg(test)]
+pub(in crate::app) use bulk::benchmark as bulk_benchmark;
+mod cache;
 mod details;
 mod hierarchy;
 
@@ -56,14 +60,54 @@ pub(super) struct UiState {
     status_filter: CollectionStatusFilter,
     reveal_selection: bool,
     mutation_feedback: Option<(bool, String)>,
+    bulk_feedback: Option<(bool, String)>,
+    bulk_job: Option<bulk::Job>,
+    bulk_ready: Option<bulk::Job>,
+    selected: HashSet<u16>,
+    browse: Option<cache::Cache>,
+    cached_status: Option<StatusCache>,
+}
+
+#[derive(Debug)]
+struct StatusCache {
+    source: [Value; 3],
+    native: bool,
+    snapshot: CollectionStateSnapshot,
+    rows: Vec<acquisition::StateLine>,
+}
+impl StatusCache {
+    fn new(document: &Value, catalog: &Catalog) -> Option<Self> {
+        let snapshot = collection_state_snapshot(document)?;
+        let rows = catalog
+            .collectibles()
+            .iter()
+            .map(|definition| collection_leaf(definition, &snapshot, catalog).status)
+            .collect();
+        Some(Self {
+            source: [
+                document["state"].clone(),
+                document["_native_progression"]["family"].clone(),
+                document["version"].clone(),
+            ],
+            native: document.get("_native_progression").is_some(),
+            snapshot,
+            rows,
+        })
+    }
 }
 
 impl UiState {
     pub(super) fn reset_navigation(&mut self) {
+        self.cached_status = None;
+        self.browse = None;
         self.metadata_index = None;
         self.hash_inspection.close();
         self.reveal_selection = false;
         self.mutation_feedback = None;
+        self.bulk_feedback = None;
+        self.bulk_job = None;
+        self.bulk_ready = None;
+        self.selected.clear();
     }
 }
 
@@ -72,18 +116,18 @@ enum CollectionStatusFilter {
     #[default]
     All,
     Acquired,
-    Missing,
+    NotAcquired,
     Unknown,
 }
 
 impl CollectionStatusFilter {
-    const ALL: [Self; 4] = [Self::All, Self::Acquired, Self::Missing, Self::Unknown];
+    const ALL: [Self; 4] = [Self::All, Self::Acquired, Self::NotAcquired, Self::Unknown];
 
     const fn label(self) -> &'static str {
         match self {
-            Self::All => "All states",
+            Self::All => "All States",
             Self::Acquired => "Acquired",
-            Self::Missing => "Missing",
+            Self::NotAcquired => "Not Acquired",
             Self::Unknown => "Unresolved",
         }
     }
@@ -93,13 +137,13 @@ impl CollectionStatusFilter {
             || matches!(
                 (self, state),
                 (Self::Acquired, AcquisitionState::Acquired)
-                    | (Self::Missing, AcquisitionState::Missing)
+                    | (Self::NotAcquired, AcquisitionState::NotAcquired)
                     | (Self::Unknown, AcquisitionState::Unknown)
             )
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TableSort {
     column: usize,
     descending: bool,
@@ -126,17 +170,38 @@ pub(super) fn draw_content(
         ui.add_space(4.0);
     }
 
-    let Some(snapshot) = collection_state_snapshot(document) else {
+    let cached = state.cached_status.take().filter(|cached| {
+        cached.native == document.get("_native_progression").is_some()
+            && cached.source[0] == document["state"]
+            && cached.source[1] == document["_native_progression"]["family"]
+            && cached.source[2] == document["version"]
+            && cached.rows.len() == catalog.collectibles().len()
+    });
+    if cached.is_none() {
+        state.browse = None;
+    }
+    let Some(cached) = cached.or_else(|| StatusCache::new(document, catalog)) else {
         ui.colored_label(ui.visuals().error_fg_color, "Invalid progression settings");
         return false;
     };
+    let mut changed =
+        draw_collection_metadata_workspace(ui, document, catalog, &cached.snapshot, state);
+    if changed {
+        state.browse = None;
+        ui.ctx().request_repaint();
+        return true;
+    }
+    state.cached_status = Some(cached);
 
-    let mut changed = draw_collection_metadata_workspace(ui, document, catalog, &snapshot, state);
+    if bulk::jobs(ui, document, catalog, state) {
+        ui.ctx().request_repaint();
+        return true;
+    }
 
     let mut expansion_action = None;
-    collection_toolbar(ui, |ui| {
-        ui.label(egui::RichText::new("Filter").strong());
-        let width = (ui.available_width() * 0.35).clamp(180.0, 420.0);
+    let cache = collection_toolbar(ui, |ui| {
+        ui.strong("Filter");
+        let width = (ui.available_width() * 0.25).clamp(160.0, 260.0);
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
                 .hint_text("Name, type, path, index, hash, or condition…")
@@ -144,7 +209,7 @@ pub(super) fn draw_content(
         );
         egui::ComboBox::from_id_salt("collection_status_filter")
             .selected_text(state.status_filter.label())
-            .width(160.0)
+            .width(120.0)
             .show_ui(ui, |ui| {
                 for filter in CollectionStatusFilter::ALL {
                     ui.selectable_value(&mut state.status_filter, filter, filter.label());
@@ -156,42 +221,35 @@ pub(super) fn draw_content(
         if glyph_button(ui, Glyph::ChevronUp, "Collapse all collection branches").clicked() {
             expansion_action = Some(false);
         }
-    });
-    ui.add_space(6.0);
-    let query = state.query.trim().to_lowercase();
-    let leaves = catalog
-        .collectibles()
-        .iter()
-        .filter(|definition| collection_matches(&query, definition, catalog))
-        .map(|definition| collection_leaf(definition, &snapshot, catalog))
-        .collect::<Vec<_>>();
-    let counts = acquisition_counts(&leaves);
-    let visible_leaves = leaves
-        .iter()
-        .filter(|leaf| state.status_filter.matches(leaf.status.state))
-        .cloned()
-        .collect::<Vec<_>>();
-    ui.horizontal_wrapped(|ui| {
+        let cached = state
+            .browse
+            .take()
+            .filter(|cache| cache.current(state) && expansion_action.is_none());
+        let cache = cached.unwrap_or_else(|| cache::Cache::build(catalog, state, expansion_action));
+        let counts = cache.counts;
         ui.label(format!("{} / {} acquired", counts.acquired, counts.total()))
             .on_hover_text("Calculated from the saved account and package definitions. Conditions that need live game context remain unresolved.");
         let mut remainder = Vec::new();
-        if counts.missing > 0 {
-            remainder.push(format!("{} missing", counts.missing));
+        if counts.not_acquired > 0 {
+            remainder.push(format!("{} not acquired", counts.not_acquired));
         }
         if counts.unknown > 0 {
             remainder.push(format!("{} unresolved", counts.unknown));
         }
         if !remainder.is_empty() {
-            ui.label(egui::RichText::new(format!("· {}", remainder.join(" · "))).weak());
+            ui.weak(format!("· {}", remainder.join(" · ")));
         }
-        if visible_leaves.len() != leaves.len() {
+        if cache.indices.len() != counts.total() {
             ui.label(
-                egui::RichText::new(format!("· {} shown", visible_leaves.len()))
+                egui::RichText::new(format!("· {} shown", cache.indices.len()))
                     .small()
                     .strong(),
             );
         }
+        bulk::selection(ui, document, catalog, &cache.indices, state);
+        cache
     });
+    let query = state.query.trim().to_lowercase();
 
     let available_width = ui.available_width();
     let show_hash = available_width >= 680.0;
@@ -200,7 +258,7 @@ pub(super) fn draw_content(
     let type_width = (available_width * 0.2).clamp(96.0, 190.0);
     let state_width = (available_width * 0.27).clamp(120.0, 280.0);
     let column_gaps = if show_hash { 4.0 } else { 3.0 };
-    let item_width = (ui.available_width()
+    let item_width = (available_width
         - index_width
         - hash_width
         - type_width
@@ -217,23 +275,23 @@ pub(super) fn draw_content(
     if show_hash {
         columns.push((hash_width, "Hash"));
     }
-    draw_header(ui, &columns, &mut state.sort);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = TABLE_COLUMN_GAP;
+        hierarchy_selection_cell(ui, item_width, 0, |ui, width| {
+            bulk::checkbox(ui, &cache.indices, &mut state.selected);
+            draw_header(ui, &[(width, "Collectible")], &mut state.sort, 0);
+        });
+        draw_header(ui, &columns[1..], &mut state.sort, 1);
+    });
     ui.separator();
-    if visible_leaves.is_empty() {
-        ui.label(egui::RichText::new("No matching rows").weak());
+    if cache.indices.is_empty() {
+        ui.weak("No matching rows");
+        state.browse = Some(cache);
         return changed;
     }
 
-    let mut hierarchy = build_hierarchy(&visible_leaves);
-    if let Some(expanded) = expansion_action {
-        set_all_expansion(&hierarchy, &mut state.expansion, expanded);
-    }
-    if state.reveal_selection {
-        set_all_expansion(&hierarchy, &mut state.expansion, true);
-    }
-    sort_hierarchy(&mut hierarchy, state.sort);
     let auto_expand = !query.is_empty();
-    let lines = display_lines(&hierarchy, &state.expansion, auto_expand);
+    let lines = &cache.lines;
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = TABLE_ROW_GAP;
         let mut scroll = egui::ScrollArea::vertical()
@@ -242,7 +300,7 @@ pub(super) fn draw_content(
         if state.reveal_selection {
             if let Some(selected) = state.metadata_index
                 && let Some(line_index) = lines.iter().position(|line| {
-                    matches!(line, DisplayLine::Leaf { leaf, .. } if leaf.definition.index == selected)
+                    matches!(line, cache::Line::Leaf { position, .. } if catalog.collectibles()[*position].index == selected)
                 })
             {
                 scroll = scroll.vertical_scroll_offset(line_index as f32 * TABLE_CELL_HEIGHT);
@@ -257,25 +315,23 @@ pub(super) fn draw_content(
                     .show(ui, |ui| {
                         for line_index in range {
                             match &lines[line_index] {
-                                DisplayLine::Branch {
-                                    branch,
-                                    depth,
-                                    expanded,
-                                } => {
-                                    let response = draw_branch_cell(
+                                cache::Line::Branch {label,path,depth,expanded,indices,counts} => {
+                                    let response = hierarchy_selection_cell(ui, item_width, *depth, |ui, width| {
+                                        bulk::checkbox(ui, indices, &mut state.selected);
+                                        draw_branch_cell(
                                         ui,
-                                        item_width,
-                                        *depth,
-                                        &branch.label,
+                                        width,
+                                        0,
+                                        label,
                                         *expanded,
                                         !auto_expand,
-                                    )
-                                    .on_hover_text(branch.path.join(" > "));
+                                    )})
+                                    .on_hover_text(path.join(" > "));
                                     if !auto_expand && response.clicked() {
-                                        state.expansion.insert(branch.path.clone(), !expanded);
+                                        state.expansion.insert(path.clone(), !expanded);
                                     }
                                     table_cell(ui, type_width, "");
-                                    let branch_counts = branch_counts(branch);
+                                    let branch_counts = counts;
                                     table_cell(
                                         ui,
                                         state_width,
@@ -295,18 +351,20 @@ pub(super) fn draw_content(
                                         table_cell(ui, hash_width, "");
                                     }
                                 }
-                                DisplayLine::Leaf { leaf, depth } => {
+                                cache::Line::Leaf { position, depth } => {
+                                    let leaf=CollectionLeaf {definition:&catalog.collectibles()[*position],status:state.cached_status.as_ref().expect("statuses").rows[*position].clone()};
                                     let accessible_name = if leaf.definition.name.trim().is_empty() {
                                         format_hash_hex(leaf.definition.hash)
                                     } else {
                                         leaf.definition.name.clone()
                                     };
-                                    let response = draw_leaf_cell(
+                                    let response = hierarchy_selection_cell(ui, item_width, *depth, |ui, width| {
+                                        bulk::checkbox(ui, &[leaf.definition.index], &mut state.selected);
+                                        table_cell(
                                         ui,
-                                        item_width,
-                                        *depth,
-                                        collection_name(leaf.definition),
-                                    )
+                                        width,
+                                        collection_name(ui, leaf.definition),
+                                    )})
                                     .interact(egui::Sense::click())
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .on_hover_text(format!(
@@ -365,14 +423,15 @@ pub(super) fn draw_content(
         &mut state.hash_inspection,
         "collections",
     );
+    state.browse = Some(cache);
     changed
 }
 
-fn collection_name(definition: &CollectibleDef) -> egui::RichText {
+fn collection_name(ui: &egui::Ui, definition: &CollectibleDef) -> egui::RichText {
     if definition.name.trim().is_empty() {
         egui::RichText::new(format_hash_hex(definition.hash)).monospace()
     } else {
-        egui::RichText::new(&definition.name)
+        super::ui::destiny_text(ui, &definition.name)
     }
 }
 
@@ -450,29 +509,27 @@ fn unlock_definition_matches(query: &str, index: usize, definition: &UnlockDefin
             .is_some_and(|name| name.to_lowercase().contains(query))
 }
 
-fn draw_header(ui: &mut egui::Ui, columns: &[(f32, &str)], sort: &mut TableSort) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = TABLE_COLUMN_GAP;
-        for (column, (width, label)) in columns.iter().enumerate() {
-            let marker = if sort.column == column {
-                Some(if sort.descending {
-                    Glyph::ChevronDown
-                } else {
-                    Glyph::ChevronUp
-                })
+fn draw_header(ui: &mut egui::Ui, columns: &[(f32, &str)], sort: &mut TableSort, first: usize) {
+    for (column, (width, label)) in columns.iter().enumerate() {
+        let column = first + column;
+        let marker = if sort.column == column {
+            Some(if sort.descending {
+                Glyph::ChevronDown
             } else {
-                None
-            };
-            if header_cell(ui, *width, label, marker).clicked() {
-                if sort.column == column {
-                    sort.descending = !sort.descending;
-                } else {
-                    sort.column = column;
-                    sort.descending = false;
-                }
+                Glyph::ChevronUp
+            })
+        } else {
+            None
+        };
+        if header_cell(ui, *width, label, marker).clicked() {
+            if sort.column == column {
+                sort.descending = !sort.descending;
+            } else {
+                sort.column = column;
+                sort.descending = false;
             }
         }
-    });
+    }
 }
 
 fn collection_hash_cell(ui: &mut egui::Ui, width: f32, hash: u64) {
@@ -482,7 +539,7 @@ fn collection_hash_cell(ui: &mut egui::Ui, width: f32, hash: u64) {
         |ui| {
             ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
             if hash == 0 {
-                ui.label(egui::RichText::new("-").weak());
+                ui.weak("-");
                 return;
             }
             let response = ui
@@ -507,7 +564,7 @@ mod tests {
         let states = [
             AcquisitionState::Acquired,
             AcquisitionState::Acquired,
-            AcquisitionState::Missing,
+            AcquisitionState::NotAcquired,
             AcquisitionState::Unknown,
         ];
         let mut counts = acquisition::AcquisitionCounts::default();
@@ -517,10 +574,10 @@ mod tests {
 
         assert_eq!(counts.total(), 4);
         assert_eq!(counts.acquired, 2);
-        assert_eq!(counts.missing, 1);
+        assert_eq!(counts.not_acquired, 1);
         assert_eq!(counts.unknown, 1);
         assert!(CollectionStatusFilter::Unknown.matches(AcquisitionState::Unknown));
-        assert!(!CollectionStatusFilter::Unknown.matches(AcquisitionState::Missing));
+        assert!(!CollectionStatusFilter::Unknown.matches(AcquisitionState::NotAcquired));
         assert!(CollectionStatusFilter::All.matches(AcquisitionState::Acquired));
     }
 }

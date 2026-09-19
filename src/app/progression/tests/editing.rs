@@ -45,19 +45,18 @@ fn progression_read_only_closes_add_dialog_and_blocks_undo_until_enabled() {
     let before = document.clone();
     let mut state = UiState {
         read_only: true,
-        unlock_table: UnlockTable::AccountProgressions,
         add_open: true,
-        edit_progression_lanes: true,
         ..Default::default()
     };
+    state.unlock_browser.tab = super::super::unlocks::Tab::Ranks;
     state.record_progression_change("account_progressions", 23, Some([1, 2, 3]), Some([9, 8, 7]));
     let ctx = egui::Context::default();
     for read_only in [true, false] {
         state.read_only = read_only;
         let output = frame(&ctx, &mut state, &mut document, vec![]);
         assert!(!state.add_open);
-        assert!(!state.edit_progression_lanes);
-        let pos = button_position(&output, "Undo Progression Change");
+        assert!(!state.storage.edit_extra);
+        let pos = button_position(&output, "Undo Rank Change");
         for pressed in [true, false] {
             frame(
                 &ctx,

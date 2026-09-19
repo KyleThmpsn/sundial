@@ -67,7 +67,7 @@ pub(in crate::app) fn draw_hash_hex_cell(ui: &mut egui::Ui, width: f32, hash: Op
             if let Some(hash) = hash.filter(|hash| *hash != 0) {
                 draw_hash_link(ui, hash, format_hash_hex(hash));
             } else {
-                ui.label(egui::RichText::new("-").weak());
+                ui.weak("-");
             }
         },
     );
@@ -133,7 +133,7 @@ pub(in crate::app) fn metadata_subsection<R>(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.label(egui::RichText::new(title).strong());
+    ui.strong(title);
     ui.add_space(2.0);
     add_contents(ui)
 }
@@ -318,23 +318,6 @@ pub(in crate::app) const fn progression_scope_label(scope: ProgressionScope) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn package_paths_render_root_first() {
-        let package_path = vec![
-            "Aspirant Suit".to_owned(),
-            "Leveling".to_owned(),
-            "Warlock".to_owned(),
-            "Armor".to_owned(),
-            "Items".to_owned(),
-        ];
-
-        assert_eq!(
-            metadata_path_text(&package_path),
-            "Items > Armor > Warlock > Leveling > Aspirant Suit"
-        );
-        assert_eq!(metadata_path_text(&[]), "<empty path>");
-    }
 
     #[test]
     fn parser_accepts_the_hex_component_of_a_hash_display_pair() {

@@ -25,7 +25,10 @@ impl UninstallUi {
 
 impl PackageAuthoringApp {
     pub(super) fn start_uninstall_review(&mut self, recover: bool) {
-        if self.has_background_work() || self.perk_workbench.editing() || self.icon_editor.is_some()
+        if self.has_background_work()
+            || self.perk_workbench.editing()
+            || self.icon_editor.is_some()
+            || self.presentation_editor.editing()
         {
             return;
         }
@@ -90,7 +93,7 @@ impl PackageAuthoringApp {
             let _ = sender.send(result);
         });
         self.log.push(LogEntry::info(
-            if self.uninstall.cleanup_account { "Started custom package uninstall with confirmed account cleanup; recipes will be preserved" } else { "Started package-only uninstall; recipes and account data will be preserved" },
+            if self.uninstall.cleanup_account { "Started custom package uninstall with confirmed account cleanup. Recipes will be preserved" } else { "Started package-only uninstall. Recipes and account data will be preserved" },
         ));
     }
 
@@ -118,7 +121,7 @@ impl PackageAuthoringApp {
             match result {
                 Ok(report) => {
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} custom packages; recovery backup: {}",
+                        "Removed {} custom packages. Recovery backup: {}",
                         report.removed_files.len(),
                         report.backup_directory.display()
                     )));
@@ -149,7 +152,7 @@ impl PackageAuthoringApp {
                         ui.heading("Custom Packages Uninstalled");
                         ui.label(format!("Removed {} Parhelion package files. Stock packages and recipes were kept.", report.removed_files.len()));
                         if let Some(path) = &report.cleaned_account {
-                            ui.label(format!("Removed the reviewed custom items, custom plug references and collection flags from {}. The original account is backed up with the package set; unrelated progress was kept.", path.display()));
+                            ui.label(format!("Removed the reviewed custom items, custom plug references and collection flags from {}. The original account is backed up with the package set. Unrelated progress was kept.", path.display()));
                         } else { ui.label("Saved account data was kept unchanged."); }
                         ui.label("Runtime caches were invalidated where present. They will be rebuilt on the next launch.");
                         ui.label(format!("Recovery backup: {}", report.backup_directory.display()));
@@ -166,13 +169,13 @@ impl PackageAuthoringApp {
                             ui.label(format!("Remove all {} recognized Parhelion packages from:", plan.artifacts().len()));
                             ui.label(plan.target().display().to_string());
                             ui.collapsing("Package Files", |ui| { for artifact in plan.artifacts() { ui.label(&artifact.file_name); } });
-                            ui.label("The complete set is backed up before removal. Stock packages and recipes are kept; relevant runtime caches are refreshed.");
+                            ui.label("The complete set is backed up before removal. Stock packages and recipes are kept. Relevant runtime caches are refreshed.");
                             if let Some(cleanup) = plan.account_cleanup() {
                                 if ui.checkbox(&mut self.uninstall.cleanup_account, "Remove Custom Items and Progression").changed() { self.uninstall.acknowledged = false; }
                                 ui.label(format!("Selected account: {}", cleanup.settings_path.display()));
-                                ui.label(format!("{} saved item instances, {} custom plug references, {} collection unlocks. Includes equipped weapons and all characters in this account; affected equipment slots will be empty.", cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs, cleanup.cleared_unlocks));
+                                ui.label(format!("{} saved item instances, {} custom plug references, {} collection unlocks. Includes equipped weapons and all characters in this account. Affected equipment slots will be empty.", cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs, cleanup.cleared_unlocks));
                                 ui.collapsing("Affected Items", |ui| { for (hash, count) in &cleanup.removed_items {
-                                    let name = self.donor_summaries.iter().find(|item| item.hash == *hash).map(|item| item.name.as_str()).unwrap_or("Custom Item");
+                                    let name = self.donor_summaries.iter().find(|item| item.hash == *hash).map_or("Custom Item", |item| item.name.as_str());
                                     ui.label(format!("{name} · 0x{hash:08X} · {count} instance(s)"));
                                 } });
                                 if cleanup.removed_reward_rules > 0 { ui.label(format!("{} dismantle reward rules referencing custom items will also be removed.", cleanup.removed_reward_rules)); }

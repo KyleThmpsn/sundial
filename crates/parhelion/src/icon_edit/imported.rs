@@ -1,21 +1,14 @@
 //! Bounded image imports embedded in recipes, with no dependency on the original file.
 
-use std::{
-    fmt,
-    fs::File,
-    io::{Cursor, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{fmt, io::Cursor, path::Path, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{ImageFormat, ImageReader, RgbaImage, imageops::FilterType};
+use image::{ImageFormat, RgbaImage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
 use super::ICON_PREVIEW_SIZE;
+use crate::image_import::{decode, decode_source, fit, read_path};
 
-const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SOURCE_EDGE: u32 = 4096;
 const MAX_EMBEDDED_BYTES: usize = 64 * 1024;
 const ICON_EDGE: u32 = ICON_PREVIEW_SIZE as u32;
 
@@ -41,24 +34,12 @@ impl fmt::Debug for ImportedIcon {
 
 impl ImportedIcon {
     pub(super) fn from_path(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|error| format!("Could not open image: {error}"))?;
-        let mut bytes = Vec::new();
-        file.take((MAX_FILE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("Could not read image: {error}"))?;
+        let bytes = read_path(path)?;
         Self::from_bytes(&bytes)
     }
 
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err("Choose an image no larger than 16 MiB.".to_owned());
-        }
-        let format =
-            image::guess_format(bytes).map_err(|_| "Choose a PNG or JPEG image.".to_owned())?;
-        if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg) {
-            return Err("Choose a PNG or JPEG image.".to_owned());
-        }
-        let source = decode(bytes, format, MAX_SOURCE_EDGE)?;
+        let source = decode_source(bytes)?;
         Self::from_normalized(fit(&source, ICON_EDGE, ICON_EDGE))
     }
 
@@ -75,71 +56,6 @@ impl ImportedIcon {
     pub(super) fn fit_to(&self, width: u32, height: u32) -> RgbaImage {
         fit(&self.0.rgba, width, height)
     }
-}
-
-pub(crate) fn decode(
-    bytes: &[u8],
-    format: ImageFormat,
-    max_edge: u32,
-) -> Result<RgbaImage, String> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(max_edge);
-    limits.max_image_height = Some(max_edge);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let decoded = reader
-        .decode()
-        .map_err(|error| {
-            format!("Could not decode image (maximum {max_edge}×{max_edge}): {error}")
-        })?
-        .into_rgba8();
-    if decoded.width() == 0 || decoded.height() == 0 {
-        return Err("Image dimensions must be nonzero.".to_owned());
-    }
-    Ok(decoded)
-}
-
-// Filter premultiplied pixels to prevent hidden RGB in transparent PNGs from bleeding at edges.
-pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
-    if source.dimensions() == (width, height) {
-        return source.clone();
-    }
-    let scale = (f64::from(width) / f64::from(source.width()))
-        .min(f64::from(height) / f64::from(source.height()));
-    let fitted_width = ((f64::from(source.width()) * scale).round() as u32).clamp(1, width);
-    let fitted_height = ((f64::from(source.height()) * scale).round() as u32).clamp(1, height);
-    let mut premultiplied = source.clone();
-    for pixel in premultiplied.pixels_mut() {
-        let alpha = u32::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
-        }
-    }
-    let mut resized = image::imageops::resize(
-        &premultiplied,
-        fitted_width,
-        fitted_height,
-        FilterType::Lanczos3,
-    );
-    for pixel in resized.pixels_mut() {
-        let alpha = u32::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = if alpha == 0 {
-                0
-            } else {
-                ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
-            };
-        }
-    }
-    let mut canvas = RgbaImage::new(width, height);
-    image::imageops::replace(
-        &mut canvas,
-        &resized,
-        i64::from((width - fitted_width) / 2),
-        i64::from((height - fitted_height) / 2),
-    );
-    canvas
 }
 
 #[derive(Serialize, Deserialize)]

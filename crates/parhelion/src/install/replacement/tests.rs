@@ -3,7 +3,7 @@ use serde_json::json;
 
 #[test]
 fn slot_replacement_requires_exact_consent_for_moves_and_deletions() {
-    use sundial::investment::AuthoredSlotChange;
+    use sundial::package_authoring::account::AuthoredSlotChange;
     for capacity in [1, 2] {
         let root = tempfile::tempdir().unwrap();
         let packages = root.path().join("packages");

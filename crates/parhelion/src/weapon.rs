@@ -7,7 +7,9 @@ mod resolve;
 mod sources;
 #[cfg(test)]
 mod tests;
+pub(crate) mod variable_damage;
 use custom_runtime::*;
+pub(crate) use custom_runtime::{preflight_runtime_edits, runtime_hud_key};
 mod localization;
 use localization::*;
 mod socket_columns;
@@ -22,6 +24,7 @@ use raw_payload::*;
 
 mod validation;
 pub(crate) use validation::validate_catalog_with_progress;
+pub(crate) use validation::validate_socket_plug_variant_shapes;
 #[cfg(test)]
 pub(crate) use validation::validate_weapon_clone_specs_against_catalog;
 use validation::*;
@@ -137,9 +140,7 @@ use sundial::package_authoring::{
         sandbox_pattern_identity_at, validate_weapon_entity, weapon_component_bindings,
         weapon_entity_assignment,
     },
-    weapon_runtime::{
-        WeaponRuntimeValueOverride, encode_weapon_runtime_value, resolve_weapon_runtime_field,
-    },
+    weapon_runtime::{WeaponRuntimeValueOverride, resolve_weapon_runtime_field},
 };
 
 use tiger_pkg::{PackageManager, TagHash};
@@ -273,7 +274,6 @@ const PRIVATE_PERK_RESIDENCY_B9_SIZE: usize = 0x160;
 const PRIVATE_PERK_RESIDENCY_BA_SIZE: usize = 0xA14;
 const PRIVATE_PERK_RESIDENCY_ROOT_SIZE: usize = 0xC0;
 const PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE: usize = 0x122;
-const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
 const LOCALIZATION_STOCK_TABLE_COUNT: usize = 3108;
 // Bank 2927 is an already-rooted native two-string bank. Its existing hashes and strings are
 // preserved while authored weapon and private-plug text is appended in a patch overlay. A new independent
@@ -464,6 +464,19 @@ pub enum ModernDamageType {
     Void,
 }
 
+/// Element switching by holding Reload, the way Hard Light and Borealis work.
+///
+/// The hold itself is client-side and exists only on those two weapons' gear-art rows, so the
+/// appearance donor has to be one of them. The switchable effects are the three stock rows on
+/// Hard Light's Fundamentals plug, one Set Host Mode node per element, each gated on the selector
+/// value the hold steps through: 0 is Void, 1 is Arc, 2 is Solar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeaponVariableDamage {
+    /// Elements the cycle can settle on. A selector step without a chosen element keeps the
+    /// element the weapon already has, so a two-element set repeats one element for one hold.
+    pub elements: Vec<ModernDamageType>,
+}
+
 /// The inventory column occupied by an authored weapon.
 ///
 /// This is intentionally separate from weapon/ammo category. The compact inventory bucket and
@@ -630,7 +643,7 @@ impl WeaponInventorySlot {
 /// Existing inventory instances retain their saved selections. Because authored collection items
 /// are curated, an inherited randomized donor lane is automatically fixed to its native default
 /// and embedded choices.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponCloneOverrides {
     pub collection_destination: Option<crate::collection::Destination>,
     pub exclude_from_sunrise_badge: bool,
@@ -660,6 +673,16 @@ pub struct WeaponCloneOverrides {
     pub inventory_slot: Option<WeaponInventorySlot>,
     pub ammo_type: Option<WeaponAmmoType>,
     pub modern_damage_type: Option<ModernDamageType>,
+    /// Reload-hold element switching. Compilation pins The Fundamentals into the first trait
+    /// socket, and [`Self::modern_damage_type`] is then the element the weapon rests on.
+    pub variable_damage: Option<WeaponVariableDamage>,
+    /// Catalogue identifiers of exotic behavior records grafted onto this weapon's variant block.
+    pub additional_behaviors: Vec<String>,
+    /// Leave each grafted behavior's own intrinsic and trait plugs out of the graft.
+    pub skip_behavior_perks: bool,
+    /// Raises a grafted projectile's launch speed on a weapon that fires none of its own, and
+    /// caps how far it is raised.
+    pub behavior_projectile_speed: Option<f32>,
     pub power_cap_group: Option<u16>,
     /// Complete ordered native version-group values. Mutually exclusive with
     /// [`Self::power_cap_group`] and required to match the donor row count.
@@ -801,6 +824,22 @@ pub struct WeaponRuntimeResourcePatch {
     pub graph_values: Vec<WeaponRuntimeValueOverride>,
 }
 
+/// Adds a self-contained record to the end of a component owner and points slots at it.
+///
+/// A patch can only overwrite bytes that already exist, so a weapon whose family has no record of
+/// its own needs one appended. Every relative pointer inside the added bytes is self relative, and
+/// appending never moves existing data, so the rest of the payload stays valid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeaponRuntimeResourceAppend {
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    /// Bytes added at the end of the owner payload.
+    pub bytes: Vec<u8>,
+    /// Slots to fill in, as the slot's resource-relative offset, the offset inside `bytes` it
+    /// should reach, and the count written in the following eight bytes.
+    pub slots: Vec<(u32, usize, i64)>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WeaponArtArrangementOverride {
     pub character_class: i8,
@@ -932,7 +971,7 @@ pub struct WeaponRuntimeComponentDonorReference {
 /// identities, localized text, presentation assets and Collections placement, and fixes inherited
 /// randomized socket lanes to their native defaults. Explicit donors and overrides replace their
 /// corresponding fields.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WeaponCloneSpec {
     pub namespace: String,
     pub donor_item_hash: u32,
@@ -976,6 +1015,7 @@ impl WeaponCloneSpec {
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
         validate_weapon_donor_references(self)?;
+        variable_damage::validate_spec(self)?;
         validate_weapon_clone_text(&self.text)?;
         self.overrides.icon_edit.validate()?;
         validate_investment_stat_definitions(&self.overrides)?;
@@ -1014,7 +1054,7 @@ pub struct NewWeaponPlan {
 
 /// A coherent project compiled into five investment overlays, one standalone asset package,
 /// and any recipe-selected runtime overlays. The build manifest owns the exact output set.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WeaponProjectSpec {
     pub weapons: Vec<WeaponCloneSpec>,
 }

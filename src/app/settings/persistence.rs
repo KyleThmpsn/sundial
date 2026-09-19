@@ -1,5 +1,6 @@
 //! Verified settings saves, source-change checks, and recovery backups.
 use super::{backups_path, prepare_settings};
+pub(in crate::app) use crate::persistence::json_document::load_workspace_json;
 use crate::{game_settings, persistence::json_account::ensure_schema_v8_preferences, storage};
 use serde_json::Value;
 use std::{
@@ -7,24 +8,6 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-pub(in crate::app) fn load_workspace_json(path: &Path) -> Result<Value, String> {
-    let raw = fs::read_to_string(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            format!(
-                "No Project Sunrise settings.json was found in the selected installation. Expected: {}. Choose the Destiny 2 Shadowkeep folder containing destiny2.exe and the bin folder, and confirm Project Sunrise is installed there",
-                path.display()
-            )
-        } else {
-            format!("Could not read {}: {error}", path.display())
-        }
-    })?;
-    // Sunrise accepts a leading UTF-8 BOM because common Windows editors add one. Match the
-    // loader before handing the document to serde_json, which otherwise treats it as a token.
-    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
-    crate::strict_json::from_str(raw)
-        .map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))
-}
 
 #[cfg(test)]
 pub(in crate::app) fn load_json(path: &Path) -> Result<Value, String> {
@@ -47,11 +30,7 @@ pub(in crate::app) fn verify_workspace_source_unchanged(
     if normalize_json_account {
         ensure_schema_v8_preferences(&mut current);
     }
-    if current == *expected {
-        Ok(())
-    } else {
-        Err("settings.json changed outside Sundial after it was loaded. Reload before saving so newer data is not overwritten".into())
-    }
+    crate::persistence::json_document::verify_value_unchanged(&current, expected)
 }
 
 pub(in crate::app) struct SaveJsonResult {
@@ -185,7 +164,7 @@ fn save_json_with_writer(
         ensure_schema_v8_preferences(&mut original_document);
     }
     if original_document != *expected {
-        return Err("settings.json changed outside Sundial; reload before saving".into());
+        return Err("settings.json changed outside Sundial. Reload before saving".into());
     }
     let prepared = prepare_settings(document)?;
 
@@ -205,7 +184,7 @@ fn save_json_with_writer(
     )?;
     if fs::read(&backup).map_err(|error| error.to_string())? != original {
         return Err(format!(
-            "settings.json changed while it was being backed up; no replacement was attempted. Backup: {}",
+            "settings.json changed while it was being backed up. No replacement was attempted. Backup: {}",
             backup.display()
         ).into());
     }
@@ -215,13 +194,13 @@ fn save_json_with_writer(
     // actual bytes so the coordinator does not roll back SQLite after a JSON commit.
     // Never restore blindly: unexpected bytes may belong to another writer.
     let saved = fs::read(path).map_err(|error| SaveJsonError {
-        message: format!("Could not verify settings.json ({error}); its state is uncertain and was left untouched. Reload before continuing. Backup: {}", backup.display()),
+        message: format!("Could not verify settings.json ({error}). Its state is uncertain and was left untouched. Reload before continuing. Backup: {}", backup.display()),
         may_have_committed: true,
     })?;
     if saved != prepared.encoded.as_bytes() {
         return Err(SaveJsonError {
             message: format!(
-                "Settings save did not verify ({}); current contents were preserved. Reload before saving. Backup: {}",
+                "Settings save did not verify ({}). Current contents were preserved. Reload before saving. Backup: {}",
                 write_result.err().map_or_else(
                     || "the file changed after replacement".to_owned(),
                     |error| error.to_string()
@@ -252,7 +231,7 @@ pub(in crate::app) fn require_game_closed(running: Result<bool, String>) -> Resu
     Ok(())
 }
 
-fn lock_settings(path: &Path) -> Result<fs::File, String> {
+pub(in crate::app) fn lock_settings(path: &Path) -> Result<fs::File, String> {
     let name = path
         .file_name()
         .ok_or("Settings path has no file name")?
@@ -269,7 +248,7 @@ fn lock_settings(path: &Path) -> Result<fs::File, String> {
         .open(&lock_path)
         .map_err(|error| format!("Could not open settings write lock: {error}"))?;
     fs2::FileExt::try_lock_exclusive(&file).map_err(|error| format!(
-        "Another Sundial operation may be saving this account; retry after it finishes ({error})"
+        "Another Sundial operation may be saving this account. Retry after it finishes ({error})"
     ))?;
     // Keep the lock file: unlinking it would let another writer lock a new inode.
     Ok(file)
@@ -307,7 +286,7 @@ fn create_backup(source: &Path, destination: &Path) -> Result<(), String> {
         return match storage::remove_file_if_present(destination) {
             Ok(()) => Err(failure),
             Err(cleanup_error) => Err(format!(
-                "{failure}; the incomplete backup could not be removed: {cleanup_error}"
+                "{failure}. The incomplete backup could not be removed: {cleanup_error}"
             )),
         };
     }

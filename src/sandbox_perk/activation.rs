@@ -11,6 +11,53 @@ use crate::package_payload::{
 };
 use serde::{Deserialize, Serialize};
 
+mod label_sites;
+pub use label_sites::{LABEL_SITES, Site};
+
+/// The labels stock perks use at one label binding site, most used first. Empty when no
+/// stock perk authors a named label there.
+#[must_use]
+pub fn site_labels(class: u32, offset: usize) -> &'static [(u32, &'static str, u32)] {
+    LABEL_SITES
+        .iter()
+        .find(|(candidate, at, _)| *candidate == class && *at == offset)
+        .map_or(&[], |(_, _, labels)| *labels)
+}
+
+/// The name of a label, when a stock perk uses it at some binding site.
+#[must_use]
+pub fn site_label_name(hash: u32) -> Option<&'static str> {
+    LABEL_SITES
+        .iter()
+        .flat_map(|(_, _, labels)| labels.iter())
+        .find(|(candidate, _, _)| *candidate == hash)
+        .map(|(_, name, _)| *name)
+}
+
+/// How each of the four native label lists at a binding site is applied to an event.
+pub const LABEL_OPERATIONS: [(usize, &str, &str); 4] = [
+    (
+        0,
+        "Matches any",
+        "The event passes when it carries any of these labels.",
+    ),
+    (
+        1,
+        "Requires all",
+        "The event passes only when it carries every one of these labels.",
+    ),
+    (
+        2,
+        "Excludes any",
+        "The event is rejected when it carries any of these labels.",
+    ),
+    (
+        3,
+        "Not all",
+        "The event is rejected only when it carries every one of these labels.",
+    ),
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerkActivation {
@@ -22,6 +69,18 @@ pub enum PerkActivation {
 }
 
 impl PerkActivation {
+    /// Match the complete kill category, independent of label ordering. Companion
+    /// restrictions are not part of this category and must remain on the node.
+    pub fn from_filter(labels: &[u32], requires_weapon: bool) -> Option<Self> {
+        let mut labels = labels.to_vec();
+        labels.sort_unstable();
+        Self::ALL.into_iter().find(|choice| {
+            let mut expected = choice.labels().to_vec();
+            expected.sort_unstable();
+            labels == expected && requires_weapon == choice.requires_weapon()
+        })
+    }
+
     pub const ALL: [Self; 5] = [
         Self::WeaponKill,
         Self::PrecisionWeaponKill,
@@ -41,7 +100,8 @@ impl PerkActivation {
         }
     }
 
-    const fn labels(self) -> &'static [u32] {
+    /// Source label hashes defining the credited kill category.
+    pub const fn labels(self) -> &'static [u32] {
         match self {
             Self::PrecisionWeaponKill => &[0x962E_A19B],
             Self::MeleeKill => &[0xBF39_E12B, 0xE175_76C9, 0x5D3A_7C84],
@@ -50,7 +110,8 @@ impl PerkActivation {
         }
     }
 
-    const fn requires_weapon(self) -> bool {
+    /// Whether the kill must originate from the owning weapon.
+    pub const fn requires_weapon(self) -> bool {
         matches!(self, Self::WeaponKill | Self::PrecisionWeaponKill)
     }
 }
@@ -65,7 +126,7 @@ const OUTLAW_ACTION: u32 = 0x80BB_C7B4;
 const NODE_CLASS: u32 = 0x8080_3DE7;
 const NODE_STARTS: [usize; 2] = [0x100, 0x410];
 const LABEL_CLASS: u32 = 0x8080_94B3;
-const LABEL_GLOBALS: u32 = 0x80C7_0CA1;
+pub const LABEL_GLOBALS: u32 = 0x80C7_0CA1;
 const LABEL_PATH: &[u8] = b"content/common/native/sandbox/label_globals.label_globals.tft\0";
 
 /// Returns an independently owned action, changing only the kill filter and source
@@ -74,11 +135,13 @@ pub fn with_activation(
     action_tag: u32,
     source: &[u8],
     activation: PerkActivation,
+    label_registry: &[u8],
 ) -> Result<Vec<u8>, String> {
     let paths = validate_outlaw(action_tag, source)?;
     if activation == PerkActivation::PrecisionWeaponKill {
         return Ok(source.to_vec());
     }
+    let mask = super::program::compiler::compile_labels(label_registry, activation.labels())?;
     let mut result = source.to_vec();
     for (start, path) in NODE_STARTS.into_iter().zip(paths) {
         let descriptor = start + 0xD0;
@@ -93,8 +156,9 @@ pub fn with_activation(
         } else {
             // Out-of-line rows keep every existing offset stable. Rebase the debug
             // path pointer in each new row; copying its old relative value is invalid.
-            result.resize(result.len().next_multiple_of(16), 0);
+            result.resize((result.len() + 4).next_multiple_of(16), 0);
             let header = result.len();
+            write_bytes(&mut result, header - 4, &0x8080_9FBDu32.to_le_bytes())?;
             result.extend_from_slice(&(labels.len() as u64).to_le_bytes());
             result.extend_from_slice(&LABEL_CLASS.to_le_bytes());
             result.extend_from_slice(&[0; 4]);
@@ -121,6 +185,10 @@ pub fn with_activation(
             start + 0x141,
             &[u8::from(activation.requires_weapon())],
         )?;
+        // The native consumer evaluates this compiled predicate, not the source label list.
+        let predicate = relative_offset(start, 0x130, i64_at(source, start + 0x130)?)?;
+        write_bytes(&mut result, predicate, &mask)?;
+        write_bytes(&mut result, predicate + 80, &[u8::from(labels.is_empty())])?;
     }
     let size = result.len() as u64;
     write_bytes(&mut result, 0, &size.to_le_bytes())?;
@@ -195,6 +263,9 @@ fn validate_outlaw(action_tag: u32, source: &[u8]) -> Result<[usize; 2], String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registry() -> Vec<u8> {
+        crate::package_runtime::labels::fixture::registry()
+    }
 
     fn fixture() -> Vec<u8> {
         let mut b = vec![0; 1782];
@@ -223,6 +294,7 @@ mod tests {
             )
             .unwrap();
             write_bytes(&mut b, header, &1u64.to_le_bytes()).unwrap();
+            write_bytes(&mut b, header - 4, &0x8080_9FBDu32.to_le_bytes()).unwrap();
             write_bytes(&mut b, header + 8, &LABEL_CLASS.to_le_bytes()).unwrap();
             write_bytes(&mut b, header + 16, &0x962E_A19Bu64.to_le_bytes()).unwrap();
             write_bytes(
@@ -258,7 +330,7 @@ mod tests {
     fn activation_changes_both_filters_and_preserves_effect_bytes() {
         let source = fixture();
         for condition in PerkActivation::ALL {
-            let result = with_activation(OUTLAW_ACTION, &source, condition).unwrap();
+            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
             for start in NODE_STARTS {
                 assert_activation_filter(&result, start, condition);
             }
@@ -268,6 +340,9 @@ mod tests {
                     .any(|start| (start + 0xD0..start + 0xE0).contains(&i) || i == start + 0x141)
                     || [0x270..0x274, 0x580..0x584]
                         .iter()
+                        .any(|range| range.contains(&i))
+                    || [0x28C..0x2B4, 0x59C..0x5C4, 0x2DC..0x2DD, 0x5EC..0x5ED]
+                        .iter()
                         .any(|range| range.contains(&i));
                 if !edited {
                     assert_eq!(result[i], *byte, "effect byte {i:X}");
@@ -276,7 +351,13 @@ mod tests {
             assert_eq!(u64_at(&result, 0).unwrap(), result.len() as u64);
         }
         assert_eq!(
-            with_activation(OUTLAW_ACTION, &source, PerkActivation::PrecisionWeaponKill).unwrap(),
+            with_activation(
+                OUTLAW_ACTION,
+                &source,
+                PerkActivation::PrecisionWeaponKill,
+                &registry()
+            )
+            .unwrap(),
             source
         );
     }
@@ -284,16 +365,44 @@ mod tests {
     #[test]
     fn activation_rejects_unmapped_or_changed_sources_without_mutation() {
         let source = fixture();
-        assert!(with_activation(0, &source, PerkActivation::AnyKill).is_err());
+        assert!(with_activation(0, &source, PerkActivation::AnyKill, &registry()).is_err());
         for offset in [0, 0xFC, 0x108, 0x1D0, 0x270, 0x280, 0x241, 0x580] {
             let mut changed = source.clone();
             changed[offset] ^= 1;
             let before = changed.clone();
             assert!(
-                with_activation(OUTLAW_ACTION, &changed, PerkActivation::AnyKill).is_err(),
+                with_activation(
+                    OUTLAW_ACTION,
+                    &changed,
+                    PerkActivation::AnyKill,
+                    &registry()
+                )
+                .is_err(),
                 "{offset:X}"
             );
             assert_eq!(before, changed);
+        }
+    }
+
+    #[test]
+    fn every_activation_has_typed_arrays_and_matching_runtime_predicates() {
+        use crate::sandbox_perk::action::native::{Graph, labels};
+        let source = fixture();
+        for condition in PerkActivation::ALL {
+            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
+            let expected =
+                super::super::program::compiler::compile_labels(&registry(), condition.labels())
+                    .unwrap();
+            for start in NODE_STARTS {
+                let graph = Graph::read(&result, start, NODE_CLASS).unwrap();
+                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[0], expected);
+                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[2], [0; 40]);
+                if !condition.labels().is_empty() {
+                    let target = graph.blocks[0].links[&0xD8];
+                    assert_eq!(graph.blocks[target].class, LABEL_CLASS);
+                    assert_eq!(graph.blocks[target].count, Some(condition.labels().len()));
+                }
+            }
         }
     }
 }

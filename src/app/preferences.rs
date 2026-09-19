@@ -1,7 +1,11 @@
+pub(super) use crate::account::source::{SettingsLayout, SettingsPathResolution};
 pub use crate::investment::PlugSelectionMode;
 pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
 
 pub(super) mod store;
+
+#[cfg(test)]
+mod tests;
 
 use std::{
     fs,
@@ -66,51 +70,6 @@ pub(super) enum CharacterInventoryLayout {
     Panoptes,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SettingsLayout {
-    GameRoot,
-    Root,
-    BinX64,
-}
-
-impl SettingsLayout {
-    pub(super) const ALL: [Self; 3] = [Self::GameRoot, Self::Root, Self::BinX64];
-
-    pub(super) fn relative_path(self) -> PathBuf {
-        match self {
-            Self::GameRoot => PathBuf::from("settings.json"),
-            Self::Root => PathBuf::from("Sunrise").join("settings.json"),
-            Self::BinX64 => PathBuf::from("bin")
-                .join("x64")
-                .join("Sunrise")
-                .join("settings.json"),
-        }
-    }
-
-    pub(super) const fn preference_value(self) -> &'static str {
-        match self {
-            Self::GameRoot => "game_root",
-            Self::Root => "root",
-            Self::BinX64 => "bin_x64",
-        }
-    }
-
-    pub(super) fn from_preference(value: &str) -> Option<Self> {
-        match value {
-            "game_root" => Some(Self::GameRoot),
-            "root" => Some(Self::Root),
-            "bin_x64" => Some(Self::BinX64),
-            _ => None,
-        }
-    }
-}
-
-pub(super) enum SettingsPathResolution {
-    Found(SettingsLayout, PathBuf),
-    Missing,
-    Ambiguous,
-}
-
 #[derive(Clone)]
 pub(super) struct InstallSelection {
     pub(super) install_path: PathBuf,
@@ -149,8 +108,6 @@ pub(super) struct Preferences {
     pub(super) character_inventory_layout: CharacterInventoryLayout,
     #[serde(default)]
     pub(super) experimental_progression: bool,
-    #[serde(default)]
-    pub(super) experimental_activity_state: bool,
     #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
     #[serde(default)]
@@ -283,7 +240,6 @@ impl Default for Preferences {
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,
-            experimental_activity_state: false,
             experimental_power_above_cap: false,
             experimental_extended_fov: false,
             experimental_cross_class_subclasses: false,
@@ -324,5 +280,28 @@ impl Preferences {
                 .as_deref()
                 .and_then(SettingsLayout::from_preference),
         })
+    }
+}
+
+impl SettingsLayout {
+    pub(super) const fn preference_value(self) -> &'static str {
+        match self {
+            Self::GameRoot => "game_root",
+            Self::Root => "root",
+            Self::BinX64 => "bin_x64",
+            Self::DawnRoot => "dawn_root",
+            Self::DawnBinX64 => "dawn_bin_x64",
+        }
+    }
+
+    pub(super) fn from_preference(value: &str) -> Option<Self> {
+        match value {
+            "game_root" => Some(Self::GameRoot),
+            "root" => Some(Self::Root),
+            "bin_x64" => Some(Self::BinX64),
+            "dawn_root" => Some(Self::DawnRoot),
+            "dawn_bin_x64" => Some(Self::DawnBinX64),
+            _ => None,
+        }
     }
 }

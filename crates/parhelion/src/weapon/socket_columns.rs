@@ -49,7 +49,7 @@ pub(super) fn resolve_socket_column_indices(
             let matches = item_rows_by_hash
                 .get(&hash)
                 .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .unwrap_or_default();
             let [index] = matches else {
                 if matches.is_empty() {
                     return Err(invalid(format!(

@@ -14,6 +14,12 @@ pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
         serde_json::from_str::<Vec<RegistryRecord>>(include_str!("projectile_schema.json"))
             .map_err(|error| format!("Embedded projectile runtime schema is invalid: {error}"))?,
     );
+    // Include the registered component families and their reflected member types.
+    // Weapon-only roots miss secondary projectile, enemy and ability components.
+    records.extend(
+        serde_json::from_str::<Vec<RegistryRecord>>(include_str!("component_schema.json"))
+            .map_err(|error| format!("Embedded component runtime schema is invalid: {error}"))?,
+    );
     if records.len() < 900 {
         return Err(format!(
             "Embedded weapon runtime schema is incomplete ({} records)",
@@ -86,10 +92,38 @@ pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
             names.insert(hash, candidates);
         }
     }
+    let inferred = build_inferred_names(&names)?;
     Ok(RuntimeRegistry {
         records: records_by_handle,
         names,
+        inferred,
     })
+}
+
+/// Loads the recovered candidate names, dropping any entry that does not hash to its key.
+///
+/// A verified name always wins, so an inferred entry never shadows `names.json`.
+fn build_inferred_names(
+    verified: &BTreeMap<u32, Vec<String>>,
+) -> Result<BTreeMap<u32, String>, String> {
+    let encoded =
+        serde_json::from_str::<BTreeMap<String, Vec<String>>>(include_str!("inferred_names.json"))
+            .map_err(|error| format!("Embedded inferred name table is invalid: {error}"))?;
+    let mut inferred = BTreeMap::new();
+    for (hash, candidates) in encoded {
+        let hash = u32::from_str_radix(&hash, 16)
+            .map_err(|_| format!("Embedded inferred name key {hash:?} is not hexadecimal"))?;
+        if verified.contains_key(&hash) {
+            continue;
+        }
+        if let Some(name) = candidates
+            .into_iter()
+            .find(|candidate| fnv1_name_hash(candidate) == hash)
+        {
+            inferred.insert(hash, name);
+        }
+    }
+    Ok(inferred)
 }
 
 pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistry) -> String {
@@ -102,6 +136,12 @@ pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistr
         WEAPON_RELOAD_COMPONENT_KEY => Some("Reload"),
         WEAPON_TRIGGER_CHARGE_COMPONENT_KEY => Some("Trigger charge"),
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY => Some("Weapon stats / translator"),
+        // Paired movement schema 80803B73 and its definition drive the projectile
+        // parameters. The modifier bindings use native M Modifiers plus CA2830's
+        // target-component dispatch, shared by Micro-Missile and other attached effects.
+        0x0437_756D => Some("Projectile Movement"),
+        0x245B_EBBA => Some("Component Modifiers"),
+        0x7330_E39F => Some("Component Property Modifier"),
         _ => None,
     };
     known.map(str::to_owned).unwrap_or_else(|| {
@@ -109,8 +149,10 @@ pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistr
             .names
             .get(&binding_hash)
             .and_then(|names| names.first())
-            .map(|name| humanize_identifier(name))
-            .unwrap_or_else(|| format!("Binding 0x{binding_hash:08X}"))
+            .map_or_else(
+                || format!("Binding 0x{binding_hash:08X}"),
+                |name| humanize_identifier(name),
+            )
     })
 }
 
@@ -244,12 +286,22 @@ pub(super) fn generated_scalar_kind(kind: Option<u8>, size: u32) -> Option<Weapo
 }
 
 pub(super) fn runtime_member_label(name_hash: u32, registry: &RuntimeRegistry) -> String {
-    registry
+    runtime_member_name(name_hash, registry).0
+}
+
+/// Display name for a member hash and whether that name is an inferred candidate.
+pub(super) fn runtime_member_name(name_hash: u32, registry: &RuntimeRegistry) -> (String, bool) {
+    if let Some(name) = registry
         .names
         .get(&name_hash)
         .and_then(|names| names.first())
-        .map(|name| humanize_identifier(name))
-        .unwrap_or_else(|| format!("Member 0x{name_hash:08X}"))
+    {
+        return (humanize_identifier(name), false);
+    }
+    if let Some(name) = registry.inferred.get(&name_hash) {
+        return (humanize_identifier(name), true);
+    }
+    (format!("Member 0x{name_hash:08X}"), false)
 }
 
 pub(super) fn format_runtime_path(

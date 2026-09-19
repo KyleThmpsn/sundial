@@ -122,10 +122,10 @@ pub(in crate::catalog) fn expand_shared_condition_contexts(
             for token in program {
                 match token.kind {
                     CONDITION_FLAG_KIND => {
-                        add_progression_context(flags, token.operand as usize, &context)
+                        add_progression_context(flags, token.operand as usize, &context);
                     }
                     CONDITION_VALUE_KIND => {
-                        add_progression_context(values, token.operand as usize, &context)
+                        add_progression_context(values, token.operand as usize, &context);
                     }
                     CONDITION_POOL_KIND => queue.push(token.operand as usize),
                     _ => {}

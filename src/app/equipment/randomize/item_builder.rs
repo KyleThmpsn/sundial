@@ -157,12 +157,12 @@ pub(super) fn draw_item_workspace(
                 context,
                 |ui| {
                     ui.set_width(440.0);
-                    ui.heading("Replace equipped item?");
+                    ui.heading("Replace Equipped Item?");
                     ui.add_space(6.0);
                     ui.colored_label(ui.visuals().warn_fg_color, warning.message());
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Delete old item and equip").clicked() {
+                        if ui.button("Delete Old Item and Equip").clicked() {
                             replace = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -219,7 +219,7 @@ pub(super) fn draw_item_workspace(
         };
         match result {
             Ok(message) => {
-                app.dirty = true;
+                app.record_edit("Randomized Item Applied");
                 app.set_status(format!("{message}. Click Save to write it"), false);
                 state.feedback = Some(Feedback {
                     text: unchanged.map_or_else(
@@ -397,9 +397,7 @@ fn draw_base_section(
                 |ui| {
                     ui.set_width(search.rect.width());
                     if instance_results.is_empty() && definition_results.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No items match the search and filters.").weak(),
-                        );
+                        ui.weak("No items match the search and filters.");
                     } else {
                         egui::ScrollArea::vertical()
                             .id_salt("randomize-base-results")
@@ -532,7 +530,7 @@ fn draw_base_filters(
         if family == ItemFamily::Armor {
             ui.separator();
             ui.label("Class");
-            ui.label(egui::RichText::new(class_name(class_type)).strong());
+            ui.strong(class_name(class_type));
         }
     });
 
@@ -661,7 +659,7 @@ fn draw_plug_heading(
         .and_then(|candidate| catalog.item(candidate.item_hash));
     ui.horizontal(|ui| {
         ui.heading("Plugs");
-        let reroll = ui.add_enabled(item.is_some(), egui::Button::new("Reroll plugs").small());
+        let reroll = ui.add_enabled(item.is_some(), egui::Button::new("Reroll Plugs").small());
         if reroll.clicked()
             && let Some(item) = item
         {
@@ -696,9 +694,7 @@ fn draw_plug_section_contents(
             .as_ref()
             .map(|candidate| candidate.item_hash)
         else {
-            ui.label(
-                egui::RichText::new("Choose a base item to generate and edit its plugs.").weak(),
-            );
+            ui.weak("Choose a base item to generate and edit its plugs.");
             return;
         };
         let Some(item) = catalog.item(item_hash) else {
@@ -710,7 +706,7 @@ fn draw_plug_section_contents(
         };
         let socket_count = item.sockets.len().min(inventory::MAX_ITEM_PLUGS);
         if socket_count == 0 {
-            ui.label(egui::RichText::new("This item has no configurable sockets.").weak());
+            ui.weak("This item has no configurable sockets.");
             return;
         }
         state.selected_socket = state.selected_socket.min(socket_count - 1);
@@ -754,7 +750,7 @@ fn draw_available_plugs(
         let mut selection = None::<Option<u64>>;
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Available plugs").strong().size(15.0));
+            ui.label(egui::RichText::new("Available Plugs").strong().size(15.0));
             ui.label(format!("· {socket_label}"));
             if ui
                 .add_enabled(!choices.is_empty(), egui::Button::new("Reroll").small())
@@ -839,7 +835,7 @@ fn draw_available_plugs(
                     }
                 }
                 if visible == 0 {
-                    ui.label(egui::RichText::new("No matching plugs.").weak());
+                    ui.weak("No matching plugs.");
                 }
             });
 
@@ -862,7 +858,7 @@ fn draw_selected_plugs(
 ) {
     ui.vertical(|ui| {
         ui.set_width(ui.available_width());
-        ui.label(egui::RichText::new("Selected plugs").strong().size(15.0));
+        ui.label(egui::RichText::new("Selected Plugs").strong().size(15.0));
         let mut selected = None;
         egui::ScrollArea::vertical()
             .id_salt("randomize-selected-plugs")
@@ -984,7 +980,7 @@ fn draw_footer(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let candidate = state.candidate.clone();
             let can_apply = candidate.is_some();
-            let equip = ui.add_enabled(can_apply, egui::Button::new("Equip item"));
+            let equip = ui.add_enabled(can_apply, egui::Button::new("Equip Item"));
             let equip = if let Some(warning) = equip_warning {
                 equip.on_hover_text(warning.message())
             } else {
@@ -1002,7 +998,7 @@ fn draw_footer(
             }
             let add = ui.add_enabled(
                 can_apply && inventory_blocker.is_none(),
-                egui::Button::new("Add to inventory"),
+                egui::Button::new("Add to Inventory"),
             );
             let add = if let Some(reason) = inventory_blocker {
                 add.on_disabled_hover_text(reason)

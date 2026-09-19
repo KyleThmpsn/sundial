@@ -15,8 +15,9 @@ use super::super::{schema_version, take_entity_id};
 use super::{EquipmentOrigin, JsonAccountError, JsonCharacterAdapter, JsonCharacterResult};
 use crate::{
     account_contract::{
-        CHARACTER_INVENTORY_CAPACITY, EQUIPMENT_FLAGS_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION,
-        MAX_ITEM_PLUGS, RUNTIME_FEATURES_SCHEMA_VERSION, is_known_equipment_slot, item_flag_mask,
+        CHARACTER_INVENTORY_CAPACITY, EQUIPMENT_FLAGS_SCHEMA_VERSION,
+        EXTENDED_EQUIPMENT_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, MAX_ITEM_PLUGS,
+        is_known_equipment_slot, item_flag_mask,
     },
     game_settings::{MAX_SUPPORTED_SCHEMA, MIN_SUPPORTED_SCHEMA},
     hash::parse_unsigned_value,
@@ -397,7 +398,7 @@ impl JsonCharacterAdapter {
     fn load_scoped(document: &Value, scope: LoadScope) -> JsonCharacterResult<Self> {
         let source_schema_version = document.get("version").and_then(Value::as_u64);
         let schema_version = if scope.allow_missing_schema_version {
-            source_schema_version.unwrap_or(RUNTIME_FEATURES_SCHEMA_VERSION - 1)
+            source_schema_version.unwrap_or(EXTENDED_EQUIPMENT_SCHEMA_VERSION - 1)
         } else {
             schema_version(document)?
         };

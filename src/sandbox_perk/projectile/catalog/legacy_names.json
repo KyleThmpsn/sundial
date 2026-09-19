@@ -1,0 +1,52 @@
+[
+  {
+    "hash": "34DCD27F",
+    "name": "pulse_grenade",
+    "source": "Destiny 1 PS4 alpha wwise event pulse_grenade_loop"
+  },
+  {
+    "hash": "58C9E446",
+    "name": "ward_of_dawn",
+    "source": "Destiny 1 PS3 Taken King pattern ward_of_dawn_super"
+  },
+  {
+    "hash": "5D897F65",
+    "name": "solar_flare",
+    "source": "Destiny 1 PS4 alpha icon content\\ui\\common\\icon_libraries\\weapon_profiles_killed_by\\data\\solar_flare.v2.tif"
+  },
+  {
+    "hash": "765D81DF",
+    "name": "flux_grenade",
+    "source": "Destiny 1 PS4 alpha string al_flux_grenade"
+  },
+  {
+    "hash": "B0F439A4",
+    "name": "glide",
+    "source": "Destiny 1 PS4 alpha ability content\\sandbox\\abilities\\player\\movement\\glide\\glide.ability.tft"
+  },
+  {
+    "hash": "C149815F",
+    "name": "proximity_grenade",
+    "source": "Destiny 1 PS4 alpha wwise event proximity_grenade_impact"
+  },
+  {
+    "hash": "DAD7E57E",
+    "name": "frag_grenade",
+    "source": "Destiny 1 PS4 alpha wwise event frag_grenade_throw"
+  },
+  {
+    "hash": "E0ABC9C9",
+    "name": "dead_ghost_prop",
+    "source": "Destiny 1 PS4 alpha string dead_ghost_prop"
+  },
+  {
+    "hash": "F0ADC4F2",
+    "name": "axion_bolt",
+    "source": "Destiny 1 PS4 alpha stat kill.ai.ability(axion_bolt)"
+  },
+  {
+    "hash": "FC6E26E0",
+    "name": "field_grenade",
+    "source": "Destiny 1 PS4 alpha wwise event field_grenade_bounce"
+  }
+]

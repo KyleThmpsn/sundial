@@ -4,7 +4,7 @@ mod details;
 #[cfg(test)]
 mod tests;
 use sundial::{
-    investment::PerkPatternUse,
+    investment::{PerkPatternUse, PerkSources},
     package_authoring::sandbox_perk::dependencies::{self, Entity, Index, Perk},
 };
 
@@ -20,7 +20,7 @@ struct Request(Option<usize>);
 
 pub(super) fn request(ctx: &egui::Context, perk: Option<usize>) {
     ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::new("pattern-dependency-request"), Request(perk))
+        data.insert_temp(egui::Id::new("pattern-dependency-request"), Request(perk));
     });
 }
 
@@ -45,6 +45,7 @@ pub(super) struct Browser {
     reveal_selection: bool,
     index: Option<Arc<Index>>,
     uses: Vec<PerkPatternUse>,
+    sources: PerkSources,
     error: Option<String>,
     progress: (usize, usize),
     job: Option<Job>,
@@ -60,6 +61,7 @@ impl Browser {
         self.open = false;
         self.index = None;
         self.uses.clear();
+        self.sources = PerkSources::default();
         self.error = None;
         self.generation = self.generation.wrapping_add(1);
     }
@@ -155,6 +157,10 @@ impl PackageAuthoringApp {
                 .catalog
                 .as_ref()
                 .map_or_else(Vec::new, InvestmentCatalog::perk_pattern_uses);
+            self.runtime_dependencies.sources = self
+                .catalog
+                .as_ref()
+                .map_or_else(PerkSources::default, InvestmentCatalog::perk_sources);
             self.runtime_dependencies.start(self.packages.clone(), ctx);
         }
         let mut open = true;
@@ -171,25 +177,11 @@ impl PackageAuthoringApp {
             .max_height((ctx.screen_rect().height() - 64.0).max(240.0))
             .show(ctx, |ui| {
                 workbench_style(ui);
-                self.runtime_dependencies.show(
-                    ui,
-                    &self.sandbox_perk_choices,
-                    &self.donor_summaries,
-                    target,
-                );
+                self.runtime_dependencies
+                    .show(ui, &self.donor_summaries, target);
             });
         self.runtime_dependencies.open = open;
     }
-}
-
-fn perk_label(index: usize, choices: &[WeaponSandboxPerkChoice]) -> String {
-    choices
-        .iter()
-        .find(|choice| usize::from(choice.perk_index) == index)
-        .map_or_else(
-            || format!("Effect {index}"),
-            |choice| format!("{} · {index}", choice.representative_name),
-        )
 }
 
 fn pattern_label(index: usize, donors: &[WeaponDonorSummary]) -> String {
@@ -212,28 +204,21 @@ fn pattern_names_label(index: usize, names: &[&str]) -> String {
         } else {
             String::new()
         };
-        format!("{}{more} · Pattern {index}", names[0])
+        format!("Pattern {index} · Used by {}{more}", names[0])
     }
 }
 
 fn selector_rows(
     page: Page,
     count: usize,
-    choices: &[WeaponSandboxPerkChoice],
+    sources: &PerkSources,
     donors: &[WeaponDonorSummary],
     show_unnamed: bool,
     query: &str,
 ) -> Vec<(usize, String)> {
     let mut names = BTreeMap::<usize, Vec<&str>>::new();
     match page {
-        Page::Perks => {
-            for choice in choices {
-                names
-                    .entry(usize::from(choice.perk_index))
-                    .or_default()
-                    .push(&choice.representative_name);
-            }
-        }
+        Page::Perks => {}
         Page::Patterns => {
             for donor in donors {
                 if let Some(index) = donor.weapon_pattern_index {
@@ -247,6 +232,11 @@ fn selector_rows(
     }
     (0..count)
         .filter_map(|row| {
+            if page == Page::Perks {
+                return ((show_unnamed || sources.has_names(row))
+                    && sources.matches_query(row, query))
+                .then(|| (row, sources.label(row)));
+            }
             let mut names = names.remove(&row).unwrap_or_default();
             if names.is_empty() && !show_unnamed {
                 return None;
@@ -254,9 +244,7 @@ fn selector_rows(
             names.sort_unstable();
             names.dedup();
             let label = match page {
-                Page::Perks => names
-                    .first()
-                    .map_or_else(|| format!("Effect {row}"), |name| format!("{name} · {row}")),
+                Page::Perks => unreachable!("perk rows returned above"),
                 Page::Patterns => pattern_names_label(row, &names),
             };
             (label.to_lowercase().contains(query)
@@ -298,7 +286,7 @@ impl Browser {
                 self.index = None;
             }
             sundial::investment::draw_authoring_info_icon(ui,
-                format!("Patterns contain weapon behavior. Perks may add actions or depend on that behavior.\n\nStock pairings are examples, not requirements. Package data cannot confirm gameplay compatibility. Recipe component overrides are not included.\n\n{} patterns · {} perks\n{} unreadable patterns · {} perk errors", index.patterns.len(), index.perks.len(), index.patterns.iter().filter(|row| row.error.is_some()).count(), index.perks.iter().filter(|row| row.error.is_some()).count()));
+                format!("Patterns contain weapon behavior. Internal effects may add actions or depend on that behavior. Item and plug names identify references, not the effect itself.\n\nItem defaults are examples, not requirements. Package data cannot confirm gameplay compatibility. Recipe component overrides are not included.\n\n{} patterns · {} effects\n{} unreadable patterns · {} effect errors", index.patterns.len(), index.perks.len(), index.patterns.iter().filter(|row| row.error.is_some()).count(), index.perks.iter().filter(|row| row.error.is_some()).count()));
         });
         ui.separator();
     }
@@ -307,14 +295,11 @@ impl Browser {
         &mut self,
         ui: &mut egui::Ui,
         index: &Index,
-        choices: &[WeaponSandboxPerkChoice],
         donors: &[WeaponDonorSummary],
     ) -> bool {
         if self.reveal_selection {
             let named = match self.page {
-                Page::Perks => choices
-                    .iter()
-                    .any(|choice| usize::from(choice.perk_index) == self.selected),
+                Page::Perks => self.sources.has_names(self.selected),
                 Page::Patterns => donors.iter().any(|donor| {
                     donor.weapon_pattern_index.map(usize::from) == Some(self.selected)
                 }),
@@ -334,7 +319,14 @@ impl Browser {
         } else {
             index.patterns.len()
         };
-        let labels = selector_rows(self.page, count, choices, donors, self.show_unnamed, &query);
+        let labels = selector_rows(
+            self.page,
+            count,
+            &self.sources,
+            donors,
+            self.show_unnamed,
+            &query,
+        );
         ui.weak(format!("{} Results", labels.len()));
         if labels.is_empty() {
             ui.weak("No matches. Try another name or number.");
@@ -365,7 +357,11 @@ impl Browser {
                             .truncate()
                             .min_size(egui::vec2(ui.available_width(), 26.0)),
                     )
-                    .on_hover_text(label)
+                    .on_hover_text(if self.page == Page::Perks {
+                        format!("{label}\nReferenced by:\n{}", self.sources.details(*value))
+                    } else {
+                        label.clone()
+                    })
                     .clicked()
                 {
                     self.history.push((self.page, self.selected));
@@ -376,13 +372,7 @@ impl Browser {
         true
     }
 
-    fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        choices: &[WeaponSandboxPerkChoice],
-        donors: &[WeaponDonorSummary],
-        target: Option<u16>,
-    ) {
+    fn show(&mut self, ui: &mut egui::Ui, donors: &[WeaponDonorSummary], target: Option<u16>) {
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
             if ui.button("Retry Inspection").clicked() {
@@ -406,7 +396,7 @@ impl Browser {
                     .allocate_ui_with_layout(
                         egui::vec2(280.0, height),
                         egui::Layout::top_down(egui::Align::Min),
-                        |ui| self.draw_selector(ui, &index, choices, donors),
+                        |ui| self.draw_selector(ui, &index, donors),
                     )
                     .inner;
                 ui.separator();
@@ -415,7 +405,7 @@ impl Browser {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         if has_results {
-                            self.draw_details(ui, &index, choices, donors, target);
+                            self.draw_details(ui, &index, donors, target);
                         }
                     },
                 );
@@ -423,12 +413,12 @@ impl Browser {
         } else {
             let has_results = ui
                 .allocate_ui(egui::vec2(ui.available_width(), 180.0), |ui| {
-                    self.draw_selector(ui, &index, choices, donors)
+                    self.draw_selector(ui, &index, donors)
                 })
                 .inner;
             ui.separator();
             if has_results {
-                self.draw_details(ui, &index, choices, donors, target);
+                self.draw_details(ui, &index, donors, target);
             }
         }
     }
@@ -437,7 +427,6 @@ impl Browser {
         &mut self,
         ui: &mut egui::Ui,
         index: &Index,
-        choices: &[WeaponSandboxPerkChoice],
         donors: &[WeaponDonorSummary],
         target: Option<u16>,
     ) {
@@ -445,8 +434,8 @@ impl Browser {
             .id_salt(("dependency-details", self.page as u8, self.selected))
             .auto_shrink([false, false])
             .show(ui, |ui| match self.page {
-                Page::Perks => self.draw_perk(ui, index, choices, donors, target),
-                Page::Patterns => self.draw_pattern(ui, index, choices, donors, target),
+                Page::Perks => self.draw_perk(ui, index, donors, target),
+                Page::Patterns => self.draw_pattern(ui, index, donors, target),
             });
     }
 }
@@ -455,11 +444,11 @@ fn perk_explanation(perk: &Perk) -> &'static str {
     if perk.error.is_some() {
         "Could not read this effect completely. Requirements are unknown."
     } else if perk.action.is_none() {
-        "This is a marker. Adding it alone may not add its behavior."
+        "No standalone action was found. This entry may be a marker used by behavior elsewhere."
     } else if perk.graphs.is_empty() {
         "Has an action, but no direct entity graph. It may use the weapon's resources."
     } else {
-        "Supplies its own resources. Host requirements may still apply."
+        "The action references entity resources. Those references do not establish which host resources it needs."
     }
 }
 

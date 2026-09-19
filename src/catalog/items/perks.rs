@@ -28,6 +28,19 @@ const SANDBOX_PERK_CATALOG_ACTIVE_OFFSET: usize = 6;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ItemSandboxPerk {
     pub perk_index: u16,
+    /// The metadata table's byte `+6` for this row.
+    ///
+    /// This is liveness for the native registry's own lookup, not a statement that the client
+    /// ignores the perk. Declaration-only rows such as 479, which carry no runtime action and
+    /// mark Hard Light's alternate fire, store zero here and are still projected into the
+    /// client's replicated perk bank. Filtering them out of an item's perk list hid 666 of
+    /// 2481 catalog rows, so callers that care must read this flag rather than rely on absence.
+    #[serde(default = "default_active")]
+    pub active: bool,
+}
+
+const fn default_active() -> bool {
+    true
 }
 
 /// Reads liveness from the root's eight-byte perk metadata rows. The native
@@ -113,15 +126,18 @@ pub(in crate::catalog) fn item_sandbox_perks(
     let Some(active_catalog_rows) = active_catalog_rows else {
         return Vec::new();
     };
+    // An index outside the catalog is not decodable and stays rejected. An in-range index is
+    // kept whatever its liveness byte says, because the client honours declaration-only rows.
     item_perk_indices(item)
         .into_iter()
-        .filter(|&index| {
+        .filter_map(|perk_index| {
             active_catalog_rows
-                .get(usize::from(index))
-                .copied()
-                .unwrap_or(false)
+                .get(usize::from(perk_index))
+                .map(|active| ItemSandboxPerk {
+                    perk_index,
+                    active: *active,
+                })
         })
-        .map(|perk_index| ItemSandboxPerk { perk_index })
         .collect()
 }
 
@@ -183,22 +199,42 @@ mod tests {
         assert_eq!(
             item_sandbox_perks(&item, Some(&active)),
             vec![
-                ItemSandboxPerk { perk_index: 449 },
-                ItemSandboxPerk { perk_index: 84 },
-                ItemSandboxPerk { perk_index: 2_480 },
+                ItemSandboxPerk {
+                    perk_index: 449,
+                    active: true
+                },
+                ItemSandboxPerk {
+                    perk_index: 84,
+                    active: true
+                },
+                ItemSandboxPerk {
+                    perk_index: 2_480,
+                    active: true
+                },
             ]
         );
     }
 
     #[test]
-    fn item_perks_reject_inactive_and_out_of_range_catalog_rows() {
+    fn item_perks_keep_inactive_rows_and_reject_out_of_range_ones() {
         let item = item_with_sandbox_perks(&[(84, [0; 22]), (2_480, [0; 22]), (2_481, [0; 22])]);
         let mut active = vec![false; SANDBOX_PERK_CATALOG_STOCK_COUNT];
         active[2_480] = true;
 
+        // 2481 is outside the catalog and stays rejected. 84 is in range but inactive, which is
+        // how declaration-only rows such as Hard Light's 479 are stored, so it is retained.
         assert_eq!(
             item_sandbox_perks(&item, Some(&active)),
-            vec![ItemSandboxPerk { perk_index: 2_480 }]
+            vec![
+                ItemSandboxPerk {
+                    perk_index: 84,
+                    active: false
+                },
+                ItemSandboxPerk {
+                    perk_index: 2_480,
+                    active: true
+                }
+            ]
         );
         assert!(item_sandbox_perks(&item, None).is_empty());
     }

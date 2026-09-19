@@ -29,7 +29,20 @@ pub struct IconColorReplacement {
     /// Maximum channel distance as a percentage of the full RGB range, with feathered edges.
     #[serde(skip_serializing_if = "is_default_range")]
     pub range_percent: u8,
+    /// Match every shade that shares the source hue within this many degrees instead.
+    ///
+    /// Artwork shades one color across a wide brightness range, which puts its darkest and
+    /// brightest pixels far apart in RGB. Matching on hue takes the whole shaded surface in one
+    /// rule, and the replacement keeps carrying the source pixel's own brightness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hue_range_degrees: Option<u8>,
 }
+
+/// Chroma a pixel needs before a hue match will claim it, so greys and whites are left alone.
+const MINIMUM_HUE_MATCH_CHROMA: i32 = 12;
+pub(super) const MAX_HUE_RANGE_DEGREES: u8 = 180;
+/// Wide enough to hold a shaded surface together, narrow enough to leave adjacent hues alone.
+const DEFAULT_HUE_RANGE_DEGREES: u8 = 20;
 
 fn is_default_range(value: &u8) -> bool {
     *value == 20
@@ -41,8 +54,28 @@ impl Default for IconColorReplacement {
             source: [255, 255, 255],
             replacement: [255, 255, 255],
             range_percent: 20,
+            hue_range_degrees: None,
         }
     }
+}
+
+/// Returns a color's hue in degrees and its chroma, or `None` for a color with no hue at all.
+fn hue_and_chroma(rgb: [u8; 3]) -> Option<(f32, i32)> {
+    let max = *rgb.iter().max()?;
+    let min = *rgb.iter().min()?;
+    if max == min {
+        return None;
+    }
+    let chroma = f32::from(max) - f32::from(min);
+    let (r, g, b) = (f32::from(rgb[0]), f32::from(rgb[1]), f32::from(rgb[2]));
+    let hue = if max == rgb[0] {
+        60.0 * (((g - b) / chroma) % 6.0)
+    } else if max == rgb[1] {
+        60.0 * ((b - r) / chroma + 2.0)
+    } else {
+        60.0 * ((r - g) / chroma + 4.0)
+    };
+    Some((((hue % 360.0) + 360.0) % 360.0, chroma as i32))
 }
 
 impl IconColorReplacement {
@@ -54,13 +87,29 @@ impl IconColorReplacement {
         if self.is_identity() {
             return 0;
         }
-        let distance = rgb
-            .iter()
-            .zip(self.source)
-            .map(|(a, b)| i32::from(a.abs_diff(b)))
-            .max()
-            .unwrap_or(0);
-        let radius = i32::from(self.range_percent) * 255 / 100;
+        let (distance, radius) = match self.hue_range_degrees {
+            Some(degrees) => {
+                let (Some((hue, chroma)), Some((source_hue, _))) =
+                    (hue_and_chroma(rgb), hue_and_chroma(self.source))
+                else {
+                    return 0;
+                };
+                if chroma < MINIMUM_HUE_MATCH_CHROMA {
+                    return 0;
+                }
+                let delta = (hue - source_hue).abs();
+                (delta.min(360.0 - delta) as i32, i32::from(degrees))
+            }
+            None => {
+                let distance = rgb
+                    .iter()
+                    .zip(self.source)
+                    .map(|(a, b)| i32::from(a.abs_diff(b)))
+                    .max()
+                    .unwrap_or(0);
+                (distance, i32::from(self.range_percent) * 255 / 100)
+            }
+        };
         if distance > radius {
             return 0;
         }
@@ -151,13 +200,37 @@ pub(super) fn draw_controls(
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     changed |= color_control(ui, "From", &mut replacement.source, index);
-                    ui.label("→");
+                    // A text label rather than an arrow glyph: the loaded fonts have no ⇄.
+                    if ui
+                        .small_button("Swap")
+                        .on_hover_text("Exchange the source and replacement colors")
+                        .clicked()
+                    {
+                        std::mem::swap(&mut replacement.source, &mut replacement.replacement);
+                        changed = true;
+                    }
                     changed |= color_control(ui, "To", &mut replacement.replacement, index);
                     if ui.small_button("Remove").clicked() { remove = Some(index); }
                 });
-                changed |= ui.add(egui::Slider::new(&mut replacement.range_percent, 0..=100).text("Color range").suffix("%"))
-                    .on_hover_text("0% matches the exact source color before adjustments. Increase to include nearby shades with a soft transition. Replacement colors are applied last. The strongest match wins. Replacements never chain.")
-                    .changed();
+                let mut by_hue = replacement.hue_range_degrees.is_some();
+                if ui
+                    .checkbox(&mut by_hue, "Match every shade of this hue")
+                    .on_hover_text("Artwork shades one color from dark to bright, which spreads it out in color range. Matching the hue takes the whole surface at once, and each pixel keeps its own brightness.")
+                    .changed()
+                {
+                    replacement.hue_range_degrees = by_hue.then_some(DEFAULT_HUE_RANGE_DEGREES);
+                    changed = true;
+                }
+                changed |= match &mut replacement.hue_range_degrees {
+                    Some(degrees) => ui
+                        .add(egui::Slider::new(degrees, 0..=MAX_HUE_RANGE_DEGREES).text("Hue range").suffix("°"))
+                        .on_hover_text("0° matches only the source hue. Widen to take neighbouring hues with a soft transition. Greys and near-greys are never matched by hue.")
+                        .changed(),
+                    None => ui
+                        .add(egui::Slider::new(&mut replacement.range_percent, 0..=100).text("Color range").suffix("%"))
+                        .on_hover_text("0% matches the exact source color before adjustments. Increase to include nearby shades with a soft transition. Replacement colors are applied last. The strongest match wins. Replacements never chain.")
+                        .changed(),
+                };
             });
         });
     }
@@ -189,7 +262,7 @@ fn color_control(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3], index: usi
     ui.label(label);
     let response = ui.color_edit_button_srgb(color);
     response.ctx.accesskit_node_builder(response.id, |node| {
-        node.set_label(format!("Color replacement {} {label}", index + 1))
+        node.set_label(format!("Color replacement {} {label}", index + 1));
     });
     response
         .on_hover_text(format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]))
@@ -224,6 +297,7 @@ mod tests {
             source,
             replacement,
             range_percent: 0,
+            hue_range_degrees: None,
         }
     }
 

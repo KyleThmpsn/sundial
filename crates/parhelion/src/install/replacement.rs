@@ -1,6 +1,6 @@
 //! Reviewed, exact-identity account cleanup for a replacement generation.
 use super::*;
-use sundial::investment::{
+use sundial::package_authoring::account::{
     AuthoredAccountCleanup, AuthoredClientSettings, AuthoredMoveOutcome, AuthoredSlotReplacement,
     AuthoredSocketChange, preview_authored_account_replacement_with_slots,
     preview_authored_client_settings,
@@ -68,7 +68,7 @@ fn preview_with_progress(
     progress: progress::Observer<'_>,
 ) -> Result<ReplacementReview, String> {
     report(progress, "Checking Review Paths", 0);
-    let target = canonical_directory(target, "target packages").map_err(|e| e.to_string())?;
+    let target = canonical_packages_directory(target).map_err(|e| e.to_string())?;
     let staged = canonical_directory(staged, "staged run").map_err(|e| e.to_string())?;
     let _staged_run_lease = crate::workflow::staging_retention::lease_for_read(&staged)?;
     report(progress, "Verifying Staged Packages and Recipes", 1);

@@ -58,6 +58,22 @@ pub(crate) fn project(
         .map(|p| format!("Base effect {p}"))
         .collect::<Vec<_>>();
     let mut maximum_count = defaults.len();
+    // Variable damage pins The Fundamentals into the first trait socket at build time, so that
+    // lane contributes the chosen element rows instead of the donor's trait perk.
+    let variable_lane = recipe.overrides.variable_damage.as_ref().map(|variable| {
+        let rows = variable
+            .elements
+            .iter()
+            .copied()
+            .map(super::ModernDamageType::from)
+            .filter_map(super::variable_damage::element_perk_index)
+            .collect::<Vec<_>>();
+        let lane = donor
+            .sockets
+            .iter()
+            .position(|socket| socket.socket_type == super::variable_damage::TRAIT_SOCKET_TYPE);
+        (lane, rows)
+    });
     for lane in 0..donor
         .sockets
         .len()
@@ -73,6 +89,16 @@ pub(crate) fn project(
             .and_then(|c| c.socket_type)
             .or_else(|| socket.map(|s| s.socket_type));
         if socket_type == Some(u16::MAX) {
+            continue;
+        }
+        if let Some((Some(variable_lane), rows)) = &variable_lane
+            && *variable_lane == lane
+        {
+            maximum_count += rows.len();
+            defaults.extend(
+                rows.iter()
+                    .map(|p| format!("Socket {} effect {p}", lane + 1)),
+            );
             continue;
         }
         let choices = if let Some(column) = column {

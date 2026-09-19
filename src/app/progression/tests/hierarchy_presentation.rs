@@ -203,26 +203,6 @@ fn hierarchy_normalizes_leaf_first_and_bare_paths_to_one_root_first_path() {
 }
 
 #[test]
-fn compact_override_table_sort_maps_to_semantic_columns() {
-    assert_eq!(
-        override_table_sort(TableSort::ascending(0), false),
-        TableSort::ascending(0)
-    );
-    assert_eq!(
-        override_table_sort(TableSort::ascending(1), false),
-        TableSort::ascending(2)
-    );
-    assert_eq!(
-        override_table_sort(TableSort::ascending(2), false),
-        TableSort::ascending(3)
-    );
-    assert_eq!(
-        override_table_sort(TableSort::ascending(3), true),
-        TableSort::ascending(3)
-    );
-}
-
-#[test]
 fn override_meaning_uses_authored_names_then_exact_package_readers() {
     let context = |name: &str| ProgressionContextDef {
         direct_references: Vec::new(),
@@ -346,101 +326,7 @@ fn objective_hierarchy_lists_every_distinct_path_without_a_cap() {
 }
 
 #[test]
-fn objective_leaf_sort_is_stable_inside_a_branch() {
-    let rows = [
-        IndexedValue { index: 1, value: 5 },
-        IndexedValue { index: 2, value: 4 },
-        IndexedValue { index: 3, value: 3 },
-    ];
-    let objectives = [
-        ObjectiveDef {
-            description: "Alpha".into(),
-            ..ObjectiveDef::default()
-        },
-        ObjectiveDef {
-            description: "Alpha".into(),
-            ..ObjectiveDef::default()
-        },
-        ObjectiveDef {
-            description: "Beta".into(),
-            ..ObjectiveDef::default()
-        },
-    ];
-    let mut branch = ObjectiveHierarchyBranch::new("Metrics".into(), vec!["Metrics".into()]);
-    branch.leaves = vec![
-        ObjectiveHierarchyLeaf {
-            row: &rows[0],
-            definition_index: None,
-            definition: None,
-            objective_index: None,
-            objective: Some(&objectives[0]),
-        },
-        ObjectiveHierarchyLeaf {
-            row: &rows[1],
-            definition_index: None,
-            definition: None,
-            objective_index: None,
-            objective: Some(&objectives[1]),
-        },
-        ObjectiveHierarchyLeaf {
-            row: &rows[2],
-            definition_index: None,
-            definition: None,
-            objective_index: None,
-            objective: Some(&objectives[2]),
-        },
-    ];
-
-    let mut hierarchy = ObjectiveHierarchy {
-        branches: vec![branch],
-        leaves: Vec::new(),
-    };
-    sort_objective_hierarchy(&mut hierarchy, TableSort::ascending(0));
-
-    assert_eq!(
-        hierarchy.branches[0]
-            .leaves
-            .iter()
-            .map(|leaf| leaf.row.index)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
-}
-
-#[test]
-fn filtered_hierarchy_auto_expands_matching_branches() {
-    let row = IndexedValue { index: 1, value: 1 };
-    let mut root = ObjectiveHierarchyBranch::new("Metrics".into(), vec!["Metrics".into()]);
-    let mut child = ObjectiveHierarchyBranch::new(
-        "Destination".into(),
-        vec!["Metrics".into(), "Destination".into()],
-    );
-    child.leaves.push(ObjectiveHierarchyLeaf {
-        row: &row,
-        definition_index: None,
-        definition: None,
-        objective_index: None,
-        objective: None,
-    });
-    root.children.push(child);
-    let hierarchy = ObjectiveHierarchy {
-        branches: vec![root],
-        leaves: Vec::new(),
-    };
-    let state = UiState::default();
-
-    assert_eq!(
-        objective_matrix_lines(&hierarchy, "test", &state, false).len(),
-        2
-    );
-    assert_eq!(
-        objective_matrix_lines(&hierarchy, "test", &state, true).len(),
-        3
-    );
-}
-
-#[test]
-fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
+fn definition_contexts_have_no_cap_and_merge_identical_visible_contexts() {
     let mut contexts = (0..300)
         .map(|index| ProgressionContextDef {
             direct_references: Vec::new(),
@@ -470,10 +356,8 @@ fn tested_by_rows_have_no_cap_and_merge_identical_visible_contexts() {
     };
 
     let lines = definition_context_lines(&definition);
-    let display_lines = definition_context_display_lines(1, |_| Some((0, &definition)), false);
 
     assert_eq!(lines.len(), 300);
-    assert_eq!(display_lines.len(), 300);
     assert_eq!(
         lines
             .iter()

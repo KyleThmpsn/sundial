@@ -21,6 +21,7 @@ pub(crate) enum Tab {
     Social,
     KeyBindings,
     Sunrise,
+    Dawn,
 }
 
 pub(crate) struct PageContext<'a> {
@@ -29,8 +30,11 @@ pub(crate) struct PageContext<'a> {
     pub bindings_editable: bool,
     pub json_account: bool,
     pub extended_fov: bool,
+    pub dawn: Option<&'a mut super::dawn::Runtime>,
     pub tab: &'a mut Tab,
     pub key_bindings: &'a mut KeyBindingUiState,
+    /// Which optional Sunrise controls the installed runtime still reads.
+    pub runtime_capabilities: super::Capabilities,
 }
 
 pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdits {
@@ -40,11 +44,16 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         bindings_editable,
         json_account,
         extended_fov,
+        dawn,
         tab,
         key_bindings,
+        runtime_capabilities,
     } = context;
     let runtime_available = super::runtime::available(json_document);
     if *tab == Tab::Sunrise && !runtime_available {
+        *tab = Tab::Player;
+    }
+    if *tab == Tab::Dawn && dawn.is_none() {
         *tab = Tab::Player;
     }
     ui.horizontal(|ui| {
@@ -73,6 +82,9 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         if runtime_available {
             ui.selectable_value(tab, Tab::Sunrise, "Sunrise");
         }
+        if dawn.is_some() {
+            ui.selectable_value(tab, Tab::Dawn, "Dawn");
+        }
     });
     ui.separator();
 
@@ -80,11 +92,20 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         .auto_shrink([false, false])
         .id_salt(("game_settings_scroll", *tab))
         .show(ui, |ui| match *tab {
+            Tab::Dawn => PageEdits {
+                json_changed: super::dawn::draw(
+                    ui,
+                    json_document,
+                    dawn.expect("Dawn tab requires detected runtime"),
+                ),
+                account_commands: Vec::new(),
+            },
             Tab::Sunrise => PageEdits {
                 json_changed: super::runtime::draw(
                     ui,
                     json_document,
                     json_account || account_settings.is_ok(),
+                    runtime_capabilities,
                 ),
                 account_commands: Vec::new(),
             },
@@ -151,7 +172,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
             crate::ui_help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
             if let Some(current) = document.pointer("/steam/user/persona_name").and_then(Value::as_str) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("{}/63", current.len())).weak());
+                    ui.weak(format!("{}/63", current.len()));
                 });
             }
         });

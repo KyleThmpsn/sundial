@@ -1,21 +1,20 @@
 use std::collections::HashMap;
 
+use crate::persistence::native_account::NativeAccountDocument;
+
 use serde_json::json;
 use sundial_account as domain;
 
 use super::super::{ARMOR_SLOTS, WEAPON_SLOTS};
 use super::{
-    DismantleGearClass, DismantleRarity, DismantleRewardAction, DismantleRewardLocation,
-    DismantleRewardSnapshot, EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue,
-    InventoryError, InventoryItemAction, InventoryItemLocation, InventoryItemSnapshot, ItemPlugs,
-    NewInventoryItem, ProfileItemAction, ProfileItemLocation, ProfileItemSnapshot,
-    SqliteAccountDocument,
+    DismantleRewardAction, DismantleRewardLocation, DismantleRewardSnapshot, EquippedItemPlugs,
+    EquippedItemSnapshot, EquippedPlugValue, InventoryError, InventoryItemAction,
+    InventoryItemLocation, InventoryItemSnapshot, ItemPlugs, NewInventoryItem, ProfileItemAction,
+    ProfileItemLocation, ProfileItemSnapshot,
 };
 
-const SQLITE_PATH: &str = "investment.sqlite3";
-
-pub(super) fn character_metadata(
-    document: &SqliteAccountDocument,
+pub(super) fn character_metadata<D: NativeAccountDocument>(
+    document: &D,
     character_index: usize,
 ) -> Result<domain::CharacterMetadata, String> {
     character(document, character_index)?
@@ -23,8 +22,8 @@ pub(super) fn character_metadata(
         .ok_or_else(|| format!("Character {} metadata was not loaded", character_index + 1))
 }
 
-pub(super) fn class_armor_default_characters(
-    document: &SqliteAccountDocument,
+pub(super) fn class_armor_default_characters<D: NativeAccountDocument>(
+    document: &D,
 ) -> HashMap<u64, usize> {
     document
         .characters()
@@ -42,8 +41,8 @@ pub(super) fn class_armor_default_characters(
         })
 }
 
-pub(super) fn apply_character_updates(
-    document: &mut SqliteAccountDocument,
+pub(super) fn apply_character_updates<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     updates: Vec<domain::CharacterMetadataUpdate>,
 ) -> Result<bool, String> {
@@ -68,7 +67,7 @@ pub(super) fn apply_character_updates(
     document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::Batch(commands),
         )
         .map_err(|error| error.to_string())?;
@@ -90,16 +89,16 @@ pub(super) fn apply_character_updates(
     Ok(true)
 }
 
-pub(super) fn inventory_item_abilities(
-    document: &SqliteAccountDocument,
+pub(super) fn inventory_item_abilities<D: NativeAccountDocument>(
+    document: &D,
     location: InventoryItemLocation,
 ) -> Option<domain::CharacterAbilities> {
     let item = inventory_item(document, location).ok()?;
     document.persisted_item_abilities(item.id)
 }
 
-pub(super) fn apply_account_settings(
-    document: &mut SqliteAccountDocument,
+pub(super) fn apply_account_settings<D: NativeAccountDocument>(
+    document: &mut D,
     commands: Vec<domain::AccountSettingsCommand>,
 ) -> Result<bool, String> {
     if commands.is_empty() {
@@ -108,50 +107,46 @@ pub(super) fn apply_account_settings(
     let before = document.settings().clone();
     document
         .settings_mut()
-        .apply_all(SqliteAccountDocument::settings_capabilities(), commands)
+        .apply_all(D::settings_capabilities(), commands)
         .map_err(|error| error.to_string())?;
     Ok(document.settings() != &before)
 }
 
-pub(super) fn profile_items(document: &SqliteAccountDocument) -> Option<Vec<ProfileItemSnapshot>> {
-    Some(
-        document
-            .profile()
-            .profile_items()
-            .iter()
-            .enumerate()
-            .map(|(index, item)| ProfileItemSnapshot {
-                location: ProfileItemLocation { index },
-                definition_hash: item.definition_hash.get(),
-                quantity: item.quantity,
-            })
-            .collect(),
-    )
+pub(super) fn profile_items<D: NativeAccountDocument>(document: &D) -> Vec<ProfileItemSnapshot> {
+    document
+        .profile()
+        .profile_items()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ProfileItemSnapshot {
+            location: ProfileItemLocation { index },
+            definition_hash: item.definition_hash.get(),
+            quantity: item.quantity,
+        })
+        .collect()
 }
 
-pub(super) fn dismantle_rewards(
-    document: &SqliteAccountDocument,
-) -> Option<Vec<DismantleRewardSnapshot>> {
-    Some(
-        document
-            .profile()
-            .dismantle_rewards()
-            .iter()
-            .enumerate()
-            .map(|(index, reward)| DismantleRewardSnapshot {
-                location: DismantleRewardLocation { index },
-                definition_hash: reward.definition_hash.get(),
-                quantity: reward.quantity,
-                rarities: reward.rarities.iter().copied().map(app_rarity).collect(),
-                gear_class: reward.gear_class.map(app_gear_class),
-                masterworked: reward.masterworked,
-            })
-            .collect(),
-    )
+pub(super) fn dismantle_rewards<D: NativeAccountDocument>(
+    document: &D,
+) -> Vec<DismantleRewardSnapshot> {
+    document
+        .profile()
+        .dismantle_rewards()
+        .iter()
+        .enumerate()
+        .map(|(index, reward)| DismantleRewardSnapshot {
+            location: DismantleRewardLocation { index },
+            definition_hash: reward.definition_hash.get(),
+            quantity: reward.quantity,
+            rarities: reward.rarities.clone(),
+            gear_class: reward.gear_class,
+            masterworked: reward.masterworked,
+        })
+        .collect()
 }
 
-pub(super) fn character_inventory(
-    document: &SqliteAccountDocument,
+pub(super) fn character_inventory<D: NativeAccountDocument>(
+    document: &D,
     character_index: usize,
 ) -> Result<Option<Vec<InventoryItemSnapshot>>, InventoryError> {
     Ok(Some(
@@ -163,29 +158,32 @@ pub(super) fn character_inventory(
     ))
 }
 
-pub(super) fn add_profile_item(
-    document: &mut SqliteAccountDocument,
+pub(super) fn add_profile_item<D: NativeAccountDocument>(
+    document: &mut D,
     definition_hash: u32,
     quantity: i32,
 ) -> Result<ProfileItemLocation, InventoryError> {
     let index = document.profile().profile_items().len();
     let item = domain::ProfileItem {
-        id: document.next_entity_id().map_err(sqlite_inventory_error)?,
+        id: document
+            .next_entity_id()
+            .map_err(app_inventory_error::<D>)?,
         definition_hash: domain::DefinitionHash::new(definition_hash),
         quantity,
+        instance_soid: None,
     };
     document
         .profile_mut()
         .apply_profile_item(
-            SqliteAccountDocument::profile_capabilities(),
+            D::profile_capabilities(),
             domain::ProfileItemCommand::Add(item),
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(ProfileItemLocation { index })
 }
 
-pub(super) fn apply_profile_item_action(
-    document: &mut SqliteAccountDocument,
+pub(super) fn apply_profile_item_action<D: NativeAccountDocument>(
+    document: &mut D,
     location: ProfileItemLocation,
     action: ProfileItemAction,
 ) -> Result<(), InventoryError> {
@@ -194,7 +192,7 @@ pub(super) fn apply_profile_item_action(
         .profile_items()
         .get(location.index)
         .map(|item| item.id)
-        .ok_or_else(|| InventoryError::new(SQLITE_PATH, "profile item index is out of range"))?;
+        .ok_or_else(|| InventoryError::new(D::LABEL, "profile item index is out of range"))?;
     let command = match action {
         ProfileItemAction::SetDefinitionHash(hash) => {
             domain::ProfileItemCommand::SetDefinitionHash {
@@ -209,31 +207,33 @@ pub(super) fn apply_profile_item_action(
     };
     document
         .profile_mut()
-        .apply_profile_item(SqliteAccountDocument::profile_capabilities(), command)
-        .map_err(domain_inventory_error)
+        .apply_profile_item(D::profile_capabilities(), command)
+        .map_err(domain_inventory_error::<D>)
 }
 
-pub(super) fn add_dismantle_reward(
-    document: &mut SqliteAccountDocument,
+pub(super) fn add_dismantle_reward<D: NativeAccountDocument>(
+    document: &mut D,
     definition_hash: u32,
 ) -> Result<DismantleRewardLocation, InventoryError> {
     let index = document.profile().dismantle_rewards().len();
-    let id = document.next_entity_id().map_err(sqlite_inventory_error)?;
+    let id = document
+        .next_entity_id()
+        .map_err(app_inventory_error::<D>)?;
     document
         .profile_mut()
         .apply_dismantle_reward(
-            SqliteAccountDocument::profile_capabilities(),
+            D::profile_capabilities(),
             domain::DismantleRewardCommand::AddForDefinition {
                 id,
                 definition_hash: domain::DefinitionHash::new(definition_hash),
             },
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(DismantleRewardLocation { index })
 }
 
-pub(super) fn apply_dismantle_reward_action(
-    document: &mut SqliteAccountDocument,
+pub(super) fn apply_dismantle_reward_action<D: NativeAccountDocument>(
+    document: &mut D,
     location: DismantleRewardLocation,
     action: DismantleRewardAction,
 ) -> Result<(), InventoryError> {
@@ -242,9 +242,7 @@ pub(super) fn apply_dismantle_reward_action(
         .dismantle_rewards()
         .get(location.index)
         .map(|reward| reward.id)
-        .ok_or_else(|| {
-            InventoryError::new(SQLITE_PATH, "dismantle reward index is out of range")
-        })?;
+        .ok_or_else(|| InventoryError::new(D::LABEL, "dismantle reward index is out of range"))?;
     let command = match action {
         DismantleRewardAction::Remove => domain::DismantleRewardCommand::Remove { id },
         DismantleRewardAction::SetPolicy {
@@ -257,37 +255,39 @@ pub(super) fn apply_dismantle_reward_action(
             id,
             definition_hash: domain::DefinitionHash::new(definition_hash),
             quantity,
-            rarities: rarities.into_iter().map(domain_rarity).collect(),
-            gear_class: gear_class.map(domain_gear_class),
+            rarities,
+            gear_class,
             masterworked,
         }),
     };
     document
         .profile_mut()
-        .apply_dismantle_reward(SqliteAccountDocument::profile_capabilities(), command)
-        .map_err(domain_inventory_error)
+        .apply_dismantle_reward(D::profile_capabilities(), command)
+        .map_err(domain_inventory_error::<D>)
 }
 
-pub(super) fn add_inventory_item(
-    document: &mut SqliteAccountDocument,
+pub(super) fn add_inventory_item<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     item: NewInventoryItem,
 ) -> Result<InventoryItemLocation, InventoryError> {
-    let character = character(document, character_index).map_err(app_inventory_error)?;
+    let character = character(document, character_index).map_err(app_inventory_error::<D>)?;
     let character_id = character.id;
     let item_index = character.inventory.len();
-    let entity_id = document.next_entity_id().map_err(sqlite_inventory_error)?;
+    let entity_id = document
+        .next_entity_id()
+        .map_err(app_inventory_error::<D>)?;
     let first_soid =
         domain::InstanceSoid::try_from_u64(super::super::inventory::GENERATED_INSTANCE_SOID_START)
             .expect("the generated SOID start is nonzero");
     let instance_soid = document
         .characters()
         .next_available_instance_soid(first_soid)
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::AddInventoryItem {
                 character_id,
                 item: domain::ItemInstance {
@@ -301,15 +301,15 @@ pub(super) fn add_inventory_item(
                 },
             },
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(InventoryItemLocation {
         character_index,
         item_index,
     })
 }
 
-pub(super) fn apply_inventory_item_action(
-    document: &mut SqliteAccountDocument,
+pub(super) fn apply_inventory_item_action<D: NativeAccountDocument>(
+    document: &mut D,
     location: InventoryItemLocation,
     action: InventoryItemAction,
 ) -> Result<(), InventoryError> {
@@ -324,17 +324,17 @@ pub(super) fn apply_inventory_item_action(
     };
     document
         .characters_mut()
-        .apply(SqliteAccountDocument::character_capabilities(), command)
-        .map_err(domain_inventory_error)?;
+        .apply(D::character_capabilities(), command)
+        .map_err(domain_inventory_error::<D>)?;
     Ok(())
 }
 
-pub(super) fn remove_character_inventory_items(
-    document: &mut SqliteAccountDocument,
+pub(super) fn remove_character_inventory_items<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     item_indices: impl IntoIterator<Item = usize>,
 ) -> Result<usize, InventoryError> {
-    let character = character(document, character_index).map_err(app_inventory_error)?;
+    let character = character(document, character_index).map_err(app_inventory_error::<D>)?;
     let mut indices = item_indices.into_iter().collect::<Vec<_>>();
     indices.sort_unstable();
     indices.dedup();
@@ -346,7 +346,7 @@ pub(super) fn remove_character_inventory_items(
                 .get(index)
                 .map(|item| domain::CharacterCommand::RemoveInventoryItem { item_id: item.id })
                 .ok_or_else(|| {
-                    InventoryError::new(SQLITE_PATH, "inventory item index is out of range")
+                    InventoryError::new(D::LABEL, "inventory item index is out of range")
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -354,15 +354,15 @@ pub(super) fn remove_character_inventory_items(
     document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::Batch(commands),
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(removed)
 }
 
-pub(super) fn swap_inventory_item_with_equipment(
-    document: &mut SqliteAccountDocument,
+pub(super) fn swap_inventory_item_with_equipment<D: NativeAccountDocument>(
+    document: &mut D,
     location: InventoryItemLocation,
     slot: &str,
 ) -> Result<bool, InventoryError> {
@@ -370,71 +370,71 @@ pub(super) fn swap_inventory_item_with_equipment(
     let result = document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::SwapInventoryItemWithEquipment {
                 item_id,
                 slot: domain::EquipmentSlot::new(slot),
             },
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     match result {
         domain::CharacterCommandResult::EquipmentSwapped { replaced } => Ok(replaced),
         _ => Err(InventoryError::new(
-            SQLITE_PATH,
+            D::LABEL,
             "SQLite inventory swap returned an unexpected result",
         )),
     }
 }
 
-pub(super) fn move_inventory_item_to_character(
-    document: &mut SqliteAccountDocument,
+pub(super) fn move_inventory_item_to_character<D: NativeAccountDocument>(
+    document: &mut D,
     location: InventoryItemLocation,
     destination_character_index: usize,
 ) -> Result<InventoryItemLocation, InventoryError> {
     let item_id = inventory_item(document, location)?.id;
     let destination =
-        character(document, destination_character_index).map_err(app_inventory_error)?;
+        character(document, destination_character_index).map_err(app_inventory_error::<D>)?;
     let destination_character_id = destination.id;
     let item_index = destination.inventory.len();
     document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::MoveInventoryItem {
                 item_id,
                 destination_character_id,
             },
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(InventoryItemLocation {
         character_index: destination_character_index,
         item_index,
     })
 }
 
-pub(super) fn move_equipment_item_to_inventory(
-    document: &mut SqliteAccountDocument,
+pub(super) fn move_equipment_item_to_inventory<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
 ) -> Result<(), InventoryError> {
     let character_id = character(document, character_index)
-        .map_err(app_inventory_error)?
+        .map_err(app_inventory_error::<D>)?
         .id;
     document
         .characters_mut()
         .apply(
-            SqliteAccountDocument::character_capabilities(),
+            D::character_capabilities(),
             domain::CharacterCommand::MoveEquipmentItemToInventory {
                 character_id,
                 slot: domain::EquipmentSlot::new(slot),
             },
         )
-        .map_err(domain_inventory_error)?;
+        .map_err(domain_inventory_error::<D>)?;
     Ok(())
 }
 
-pub(super) fn equipped_item_snapshots(
-    document: &SqliteAccountDocument,
+pub(super) fn equipped_item_snapshots<D: NativeAccountDocument>(
+    document: &D,
     character_index: usize,
 ) -> Result<Vec<EquippedItemSnapshot>, String> {
     let character = character(document, character_index)?;
@@ -450,8 +450,8 @@ pub(super) fn equipped_item_snapshots(
         .collect())
 }
 
-pub(super) fn equip_definition(
-    document: &mut SqliteAccountDocument,
+pub(super) fn equip_definition<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
     definition_hash: u64,
@@ -507,8 +507,8 @@ pub(super) fn equip_definition(
     apply_character_command(document, command)
 }
 
-pub(super) fn set_equipment_item_level(
-    document: &mut SqliteAccountDocument,
+pub(super) fn set_equipment_item_level<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
     level: i64,
@@ -525,8 +525,8 @@ pub(super) fn set_equipment_item_level(
     )
 }
 
-pub(super) fn set_equipment_item_flags(
-    document: &mut SqliteAccountDocument,
+pub(super) fn set_equipment_item_flags<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
     flags: Option<u8>,
@@ -539,8 +539,8 @@ pub(super) fn set_equipment_item_flags(
     )
 }
 
-pub(super) fn set_equipment_item_plug(
-    document: &mut SqliteAccountDocument,
+pub(super) fn set_equipment_item_plug<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
     socket_index: usize,
@@ -570,14 +570,14 @@ pub(super) fn set_equipment_item_plug(
     )
 }
 
-pub(super) fn set_weapon_slot_empty(
-    document: &mut SqliteAccountDocument,
+pub(super) fn set_weapon_slot_empty<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
 ) -> Result<(), String> {
     if !WEAPON_SLOTS.contains(&slot) {
         return Err(format!(
-            "Only weapon slots can be set to empty; {slot} was not changed"
+            "Only weapon slots can be set to empty. {slot} was not changed"
         ));
     }
     let character_id = character(document, character_index)?.id;
@@ -591,8 +591,8 @@ pub(super) fn set_weapon_slot_empty(
     )
 }
 
-pub(super) fn restore_class_armor(
-    document: &mut SqliteAccountDocument,
+pub(super) fn restore_class_armor<D: NativeAccountDocument>(
+    document: &mut D,
     source_character_index: usize,
     destination_character_index: usize,
 ) -> Result<bool, String> {
@@ -613,7 +613,10 @@ pub(super) fn restore_class_armor(
     Ok(document.characters() != &before)
 }
 
-fn character(document: &SqliteAccountDocument, index: usize) -> Result<&domain::Character, String> {
+fn character<D: NativeAccountDocument>(
+    document: &D,
+    index: usize,
+) -> Result<&domain::Character, String> {
     document
         .characters()
         .characters()
@@ -621,37 +624,37 @@ fn character(document: &SqliteAccountDocument, index: usize) -> Result<&domain::
         .ok_or_else(|| format!("Character {} does not exist", index + 1))
 }
 
-fn character_inventory_ref(
-    document: &SqliteAccountDocument,
+fn character_inventory_ref<D: NativeAccountDocument>(
+    document: &D,
     character_index: usize,
 ) -> Result<&[domain::ItemInstance], InventoryError> {
     character(document, character_index)
         .map(|character| character.inventory.as_slice())
-        .map_err(app_inventory_error)
+        .map_err(app_inventory_error::<D>)
 }
 
-fn inventory_item(
-    document: &SqliteAccountDocument,
+fn inventory_item<D: NativeAccountDocument>(
+    document: &D,
     location: InventoryItemLocation,
 ) -> Result<&domain::ItemInstance, InventoryError> {
     character_inventory_ref(document, location.character_index)?
         .get(location.item_index)
-        .ok_or_else(|| InventoryError::new(SQLITE_PATH, "inventory item index is out of range"))
+        .ok_or_else(|| InventoryError::new(D::LABEL, "inventory item index is out of range"))
 }
 
-fn apply_character_command(
-    document: &mut SqliteAccountDocument,
+fn apply_character_command<D: NativeAccountDocument>(
+    document: &mut D,
     command: domain::CharacterCommand,
 ) -> Result<(), String> {
     document
         .characters_mut()
-        .apply(SqliteAccountDocument::character_capabilities(), command)
+        .apply(D::character_capabilities(), command)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
-fn update_equipment(
-    document: &mut SqliteAccountDocument,
+fn update_equipment<D: NativeAccountDocument>(
+    document: &mut D,
     character_index: usize,
     slot: &str,
     update: domain::ItemUpdate,
@@ -676,7 +679,7 @@ fn update_equipment(
     )
 }
 
-fn inferred_item_level(document: &SqliteAccountDocument, character_index: usize) -> i32 {
+fn inferred_item_level<D: NativeAccountDocument>(document: &D, character_index: usize) -> i32 {
     character(document, character_index)
         .ok()
         .into_iter()
@@ -806,52 +809,10 @@ fn domain_item_update(action: InventoryItemAction) -> domain::ItemUpdate {
     }
 }
 
-const fn app_rarity(value: domain::DismantleRarity) -> DismantleRarity {
-    match value {
-        domain::DismantleRarity::Common => DismantleRarity::Common,
-        domain::DismantleRarity::Uncommon => DismantleRarity::Uncommon,
-        domain::DismantleRarity::Rare => DismantleRarity::Rare,
-        domain::DismantleRarity::Legendary => DismantleRarity::Legendary,
-        domain::DismantleRarity::Exotic => DismantleRarity::Exotic,
-    }
+fn app_inventory_error<D: NativeAccountDocument>(error: String) -> InventoryError {
+    InventoryError::new(D::LABEL, error)
 }
 
-const fn domain_rarity(value: DismantleRarity) -> domain::DismantleRarity {
-    match value {
-        DismantleRarity::Common => domain::DismantleRarity::Common,
-        DismantleRarity::Uncommon => domain::DismantleRarity::Uncommon,
-        DismantleRarity::Rare => domain::DismantleRarity::Rare,
-        DismantleRarity::Legendary => domain::DismantleRarity::Legendary,
-        DismantleRarity::Exotic => domain::DismantleRarity::Exotic,
-    }
-}
-
-const fn app_gear_class(value: domain::DismantleGearClass) -> DismantleGearClass {
-    match value {
-        domain::DismantleGearClass::Weapon => DismantleGearClass::Weapon,
-        domain::DismantleGearClass::Armor => DismantleGearClass::Armor,
-        domain::DismantleGearClass::Both => DismantleGearClass::Both,
-    }
-}
-
-const fn domain_gear_class(value: DismantleGearClass) -> domain::DismantleGearClass {
-    match value {
-        DismantleGearClass::Weapon => domain::DismantleGearClass::Weapon,
-        DismantleGearClass::Armor => domain::DismantleGearClass::Armor,
-        DismantleGearClass::Both => domain::DismantleGearClass::Both,
-    }
-}
-
-fn app_inventory_error(error: String) -> InventoryError {
-    InventoryError::new(SQLITE_PATH, error)
-}
-
-fn domain_inventory_error(error: domain::AccountError) -> InventoryError {
-    InventoryError::new(SQLITE_PATH, error.to_string())
-}
-
-fn sqlite_inventory_error(
-    error: crate::persistence::sqlite_account::SqliteAccountError,
-) -> InventoryError {
-    InventoryError::new(SQLITE_PATH, error.to_string())
+fn domain_inventory_error<D: NativeAccountDocument>(error: domain::AccountError) -> InventoryError {
+    InventoryError::new(D::LABEL, error.to_string())
 }

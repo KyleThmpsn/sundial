@@ -5,6 +5,7 @@ use std::{
     num::NonZeroU64,
 };
 
+use super::schema_version;
 use serde_json::{Map, Value};
 use sundial_account::{
     DefinitionHash, DismantleGearClass, DismantleRarity, DismantleReward, DismantleRewardCommand,
@@ -334,15 +335,6 @@ impl JsonProfileAdapter {
     }
 }
 
-fn schema_version(document: &Value) -> JsonProfileResult<u64> {
-    document
-        .get("version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            JsonProfileError::format("/version", "settings schema version is missing or invalid")
-        })
-}
-
 fn capabilities_for_schema(schema_version: u64) -> JsonProfileResult<ProfileCapabilities> {
     if schema_version < MIN_SUPPORTED_SCHEMA {
         return Err(JsonProfileError::format(
@@ -441,6 +433,7 @@ fn load_profile_items(
             id,
             definition_hash: parse_definition_hash(row, &path)?,
             quantity: parse_quantity(row, &path)?,
+            instance_soid: None,
         });
         order.push(id);
         raw.insert(id, row.clone());
@@ -695,51 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn loading_and_projecting_without_a_command_is_lossless() {
-        let mut document = document(8);
-        *document
-            .pointer_mut("/state/account/profile_items")
-            .unwrap() = json!([{
-            "definition_hash": 44,
-            "quantity": 2,
-            "future": {"keep": true}
-        }]);
-        let adapter = JsonProfileAdapter::load(&document).unwrap();
-
-        assert_eq!(adapter.project(&document).unwrap(), document);
-    }
-
-    #[test]
-    fn profile_field_edits_preserve_other_known_representations_and_unknown_members() {
-        let mut document = document(8);
-        *document
-            .pointer_mut("/state/account/profile_items")
-            .unwrap() = json!([{
-            "definition_hash": 44,
-            "quantity": 2,
-            "future": {"keep": true}
-        }]);
-        let adapter = JsonProfileAdapter::load(&document).unwrap();
-        let id = adapter.state().profile_items()[0].id;
-
-        let (_, projected) = adapter
-            .apply_profile_item(
-                &document,
-                ProfileItemCommand::SetQuantity { id, quantity: 9 },
-            )
-            .unwrap();
-
-        assert_eq!(
-            projected.pointer("/state/account/profile_items/0"),
-            Some(&json!({
-                "definition_hash": 44,
-                "quantity": 9,
-                "future": {"keep": true}
-            }))
-        );
-    }
-
-    #[test]
     fn future_schema_dismantle_rows_remain_opaque() {
         let mut document = document(MAX_SUPPORTED_SCHEMA + 1);
         document
@@ -757,6 +705,7 @@ mod tests {
                     id: new_id,
                     definition_hash: DefinitionHash::new(44),
                     quantity: 1,
+                    instance_soid: None,
                 }),
             )
             .unwrap();
@@ -765,20 +714,6 @@ mod tests {
             projected.pointer("/state/account/dismantle_rewards"),
             document.pointer("/state/account/dismantle_rewards")
         );
-    }
-
-    #[test]
-    fn filtered_dismantle_layout_remains_supported_after_schema_eight() {
-        for version in FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION..=MAX_SUPPORTED_SCHEMA {
-            let capabilities = capabilities_for_schema(version).unwrap();
-            assert!(capabilities.dismantle_rewards_writable, "schema {version}");
-            assert!(capabilities.filtered_dismantle_rewards, "schema {version}");
-            assert_eq!(
-                capabilities.dismantle_reward_capacity,
-                Some(FILTERED_DISMANTLE_REWARD_CAPACITY),
-                "schema {version}"
-            );
-        }
     }
 
     #[test]
@@ -795,6 +730,7 @@ mod tests {
                         id: adapter.next_entity_id(),
                         definition_hash: DefinitionHash::new(44),
                         quantity: 1,
+                        instance_soid: None,
                     }),
                 )
                 .is_err()

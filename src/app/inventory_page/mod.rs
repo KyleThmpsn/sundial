@@ -12,6 +12,7 @@ mod model;
 mod presentation;
 mod profile;
 mod rewards;
+mod sources;
 
 #[cfg(test)]
 mod tests;

@@ -22,7 +22,8 @@ pub(crate) fn validate_install(install: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Not a Shadowkeep install: expected destiny2.exe, packages, and {}",
+            "Invalid game folder: {}. Select the folder containing destiny2.exe, packages, and {}",
+            install.display(),
             oodle_relative.display()
         ))
     }

@@ -18,6 +18,7 @@ fn source_items_may_have_no_flavor_text() {
 fn runtime_value_shape_accepts_native_package_schema_handles() {
     let runtime = WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {
+            graph_tag: None,
             binding_hash: 0x39AF_D7D3,
             resource_index: 0,
             root: WeaponRuntimeRootKind::ComponentInstance,

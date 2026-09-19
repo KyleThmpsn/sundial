@@ -135,8 +135,9 @@ fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     );
     let mut app = app(directory.0.clone());
     let mut original = defaults();
+    original["version"] = json!(18);
     original["core"]["logging"]["debugger_sink"] = json!("invalid");
-    app.document = WorkspaceDocument::load(original, &app.settings_path);
+    app.document = WorkspaceDocument::load(original, &app.settings_path, false);
     assert!(!app.document.uses_json_account());
     app.persisted_document = app.document.clone();
     account_workspace::apply_account_settings(
@@ -156,4 +157,37 @@ fn unchanged_invalid_json_does_not_block_sqlite_only_edits() {
     let mut candidate = app.document.clone();
     candidate.json_mut()["client"]["external_server"]["host"] = json!("invalid");
     assert!(app.validation_warning_for_write(&candidate).is_err());
+}
+
+#[test]
+fn sqlite_only_save_rechecks_the_settings_source_on_disk() {
+    let directory = TestDirectory::new("save-sqlite-external-schema");
+    crate::persistence::sqlite_account::tests::create_fixture(
+        &directory.0.join("data/investment.sqlite3"),
+        3,
+    );
+    let mut app = app(directory.0.clone());
+    let mut source = defaults();
+    source["version"] = json!(18);
+    app.document = WorkspaceDocument::load(source.clone(), &app.settings_path, false);
+    app.persisted_document = app.document.clone();
+    account_workspace::apply_account_settings(
+        &mut app.document,
+        vec![sundial_account::AccountSettingsCommand::Set {
+            key: sundial_account::AccountSettingKey::known_preference("show_fps").unwrap(),
+            value: sundial_account::AccountSettingValue::Boolean(false),
+        }],
+    )
+    .unwrap();
+    assert!(app.document.account_changed_from(&app.persisted_document));
+    assert!(!app.document.json_changed_from(&app.persisted_document));
+    source["version"] = json!(8);
+    std::fs::write(&app.settings_path, source.to_string()).unwrap();
+    let error = app
+        .verify_save_preconditions(false, true, false)
+        .unwrap_err();
+    assert!(
+        error.contains("settings.json changed outside Sundial"),
+        "{error}"
+    );
 }

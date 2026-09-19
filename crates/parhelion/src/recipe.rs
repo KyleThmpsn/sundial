@@ -1,7 +1,9 @@
 //! Versioned, human-editable donor-clone weapon recipes for Parhelion.
 
+mod copy;
+mod variant;
+
 use std::{
-    collections::BTreeSet,
     fmt, fs, io,
     path::{Path, PathBuf},
     str::FromStr,
@@ -14,6 +16,7 @@ use crate::{
     WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponRawPayloadPatch,
     WeaponRawPayloadTarget, WeaponRenderGearDonorReference, WeaponSandboxPerkActionFloatOverride,
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
@@ -221,6 +224,47 @@ impl From<RecipeInventorySlot> for WeaponInventorySlot {
 #[serde(rename_all = "snake_case")]
 pub enum RecipeCollectionPlacement {
     SunriseBadge,
+}
+
+/// One exotic behavior record grafted from another weapon of the same family.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdditionalBehaviorRecipe {
+    /// Catalogue identifier from [`crate::weapon_behavior::CATALOG`].
+    pub behavior: String,
+}
+
+/// Element switching by holding Reload, the way Hard Light and Borealis work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariableDamageRecipe {
+    /// Elements the hold can settle on: any two or all three of Arc, Solar and Void.
+    pub elements: Vec<RecipeDamageType>,
+}
+
+impl VariableDamageRecipe {
+    /// Every element, in the order the hold steps through them.
+    #[must_use]
+    pub fn all() -> Self {
+        Self {
+            elements: vec![
+                RecipeDamageType::Void,
+                RecipeDamageType::Arc,
+                RecipeDamageType::Solar,
+            ],
+        }
+    }
+
+    fn to_compiler(&self) -> WeaponVariableDamage {
+        WeaponVariableDamage {
+            elements: self
+                .elements
+                .iter()
+                .copied()
+                .map(ModernDamageType::from)
+                .collect(),
+        }
+    }
 }
 
 impl From<RecipeDamageType> for ModernDamageType {
@@ -877,6 +921,22 @@ pub struct WeaponRecipeOverrides {
     /// default and perk-selected runtime variants. Does not rebalance magazine or reserve stats.
     pub ammo_type: Option<RecipeAmmoType>,
     pub modern_damage_type: Option<RecipeDamageType>,
+    /// Reload-hold element switching. Compilation pins Hard Light's Fundamentals plug into the
+    /// first trait socket, so the appearance donor must be Hard Light or Borealis.
+    /// [`Self::modern_damage_type`] is then the element the weapon rests on and must be in the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable_damage: Option<VariableDamageRecipe>,
+    /// Exotic behaviors grafted from weapons that share this weapon's content component owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_behaviors: Vec<AdditionalBehaviorRecipe>,
+    /// Leave the source weapon's own intrinsic and trait plugs out of the graft. Several exotics
+    /// keep half of their behavior in a perk, so the plugs travel with it by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_behavior_perks: bool,
+    /// IEEE-754 bit pattern raising the launch speed of a grafted projectile on a weapon that
+    /// fires none of its own, and the most it is raised to. Absent means the default boost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior_projectile_speed_bits: Option<u32>,
     pub power_cap_group: Option<u16>,
     /// Complete native quality/version group sequence. This advanced form preserves the number
     /// and order of the gameplay donor's version rows while allowing every row to differ.
@@ -969,11 +1029,8 @@ impl WeaponRecipeOverrides {
                                 "Socket {socket_index} cannot contain plug hash zero"
                             )));
                         }
-                        if choices.iter().copied().collect::<BTreeSet<_>>().len() != choices.len() {
-                            return Err(RecipeError::Validation(format!(
-                                "Socket {socket_index} cannot contain the same plug more than once"
-                            )));
-                        }
+                        // The compiler validates duplicates using each choice's private
+                        // definition. Different custom perks may share a stock template.
                         Ok(WeaponSocketColumnOverride {
                             choices,
                             socket_type: column.socket_type,
@@ -1044,6 +1101,17 @@ impl WeaponRecipeOverrides {
             inventory_slot: self.inventory_slot.map(WeaponInventorySlot::from),
             ammo_type: self.ammo_type.map(WeaponAmmoType::from),
             modern_damage_type: self.modern_damage_type.map(ModernDamageType::from),
+            variable_damage: self
+                .variable_damage
+                .as_ref()
+                .map(VariableDamageRecipe::to_compiler),
+            additional_behaviors: self
+                .additional_behaviors
+                .iter()
+                .map(|entry| entry.behavior.clone())
+                .collect(),
+            skip_behavior_perks: self.skip_behavior_perks,
+            behavior_projectile_speed: self.behavior_projectile_speed_bits.map(f32::from_bits),
             power_cap_group: self.power_cap_group,
             power_cap_groups: self.power_cap_groups.clone(),
             rarity: self.rarity.map(AuthoredWeaponRarity::from),
@@ -1073,65 +1141,7 @@ impl WeaponRecipeOverrides {
                 .socket_plug_variants
                 .iter()
                 .enumerate()
-                .map(|(variant_index, variant)| {
-                    Ok(WeaponSocketPlugVariantOverride {
-                        replace_effects: variant.replace_effects,
-                        investment_stats: variant.investment_stats.iter()
-                            .map(|stat| (stat.definition_index, stat.value)).collect(),
-                        socket_index: variant.socket_index,
-                        choice_index: variant.choice_index,
-                        source_plug_hash: parse_recipe_hash(
-                            &format!("socket-plug variant {variant_index} source plug"),
-                            &variant.source_plug_hash,
-                        )?,
-                        name: variant.name.clone(),
-                        description: variant.description.clone(),
-                        additional_sandbox_perks: variant.additional_sandbox_perks.clone(),
-                        classification_donor_hash: variant.classification_donor_hash.as_ref()
-                            .map(|hash| parse_recipe_hash(
-                                &format!("socket-plug variant {variant_index} classification source"), hash))
-                            .transpose()?,
-                        sandbox_perks: variant
-                            .sandbox_perks
-                            .iter()
-                            .enumerate()
-                            .map(|(perk_index, perk)| {
-                                Ok(WeaponSandboxPerkRuntimeOverride {
-                                    program: perk.program.clone(),
-                                    source_perk_index: perk.source_perk_index,
-                                    projectiles: perk.projectiles.clone(),
-                                    activation: perk.activation,
-                                    runtime_values: perk.runtime_values.clone(),
-                                    action_float_values: perk
-                                        .action_float_values
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(value_index, value)| {
-                                            Ok(WeaponSandboxPerkActionFloatOverride {
-                                                node_type_handle: parse_recipe_hash(
-                                                    &format!(
-                                                        "socket-plug variant {variant_index} perk {perk_index} action float {value_index} node type"
-                                                    ),
-                                                    &value.node_type_handle,
-                                                )?,
-                                                node_occurrence: value.node_occurrence,
-                                                value_pointer_offset: value.value_pointer_offset,
-                                                value_type_handle: parse_recipe_hash(
-                                                    &format!(
-                                                        "socket-plug variant {variant_index} perk {perk_index} action float {value_index} value type"
-                                                    ),
-                                                    &value.value_type_handle,
-                                                )?,
-                                                expected_bits: value.expected_bits,
-                                                value_bits: value.value_bits,
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>, RecipeError>>()?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, RecipeError>>()?,
-                    })
-                })
+                .map(|(index, variant)| variant.to_compiler(index))
                 .collect::<Result<Vec<_>, RecipeError>>()?,
             runtime_values: self.runtime_values.clone(),
             runtime_resource_patches: self
@@ -1512,6 +1522,19 @@ impl WeaponRecipe {
         let mut canonical = self.clone();
         canonical.canonicalize_investment_stats();
         Ok(serde_json::to_string_pretty(&canonical)?)
+    }
+
+    /// Compare the content saved by this format. Stat and locale ordering is normalized
+    /// by both load and save, and must not be mistaken for an external edit.
+    pub(crate) fn same_saved_content(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.canonicalize_investment_stats();
+        right.canonicalize_investment_stats();
+        left == right
     }
 
     pub fn load_json(path: impl AsRef<Path>) -> Result<Self, RecipeError> {

@@ -47,14 +47,14 @@ use sundial::package_authoring::{
 use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
+use crate::capabilities::{variable_damage_resting_type, variable_damage_supported};
 use crate::icon_edit::{WeaponIconEditor, WeaponIconEditorAction, render_weapon_icon_preview};
-#[cfg(test)]
-use crate::install::CANONICAL_ARTIFACT_FILE_NAMES;
 use crate::install::{
     InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     install_staged_packages_with_progress,
 };
 use crate::preferences::ParhelionPreferences;
+use crate::recipe::VariableDamageRecipe;
 use crate::runtime::{RuntimeGraphKey, load_effective_runtime_graph};
 use crate::workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildPhase, BuildProgress, BuildReport,
@@ -70,7 +70,7 @@ use crate::{
     apply_combat_profile_action, authored_inventory_slot,
     presentation_donor_candidate_is_compatible, recipe_combat_profile_action,
     reconcile_presentation_donor, selected_presentation_donor_is_compatible,
-    validate_socket_column_overrides_with_socket_types, weapon_authoring_capabilities,
+    weapon_authoring_capabilities,
 };
 
 const WINDOW_TITLE: &str = "Parhelion";
@@ -119,12 +119,12 @@ const PRIMARY_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
 const ADDITIONAL_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
     RuntimeComponentControl {
         binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
-        label: "Weapon stat translator",
+        label: "Weapon Stat Translator",
         tooltip: "A coupled, family-specific runtime translator, not a projectile-speed control. Cross-family replacements can freeze the game even when package validation succeeds. Preserve the weapon's translator for private projectile edits.",
     },
     RuntimeComponentControl {
         binding_hash: WEAPON_CONTROLLER_COMPONENT_KEY,
-        label: "Weapon controller",
+        label: "Weapon Controller",
         tooltip: "The native weapon binding. It is broader than trigger or barrel and may affect several runtime behaviors at once.",
     },
     RuntimeComponentControl {
@@ -134,7 +134,7 @@ const ADDITIONAL_RUNTIME_COMPONENTS: [RuntimeComponentControl; 4] = [
     },
     RuntimeComponentControl {
         binding_hash: WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
-        label: "Trigger charge",
+        label: "Trigger Charge",
         tooltip: "The optional native trigger-charge binding. Both the gameplay donor and selected component donor must define it.",
     },
 ];
@@ -348,6 +348,9 @@ struct PackageAuthoringApp {
     #[cfg(feature = "community-recipes")]
     community: community::Window,
     recipe: WeaponRecipe,
+    /// The (lane, plug) pairs `sync_behavior_socket_pins` wrote itself, so deselecting a behavior
+    /// takes back exactly those and never a perk the author placed by hand.
+    behavior_pins: socket_editor::BehaviorPins,
     observed_recipe: WeaponRecipe,
     recipe_baseline: WeaponRecipe,
     recipe_path: Option<PathBuf>,
@@ -370,6 +373,7 @@ struct PackageAuthoringApp {
     staging: String,
     ignore_installed: bool,
     build_receiver: Option<Receiver<BuildWorkerEvent>>,
+    build_invalidated: bool,
     build_progress: Option<TimedBuildProgress>,
     build_activity: build_status::Activity,
     install_status: build_status::InstallStatus,
@@ -427,13 +431,14 @@ struct PackageAuthoringApp {
     open_sundial_preferences: bool,
     show_internal_stats: bool,
     show_technical_socket_rows: bool,
-    private_perk_socket: Option<usize>,
+    perk_request: Option<custom_perks::workbench::Request>,
     icon_editor: Option<WeaponIconEditor>,
     hud_icon_editor: crate::hud_icon::ui::Editor,
     presentation_editor: crate::presentation::ui::Editor,
     authored_icon_preview: Option<AuthoredIconPreview>,
     library_icons: library_view::LibraryIcons,
     dye_colors: donor_view::DyeColors,
+    appearance_ornaments: donor_view::ornaments::Ornaments,
     pending_recipe_action: Option<PendingRecipeAction>,
     scroll_recipe_to_top: bool,
     workbench_page: WorkbenchPage,
@@ -480,6 +485,7 @@ impl Default for PackageAuthoringApp {
             staging: default_staging_root().display().to_string(),
             ignore_installed: true,
             build_receiver: None,
+            build_invalidated: false,
             build_progress: None,
             build_activity: build_status::Activity::default(),
             install_status: build_status::InstallStatus::default(),
@@ -533,17 +539,19 @@ impl Default for PackageAuthoringApp {
             plug_selection_mode: sundial::investment::default_plug_selection_mode(),
             show_plug_safety_warnings: sundial::investment::show_plug_safety_warnings(),
             show_experimental_options: false,
+            behavior_pins: socket_editor::BehaviorPins::default(),
             preferences_changed: false,
             open_sundial_preferences: false,
             show_internal_stats: false,
             show_technical_socket_rows: false,
-            private_perk_socket: None,
+            perk_request: None,
             icon_editor: None,
             hud_icon_editor: crate::hud_icon::ui::Editor::default(),
             presentation_editor: crate::presentation::ui::Editor::default(),
             authored_icon_preview: None,
             library_icons: library_view::LibraryIcons::default(),
             dye_colors: donor_view::DyeColors::default(),
+            appearance_ornaments: donor_view::ornaments::Ornaments::default(),
             pending_recipe_action: None,
             scroll_recipe_to_top: true,
             workbench_page: WorkbenchPage::default(),
@@ -634,6 +642,7 @@ impl PackageAuthoringApp {
         self.draw_runtime_donor_browser(ctx);
         self.draw_runtime_dependencies(ctx);
         self.draw_icon_editor(ctx);
+        self.draw_artwork_editor(ctx);
         self.draw_preferences_window(ctx);
         self.draw_activity_log_window(ctx);
         self.draw_discard_confirmation(ctx);
@@ -711,8 +720,10 @@ impl PackageAuthoringApp {
         self.presentation_editor = crate::presentation::ui::Editor::default();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
+        self.appearance_ornaments = donor_view::ornaments::Ornaments::default();
         self.catalog = None;
         self.donor_summaries.clear();
+        self.library_state.refresh_donors(&self.donor_summaries);
         self.sandbox_perk_choices.clear();
         self.trait_choices.clear();
         self.plug_queries.clear();
@@ -729,7 +740,7 @@ impl PackageAuthoringApp {
         self.runtime_donors.invalidate();
         self.invalid_weapon_name = None;
         self.clear_presentation_picker_queries();
-        self.private_perk_socket = None;
+        self.perk_request = None;
         self.runtime_bindings_open = false;
         self.workbench_page = WorkbenchPage::Weapon;
         self.presentation_donor_query.clear();
@@ -754,6 +765,9 @@ impl PackageAuthoringApp {
     }
 
     fn draw_icon_editor(&mut self, ctx: &egui::Context) {
+        if self.build_receiver.is_some() || self.install_receiver.is_some() {
+            return;
+        }
         let action = self
             .icon_editor
             .as_mut()
@@ -769,6 +783,38 @@ impl PackageAuthoringApp {
             }
             Some(WeaponIconEditorAction::Cancel) => self.icon_editor = None,
             None => {}
+        }
+    }
+
+    fn draw_artwork_editor(&mut self, ctx: &egui::Context) {
+        if !self.presentation_editor.editing()
+            || self.build_receiver.is_some()
+            || self.install_receiver.is_some()
+        {
+            return;
+        }
+        let icon = (|| {
+            let donor = self
+                .recipe
+                .icon_donor
+                .as_ref()
+                .or(self.recipe.presentation_donor.as_ref())
+                .unwrap_or(&self.recipe.donor);
+            let hash = donor.item_hash.parse_u32().ok()?;
+            let tag = self.catalog.as_ref()?.weapon_icon_container(hash)?;
+            Some((
+                TagHash(tag),
+                self.authored_icon_rarity()?,
+                self.recipe.overrides.icon_edit.clone(),
+            ))
+        })();
+        if self
+            .presentation_editor
+            .show(ctx, &mut self.recipe.overrides, &self.packages, icon)
+        {
+            self.recipe_dirty = true;
+            self.authored_icon_preview = None;
+            self.invalidate_results();
         }
     }
 
@@ -957,8 +1003,8 @@ impl PackageAuthoringApp {
             return;
         }
         ui.menu_button("Tools", |ui| {
-            if ui.button("Native Asset Browser…").clicked() {
-                self.perk_workbench.open_assets();
+            if ui.button("Engine Catalog…").clicked() {
+                self.perk_workbench.open_engine_catalog();
                 ui.close_menu();
             }
         });
@@ -1070,7 +1116,7 @@ impl PackageAuthoringApp {
         let response = egui::Modal::new("parhelion_discard_recipe".into()).show(ctx, |ui| {
             workbench_style(ui);
             ui.set_width(420.0);
-            ui.heading("Discard unsaved recipe changes?");
+            ui.heading("Discard Unsaved Recipe Changes?");
             ui.add_space(6.0);
             ui.label(match &action {
                 PendingRecipeAction::Close => {
@@ -1080,7 +1126,7 @@ impl PackageAuthoringApp {
                     "Creating a new recipe will discard this recipe's unsaved changes."
                 }
                 PendingRecipeAction::Open(_) => {
-                    "Opening another recipe will discard this recipe's unsaved changes."
+                    "Opening the saved recipe will discard this recipe's unsaved changes."
                 }
                 PendingRecipeAction::Import => {
                     "Importing a recipe will discard this recipe's unsaved changes."
@@ -1383,6 +1429,10 @@ fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
             "Advanced: runtime resource patches",
         ),
         (
+            !overrides.additional_behaviors.is_empty(),
+            "Additional behavior",
+        ),
+        (
             !overrides.raw_payload_patches.is_empty(),
             "Advanced: raw payload patches",
         ),
@@ -1466,9 +1516,21 @@ struct SocketPickerContext<'a> {
     show_plug_safety_warnings: bool,
     show_experimental_options: bool,
     show_technical_rows: &'a mut bool,
-    private_perk_socket: &'a mut Option<usize>,
+    perk_request: &'a mut Option<crate::app::custom_perks::workbench::Request>,
     donor: &'a WeaponDonor,
     log: &'a mut ActivityLog,
+}
+
+/// The spacing and rule between two stacked workbench sections.
+fn draw_stacked_section_break(ui: &mut egui::Ui) {
+    ui.add_space(3.0);
+    ui.separator();
+    ui.add_space(3.0);
+}
+
+/// Gameplay and Appearance sit side by side when there is room, and stack when there is not.
+fn donor_section_column_count(available_width: f32) -> usize {
+    if available_width >= 780.0 { 2 } else { 1 }
 }
 
 fn core_profile_column_count(available_width: f32) -> usize {
@@ -1497,8 +1559,7 @@ struct SocketTechnicalFields<'a> {
 
 fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) -> bool {
     let mut changed = false;
-    ui.label(egui::RichText::new(label).strong())
-        .on_hover_text(hint);
+    ui.strong(label).on_hover_text(hint);
     ui.horizontal(|ui| {
         let field_width = (ui.available_width() - 86.0).max(160.0);
         changed |= ui
@@ -1557,7 +1618,7 @@ fn runtime_component_control(binding_hash: u32) -> Option<RuntimeComponentContro
 
 fn draw_donor_section_label(ui: &mut egui::Ui, label: &str, tooltip: Option<&str>) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).strong());
+        ui.strong(label);
         if let Some(tooltip) = tooltip {
             draw_authoring_info_icon(ui, tooltip);
         }
@@ -1657,7 +1718,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 use style::named_control;
-pub(crate) use style::workbench_style;
+pub(crate) use style::{transparency_backdrop, workbench_style};
 mod build_status;
 mod collections_view;
 mod custom_perks;

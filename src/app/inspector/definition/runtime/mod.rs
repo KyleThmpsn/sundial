@@ -1,11 +1,11 @@
 //! On-demand, read-only package inspection. No recipe or account state is involved.
 
 mod dyes;
-mod loader;
+use crate::investment::native_content::inspection as loader;
 mod perks;
 #[cfg(test)]
 mod tests;
-mod view;
+use crate::ui::catalog::runtime as view;
 
 use std::{
     collections::{BTreeMap, VecDeque},

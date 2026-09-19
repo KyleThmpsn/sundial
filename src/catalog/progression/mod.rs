@@ -45,7 +45,8 @@ pub(crate) use models::{
     ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
     ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope,
-    ProgressionStepDefinition, UnlockDefinition, UnlockWriter,
+    ProgressionStepDefinition, RecordDefinition, RecordProgress, RecordRuntime, UnlockDefinition,
+    UnlockWriter,
 };
 pub(super) use models::{PendingProgressionContext, PresentationNodeDef, ProgressionPackageData};
 
@@ -71,7 +72,7 @@ pub(super) use presentation::{
     attach_presentation_node_objective_owners, definition_index_list, presentation_paths,
     scan_presentation_nodes,
 };
-pub(super) use records::{item_objective_indices, scan_record_objective_owners};
+pub(super) use records::{item_objective_indices, scan_records};
 pub(super) use seasonal::scan_seasonal;
 pub(super) use unlocks::{
     add_objective_owner, scan_unlock_flag_definitions, scan_unlock_flag_displays,
@@ -79,6 +80,10 @@ pub(super) use unlocks::{
 };
 
 impl Catalog {
+    pub(crate) fn records(&self) -> Option<&[RecordDefinition]> {
+        self.records.as_deref()
+    }
+
     pub(crate) fn seasonal(&self) -> Option<&crate::investment::seasonal::Definition> {
         self.seasonal.as_ref()
     }
@@ -147,19 +152,6 @@ impl Catalog {
             .get(&definition_index)
             .and_then(|indices| indices.first())
             .and_then(|index| self.objectives.get(*index))
-    }
-
-    pub(crate) fn objective_with_index_for_unlock_value(
-        &self,
-        definition_index: usize,
-    ) -> Option<(usize, &ObjectiveDef)> {
-        let index = *self
-            .objectives_by_unlock_value
-            .get(&definition_index)?
-            .first()?;
-        self.objectives
-            .get(index)
-            .map(|objective| (index, objective))
     }
 
     pub(crate) fn objectives_for_unlock_value(

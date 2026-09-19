@@ -1,8 +1,7 @@
 //! SQLite equipment moves preserve complete item rows and their socket foreign keys.
 use super::*;
-use crate::investment::{
-    AuthoredItemMove, AuthoredMoveOutcome, AuthoredSlotReplacement, account_sync::placement,
-};
+use crate::account::placement;
+use crate::account::{AuthoredItemMove, AuthoredMoveOutcome, AuthoredSlotReplacement};
 
 pub(super) fn relocate(
     db: &Connection,

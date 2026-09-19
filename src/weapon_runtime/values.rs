@@ -22,6 +22,9 @@ pub fn encode_weapon_runtime_value(
         (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(bits)) => {
             bits.to_le_bytes().to_vec()
         }
+        (WeaponRuntimeValueKind::Float64, WeaponRuntimeValue::Float64Bits(bits)) => {
+            bits.to_le_bytes().to_vec()
+        }
         (
             WeaponRuntimeValueKind::Vector4Float32,
             WeaponRuntimeValue::Vector4Float32Bits(values),
@@ -73,6 +76,9 @@ pub(super) fn decode_runtime_value(
         }
         WeaponRuntimeValueKind::Float32 => Ok(WeaponRuntimeValue::Float32Bits(u32::from_le_bytes(
             bytes.try_into().expect("four-byte runtime float"),
+        ))),
+        WeaponRuntimeValueKind::Float64 => Ok(WeaponRuntimeValue::Float64Bits(u64::from_le_bytes(
+            bytes.try_into().expect("eight-byte runtime float"),
         ))),
         WeaponRuntimeValueKind::Vector4Float32 => {
             let mut values = [0; 4];

@@ -292,3 +292,104 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
         .collect::<Vec<_>>();
     assert!(socket_names.iter().any(|name| name == "Micro-Missile"));
 }
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_donor_roles_use_first_indexed_rows_and_reject_invalid_inputs() {
+    use crate::weapon::donors::{
+        resolve_donor_item, resolve_icon_donor, resolve_presentation_donor,
+        resolve_render_gear_donor, resolve_runtime_component_donor,
+    };
+
+    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
+        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let mut sources = crate::weapon::sources::load_project_sources(Path::new(&packages))
+        .expect("clean stock sources should load");
+    let gameplay_hash = 0xEE06_B019;
+    let appearance_hash = 0x7405_1969;
+
+    let gameplay = resolve_donor_item(&sources, gameplay_hash, "Donor")
+        .expect("the gameplay donor should resolve");
+    assert_eq!(
+        gameplay.item_index, sources.stock_item_rows_by_hash[&gameplay_hash][0],
+        "donor resolution must retain the first matching native row"
+    );
+    assert_eq!(
+        resolve_item_name(&sources.manager, gameplay.string_tag).unwrap(),
+        "The Mountaintop"
+    );
+    resolve_presentation_donor(
+        &sources,
+        &WeaponPresentationDonorReference {
+            item_hash: appearance_hash,
+            expected_name: Some("Truthteller".to_owned()),
+        },
+    )
+    .expect("the geometry donor should resolve");
+    resolve_icon_donor(
+        &sources,
+        &WeaponIconDonorReference {
+            item_hash: appearance_hash,
+            expected_name: Some("Truthteller".to_owned()),
+        },
+    )
+    .expect("the icon donor should resolve");
+    resolve_render_gear_donor(
+        &sources,
+        &WeaponRenderGearDonorReference {
+            item_hash: appearance_hash,
+            expected_name: Some("Truthteller".to_owned()),
+        },
+    )
+    .expect("the render-gear donor should resolve");
+    resolve_runtime_component_donor(
+        &sources,
+        &WeaponRuntimeComponentDonorReference {
+            binding_hash: 0x1234_5678,
+            item_hash: gameplay_hash,
+            expected_name: Some("The Mountaintop".to_owned()),
+        },
+    )
+    .expect("the runtime donor should resolve");
+
+    let error = resolve_icon_donor(
+        &sources,
+        &WeaponIconDonorReference {
+            item_hash: appearance_hash,
+            expected_name: Some("Wrong Name".to_owned()),
+        },
+    )
+    .err()
+    .expect("a mismatched icon donor name should be rejected")
+    .to_string();
+    assert!(
+        error.contains("Icon donor item resolves to \"Truthteller\""),
+        "{error}"
+    );
+
+    let error = resolve_render_gear_donor(
+        &sources,
+        &WeaponRenderGearDonorReference {
+            item_hash: 0xFFFF_FFFE,
+            expected_name: None,
+        },
+    )
+    .err()
+    .expect("a missing render-gear donor should be rejected")
+    .to_string();
+    assert!(
+        error.contains("Render-gear donor item 0xFFFFFFFE is missing"),
+        "{error}"
+    );
+
+    let string_row = sources.string_rows + gameplay.item_index * ITEM_ROW_SIZE;
+    write_u32(&mut sources.stock_item_strings, string_row, appearance_hash).unwrap();
+    let error = resolve_donor_item(&sources, gameplay_hash, "Donor")
+        .err()
+        .expect("a misaligned donor item and string row should be rejected")
+        .to_string();
+    assert!(
+        error.contains("Donor item and item-string rows are not aligned"),
+        "{error}"
+    );
+}

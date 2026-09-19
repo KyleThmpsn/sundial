@@ -25,7 +25,7 @@ impl Window {
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search Recipes Or Creators")
+                    .hint_text("Search Recipes or Creators")
                     .desired_width(260.0),
             );
             let tags: BTreeSet<_> = self
@@ -171,7 +171,7 @@ impl Window {
         let label = match &receipt {
             Some(receipt) if receipt.version < listing.version => "Update Recipe",
             Some(_) => "Check Local Copy",
-            None => "Add To Library",
+            None => "Add to Library",
         };
         ui.add_enabled_ui(can_edit && self.worker.is_none(), |ui| {
             if ui.button(label).clicked() {
@@ -179,12 +179,12 @@ impl Window {
             }
             if let Some(receipt) = receipt {
                 // The parent resolves this direct filename against the configured library.
-                if ui.button("Open In Workbench").clicked() {
+                if ui.button("Open in Workbench").clicked() {
                     self.action = Some(Action::Open(PathBuf::from(receipt.file_name)));
                 }
             }
             ui.separator();
-            ui.strong("Make A Remix");
+            ui.strong("Make a Remix");
             ui.label("A remix gets its own identity and leaves the original recipe intact.");
             ui.add(egui::TextEdit::singleline(&mut self.remix_name).hint_text("Remix Name"));
             if ui

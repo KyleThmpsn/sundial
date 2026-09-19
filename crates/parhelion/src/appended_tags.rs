@@ -72,15 +72,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allocator_uses_the_complete_appended_ordinal() {
-        let allocator = AppendedTagAllocator::new(0x0914, 100);
+    fn allocator_preserves_package_and_entry_indices_through_the_runtime_limit() {
         let ordinal = AppendedTagAllocator::checked_ordinal(20, 3, "test tag").unwrap();
-        let tag = allocator
-            .assigned_tag(ordinal, "Test destination", "test tag")
-            .unwrap();
-
-        assert_eq!(tag.pkg_id(), 0x0914);
-        assert_eq!(tag.entry_index(), 123);
+        for (package, base, ordinal, expected) in [
+            (0x0914, 100, ordinal, 123),
+            (0x0CFF, MAX_PACKAGE_ENTRY_COUNT - 1, 0, 0x1FFF),
+        ] {
+            let tag = AppendedTagAllocator::new(package, base)
+                .assigned_tag(ordinal, "Test destination", "test tag")
+                .unwrap();
+            assert_eq!(tag.pkg_id(), package);
+            assert_eq!(tag.entry_index(), expected);
+        }
     }
 
     #[test]
@@ -93,20 +96,6 @@ mod tests {
             error.to_string(),
             "Test destination index 8192 exceeds the package-table limit"
         );
-    }
-
-    #[test]
-    fn allocator_accepts_the_top_of_the_runtime_package_window() {
-        let tag = AppendedTagAllocator::new(0x0CFF, MAX_PACKAGE_ENTRY_COUNT - 1)
-            .assigned_tag(0, "Test destination", "test tag")
-            .unwrap();
-
-        assert_eq!(tag.pkg_id(), 0x0CFF);
-        assert_eq!(tag.entry_index(), 0x1FFF);
-    }
-
-    #[test]
-    fn ordinal_overflow_retains_the_callers_context() {
         let error = AppendedTagAllocator::checked_ordinal(usize::MAX, 1, "test tag").unwrap_err();
         assert_eq!(
             error.to_string(),

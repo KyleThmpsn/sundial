@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn discovery_recognizes_a_stock_action_that_fits_the_program_model() {
+    let payload = crate::sandbox_perk::action::fixtures::drawn_pattern_action();
+    let behavior = Behavior::read(&payload).unwrap();
+    assert!(behavior.editable);
+    assert_eq!(
+        behavior.support,
+        crate::sandbox_perk::nodes::Support::Authorable
+    );
+}
+
+#[test]
+fn cached_reading_retains_asset_paths_values_and_owned_timer_conditions() {
+    let drawn =
+        Behavior::read(&crate::sandbox_perk::action::fixtures::drawn_pattern_action()).unwrap();
+    let effects = drawn
+        .details
+        .iter()
+        .find(|section| section.heading == "Then")
+        .unwrap();
+    assert_eq!(effects.lines[0].asset, Some(0x8161_F73A));
+    assert!(
+        effects.lines[0]
+            .fields
+            .iter()
+            .any(|field| field.contains("content/sandbox/weapons/demo/demo.pattern.tft"))
+    );
+    let precision =
+        Behavior::read(&crate::sandbox_perk::action::fixtures::precision_kill_action()).unwrap();
+    assert_eq!(
+        precision
+            .details
+            .iter()
+            .map(|section| section.heading.as_str())
+            .collect::<Vec<_>>(),
+        ["Starts When", "Then", "Ends When", "Ready Again When"]
+    );
+    let effects = precision
+        .details
+        .iter()
+        .find(|section| section.heading == "Then")
+        .unwrap();
+    assert!(
+        effects
+            .lines
+            .iter()
+            .flat_map(|line| &line.fields)
+            .any(|field| field.contains("precision"))
+    );
+    assert!(
+        precision
+            .details
+            .iter()
+            .flat_map(|section| &section.lines)
+            .flat_map(|line| &line.fields)
+            .any(|field| field.contains("2.5"))
+    );
+    let json = serde_json::to_vec(&precision).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Behavior>(&json).unwrap(),
+        precision
+    );
+}
+
+#[test]
 fn unresolved_markers_are_not_reported_as_working_actions() {
     let mut perk = Perk {
         index: 2002,
@@ -9,6 +73,7 @@ fn unresolved_markers_are_not_reported_as_working_actions() {
         action: None,
         graphs: Vec::new(),
         error: None,
+        behavior: None,
     };
     assert_eq!(perk.status(), "No Standalone Action");
     perk.action = Some(1);
@@ -35,10 +100,26 @@ fn installed_dependency_inventory_retains_marker_and_shared_pattern_evidence() {
         last = (done, total);
     })
     .unwrap();
+    let errors = index
+        .perks
+        .iter()
+        .filter_map(|perk| {
+            perk.error
+                .as_ref()
+                .map(|error| format!("{}: {error}", perk.index))
+        })
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
     assert_eq!(last.0, last.1);
     assert_eq!(index.patterns.len() + index.perks.len(), last.0);
     assert_eq!(index.perks[2002].action, None);
     assert_eq!(index.perks[1778].action, Some(0x8157_978A));
+    let wave = index.perks[1778]
+        .behavior
+        .as_ref()
+        .expect("Wave Frame decodes");
+    assert!(wave.effect_kinds.contains(&26), "{wave:?}");
+    assert!(!wave.headline.is_empty());
     assert!(
         index.perks[1778]
             .graphs

@@ -24,7 +24,7 @@ pub(super) fn draw_perks(
     egui::CollapsingHeader::new(format!("Sandbox Perks ({})", metadata.sandbox_perks.len()))
         .id_salt(("inspector-sandbox-perks", item_hash))
         .show(ui, |ui| {
-            ui.weak("Perks stored on this definition. Inspect a socket plug separately for its perks; these are not the combined effects of equipped plugs.");
+            ui.weak("Perks stored on this definition. Inspect a socket plug separately for its perks. These are not the combined effects of equipped plugs.");
             let count = metadata.sandbox_perks.iter().filter(|perk| perk.perk_index != u16::MAX).count();
             if let Some(warning) = crate::sandbox_perk::sunrise_perk_projection_warning(count) {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
@@ -63,7 +63,7 @@ fn draw_details(
                 action.tag,
                 action.graphs.len()
             ));
-            ui.weak("Package references only; this does not confirm that the action is loaded or active in game.");
+            ui.weak("Package references only. This does not confirm that the action is loaded or active in game.");
             if action.graphs.is_empty() {
                 ui.weak("No directly referenced weapon-entity graph was found. The action may still implement behavior through other native nodes.");
             }
@@ -110,7 +110,7 @@ fn draw_details(
                     .collect::<Vec<_>>()
                     .join(" "),
             );
-            ui.weak("Native detail bytes; not all fields have decoded semantics.");
+            ui.weak("Native detail bytes. Not all fields have decoded semantics.");
         } else {
             ui.weak("No native detail row.");
         }

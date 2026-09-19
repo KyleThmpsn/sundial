@@ -1,110 +1,75 @@
 use super::*;
-use sundial::package_authoring::{sandbox_perk::dependencies, tft};
+use sundial::package_authoring::sandbox_perk::dependencies;
+use sundial::package_authoring::sandbox_perk::program::properties;
 
-pub(super) struct Data {
-    pub names: Arc<tft::Index>,
-    pub effects: Arc<projectile::catalog::Catalog>,
-    pub asset_choices: Vec<program::AssetChoice>,
-    pub perks: Arc<dependencies::Index>,
-    pub perk_assets: Vec<dependencies::content::PerkAssets>,
-    perk_search: BTreeMap<u16, String>,
-}
-
-struct Row {
-    index: usize,
-    label: String,
-    search: String,
-}
+pub(super) use sundial::investment::native_content::Catalog as Data;
 
 enum Event {
     Progress(usize, usize),
+    Keys(Result<Arc<properties::KeyIndex>, String>),
+    Labels(Result<Arc<sundial::investment::native_content::labels::Registry>, String>),
     Ready(Result<Box<Data>, String>),
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Hash)]
-enum View {
-    #[default]
-    Projectiles,
-    Emitters,
-    Perks,
-    AllPaths,
-    AllReferences,
 }
 
 #[derive(Default)]
 pub(super) struct Discovery {
-    pub open: bool,
     pub data: Option<Data>,
+    pub keys: Option<Arc<properties::KeyIndex>>,
+    pub key_error: Option<String>,
+    pub labels: Option<Arc<sundial::investment::native_content::labels::Registry>>,
+    pub label_error: Option<String>,
+    packages: Option<PathBuf>,
+    discard_result: bool,
     receiver: Option<Receiver<Event>>,
     worker: Option<thread::JoinHandle<()>>,
-    error: Option<String>,
-    progress: Option<(usize, usize)>,
+    pub(super) error: Option<String>,
+    pub(super) progress: Option<(usize, usize)>,
     attempted: bool,
-    query: String,
-    view: View,
-    selected: Option<usize>,
-    rows: Vec<Row>,
-    row_key: Option<(View, usize)>,
-    filtered: Vec<usize>,
-    filter_query: Option<String>,
 }
 
 impl Discovery {
+    pub fn packages(&self) -> Option<&Path> {
+        self.packages.as_deref()
+    }
     pub fn busy(&self) -> bool {
         self.receiver.is_some() || self.worker.is_some()
     }
     pub fn invalidate(&mut self) {
         self.data = None;
+        self.keys = None;
+        self.key_error = None;
+        self.labels = None;
+        self.label_error = None;
+        self.discard_result = true;
         self.attempted = false;
         self.error = None;
-        self.row_key = None;
-        self.rows.clear();
     }
 
     pub fn start(&mut self, packages: &Path, ctx: &egui::Context) {
+        if self.packages.as_deref() != Some(packages) {
+            self.invalidate();
+            self.packages = Some(packages.to_owned());
+        }
         if self.attempted || self.busy() {
             return;
         }
         self.attempted = true;
+        self.discard_result = false;
         let packages = packages.to_owned();
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.worker = Some(thread::spawn(move || {
-            let result = (|| {
-                let manager = open_shadowkeep_package_manager(&packages)?;
-                let names = tft::cached(&packages, &manager, |current, total| {
-                    let _ = sender.send(Event::Progress(current, total));
-                    repaint.request_repaint();
-                })?;
-                let perks = dependencies::cached(&packages, &manager, |_, _| {})?;
-                let effects = projectile::catalog::cached(&packages, &manager)?;
-                let asset_choices = program::asset_choices(&effects);
-                let perk_assets = dependencies::content::map(&perks, &names);
-                let perk_search = perk_assets
-                    .iter()
-                    .filter_map(|assets| {
-                        let index = u16::try_from(assets.perk_index).ok()?;
-                        Some((
-                            index,
-                            assets
-                                .references()
-                                .map(|index| names.references[index].path.as_str())
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                                .to_ascii_lowercase(),
-                        ))
-                    })
-                    .collect();
-                Ok(Data {
-                    names,
-                    effects,
-                    asset_choices,
-                    perks,
-                    perk_assets,
-                    perk_search,
-                })
-            })();
+            let result = sundial::investment::native_content::discover(&packages, |event| {
+                use sundial::investment::native_content::DiscoveryEvent;
+                let event = match event {
+                    DiscoveryEvent::Progress(current, total) => Event::Progress(current, total),
+                    DiscoveryEvent::Keys(result) => Event::Keys(result),
+                    DiscoveryEvent::Labels(result) => Event::Labels(result),
+                };
+                let _ = sender.send(event);
+                repaint.request_repaint();
+            });
             let _ = sender.send(Event::Ready(result.map(Box::new)));
             repaint.request_repaint();
         }));
@@ -123,26 +88,72 @@ impl Discovery {
                     ))),
                 });
             match event {
-                Some(Event::Progress(current, total)) => self.progress = Some((current, total)),
+                Some(Event::Labels(result)) => {
+                    if !self.discard_result {
+                        match result {
+                            Ok(labels) => {
+                                self.labels = Some(labels);
+                                self.label_error = None;
+                            }
+                            Err(error) => self.label_error = Some(error),
+                        }
+                    }
+                }
+                Some(Event::Progress(current, total)) => {
+                    if !self.discard_result {
+                        self.progress = Some((current, total));
+                    }
+                }
+                Some(Event::Keys(result)) => {
+                    if !self.discard_result {
+                        match result {
+                            Ok(keys) => {
+                                self.keys = Some(keys);
+                                self.key_error = None;
+                            }
+                            Err(error) => self.key_error = Some(error),
+                        }
+                    }
+                }
                 Some(Event::Ready(result)) => {
                     self.receiver = None;
                     if let Some(worker) = self.worker.take() {
                         let _ = worker.join();
                     }
                     self.progress = None;
-                    self.row_key = None;
+                    if self.discard_result {
+                        break;
+                    }
                     match result {
                         Ok(data) => {
                             self.data = Some(*data);
                             self.error = None;
                         }
-                        Err(error) => self.error = Some(error),
+                        Err(error) => {
+                            if self.labels.is_none() && self.label_error.is_none() {
+                                self.label_error = Some(error.clone());
+                            }
+                            if self.keys.is_none() && self.key_error.is_none() {
+                                self.key_error = Some(error.clone());
+                            }
+                            self.error = Some(error);
+                        }
                     }
                     break;
                 }
                 None => break,
             }
         }
+    }
+
+    /// Cached reading of a perk's action, when the dependency index has one.
+    pub fn behavior(&self, index: u16) -> Option<&dependencies::Behavior> {
+        let data = self.data.as_ref()?;
+        data.perks
+            .perks
+            .get(usize::from(index))
+            .filter(|perk| perk.index == usize::from(index))
+            .and_then(|perk| perk.behavior.as_ref())
     }
 
     pub fn perk_issue(&self, index: u16) -> Option<&str> {
@@ -164,4 +175,51 @@ impl Discovery {
     }
 }
 
-mod browser;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_lookup_is_available_before_the_asset_scan_finishes() {
+        let (sender, receiver) = mpsc::channel();
+        let mut discovery = Discovery {
+            receiver: Some(receiver),
+            ..Discovery::default()
+        };
+        sender
+            .send(Event::Keys(Ok(Arc::new(properties::KeyIndex::default()))))
+            .unwrap();
+        discovery.poll();
+        assert!(discovery.keys.is_some());
+        assert!(discovery.busy());
+        assert!(discovery.data.is_none());
+        sender
+            .send(Event::Ready(Err("unrelated asset scan failure".into())))
+            .unwrap();
+        discovery.poll();
+        assert!(discovery.keys.is_some());
+        assert!(discovery.key_error.is_none());
+    }
+
+    #[test]
+    fn invalidation_discards_results_from_the_previous_installation() {
+        let (sender, receiver) = mpsc::channel();
+        let mut discovery = Discovery {
+            receiver: Some(receiver),
+            attempted: true,
+            ..Discovery::default()
+        };
+        discovery.invalidate();
+        sender
+            .send(Event::Keys(Ok(Arc::new(properties::KeyIndex::default()))))
+            .unwrap();
+        sender.send(Event::Ready(Err("old scan".into()))).unwrap();
+        discovery.poll();
+        assert!(discovery.keys.is_none());
+        assert!(discovery.data.is_none());
+        assert!(discovery.error.is_none());
+        assert!(discovery.key_error.is_none());
+        assert!(!discovery.attempted);
+        assert!(!discovery.busy());
+    }
+}

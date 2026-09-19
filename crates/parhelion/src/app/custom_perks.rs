@@ -33,8 +33,17 @@ pub(super) struct PerkEditorKey {
 struct PrivatePerkRuntimeGraph {
     action_tag: u32,
     action_payload: Vec<u8>,
+    /// Readable account of the native action, when its payload decodes.
+    summary: Option<sundial::package_authoring::sandbox_perk::action::ActionSummary>,
+    /// The editable program recovered from the action, or why none can be recovered.
+    program: Option<Result<sundial::package_authoring::sandbox_perk::program::Program, String>>,
     graphs: Vec<(u32, WeaponRuntimeGraph)>,
     warnings: Vec<String>,
+    /// Failures that prevent validating runtime edits, separate from reference-index notices.
+    graph_errors: Vec<String>,
+    /// Assets the loading index cannot serve, checked the moment they are chosen so the
+    /// build never has to be the one that says no.
+    loading_issues: Vec<String>,
     projectile_slots: Vec<(u32, u32)>,
     projectile_catalog: Arc<projectile::catalog::Catalog>,
     native_assets: Vec<sundial::package_authoring::tft::Reference>,
@@ -42,9 +51,18 @@ struct PrivatePerkRuntimeGraph {
 
 enum PrivatePerkGraphEvent {
     Finished(Result<PrivatePerkRuntimeGraph, String>),
+    Preview(
+        editor::conversion::Input,
+        Result<editor::conversion::Preview, String>,
+    ),
 }
 
 pub(super) struct PerkEditor {
+    activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
+    preview: Option<(
+        editor::conversion::Input,
+        Result<editor::conversion::Preview, String>,
+    )>,
     entity_source: Option<u32>,
     key: PerkEditorKey,
     plug_label: String,
@@ -54,6 +72,8 @@ pub(super) struct PerkEditor {
     projectile_draft: Vec<ProjectileSelection>,
     original_projectile_draft: Vec<ProjectileSelection>,
     projectile_labels: BTreeMap<u16, String>,
+    /// Weapon names by item hash, for assets named after the pattern that fires them.
+    item_names: BTreeMap<u32, projectile::catalog::ItemName>,
     projectile_query: String,
     pending_movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
     original_draft: Vec<WeaponRuntimeValueOverride>,
@@ -66,4 +86,6 @@ pub(super) struct PerkEditor {
     query: String,
     value_text: BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
     show_all_native_values: bool,
+    /// A conversion the user requested. The workbench applies it and closes the editor.
+    conversion: Option<sundial::package_authoring::sandbox_perk::program::Program>,
 }

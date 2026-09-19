@@ -1,6 +1,9 @@
 //! Resolve exact socket choices and guard against edits made while a perk draft is open.
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
         socket_index: 0,
@@ -23,7 +26,7 @@ pub(super) struct Target {
     socket: usize,
     choice: usize,
     socket_type: u16,
-    choices: Vec<u32>,
+    choices: Arc<[u32]>,
     variant: Option<WeaponSocketPlugVariantRecipe>,
 }
 
@@ -67,12 +70,12 @@ impl Target {
             socket,
             choice,
             socket_type,
-            choices,
+            choices: choices.into(),
             variant,
         })
     }
 
-    fn label(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> String {
+    pub(super) fn label(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> String {
         let role =
             socket_editor::socket_role_label(catalog, donor, self.socket, Some(self.socket_type));
         let name = self
@@ -85,10 +88,14 @@ impl Target {
                     .map(|hash| catalog.plug_label(*hash, false))
             })
             .unwrap_or_else(|| "New Choice".into());
-        format!("{role} · Choice {} · {name}", self.choice + 1)
+        if self.choice == self.choices.len() {
+            format!("Add an Alternative · {role}")
+        } else {
+            format!("Replace {name} · {role} · Choice {}", self.choice + 1)
+        }
     }
 
-    fn check(&self, weapon: &WeaponRecipe, donor: &WeaponDonor) -> Result<(), String> {
+    pub(super) fn check(&self, weapon: &WeaponRecipe, donor: &WeaponDonor) -> Result<(), String> {
         if Self::capture(weapon, donor, self.socket, self.choice).as_ref() != Ok(self) {
             return Err("The weapon or socket choices changed while this perk was open. Select the destination again before applying.".into());
         }
@@ -128,7 +135,7 @@ impl Change {
             ) {
                 return Err("This perk already appears in another choice in this socket.".into());
             }
-            let mut choices = target.choices.clone();
+            let mut choices = target.choices.to_vec();
             if target.choice == choices.len() {
                 choices.push(hash);
             } else {
@@ -154,6 +161,18 @@ impl Change {
             });
             weapon.overrides.socket_plug_variants.push(variant);
         } else {
+            if let Some(&hash) = target.choices.get(target.choice)
+                && choice_conflicts(
+                    weapon,
+                    target.socket,
+                    target.choice,
+                    hash,
+                    None,
+                    &target.choices,
+                )
+            {
+                return Err("This socket already contains the original perk. Remove the other stock choice before restoring, or remove this custom choice instead.".into());
+            }
             weapon.overrides.socket_plug_variants.retain(|entry| {
                 usize::from(entry.socket_index) != target.socket
                     || usize::from(entry.choice_index) != target.choice
@@ -164,30 +183,47 @@ impl Change {
 }
 
 fn targets(weapon: &WeaponRecipe, donor: &WeaponDonor, include_new: bool) -> Vec<Target> {
+    let variants = weapon
+        .overrides
+        .socket_plug_variants
+        .iter()
+        .map(|variant| {
+            (
+                (
+                    usize::from(variant.socket_index),
+                    usize::from(variant.choice_index),
+                ),
+                variant,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     donor
         .sockets
         .iter()
         .flat_map(|socket| {
-            let mut rows = Vec::new();
-            for choice in 0..sundial::investment::MAX_WEAPON_SOCKETS {
-                let Ok(target) = Target::capture(weapon, donor, socket.index, choice) else {
-                    break;
-                };
-                let new = choice == target.choices.len();
-                if !new || include_new {
-                    rows.push(target);
-                }
-                if new {
-                    break;
-                }
-            }
-            rows
+            let Ok(mut base) = Target::capture(weapon, donor, socket.index, 0) else {
+                return Vec::new();
+            };
+            base.variant = None;
+            let count = (base.choices.len() + usize::from(include_new))
+                .min(authored_socket_choice_limit(base.socket_type));
+            // Every destination shares the same immutable choice snapshot, even for large columns.
+            (0..count)
+                .map(|choice| Target {
+                    choice,
+                    variant: variants
+                        .get(&(socket.index, choice))
+                        .map(|variant| (*variant).clone()),
+                    ..base.clone()
+                })
+                .collect()
         })
         .collect()
 }
 
 impl Workbench {
     pub(super) fn open_target(&mut self, target: Target, catalog: &InvestmentCatalog) {
+        self.picker = None;
         self.initialize();
         self.message = None;
         self.message_path = None;
@@ -196,7 +232,7 @@ impl Workbench {
             .iter()
             .position(|document| document.target.as_ref() == Some(&target))
         {
-            self.selected = index;
+            self.select_document(index);
         } else if let Some(&hash) = target.choices.get(target.choice) {
             let variant = target
                 .variant
@@ -216,8 +252,8 @@ impl Workbench {
         donor: &WeaponDonor,
         catalog: &InvestmentCatalog,
     ) {
-        ui.strong("This Weapon");
-        ui.small(&weapon.name);
+        ui.strong("Weapon Sockets");
+        crate::app::style::hint(ui, &weapon.name).on_hover_text("Pick a choice to edit its perk.");
         let mut picked = None;
         egui::ScrollArea::vertical()
             .id_salt("weapon-perk-choices")
@@ -230,9 +266,8 @@ impl Workbench {
                             .get(self.selected)
                             .and_then(|document| document.target.as_ref())
                             == Some(&target);
-                        if crate::app::style::list_row(ui, selected, &target.label(donor, catalog))
-                            .clicked()
-                        {
+                        let label = target.label(donor, catalog);
+                        if crate::app::style::list_row(ui, selected, &label).clicked() {
                             picked = Some(target);
                         }
                     }
@@ -250,34 +285,93 @@ impl Workbench {
         donor: Option<&WeaponDonor>,
         catalog: Option<&InvestmentCatalog>,
     ) -> Option<Change> {
+        let issue = self.perk_issue(&self.documents.get(self.selected)?.recipe);
         let (Some(donor), Some(catalog)) = (donor, catalog) else {
-            ui.weak("Open a weapon recipe to apply this perk.");
+            if let Some(issue) = &issue {
+                ui.colored_label(ui.visuals().warn_fg_color, issue);
+            } else {
+                ui.weak("Open a weapon recipe to apply this perk.");
+            }
             return None;
         };
         let document = self.documents.get_mut(self.selected)?;
+        if let Some(target) = &document.target
+            && target.check(weapon, donor).is_err()
+        {
+            // The weapon changed under this perk, such as a Recipe discard or an apply from
+            // another perk. Follow the same socket choice so the caption names what sits
+            // there now. A choice that no longer exists clears the destination.
+            document.target = Target::capture(weapon, donor, target.socket, target.choice).ok();
+        }
         let mut result = None;
         ui.add_enabled_ui(self.editor.is_none(), |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.label("Destination");
-                egui::ComboBox::from_id_salt("perk-destination").width(340.0)
-                    .selected_text(document.target.as_ref().map_or_else(|| "Select Socket and Choice".into(), |target| target.label(donor, catalog)))
-                    .show_ui(ui, |ui| {
-                        for target in targets(weapon, donor, true) {
-                            let label = target.label(donor, catalog);
-                            if ui.selectable_label(document.target.as_ref() == Some(&target), label).clicked() { document.target = Some(target); }
+                sundial::investment::draw_authoring_info_icon(
+                    ui,
+                    "Apply to Weapon copies this perk into the chosen socket choice. Save the weapon recipe afterwards.",
+                );
+                // A destination names a socket, a choice and the perk that sits there, so
+                // the reading runs long. A combo takes the width of its selected text, and
+                // an unbounded one here pushed the actions off the row. A fixed allocation
+                // plus truncation holds it, and the whole reading stays on hover. The floor
+                // is the width of the unset reading.
+                let width = (ui.available_width() * 0.45).clamp(200.0, 340.0);
+                let destination = document.target.as_ref().map_or_else(
+                    || "Select Socket and Choice".to_owned(),
+                    |target| target.label(donor, catalog),
+                );
+                controls::sized(ui, width, |ui| {
+                    egui::ComboBox::from_id_salt("perk-destination")
+                        .width(width)
+                        .truncate()
+                        .selected_text(destination.clone())
+                        .show_ui(ui, |ui| {
+                            for target in targets(weapon, donor, true) {
+                                let label = target.label(donor, catalog);
+                                if ui
+                                    .selectable_label(
+                                        document.target.as_ref() == Some(&target),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    document.target = Some(target);
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(destination);
+                    pickers::name_combo(ui, "perk-destination", "Destination Socket");
+                });
+                // The action and anything standing in its way sit together at the right.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ready = document.target.is_some() && issue.is_none();
+                    let apply = crate::app::style::primary(ui, "Apply to Weapon");
+                    if ui.add_enabled(ready, apply)
+                        .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.")
+                        .on_disabled_hover_text(issue.as_deref().unwrap_or("Choose a destination socket and choice."))
+                        .clicked() {
+                        result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
+                    }
+                    if let Some(target) = document.target.as_ref().filter(|target| target.variant.is_some())
+                        && let Some(hash) = target.choices.get(target.choice)
+                    {
+                        let source = catalog.plug_label(*hash, false);
+                        if ui.add(egui::Button::new(format!("Use Stock {source}")).truncate())
+                            .on_hover_text(format!("Remove this choice's custom text, stats and effects and use its source perk, {source}."))
+                            .clicked() {
+                            result = Some(Change { target: target.clone(), perk: None });
                         }
-                    });
-                let ready = document.target.is_some() && document.recipe.validate().is_ok()
-                    && document.recipe.effects.iter().all(|effect| self.discovery.perk_issue(effect.source_perk_index).is_none()
-                        && effect.program.as_ref().is_none_or(|program| program.validate().is_ok()));
-                if ui.add_enabled(ready, egui::Button::new("Apply to Weapon"))
-                    .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.").clicked() {
-                    result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
-                }
-                if document.target.as_ref().is_some_and(|target| target.variant.is_some())
-                    && ui.button("Restore Original Perk").on_hover_text("Remove the selected choice's custom text, stats and effects. Other choices remain unchanged.").clicked() {
-                    result = document.target.clone().map(|target| Change { target, perk: None });
-                }
+                    }
+                    if let Some(issue) = &issue {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(issue).color(ui.visuals().warn_fg_color))
+                                .truncate(),
+                        )
+                        .on_hover_text(issue);
+                    }
+                });
             });
         });
         result
@@ -308,7 +402,7 @@ impl Workbench {
         self.message_path = None;
         self.message = Some(
             if restored {
-                "Restored the original perk. Save Recipe to keep it."
+                "Replaced the custom perk with its stock source. Save Recipe to keep it."
             } else {
                 "Applied to the selected choice. Save Recipe to keep it."
             }
@@ -320,20 +414,45 @@ impl Workbench {
 
 impl PackageAuthoringApp {
     pub(in crate::app) fn draw_perk_workbench(&mut self, ctx: &egui::Context) {
+        if self.build_receiver.is_some() || self.install_receiver.is_some() {
+            return;
+        }
         let mut workbench = std::mem::take(&mut self.perk_workbench);
         let donor = self
             .current_donor()
             .map(|donor| socket_editor::socket_editor_donor(&donor, &self.recipe).into_owned());
-        if let Some(socket) = self.private_perk_socket.take()
+        if let Some(request) = self.perk_request.take()
             && let (Some(donor), Some(catalog)) = (&donor, &self.catalog)
         {
-            match Target::capture(&self.recipe, donor, socket, 0) {
-                Ok(target) => workbench.open_target(target, catalog),
+            let choice = match request {
+                Request::EditChoice { choice, .. } | Request::SelectChoice { choice, .. } => choice,
+            };
+            match Target::capture(&self.recipe, donor, request.socket(), choice) {
+                Ok(target) => match request {
+                    Request::EditChoice { .. } => workbench.open_target(target, catalog),
+                    Request::SelectChoice { .. } => workbench.open_picker(
+                        target,
+                        catalog,
+                        self.recipe_library.as_ref(),
+                        &self.recipe,
+                    ),
+                },
                 Err(error) => {
                     workbench.error = Some(error);
                     workbench.open = true;
                 }
             }
+        }
+        if workbench.picker.is_some() {
+            if let (Some(donor), Some(catalog)) = (&donor, &self.catalog) {
+                if workbench.show_picker(ctx, &mut self.recipe, donor, catalog) {
+                    self.plug_queries.clear();
+                }
+            } else {
+                workbench.picker = None;
+            }
+            self.perk_workbench = workbench;
+            return;
         }
         if workbench.open && workbench.authored_templates.is_none() {
             workbench.load_authored_templates(self.recipe_library.as_ref(), &self.recipe);

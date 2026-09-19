@@ -92,7 +92,7 @@ fn draw_hash_collectible_table(
                     );
                     ui.label(state).on_hover_text(tooltip);
                 } else {
-                    ui.label(egui::RichText::new("Unavailable").weak());
+                    ui.weak("Unavailable");
                 }
                 if show_actions {
                     draw_collectible_state_action(ui, catalog, collectible, snapshot, action);
@@ -110,13 +110,13 @@ fn draw_collectible_state_action(
     action: &mut HashInspectorAction,
 ) {
     let Some(snapshot) = snapshot else {
-        ui.label(egui::RichText::new("-").weak());
+        ui.weak("-");
         return;
     };
     let Some(acquired) =
         crate::app::collections_page::collectible_acquired_state(collectible, snapshot, catalog)
     else {
-        ui.label(egui::RichText::new("-").weak())
+        ui.weak("-")
             .on_hover_text("This collectible does not have a reversible acquisition condition");
         return;
     };
@@ -130,7 +130,7 @@ fn draw_collectible_state_action(
     let label = if desired {
         "Mark Acquired"
     } else {
-        "Mark Missing"
+        "Mark Not Acquired"
     };
     if ui
         .add_enabled(available, egui::Button::new(label).small())
@@ -273,10 +273,7 @@ pub(super) fn draw_hash_package_paths(ui: &mut egui::Ui, id: egui::Id, paths: &[
         .default_open(false)
         .show(ui, |ui| {
             for (index, path) in paths.iter().enumerate() {
-                ui.label(
-                    egui::RichText::new(format!("{}. {}", index + 1, metadata_path_text(path)))
-                        .monospace(),
-                );
+                ui.monospace(format!("{}. {}", index + 1, metadata_path_text(path)));
             }
         });
 }
@@ -344,14 +341,11 @@ fn draw_hash_collection_conditions(
         .default_open(false)
         .show(ui, |ui| {
             for (condition_index, condition) in conditions.iter().enumerate() {
-                ui.label(
-                    egui::RichText::new(if condition.field == 3 {
-                        "Acquisition (field 3)".to_owned()
-                    } else {
-                        format!("Field {}", condition.field)
-                    })
-                    .strong(),
-                );
+                ui.strong(if condition.field == 3 {
+                    "Acquisition (field 3)".to_owned()
+                } else {
+                    format!("Field {}", condition.field)
+                });
                 let program = condition
                     .tokens
                     .iter()
@@ -444,7 +438,7 @@ fn condition_operand_tooltip(kind: u32, operand: u32, catalog: &Catalog) -> Stri
         2 | 3 | 4 | 8 | 9 | 13 | 14 | 15 => format!(
             "This operation does not read its operand. {operand} is retained as the raw package value."
         ),
-        _ => format!("Raw operand {operand}; this operation has not been decoded."),
+        _ => format!("Raw operand {operand}. This operation has not been decoded."),
     }
 }
 

@@ -1,4 +1,9 @@
+mod accessibility;
+mod canvas;
 mod entry;
+mod guidance;
+mod identity;
+mod navigation;
 use super::attachment::{Change, Target};
 use super::*;
 use crate::app::custom_perks::editor::tests::{editor, fixture};
@@ -113,7 +118,7 @@ fn unified_workbench_preserves_drafts_and_parameter_controls_in_both_modes() {
                 output = frame(&ctx, &mut workbench, experimental, size, vec![]);
             }
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            for text in ["Apply and Back", "Back", "Discard Changes"] {
+            for text in ["Apply and Back", "Back", "…"] {
                 let rect = label(&output, text).unwrap_or_else(|| panic!("Missing {text}"));
                 assert!(
                     screen.contains_rect(rect),
@@ -151,16 +156,18 @@ fn discard_restores_saved_or_initial_perk_and_clears_pending_edits() {
 }
 
 #[test]
-fn normal_mode_keeps_perk_authoring_and_closes_experimental_asset_browser() {
-    let mut recipe = PerkRecipe::new();
-    recipe.effects.push(PerkRecipe::effect(1178));
+fn the_engine_catalog_opens_as_its_own_window_with_a_kind_selected() {
     let mut workbench = Workbench {
         open: true,
         initialized: true,
-        documents: vec![Document::new(recipe, None)],
+        documents: vec![Document::new(PerkRecipe::new(), None)],
         ..Default::default()
     };
-    workbench.open_assets();
+    workbench.open_engine_catalog();
+    workbench.engine.kinds.selected = Some((
+        sundial::investment::native_content::kinds::Family::Effects,
+        1,
+    ));
     let ctx = egui::Context::default();
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {
@@ -172,47 +179,18 @@ fn normal_mode_keeps_perk_authoring_and_closes_experimental_asset_browser() {
             vec![],
         );
     }
-    assert!(!workbench.discovery.open);
+    for text in [
+        "Engine Catalog",
+        "Installed Effect Entries",
+        "Create Entity",
+    ] {
+        assert!(label(&output, text).is_some(), "Missing {text}");
+    }
+    // Unavailable installed counts must not be replaced by the bundled survey.
     assert!(output.shapes.iter().any(|shape| matches!(
         &shape.shape,
-        egui::Shape::Text(text)
-            if text.galley.job.text.contains("This feature is in early development!")
+        egui::Shape::Text(text) if text.galley.job.text.contains("unavailable until native content")
     )));
-    for text in [
-        "New Perk",
-        "Save as New Perk",
-        "Discard Changes",
-        "Edit Behavior…",
-        "Add Existing Behavior…",
-    ] {
-        assert!(
-            label(&output, text).is_some(),
-            "Missing normal control: {text}"
-        );
-    }
-    assert!(label(&output, "Add Effect").is_none());
-    assert!(label(&output, "Inspect Pattern Dependencies…").is_none());
-    workbench.page = Page::Basics;
-    for _ in 0..3 {
-        output = frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1320.0, 900.0),
-            vec![],
-        );
-    }
-    for text in [
-        "Description",
-        "Stat Bonuses",
-        "Add Stat Bonus…",
-        "Icon and Category",
-    ] {
-        assert!(
-            label(&output, text).is_some(),
-            "Missing normal control: {text}"
-        );
-    }
 }
 
 #[test]
@@ -240,6 +218,96 @@ fn save_as_new_preserves_the_original_library_file_and_pending_document() {
     assert_ne!(workbench.documents[1].recipe.id, original.id);
     assert_eq!(workbench.documents[1].recipe.description, draft.description);
     assert_eq!(library.scan().unwrap().entries.len(), 2);
+}
+
+/// A workbench over a temporary library holding one saved perk named Alpha.
+fn workbench_with_saved_perk() -> (tempfile::TempDir, Library, PerkRecipe, Entry, Workbench) {
+    let temporary = tempfile::tempdir().unwrap();
+    let library = Library::open(temporary.path().to_owned()).unwrap();
+    let mut original = PerkRecipe::new();
+    original.name = "Alpha".into();
+    original.effects.push(PerkRecipe::effect(405));
+    let entry = library.save(&original, None).unwrap();
+    let workbench = Workbench {
+        initialized: true,
+        library: Some(library.clone()),
+        documents: vec![Document::new(
+            original.clone(),
+            Some(entry.baseline.clone()),
+        )],
+        ..Default::default()
+    };
+    (temporary, library, original, entry, workbench)
+}
+
+#[test]
+fn duplicating_a_perk_opens_a_fresh_draft_and_leaves_the_file_alone() {
+    let (_temporary, _library, original, entry, mut workbench) = workbench_with_saved_perk();
+    workbench.duplicate(library::PerkSource::Document(0));
+    assert_eq!(workbench.documents.len(), 2);
+    assert_eq!(workbench.selected, 1);
+    let copy = &workbench.documents[1];
+    assert_eq!(copy.recipe.name, "Alpha Copy");
+    assert_ne!(copy.recipe.id, original.id);
+    assert_eq!(copy.recipe.effects, original.effects);
+    assert!(copy.baseline.is_none());
+    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
+}
+
+#[test]
+fn deleting_a_perk_removes_its_file_and_keeps_one_document_selected() {
+    let (_temporary, library, original, entry, mut workbench) = workbench_with_saved_perk();
+    workbench.duplicate(library::PerkSource::Document(0));
+    // Deleting the saved perk removes its file and its document, keeping the copy selected.
+    workbench.delete(library::PerkSource::Document(0));
+    assert!(workbench.error.is_none(), "{:?}", workbench.error);
+    assert!(!entry.path.exists());
+    assert_eq!(workbench.documents.len(), 1);
+    assert_eq!(workbench.documents[0].recipe.name, "Alpha Copy");
+    assert_eq!(workbench.selected, 0);
+    // Deleting the last document leaves a fresh, unsaved perk open.
+    workbench.delete(library::PerkSource::Document(0));
+    assert!(workbench.error.is_none(), "{:?}", workbench.error);
+    assert_eq!(workbench.documents.len(), 1);
+    assert!(workbench.documents[0].baseline.is_none());
+    assert_ne!(workbench.documents[0].recipe.name, "Alpha Copy");
+    // A saved perk that is not open can be deleted from the list as well.
+    let entry = library.save(&original, None).unwrap();
+    workbench.refresh_library();
+    assert_eq!(workbench.entries.len(), 1);
+    workbench.delete(library::PerkSource::Entry(0));
+    assert!(workbench.error.is_none(), "{:?}", workbench.error);
+    assert!(!entry.path.exists());
+    assert!(workbench.entries.is_empty());
+}
+
+#[test]
+fn deleting_a_perk_changed_outside_the_workbench_preserves_the_file() {
+    let (_temporary, _library, _original, entry, mut workbench) = workbench_with_saved_perk();
+    std::fs::write(&entry.path, b"{}").unwrap();
+    workbench.delete(library::PerkSource::Document(0));
+    assert!(workbench.error.is_some());
+    assert!(entry.path.exists());
+    assert_eq!(workbench.documents.len(), 1);
+    assert_eq!(workbench.documents[0].recipe.name, "Alpha");
+}
+
+#[test]
+fn a_deleted_bundled_perk_is_not_added_back() {
+    let temporary = tempfile::tempdir().unwrap();
+    let library = Library::open(temporary.path().to_owned()).unwrap();
+    library.materialize_bundled().unwrap();
+    let scan = library.scan().unwrap();
+    assert!(!scan.entries.is_empty());
+    for entry in &scan.entries {
+        library.delete(&entry.recipe, &entry.baseline).unwrap();
+    }
+    library.materialize_bundled().unwrap();
+    assert!(library.scan().unwrap().entries.is_empty());
+    // Deleting an already deleted perk is not an error.
+    library
+        .delete(&scan.entries[0].recipe, &scan.entries[0].baseline)
+        .unwrap();
 }
 
 #[test]

@@ -1,7 +1,10 @@
 //! Per-character Sunrise preferences; metadata rules live with the account adapter.
 use crate::{
     hash::parse_unsigned_value,
-    persistence::{json_account::character_runtime::validate_details, json_fields::optional_value},
+    persistence::{
+        json_account::character_preferences::validate as validate_details,
+        json_fields::optional_value,
+    },
 };
 use eframe::egui;
 use serde_json::Value;

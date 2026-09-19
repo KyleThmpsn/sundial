@@ -13,12 +13,20 @@ pub(super) fn effective_power_cap_rows(
     })
 }
 
+const VARIABLE_DAMAGE_LABEL: &str = "Variable (Hold Reload)";
+
 /// Changes one field without implicitly changing the other or the ammo override.
+///
+/// `variable_damage_available` says whether this weapon's family can switch damage at all.
+/// `damage_locked` holds the control while a behavior graft owns the damage type, which happens
+/// when the chosen source weapon switches damage itself.
 pub(super) fn draw_combat_profile_control(
     ui: &mut egui::Ui,
     overrides: &mut WeaponRecipeOverrides,
     donor: Option<&WeaponDonor>,
     select_slot: bool,
+    variable_damage_available: bool,
+    damage_locked: bool,
 ) -> bool {
     use crate::capabilities::{
         recipe_damage_type_from_catalog, recipe_inventory_slot_from_catalog,
@@ -34,12 +42,12 @@ pub(super) fn draw_combat_profile_control(
         draw_authoring_info_icon(ui, if select_slot {
             "Chooses the Kinetic, Energy, or Power slot. Damage type and ammo type are separate choices. Test unusual combinations in game."
         } else {
-            "Changes the weapon's damage type. Slot and ammo type are separate choices. Kinetic conversion is unavailable for some elemental weapons. Test unusual combinations in game."
+            "Changes the weapon's damage type. Slot and ammo type are separate choices. Kinetic conversion is unavailable for some elemental weapons. Variable damage steps the element while Reload is held, the way Hard Light and Borealis do, and wears one of them. Test unusual combinations in game."
         });
         label
     }).inner;
     let Some(donor) = donor else {
-        ui.add_enabled(false, egui::Button::new("Load a base weapon"));
+        ui.add_enabled(false, egui::Button::new("Load a Base Weapon"));
         return false;
     };
     let capabilities = weapon_authoring_capabilities(donor);
@@ -70,7 +78,10 @@ pub(super) fn draw_combat_profile_control(
     } else {
         overrides.modern_damage_type.is_none()
     };
-    let selected_text = if inherited {
+    let variable = !select_slot && overrides.variable_damage.is_some();
+    let selected_text = if variable {
+        VARIABLE_DAMAGE_LABEL.to_owned()
+    } else if inherited {
         format!("{selected} (base weapon)")
     } else {
         selected.to_owned()
@@ -87,7 +98,11 @@ pub(super) fn draw_combat_profile_control(
         WeaponDamageType::Void,
     ];
     let mut changed = false;
-    ui.add_enabled_ui(capabilities.is_authorable() && profile.is_some(), |ui| {
+    let variable_offered = !select_slot && (variable_damage_available || variable);
+    let locked = damage_locked && !select_slot;
+    ui.add_enabled_ui(
+        !locked && capabilities.is_authorable() && (profile.is_some() || variable_offered),
+        |ui| {
         egui::ComboBox::from_id_salt(if select_slot {
             "recipe_inventory_slot"
         } else {
@@ -122,7 +137,7 @@ pub(super) fn draw_combat_profile_control(
                 if ui
                     .add_enabled(
                         capabilities.supports(candidate_action),
-                        egui::SelectableLabel::new(profile == Some(candidate), text),
+                        egui::SelectableLabel::new(!variable && profile == Some(candidate), text),
                     )
                     .on_disabled_hover_text("This damage conversion has not been verified for the base weapon and cannot be selected.")
                     .clicked()
@@ -136,19 +151,67 @@ pub(super) fn draw_combat_profile_control(
                     } else {
                         let value = (donor.summary.damage_type != Some(candidate.damage_type))
                             .then(|| recipe_damage_type_from_catalog(candidate.damage_type));
-                        changed = overrides.modern_damage_type != value;
+                        let was_variable = overrides.variable_damage.take().is_some();
+                        changed = was_variable || overrides.modern_damage_type != value;
                         overrides.modern_damage_type = value;
                     }
                 }
             }
+            if variable_offered
+                && ui
+                    .add_enabled(
+                        variable_damage_available || variable,
+                        egui::SelectableLabel::new(variable, VARIABLE_DAMAGE_LABEL),
+                    )
+                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon keeps its own appearance.")
+                    .on_disabled_hover_text("This weapon family has no element-switch behavior to graft. Rifles and sniper rifles support it.")
+                    .clicked()
+                && !variable
+            {
+                overrides.variable_damage = Some(VariableDamageRecipe::all());
+                changed = true;
+            }
         })
         .response
+        .on_disabled_hover_text(if locked {
+            "The chosen Unique Weapon Behavior switches damage, so this follows it."
+        } else {
+            "This weapon cannot take a different damage type."
+        })
         .labelled_by(label.id);
-    });
+        },
+    );
+    if variable && (draw_variable_damage_elements(ui, overrides) || changed) {
+        // The weapon rests on the first chosen element in selector order. A base weapon whose
+        // damage cannot be converted, such as Hard Light itself, keeps its own marker.
+        let resting = overrides
+            .variable_damage
+            .as_ref()
+            .and_then(|variable| variable_damage_resting_type(&variable.elements));
+        let slot = profile
+            .map(|profile| profile.inventory_slot)
+            .or(donor.summary.inventory_slot);
+        overrides.modern_damage_type = resting.zip(slot).and_then(|(resting, slot)| {
+            let damage_type = crate::capabilities::recipe_damage_type(resting);
+            let native = donor.summary.inventory_slot == Some(slot)
+                && donor.summary.damage_type == Some(damage_type);
+            let action = if native {
+                CombatProfileAction::Preserve
+            } else {
+                CombatProfileAction::Set(crate::capabilities::CombatProfile {
+                    inventory_slot: slot,
+                    damage_type,
+                })
+            };
+            (capabilities.supports(action) && donor.summary.damage_type != Some(damage_type))
+                .then_some(resting)
+        });
+        changed = true;
+    }
     if !select_slot
         && capabilities.diagnostics.is_empty()
         && action.is_none_or(|action| !capabilities.supports(action))
-        && ui.button("Use base weapon").clicked()
+        && ui.button("Use Base Weapon").clicked()
     {
         apply_combat_profile_action(overrides, &donor.summary, CombatProfileAction::Preserve);
         changed = true;
@@ -188,6 +251,42 @@ pub(super) fn draw_optional_locale_text_field(
     ui.add_space(4.0);
 }
 
+/// Element checkboxes for a variable-damage weapon. Returns whether the set changed.
+fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipeOverrides) -> bool {
+    use crate::recipe::RecipeDamageType;
+    use crate::weapon::variable_damage::{SELECTOR_ORDER, element_label};
+    let Some(variable) = overrides.variable_damage.as_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        for element in SELECTOR_ORDER.into_iter().map(RecipeDamageType::from) {
+            let mut on = variable.elements.contains(&element);
+            let last_two = on && variable.elements.len() <= 2;
+            if ui
+                .add_enabled(
+                    !last_two,
+                    egui::Checkbox::new(&mut on, element_label(element.into())),
+                )
+                .on_disabled_hover_text("Variable damage needs at least two elements.")
+                .changed()
+            {
+                if on {
+                    variable.elements.push(element);
+                } else {
+                    variable.elements.retain(|chosen| *chosen != element);
+                }
+                changed = true;
+            }
+        }
+        draw_authoring_info_icon(
+            ui,
+            "Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one.",
+        );
+    });
+    changed
+}
+
 pub(super) fn draw_combat_profile_diagnostics(
     ui: &mut egui::Ui,
     overrides: &WeaponRecipeOverrides,
@@ -196,6 +295,23 @@ pub(super) fn draw_combat_profile_diagnostics(
     let Some(donor) = donor else {
         return;
     };
+    if let Some(variable) = &overrides.variable_damage {
+        ui.weak("Hold Reload in game to step the element. The weapon keeps its own appearance.");
+        if variable.elements.len() < 2 {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "Variable damage needs at least two elements.",
+            );
+        }
+        if let Some(resting) = overrides.modern_damage_type
+            && !variable.elements.contains(&resting)
+        {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "The resting damage type is not one of the variable elements. Pick the damage type again.",
+            );
+        }
+    }
     if let Some(CombatProfileAction::Set(profile)) =
         recipe_combat_profile_action(overrides, &donor.summary)
     {

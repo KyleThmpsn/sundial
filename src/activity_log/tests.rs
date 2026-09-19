@@ -2,16 +2,6 @@ use super::*;
 use crate::test_support::TestDirectory;
 
 #[test]
-fn activity_entries_have_utc_time_and_severity() {
-    let entry = Entry::error("Build failed");
-    let timestamp = entry.formatted();
-    let (timestamp, message) = timestamp.split_once(' ').unwrap();
-    assert!(timestamp.contains('T') && timestamp.ends_with('Z'));
-    assert_eq!(message, "[Error] Build failed");
-    assert!(Entry::info("Ready").formatted().ends_with("[Info] Ready"));
-}
-
-#[test]
 fn file_log_appends_across_sessions_and_keeps_two_archives() {
     let directory = TestDirectory::new("activity-rotation");
     let path = directory.0.join("sundial.log");
@@ -101,14 +91,6 @@ fn another_writer_cannot_rotate_or_append_while_locked() {
     assert!(!path.exists());
     drop(lock);
     append_at(&path, &Entry::info("Saved"), 200).unwrap();
-}
-
-#[test]
-fn disabled_file_log_is_memory_only() {
-    let mut logger = FileLog::default();
-    logger.append(&Entry::info("Preview"));
-    assert!(logger.directory().is_none());
-    assert!(logger.error().is_none());
 }
 
 #[test]

@@ -140,23 +140,6 @@ fn progression_target_sums_rank_costs_instead_of_taking_the_largest_step() {
 }
 
 #[test]
-fn cached_optional_sort_builds_each_key_once_and_keeps_missing_values_last() {
-    let mut rows = vec![Some("bravo"), None, Some("alpha")];
-    let mut calls = 0;
-
-    sort_by_optional_cached_key(&mut rows, false, |row| {
-        calls += 1;
-        row.map(str::to_owned)
-    });
-
-    assert_eq!(calls, rows.len());
-    assert_eq!(rows, [Some("alpha"), Some("bravo"), None]);
-
-    sort_by_optional_cached_key(&mut rows, true, |row| row.map(str::to_owned));
-    assert_eq!(rows, [Some("bravo"), Some("alpha"), None]);
-}
-
-#[test]
 fn override_coverage_filters_distinguish_mapping_and_decode_confidence() {
     let unresolved = UnlockDefinition {
         hash: 1,

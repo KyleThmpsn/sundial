@@ -283,9 +283,10 @@ impl JsonCharacterAdapter {
             | CharacterCommand::MoveInventoryItem { .. }
             | CharacterCommand::SwapInventoryItemWithEquipment { .. }
             | CharacterCommand::MoveEquipmentItemToInventory { .. }
-            | CharacterCommand::SetEquipmentItem { item: None, .. } => None,
-            CharacterCommand::Batch(_) | CharacterCommand::UpdateMetadata { .. } => None,
-            CharacterCommand::CopyEquipmentItems { .. } => None,
+            | CharacterCommand::SetEquipmentItem { item: None, .. }
+            | CharacterCommand::Batch(_)
+            | CharacterCommand::UpdateMetadata { .. }
+            | CharacterCommand::CopyEquipmentItems { .. } => None,
         };
         if let Some((item_id, changes)) = changed {
             self.item_changes.entry(item_id).or_default().merge(changes);

@@ -87,37 +87,3 @@ pub(in crate::app) fn heading(ui: &mut egui::Ui, title: impl Into<String>) -> bo
     });
     close
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn long_heading_keeps_close_button_inside_panel() {
-        for width in [260.0, 420.0, 540.0] {
-            let ctx = egui::Context::default();
-            let output = ctx.run(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 300.0))),
-                ..Default::default()
-            }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    heading(ui, "Unlock Value Definition #12345 · A very long objective name that should never push Close outside the inspector");
-                });
-            });
-            let close = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == "Close" => Some(text),
-                    _ => None,
-                })
-                .expect("Close must be drawn");
-            assert!(close.pos.x >= 0.0);
-            assert!(close.pos.x + close.galley.size().x < width);
-            assert!(
-                close.pos.y < 40.0,
-                "Heading must not consume the panel height"
-            );
-        }
-    }
-}

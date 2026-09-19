@@ -1,6 +1,6 @@
 //! Staged activity configuration controls, separate from the common runtime switches.
 
-use super::{activity, optional_value};
+use super::{Capabilities, activity, optional_value};
 use crate::app::components::object_form::{self as form, Action, Field, Input};
 use eframe::egui;
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ const ARRIVAL_FIELDS: &[Field] = &[
     },
 ];
 
-pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
+pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value, capabilities: Capabilities) -> bool {
     ui.horizontal(|ui| { ui.strong("Activity Destinations"); crate::ui_help::info(ui, "Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them."); });
     let mut changed = false;
     egui::CollapsingHeader::new("Default Destination").show(ui, |ui| {
@@ -104,6 +104,11 @@ pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
             }
         }
     });
+    // Sunrise 0.5 deleted the arrival-override parser but kept the default destination, so only
+    // this half of the tab retires. An authored value stays in settings.json and is skipped there.
+    if !capabilities.supports(activity::ARRIVALS) {
+        return changed;
+    }
     let rows = match optional_value(document, activity::ARRIVALS) {
         Ok(None) => Vec::new(),
         Ok(Some(value)) => match value.as_array() {

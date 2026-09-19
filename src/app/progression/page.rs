@@ -1,5 +1,5 @@
 use super::*;
-use super::{add_dialogs::*, mutations::*, override_tables::*, state::*, unlock_tables::*};
+use super::{add_dialogs::*, mutations::*, state::*};
 
 pub(in crate::app) fn draw_content(
     ui: &mut egui::Ui,
@@ -11,7 +11,7 @@ pub(in crate::app) fn draw_content(
 ) -> bool {
     if state.read_only {
         state.add_open = false;
-        state.edit_progression_lanes = false;
+        state.storage.edit_extra = false;
     }
     if let Some(error) = catalog.progression_package_error() {
         ui.colored_label(ui.visuals().warn_fg_color, "Package scan incomplete")
@@ -59,7 +59,10 @@ pub(in crate::app) fn draw_content(
         false
     } else {
         match view {
-            View::Unlocks => draw_unlocks(ui, document, &policy.unlocks, catalog, state),
+            View::Unlocks => super::unlocks::draw(ui, document, &policy.unlocks, catalog, state),
+            View::Triumphs => {
+                super::triumphs::draw(ui, document, catalog, &mut state.triumphs, state.read_only)
+            }
             View::Investment => draw_investment(ui, document, &policy.investment, catalog, state),
         }
     };
@@ -101,6 +104,7 @@ fn reveal_metadata_selection(
             |definition| format_hash_hex(definition.hash),
         );
     match view {
+        View::Triumphs => {}
         View::Investment => {
             state.investment_table = if selection.is_value() {
                 InvestmentTable::ValueOverrides
@@ -109,215 +113,19 @@ fn reveal_metadata_selection(
             };
         }
         View::Unlocks => {
-            let definition = if selection.is_value() {
-                catalog.unlock_value_definition(index)
-            } else {
-                catalog.unlock_flag_definition(index)
-            };
-            state.unlock_table = match (selection.is_value(), definition.map(|value| value.bank()))
-            {
-                (false, Some(ACCOUNT_FLAG_BANK)) => UnlockTable::AccountFlagRuns,
-                (false, Some(PROFILE_FLAG_BANK)) => UnlockTable::ProfileFlagRuns,
-                (false, Some(CHARACTER_OBJECT_FLAG_BANK)) => UnlockTable::CharacterObjectFlagRuns,
-                (false, Some(CHARACTER_FLAG_BANK)) | (false, _) => UnlockTable::CharacterFlags,
-                (true, Some(CHARACTER_OBJECTIVE_BANK)) => {
-                    UnlockTable::CharacterObjectObjectiveValues
-                }
-                (true, _) => UnlockTable::ObjectiveValues,
-            };
+            state.unlock_browser.reveal(selection.is_value());
         }
     }
 }
 
-pub(super) fn draw_unlocks(
+pub(super) fn draw_storage(
     ui: &mut egui::Ui,
     document: &mut Value,
-    unlocks: &UnlockPolicy,
+    _unlocks: &UnlockPolicy,
     catalog: &Catalog,
     state: &mut UiState,
 ) -> bool {
-    let mut table_changed = false;
-    let mut undo_progression_requested = false;
-    progression_toolbar(ui, |ui| {
-        ui.label(egui::RichText::new("Table").strong());
-        let table_picker = egui::ComboBox::from_id_salt("progression_unlock_table")
-            .selected_text(state.unlock_table.label())
-            .width(220.0)
-            .show_ui(ui, |ui| {
-                for table in UnlockTable::ALL {
-                    if table == UnlockTable::StoredValues
-                        && document.get("_native_progression").is_none()
-                    {
-                        continue;
-                    }
-                    table_changed |= ui
-                        .selectable_value(&mut state.unlock_table, table, table.label())
-                        .changed();
-                }
-            });
-        if let Some(field_name) = state.unlock_table.field_name() {
-            table_picker
-                .response
-                .on_hover_text(format!("Settings field: {field_name}"));
-        }
-        ui.add_space(8.0);
-        draw_filter(ui, &mut state.query);
-        if state.unlock_table.field_name().is_some()
-            && !state.unlock_table.is_progression()
-            && ui
-                .add_enabled(!state.read_only, egui::Button::new("+ Add"))
-                .clicked()
-        {
-            state.add_open = true;
-            state.add_query.clear();
-            state.add_value = 0;
-            state.add_progression_lanes = [0; 3];
-        }
-        if state.unlock_table.is_progression() {
-            ui.add_enabled(
-                !state.read_only,
-                egui::Checkbox::new(&mut state.edit_progression_lanes, "Edit Lanes 1 and 2"),
-            )
-            .on_hover_text("Lane 1 and Lane 2 meanings are not decoded from package data");
-            if let Some(last_change) = state.last_progression_change
-                && ui
-                    .add_enabled(
-                        !state.read_only,
-                        egui::Button::new("Undo Progression Change"),
-                    )
-                    .on_hover_text(last_change.label())
-                    .clicked()
-            {
-                undo_progression_requested = true;
-            }
-            if !state.progression_baselines.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("{} changed", state.progression_baselines.len()))
-                        .color(ui.visuals().warn_fg_color),
-                );
-            }
-        }
-    });
-    if table_changed {
-        state.query.clear();
-        state.add_open = false;
-        state.edit_progression_lanes = false;
-    }
-    let query = state.query.clone();
-
-    let mut changed = match state.unlock_table {
-        UnlockTable::AccountFlagRuns => draw_flag_runs(
-            ui,
-            FlagTableConfig {
-                id: "account_flag_runs",
-                bank: ACCOUNT_FLAG_BANK,
-                capacity: ACCOUNT_FLAG_CAPACITY,
-            },
-            &unlocks.account_flag_runs,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::ProfileFlagRuns => draw_flag_runs(
-            ui,
-            FlagTableConfig {
-                id: "profile_flag_runs",
-                bank: PROFILE_FLAG_BANK,
-                capacity: PROFILE_FLAG_CAPACITY,
-            },
-            &unlocks.profile_flag_runs,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::CharacterFlags => draw_flag_indices(
-            ui,
-            FlagTableConfig {
-                id: "character_flags",
-                bank: CHARACTER_FLAG_BANK,
-                capacity: CHARACTER_FLAG_CAPACITY,
-            },
-            &unlocks.character_flags,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::ObjectiveValues => draw_objective_values(
-            ui,
-            "objective_values",
-            &unlocks.objective_values,
-            ACCOUNT_OBJECTIVE_BANK,
-            TableDrawContext {
-                catalog,
-                query: &query,
-                state,
-                document,
-            },
-        ),
-        UnlockTable::CharacterObjectFlagRuns => draw_flag_runs(
-            ui,
-            FlagTableConfig {
-                id: "character_object_flag_runs",
-                bank: CHARACTER_OBJECT_FLAG_BANK,
-                capacity: CHARACTER_OBJECT_FLAG_CAPACITY,
-            },
-            &unlocks.character_object_flag_runs,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::CharacterObjectObjectiveValues => draw_objective_values(
-            ui,
-            "character_object_objective_values",
-            &unlocks.character_objective_values,
-            CHARACTER_OBJECTIVE_BANK,
-            TableDrawContext {
-                catalog,
-                query: &query,
-                state,
-                document,
-            },
-        ),
-        UnlockTable::AccountProgressions => draw_progression_values(
-            ui,
-            "account_progressions",
-            &unlocks.account_progressions,
-            ProgressionScope::Account,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::CharacterProgressions => draw_progression_values(
-            ui,
-            "character_progressions",
-            &unlocks.character_progressions,
-            ProgressionScope::Character,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        UnlockTable::UnreplicatedProgressions => {
-            draw_unreplicated_progressions(ui, catalog, &query, state);
-            false
-        }
-        UnlockTable::FlagDefinitions | UnlockTable::ValueDefinitions => {
-            super::browser::draw(ui, document, catalog, state);
-            false
-        }
-        UnlockTable::StoredValues => {
-            super::native::draw(ui, document, catalog, &query);
-            false
-        }
-    };
-    changed |= undo_progression_requested && undo_progression_change(document, state);
-    changed |= draw_add_unlock_window(ui.ctx(), document, unlocks, catalog, state);
-    changed
+    super::storage::draw(ui, document, catalog, state, super::storage::Mode::All)
 }
 
 pub(super) fn draw_investment(
@@ -336,7 +144,7 @@ pub(super) fn draw_investment(
     let hidden_count = super::native::hidden_count(document, state.investment_table);
     let can_add = !state.read_only && row_count + hidden_count < FAMILY5_OVERRIDE_CAPACITY;
     progression_toolbar(ui, |ui| {
-        ui.label(egui::RichText::new("Table").strong());
+        ui.strong("Table");
         let table_picker = egui::ComboBox::from_id_salt("progression_investment_table")
             .selected_text(state.investment_table.label())
             .width(220.0)
@@ -367,7 +175,6 @@ pub(super) fn draw_investment(
             state.add_value = 1;
         }
         ui.add_space(8.0);
-        draw_filter(ui, &mut state.query);
         egui::ComboBox::from_id_salt("progression_override_coverage")
             .selected_text(state.override_filter.label())
             .width(170.0)
@@ -388,6 +195,12 @@ pub(super) fn draw_investment(
                 undo_requested = true;
             }
         }
+        let capacity = format!("{} / 100 Overrides", row_count + hidden_count);
+        ui.weak(if hidden_count == 0 {
+            capacity
+        } else {
+            format!("{capacity} · {hidden_count} Preserved Native Rows")
+        });
     });
     if table_changed {
         state.query.clear();
@@ -396,36 +209,14 @@ pub(super) fn draw_investment(
     if !can_add {
         state.add_open = false;
     }
-    ui.add_space(4.0);
-    ui.label(state.investment_table.explanation());
-    let capacity = format!("{} / 100 Overrides", row_count + hidden_count);
-    ui.label(if hidden_count == 0 {
-        capacity
-    } else {
-        format!("{capacity} · {hidden_count} Preserved Native Rows")
-    });
-    ui.add_space(4.0);
-    let query = state.query.clone();
-
     let mut changed = undo_requested && undo_investment_change(document, state);
-    changed |= match state.investment_table {
-        InvestmentTable::FlagOverrides => draw_flag_overrides(
-            ui,
-            &investment.flag_overrides,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-        InvestmentTable::ValueOverrides => draw_value_overrides(
-            ui,
-            &investment.value_overrides,
-            catalog,
-            &query,
-            state,
-            document,
-        ),
-    };
+    changed |= super::storage::draw(
+        ui,
+        document,
+        catalog,
+        state,
+        super::storage::Mode::Overrides(state.investment_table),
+    );
     changed |= draw_add_investment_window(ui.ctx(), document, investment, catalog, state);
     changed
 }

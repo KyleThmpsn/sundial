@@ -200,12 +200,27 @@ pub(crate) fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bo
 }
 
 pub(crate) fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
-    let name = catalog.display_name(hash);
+    draw_item_tooltip(ui, catalog, hash, None);
+}
+
+pub(crate) fn draw_item_tooltip(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    authored: Option<crate::investment::PlugTooltip<'_>>,
+) {
+    let name = authored
+        .and_then(|text| text.name)
+        .or_else(|| catalog.display_name(hash));
+    let classification = authored
+        .and_then(|text| text.classification_hash)
+        .map_or(hash, u64::from);
     let type_name = catalog
-        .plug_type_name(hash)
+        .plug_type_name(classification)
         .filter(|name| !name.trim().is_empty());
-    let description = catalog
-        .description(hash)
+    let description = authored
+        .and_then(|text| text.description)
+        .or_else(|| catalog.description(hash))
         .filter(|description| !description.trim().is_empty());
     let icon_diagnostic = catalog.icon_diagnostic(hash);
     ui.set_max_width(320.0);
@@ -230,9 +245,14 @@ pub(crate) fn draw_catalog_item_tooltip(ui: &mut egui::Ui, catalog: &Catalog, ha
                             .small()
                             .monospace()
                             .weak(),
-                    );
+                    )
+                    .on_hover_text(if authored.is_some() {
+                        "Icon and presentation source"
+                    } else {
+                        "Item definition"
+                    });
                 });
-                if let Some((cost, label)) = catalog.mod_energy_cost(hash) {
+                if let Some((cost, label)) = catalog.mod_energy_cost(classification) {
                     ui.label(format!("{label}: {cost}"));
                 }
             });

@@ -53,7 +53,7 @@ fn verify_boundaries(version: u64) {
     }
     for boundary in 1..=count {
         let plan = preview_uninstall(&fixture.request.target_packages_directory).unwrap();
-        let error = uninstall::uninstall_inner(
+        let error = crate::install::uninstall::uninstall_inner(
             &plan,
             &fixture.request.backup_root,
             game_stopped,

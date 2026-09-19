@@ -1,0 +1,597 @@
+[
+  {
+    "graph": 2159550363,
+    "name": "Arc Staff C",
+    "summary": "Appears to do nothing.",
+    "aliases": "Arc Staff C  ",
+    "source": "R3 Gameplay Report · TK06"
+  },
+  {
+    "graph": 2159556319,
+    "name": "Void Anchor",
+    "summary": "Taken anchor spawns at the impact point, disorients nearby enemies and deals a small amount of damage when summoned.",
+    "aliases": "Void Anchor  ",
+    "source": "R3 Gameplay Report · TK05"
+  },
+  {
+    "graph": 2159716792,
+    "name": "Hammer of Sol A",
+    "summary": "Appears the same as Hammer of Sol B, possibly with a different sound effect.",
+    "aliases": "Hammer of Sol A Solar Titan Sunbreaker hammer solar",
+    "source": "R3 Gameplay Report · TK01"
+  },
+  {
+    "graph": 2159716818,
+    "name": "Hammer of Sol B",
+    "summary": "Titan hammer with a solar explosion.",
+    "aliases": "Hammer of Sol B Solar Titan Sunbreaker hammer solar",
+    "source": "R3 Gameplay Report · TK02"
+  },
+  {
+    "graph": 2159793938,
+    "name": "Tractor Cannon",
+    "summary": "No visible projectile or graphics. Short range, strong gravity push and good damage. Void is uncertain.",
+    "aliases": "Tractor Cannon Void ",
+    "source": "R3 Gameplay Report · WP06"
+  },
+  {
+    "graph": 2159808588,
+    "name": "Throwing Hammer A",
+    "summary": "Hammer bounces off walls and explodes after roughly five to ten seconds or on enemy impact.",
+    "aliases": "Throwing Hammer A  Titan Sunbreaker hammer solar",
+    "source": "R3 Gameplay Report · TK03"
+  },
+  {
+    "graph": 2159808754,
+    "name": "Throwing Hammer B",
+    "summary": "Works as intended on retest. The user is unsure why it initially appeared inactive and suggests they may have been firing at the ground. Exact flight, impact and return behavior were not described in the correction.",
+    "aliases": "Throwing Hammer B  Titan Sunbreaker hammer solar",
+    "source": "R3 Gameplay Report · TK04"
+  },
+  {
+    "graph": 2159929177,
+    "name": "Taken Wizard",
+    "summary": "Slow-moving solar projectile.",
+    "aliases": "Taken Wizard Solar ",
+    "source": "R3 Gameplay Report · HK01"
+  },
+  {
+    "graph": 2159931215,
+    "name": "Taken Swarm",
+    "summary": "Similar to Taken Wizard. Slow-moving, Taken-themed projectile with a purple trail. Void is uncertain.",
+    "aliases": "Taken Swarm Void ",
+    "source": "R3 Gameplay Report · HK02"
+  },
+  {
+    "graph": 2159931323,
+    "name": "Taken Goblin Family Variant",
+    "summary": "Void projectile.",
+    "aliases": "Taken Goblin Family Variant Void ",
+    "source": "R3 Gameplay Report · HK05"
+  },
+  {
+    "graph": 2159931397,
+    "name": "Taken Vandal Variant",
+    "summary": "Appears solar and does high damage.",
+    "aliases": "Taken Vandal Variant Solar ",
+    "source": "R3 Gameplay Report · HK04"
+  },
+  {
+    "graph": 2159932318,
+    "name": "Seeker",
+    "summary": "Extremely strong tracking toward the nearest enemy.",
+    "aliases": "Seeker Void ",
+    "source": "R3 Gameplay Report · HK03"
+  },
+  {
+    "graph": 2159978482,
+    "name": "Hive Ritual Seeker",
+    "summary": "Very slow solar ball. Bounces off walls and only detonates after a delay or on enemy impact. Produces a large solar blast.",
+    "aliases": "Hive Ritual Seeker Solar ",
+    "source": "R3 Gameplay Report · WK06"
+  },
+  {
+    "graph": 2159981483,
+    "name": "Crystal Beam Relic A",
+    "summary": "No visible graphics, but high damage.",
+    "aliases": "Crystal Beam Relic A  ",
+    "source": "R3 Gameplay Report · TE05"
+  },
+  {
+    "graph": 2159983276,
+    "name": "Cabal Emperor Decoy A",
+    "summary": "Large solar projectile and blast. Leaves an area of solar damage for roughly ten seconds, with uncertain duration. Standing in it applies Burning.",
+    "aliases": "Cabal Emperor Decoy A Solar ",
+    "source": "R3 Gameplay Report · WE07"
+  },
+  {
+    "graph": 2159983949,
+    "name": "Cabal Emperor Decoy B",
+    "summary": "Large solar projectile with a good blast radius. Does not leave the area of damage observed for Emperor Decoy A.",
+    "aliases": "Cabal Emperor Decoy B Solar ",
+    "source": "R3 Gameplay Report · WE08"
+  },
+  {
+    "graph": 2160036731,
+    "name": "Hive Cutter",
+    "summary": "Slow-moving tracking void projectile.",
+    "aliases": "Hive Cutter Void ",
+    "source": "R3 Gameplay Report · WK02"
+  },
+  {
+    "graph": 2160037389,
+    "name": "Hive Trooper",
+    "summary": "Solar projectile with an area blast and lingering solar damage.",
+    "aliases": "Hive Trooper Solar ",
+    "source": "R3 Gameplay Report · WK03"
+  },
+  {
+    "graph": 2160039426,
+    "name": "Hive Shrieker",
+    "summary": "Void bolt.",
+    "aliases": "Hive Shrieker Void ",
+    "source": "R3 Gameplay Report · WK01"
+  },
+  {
+    "graph": 2160040619,
+    "name": "Hive Ultra Knight A",
+    "summary": "Fast-moving void projectile.",
+    "aliases": "Hive Ultra Knight A Void ",
+    "source": "R3 Gameplay Report · WK04"
+  },
+  {
+    "graph": 2160040765,
+    "name": "Hive Ultra Knight B",
+    "summary": "Taken-looking projectile with a large blast. Arc is uncertain. The user compares the blast to Ex Diris in modern Destiny 2, without establishing shared assets or mechanics.",
+    "aliases": "Hive Ultra Knight B Arc ",
+    "source": "R3 Gameplay Report · WK05"
+  },
+  {
+    "graph": 2160041428,
+    "name": "Taken Heavy Phalanx",
+    "summary": "Solar projectile.",
+    "aliases": "Taken Heavy Phalanx Solar ",
+    "source": "R3 Gameplay Report · HK06"
+  },
+  {
+    "graph": 2160044321,
+    "name": "Flashbang A",
+    "summary": "Low-to-medium-speed projectile with a flashing light. No apparent effect on impact.",
+    "aliases": "Flashbang A  ",
+    "source": "R3 Gameplay Report · TE01"
+  },
+  {
+    "graph": 2160044578,
+    "name": "Flashbang B",
+    "summary": "No visible effect or fired projectile, and no damage.",
+    "aliases": "Flashbang B  ",
+    "source": "R3 Gameplay Report · TE02"
+  },
+  {
+    "graph": 2160044862,
+    "name": "Guardian Tank A",
+    "summary": "Resembles Drake tank secondary missiles. Appears arc but may be kinetic. Does not appear to track and can bounce without a direct impact.",
+    "aliases": "Guardian Tank A  ",
+    "source": "R3 Gameplay Report · TP06"
+  },
+  {
+    "graph": 2160049067,
+    "name": "Fallen Mine A",
+    "summary": "Spawns the proximity slowing mine at the player rather than at the aimed location.",
+    "aliases": "Fallen Mine A  ",
+    "source": "R3 Gameplay Report · HP05"
+  },
+  {
+    "graph": 2160049137,
+    "name": "Fallen Mine B",
+    "summary": "Spawns the Fallen Mine slowing-effect component at the player rather than at the aimed location.",
+    "aliases": "Fallen Mine B  ",
+    "source": "R3 Gameplay Report · HP06"
+  },
+  {
+    "graph": 2160067760,
+    "name": "Vex Harpy Boss Grenade A",
+    "summary": "Resembles the Garden of Salvation boss spit. Spawns a timed pickup. The user reports that leaving it uncollected kills everything with Voltaic Overflow. Collection instead applies the Voltaic Overflow debuff with a displayed 2:30 timer. The pickup expiry duration was not reported.",
+    "aliases": "Vex Harpy Boss Grenade A  ",
+    "source": "R3 Gameplay Report · WK08"
+  },
+  {
+    "graph": 2160070214,
+    "name": "Taken Seeker A",
+    "summary": "Randomized movement and faster than the normal Seeker.",
+    "aliases": "Taken Seeker A  ",
+    "source": "R3 Gameplay Report · HK07"
+  },
+  {
+    "graph": 2160071150,
+    "name": "Vex Dark Minotaur A",
+    "summary": "Spawns a large solar orb at the impact point. No further function is apparent.",
+    "aliases": "Vex Dark Minotaur A Solar ",
+    "source": "R3 Gameplay Report · WK10"
+  },
+  {
+    "graph": 2160071453,
+    "name": "Vex Dark Minotaur B",
+    "summary": "Same observed behavior as Dark Minotaur A, but the impact orb is arc. No further function is apparent.",
+    "aliases": "Vex Dark Minotaur B Arc ",
+    "source": "R3 Gameplay Report · WE01"
+  },
+  {
+    "graph": 2160072502,
+    "name": "Taken Seeker B",
+    "summary": "Moves side to side. Does not detonate on collision and appears to deal no damage.",
+    "aliases": "Taken Seeker B  ",
+    "source": "R3 Gameplay Report · HK08"
+  },
+  {
+    "graph": 2160116104,
+    "name": "Fallen Heavy Pike A",
+    "summary": "Bouncy arc mines.",
+    "aliases": "Fallen Heavy Pike A Arc ",
+    "source": "R3 Gameplay Report · HE10"
+  },
+  {
+    "graph": 2160119231,
+    "name": "Vex Cyclops Variant",
+    "summary": "Appears similar to Ultra Hydra Family but moves more slowly.",
+    "aliases": "Vex Cyclops Variant Void ",
+    "source": "R3 Gameplay Report · WE05"
+  },
+  {
+    "graph": 2160122078,
+    "name": "Fallen Heavy Pike B",
+    "summary": "Large arc damage. The Skiff B comparison also describes a similar large area effect.",
+    "aliases": "Fallen Heavy Pike B Arc ",
+    "source": "R3 Gameplay Report · HP01"
+  },
+  {
+    "graph": 2160122583,
+    "name": "Fallen Skiff A",
+    "summary": "Slower-moving, larger bouncy arc mines.",
+    "aliases": "Fallen Skiff A Arc ",
+    "source": "R3 Gameplay Report · HP02"
+  },
+  {
+    "graph": 2160122770,
+    "name": "Fallen Skiff B",
+    "summary": "Skiff cannon shot with arc damage and a large area effect, similar to Heavy Pike B.",
+    "aliases": "Fallen Skiff B Arc ",
+    "source": "R3 Gameplay Report · HP03"
+  },
+  {
+    "graph": 2160123317,
+    "name": "Vex Shared Variant",
+    "summary": "Red projectile resembling a standard Vex shot. Kinetic damage is uncertain.",
+    "aliases": "Vex Shared Variant Kinetic ",
+    "source": "R3 Gameplay Report · WE06"
+  },
+  {
+    "graph": 2160123363,
+    "name": "Vex Hydra Family",
+    "summary": "Void projectile with a decent splash radius.",
+    "aliases": "Vex Hydra Family Void ",
+    "source": "R3 Gameplay Report · WE03"
+  },
+  {
+    "graph": 2160123393,
+    "name": "Vex Ultra Hydra Family",
+    "summary": "Similar to Hydra Family, but appears a little faster with a slightly larger splash radius.",
+    "aliases": "Vex Ultra Hydra Family Void ",
+    "source": "R3 Gameplay Report · WE04"
+  },
+  {
+    "graph": 2160126002,
+    "name": "Cabal Dropship",
+    "summary": "Solar projectile that seems similar to the Skiff arc projectile.",
+    "aliases": "Cabal Dropship Solar ",
+    "source": "R3 Gameplay Report · WP01"
+  },
+  {
+    "graph": 2160127248,
+    "name": "Cabal Pyro Boss",
+    "summary": "Slow-to-medium projectile resembling scatter-grenade projectiles. Bounces off walls, then explodes after a delay or on enemy impact with a medium-to-large void blast.",
+    "aliases": "Cabal Pyro Boss Void ",
+    "source": "R3 Gameplay Report · WP02"
+  },
+  {
+    "graph": 2160131746,
+    "name": "Cabal Gladiator A",
+    "summary": "Slow-moving rocket that bounces off walls. Arc is uncertain.",
+    "aliases": "Cabal Gladiator A Arc ",
+    "source": "R3 Gameplay Report · WE09"
+  },
+  {
+    "graph": 2160131779,
+    "name": "Cabal Gladiator B",
+    "summary": "Medium-speed arc projectile with a medium blast radius.",
+    "aliases": "Cabal Gladiator B Arc ",
+    "source": "R3 Gameplay Report · WE10"
+  },
+  {
+    "graph": 2160136295,
+    "name": "Vex Dark Minotaur C",
+    "summary": "Void projectile with a medium splash radius. Behaves differently from Dark Minotaur A and B.",
+    "aliases": "Vex Dark Minotaur C Void ",
+    "source": "R3 Gameplay Report · WE02"
+  },
+  {
+    "graph": 2160137394,
+    "name": "Vex Harpy Boss Grenade B",
+    "summary": "Appears to be the Voltaic Overflow detonation alone. Spawns at the player and immediately kills everything, including the player, in the reported test. Affected range was not measured.",
+    "aliases": "Vex Harpy Boss Grenade B  ",
+    "source": "R3 Gameplay Report · WK09"
+  },
+  {
+    "graph": 2160167327,
+    "name": "Fallen Tracer Shank",
+    "summary": "Arc bolt.",
+    "aliases": "Fallen Tracer Shank Arc ",
+    "source": "R3 Gameplay Report · HE08"
+  },
+  {
+    "graph": 2160167378,
+    "name": "Fallen Ultra Servitor",
+    "summary": "Appears to be a larger version of the normal Servitor blast.",
+    "aliases": "Fallen Ultra Servitor Void ",
+    "source": "R3 Gameplay Report · HP04"
+  },
+  {
+    "graph": 2160177421,
+    "name": "Fallen Heavy Shank",
+    "summary": "Void projectile.",
+    "aliases": "Fallen Heavy Shank Void ",
+    "source": "R3 Gameplay Report · HE09"
+  },
+  {
+    "graph": 2160180250,
+    "name": "Cabal Ultra Centurion C",
+    "summary": "Medium-to-fast solar grenade. Sticks to a surface and detonates after about one second.",
+    "aliases": "Cabal Ultra Centurion C Solar ",
+    "source": "R3 Gameplay Report · WP05"
+  },
+  {
+    "graph": 2160180379,
+    "name": "Cabal Ultra Centurion A",
+    "summary": "Fast-moving arc projectile with no observed blast radius.",
+    "aliases": "Cabal Ultra Centurion A Arc ",
+    "source": "R3 Gameplay Report · WP03"
+  },
+  {
+    "graph": 2160180384,
+    "name": "Cabal Ultra Centurion B",
+    "summary": "Fast-moving solar projectile with no observed blast radius.",
+    "aliases": "Cabal Ultra Centurion B Solar ",
+    "source": "R3 Gameplay Report · WP04"
+  },
+  {
+    "graph": 2160181313,
+    "name": "Spear Launcher",
+    "summary": "Fast solar projectile with a medium blast radius, resembling a tank main-cannon shot.",
+    "aliases": "Spear Launcher Solar ",
+    "source": "R3 Gameplay Report · TP05"
+  },
+  {
+    "graph": 2160434470,
+    "name": "Fallen Mech B",
+    "summary": "Arc effect.",
+    "aliases": "Fallen Mech B Arc ",
+    "source": "R3 Gameplay Report · HP08"
+  },
+  {
+    "graph": 2160443525,
+    "name": "Fallen Mech C",
+    "summary": "A large solar area blast occurs at the impact location after about one second.",
+    "aliases": "Fallen Mech C Solar ",
+    "source": "R3 Gameplay Report · HP09"
+  },
+  {
+    "graph": 2160446472,
+    "name": "Fallen Caporegime Blast",
+    "summary": "Very fast arc projectile that does not appear to deal damage.",
+    "aliases": "Fallen Caporegime Blast Arc ",
+    "source": "R3 Gameplay Report · WP09"
+  },
+  {
+    "graph": 2163406276,
+    "name": "Hive Sword Relic A",
+    "summary": "Large arc wave originates at the player and has medium range. Reported jointly for Hive Sword Relic A and B.",
+    "aliases": "Hive Sword Relic A Arc ",
+    "source": "R3 Gameplay Report · TE03"
+  },
+  {
+    "graph": 2163406634,
+    "name": "Hive Sword Relic B",
+    "summary": "Large arc wave originates at the player and has medium range. Reported jointly for Hive Sword Relic A and B.",
+    "aliases": "Hive Sword Relic B Arc ",
+    "source": "R3 Gameplay Report · TE04"
+  },
+  {
+    "graph": 2163486530,
+    "name": "Crystal Beam Relic B",
+    "summary": "Same invisible presentation as Crystal Beam Relic A with even higher damage, possibly about twice as much. The ratio is uncertain.",
+    "aliases": "Crystal Beam Relic B  ",
+    "source": "R3 Gameplay Report · TE06"
+  },
+  {
+    "graph": 2163489401,
+    "name": "Guardian Tank B",
+    "summary": "Fast projectile with a large blast radius and high damage. The user cannot distinguish arc from kinetic.",
+    "aliases": "Guardian Tank B  ",
+    "source": "R3 Gameplay Report · TP07"
+  },
+  {
+    "graph": 2163628898,
+    "name": "Nokris Relic",
+    "summary": "Interactable orb similar in function to Armory Run Relic, but a different orb with no visible timer. The user reports the same nearby pickup behavior.",
+    "aliases": "Nokris Relic  ",
+    "source": "R3 Gameplay Report · TE07"
+  },
+  {
+    "graph": 2163716875,
+    "name": "Taken Intrepid Swarm",
+    "summary": "Slow-moving like Taken Wizard and appears void.",
+    "aliases": "Taken Intrepid Swarm Void ",
+    "source": "R3 Gameplay Report · HK09"
+  },
+  {
+    "graph": 2163720134,
+    "name": "Shadow Sword Projectile",
+    "summary": "Solar-looking ball with medium speed and blast radius, but the impact mark looks arc. Damage type remains uncertain.",
+    "aliases": "Shadow Sword Projectile  ",
+    "source": "R3 Gameplay Report · WP10"
+  },
+  {
+    "graph": 2163864636,
+    "name": "Crypt Boss Relic",
+    "summary": "Appears to fire the Nokris relic orb, with a visible timer roughly thirty seconds to one minute before despawning. Both orb identity and duration are uncertain.",
+    "aliases": "Crypt Boss Relic  ",
+    "source": "R3 Gameplay Report · TE08"
+  },
+  {
+    "graph": 2163953970,
+    "name": "Armory Run Relic",
+    "summary": "Shoots an interactable orb that the player picks up when nearby. A timer appears on the HUD icon. It seems to despawn after about one minute.",
+    "aliases": "Armory Run Relic  ",
+    "source": "R3 Gameplay Report · TE09"
+  },
+  {
+    "graph": 2163954905,
+    "name": "Charged Detonation",
+    "summary": "Immediate detonation at the player, resembling the Fire Relic orb hit effect. The user reports about 780,000 damage in this test. Target and damage context were not specified.",
+    "aliases": "Charged Detonation Void ",
+    "source": "R3 Gameplay Report · TP01"
+  },
+  {
+    "graph": 2163954909,
+    "name": "Instant Detonation",
+    "summary": "Immediate detonation at the player, resembling the Fire Relic orb expiry explosion.",
+    "aliases": "Instant Detonation Void ",
+    "source": "R3 Gameplay Report · TP02"
+  },
+  {
+    "graph": 2163955224,
+    "name": "Fire Relic",
+    "summary": "Spawns an interactable void orb with an approximately ten-second timer that refreshes on pickup. Throwing it at enemies deals high damage. Timer expiry causes a large-radius void explosion with comparatively low damage. On a later retest it immediately appeared on the player as though already picked up. Nearby automatic pickup is the user's proposed explanation for the differing appearance, not a verified cause.",
+    "aliases": "Fire Relic Void ",
+    "source": "R3 Gameplay Report · TE10"
+  },
+  {
+    "graph": 2163967671,
+    "name": "Air Strike",
+    "summary": "Air Strike appears at the player, with roughly a three-to-five-second delay before the strike hits.",
+    "aliases": "Air Strike  ",
+    "source": "R3 Gameplay Report · TP08"
+  },
+  {
+    "graph": 2163970065,
+    "name": "Spider Tank Rocket",
+    "summary": "Rocket with a large solar blast.",
+    "aliases": "Spider Tank Rocket Solar ",
+    "source": "R3 Gameplay Report · HP10"
+  },
+  {
+    "graph": 2164092123,
+    "name": "Engram Bomb",
+    "summary": "Fires an exploding exotic engram that detonates on impact.",
+    "aliases": "Engram Bomb  ",
+    "source": "R3 Gameplay Report · TP03"
+  },
+  {
+    "graph": 2164121839,
+    "name": "Scorn Dreg",
+    "summary": "Void projectile with a large area effect after impact.",
+    "aliases": "Scorn Dreg Void ",
+    "source": "R3 Gameplay Report · HE01"
+  },
+  {
+    "graph": 2164122094,
+    "name": "Scorn Solar Captain",
+    "summary": "Produces a large red ball. The user suspects missing graphics. The cause is unverified.",
+    "aliases": "Scorn Solar Captain Solar ",
+    "source": "R3 Gameplay Report · HE02"
+  },
+  {
+    "graph": 2164123778,
+    "name": "Scorn Immunity Totem",
+    "summary": "Only the effect of spawning the immunity totem appears. No totem is spawned.",
+    "aliases": "Scorn Immunity Totem Void ",
+    "source": "R3 Gameplay Report · HE05"
+  },
+  {
+    "graph": 2164124078,
+    "name": "Scorn Impulse Totem",
+    "summary": "Only the effect of spawning the impulse totem appears. No totem is spawned.",
+    "aliases": "Scorn Impulse Totem Arc ",
+    "source": "R3 Gameplay Report · HE06"
+  },
+  {
+    "graph": 2164124202,
+    "name": "Scorn Orbital Totem",
+    "summary": "Only the effect of spawning the orbital totem appears. No totem is spawned.",
+    "aliases": "Scorn Orbital Totem Solar ",
+    "source": "R3 Gameplay Report · HE07"
+  },
+  {
+    "graph": 2164128788,
+    "name": "Scorn Pike",
+    "summary": "Void projectile.",
+    "aliases": "Scorn Pike Void ",
+    "source": "R3 Gameplay Report · HE04"
+  },
+  {
+    "graph": 2164129207,
+    "name": "Scorn Abomination",
+    "summary": "Large arc bolt.",
+    "aliases": "Scorn Abomination Arc ",
+    "source": "R3 Gameplay Report · HE03"
+  },
+  {
+    "graph": 2164197099,
+    "name": "Bloom Projectile",
+    "summary": "Slow-to-medium-speed Orb of Light appearance, compared with Noble Rounds. Bounces off everything but damages enemies.",
+    "aliases": "Bloom Projectile  ",
+    "source": "R3 Gameplay Report · TP04"
+  },
+  {
+    "graph": 2169712604,
+    "name": "Outbreak Swarm",
+    "summary": "Immediately spawns one Outbreak SIVA nanite at the player.",
+    "aliases": "Outbreak Swarm  ",
+    "source": "R3 Gameplay Report · TP09"
+  },
+  {
+    "graph": 2170246732,
+    "name": "Usurper Knight Projectile",
+    "summary": "Large solar projectile with a large blast.",
+    "aliases": "Usurper Knight Projectile Solar ",
+    "source": "R3 Gameplay Report · WK07"
+  },
+  {
+    "graph": 2170248406,
+    "name": "Arc Strike",
+    "summary": "Similar to the previously tested Air Strike, appearing at the player when fired. The user wonders whether it is a Titan arc strike. That identity is unverified.",
+    "aliases": "Arc Strike  ",
+    "source": "R3 Gameplay Report · WP07"
+  },
+  {
+    "graph": 2170248500,
+    "name": "Solar Strike",
+    "summary": "Large, medium-speed solar orb with a large blast on impact.",
+    "aliases": "Solar Strike Solar ",
+    "source": "R3 Gameplay Report · WP08"
+  },
+  {
+    "graph": 2170676191,
+    "name": "Parting Gift",
+    "summary": "Slow-moving projectile with a large-radius kinetic explosion on impact.",
+    "aliases": "Parting Gift Kinetic ",
+    "source": "R3 Gameplay Report · TP10"
+  },
+  {
+    "graph": 2170729807,
+    "name": "Prophecy Captain",
+    "summary": "Large projectile.",
+    "aliases": "Prophecy Captain  ",
+    "source": "R3 Gameplay Report · HK10"
+  }
+]

@@ -68,7 +68,7 @@ fn draw_color(ui: &mut egui::Ui, label: &str, rgb: [f32; 3]) {
         let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 22.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 3.0, color);
         ui.painter().rect_stroke(rect, 3.0, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
-        response.on_hover_text("sRGB preview, clamped to the display range; exact linear values are retained below and in the copied data.");
+        response.on_hover_text("sRGB preview, clamped to the display range. Exact linear values are retained below and in the copied data.");
         ui.label(label);
         ui.monospace(format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b()));
         ui.label("Linear RGB");

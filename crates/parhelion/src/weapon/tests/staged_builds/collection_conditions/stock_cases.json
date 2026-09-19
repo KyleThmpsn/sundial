@@ -1,0 +1,463 @@
+{
+  "missing_collectible": [
+    {
+      "name": "Traitor's Fate",
+      "hash": "0x9FF5BE8F",
+      "dummy": false
+    },
+    {
+      "name": "Bushwhacker",
+      "hash": "0x12967CD8",
+      "dummy": false
+    },
+    {
+      "name": "Timecard",
+      "hash": "0x623F5036",
+      "dummy": false
+    },
+    {
+      "name": "Legend of Acrius",
+      "hash": "0x67F515B2",
+      "dummy": false
+    },
+    {
+      "name": "Rebuke AX-GL",
+      "hash": "0xAD11501A",
+      "dummy": false
+    },
+    {
+      "name": "Presto-48",
+      "hash": "0x5F16E587",
+      "dummy": false
+    },
+    {
+      "name": "Traveler's Chosen",
+      "hash": "0x032B2570",
+      "dummy": false
+    },
+    {
+      "name": "Origin Story",
+      "hash": "0xEFD9F21F",
+      "dummy": false
+    },
+    {
+      "name": "The Last Dance",
+      "hash": "0x654C35C4",
+      "dummy": false
+    },
+    {
+      "name": "The Jade Rabbit",
+      "hash": "0xB180EBE6",
+      "dummy": true
+    },
+    {
+      "name": "The Jade Rabbit",
+      "hash": "0xC07AC8FB",
+      "dummy": true
+    },
+    {
+      "name": "The Jade Rabbit",
+      "hash": "0xACA49190",
+      "dummy": true
+    },
+    {
+      "name": "The Jade Rabbit",
+      "hash": "0x1B7617AC",
+      "dummy": true
+    },
+    {
+      "name": "The Jade Rabbit",
+      "hash": "0x2090FACD",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x6D4CB92F",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0x3B4F02D5",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0xC92D6B37",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0x3452F1F3",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0xBB5DB0A6",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0x995440F4",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0x3EBAE846",
+      "dummy": true
+    },
+    {
+      "name": "Polaris Lance",
+      "hash": "0x37356D87",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x657BE488",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x9E023464",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0xE5E43E1F",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x297948F4",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x8A3932A9",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0xA1235359",
+      "dummy": true
+    },
+    {
+      "name": "Trust",
+      "hash": "0x93F85836",
+      "dummy": true
+    },
+    {
+      "name": "Prometheus Lens",
+      "hash": "0x7FF347D1",
+      "dummy": true
+    },
+    {
+      "name": "Eriana's Vow",
+      "hash": "0x9BCF6E60",
+      "dummy": true
+    },
+    {
+      "name": "Eriana's Vow",
+      "hash": "0x93E680C3",
+      "dummy": true
+    },
+    {
+      "name": "Arc Logic",
+      "hash": "0xC3EEB7F5",
+      "dummy": true
+    },
+    {
+      "name": "Dream Breaker",
+      "hash": "0x178852E6",
+      "dummy": true
+    },
+    {
+      "name": "Love and Death",
+      "hash": "0x4FFB78C0",
+      "dummy": true
+    },
+    {
+      "name": "Loud Lullaby",
+      "hash": "0xF88608BE",
+      "dummy": true
+    },
+    {
+      "name": "A Fine Memorial",
+      "hash": "0x48C5EF16",
+      "dummy": true
+    },
+    {
+      "name": "Premonition",
+      "hash": "0xF5C87491",
+      "dummy": true
+    },
+    {
+      "name": "One Small Step",
+      "hash": "0x239FDDDB",
+      "dummy": true
+    },
+    {
+      "name": "Tranquility",
+      "hash": "0x45CA626D",
+      "dummy": true
+    },
+    {
+      "name": "Every Waking Moment",
+      "hash": "0xEEECC4FA",
+      "dummy": true
+    },
+    {
+      "name": "Night Terror",
+      "hash": "0xC31B49FC",
+      "dummy": true
+    },
+    {
+      "name": "Symmetry",
+      "hash": "0x9C0AF31B",
+      "dummy": true
+    },
+    {
+      "name": "Tommy's Matchbook",
+      "hash": "0xC13DCD47",
+      "dummy": true
+    },
+    {
+      "name": "Witherhoard",
+      "hash": "0x965F2337",
+      "dummy": true
+    }
+  ],
+  "unrelated_condition_flags": [
+    {
+      "name": "Traitor's Fate",
+      "hash": "0x9FF5BE8E"
+    },
+    {
+      "name": "Horror Story",
+      "hash": "0xE43E4448"
+    },
+    {
+      "name": "No Feelings",
+      "hash": "0x732134AB"
+    },
+    {
+      "name": "Avalanche",
+      "hash": "0x03FC6FD9"
+    },
+    {
+      "name": "The Vow",
+      "hash": "0x77C086AB"
+    },
+    {
+      "name": "The Wizened Rebuke",
+      "hash": "0x3777ADAF"
+    },
+    {
+      "name": "Rose",
+      "hash": "0x90D42800"
+    },
+    {
+      "name": "Gahlran's Right Hand",
+      "hash": "0x4CB14828"
+    },
+    {
+      "name": "Bane of Sorrow",
+      "hash": "0x59318DBF"
+    },
+    {
+      "name": "Calusea Noblesse",
+      "hash": "0x8B5C6795"
+    },
+    {
+      "name": "Emperor's Courtesy",
+      "hash": "0xE6290630"
+    },
+    {
+      "name": "Heretic",
+      "hash": "0xB6DB3C90"
+    },
+    {
+      "name": "Blasphemer",
+      "hash": "0xA5DEE0CB"
+    },
+    {
+      "name": "Apostate",
+      "hash": "0x8102DDBD"
+    },
+    {
+      "name": "Exit Strategy",
+      "hash": "0xFBF5AC00"
+    },
+    {
+      "name": "Pluperfect",
+      "hash": "0x745BA6AA"
+    },
+    {
+      "name": "Temporal Clause",
+      "hash": "0xC8D730D9"
+    },
+    {
+      "name": "BrayTech Werewolf",
+      "hash": "0x1F855E14"
+    },
+    {
+      "name": "Randy's Throwing Knife",
+      "hash": "0xD2BF27EF"
+    },
+    {
+      "name": "Edgewise",
+      "hash": "0x32813788"
+    },
+    {
+      "name": "Leviathan's Breath",
+      "hash": "0x9A7AEB9A"
+    },
+    {
+      "name": "Eriana's Vow",
+      "hash": "0xD210C009"
+    },
+    {
+      "name": "Xenophage",
+      "hash": "0x532A003B"
+    },
+    {
+      "name": "Divinity",
+      "hash": "0xF49521E2"
+    },
+    {
+      "name": "Steelfeather Repeater",
+      "hash": "0x4A9BDE96"
+    },
+    {
+      "name": "Gallant Charge",
+      "hash": "0x65B2A5CD"
+    },
+    {
+      "name": "Martyr's Retribution",
+      "hash": "0xE57CEA43"
+    },
+    {
+      "name": "Line in the Sand",
+      "hash": "0x38699403"
+    },
+    {
+      "name": "Patron of Lost Causes",
+      "hash": "0xA2515F77"
+    },
+    {
+      "name": "Breachlight",
+      "hash": "0x4CE3CE93"
+    },
+    {
+      "name": "Pyroclastic Flow",
+      "hash": "0x4CD986AA"
+    },
+    {
+      "name": "Trophy Hunter",
+      "hash": "0xF8537FBB"
+    },
+    {
+      "name": "Cold Front",
+      "hash": "0x59CEB755"
+    },
+    {
+      "name": "Jack Queen King 3",
+      "hash": "0x187F4F6E"
+    },
+    {
+      "name": "Infinite Paths 8",
+      "hash": "0xC0B9A141"
+    },
+    {
+      "name": "Perfect Paradox",
+      "hash": "0xCA44FDCB"
+    },
+    {
+      "name": "Traveler's Judgment 5",
+      "hash": "0xF758496E"
+    },
+    {
+      "name": "Symmetry",
+      "hash": "0xEF7D3366"
+    },
+    {
+      "name": "Devil's Ruin",
+      "hash": "0xE3EF3A6E"
+    },
+    {
+      "name": "Seventh Seraph Carbine",
+      "hash": "0x5D0B134F"
+    },
+    {
+      "name": "Seventh Seraph SAW",
+      "hash": "0x99F1B810"
+    },
+    {
+      "name": "Seventh Seraph SI-2",
+      "hash": "0xEAB71294"
+    },
+    {
+      "name": "Seventh Seraph Officer Revolver",
+      "hash": "0xB50CE218"
+    },
+    {
+      "name": "Seventh Seraph CQC-12",
+      "hash": "0x6C95506C"
+    },
+    {
+      "name": "Seventh Seraph VY-7",
+      "hash": "0x2DAD2B59"
+    },
+    {
+      "name": "Tommy's Matchbook",
+      "hash": "0x2E43BDEE"
+    },
+    {
+      "name": "Heir Apparent",
+      "hash": "0x7C44B6B5"
+    },
+    {
+      "name": "Cold Denial",
+      "hash": "0x487CAF99"
+    },
+    {
+      "name": "Falling Guillotine",
+      "hash": "0x249F67B4"
+    },
+    {
+      "name": "Death Adder",
+      "hash": "0xA37715F1"
+    },
+    {
+      "name": "Widow's Bite",
+      "hash": "0x4BC72B18"
+    },
+    {
+      "name": "IKELOS_HC_v1.0.2",
+      "hash": "0x4793217C"
+    },
+    {
+      "name": "IKELOS_SG_v1.0.2",
+      "hash": "0x4156C94D"
+    },
+    {
+      "name": "Hoosegow",
+      "hash": "0xDAB9E745"
+    },
+    {
+      "name": "Negative Space",
+      "hash": "0xD85CED7D"
+    },
+    {
+      "name": "Witherhoard",
+      "hash": "0x8C8180D6"
+    },
+    {
+      "name": "Traveler's Chosen",
+      "hash": "0x6E754BFC"
+    },
+    {
+      "name": "Ruinous Effigy",
+      "hash": "0x5141601F"
+    }
+  ]
+}

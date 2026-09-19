@@ -1,14 +1,12 @@
 //! Project validated account collections into native rows, preserving opaque columns.
 use rusqlite::{Transaction, params};
-use sundial_account::{
-    CharacterAbilities, DismantleGearClass, DismantleRarity, ItemInstance, ItemPlugs,
-};
+use sundial_account::{CharacterAbilities, DismantleGearClass, ItemInstance, ItemPlugs};
 
 use super::{NativeRow, insert, matching, put};
 use crate::persistence::sqlite_account::{
     SqliteAccountDocument, SqliteAccountError,
     contract::{EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION},
-    package, settings,
+    settings, snapshot,
 };
 
 pub(super) fn write_document(
@@ -40,7 +38,7 @@ pub(super) fn write_document(
                 reward
                     .rarities
                     .iter()
-                    .fold(0_u8, |mask, rarity| mask | rarity_bit(*rarity)),
+                    .fold(0_u8, |mask, rarity| mask | rarity.bit()),
             ),
         );
         put(
@@ -71,7 +69,7 @@ pub(super) fn write_document(
             .map(|p| matching(old_profile, &[("position", p as i64)]))
             .unwrap_or_default();
         row.entry("seen".into())
-            .or_insert(package::Cell::Integer(1));
+            .or_insert(snapshot::Cell::Integer(1));
         if let Some(seen) = document.profile_seen_override(item.id) {
             put(&mut row, "seen", i64::from(seen));
         }
@@ -158,7 +156,7 @@ impl ItemWriter<'_, '_> {
         let soid = sql_u64(item.instance_soid.get());
         let mut row = matching(self.old_items, &[("instance_soid", soid)]);
         row.entry("seen".into())
-            .or_insert(package::Cell::Integer(0));
+            .or_insert(snapshot::Cell::Integer(0));
         let (policy, plugs): (i64, &[Option<sundial_account::DefinitionHash>]) = match &item.plugs {
             ItemPlugs::NativeDefaults => (0, &[]),
             ItemPlugs::Authored(plugs) => (1, plugs),
@@ -200,16 +198,6 @@ impl ItemWriter<'_, '_> {
             }
         }
         Ok(())
-    }
-}
-
-const fn rarity_bit(rarity: DismantleRarity) -> u8 {
-    match rarity {
-        DismantleRarity::Common => 1 << 1,
-        DismantleRarity::Uncommon => 1 << 2,
-        DismantleRarity::Rare => 1 << 3,
-        DismantleRarity::Legendary => 1 << 4,
-        DismantleRarity::Exotic => 1 << 5,
     }
 }
 

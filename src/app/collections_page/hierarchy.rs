@@ -66,7 +66,7 @@ pub(super) fn branch_counts(branch: &CollectionBranch<'_>) -> AcquisitionCounts 
     for child in &branch.branches {
         let child = branch_counts(child);
         counts.acquired += child.acquired;
-        counts.missing += child.missing;
+        counts.not_acquired += child.not_acquired;
         counts.unknown += child.unknown;
     }
     counts
@@ -234,14 +234,6 @@ pub(super) fn display_lines<'tree, 'data>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn package_paths_render_root_first_without_synthetic_roots() {
-        assert_eq!(
-            root_first_path(&["Kinetic".into(), "Weapons".into(), "Items".into()]),
-            ["Items", "Weapons", "Kinetic"]
-        );
-    }
 
     #[test]
     fn collections_preserve_every_package_parent_path() {

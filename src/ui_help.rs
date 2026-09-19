@@ -21,7 +21,8 @@ pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::R
     egui::RichText::new(text).font(font).strong()
 }
 
-pub(crate) fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
+/// Shared tooltip title typography for Sundial and Parhelion.
+pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
     let size = egui::TextStyle::Body.resolve(ui.style()).size + 2.0;
     ui.label(emphasized_text(ui, title).size(size))
 }

@@ -40,7 +40,7 @@ pub(super) use expression::{FLAG_INSTRUCTION, POOL_INSTRUCTION, VALUE_INSTRUCTIO
 pub(super) const ACQUISITION_CONDITION_FIELD: u8 =
     crate::catalog::COLLECTIBLE_ACQUIRED_CONDITION_FIELD;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct StateLine {
     pub(super) text: String,
     pub(super) tooltip: String,
@@ -50,26 +50,26 @@ pub(super) struct StateLine {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AcquisitionState {
     Acquired,
-    Missing,
+    NotAcquired,
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AcquisitionCounts {
     pub(super) acquired: usize,
-    pub(super) missing: usize,
+    pub(super) not_acquired: usize,
     pub(super) unknown: usize,
 }
 
 impl AcquisitionCounts {
     pub(super) const fn total(self) -> usize {
-        self.acquired + self.missing + self.unknown
+        self.acquired + self.not_acquired + self.unknown
     }
 
     pub(super) fn add(&mut self, state: AcquisitionState) {
         match state {
             AcquisitionState::Acquired => self.acquired += 1,
-            AcquisitionState::Missing => self.missing += 1,
+            AcquisitionState::NotAcquired => self.not_acquired += 1,
             AcquisitionState::Unknown => self.unknown += 1,
         }
     }
@@ -78,7 +78,7 @@ impl AcquisitionCounts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcquisitionEvaluation {
     Acquired,
-    Missing,
+    NotAcquired,
     Unconditional,
     Unknown,
 }
@@ -87,7 +87,7 @@ impl AcquisitionEvaluation {
     const fn state(self) -> AcquisitionState {
         match self {
             Self::Acquired | Self::Unconditional => AcquisitionState::Acquired,
-            Self::Missing => AcquisitionState::Missing,
+            Self::NotAcquired => AcquisitionState::NotAcquired,
             Self::Unknown => AcquisitionState::Unknown,
         }
     }
@@ -99,7 +99,7 @@ fn acquisition_evaluation(
 ) -> AcquisitionEvaluation {
     match value {
         Some(true) => AcquisitionEvaluation::Acquired,
-        Some(false) => AcquisitionEvaluation::Missing,
+        Some(false) => AcquisitionEvaluation::NotAcquired,
         None if conditions.is_empty() => AcquisitionEvaluation::Unconditional,
         None => AcquisitionEvaluation::Unknown,
     }
@@ -115,8 +115,17 @@ pub(super) fn for_each_expression_token(
         catalog: &Catalog,
         active_pool_rows: &mut [bool],
         visit: &mut impl FnMut(&CollectionConditionTokenDef),
+        depth: usize,
+        remaining: &mut usize,
     ) -> bool {
+        if depth >= 64 {
+            return false;
+        }
         for token in tokens {
+            let Some(next) = remaining.checked_sub(1) else {
+                return false;
+            };
+            *remaining = next;
             visit(token);
             if token.kind != POOL_INSTRUCTION {
                 continue;
@@ -132,7 +141,14 @@ pub(super) fn for_each_expression_token(
                 return false;
             }
             *active = true;
-            let complete = walk(program, catalog, active_pool_rows, visit);
+            let complete = walk(
+                program,
+                catalog,
+                active_pool_rows,
+                visit,
+                depth + 1,
+                remaining,
+            );
             active_pool_rows[index] = false;
             if !complete {
                 return false;
@@ -142,7 +158,14 @@ pub(super) fn for_each_expression_token(
     }
 
     let mut active_pool_rows = vec![false; catalog.shared_expression_pool().len()];
-    walk(tokens, catalog, &mut active_pool_rows, &mut visit)
+    walk(
+        tokens,
+        catalog,
+        &mut active_pool_rows,
+        &mut visit,
+        0,
+        &mut 65536,
+    )
 }
 
 pub(super) fn state_lines(
@@ -230,8 +253,8 @@ pub(super) fn acquisition_status(
             ),
             state: evaluation.state(),
         },
-        AcquisitionEvaluation::Missing => StateLine {
-            text: "Missing".into(),
+        AcquisitionEvaluation::NotAcquired => StateLine {
+            text: "Not Acquired".into(),
             tooltip: format!(
                 "Acquisition condition from available state: false\nProgram: {program}"
             ),
@@ -308,7 +331,7 @@ pub(in crate::app) fn collectible_acquired_state(
 ) -> Option<bool> {
     match acquisition_status(definition, snapshot, catalog).state {
         AcquisitionState::Acquired => Some(true),
-        AcquisitionState::Missing => Some(false),
+        AcquisitionState::NotAcquired => Some(false),
         AcquisitionState::Unknown => None,
     }
 }

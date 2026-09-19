@@ -36,7 +36,7 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
                         entry.insert(candidate);
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        if partial_cmp(&candidate, entry.get(), targets) == Ordering::Less {
+                        if compare_states(&candidate, entry.get(), targets) == Ordering::Less {
                             entry.insert(candidate);
                         }
                     }
@@ -51,7 +51,7 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
 
     let best = states
         .into_iter()
-        .min_by(|left, right| final_cmp(left, right, targets))
+        .min_by(|left, right| compare_states(left, right, targets))
         .unwrap_or(SearchState {
             totals: [0; 6],
             plans: Vec::new(),
@@ -225,7 +225,7 @@ pub(super) fn prune_search_map(
     targets: [u16; 6],
 ) -> HashMap<[u16; 6], SearchState> {
     let mut states = states.into_values().collect::<Vec<_>>();
-    states.sort_by(|left, right| partial_cmp(left, right, targets));
+    states.sort_by(|left, right| compare_states(left, right, targets));
     states.truncate(MAX_SOLVER_STATES);
     states
         .into_iter()
@@ -288,7 +288,7 @@ pub(super) fn solution_from_search(
     }
 }
 
-pub(super) fn partial_cmp(left: &SearchState, right: &SearchState, targets: [u16; 6]) -> Ordering {
+fn compare_states(left: &SearchState, right: &SearchState, targets: [u16; 6]) -> Ordering {
     score(left.totals, targets)
         .cmp(&score(right.totals, targets))
         .then_with(|| waste_above_cap(left.totals).cmp(&waste_above_cap(right.totals)))
@@ -301,33 +301,14 @@ pub(super) fn partial_cmp(left: &SearchState, right: &SearchState, targets: [u16
             target_excess(left.totals, targets).cmp(&target_excess(right.totals, targets))
         })
         .then_with(|| total_value(right.totals, targets).cmp(&total_value(left.totals, targets)))
-        .then_with(|| plan_tie_key(left).cmp(&plan_tie_key(right)))
+        .then_with(|| plan_tie_key(left).cmp(plan_tie_key(right)))
 }
 
-pub(super) fn final_cmp(left: &SearchState, right: &SearchState, targets: [u16; 6]) -> Ordering {
-    let left_score = score(left.totals, targets);
-    let right_score = score(right.totals, targets);
-    left_score
-        .cmp(&right_score)
-        .then_with(|| waste_above_cap(left.totals).cmp(&waste_above_cap(right.totals)))
-        .then_with(|| left.swaps.cmp(&right.swaps))
-        .then_with(|| {
-            (left.plug_changes + left.masterworks).cmp(&(right.plug_changes + right.masterworks))
-        })
-        .then_with(|| left.plug_changes.cmp(&right.plug_changes))
-        .then_with(|| {
-            target_excess(left.totals, targets).cmp(&target_excess(right.totals, targets))
-        })
-        .then_with(|| total_value(right.totals, targets).cmp(&total_value(left.totals, targets)))
-        .then_with(|| plan_tie_key(left).cmp(&plan_tie_key(right)))
-}
-
-pub(super) fn plan_tie_key(state: &SearchState) -> Vec<(usize, Vec<Option<u64>>)> {
+fn plan_tie_key(state: &SearchState) -> impl Iterator<Item = (usize, &[Option<u64>])> {
     state
         .plans
         .iter()
-        .map(|plan| (plan.candidate_index, plan.selections.clone()))
-        .collect()
+        .map(|plan| (plan.candidate_index, plan.selections.as_slice()))
 }
 
 pub(super) fn score(totals: [i32; 6], targets: [u16; 6]) -> (u32, u16) {

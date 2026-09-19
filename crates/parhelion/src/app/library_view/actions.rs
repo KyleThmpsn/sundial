@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) enum LibraryAction {
     Import,
     ExportOpen,
@@ -90,9 +93,7 @@ impl PackageAuthoringApp {
             LibraryAction::Entry(path, EntryAction::Open) => {
                 self.library_open = false;
                 self.library_state.highlighted.remove(&path);
-                if self.recipe_path.as_ref() != Some(&path) {
-                    self.request_recipe_action(PendingRecipeAction::Open(path));
-                }
+                self.request_recipe_action(PendingRecipeAction::Open(path));
             }
             LibraryAction::Entry(path, EntryAction::CopyPath) => {
                 ctx.copy_text(path.display().to_string());

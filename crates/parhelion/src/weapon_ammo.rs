@@ -152,13 +152,9 @@ mod tests {
             property_offsets(&fixture(), 0).unwrap(),
             vec![0x80, 0x310, 0x4D0]
         );
-    }
-
-    #[test]
-    fn supports_a_default_without_variants() {
         let mut data = vec![0; DEFINITION_SIZE];
         assert_eq!(property_offsets(&data, 0).unwrap(), vec![0x80]);
-        // Native selection never dereferences the array pointer when the count is zero.
+        // Native selection ignores the array pointer when there are no variants.
         data[0x248..0x250].copy_from_slice(&i64::MIN.to_le_bytes());
         assert_eq!(property_offsets(&data, 0).unwrap(), vec![0x80]);
     }
@@ -174,6 +170,9 @@ mod tests {
         assert!(property_offsets(&data[..data.len() - 1], 0).is_err());
         assert!(property_offsets(&data[..0x100], 0).is_err());
         assert!(property_offsets(&data, usize::MAX).is_err());
+        let mut data = fixture();
+        data[0x248..0x250].copy_from_slice(&(-0x48_i64).to_le_bytes());
+        assert!(property_offsets(&data, 0).is_err());
     }
 
     #[test]
@@ -187,13 +186,6 @@ mod tests {
         assert!(property_offsets(&data, 0).is_err());
         data[0xB4..0xB6].copy_from_slice(&[1, 1]);
         data[0x504..0x506].copy_from_slice(&[1, 3]);
-        assert!(property_offsets(&data, 0).is_err());
-    }
-
-    #[test]
-    fn rejects_array_aliasing_the_definition() {
-        let mut data = fixture();
-        data[0x248..0x250].copy_from_slice(&(-0x48_i64).to_le_bytes());
         assert!(property_offsets(&data, 0).is_err());
     }
 }
