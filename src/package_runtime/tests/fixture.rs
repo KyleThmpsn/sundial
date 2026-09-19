@@ -46,7 +46,13 @@ fn build(brand: &str, dawn: bool, missing: Option<usize>, defaults: &[u8]) -> Ve
     if dawn {
         resources.extend_from_slice(b"ev=coo_script mission=omega result=loaded format=lua\0ev=coo_executor mission=omega mode=composition\0Sunrise/scripts/omega.lua\0coo_executor\0");
     }
-    for (index, (marker, _)) in PACKAGE_AUTHORING_RUNTIME_MARKERS.iter().enumerate() {
+    // The manifest-cache magic belongs to whichever runtime this fixture stands for, so a Dawn
+    // module advertises DAWNMANF and a Sunrise one SUNCMANF.
+    let markers = PACKAGE_AUTHORING_RUNTIME_MARKERS
+        .iter()
+        .map(|(marker, _)| *marker)
+        .chain([super::super::manifest_cache_marker(brand)]);
+    for (index, marker) in markers.enumerate() {
         if Some(index) != missing {
             resources.extend_from_slice(marker);
             resources.push(0);

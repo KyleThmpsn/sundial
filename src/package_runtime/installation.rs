@@ -5,7 +5,6 @@ mod movement;
 mod restore;
 mod workspace;
 pub(crate) use backup::archive_other_runtime;
-pub(crate) use backup::{checked_directory, checked_path};
 pub(crate) use defaults::SettingsResetPlan;
 use movement::move_without_replacing;
 pub(crate) use restore::{RuntimeRestorePlan, preview_runtime_restore, restore_runtime};
@@ -72,13 +71,15 @@ impl RuntimeInspection {
             let directory = location.directory(install);
             let dll_path = directory.join("steam_api64.dll");
             if !dll_path.exists() { return None; }
-            let settings_path = directory.join("Sunrise/settings.json");
             let dll = fs::read(&dll_path);
-            let settings = fs::read(&settings_path);
             let identity = dll.as_ref().ok().and_then(|b| super::runtime_version(b));
             let defaults = dll.as_ref().ok().and_then(|b| embedded_defaults(b));
             let bundled_schema = defaults.as_ref().and_then(crate::game_settings::schema_version);
             let dawn = identity.as_ref().is_some_and(|(name, _)| *name == "Dawn");
+            // A runtime owns the folder named after it, so its settings and durable account are
+            // read from there rather than from whatever an earlier runtime left behind.
+            let settings_path = directory.join(runtime_folder(dawn)).join("settings.json");
+            let settings = fs::read(&settings_path);
             let version = identity.map(|(_, version)| version);
             let dawn_runtime = dawn.then(|| DawnRuntime::inspect(&dll_path));
             let parsed = settings.as_ref().ok().and_then(|b| settings_document(b));
@@ -139,6 +140,13 @@ impl RuntimeCopy {
     }
 
     pub(crate) fn persistence_problem(&self, json: &Value) -> Option<String> {
+        // This is Sunrise's own storage migration: it moved accounts out of settings.json and
+        // into data/investment.sqlite3 at v18. Dawn keeps its account in player-state.db at every
+        // schema, so the rule says nothing about it, and what Dawn does expect of its settings is
+        // reported by `DawnRuntime::validate` instead.
+        if self.dawn {
+            return None;
+        }
         let bundled = self.bundled_schema?;
         let current = crate::game_settings::schema_version(json)?;
         let name = self.name();
@@ -154,6 +162,12 @@ impl RuntimeCopy {
             None
         }
     }
+}
+
+/// The folder a runtime keeps its settings and durable account in, which is named after the
+/// runtime itself. Dawn 0.1 owns `Dawn`; Sunrise owns `Sunrise`.
+pub(crate) const fn runtime_folder(dawn: bool) -> &'static str {
+    if dawn { "Dawn" } else { "Sunrise" }
 }
 
 fn embedded_defaults(bytes: &[u8]) -> Option<Value> {

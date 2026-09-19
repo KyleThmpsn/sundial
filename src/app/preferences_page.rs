@@ -466,23 +466,46 @@ impl SundialApp {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Installation and Compatibility");
-            crate::ui_help::info(ui, "Select your Sunrise install, the directory containing destiny2.exe. Sundial finds Project Sunrise's settings.json inside it automatically.");
+            crate::ui_help::info(ui, "Select your game install, the directory containing destiny2.exe. Sundial finds the installed runtime's settings.json inside it automatically.");
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
-        ui.label("Sunrise Install");
+        ui.label("Game Install");
         ui.label("The directory containing destiny2.exe.");
         preference_path(ui, &self.install_path);
-        if ui.button("Choose Sunrise Install…").clicked() {
+        if ui.button("Choose Game Install…").clicked() {
             self.choose_install(ctx);
         }
-        self.draw_runtime_preferences(ui);
         ui.add_space(8.0);
-        egui::Grid::new("preferences_sunrise_grid")
+        // One grid holds every fact about the installation. These used to be loose lines above and
+        // below a smaller grid, which printed the same paths and the same paragraph twice.
+        egui::Grid::new("preferences_installation_grid")
             .num_columns(2)
-            .spacing([12.0, 10.0])
+            .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Active Account Source");
+                if let Some(runtime) = self.runtime_choice.inspection.launch_copy() {
+                    ui.label("Runtime");
+                    ui.monospace(format!(
+                        "{} {}",
+                        runtime.name(),
+                        runtime.version.as_deref().unwrap_or("version unknown")
+                    ));
+                    ui.end_row();
+                    ui.label("Runtime DLL");
+                    ui.monospace(runtime.dll_path.display().to_string());
+                    ui.end_row();
+                }
+                ui.label("Settings");
+                ui.monospace(self.settings_path.display().to_string());
+                ui.end_row();
+                ui.label("Settings Schema");
+                ui.monospace(game_settings::schema_version(&self.document).map_or_else(
+                    || "Missing or invalid".to_owned(),
+                    |version| version.to_string(),
+                ))
+                .on_hover_text("Sundial uses this value to determine compatibility.");
+                ui.end_row();
+                ui.label("Account Source");
                 ui.colored_label(
                     match account_source.kind {
                         AccountSourceKind::Json => ui.visuals().text_color(),
@@ -494,20 +517,14 @@ impl SundialApp {
                     account_source.label,
                 );
                 ui.end_row();
-                ui.label("Settings Schema");
-                ui.monospace(game_settings::schema_version(&self.document).map_or_else(
-                    || "Missing or invalid".to_owned(),
-                    |version| version.to_string(),
-                ))
-                .on_hover_text("Sundial uses this value to determine compatibility.");
-                ui.end_row();
-                ui.label("Detected Sunrise Version");
-                ui.monospace(&self.sunrise_version)
-                    .on_hover_text("Shown for reference. This does not control compatibility.");
-                ui.end_row();
                 ui.label("Account Format");
                 ui.monospace(account_source.contract);
                 ui.end_row();
+                if account_source.kind != AccountSourceKind::Json {
+                    ui.label("Account Database");
+                    ui.monospace(account_source.database_path.display().to_string());
+                    ui.end_row();
+                }
             });
         ui.add_space(8.0);
         ui.colored_label(
@@ -519,15 +536,16 @@ impl SundialApp {
             &account_source.detail,
         );
         if account_source.kind != AccountSourceKind::Json {
-            ui.label("Account Database");
-            preference_path(ui, &account_source.database_path);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Sundial saves account edits only to the active source. It never mirrors account data between {} and settings.json.",
+                    account_source.label
+                ))
+                .color(super::ui::secondary_text_color(ui)),
+            );
         }
-        ui.label(
-            egui::RichText::new(
-                "Sundial saves account edits only to the active source. It never mirrors account data between investment.sqlite3 and settings.json.",
-            )
-            .color(super::ui::secondary_text_color(ui)),
-        );
+        ui.add_space(8.0);
+        self.draw_runtime_preferences(ui);
         ui.add_space(12.0);
         self.draw_recovery_preferences(ui);
         ui.add_space(12.0);
@@ -678,35 +696,50 @@ impl SundialApp {
     fn draw_recovery_preferences(&mut self, ui: &mut egui::Ui) {
         super::ui::section_heading(ui, "Recovery");
         let account_source = self.document.source_info();
-        ui.label("Sunrise Settings");
-        preference_path(ui, &self.settings_path);
-        if ui
-            .button("Reset to Sunrise Defaults…")
-            .on_hover_text("Restore the settings bundled with this installed Sunrise version. The current settings.json is backed up first")
-            .clicked()
-        {
+        let runtime = self.runtime_name();
+        let dawn = self.document.account_is_dawn();
+        let mut reset_settings = false;
+        let mut reset_account = false;
+        let mut restore_account = false;
+        let mut browse = false;
+        // The files these act on are named in the grid above, so this is controls only, on one row.
+        ui.horizontal_wrapped(|ui| {
+            reset_settings = ui
+                .button(format!("Reset Settings to {runtime} Defaults…"))
+                .on_hover_text(format!(
+                    "Restore the settings bundled with this installed {runtime} version. The current settings.json is backed up first"
+                ))
+                .clicked();
+            // The two account controls are Sunrise's: they read Sunrise's bundled defaults and
+            // validate Sunrise account backups, then write whatever the account path names. For a
+            // Dawn workspace that path is player-state.db, so they are hidden rather than offered.
+            if account_source.kind != AccountSourceKind::Json && !dawn {
+                reset_account = ui
+                    .button("Reset Account Database…")
+                    .on_hover_text("Reset characters, inventory, progression, and account preferences to the defaults bundled with this installed Sunrise version. A full recovery backup is created first")
+                    .clicked();
+                if matches!(
+                    account_source.kind,
+                    AccountSourceKind::Sqlite | AccountSourceKind::Blocked
+                ) {
+                    restore_account = ui
+                        .button("Restore Backup…")
+                        .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
+                        .clicked();
+                }
+            }
+            browse = ui.button("Browse Backups…").clicked();
+        });
+        if reset_settings {
             self.confirmation = Some(ConfirmationDialog::ResetDefaults);
         }
-        if account_source.kind != AccountSourceKind::Json {
-            ui.add_space(8.0);
-            ui.label("Sunrise Account Database");
-            preference_path(ui, &account_source.database_path);
-            if ui.button("Reset Account Database…")
-                .on_hover_text("Reset characters, inventory, progression, and account preferences to the defaults bundled with this installed Sunrise version. A full recovery backup is created first")
-                .clicked()
-            {
-                self.request_sqlite_defaults_reset();
-            }
-            if matches!(account_source.kind, AccountSourceKind::Sqlite | AccountSourceKind::Blocked)
-                && ui.button("Restore Backup…")
-                    .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
-                    .clicked()
-            {
-                self.request_sqlite_backup_restore();
-            }
+        if reset_account {
+            self.request_sqlite_defaults_reset();
         }
-        ui.add_space(8.0);
-        if ui.button("Browse Backups…").clicked() {
+        if restore_account {
+            self.request_sqlite_backup_restore();
+        }
+        if browse {
             match backups_path()
                 .ok_or("Could not locate Sundial's backups folder".to_owned())
                 .and_then(|path| {

@@ -507,6 +507,8 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
     let (output, overflow) = render(900.0, |ui| app.draw_definition_panel(ui, Some(&donor)));
     let rendered = text(&output);
     assert!(rendered.contains("Graviton Lance"), "{rendered}");
+    // The row names the perks the choice puts in the sockets, not just the weapon it came from.
+    assert!(rendered.contains("Graviton Lance ("), "{rendered}");
     assert!(rendered.contains("Include Its Perks"), "{rendered}");
     assert!(overflow < 1.0);
 }

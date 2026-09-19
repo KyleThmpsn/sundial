@@ -42,8 +42,9 @@ pub(super) fn sized<R>(
 /// and their controls start at the same place.
 pub(super) const CELL_LABEL_WIDTH: f32 = 220.0;
 
-/// The room one cell claims, so a caller can ask whether its pane affords two of them. A
-/// cell cannot shrink, so a pane narrower than this is one a cell would overflow.
+/// The room one cell asks for, so a caller can ask whether its pane affords two of them.
+/// A cell holds itself to its line rather than overflowing it, so a pane narrower than this
+/// gets a cell with its control squeezed instead of one that runs off the edge.
 pub(super) fn cell_width(ui: &egui::Ui) -> f32 {
     CELL_LABEL_WIDTH + ui.spacing().item_spacing.x + COLUMN_WIDTH
 }

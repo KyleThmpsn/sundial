@@ -60,7 +60,16 @@ fn runtime_preferences_show_dawn_and_the_v18_account_mismatch() {
                         });
                     },
                 );
-                for expected in ["Detected Runtime: Dawn", "Dawn requires settings v6"] {
+                // Dawn keeps its account in player-state.db at every settings schema, so the
+                // v18 storage rule is Sunrise's own and must not be reported against Dawn.
+                assert!(!output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.text().contains("with JSON accounts")
+                )));
+                {
+                    // The runtime's name and version moved into the Installation facts grid the
+                    // preferences page draws; what this view still names is the copy it found.
+                    let expected = "Dawn";
                     let text = output
                         .shapes
                         .iter()

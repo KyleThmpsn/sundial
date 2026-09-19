@@ -7,7 +7,6 @@ use crate::package_runtime::installation::{
     archive_other_runtime, preview_runtime_restore, restore_runtime,
 };
 use eframe::egui;
-mod conversion;
 
 #[derive(Default)]
 pub(super) struct RuntimeChoice {
@@ -16,7 +15,6 @@ pub(super) struct RuntimeChoice {
     pub error: Option<String>,
     pub pending_restore: Option<RuntimeRestorePlan>,
     pub pending_defaults: Option<SettingsResetPlan>,
-    pending_conversion: Option<conversion::Dialog>,
 }
 
 impl RuntimeChoice {
@@ -28,12 +26,20 @@ impl RuntimeChoice {
             error: None,
             pending_restore: None,
             pending_defaults: None,
-            pending_conversion: None,
         }
     }
 }
 
 impl SundialApp {
+    /// The installed runtime's own name, for labels that would otherwise read "Sunrise" on a Dawn
+    /// install. Falls back to Sunrise's name only when nothing is detected.
+    pub(super) fn runtime_name(&self) -> &'static str {
+        self.runtime_choice
+            .inspection
+            .launch_copy()
+            .map_or("Sunrise", RuntimeCopy::name)
+    }
+
     pub(super) fn refresh_runtime_inspection(&mut self) {
         let inspection = RuntimeInspection::inspect(&self.install_path);
         if inspection.duplicates() && !self.runtime_choice.inspection.duplicates() {
@@ -60,7 +66,6 @@ impl SundialApp {
             egui::TopBottomPanel::top("runtime_account_schema_warning").show(ctx, |ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, "Runtime Compatibility");
                 ui.label(problem);
-                self.draw_conversion_button(ui);
             });
         }
         if self.runtime_choice.inspection.duplicates() {
@@ -77,23 +82,42 @@ impl SundialApp {
         }
     }
 
+    /// The runtime controls. What is merely true about the installation belongs in the facts grid
+    /// the caller draws; this is what a reader can act on.
     pub(super) fn draw_runtime_preferences(&mut self, ui: &mut egui::Ui) {
-        if let Some(copy) = self.runtime_choice.inspection.launch_copy() {
-            ui.strong(format!("Detected Runtime: {}", copy.name()));
-            ui.label(format!("DLL: {}", copy.dll_path.display()));
+        // Swapping the DLL is how a player changes runtime, so the settings Sundial opens follow
+        // it. A session that was already open keeps its document until asked, rather than
+        // dropping unsaved edits the moment the other runtime is detected.
+        if let Some((layout, path)) =
+            crate::account::source::runtime_settings_path(&self.install_path)
+                .filter(|(_, path)| !crate::paths::paths_equal(path, &self.settings_path))
+        {
+            let name = self
+                .runtime_choice
+                .inspection
+                .launch_copy()
+                .map_or("The installed runtime", |copy| copy.name());
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("{name} reads {} instead.", path.display()),
+            );
+            if ui
+                .button(format!("Open {name}'s Settings"))
+                .on_hover_text(
+                    "Loads the settings and account the installed runtime actually reads.",
+                )
+                .clicked()
+            {
+                let install = self.install_path.clone();
+                self.load_install(ui.ctx(), install, path, layout);
+            }
         }
-        ui.label(format!("Open Settings: {}", self.settings_path.display()));
-        ui.label(self.document.source_info().detail);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Recheck Runtime Copies").clicked() {
                 self.refresh_runtime_inspection();
             }
             if ui.button("Restore Runtime Backup…").clicked() {
                 self.request_runtime_restore();
-            }
-            self.draw_conversion_button(ui);
-            if ui.button("Restore Conversion Backup…").clicked() {
-                self.request_conversion_restore();
             }
             if self.runtime_choice.inspection.duplicates()
                 && ui.button("Choose Runtime Copy…").clicked()
@@ -102,15 +126,33 @@ impl SundialApp {
                 self.runtime_choice.open = true;
             }
         });
+        // One copy with nothing to report is already described by the grid above. A second copy,
+        // or anything wrong with either, is worth the lines.
+        let worth_listing = self.runtime_choice.inspection.duplicates()
+            || self
+                .runtime_choice
+                .inspection
+                .copies
+                .iter()
+                .any(|copy| copy.selection_problem.is_some() || !copy.compatibility.is_empty());
+        if !worth_listing {
+            return;
+        }
+        ui.add_space(6.0);
         for copy in &self.runtime_choice.inspection.copies {
-            ui.label(format!(
-                "{}: {} {}",
-                copy.location.label(),
-                copy.name(),
-                copy.version.as_deref().unwrap_or("version unavailable")
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}: {} {}",
+                    copy.location.label(),
+                    copy.name(),
+                    copy.version.as_deref().unwrap_or("version unavailable")
+                ))
+                .color(crate::app::ui::secondary_text_color(ui)),
+            );
             for detail in &copy.compatibility {
-                ui.label(detail);
+                ui.label(
+                    egui::RichText::new(detail).color(crate::app::ui::secondary_text_color(ui)),
+                );
             }
             if let Some(problem) = &copy.selection_problem {
                 ui.colored_label(ui.visuals().warn_fg_color, problem);
@@ -119,10 +161,6 @@ impl SundialApp {
     }
 
     pub(super) fn draw_runtime_choice(&mut self, ctx: &egui::Context) {
-        if self.runtime_choice.pending_conversion.is_some() {
-            self.draw_account_conversion(ctx);
-            return;
-        }
         if self.runtime_choice.pending_defaults.is_some() {
             self.draw_runtime_defaults(ctx);
             return;
@@ -217,6 +255,11 @@ impl SundialApp {
                 ui.add_space(8.0);
                 ui.label(plan.copy().settings_path.display().to_string());
                 ui.label("The current settings.json will be backed up to .sunrise/backups before replacement.");
+                if plan.copy().dawn {
+                    // Dawn consumed this file once to seed player-state.db and has not read it
+                    // since, so replacing it does not touch saved progress.
+                    ui.label("Dawn already imported this file into player-state.db, so your saved progress is not affected.");
+                }
                 if plan.schema < 18 {
                     ui.colored_label(ui.visuals().warn_fg_color, "These defaults include the JSON account. Its saved progress and unlocks will return to defaults.");
                     ui.label("If you have custom Parhelion packages installed, reinstall them afterward to restore their Collections entries and unlocks.");
@@ -348,9 +391,21 @@ impl SundialApp {
             self.runtime_choice.error = Some(reason.into());
             return;
         }
-        let path = keep
-            .directory(&self.install_path)
-            .join("Sunrise/settings.json");
+        // The kept copy's settings live in the folder named after that runtime, so read them from
+        // the copy itself rather than assuming Sunrise's.
+        let path = self
+            .runtime_choice
+            .inspection
+            .copies
+            .iter()
+            .find(|copy| copy.location == keep)
+            .map_or_else(
+                || {
+                    keep.directory(&self.install_path)
+                        .join("Sunrise/settings.json")
+                },
+                |copy| copy.settings_path.clone(),
+            );
         // Resolve the chosen document before touching files. The archive operation rechecks its hash.
         let json = match super::settings::load_workspace_json(&path) {
             Ok(value) => value,

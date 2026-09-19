@@ -197,6 +197,7 @@ impl PackageAuthoringApp {
 
     pub(super) fn discard_recipe_changes(&mut self) {
         self.recipe = self.recipe_baseline.clone();
+        self.behavior_pins.clear();
         self.recipe_dirty = self.recipe_requires_initial_save;
         self.clear_dependent_picker_queries();
         self.invalidate_results();
@@ -232,6 +233,7 @@ impl PackageAuthoringApp {
         match WeaponRecipe::load_json(path) {
             Ok(recipe) => {
                 self.recipe = recipe;
+                self.behavior_pins.clear();
                 self.recipe_baseline = self.recipe.clone();
                 self.recipe_path = Some(path.to_path_buf());
                 self.recipe_requires_initial_save = false;
@@ -270,6 +272,7 @@ impl PackageAuthoringApp {
             }
         };
         self.recipe = copy;
+        self.behavior_pins.clear();
         self.recipe_baseline = self.recipe.clone();
         self.recipe_path = None;
         self.recipe_requires_initial_save = true;
@@ -288,6 +291,7 @@ impl PackageAuthoringApp {
             return false;
         };
         self.recipe = recipe;
+        self.behavior_pins.clear();
         self.bind_default_donor();
         self.recipe_baseline = self.recipe.clone();
         self.recipe_path = None;
@@ -391,6 +395,7 @@ impl PackageAuthoringApp {
             Ok((destination, recipe)) => {
                 self.recipe_requires_initial_save = false;
                 self.recipe = recipe;
+                self.behavior_pins.clear();
                 self.recipe_baseline = self.recipe.clone();
                 self.recipe_path = Some(destination.clone());
                 self.recipe_dirty = false;

@@ -5,7 +5,7 @@
 //! whatever the file happens to hold.
 
 /// `PRAGMA user_version` Dawn writes when it creates the database.
-pub(super) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Dawn's own schema, used to build a database a test can read the way Dawn would.
 #[allow(dead_code)]

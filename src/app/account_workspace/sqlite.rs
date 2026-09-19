@@ -170,6 +170,7 @@ pub(super) fn add_profile_item<D: NativeAccountDocument>(
             .map_err(app_inventory_error::<D>)?,
         definition_hash: domain::DefinitionHash::new(definition_hash),
         quantity,
+        instance_soid: None,
     };
     document
         .profile_mut()

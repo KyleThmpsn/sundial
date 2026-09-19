@@ -1107,6 +1107,35 @@ fn selected_unique_behavior(
         .and_then(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
 }
 
+/// The source weapon's name, followed by the perks choosing it puts in the sockets.
+///
+/// The row named only the weapon the behavior is borrowed from, which does not say what turns up
+/// in the sockets afterwards. Several of these keep half of the behavior in a perk, so naming
+/// them here is what tells an author that taking Hard Light also takes The Fundamentals.
+fn behavior_label(
+    entry: &crate::weapon_behavior::Behavior,
+    catalog: Option<&InvestmentCatalog>,
+) -> String {
+    let mut perks: Vec<&str> = Vec::new();
+    if let Some(catalog) = catalog {
+        for plug in [entry.intrinsic_plug, entry.trait_plug]
+            .into_iter()
+            .flatten()
+        {
+            // An installation that cannot name the plug says nothing rather than a bare hash.
+            if let Some(name) = catalog.item_display_name(plug)
+                && !perks.contains(&name)
+            {
+                perks.push(name);
+            }
+        }
+    }
+    if perks.is_empty() {
+        return entry.source_name.to_owned();
+    }
+    format!("{} ({})", entry.source_name, perks.join(", "))
+}
+
 /// Copies another weapon's built-in behavior onto this one.
 ///
 /// This sits with the damage type and the other weapon-wide choices, so it is one line: a label
@@ -1115,6 +1144,7 @@ pub(super) fn draw_unique_behavior_control(
     ui: &mut egui::Ui,
     overrides: &mut crate::recipe::WeaponRecipeOverrides,
     sources: &[&'static crate::weapon_behavior::Behavior],
+    catalog: Option<&InvestmentCatalog>,
 ) {
     use crate::app::style::workbench_style;
     use crate::recipe::AdditionalBehaviorRecipe;
@@ -1140,7 +1170,7 @@ pub(super) fn draw_unique_behavior_control(
     let selected = selected_unique_behavior(overrides);
     let selected_text = selected.map_or_else(
         || NO_BEHAVIOR.to_owned(),
-        |entry| entry.source_name.to_owned(),
+        |entry| behavior_label(entry, catalog),
     );
     ui.add_enabled_ui(!offered.is_empty(), |ui| {
         egui::ComboBox::from_id_salt("recipe_unique_behavior")
@@ -1164,7 +1194,7 @@ pub(super) fn draw_unique_behavior_control(
                 for entry in offered {
                     let chosen = selected.is_some_and(|current| current.id == entry.id);
                     if ui
-                        .selectable_label(chosen, entry.source_name)
+                        .selectable_label(chosen, behavior_label(entry, catalog))
                         .on_hover_text(entry.summary)
                         .clicked()
                         && !chosen
@@ -1211,7 +1241,7 @@ pub(super) fn draw_unique_behavior_details(
     {
         overrides.skip_behavior_perks = !with_perks;
     }
-    if entry.carries_firing_graph() {
+    if entry.launches_projectiles() {
         draw_unique_behavior_projectile_speed(ui, overrides);
     }
     ui.weak(entry.summary);
@@ -1231,7 +1261,7 @@ fn draw_unique_behavior_projectile_speed(
         crate::weapon_behavior::DEFAULT_PROJECTILE_SPEED_BOOST,
         f32::from_bits,
     );
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Projectile Speed Multiplier");
         let response = ui.add_sized(
             [100.0, ui.spacing().interact_size.y],
@@ -1249,4 +1279,19 @@ fn draw_unique_behavior_projectile_speed(
             overrides.behavior_projectile_speed_bits = Some(boost.to_bits());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::behavior_label;
+    use crate::weapon_behavior::CATALOG;
+
+    /// Without an installation the plug hashes cannot be turned into names, and a bare hash or an
+    /// empty pair of brackets says less than the weapon's name on its own.
+    #[test]
+    fn a_behavior_with_no_installation_to_name_its_perks_is_just_the_weapon() {
+        for entry in CATALOG {
+            assert_eq!(behavior_label(entry, None), entry.source_name);
+        }
+    }
 }

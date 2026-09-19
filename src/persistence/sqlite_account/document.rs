@@ -244,26 +244,6 @@ impl SqliteAccountDocument {
         &self.path
     }
 
-    pub(crate) fn primary_soid(&self) -> u64 {
-        self.primary_soid.get()
-    }
-
-    pub(crate) fn write_conversion_copy(&self, path: &Path) -> Result<(), SqliteAccountError> {
-        let source = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| SqliteAccountError::sqlite("read the conversion source", error))?;
-        if database_revision(&source)? != self.revision {
-            return Err(SqliteAccountError::SourceChanged);
-        }
-        super::writer::create_integrity_checked_snapshot(&self.path, path)?;
-        let mut candidate = self.clone();
-        candidate.path = path.to_owned();
-        super::writer::save_with_backup(
-            &mut candidate,
-            Some(path.with_extension("before.sqlite3")),
-        )?;
-        Ok(())
-    }
-
     pub(crate) const fn profile(&self) -> &ProfileState {
         &self.profile
     }

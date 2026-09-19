@@ -43,6 +43,92 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, donor: &WeaponDonor
     }
 }
 
+fn drag(
+    ctx: &egui::Context,
+    app: &mut PackageAuthoringApp,
+    donor: &WeaponDonor,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) {
+    frame(ctx, app, donor, vec![egui::Event::PointerMoved(from)]);
+    frame(
+        ctx,
+        app,
+        donor,
+        vec![
+            egui::Event::PointerMoved(from),
+            egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    // Cross the drag threshold in steps, the way a pointer actually travels.
+    for step in 1..=6 {
+        let position = from + (to - from) * (step as f32 / 6.0);
+        frame(ctx, app, donor, vec![egui::Event::PointerMoved(position)]);
+    }
+    frame(
+        ctx,
+        app,
+        donor,
+        vec![
+            egui::Event::PointerMoved(to),
+            egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    frame(ctx, app, donor, vec![]);
+}
+
+#[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket reorder UI check"]
+fn dragging_a_choice_grip_reorders_its_socket() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let donor = catalog.weapon_donor(0x4CE3_CE93).unwrap();
+    let mut app = PackageAuthoringApp {
+        catalog: Some(catalog),
+        recipe: WeaponRecipe::new_named_weapon_for_donor(
+            "Reorder Test",
+            donor.summary.hash,
+            &donor.summary.name,
+        )
+        .unwrap(),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, &donor, vec![]);
+    let output = frame(&ctx, &mut app, &donor, vec![]);
+    let grips = text_origins(&output, egui_phosphor::regular::DOTS_SIX_VERTICAL);
+    assert!(grips.len() >= 2, "no drag grips were rendered");
+    // Two grips sharing a row belong to the same socket, so this is a reorder and not a copy.
+    let (first, second) = grips
+        .iter()
+        .zip(grips.iter().skip(1))
+        .find(|(left, right)| (left.y - right.y).abs() <= 1.0)
+        .map(|(left, right)| (*left, *right))
+        .expect("a socket with two choices on one row");
+    let before = app.recipe.clone();
+    drag(
+        &ctx,
+        &mut app,
+        &donor,
+        first + egui::vec2(3.0, 6.0),
+        second + egui::vec2(3.0, 6.0),
+    );
+    assert_ne!(
+        app.recipe, before,
+        "dragging a grip onto the next choice changed nothing"
+    );
+}
+
 #[test]
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket UI check"]
 fn extra_choice_context_menu_promotes_its_private_definition() {

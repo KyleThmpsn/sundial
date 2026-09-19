@@ -8,6 +8,16 @@ impl SundialApp {
             self.set_status("The active account uses settings.json. Use Reset to Sunrise Defaults for this installation", true);
             return;
         }
+        // Sunrise's bundled account defaults have nothing to do with Dawn, and this would write
+        // them over player-state.db, which is where that path points for a Dawn workspace. Dawn
+        // seeds its own database from settings.json the first time it boots.
+        if self.document.account_is_dawn() {
+            self.set_status(
+                "Dawn seeds player-state.db from settings.json on its first boot. Sundial does not reset it",
+                true,
+            );
+            return;
+        }
         let result = super::super::settings::load_installed_account_defaults(&self.install_path)
             .and_then(|defaults| {
                 ResetPlan::prepare(&self.document.source_info().database_path, &defaults)

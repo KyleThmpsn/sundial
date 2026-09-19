@@ -17,7 +17,7 @@ pub(super) use paths::{
     settings_path_for_install,
 };
 pub(super) use persistence::{
-    SaveJsonError, SaveJsonResult, create_adjacent_backup, load_workspace_json, lock_settings,
+    SaveJsonError, SaveJsonResult, create_adjacent_backup, load_workspace_json,
     require_game_closed, save_json, verify_workspace_source_unchanged,
 };
 #[cfg(test)]

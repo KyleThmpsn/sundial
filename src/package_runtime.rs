@@ -21,17 +21,30 @@ pub mod tft;
 const MIN_RUNTIME_PACKAGE_ID: u16 = 0x0100;
 const MAX_RUNTIME_PACKAGE_ID: u16 = 0x0CFF;
 
-const PACKAGE_AUTHORING_RUNTIME_MARKERS: [(&[u8], &str); 3] = [
+const PACKAGE_AUTHORING_RUNTIME_MARKERS: [(&[u8], &str); 2] = [
     (
         b"mode=package_integrity_bypass",
         "generated package-header trust",
     ),
-    (b"SUNCMANF", "generated content manifest"),
     (
         b"ev=content_config stage=get route=manifest",
         "generated manifest routing",
     ),
 ];
+
+/// Each runtime stamps its generated content-manifest cache with its own eight ASCII bytes:
+/// Sunrise writes `SUNCMANF`, Dawn writes `DAWNMANF` (`content_manifest/cache/format.h`). The two
+/// mean the same capability, so the one to look for follows the runtime that is installed rather
+/// than being fixed at Sunrise's.
+const MANIFEST_CACHE_MARKERS: [(&str, &[u8]); 2] =
+    [("Dawn", b"DAWNMANF"), ("Sunrise", b"SUNCMANF")];
+
+fn manifest_cache_marker(runtime: &str) -> &'static [u8] {
+    MANIFEST_CACHE_MARKERS
+        .iter()
+        .find(|(name, _)| *name == runtime)
+        .map_or(MANIFEST_CACHE_MARKERS[1].1, |(_, marker)| *marker)
+}
 
 pub(crate) fn sunrise_module_path(install: &Path) -> PathBuf {
     let root = install.join("steam_api64.dll");
@@ -138,7 +151,7 @@ pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), S
     })?;
     // These embedded markers are a capability advertisement, not proof that a particular
     // generated manifest or package set has already loaded successfully.
-    let missing = missing_package_authoring_runtime_features(&bytes);
+    let missing = missing_package_authoring_runtime_features(&bytes, name);
     if missing.is_empty() {
         Ok(())
     } else {
@@ -149,10 +162,12 @@ pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), S
     }
 }
 
-fn missing_package_authoring_runtime_features(bytes: &[u8]) -> Vec<&'static str> {
+fn missing_package_authoring_runtime_features(bytes: &[u8], runtime: &str) -> Vec<&'static str> {
     PACKAGE_AUTHORING_RUNTIME_MARKERS
         .iter()
-        .filter_map(|(marker, label)| (!contains_bytes(bytes, marker)).then_some(*label))
+        .copied()
+        .chain([(manifest_cache_marker(runtime), "generated content manifest")])
+        .filter_map(|(marker, label)| (!contains_bytes(bytes, marker)).then_some(label))
         .collect()
 }
 

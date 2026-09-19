@@ -152,13 +152,16 @@ pub(super) fn primary_soid(connection: &Connection) -> Incompatible<InstanceSoid
 /// Reads profile stacks. Dawn requires `position` to run contiguously from zero.
 pub(super) fn profile(connection: &Connection) -> Incompatible<ProfileState> {
     let mut statement = connection
-        .prepare("SELECT position,definition_hash,quantity FROM profile_items ORDER BY position")?;
+        .prepare(
+            "SELECT position,definition_hash,quantity,instance_soid FROM profile_items              ORDER BY position",
+        )?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -171,7 +174,7 @@ pub(super) fn profile(connection: &Connection) -> Incompatible<ProfileState> {
     }
     let mut ids = Ids::new();
     let mut items = Vec::with_capacity(rows.len());
-    for (index, (position, hash, quantity)) in rows.iter().enumerate() {
+    for (index, (position, hash, quantity, soid)) in rows.iter().enumerate() {
         if *position != index as i64 {
             return Ok(Err(row(format!(
                 "profile item positions are not contiguous from zero at {position}"
@@ -187,10 +190,15 @@ pub(super) fn profile(connection: &Connection) -> Incompatible<ProfileState> {
                 "profile item {position} quantity is out of range"
             ))));
         };
+        // The stack's durable identity travels with it. Position cannot stand in for it, because
+        // adding or removing a stack renumbers every later position. A stack with no readable
+        // identity is carried as having none and the writer allocates one, which repairs a
+        // database an earlier Sundial wrote zeroes into rather than refusing to open it.
         items.push(ProfileItem {
             id: ids.next(),
             definition_hash: DefinitionHash::new(hash),
             quantity,
+            instance_soid: contract::parse_soid(soid).and_then(InstanceSoid::try_from_u64),
         });
     }
     let capabilities = ProfileCapabilities {
@@ -458,9 +466,14 @@ fn read_items(connection: &Connection, ids: &mut Ids) -> Incompatible<Vec<Loaded
     Ok(Ok(items))
 }
 
-/// Reads `settings_values` and `key_bindings` into storage-neutral settings.
-pub(super) fn settings(connection: &Connection) -> Incompatible<AccountSettingsState> {
+/// Reads `settings_values` and `key_bindings` into storage-neutral settings, with an index of
+/// where each one came from so a later write goes back to exactly that row and column.
+pub(super) fn settings(
+    connection: &Connection,
+) -> Incompatible<(AccountSettingsState, super::settings::SettingsIndex)> {
+    use super::settings::{SettingColumn, SettingsIndex};
     let mut values: BTreeMap<AccountSettingKey, AccountSettingValue> = BTreeMap::new();
+    let mut index = SettingsIndex::default();
 
     let mut statement = connection
         .prepare("SELECT key,integer_value,real_value FROM settings_values ORDER BY key")?;
@@ -508,9 +521,17 @@ pub(super) fn settings(connection: &Connection) -> Incompatible<AccountSettingsS
         // Dawn stores every preference as a number, while the storage-neutral model types each
         // one. Offering the alternatives and keeping the first the account crate accepts avoids
         // mirroring its table here. A preference it does not model stays in the database.
-        let key = AccountSettingKey::preference(group, snake_case(name));
-        if let Some(value) = first_supported(&key, value) {
-            values.insert(key, value);
+        let column = if integer.is_some() {
+            SettingColumn::Integer
+        } else {
+            SettingColumn::Real
+        };
+        let model_key = AccountSettingKey::preference(group, snake_case(name));
+        if let Some(value) = first_supported(&model_key, value) {
+            index
+                .preferences
+                .insert(model_key.clone(), (key.clone(), column));
+            values.insert(model_key, value);
         }
     }
 
@@ -553,6 +574,7 @@ pub(super) fn settings(connection: &Connection) -> Incompatible<AccountSettingsS
             };
             let key = AccountSettingKey::key_binding(*name, slot);
             if let Some(value) = first_supported(&key, value) {
+                index.actions.insert((*name).to_owned(), action);
                 values.insert(key, value);
             }
         }
@@ -565,7 +587,7 @@ pub(super) fn settings(connection: &Connection) -> Incompatible<AccountSettingsS
         extended_field_of_view: false,
     };
     match AccountSettingsState::try_new(capabilities, values) {
-        Ok(state) => Ok(Ok(state)),
+        Ok(state) => Ok(Ok((state, index))),
         Err(error) => Ok(Err(row(error.to_string()))),
     }
 }

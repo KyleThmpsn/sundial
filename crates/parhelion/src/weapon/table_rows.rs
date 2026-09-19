@@ -146,7 +146,7 @@ pub(super) fn append_dense_item_presentation(
     data: Vec<u8>,
     template_item_index: usize,
     expected_item_count: usize,
-    donor_icon_container: TagHash,
+    template_icon_container: TagHash,
     authored_icon_container: TagHash,
 ) -> AuthoringResult<Vec<u8>> {
     let arrays = dense_item_presentation_arrays(&data)?;
@@ -176,7 +176,7 @@ pub(super) fn append_dense_item_presentation(
         || read_u32(
             &data,
             icon_tags.rows + template_icon_tag_index * ITEM_DENSE_ICON_TAG_ROW_SIZE,
-        )? != donor_icon_container.0
+        )? != template_icon_container.0
     {
         return Err(invalid(
             "Dense item-presentation donor selector does not resolve to its item icon container",
@@ -215,7 +215,7 @@ pub(super) fn validate_dense_item_presentation(
     data: &[u8],
     template_item_index: usize,
     expected_count: usize,
-    donor_icon_container: TagHash,
+    template_icon_container: TagHash,
     authored_icon_container: TagHash,
 ) -> AuthoringResult<()> {
     let arrays = dense_item_presentation_arrays(data)?;
@@ -265,7 +265,7 @@ pub(super) fn validate_dense_item_presentation(
         || read_u32(
             data,
             icon_tags.rows + template_icon_tag_index * ITEM_DENSE_ICON_TAG_ROW_SIZE,
-        )? != donor_icon_container.0
+        )? != template_icon_container.0
         || read_u32(
             data,
             icon_tags.rows + authored_icon_tag_index * ITEM_DENSE_ICON_TAG_ROW_SIZE,

@@ -32,9 +32,8 @@ pub(super) fn source_bits(
     Ok(u32::from_le_bytes(
         payload
             .get(offset..offset + 4)
-            .ok_or("Action scalar is truncated")?
-            .try_into()
-            .unwrap(),
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or("Action scalar is truncated")?,
     ))
 }
 

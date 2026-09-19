@@ -307,7 +307,33 @@ fn nested(ui: &mut egui::Ui, graph: &mut Graph, parent: usize) -> Result<(), Str
                                         &field.label,
                                         fields::contract(class, field).description,
                                         |ui| {
-                                            super::scalar(ui, field, &mut graph.blocks[child], row)
+                                            // This record can be one another node points at
+                                            // too, so an edit lands on a copy that only this
+                                            // owner reaches. The link is re-read because an
+                                            // earlier field in this same pass may have made
+                                            // that copy already.
+                                            let target = graph.blocks[parent]
+                                                .links
+                                                .get(&at)
+                                                .copied()
+                                                .unwrap_or(child);
+                                            let before = graph.blocks[target].bytes.clone();
+                                            let drawn = super::scalar(
+                                                ui,
+                                                field,
+                                                &mut graph.blocks[target],
+                                                row,
+                                            );
+                                            if drawn.is_ok() && graph.blocks[target].bytes != before
+                                            {
+                                                let after = std::mem::replace(
+                                                    &mut graph.blocks[target].bytes,
+                                                    before,
+                                                );
+                                                let private = graph.make_unique(parent, at)?;
+                                                graph.blocks[private].bytes = after;
+                                            }
+                                            drawn
                                         },
                                     )
                                 })
@@ -600,8 +626,8 @@ fn controls(
     // Two fields fit side by side once the pane affords two cells. Each row measures its own
     // label column against the whole line, so however wide the pane grew a card of short
     // fields ran down a single column with the rest of every line empty. A narrow pane keeps
-    // the rows: a cell cannot shrink, and one placed in a pane too small for it pushes the
-    // card wider than the window that holds it.
+    // the rows, where the label column gives way as the pane tightens, rather than cells that
+    // hold their label width and squeeze the control instead.
     let wide = ui.available_width() >= cell_width(ui) * 2.0;
     let mut failed = None;
     let mut draw_fields = |ui: &mut egui::Ui| {

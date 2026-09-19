@@ -259,6 +259,7 @@ fn load_profile_items(
             id: entity_ids.next()?,
             definition_hash: DefinitionHash::new(definition_hash),
             quantity,
+            instance_soid: None,
         });
     }
     if items.len() != expected_count {

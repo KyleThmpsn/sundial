@@ -289,6 +289,8 @@ impl SettingsLayout {
             Self::GameRoot => "game_root",
             Self::Root => "root",
             Self::BinX64 => "bin_x64",
+            Self::DawnRoot => "dawn_root",
+            Self::DawnBinX64 => "dawn_bin_x64",
         }
     }
 
@@ -297,6 +299,8 @@ impl SettingsLayout {
             "game_root" => Some(Self::GameRoot),
             "root" => Some(Self::Root),
             "bin_x64" => Some(Self::BinX64),
+            "dawn_root" => Some(Self::DawnRoot),
+            "dawn_bin_x64" => Some(Self::DawnBinX64),
             _ => None,
         }
     }

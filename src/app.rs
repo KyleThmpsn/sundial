@@ -835,7 +835,7 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind)
         ),
         AccountSourceKind::Dawn => (
             "Dawn Account Data",
-            "This install runs Dawn, so account data is read from player-state.db beside settings.json. Sundial does not write that database yet, and player identity and runtime configuration are still read from settings.json.",
+            "This install runs Dawn, so account data lives in player-state.db beside settings.json. Dawn reads settings.json once when it first creates that database and never again, so edits made here are written to player-state.db.",
         ),
         AccountSourceKind::Blocked => (
             "Account Database Unavailable",

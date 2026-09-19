@@ -91,11 +91,17 @@ fn runtime_format_checks_cover_both_directions_and_every_settings_location() {
         let before = app.document.clone();
         let database_before = fs::read(&database).unwrap();
         set_runtime(&mut inspection, true, 6);
-        let error = app
-            .validation_warning_for_runtime(&app.document, &inspection)
-            .unwrap_err();
-        assert!(error.contains("Dawn requires settings v6"), "{error}");
-        assert!(error.contains("Restore matching JSON"), "{error}");
+        // Dawn keeps its account in player-state.db whatever its settings schema says, so the
+        // v18 storage rule is Sunrise's own migration and says nothing about Dawn. What Dawn
+        // does expect of its settings is reported by its own runtime validation instead.
+        let checked = app.validation_warning_for_runtime(&app.document, &inspection);
+        assert!(
+            checked
+                .as_ref()
+                .err()
+                .is_none_or(|error| !error.contains("account storage")),
+            "{checked:?}"
+        );
         assert_eq!(app.document, before);
         assert_eq!(fs::read(&database).unwrap(), database_before);
     }
@@ -110,7 +116,9 @@ fn runtime_swap_blocks_raw_apply_and_save_review_for_each_settings_layout() {
         fs::create_dir_all(app.settings_path.parent().unwrap()).unwrap();
         fs::write(&app.settings_path, &app.raw_json).unwrap();
         let mut dll = directory.0.join("steam_api64.dll");
-        if layout == SettingsLayout::BinX64 {
+        // Both bin/x64 layouts put the runtime there, so the DLL has to move for either or the
+        // swap is not a swap in place.
+        if matches!(layout, SettingsLayout::BinX64 | SettingsLayout::DawnBinX64) {
             let bin = directory.0.join("bin/x64/steam_api64.dll");
             fs::rename(&dll, &bin).unwrap();
             dll = bin;
@@ -157,7 +165,7 @@ fn a_new_game_folder_dll_cannot_hide_behind_the_selected_bin_copy() {
     let error = inspection
         .workspace_problem(&app.settings_path, &sunrise_v18())
         .unwrap();
-    assert!(error.contains("Dawn requires settings v6"), "{error}");
+    assert!(error.contains("takes precedence"), "{error}");
     inspection.copies.reverse();
     assert_eq!(
         inspection.launch_copy().unwrap().location,

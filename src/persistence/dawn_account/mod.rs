@@ -8,19 +8,28 @@
 //! checkpoints this database, and a layout Dawn would refuse to boot from is surfaced explicitly
 //! so it cannot be mistaken for the pinned one.
 
+mod carried;
 mod contract;
 mod document;
 mod error;
+mod package;
 mod reader;
+mod settings;
+mod unlocks;
 mod writer;
 
 use std::path::PathBuf;
 
 use sundial_account::{AccountSettingsState, CharacterState, InstanceSoid, ProfileState};
 
+/// Exposed so the app layer can assert its user-facing contract line still matches.
+#[cfg(test)]
+pub(crate) use contract::SCHEMA_VERSION;
 pub(crate) use document::load;
 pub(crate) use error::DawnAccountIncompatibility;
+pub(crate) use package::{preview_replacement, read as read_snapshot, replace};
 use reader::{DawnAllocators, DawnMetadata};
+pub(crate) use unlocks::apply_authored_unlocks;
 pub(crate) use writer::{DawnSaveReceipt, restore_backup, save};
 
 /// The storage-neutral account state one player-state database holds.
@@ -33,12 +42,21 @@ pub(crate) struct DawnAccountSnapshot {
 }
 
 /// One loaded player-state database, with the runtime bookkeeping a later write must respect.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: the carried `characters.appearance` is a float.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DawnAccountDocument {
     path: PathBuf,
     metadata: DawnMetadata,
     allocators: DawnAllocators,
     snapshot: DawnAccountSnapshot,
+    /// Rows this build does not model. A save replaces the account graph, so they are read with
+    /// it and put back after it.
+    carried: carried::Carried,
+    /// Where each modelled setting was read from, so an edit is written back to that exact row.
+    settings_index: settings::SettingsIndex,
+    /// The settings as loaded. A save writes only what differs from this.
+    loaded_settings: AccountSettingsState,
 }
 
 /// Read surface for the loaded account. The writer reads the revision and allocators through the
@@ -58,6 +76,20 @@ impl DawnAccountDocument {
         &self.snapshot.settings
     }
     /// The revision a write must advance, mirroring Dawn's own compare and swap.
+    /// Whether the editable account differs from another copy of it.
+    ///
+    /// The comparison is the account and the rows carried with it, never `account_revision`: a
+    /// save advances that, and a document compared against its pre-save self would otherwise look
+    /// permanently edited.
+    pub(crate) fn differs_from(&self, other: &Self) -> bool {
+        self.snapshot != other.snapshot || self.carried != other.carried
+    }
+
+    /// Adopts another copy's revision, after that copy's bytes were put back on disk.
+    pub(crate) fn adopt_revision(&mut self, source: &Self) {
+        self.metadata.account_revision = source.metadata.account_revision;
+    }
+
     pub(crate) fn account_revision(&self) -> i64 {
         self.metadata.account_revision
     }
@@ -82,7 +114,7 @@ pub(crate) enum DawnAccountDocumentLoad {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 impl DawnAccountDocument {
     pub(crate) fn profile_mut(&mut self) -> &mut ProfileState {

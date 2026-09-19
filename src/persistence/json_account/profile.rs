@@ -433,6 +433,7 @@ fn load_profile_items(
             id,
             definition_hash: parse_definition_hash(row, &path)?,
             quantity: parse_quantity(row, &path)?,
+            instance_soid: None,
         });
         order.push(id);
         raw.insert(id, row.clone());
@@ -704,6 +705,7 @@ mod tests {
                     id: new_id,
                     definition_hash: DefinitionHash::new(44),
                     quantity: 1,
+                    instance_soid: None,
                 }),
             )
             .unwrap();
@@ -728,6 +730,7 @@ mod tests {
                         id: adapter.next_entity_id(),
                         definition_hash: DefinitionHash::new(44),
                         quantity: 1,
+                        instance_soid: None,
                     }),
                 )
                 .is_err()

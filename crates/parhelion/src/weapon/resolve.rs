@@ -16,6 +16,10 @@ pub(super) struct ResolvedWeapon {
     pub(super) definition: Vec<u8>,
     pub(super) strings: Vec<u8>,
     pub(super) icon_template_item_index: usize,
+    /// The icon container the template item's own presentation row resolves to. The dense table
+    /// is checked against this, not against the icon donor's container, which differs from it
+    /// exactly when an icon donor is set.
+    pub(super) icon_template_container: TagHash,
     pub(super) donor_icon_index: u16,
     pub(super) donor_icon_container: TagHash,
     pub(super) presentation_donor: Option<ResolvedPresentationDonor>,
@@ -393,7 +397,13 @@ pub(super) fn resolve_project_weapons_with_progress(
                 string_tag,
                 definition,
                 strings,
-                icon_template_item_index: selected_icon.item_index,
+                // The icon donor supplies the icon, not the item. The dense presentation row is
+                // templated from the item this weapon actually is, because that row carries the
+                // client's UI cache entry: its presentation type and classification. Templating it
+                // from the icon donor made a weapon whose icon came from an ornament present as
+                // that ornament, which the inventory grid drew as an empty tile.
+                icon_template_item_index: inherited_icon.item_index,
+                icon_template_container: inherited_icon.icon_container,
                 donor_icon_index: selected_icon.icon_index,
                 donor_icon_container: selected_icon.icon_container,
                 presentation_donor,

@@ -11,6 +11,7 @@ mod character;
 mod error;
 mod identity;
 mod profile;
+mod unlocks;
 mod validation;
 
 pub use account_settings::{
@@ -30,6 +31,7 @@ pub use profile::{
     DismantleGearClass, DismantleRarity, DismantleReward, DismantleRewardCommand,
     ProfileCapabilities, ProfileItem, ProfileItemCommand, ProfileState,
 };
+pub use unlocks::{AuthoredUnlock, FLAG_CLEAR, FLAG_SET, UnlockScope};
 
 /// The engine sentinel used where no valid investment definition is present.
 pub const NO_DEFINITION_HASH: DefinitionHash = DefinitionHash::new(0x811C_9DC5);

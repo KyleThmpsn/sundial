@@ -64,6 +64,7 @@ pub(crate) fn add_profile_item(
         id: adapter.next_entity_id(),
         definition_hash: account_domain::DefinitionHash::new(definition_hash),
         quantity,
+        instance_soid: None,
     };
     let (_, candidate) = adapter
         .apply_profile_item(document, account_domain::ProfileItemCommand::Add(item))

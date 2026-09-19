@@ -129,6 +129,17 @@ pub(super) fn draw_active(
                         }
                     }
                 });
+                if current_len == 0
+                    && can_add
+                    && let Some(command) = draw_empty_choice_drop(
+                        ui,
+                        donor.summary.hash,
+                        socket.index,
+                        choice_area_width,
+                    )
+                {
+                    selection = Some(command);
+                }
                 draw_paging(ui, context.page, choices);
             },
         );
@@ -205,6 +216,54 @@ fn choice_drag_id(donor_hash: u32, socket_index: usize, choice_index: usize) -> 
 
 fn choice_drop_id(donor_hash: u32, socket_index: usize, choice_index: usize) -> egui::Id {
     egui::Id::new(("socket-choice-drop", donor_hash, socket_index, choice_index))
+}
+
+/// A socket with no choices has no tile to drop onto, so it offers its whole choice area while a
+/// drag is in flight. Without this a blank socket is the one place a perk cannot be dropped, even
+/// though the drag grip invites it.
+fn draw_empty_choice_drop(
+    ui: &mut egui::Ui,
+    donor_hash: u32,
+    socket_index: usize,
+    width: f32,
+) -> Option<RowCommand> {
+    if !egui::DragAndDrop::has_payload_of_type::<ChoiceDrag>(ui.ctx()) {
+        return None;
+    }
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Sense::hover(),
+    );
+    let drop = ui.interact(
+        rect,
+        choice_drop_id(donor_hash, socket_index, 0),
+        egui::Sense::hover(),
+    );
+    let visuals = if drop.dnd_hover_payload::<ChoiceDrag>().is_some() {
+        ui.visuals().widgets.active
+    } else {
+        ui.visuals().widgets.inactive
+    };
+    ui.painter().rect_stroke(
+        rect,
+        visuals.corner_radius,
+        visuals.fg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop a perk here",
+        egui::TextStyle::Body.resolve(ui.style()),
+        visuals.fg_stroke.color,
+    );
+    // The socket is empty, so the dropped perk becomes its default. As with a drop onto another
+    // socket's tile, the source keeps its own copy.
+    drop.dnd_release_payload::<ChoiceDrag>()
+        .map(|dragged| RowCommand::EditChoice {
+            index: 0,
+            hash: Some(dragged.hash),
+        })
 }
 
 fn draw_choice(

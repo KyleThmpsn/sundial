@@ -123,9 +123,24 @@ fn real_ornament_model_and_icon_survive_resolution_and_build() {
             .expect("the spec selects an ornament"),
     )
     .expect("the ornament should resolve");
+    // The icon and its container come from the ornament, and the model and dyes below come from
+    // it too. The dense presentation row does not: that row is the client's UI cache entry for the
+    // item, carrying its presentation type and classification, so templating it from the ornament
+    // made the authored weapon present as an ornament and draw as an empty tile in the grid.
     assert_eq!(resolved[0].donor_icon_container, ornament.icon_container);
     assert_eq!(resolved[0].donor_icon_index, ornament.icon_index);
-    assert_eq!(resolved[0].icon_template_item_index, ornament.item_index);
+    assert_eq!(
+        resolved[0].icon_template_item_index, resolved[0].donor_item_index,
+        "the presentation row templates on the weapon this is, not on the icon donor"
+    );
+    assert_ne!(
+        resolved[0].icon_template_item_index, ornament.item_index,
+        "the ornament must not supply the item's presentation row"
+    );
+    assert_ne!(
+        resolved[0].icon_template_container, ornament.icon_container,
+        "the presentation row is checked against its own item's container, not the ornament's"
+    );
 
     let bundle = build_weapon_project(
         &packages,

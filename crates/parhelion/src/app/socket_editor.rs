@@ -170,20 +170,23 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         "Replicated Effect Bank: {} / 16",
         bank.default_count
     ));
-    if recipe.overrides.variable_damage.is_some() {
-        let lane = donor.sockets.iter().position(|socket| {
-            socket.socket_type == crate::weapon::variable_damage::TRAIT_SOCKET_TYPE
-        });
+    // The Fundamentals now leads its trait socket in the list below, so the only thing left to
+    // say is when there is no trait socket for it to lead. A socket the author gave the trait
+    // role, or appended, counts as one, so this asks the lanes the same way the build does.
+    if recipe.overrides.variable_damage.is_some()
+        && !crate::weapon_behavior::effective_socket_types(
+            &authored_socket_roles(recipe),
+            &donor
+                .sockets
+                .iter()
+                .map(|socket| socket.socket_type)
+                .collect::<Vec<_>>(),
+        )
+        .contains(&crate::weapon::variable_damage::TRAIT_SOCKET_TYPE)
+    {
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            match lane {
-                Some(lane) => format!(
-                    "Variable damage pins The Fundamentals into socket {} (Trait) at build time. Overrides on that socket are rejected.",
-                    lane + 1
-                ),
-                None => "Variable damage needs a trait socket, and this base weapon has none."
-                    .to_owned(),
-            },
+            "Variable damage needs a trait socket, and this weapon has none. Add one below.",
         );
     }
     let solar = recipe.overrides.modern_damage_type.map_or(
@@ -1281,4 +1284,176 @@ pub(super) fn inherited_socket_choices(
         }
     }
     choices
+}
+
+/// The plugs the behavior sync wrote into sockets itself, as (lane, plug) pairs.
+///
+/// Deselecting a behavior takes back only what is recorded here. Anything else at the head of a
+/// lane, whether the donor's own perk or one the author placed and made the default, was never
+/// the sync's to remove. The record is per editor session: a recipe loaded with a behavior
+/// already chosen keeps that perk in place until the author removes it by hand.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct BehaviorPins(BTreeSet<(usize, u32)>);
+
+impl BehaviorPins {
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Puts each chosen behavior's own perk at the head of the socket it claims, and takes back a
+/// perk no longer claimed.
+///
+/// The build grafts these plugs too, so this changes nothing about the weapon that gets built.
+/// What it changes is when the author sees them: a behavior used to describe what it would do to
+/// the sockets later, which left the list on screen disagreeing with the weapon until it was
+/// built. Running every frame keeps the two in step through every way the choice can change,
+/// including deselecting the behavior and turning its perks off.
+pub(super) fn sync_behavior_socket_pins(
+    recipe: &mut WeaponRecipe,
+    pins: &mut BehaviorPins,
+    donor: &WeaponDonor,
+) {
+    let donor_socket_types = donor
+        .sockets
+        .iter()
+        .map(|socket| socket.socket_type)
+        .collect::<Vec<_>>();
+    // The lane roles and authored plugs the build reads, so the sockets drawn here are the
+    // sockets that get built: a column the author gave the trait role, or appended, is a trait
+    // socket to both.
+    let socket_types = crate::weapon_behavior::effective_socket_types(
+        &authored_socket_roles(recipe),
+        &donor_socket_types,
+    );
+    let placed = authored_socket_plugs(recipe);
+    let behaviors = || {
+        recipe
+            .overrides
+            .additional_behaviors
+            .iter()
+            .map(|entry| entry.behavior.as_str())
+    };
+    let skip = recipe.overrides.skip_behavior_perks;
+    let mut required =
+        crate::weapon_behavior::socket_pins(behaviors(), skip, &socket_types, &placed);
+    let mut claimed = crate::weapon_behavior::claimed_plugs(behaviors(), skip);
+    // Variable damage carries The Fundamentals into a trait lane whether or not the element-switch
+    // behavior is listed, which is how the build reads it.
+    if recipe.overrides.variable_damage.is_some() {
+        let fundamentals = crate::weapon::variable_damage::FUNDAMENTALS_PLUG_HASH;
+        claimed.insert(fundamentals);
+        let trait_lanes = || {
+            socket_types
+                .iter()
+                .enumerate()
+                .filter(|(_, socket_type)| {
+                    **socket_type == crate::weapon_behavior::TRAIT_SOCKET_TYPE
+                })
+                .map(|(lane, _)| lane)
+        };
+        let held = trait_lanes().any(|lane| {
+            placed
+                .get(lane)
+                .is_some_and(|choices| choices.contains(&fundamentals))
+        });
+        if !held && let Some(lane) = trait_lanes().next() {
+            required.push((lane, fundamentals));
+        }
+    }
+    for (lane, socket_type) in socket_types.iter().enumerate() {
+        let limit = authored_socket_choice_limit(*socket_type);
+        if limit == 0 {
+            continue;
+        }
+        let inherited = donor.sockets.get(lane).map_or_else(Vec::new, |socket| {
+            inherited_socket_choices(
+                socket.native_default,
+                &socket.ordered_embedded_choices,
+                limit,
+            )
+        });
+        let Ok(current) = recipe_socket_choices(recipe, lane, &inherited) else {
+            continue;
+        };
+        let mut choices = current.clone();
+        // Only a plug this sync wrote is ours to take back, and only once no chosen behavior
+        // wants it any more. A perk the author placed, made the default, or moved into a socket
+        // of their own is their choice and stays where they put it, and so does the donor's own.
+        choices.retain(|choice| {
+            let released = pins.0.contains(&(lane, *choice)) && !claimed.contains(choice);
+            if released {
+                pins.0.remove(&(lane, *choice));
+            }
+            !released
+        });
+        let mut pinned = false;
+        for plug in required
+            .iter()
+            .filter(|(claimant, _)| *claimant == lane)
+            .map(|(_, plug)| *plug)
+        {
+            choices.retain(|choice| *choice != plug);
+            choices.insert(0, plug);
+            pins.0.insert((lane, plug));
+            pinned = true;
+        }
+        // Only a lane a behavior just took is trimmed, and only because the socket cannot hold
+        // more than it does. An untouched lane keeps everything the author put in it.
+        if pinned {
+            choices.truncate(limit);
+        }
+        // A record whose plug the author has since removed by hand is stale.
+        pins.0
+            .retain(|(recorded, plug)| *recorded != lane || choices.contains(plug));
+        if choices != current && !choices.is_empty() {
+            // A custom perk follows its plug to the plug's new index. The write below drops any
+            // variant whose index no longer points at its own plug, so this has to come first.
+            for variant in &mut recipe.overrides.socket_plug_variants {
+                if usize::from(variant.socket_index) != lane {
+                    continue;
+                }
+                let Ok(hash) = variant.source_plug_hash.parse_u32() else {
+                    continue;
+                };
+                if current.get(usize::from(variant.choice_index)) != Some(&hash) {
+                    continue;
+                }
+                if let Some(index) = choices.iter().position(|choice| *choice == hash)
+                    && let Ok(index) = u16::try_from(index)
+                {
+                    variant.choice_index = index;
+                }
+            }
+            set_recipe_socket_column(recipe, donor.sockets.len(), lane, &inherited, choices, None);
+        }
+    }
+}
+
+/// The role the recipe gives each lane, empty where it leaves the donor's own.
+fn authored_socket_roles(recipe: &WeaponRecipe) -> Vec<Option<u16>> {
+    recipe
+        .overrides
+        .socket_columns
+        .iter()
+        .map(|column| column.as_ref().and_then(|column| column.socket_type))
+        .collect()
+}
+
+/// The plugs the recipe puts in each lane, empty where it inherits the donor's own.
+fn authored_socket_plugs(recipe: &WeaponRecipe) -> Vec<Vec<u32>> {
+    recipe
+        .overrides
+        .socket_columns
+        .iter()
+        .map(|column| {
+            column.as_ref().map_or_else(Vec::new, |column| {
+                column
+                    .choices
+                    .iter()
+                    .filter_map(|choice| HexHash::parse_u32(choice).ok())
+                    .collect()
+            })
+        })
+        .collect()
 }

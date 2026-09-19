@@ -70,14 +70,32 @@ fn digest(bytes: &[u8]) -> TransactionDigest {
     }
 }
 
+/// Every account file a runtime can own, relative to the game root.
+///
+/// A runtime keeps its settings in the folder named after it and its account beside them: Sunrise
+/// under `data/investment.sqlite3`, Dawn as `player-state.db`. The bare paths are the legacy
+/// game-root layout. This is built from the layout rather than listed by hand because the hand
+/// written list held only Sunrise's, which refused every uninstall record written on a Dawn
+/// install.
+fn supported_account_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("settings.json"),
+        PathBuf::from("data/investment.sqlite3"),
+    ];
+    for prefix in ["", "bin/x64/"] {
+        for (folder, account) in [
+            ("Sunrise", "data/investment.sqlite3"),
+            ("Dawn", "player-state.db"),
+        ] {
+            paths.push(PathBuf::from(format!("{prefix}{folder}/settings.json")));
+            paths.push(PathBuf::from(format!("{prefix}{folder}/{account}")));
+        }
+    }
+    paths
+}
+
 fn target_path(record: &AccountCleanupRecord, packages: &Path) -> Result<PathBuf, InstallError> {
-    if record.relative_path != Path::new("settings.json")
-        && record.relative_path != Path::new("Sunrise/settings.json")
-        && record.relative_path != Path::new("bin/x64/Sunrise/settings.json")
-        && record.relative_path != Path::new("data/investment.sqlite3")
-        && record.relative_path != Path::new("Sunrise/data/investment.sqlite3")
-        && record.relative_path != Path::new("bin/x64/Sunrise/data/investment.sqlite3")
-    {
+    if !supported_account_paths().contains(&record.relative_path) {
         return Err(InstallError::validation(
             "Uninstall account record has an unsupported settings path",
         ));
@@ -394,5 +412,46 @@ mod tests {
         let mut invalid = record;
         invalid.relative_path = PathBuf::from("../unrelated.json");
         assert!(target_path(&invalid, &packages).is_err());
+    }
+}
+
+#[cfg(test)]
+mod account_path_tests {
+    use super::*;
+
+    /// A runtime owns the folder named after it, so an uninstall record written on a Dawn install
+    /// names Dawn's settings or its player-state.db. The list held only Sunrise's six paths, so
+    /// every Dawn record was refused as an unsupported settings path.
+    #[test]
+    fn every_runtime_account_file_is_a_supported_uninstall_target() {
+        let supported = supported_account_paths();
+        for path in [
+            "settings.json",
+            "Sunrise/settings.json",
+            "bin/x64/Sunrise/settings.json",
+            "data/investment.sqlite3",
+            "Sunrise/data/investment.sqlite3",
+            "bin/x64/Sunrise/data/investment.sqlite3",
+            "Dawn/settings.json",
+            "bin/x64/Dawn/settings.json",
+            "Dawn/player-state.db",
+            "bin/x64/Dawn/player-state.db",
+        ] {
+            assert!(
+                supported.iter().any(|known| known == Path::new(path)),
+                "{path} must be a supported uninstall target"
+            );
+        }
+        // Nothing outside a runtime's own folder is writable by an uninstall record.
+        for path in [
+            "bin/x64/steam_api64.dll",
+            "Dawn/../settings.json",
+            "packages/w64_ui_0123_0.pkg",
+        ] {
+            assert!(
+                !supported.iter().any(|known| known == Path::new(path)),
+                "{path} must not be a supported uninstall target"
+            );
+        }
     }
 }

@@ -38,20 +38,22 @@ enum Family {
     Effect(u8, Option<String>),
 }
 
-fn trigger_family(trigger: Trigger) -> ConditionFamily {
+/// The family a standard trigger belongs to. A native trigger carries its own node and so
+/// has none of its own, which the picker shows by not offering it among the standard rows.
+fn trigger_family(trigger: Trigger) -> Option<ConditionFamily> {
     use sundial::package_authoring::sandbox_perk::activation::PerkActivation as Kill;
     let kill = match trigger {
-        Trigger::Always => return ConditionFamily::Kind(0),
-        Trigger::Equipped => return ConditionFamily::Kind(14),
-        Trigger::Drawn => return ConditionFamily::Kind(16),
+        Trigger::Always => return Some(ConditionFamily::Kind(0)),
+        Trigger::Equipped => return Some(ConditionFamily::Kind(14)),
+        Trigger::Drawn => return Some(ConditionFamily::Kind(16)),
         Trigger::WeaponKill => Kill::WeaponKill,
         Trigger::PrecisionKill => Kill::PrecisionWeaponKill,
         Trigger::MeleeKill => Kill::MeleeKill,
         Trigger::GrenadeKill => Kill::GrenadeKill,
         Trigger::AnyKill => Kill::AnyKill,
-        Trigger::Native => unreachable!("A native trigger supplies its own condition family"),
+        Trigger::Native => return None,
     };
-    ConditionFamily::kill(kill.labels(), kill.requires_weapon())
+    Some(ConditionFamily::kill(kill.labels(), kill.requires_weapon()))
 }
 
 fn effect_family(kind: u8, bytes: &[u8]) -> Family {
@@ -520,7 +522,7 @@ impl Picker {
         let mut rows = Trigger::ALL
             .into_iter()
             .filter(|trigger| *trigger != Trigger::Native)
-            .map(|trigger| {
+            .filter_map(|trigger| {
                 let title = program::trigger_label(trigger, retained).to_owned();
                 let detail = match trigger {
                     Trigger::Always => "Starts when the perk is applied.",
@@ -528,15 +530,15 @@ impl Picker {
                     Trigger::Drawn => "Starts when this weapon is drawn.",
                     _ => trigger.description(),
                 };
-                Row {
-                    family: Family::Condition(trigger_family(trigger)),
+                Some(Row {
+                    family: Family::Condition(trigger_family(trigger)?),
                     enabled: true,
                     reason: "",
                     search: format!("{title} {detail}"),
                     title,
                     detail: detail.to_owned(),
                     choice: Choice::Trigger(trigger),
-                }
+                })
             })
             .collect::<Vec<_>>();
         rows.extend(comparison_rows());
@@ -1257,7 +1259,7 @@ mod tests {
 
     #[test]
     fn aliases_share_one_entry_without_losing_configurations_or_weapon_restrictions() {
-        let family = Family::Condition(trigger_family(Trigger::WeaponKill));
+        let family = Family::Condition(trigger_family(Trigger::WeaponKill).unwrap());
         let rows = vec![
             Row {
                 family: family.clone(),
@@ -1278,7 +1280,7 @@ mod tests {
                 choice: Choice::Condition(42),
             },
             Row {
-                family: Family::Condition(trigger_family(Trigger::AnyKill)),
+                family: Family::Condition(trigger_family(Trigger::AnyKill).unwrap()),
                 enabled: true,
                 reason: "",
                 title: "On Any Credited Kill".into(),
@@ -1726,7 +1728,7 @@ mod tests {
         // A kill family carries no kind number, so it sorts after every numbered kind
         // instead of being dropped.
         let kill = Row {
-            family: Family::Condition(trigger_family(Trigger::WeaponKill)),
+            family: Family::Condition(trigger_family(Trigger::WeaponKill).unwrap()),
             ..row("A Kill", 0, Choice::Trigger(Trigger::WeaponKill))
         };
         assert_eq!(kill.family.kind(), None);

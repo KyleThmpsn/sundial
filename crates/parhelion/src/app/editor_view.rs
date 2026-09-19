@@ -245,16 +245,25 @@ impl PackageAuthoringApp {
                             donor,
                             self.catalog.as_ref(),
                         ),
-                        _ => crate::app::donor_view::draw_unique_behavior_control(
-                            column,
-                            &mut self.recipe.overrides,
-                            &behaviors,
-                        ),
+                        _ => {
+                            crate::app::donor_view::draw_unique_behavior_control(
+                                column,
+                                &mut self.recipe.overrides,
+                                &behaviors,
+                                self.catalog.as_ref(),
+                            );
+                            // What the choice brings with it belongs under the choice. Drawn
+                            // below the whole row it started at the panel's left edge, a column
+                            // or two away from the list it was describing.
+                            crate::app::donor_view::draw_unique_behavior_details(
+                                column,
+                                &mut self.recipe.overrides,
+                            );
+                        }
                     }
                 }
             });
         }
-        crate::app::donor_view::draw_unique_behavior_details(ui, &mut self.recipe.overrides);
         draw_combat_profile_diagnostics(ui, &self.recipe.overrides, donor);
         if inventory_slot_changed && let Some(gameplay_donor) = donor {
             reconcile_presentation_donor(
@@ -843,6 +852,13 @@ impl PackageAuthoringApp {
         donor: Option<&WeaponDonor>,
     ) {
         if let Some(donor) = donor {
+            // A chosen behavior claims its sockets here rather than at build time, so the list
+            // below is the weapon that gets built.
+            super::socket_editor::sync_behavior_socket_pins(
+                &mut self.recipe,
+                &mut self.behavior_pins,
+                donor,
+            );
             let show_experimental_options = self.show_experimental_options;
             let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
                 || !self.recipe.overrides.socket_plug_variants.is_empty();
@@ -859,33 +875,6 @@ impl PackageAuthoringApp {
                 }
                 self.draw_socket_options(ui, has_authored_columns);
             });
-            // A graft fills these sockets when the weapon is built, so say which and where.
-            if !self.recipe.overrides.skip_behavior_perks
-                && let Some(catalog) = self.catalog.as_ref()
-            {
-                for entry in self
-                    .recipe
-                    .overrides
-                    .additional_behaviors
-                    .iter()
-                    .filter_map(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
-                {
-                    let mut pinned = Vec::new();
-                    if let Some(plug) = entry.intrinsic_plug {
-                        pinned.push(format!("{} in Intrinsic", catalog.plug_label(plug, false)));
-                    }
-                    if let Some(plug) = entry.trait_plug {
-                        pinned.push(format!("{} in Trait", catalog.plug_label(plug, false)));
-                    }
-                    if !pinned.is_empty() {
-                        ui.weak(format!(
-                            "{} adds {} when the weapon is built.",
-                            entry.source_name,
-                            pinned.join(" and ")
-                        ));
-                    }
-                }
-            }
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
             }

@@ -46,10 +46,19 @@ fn inactive_settings(runtime: &RuntimeCopy, settings_path: &Path) -> bool {
     install.is_some_and(|install| {
         RuntimeLocation::ALL.into_iter().any(|location| {
             location != runtime.location
-                && crate::paths::paths_equal(
-                    &location.directory(install).join("Sunrise/settings.json"),
-                    settings_path,
-                )
+                // The other copy owns the folder named after whichever runtime it is, and this
+                // one only knows its own brand, so both candidates count as that copy's settings.
+                && [
+                    crate::package_runtime::installation::runtime_folder(true),
+                    crate::package_runtime::installation::runtime_folder(false),
+                ]
+                .into_iter()
+                .any(|folder| {
+                    crate::paths::paths_equal(
+                        &location.directory(install).join(folder).join("settings.json"),
+                        settings_path,
+                    )
+                })
         })
     })
 }

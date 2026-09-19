@@ -79,10 +79,14 @@ pub(crate) struct Runtime {
 impl Runtime {
     // Call only after positive DLL detection. File checks are cached between refreshes.
     pub(crate) fn inspect(dll_path: &Path) -> Self {
+        // Dawn owns the folder named after it, and its DLL names this path itself. Looking under
+        // Sunrise's folder found a stale copy at best and reported the script missing at worst.
         let script_path = dll_path
             .parent()
             .unwrap_or(Path::new("."))
-            .join("Sunrise/scripts/omega.lua");
+            .join(crate::package_runtime::installation::runtime_folder(true))
+            .join("scripts")
+            .join("omega.lua");
         let script_problem = match fs::read(&script_path) {
             Ok(bytes) if bytes.iter().any(|b| !b.is_ascii_whitespace()) => None,
             Ok(_) => Some("The Omega Lua script is empty.".into()),

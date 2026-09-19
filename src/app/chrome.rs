@@ -180,6 +180,53 @@ impl SundialApp {
                         self.select_view(ViewMode::Preferences);
                     }
                 }
+                // Which runtime owns the account, beside the database it writes. The two keep
+                // their state in different places and answer to different rules, so the one in
+                // play is worth reading at a glance. Drawn after the icon because this row runs
+                // right to left, which puts it on the icon's left.
+                if let Some(runtime) = self.runtime_choice.inspection.launch_copy()
+                    && (runtime.dawn || runtime.version.is_some())
+                {
+                    let dark = ui.visuals().dark_mode;
+                    let (name, color) = if runtime.dawn {
+                        (
+                            "DAWN",
+                            if dark {
+                                egui::Color32::from_rgb(108, 148, 196)
+                            } else {
+                                egui::Color32::from_rgb(62, 100, 150)
+                            },
+                        )
+                    } else {
+                        (
+                            "SUNRISE",
+                            if dark {
+                                egui::Color32::from_rgb(198, 140, 78)
+                            } else {
+                                egui::Color32::from_rgb(150, 96, 40)
+                            },
+                        )
+                    };
+                    // Facts, one per line, no sentences: this is a reference readout, not a
+                    // description.
+                    let mut details = vec![format!(
+                        "{} {}",
+                        runtime.name(),
+                        runtime.version.as_deref().unwrap_or("version unknown")
+                    )];
+                    if let Some(schema) = runtime.schema {
+                        details.push(format!("Settings v{schema}"));
+                    }
+                    if account_source.kind != AccountSourceKind::Json {
+                        details.push(format!(
+                            "{} · {}",
+                            account_source.label, account_source.contract
+                        ));
+                    }
+                    details.push(runtime.dll_path.display().to_string());
+                    ui.add(egui::Label::new(egui::RichText::new(name).color(color)))
+                        .on_hover_text(details.join("\n"));
+                }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(&self.status).color(color)).truncate(),

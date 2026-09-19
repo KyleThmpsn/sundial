@@ -23,8 +23,16 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
     let mut edit_asset = None;
     let result = ui
         .add_enabled_ui(editing, |ui| {
-            edit_asset = behavior::draw(ui, &mut changed.graph, labels, pick)?;
-            egui::CollapsingHeader::new("Advanced")
+            // One card draws many independent editors. Carrying the first failure out of here
+            // rather than returning on it keeps the rest of the card drawn and, more
+            // importantly, keeps the edits its other controls made this frame: a truncated
+            // field in one node used to discard a label set made in another.
+            let mut failed = None;
+            match behavior::draw(ui, &mut changed.graph, labels, pick) {
+                Ok(asset) => edit_asset = asset,
+                Err(error) => failed = Some(error),
+            }
+            let structure = egui::CollapsingHeader::new("Advanced")
                 .id_salt("complete-program-structure")
                 .show(ui, |ui| {
                     if !changed.assets.is_empty() {
@@ -43,22 +51,34 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
                     allocation(ui, &mut changed.graph, 0, &mut Vec::new())
                 })
                 .body_returned
-                .transpose()?;
-            if !editing {
-                return Ok(());
+                .transpose();
+            if let (Err(error), None) = (structure, &failed) {
+                failed = Some(error);
             }
-            changed.sync_assets()?;
-            changed.validate()
+            if !editing {
+                return (failed, false);
+            }
+            // Every edit above repointed its allocation rather than writing through one that
+            // may be shared, so the replaced allocations are dropped here, where no caller
+            // still holds an index into the graph.
+            changed.graph.compact();
+            match changed.sync_assets().and_then(|()| changed.validate()) {
+                // The graph holds together, so this frame's edits are kept even when one of
+                // the editors above could not draw. Only a graph that fails to validate is
+                // thrown away, since storing that is what would lose the whole program.
+                Ok(()) => (failed, true),
+                Err(error) => (failed.or(Some(error)), false),
+            }
         })
         .inner;
-    match result {
-        // A locked card is a reading. Writing the round trip back turned any value that
-        // normalises into an edit the reader never made.
-        Ok(()) if editing => *program = changed,
-        Ok(()) => {}
-        Err(error) => {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
+    // A locked card is a reading. Writing the round trip back turned any value that
+    // normalises into an edit the reader never made.
+    let (failure, commit) = result;
+    if commit {
+        *program = changed;
+    }
+    if let Some(error) = failure {
+        ui.colored_label(ui.visuals().error_fg_color, error);
     }
     edit_asset.and_then(|tag| program.assets.iter().position(|asset| asset.graph == tag))
 }

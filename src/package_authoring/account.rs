@@ -64,7 +64,9 @@ pub fn preview_authored_account_replacement_with_slots(
 }
 
 /// Ensures every authored collection unlock is set in the active account source.
-/// JSON accounts use compact runs. SQLite accounts use the native sparse unlock banks.
+/// The installed runtime chooses that source: a Dawn install keeps its unlocks as durable flags
+/// in player-state.db, while Sunrise keeps them in the settings document as compact runs or in
+/// the investment database as native sparse unlock banks.
 /// Saves preserve existing values and require a verified backup and an unchanged source.
 pub fn synchronize_authored_collection_unlocks(
     install: &Path,

@@ -54,7 +54,7 @@ fn installation_and_recovery_offer_the_active_source_resets_without_writing() {
                 frame(&mut app, &context, vec![]);
             }
             let output = frame(&mut app, &context, vec![]);
-            let reset = text_position(&output, "Reset to Sunrise Defaults…")
+            let reset = text_position(&output, "Reset Settings to Sunrise Defaults…")
                 .expect("settings reset is available");
             assert_eq!(
                 text_position(&output, "Reset Account Database…").is_some(),

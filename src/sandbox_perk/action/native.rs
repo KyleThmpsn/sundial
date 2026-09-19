@@ -162,6 +162,95 @@ impl Graph {
         Ok(first)
     }
 
+    /// Give an owner its own copy of the allocation it links at `field`, when that allocation
+    /// is reached from anywhere else as well.
+    ///
+    /// Reading a native object memoizes by resource position, so two nodes that pointed at
+    /// one resource become one block here. Writing through such a block changes both nodes,
+    /// and the second one is usually somewhere else entirely in the program. Returns the
+    /// index to write through, which is the original when nothing else refers to it.
+    pub fn make_unique(&mut self, owner: usize, field: usize) -> Result<usize, String> {
+        let target = *self
+            .blocks
+            .get(owner)
+            .ok_or("Missing native pointer owner.")?
+            .links
+            .get(&field)
+            .ok_or("Missing native allocation.")?;
+        let referrers = self
+            .blocks
+            .iter()
+            .enumerate()
+            .flat_map(|(index, block)| block.links.iter().map(move |link| (index, link)))
+            .filter(|(_, (_, referenced))| **referenced == target)
+            .count();
+        if referrers <= 1 {
+            return Ok(target);
+        }
+        if self.blocks.len() >= MAX_BLOCKS {
+            return Err("The native program contains too many allocations.".into());
+        }
+        let copy = self.blocks.len();
+        let block = self
+            .blocks
+            .get(target)
+            .ok_or("Missing native allocation.")?
+            .clone();
+        self.blocks.push(block);
+        self.blocks
+            .get_mut(owner)
+            .ok_or("Missing native pointer owner.")?
+            .links
+            .insert(field, copy);
+        Ok(copy)
+    }
+
+    /// Drop the allocations no longer reachable from the root.
+    ///
+    /// An edit that repoints a link allocates a fresh target rather than writing through one
+    /// that may be shared with another node, so the allocation it replaced stays behind.
+    /// `emit` walks from the root and never writes those, but `validate` counts every block
+    /// against `MAX_BLOCKS` and an authored program stores its block list as it stands, so a
+    /// long editing session otherwise grows its own saved recipe until no frame can validate
+    /// it and the program can no longer be edited at all.
+    ///
+    /// This renumbers the blocks it keeps, so a caller holding an allocation index must
+    /// re-read it afterwards. Call it where an edit is committed, not between the steps of
+    /// one.
+    pub fn compact(&mut self) {
+        let mut reachable = vec![false; self.blocks.len()];
+        let mut pending = vec![0usize];
+        while let Some(index) = pending.pop() {
+            match reachable.get_mut(index) {
+                Some(seen) if !*seen => *seen = true,
+                _ => continue,
+            }
+            if let Some(block) = self.blocks.get(index) {
+                pending.extend(block.links.values().copied());
+            }
+        }
+        if reachable.iter().all(|seen| *seen) {
+            return;
+        }
+        let mut moved = BTreeMap::new();
+        for (index, _) in reachable.iter().enumerate().filter(|(_, seen)| **seen) {
+            moved.insert(index, moved.len());
+        }
+        let mut blocks = Vec::with_capacity(moved.len());
+        for (index, mut block) in std::mem::take(&mut self.blocks).into_iter().enumerate() {
+            if !reachable[index] {
+                continue;
+            }
+            for target in block.links.values_mut() {
+                if let Some(index) = moved.get(target) {
+                    *target = *index;
+                }
+            }
+            blocks.push(block);
+        }
+        self.blocks = blocks;
+    }
+
     /// Change an array length while preserving its existing records and their pointers.
     pub fn resize_array(&mut self, block: usize, count: usize) -> Result<(), String> {
         let mut changed = self.clone();
@@ -247,16 +336,23 @@ impl Graph {
     ) -> Result<(), String> {
         let mut changed = self.clone();
         let target = if !array {
-            let node = crate::sandbox_perk::nodes::CONDITIONS
-                .iter()
-                .find(|n| n.class == class)
-                .map(|n| (true, n.kind))
-                .or_else(|| {
-                    crate::sandbox_perk::nodes::EFFECTS
+            // Class zero is a string allocation, not a node. The unobserved kinds carry a
+            // zero class of their own, so looking one up by it finds a node with no template
+            // and fails a request that only ever meant "make me a string".
+            let node = (class != 0)
+                .then(|| {
+                    crate::sandbox_perk::nodes::CONDITIONS
                         .iter()
                         .find(|n| n.class == class)
-                        .map(|n| (false, n.kind))
-                });
+                        .map(|n| (true, n.kind))
+                        .or_else(|| {
+                            crate::sandbox_perk::nodes::EFFECTS
+                                .iter()
+                                .find(|n| n.class == class)
+                                .map(|n| (false, n.kind))
+                        })
+                })
+                .flatten();
             if let Some((condition, kind)) = node {
                 let bytes = template(condition, kind).ok_or("Missing native node template.")?;
                 changed.append(&Graph::read(&bytes, 0, class)?)?

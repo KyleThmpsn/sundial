@@ -348,6 +348,9 @@ struct PackageAuthoringApp {
     #[cfg(feature = "community-recipes")]
     community: community::Window,
     recipe: WeaponRecipe,
+    /// The (lane, plug) pairs `sync_behavior_socket_pins` wrote itself, so deselecting a behavior
+    /// takes back exactly those and never a perk the author placed by hand.
+    behavior_pins: socket_editor::BehaviorPins,
     observed_recipe: WeaponRecipe,
     recipe_baseline: WeaponRecipe,
     recipe_path: Option<PathBuf>,
@@ -536,6 +539,7 @@ impl Default for PackageAuthoringApp {
             plug_selection_mode: sundial::investment::default_plug_selection_mode(),
             show_plug_safety_warnings: sundial::investment::show_plug_safety_warnings(),
             show_experimental_options: false,
+            behavior_pins: socket_editor::BehaviorPins::default(),
             preferences_changed: false,
             open_sundial_preferences: false,
             show_internal_stats: false,

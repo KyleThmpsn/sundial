@@ -46,7 +46,16 @@ fn runtime_inspection_and_parhelion_agree_at_both_dll_locations_and_require_capa
             assert_eq!(copy.bundled_schema, Some(6));
             validate_for_parhelion(&directory.path().join("packages")).unwrap();
         }
-        for (missing, (_, label)) in PACKAGE_AUTHORING_RUNTIME_MARKERS.iter().enumerate() {
+        // The manifest-cache magic is the third capability and belongs to the runtime, so it is
+        // checked here alongside the two both runtimes share.
+        for (missing, label) in [
+            "generated package-header trust",
+            "generated manifest routing",
+            "generated content manifest",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             fs::write(&module_path, fixture::module("Dawn", false, Some(missing))).unwrap();
             let error = validate_for_parhelion(&directory.path().join("packages")).unwrap_err();
             assert!(error.starts_with("Dawn 0.1"), "{error}");
@@ -77,4 +86,23 @@ fn dawn_in_bin_does_not_hide_an_unsupported_root_dll() {
     // directory can sit under a short 8.3 ancestor that canonicalization expands.
     let reported = fs::canonicalize(&root).unwrap();
     assert!(error.contains(&reported.display().to_string()), "{error}");
+}
+
+/// Each runtime stamps its generated manifest cache with its own eight ASCII bytes: Sunrise writes
+/// SUNCMANF, Dawn writes DAWNMANF. Looking for Sunrise's magic in a Dawn DLL reported Dawn as
+/// missing content-manifest support and refused every Parhelion install on it.
+#[test]
+fn each_runtime_advertises_its_own_manifest_cache_magic() {
+    let holds = |bytes: &[u8], marker: &[u8]| bytes.windows(marker.len()).any(|w| w == marker);
+    for (brand, own, foreign) in [
+        ("Dawn", b"DAWNMANF".as_slice(), b"SUNCMANF".as_slice()),
+        ("Sunrise", b"SUNCMANF".as_slice(), b"DAWNMANF".as_slice()),
+    ] {
+        let module = fixture::module(brand, false, None);
+        assert!(holds(&module, own), "{brand} must advertise its own magic");
+        assert!(
+            !holds(&module, foreign),
+            "{brand} must not advertise the other runtime's magic"
+        );
+    }
 }

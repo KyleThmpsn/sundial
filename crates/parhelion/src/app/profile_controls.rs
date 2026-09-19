@@ -173,12 +173,14 @@ pub(super) fn draw_combat_profile_control(
             }
         })
         .response
+        .on_disabled_hover_text(if locked {
+            "The chosen Unique Weapon Behavior switches damage, so this follows it."
+        } else {
+            "This weapon cannot take a different damage type."
+        })
         .labelled_by(label.id);
         },
     );
-    if locked {
-        ui.weak("The chosen Unique Weapon Behavior switches damage, so this follows it.");
-    }
     if variable && (draw_variable_damage_elements(ui, overrides) || changed) {
         // The weapon rests on the first chosen element in selector order. A base weapon whose
         // damage cannot be converted, such as Hard Light itself, keeps its own marker.
@@ -277,8 +279,11 @@ fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipe
                 changed = true;
             }
         }
+        draw_authoring_info_icon(
+            ui,
+            "Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one.",
+        );
     });
-    ui.weak("Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one. The Fundamentals takes the first trait socket.");
     changed
 }
 

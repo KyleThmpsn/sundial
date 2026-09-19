@@ -6,7 +6,6 @@
 //! verified SQLite-native backup.
 
 mod contract;
-pub(crate) mod conversion;
 mod defaults;
 mod document;
 mod entitlements;

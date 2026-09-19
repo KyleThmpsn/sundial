@@ -83,10 +83,14 @@ impl Workbench {
                 self.page = if open { Page::Effects } else { Page::Basics };
             }
             if let Some(catalog) = catalog {
-                let choices = self
-                    .templates
-                    .as_ref()
-                    .expect("Presentation choices loaded above");
+                // The same source the type control above reads. Taking it from there by
+                // assuming that control already ran made the icon picker depend on the order
+                // of two blocks that only happen to share a condition.
+                let choices = self.templates.get_or_insert_with(|| {
+                    catalog.perk_template_choices_from(
+                        crate::package_profile::is_stock_item_definition,
+                    )
+                });
                 let hash = recipe.template_plug.parse_u32().unwrap_or_default();
                 if let Some(picked) = pickers::popup(
                     ui,
@@ -251,9 +255,11 @@ impl Workbench {
                 if experimental && ui.button("Add Complete Program").clicked() {
                     if let Some(index) = self.free_metadata_index(recipe, choices) {
                         let mut effect = program::new_effect(index);
-                        effect.program.as_mut().expect("new program").native = Some(
-                            sundial::package_authoring::sandbox_perk::program::NativeProgram::empty(),
-                        );
+                        if let Some(program) = effect.program.as_mut() {
+                            program.native = Some(
+                                sundial::package_authoring::sandbox_perk::program::NativeProgram::empty(),
+                            );
+                        }
                         recipe.effects.push(effect);
                     }
                     ui.close_menu();

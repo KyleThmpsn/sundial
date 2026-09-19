@@ -197,6 +197,7 @@ fn profile_add_and_remove_match_legacy_json_exactly() {
                 id: new_id,
                 definition_hash: domain::DefinitionHash::new(33),
                 quantity: 3,
+                instance_soid: None,
             }),
         )
         .unwrap();

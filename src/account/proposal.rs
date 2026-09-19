@@ -24,6 +24,18 @@ pub fn preview_replacement(
     socket_changes: &[AuthoredSocketChange],
     slots: Option<&AuthoredSlotReplacement>,
 ) -> Result<AuthoredAccountCleanup, String> {
+    // A Dawn install keeps every item in player-state.db. Its settings schema says nothing about
+    // that, so the Dawn database is checked before any decision is taken from settings.json.
+    let dawn = crate::persistence::dawn_path(settings_path);
+    if dawn.is_file() {
+        return crate::persistence::dawn_account::preview_replacement(
+            &dawn,
+            hashes,
+            unlocks,
+            socket_changes,
+            slots,
+        );
+    }
     let original_bytes = std::fs::read(settings_path).map_err(|e| e.to_string())?;
     let original: Value =
         crate::strict_json::from_reader(original_bytes.as_slice()).map_err(|e| e.to_string())?;

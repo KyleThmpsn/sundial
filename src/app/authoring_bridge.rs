@@ -438,9 +438,27 @@ pub(crate) fn synchronize_authored_collection_unlocks(
     unlocks: &[(usize, u8, u16)],
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
     let preferences = super::settings::load_preferences().preferences;
-    let settings_path = authored_unlock_settings_path(install, &preferences)?;
+    synchronize_authored_collection_unlocks_with(install, &preferences, unlocks)
+}
+
+fn synchronize_authored_collection_unlocks_with(
+    install: &Path,
+    preferences: &super::Preferences,
+    unlocks: &[(usize, u8, u16)],
+) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
+    let (target, durable) = authored_unlock_target(install, preferences)?;
+    if durable {
+        // The settings path guards its own writes this way. A durable account is the same
+        // hazard: the runtime owns the database while it is up, and its uncheckpointed journal
+        // would be written over.
+        super::settings::require_game_closed(super::platform::destiny_is_running())?;
+        let receipt =
+            crate::persistence::dawn_account::apply_authored_unlocks(&target, &dawn_rows(unlocks)?)
+                .map_err(|error| error.to_string())?;
+        return Ok((target, receipt.backup, receipt.changed));
+    }
     crate::account::unlocks::synchronize_authored_collection_unlocks_at(
-        &settings_path,
+        &target,
         unlocks,
         |path, document, original| {
             super::settings::save_json(path, document, original, false)
@@ -448,6 +466,47 @@ pub(crate) fn synchronize_authored_collection_unlocks(
                 .map_err(Into::into)
         },
     )
+}
+
+/// Where an authored unlock is written for this installation, and whether that is a durable
+/// account database rather than the settings document.
+///
+/// Which runtime is installed decides where the account lives, and only the DLL says so: a Dawn
+/// install keeps its unlocks in player-state.db beside its settings, while Sunrise keeps them in
+/// the settings document or the investment database next to it.
+fn authored_unlock_target(
+    install: &Path,
+    preferences: &super::Preferences,
+) -> Result<(PathBuf, bool), String> {
+    let inspection = crate::package_runtime::installation::RuntimeInspection::inspect(install);
+    if let Some(runtime) = inspection.launch_copy().filter(|runtime| runtime.dawn) {
+        // Dawn owns the folder named after it, so its settings and the account beside them are
+        // taken from the runtime itself. An installation that has also run Sunrise still holds
+        // that runtime's folder, and guessing between the two would write the unlock to whichever
+        // one happened to be preferred rather than to the one the game reads.
+        let settings_path = runtime.settings_path.clone();
+        crate::account::source::validate_runtime_document(install, &settings_path)?;
+        return Ok((crate::persistence::dawn_path(&settings_path), true));
+    }
+    Ok((authored_unlock_settings_path(install, preferences)?, false))
+}
+
+/// The authored unlocks as the storage-neutral rows every account adapter shares.
+fn dawn_rows(unlocks: &[(usize, u8, u16)]) -> Result<Vec<sundial_account::AuthoredUnlock>, String> {
+    unlocks
+        .iter()
+        .map(|(definition_index, bank, slot)| {
+            u16::try_from(*definition_index)
+                .map(|definition_index| sundial_account::AuthoredUnlock {
+                    definition_index,
+                    bank: *bank,
+                    slot: *slot,
+                })
+                .map_err(|_| {
+                    format!("Authored unlock definition {definition_index} is outside the range an unlock map addresses")
+                })
+        })
+        .collect()
 }
 
 pub(crate) fn authored_client_settings_path(install: &Path) -> Result<PathBuf, String> {

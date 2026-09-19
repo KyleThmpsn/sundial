@@ -47,7 +47,9 @@ pub(crate) fn load(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountEr
     let primary_soid = read!(reader::primary_soid(&connection));
     let profile = read!(reader::profile(&connection));
     let characters = read!(reader::characters(&connection));
-    let settings = read!(reader::settings(&connection));
+    let (settings, settings_index) = read!(reader::settings(&connection));
+    let loaded_settings = settings.clone();
+    let carried = super::carried::read(&connection)?;
 
     Ok(DawnAccountDocumentLoad::Loaded(Box::new(
         DawnAccountDocument {
@@ -60,6 +62,9 @@ pub(crate) fn load(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountEr
                 characters,
                 settings,
             },
+            carried,
+            settings_index,
+            loaded_settings,
         },
     )))
 }

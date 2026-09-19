@@ -226,6 +226,10 @@ fn every_scalar_effect_can_be_authored_serialized_compiled_and_read_back() {
         }
         let program = Program {
             trigger: Trigger::Always,
+            // An always-active program emits no removal condition, so it has nowhere to keep
+            // a duration and the default one would not survive the round trip below. Zero is
+            // what "runs until something removes it" means in the compiled form.
+            duration_ms: 0,
             actions: vec![Action::Native { node: node.clone() }],
             ..Program::default()
         };
@@ -246,13 +250,45 @@ fn every_scalar_effect_can_be_authored_serialized_compiled_and_read_back() {
                 .unwrap()
                 .is_empty()
         );
+        // The recovered program is a fixed point: saving and reopening it returns the same
+        // program, not merely bytes that compile alike. Equality with the authored program
+        // is deliberately not asserted, because a node with a typed action comes back as
+        // that action, which is what the editor should show. An asset-bearing action needs
+        // a package manager to resolve its graph and so stays with the tests that require an
+        // installation, but everything reachable through `assemble` is checked on every
+        // change rather than only on a machine with the game installed.
+        let reopened = decompile::decompile(
+            &action::decode(&rebuilt.payload).unwrap(),
+            &program.name,
+            |tag| tag,
+        )
+        .unwrap();
+        assert_eq!(reopened, recovered, "effect kind {}", entry.kind);
     }
 }
 
 #[test]
 fn every_scalar_condition_can_be_authored_as_activation_and_removal() {
     for entry in layout::CONDITION_LAYOUTS {
-        let node = NativeNode::condition(entry.kind).unwrap();
+        let mut node = NativeNode::condition(entry.kind).unwrap();
+        // Author every field the kind carries. A bare template leaves them zero, and a
+        // zero-length timer is a removal the compiled form does not keep, so the round trip
+        // below would be checking a condition that says nothing.
+        for field in entry.fields {
+            use layout::FieldFormat::*;
+            let value = match field.format {
+                Byte => FactValue::Selector(2),
+                Flag => FactValue::Flag(true),
+                Mask8 => FactValue::Mask(0x81),
+                Mask32 => FactValue::Mask(0x8000_0001),
+                Key => FactValue::Key(0x1234_5678),
+                Float => FactValue::Number(1.25),
+                Seconds => FactValue::Seconds(1.25),
+                Range => FactValue::Range(0.5, 2.5),
+            };
+            assert!(field.write(&mut node.bytes, &value));
+        }
+        let node = node;
         let program = Program {
             trigger: Trigger::Native,
             native_trigger: Some(node.clone()),
@@ -268,6 +304,23 @@ fn every_scalar_condition_can_be_authored_as_activation_and_removal() {
         assert_eq!(decoded.groups[0].removal[0].kind, entry.kind);
         assert_eq!(decoded.activation_event_mask, 1_u64 << entry.kind);
         assert_eq!(decoded.removal_event_mask, 1_u64 << entry.kind);
+        // A condition also has to survive being read back and reopened, or an authored
+        // trigger would change under a reader who only opened and saved the perk.
+        let recovered = decompile::decompile(&decoded, &program.name, |tag| tag).unwrap();
+        let rebuilt = assemble(&recovered, None).unwrap();
+        let differences = decompile::fidelity(&compiled.payload, &rebuilt.payload).unwrap();
+        assert!(
+            differences.is_empty(),
+            "condition kind {}: {differences:?}",
+            entry.kind
+        );
+        let reopened = decompile::decompile(
+            &action::decode(&rebuilt.payload).unwrap(),
+            &program.name,
+            |tag| tag,
+        )
+        .unwrap();
+        assert_eq!(reopened, recovered, "condition kind {}", entry.kind);
     }
 }
 

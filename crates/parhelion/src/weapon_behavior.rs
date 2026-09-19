@@ -5,6 +5,8 @@
 //! triples of relative pointers: a label array, a state array, and a behavior array. Pointing a
 //! target block's state and behavior slots at another block's records transplants the behavior.
 //! Confirmed in game across auto rifles, scout rifles, pulse rifles and sniper rifles.
+use std::collections::BTreeSet;
+
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
 use crate::{AuthoringResult, error::invalid, weapon::WeaponRuntimeResourcePatch};
 use sundial::package_authoring::weapon_entity::weapon_component_bindings;
@@ -82,11 +84,15 @@ impl Behavior {
         }
     }
 
-    /// Whether this source brings its own firing and projectile graph. Only those can hand a
-    /// weapon projectiles it does not normally fire, so only those need the speed boost.
+    /// Whether this source brings projectiles whose launch speed a graft can raise.
+    ///
+    /// Two things have to hold. Only a graph carries the firing side at all, and only a graph
+    /// from a weapon that launches something reads a speed below the hitscan sentinel for the
+    /// boost to raise. A graph from a weapon that fires instantly answers no, because raising a
+    /// multiplier it does not have writes nothing.
     #[must_use]
-    pub const fn carries_firing_graph(&self) -> bool {
-        matches!(self.source, BehaviorSource::Graph { .. })
+    pub fn launches_projectiles(&self) -> bool {
+        matches!(self.source, BehaviorSource::Graph { .. }) && LAUNCHING_SOURCES.contains(&self.id)
     }
 
     /// Whether a weapon of this type can graft this behavior. Graphs reach every weapon.
@@ -1017,6 +1023,40 @@ fn host_graph(content: &Content, block: usize) -> Option<u32> {
 /// hitscan weapon's graph reads exactly this, and no weapon that launches anything does.
 const HITSCAN_SPEED: f32 = 9999.0;
 
+/// The catalogued sources whose graph actually launches something, in catalogue order.
+///
+/// Every graph carries the firing side, but only these expose a launch speed under the sentinel,
+/// so only these have anything for the boost to raise. The rest were offering a speed control
+/// that wrote nothing: the weapon looked tunable and no number moved. Measured against the clean
+/// stock packages, which is what `every_launching_source_is_recorded` re-checks, so add a source
+/// here only on the strength of that test rather than on what the weapon looks like in game.
+const LAUNCHING_SOURCES: &[&str] = &[
+    "anarchy-graph",
+    "arbalest-graph",
+    "bastion-graph",
+    "deathbringer-graph",
+    "devil-s-ruin-graph",
+    "j-tunn-graph",
+    "le-monarque-graph",
+    "legend-of-acrius-graph",
+    "leviathan-s-breath-graph",
+    "lord-of-wolves-graph",
+    "merciless-graph",
+    "skyburner-s-oath-graph",
+    "sleeper-simulant-graph",
+    "symmetry-graph",
+    "telesto-graph",
+    "the-colony-graph",
+    "the-prospector-graph",
+    "the-queenbreaker-graph",
+    "the-wardcliff-coil-graph",
+    "tractor-cannon-graph",
+    "trinity-ghoul-graph",
+    "truth-graph",
+    "wish-ender-graph",
+    "witherhoard-graph",
+];
+
 /// Values to apply inside a grafted graph's private clone, if it needs any.
 ///
 /// A behavior graph is itself a weapon entity, so both sides are read the same way. The speed a
@@ -1449,24 +1489,149 @@ pub(crate) const INTRINSIC_SOCKET_TYPE: u16 = 176;
 /// Socket type of a weapon's trait columns.
 pub(crate) const TRAIT_SOCKET_TYPE: u16 = 92;
 
+/// The role every lane actually has, which is not always the role the donor shipped.
+///
+/// An author can turn one of the donor's sockets into a trait column, and can append columns the
+/// donor never had. The socket list draws both as trait sockets, so anything choosing a lane has
+/// to read them the same way or it lands somewhere the author was never shown.
+pub(crate) fn effective_socket_types(
+    authored_roles: &[Option<u16>],
+    donor_socket_types: &[u16],
+) -> Vec<u16> {
+    (0..donor_socket_types.len().max(authored_roles.len()))
+        .map(|lane| {
+            authored_roles
+                .get(lane)
+                .copied()
+                .flatten()
+                .or_else(|| donor_socket_types.get(lane).copied())
+                .unwrap_or(u16::MAX)
+        })
+        .collect()
+}
+
+/// Every plug the chosen behaviors own, whether or not a pin was needed to place it.
+///
+/// A lane is only cleared of a perk no behavior wants any more, so this has to name the perks
+/// that are still wanted even when they already sit where the author put them.
+pub(crate) fn claimed_plugs<'a>(
+    behaviors: impl IntoIterator<Item = &'a str>,
+    skip_behavior_perks: bool,
+) -> BTreeSet<u32> {
+    if skip_behavior_perks {
+        return BTreeSet::new();
+    }
+    behaviors
+        .into_iter()
+        .filter_map(behavior)
+        .flat_map(|entry| [entry.intrinsic_plug, entry.trait_plug])
+        .flatten()
+        .collect()
+}
+
+/// The socket lanes each grafted behavior claims, and the plug it puts first in them.
+///
+/// The editor writes these as soon as a behavior is chosen and the build writes them again, so
+/// both read the lanes from here rather than each deciding for itself which socket a behavior
+/// takes. A behavior whose lane the weapon does not have is skipped.
+///
+/// `socket_types` is every lane's effective role, so a column the author turned into a trait
+/// socket counts as one of them. `placed` is what each lane already holds: a perk the author put
+/// in a socket of their own already satisfies the behavior, and pinning a second copy into the
+/// donor's own trait lane would show the same perk twice and reshuffle a list they arranged.
+pub(crate) fn socket_pins<'a>(
+    behaviors: impl IntoIterator<Item = &'a str>,
+    skip_behavior_perks: bool,
+    socket_types: &[u16],
+    placed: &[Vec<u32>],
+) -> Vec<(usize, u32)> {
+    if skip_behavior_perks {
+        return Vec::new();
+    }
+    let lanes = |kind: u16| {
+        socket_types
+            .iter()
+            .enumerate()
+            .filter(move |(_, socket_type)| **socket_type == kind)
+            .map(|(lane, _)| lane)
+    };
+    let holds = |lane: usize, plug: u32| {
+        placed
+            .get(lane)
+            .is_some_and(|choices| choices.contains(&plug))
+    };
+    // Each behavior takes a fresh trait lane, so two of them do not land on one socket. A lane
+    // already holding one of their perks counts as spoken for.
+    let mut taken = BTreeSet::new();
+    let mut pins = Vec::new();
+    for entry in behaviors.into_iter().filter_map(behavior) {
+        for (plug, kind) in [
+            (entry.intrinsic_plug, INTRINSIC_SOCKET_TYPE),
+            (entry.trait_plug, TRAIT_SOCKET_TYPE),
+        ] {
+            let Some(plug) = plug else { continue };
+            if let Some(lane) = lanes(kind).find(|lane| holds(*lane, plug)) {
+                taken.insert(lane);
+                continue;
+            }
+            // The intrinsic column is single, so behaviors share it as they always have.
+            let free = if kind == INTRINSIC_SOCKET_TYPE {
+                lanes(kind).next()
+            } else {
+                lanes(kind).find(|lane| !taken.contains(lane))
+            };
+            let Some(lane) = free else { continue };
+            taken.insert(lane);
+            pins.push((lane, plug));
+        }
+    }
+    pins
+}
+
+/// The role the recipe gives each lane, empty where it leaves the donor's own.
+pub(crate) fn authored_socket_roles(
+    overrides: &crate::weapon::WeaponCloneOverrides,
+) -> Vec<Option<u16>> {
+    overrides
+        .socket_columns
+        .iter()
+        .map(|column| column.as_ref().and_then(|column| column.socket_type))
+        .collect()
+}
+
+/// The plugs the recipe puts in each lane, empty where it inherits the donor's own.
+pub(crate) fn authored_socket_choices(
+    overrides: &crate::weapon::WeaponCloneOverrides,
+) -> Vec<Vec<u32>> {
+    overrides
+        .socket_columns
+        .iter()
+        .map(|column| {
+            column
+                .as_ref()
+                .map(|column| column.choices.clone())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// Pins each grafted behavior's own plugs into the weapon's intrinsic and trait sockets.
 ///
 /// A graph moves the firing and projectile side, but several exotics keep half of the behavior in
-/// their perk, so the plugs travel with the graft unless the author turned them off.
+/// their perk, so the plugs travel with the graft unless the author turned them off. The plug
+/// leads the socket rather than emptying it, so an author's own choices stay behind it.
 pub(crate) fn expand_socket_columns(
     overrides: &crate::weapon::WeaponCloneOverrides,
     socket_types: &[u16],
 ) -> crate::AuthoringResult<crate::weapon::WeaponCloneOverrides> {
     use crate::weapon::WeaponSocketColumnOverride;
-    if overrides.additional_behaviors.is_empty() || overrides.skip_behavior_perks {
-        return Ok(overrides.clone());
-    }
-    let wanted = overrides
-        .additional_behaviors
-        .iter()
-        .filter_map(|id| behavior(id))
-        .collect::<Vec<_>>();
-    if wanted.is_empty() {
+    let pins = socket_pins(
+        overrides.additional_behaviors.iter().map(String::as_str),
+        overrides.skip_behavior_perks,
+        &effective_socket_types(&authored_socket_roles(overrides), socket_types),
+        &authored_socket_choices(overrides),
+    );
+    if pins.is_empty() {
         return Ok(overrides.clone());
     }
     let mut expanded = overrides.clone();
@@ -1480,37 +1645,10 @@ pub(crate) fn expand_socket_columns(
             socket_types.len()
         )));
     }
-    let mut trait_lanes = socket_types
-        .iter()
-        .enumerate()
-        .filter(|(_, kind)| **kind == TRAIT_SOCKET_TYPE)
-        .map(|(lane, _)| lane);
-    for entry in wanted {
-        let lanes = [
-            (
-                entry.intrinsic_plug,
-                socket_types
-                    .iter()
-                    .position(|kind| *kind == INTRINSIC_SOCKET_TYPE),
-            ),
-            (entry.trait_plug, trait_lanes.next()),
-        ];
-        for (plug, lane) in lanes {
-            let (Some(plug), Some(lane)) = (plug, lane) else {
-                continue;
-            };
-            if expanded.socket_columns[lane]
-                .as_ref()
-                .is_some_and(|column| column.choices != [plug])
-            {
-                return Err(invalid(format!(
-                    "{} needs socket {} for its own perk, but the recipe already overrides that socket.",
-                    entry.source_name,
-                    lane + 1
-                )));
-            }
-            expanded.socket_columns[lane] = Some(WeaponSocketColumnOverride {
-                choices: vec![plug],
+    for (lane, plug) in pins {
+        let column =
+            expanded.socket_columns[lane].get_or_insert_with(|| WeaponSocketColumnOverride {
+                choices: Vec::new(),
                 socket_type: None,
                 choice_weight_bits: Vec::new(),
                 choice_conditions: Vec::new(),
@@ -1518,7 +1656,8 @@ pub(crate) fn expand_socket_columns(
                 randomized_plug_set_index: None,
                 randomized_selection_program: Vec::new(),
             });
-        }
+        column.choices.retain(|choice| *choice != plug);
+        column.choices.insert(0, plug);
     }
     Ok(expanded)
 }
@@ -1756,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicting_socket_override_is_refused_rather_than_overwritten() {
+    fn a_behavior_leads_a_socket_the_author_already_chose_for() {
         let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
         let mut overrides = overrides_for("malfeasance-graph");
         overrides.socket_columns = vec![
@@ -1771,7 +1910,73 @@ mod tests {
             }),
             None,
         ];
-        assert!(expand_socket_columns(&overrides, &types).is_err());
+        // The author's own choice is kept, behind the perk the behavior needs first.
+        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        let intrinsic = behavior("malfeasance-graph")
+            .and_then(|entry| entry.intrinsic_plug)
+            .expect("the graft names an intrinsic plug");
+        assert_eq!(
+            expanded.socket_columns[0]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([intrinsic, 0x1234_5678].as_slice())
+        );
+    }
+
+    fn column(
+        choices: Vec<u32>,
+        socket_type: Option<u16>,
+    ) -> crate::weapon::WeaponSocketColumnOverride {
+        crate::weapon::WeaponSocketColumnOverride {
+            choices,
+            socket_type,
+            choice_weight_bits: Vec::new(),
+            choice_conditions: Vec::new(),
+            reusable_plug_set_index: None,
+            randomized_plug_set_index: None,
+            randomized_selection_program: Vec::new(),
+        }
+    }
+
+    /// An author who gives the behavior's perk a socket of their own has already satisfied it.
+    /// Leading the donor's own trait column with a second copy showed the same perk twice and
+    /// pushed the choices they had arranged down a place.
+    #[test]
+    fn a_perk_the_author_already_placed_is_not_pinned_a_second_time() {
+        let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
+        let entry = behavior("malfeasance-graph").unwrap();
+        let mut overrides = overrides_for("malfeasance-graph");
+        overrides.socket_columns = vec![
+            None,
+            Some(column(vec![0x1234_5678], None)),
+            Some(column(
+                vec![entry.trait_plug.unwrap()],
+                Some(TRAIT_SOCKET_TYPE),
+            )),
+        ];
+        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        assert_eq!(expanded.socket_columns[1], overrides.socket_columns[1]);
+        assert_eq!(expanded.socket_columns[2], overrides.socket_columns[2]);
+    }
+
+    /// The socket list draws a column the author gave the trait role as a trait socket, so the
+    /// build has to pin into it too. Reading only the donor's own types skipped it entirely.
+    #[test]
+    fn a_socket_the_author_turned_into_a_trait_column_is_where_the_perk_lands() {
+        let types = [INTRINSIC_SOCKET_TYPE, u16::MAX];
+        let entry = behavior("malfeasance-graph").unwrap();
+        let mut overrides = overrides_for("malfeasance-graph");
+        overrides.socket_columns = vec![
+            None,
+            Some(column(vec![0x1234_5678], Some(TRAIT_SOCKET_TYPE))),
+        ];
+        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        assert_eq!(
+            expanded.socket_columns[1]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([entry.trait_plug.unwrap(), 0x1234_5678].as_slice())
+        );
     }
 
     #[test]
@@ -1847,17 +2052,44 @@ mod tests {
         assert_eq!(checked, 10, "every record in the catalogue should extract");
     }
 
-    /// Only sources that bring a firing graph can hand a weapon projectiles.
+    /// Only a graph source can hand a weapon projectiles, and the recorded list has to name
+    /// sources that exist.
     #[test]
-    fn only_graph_sources_carry_a_firing_graph() {
+    fn only_graph_sources_launch_projectiles() {
         for entry in CATALOG {
-            assert_eq!(
-                entry.carries_firing_graph(),
-                matches!(entry.source, BehaviorSource::Graph { .. }),
-                "{}",
+            assert!(
+                !entry.launches_projectiles()
+                    || matches!(entry.source, BehaviorSource::Graph { .. }),
+                "{} is not a graph source",
                 entry.id
             );
         }
+        for id in LAUNCHING_SOURCES {
+            let entry = behavior(id).unwrap_or_else(|| panic!("{id} is not in the catalogue"));
+            assert!(entry.launches_projectiles(), "{id}");
+        }
+    }
+
+    /// The recorded list is a measurement, not a judgement about how a weapon looks in game, so
+    /// it is checked against the packages it was taken from. Hard Light fires visible bouncing
+    /// rounds and still exposes no launch speed to raise, which is exactly the sort of guess this
+    /// catches.
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn every_launching_source_is_recorded() {
+        use sundial::package_authoring::open_shadowkeep_package_manager;
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let manager = open_shadowkeep_package_manager(&path).unwrap();
+        let measured = CATALOG
+            .iter()
+            .filter(|entry| match entry.source {
+                BehaviorSource::Graph { tag } => launches_its_own(&manager, tag),
+                BehaviorSource::Record { .. } => false,
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(measured, LAUNCHING_SOURCES);
     }
 
     /// The boost only fires when the graft launches something the host cannot speed up itself.

@@ -16,7 +16,10 @@ pub(crate) fn investment_path(settings_path: &std::path::Path) -> std::path::Pat
         .join("investment.sqlite3")
 }
 
+/// The file name Dawn keeps its player state in.
+pub(crate) const DAWN_DATABASE_NAME: &str = "player-state.db";
+
 /// Dawn stores its player state beside the settings file rather than under a data directory.
 pub(crate) fn dawn_path(settings_path: &std::path::Path) -> std::path::PathBuf {
-    settings_path.with_file_name("player-state.db")
+    settings_path.with_file_name(DAWN_DATABASE_NAME)
 }

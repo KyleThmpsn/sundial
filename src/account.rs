@@ -27,6 +27,18 @@ pub struct AuthoredAccountCleanup {
     pub slot_moves: Vec<AuthoredItemMove>,
 }
 
+impl AuthoredAccountCleanup {
+    /// Whether the proposal touches the account at all.
+    pub fn changed_anything(&self) -> bool {
+        !self.removed_items.is_empty()
+            || self.cleared_plugs != 0
+            || self.removed_reward_rules != 0
+            || self.cleared_unlocks != 0
+            || !self.resized_items.is_empty()
+            || !self.slot_moves.is_empty()
+    }
+}
+
 /// Verified native socket layouts for a retained definition in a replacement generation.
 /// Account proposals preserve existing selections and use new defaults only for added sockets.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,8 +79,18 @@ fn is_database(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|name| name == "investment.sqlite3")
 }
+
+/// Dawn keeps its whole account here. Its settings.json is the seed it consumed on first boot and
+/// never reads again, so nothing about a Dawn account is decided from that file.
+fn is_dawn_database(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == crate::persistence::DAWN_DATABASE_NAME)
+}
 /// Returns journal bytes. SQLite uses a complete logical snapshot including uncheckpointed WAL data.
 pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {
+    if is_dawn_database(path) {
+        return crate::persistence::dawn_account::read_snapshot(path);
+    }
     validate_authored_cleanup_backend(path)?;
     if is_database(path) {
         return crate::persistence::sqlite_account::snapshot::read(path);
@@ -81,6 +103,9 @@ pub fn replace_authored_account_source(
     expected: &[u8],
     updated: &[u8],
 ) -> Result<(), String> {
+    if is_dawn_database(path) {
+        return crate::persistence::dawn_account::replace(path, expected, updated);
+    }
     validate_authored_cleanup_backend(path)?;
     if is_database(path) {
         return crate::persistence::sqlite_account::package::replace(path, expected, updated);

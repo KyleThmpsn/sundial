@@ -51,7 +51,8 @@ pub(super) enum AccountSourceKind {
     Blocked,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Eq`: a Dawn document carries `characters.appearance`, which is a float.
+#[derive(Clone, Debug, PartialEq)]
 enum AccountDocument {
     Json,
     Sqlite(Box<SqliteAccountDocument>),
@@ -59,7 +60,8 @@ enum AccountDocument {
     Blocked(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Eq`: see [`AccountDocument`].
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct WorkspaceDocument {
     json: Value,
     database_path: PathBuf,
@@ -99,10 +101,15 @@ impl WorkspaceDocument {
         }
     }
     pub(super) fn progression_view(&self, index: usize) -> Value {
-        if let AccountDocument::Sqlite(document) = &self.account {
-            return document.progression_view(index);
+        match &self.account {
+            AccountDocument::Sqlite(document) => document.progression_view(index),
+            // Dawn keeps progression in player-state.db durable_flags, and its settings.json is the
+            // seed it consumed on first boot. Serving that seed here presented values Dawn stopped
+            // reading long ago as if they were live, and an edit to them was only refused after the
+            // fact.
+            AccountDocument::Dawn(_) => Value::Null,
+            _ => self.json.clone(),
         }
-        self.json.clone()
     }
     pub(super) fn apply_progression_view(
         &mut self,
@@ -114,9 +121,10 @@ impl WorkspaceDocument {
             AccountDocument::Sqlite(document) => document
                 .apply_progression_view(index, &value)
                 .map_err(|e| e.to_string()),
-            AccountDocument::Dawn(_) => {
-                Err("Progression editing is not available for a Dawn account yet.".to_owned())
-            }
+            AccountDocument::Dawn(_) => Err(
+                "Dawn keeps progression in player-state.db durable flags. Sundial writes those only through authored collection unlocks."
+                    .to_owned(),
+            ),
             AccountDocument::Json => {
                 self.json = value;
                 Ok(())
@@ -222,6 +230,11 @@ impl WorkspaceDocument {
             (AccountDocument::Sqlite(current), AccountDocument::Sqlite(previous)) => {
                 current != previous
             }
+            // Dawn keeps its account in player-state.db, so an edit there is a change even though
+            // settings.json never moves. Without this arm no Dawn edit was ever offered for saving.
+            (AccountDocument::Dawn(current), AccountDocument::Dawn(previous)) => {
+                current.differs_from(previous)
+            }
             _ => false,
         }
     }
@@ -291,9 +304,9 @@ impl WorkspaceDocument {
             AccountDocument::Dawn(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Dawn,
                 label: "player-state.db",
-                detail: "This install runs Dawn, which keeps characters, inventory, equipment and preferences in player-state.db beside settings.json. Player identity and runtime configuration use settings.json.".to_owned(),
+                detail: "This install runs Dawn, which keeps characters, inventory, equipment and preferences in player-state.db beside settings.json. Dawn reads settings.json once when it first creates that database and never again, so account edits go to player-state.db.".to_owned(),
                 database_path: self.database_path.clone(),
-                contract: "SQLite · Dawn schema 1",
+                contract: DAWN_CONTRACT,
             },
 
             AccountDocument::Blocked(reason) => AccountSourceInfo {
@@ -308,6 +321,20 @@ impl WorkspaceDocument {
         }
     }
 
+    /// Whether this workspace's account belongs to Dawn, including one that failed to load.
+    ///
+    /// A Dawn database that is missing, empty or of an unsupported schema becomes `Blocked`, which
+    /// on its own is indistinguishable from a blocked Sunrise account. The recovery controls act on
+    /// `database_path`, so they have to tell the two apart or they aim Sunrise's tools at
+    /// player-state.db.
+    pub(super) fn account_is_dawn(&self) -> bool {
+        matches!(self.account, AccountDocument::Dawn(_))
+            || self
+                .database_path
+                .file_name()
+                .is_some_and(|name| name == crate::persistence::DAWN_DATABASE_NAME)
+    }
+
     pub(super) fn uses_json_account(&self) -> bool {
         matches!(self.account, AccountDocument::Json)
     }
@@ -320,6 +347,13 @@ impl WorkspaceDocument {
     }
 
     pub(super) fn verify_account_source_unchanged(&self) -> Result<(), String> {
+        // Dawn's account source is decided by detecting the installed runtime, and its account
+        // lives in player-state.db whatever settings.json says. The test below is Sunrise's own
+        // move from JSON accounts to data/investment.sqlite3 at settings v18, which never applied
+        // to Dawn: running it against a Dawn workspace refused every save.
+        if matches!(self.account, AccountDocument::Dawn(_)) {
+            return Ok(());
+        }
         if self.uses_json_account() == requires_sqlite(&self.json) {
             return Err(
                 "The settings schema changed its account source. Reload before applying or saving changes".into(),
@@ -391,13 +425,23 @@ impl WorkspaceDocument {
     }
 
     pub(super) fn rebase_account_revision_from(&mut self, source: &Self) {
-        if let (AccountDocument::Sqlite(current), AccountDocument::Sqlite(source)) =
-            (&mut self.account, &source.account)
-        {
-            current.adopt_revision_from(source);
+        match (&mut self.account, &source.account) {
+            (AccountDocument::Sqlite(current), AccountDocument::Sqlite(source)) => {
+                current.adopt_revision_from(source);
+            }
+            // Dawn guards every commit with a compare and swap on account_revision. After a
+            // rollback restores the verified copy, the revision on disk is the restored one, so
+            // the held document has to adopt it or no further save can ever match.
+            (AccountDocument::Dawn(current), AccountDocument::Dawn(source)) => {
+                current.adopt_revision(source);
+            }
+            _ => {}
         }
     }
 }
+
+/// The schema this build accepts. `dawn_contract_names_the_supported_schema` keeps it honest.
+const DAWN_CONTRACT: &str = "SQLite · Dawn schema 5";
 
 pub(super) use crate::game_settings::requires_sqlite_account as requires_sqlite;
 
@@ -600,12 +644,16 @@ pub(super) fn character_soid(document: &WorkspaceDocument, character_index: usiz
 }
 
 pub(super) fn character_inventory_capacity(document: &WorkspaceDocument) -> usize {
-    if matches!(document.account, AccountDocument::Sqlite(_)) {
-        return SqliteAccountDocument::character_capabilities()
+    match &document.account {
+        AccountDocument::Sqlite(_) => SqliteAccountDocument::character_capabilities()
             .inventory_capacity
-            .unwrap_or(super::inventory::CHARACTER_INVENTORY_CAPACITY);
+            .unwrap_or(super::inventory::CHARACTER_INVENTORY_CAPACITY),
+        // Dawn's limit is compiled into Dawn, not derived from a settings schema.
+        AccountDocument::Dawn(_) => DawnAccountDocument::character_capabilities()
+            .inventory_capacity
+            .unwrap_or(super::inventory::CHARACTER_INVENTORY_CAPACITY),
+        _ => super::inventory::CHARACTER_INVENTORY_CAPACITY,
     }
-    super::inventory::CHARACTER_INVENTORY_CAPACITY
 }
 
 pub(super) fn profile_items_editable(document: &WorkspaceDocument) -> bool {
@@ -620,10 +668,15 @@ pub(super) fn profile_items_editable(document: &WorkspaceDocument) -> bool {
 }
 
 pub(super) fn profile_item_capacity(document: &WorkspaceDocument) -> Option<usize> {
-    if matches!(document.account, AccountDocument::Sqlite(_)) {
-        return SqliteAccountDocument::profile_capabilities().profile_item_capacity;
+    match &document.account {
+        AccountDocument::Sqlite(_) => {
+            SqliteAccountDocument::profile_capabilities().profile_item_capacity
+        }
+        AccountDocument::Dawn(_) => {
+            DawnAccountDocument::profile_capabilities().profile_item_capacity
+        }
+        _ => super::inventory::schema_mode(&document.json).profile_item_capacity(),
     }
-    super::inventory::schema_mode(&document.json).profile_item_capacity()
 }
 
 pub(super) fn dismantle_rewards_available(document: &WorkspaceDocument) -> bool {
@@ -633,7 +686,9 @@ pub(super) fn dismantle_rewards_available(document: &WorkspaceDocument) -> bool 
             mode.supports_dismantle_rewards() && !mode.is_future()
         }
         AccountDocument::Sqlite(_) => true,
-        AccountDocument::Dawn(_) => true,
+        // Dawn keeps dismantle rewards, but this build does not read them, so presenting the
+        // section would state "none" as fact about an account it has not looked at.
+        AccountDocument::Dawn(_) => false,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -644,16 +699,23 @@ pub(super) fn dismantle_rewards_editable(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).can_mutate_dismantle_rewards()
         }
         AccountDocument::Sqlite(_) => true,
-        AccountDocument::Dawn(_) => true,
+        AccountDocument::Dawn(_) => {
+            DawnAccountDocument::profile_capabilities().dismantle_rewards_writable
+        }
         AccountDocument::Blocked(_) => false,
     }
 }
 
 pub(super) fn dismantle_reward_capacity(document: &WorkspaceDocument) -> Option<usize> {
-    if matches!(document.account, AccountDocument::Sqlite(_)) {
-        return SqliteAccountDocument::profile_capabilities().dismantle_reward_capacity;
+    match &document.account {
+        AccountDocument::Sqlite(_) => {
+            SqliteAccountDocument::profile_capabilities().dismantle_reward_capacity
+        }
+        AccountDocument::Dawn(_) => {
+            DawnAccountDocument::profile_capabilities().dismantle_reward_capacity
+        }
+        _ => super::inventory::schema_mode(&document.json).dismantle_reward_capacity(),
     }
-    super::inventory::schema_mode(&document.json).dismantle_reward_capacity()
 }
 
 pub(super) fn filtered_dismantle_rewards(document: &WorkspaceDocument) -> bool {

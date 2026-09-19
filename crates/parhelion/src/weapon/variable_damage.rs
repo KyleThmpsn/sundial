@@ -121,13 +121,30 @@ pub(crate) fn expand_overrides(
         return Ok(overrides.clone());
     };
     validate_elements(&variable.elements)?;
-    let lane = socket_types
-        .iter()
-        .position(|socket_type| *socket_type == TRAIT_SOCKET_TYPE)
+    // An author can turn one of the donor's columns into a trait socket, or append one, and can
+    // put The Fundamentals there themselves. Read the lanes the way the socket list draws them
+    // and use the socket they chose, so the build does not lead a second lane with the same perk.
+    let lanes = crate::weapon_behavior::effective_socket_types(
+        &crate::weapon_behavior::authored_socket_roles(overrides),
+        socket_types,
+    );
+    let trait_lanes = || {
+        lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, socket_type)| **socket_type == TRAIT_SOCKET_TYPE)
+            .map(|(lane, _)| lane)
+    };
+    let placed = crate::weapon_behavior::authored_socket_choices(overrides);
+    let lane = trait_lanes()
+        .find(|lane| {
+            placed
+                .get(*lane)
+                .is_some_and(|choices| choices.contains(&FUNDAMENTALS_PLUG_HASH))
+        })
+        .or_else(|| trait_lanes().next())
         .ok_or_else(|| {
-            invalid(
-                "Variable damage needs a trait socket on the base weapon, and this weapon has none.",
-            )
+            invalid("Variable damage needs a trait socket, and this weapon has none.")
         })?;
     let socket_index = u16::try_from(lane)
         .map_err(|_| invalid("Variable damage trait socket index does not fit 16 bits"))?;
@@ -154,17 +171,10 @@ pub(crate) fn expand_overrides(
             socket_types.len()
         )));
     }
-    if expanded.socket_columns[lane]
-        .as_ref()
-        .is_some_and(|column| column.choices != [FUNDAMENTALS_PLUG_HASH])
-    {
-        return Err(invalid(format!(
-            "Variable damage pins The Fundamentals into socket {} (Trait), but the recipe also overrides that socket. Remove that override or turn off variable damage.",
-            lane + 1
-        )));
-    }
-    expanded.socket_columns[lane] = Some(WeaponSocketColumnOverride {
-        choices: vec![FUNDAMENTALS_PLUG_HASH],
+    // The Fundamentals leads the lane rather than emptying it, so an author's own choices for
+    // that socket stay behind it and the element still steps from the first plug.
+    let column = expanded.socket_columns[lane].get_or_insert_with(|| WeaponSocketColumnOverride {
+        choices: Vec::new(),
         socket_type: None,
         choice_weight_bits: Vec::new(),
         choice_conditions: Vec::new(),
@@ -172,6 +182,10 @@ pub(crate) fn expand_overrides(
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
     });
+    column
+        .choices
+        .retain(|choice| *choice != FUNDAMENTALS_PLUG_HASH);
+    column.choices.insert(0, FUNDAMENTALS_PLUG_HASH);
     if expanded
         .socket_plug_variants
         .iter()
@@ -306,13 +320,21 @@ mod tests {
     }
 
     #[test]
-    fn conflicts_and_missing_trait_sockets_are_rejected() {
-        let mut conflicting = overrides(&SELECTOR_ORDER);
-        conflicting.socket_columns = vec![None; SOCKET_TYPES.len()];
-        conflicting.socket_columns[3] = column(0x1234_5678);
-        let error = expand_overrides(&conflicting, &SOCKET_TYPES).unwrap_err();
-        assert!(error.to_string().contains("socket 4 (Trait)"), "{error}");
+    fn a_chosen_trait_lane_keeps_its_choices_behind_the_fundamentals() {
+        let mut chosen = overrides(&SELECTOR_ORDER);
+        chosen.socket_columns = vec![None; SOCKET_TYPES.len()];
+        chosen.socket_columns[3] = column(0x1234_5678);
+        let expanded = expand_overrides(&chosen, &SOCKET_TYPES).unwrap();
+        assert_eq!(
+            expanded.socket_columns[3]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([FUNDAMENTALS_PLUG_HASH, 0x1234_5678].as_slice())
+        );
+    }
 
+    #[test]
+    fn a_missing_trait_socket_is_rejected() {
         let mut occupied = overrides(&SELECTOR_ORDER);
         occupied
             .socket_plug_variants

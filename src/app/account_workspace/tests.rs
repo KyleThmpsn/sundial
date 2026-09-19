@@ -722,3 +722,16 @@ fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
         0x1234
     );
 }
+
+/// The contract line names the schema this build actually accepts. It read "Dawn schema 1" for
+/// three revisions after the adapter moved on, which is exactly the drift a reader would trust.
+#[test]
+fn dawn_contract_names_the_supported_schema() {
+    assert_eq!(
+        super::DAWN_CONTRACT,
+        format!(
+            "SQLite · Dawn schema {}",
+            crate::persistence::dawn_account::SCHEMA_VERSION
+        )
+    );
+}

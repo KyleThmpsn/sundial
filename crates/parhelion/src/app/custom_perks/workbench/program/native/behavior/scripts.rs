@@ -81,9 +81,12 @@ pub(super) fn set(graph: &mut Graph, index: usize, script: &Script) -> Result<()
         return Err("The selected action does not run a game script.".into());
     }
     let mut changed = graph.clone();
-    if !changed.blocks[index].links.contains_key(&PATH) {
-        changed.create_target(index, PATH, 0, false)?;
-    }
+    // Always allocate the string rather than writing through the one already linked. Two
+    // nodes that named the same script share a single path allocation, so writing in place
+    // rewrote the other node's path while only this node's tag moved, leaving it running a
+    // script its own path no longer names. The allocation this replaces is dropped when the
+    // edit is committed.
+    changed.create_target(index, PATH, 0, false)?;
     let target = changed.blocks[index].links[&PATH];
     let mut path = script.path.as_bytes().to_vec();
     path.push(0);

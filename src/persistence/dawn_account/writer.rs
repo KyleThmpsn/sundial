@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, TransactionBehavior, params};
 use sundial_account::ItemPlugs;
 
+use super::DawnAccountDocument;
 use super::contract;
 use super::error::DawnAccountError;
-use super::{DawnAccountDocument, DawnAccountSnapshot};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DawnSaveReceipt {
@@ -46,8 +46,18 @@ pub(crate) fn save(
         });
     }
 
-    write_account(&transaction, &document.snapshot)?;
+    write_account(&transaction, document)?;
     write_allocators(&transaction, document)?;
+    // The account graph has been replaced, so anything this build does not model goes back now.
+    super::carried::restore(&transaction, &document.carried)?;
+    // Settings live outside that graph: their tables are never deleted, so only what the user
+    // changed is updated in place.
+    super::settings::save(
+        &transaction,
+        &document.settings_index,
+        &document.loaded_settings,
+        &document.snapshot.settings,
+    )?;
 
     let advanced = transaction.execute(
         "UPDATE metadata SET value=value+1 WHERE key='account_revision' AND value=?1",
@@ -62,21 +72,34 @@ pub(crate) fn save(
     transaction.commit()?;
 
     document.metadata.account_revision = revision + 1;
+    document.loaded_settings = document.snapshot.settings.clone();
     Ok(DawnSaveReceipt {
         backup,
         revision: document.metadata.account_revision,
     })
 }
 
+/// Takes a verified copy into Sundial's backup folder, the way the investment account does.
+///
+/// It used to drop a single `player-state.db.sundial-backup` beside the database, overwritten on
+/// every save, so the previous account was gone the moment a second save ran and none of it was
+/// reachable from Browse Backups. These are indexed and retained with the rest.
+pub(super) fn create_backup(path: &Path) -> Result<PathBuf, DawnAccountError> {
+    let root = crate::backups::root().ok_or_else(|| {
+        DawnAccountError::Backup(
+            "could not locate Sundial's local backup folder for player-state.db".to_owned(),
+        )
+    })?;
+    crate::backups::create(&root, path, "player-state-v2", "db", true, |backup, _| {
+        write_verified_copy(path, backup).map_err(|error| error.to_string())
+    })
+    .map_err(DawnAccountError::Backup)
+}
+
 /// Copies the database with SQLite's own backup API so any write ahead log is folded in.
-fn create_backup(path: &Path) -> Result<PathBuf, DawnAccountError> {
-    let backup = path.with_extension("db.sundial-backup");
-    if backup.exists() {
-        std::fs::remove_file(&backup)
-            .map_err(|error| DawnAccountError::Backup(error.to_string()))?;
-    }
+fn write_verified_copy(path: &Path, backup: &Path) -> Result<(), DawnAccountError> {
     let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut destination = Connection::open(&backup)?;
+    let mut destination = Connection::open(backup)?;
     let copy = rusqlite::backup::Backup::new(&source, &mut destination)?;
     copy.run_to_completion(64, std::time::Duration::from_millis(0), None)?;
     drop(copy);
@@ -86,14 +109,21 @@ fn create_backup(path: &Path) -> Result<PathBuf, DawnAccountError> {
             "the verified copy reported {ok}"
         )));
     }
-    Ok(backup)
+    Ok(())
 }
 
 /// Rewrites the account graph exactly as Dawn's own `write_account` does.
 fn write_account(
     transaction: &rusqlite::Transaction<'_>,
-    snapshot: &DawnAccountSnapshot,
+    document: &mut DawnAccountDocument,
 ) -> Result<(), DawnAccountError> {
+    // Split the borrows: the account is read from the snapshot while the profile allocator is
+    // advanced for any stack that does not have a durable identity yet.
+    let DawnAccountDocument {
+        snapshot,
+        allocators,
+        ..
+    } = document;
     transaction.execute_batch(
         "DELETE FROM item_sockets;
          DELETE FROM character_items;
@@ -107,12 +137,24 @@ fn write_account(
     )?;
 
     for (position, item) in snapshot.profile.profile_items().iter().enumerate() {
+        // The stack keeps the identity it was read with. One the user added has none yet, so it
+        // takes the next the profile allocator offers, the way Dawn allocates its own.
+        let soid = match item.instance_soid {
+            Some(soid) => soid.get(),
+            None => {
+                let next = allocators
+                    .profile_item
+                    .max(contract::FIRST_PROFILE_ITEM_SOID);
+                allocators.profile_item = next.saturating_add(1);
+                next
+            }
+        };
         transaction.execute(
             "INSERT INTO profile_items(position,instance_soid,definition_hash,quantity,mutation_serial)\
              VALUES(?1,?2,?3,?4,0)",
             params![
                 position as i64,
-                contract::format_soid(0),
+                contract::format_soid(soid),
                 i64::from(item.definition_hash.get()),
                 item.quantity
             ],
@@ -127,7 +169,7 @@ fn write_account(
             DawnAccountError::Unwritable("a character has no metadata to write".into())
         })?;
         transaction.execute(
-            "INSERT INTO characters VALUES(?1,?2,0,?3,?4,?5,?6,1,1,1.0,0,1,?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO characters(position,soid,last_selected,race,gender,class,level,             accepted,preview_available,appearance,last_destination,content_bypass,             movement_ability,grenade_ability,super_ability,melee_ability,class_ability,             next_inventory_serial)              VALUES(?1,?2,0,?3,?4,?5,?6,1,1,1.0,0,1,?7,?8,?9,?10,?11,?12)",
             params![
                 position as i64,
                 contract::format_soid(soid.get()),

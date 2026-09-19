@@ -5,11 +5,22 @@ pub(crate) enum SettingsLayout {
     GameRoot,
     Root,
     BinX64,
+    DawnRoot,
+    DawnBinX64,
 }
 
 impl SettingsLayout {
-    pub(crate) const ALL: [Self; 3] = [Self::GameRoot, Self::Root, Self::BinX64];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::GameRoot,
+        Self::Root,
+        Self::BinX64,
+        Self::DawnRoot,
+        Self::DawnBinX64,
+    ];
 
+    /// A runtime owns the folder named after it, so Dawn keeps its settings in `Dawn` and
+    /// Sunrise in `Sunrise`. An installation that has run both holds one of each, which is why
+    /// they are separate layouts rather than one folder whose name is guessed.
     pub(crate) fn relative_path(self) -> PathBuf {
         match self {
             Self::GameRoot => PathBuf::from("settings.json"),
@@ -17,6 +28,11 @@ impl SettingsLayout {
             Self::BinX64 => PathBuf::from("bin")
                 .join("x64")
                 .join("Sunrise")
+                .join("settings.json"),
+            Self::DawnRoot => PathBuf::from("Dawn").join("settings.json"),
+            Self::DawnBinX64 => PathBuf::from("bin")
+                .join("x64")
+                .join("Dawn")
                 .join("settings.json"),
         }
     }
@@ -32,10 +48,31 @@ pub(crate) fn settings_path_for_install(install: &Path, layout: SettingsLayout) 
     install.join(layout.relative_path())
 }
 
+/// The settings the installed runtime reads, when one is detected and that file is present.
+///
+/// A runtime owns the folder named after it, so which one is installed decides where its settings
+/// live. This comes before any saved layout: swapping the DLL is how a player changes runtime, and
+/// a layout saved under the previous one would otherwise keep Sundial pointed at a file the game
+/// no longer reads.
+pub(crate) fn runtime_settings_path(install: &Path) -> Option<(SettingsLayout, PathBuf)> {
+    let inspection = crate::package_runtime::installation::RuntimeInspection::inspect(install);
+    let path = inspection.launch_copy()?.settings_path.clone();
+    if !path.is_file() {
+        return None;
+    }
+    let layout = SettingsLayout::ALL.into_iter().find(|layout| {
+        crate::paths::paths_equal(&settings_path_for_install(install, *layout), &path)
+    })?;
+    Some((layout, path))
+}
+
 pub(crate) fn resolve_settings_path(
     install: &Path,
     preferred_layout: Option<SettingsLayout>,
 ) -> SettingsPathResolution {
+    if let Some((layout, path)) = runtime_settings_path(install) {
+        return SettingsPathResolution::Found(layout, path);
+    }
     if let Some(layout) = preferred_layout {
         let path = settings_path_for_install(install, layout);
         if path.is_file() {

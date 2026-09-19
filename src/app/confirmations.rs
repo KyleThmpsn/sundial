@@ -197,7 +197,7 @@ impl SundialApp {
                         "If an account edit prevents loading, use Preferences > Saving & Recovery to restore a verified account database backup. The current database is backed up first."
                     }
                     AccountSourceKind::Dawn => {
-                        "This install runs Dawn, so Sundial reads player-state.db and does not write it. Account edits are unavailable until Dawn account saving ships."
+                        "This install runs Dawn, so account edits are written to player-state.db rather than to settings.json."
                     }
                     AccountSourceKind::Blocked => {
                         "Account editing is currently blocked, so Sundial will not write the incompatible investment.sqlite3."
@@ -242,7 +242,10 @@ impl SundialApp {
                 .document
                 .account_change_summaries(&self.persisted_document, CHANGE_REVIEW_LIMIT + 1);
             if self.document.account_changed_from(&self.persisted_document) && changes.is_empty() {
-                changes.push("investment.sqlite3: account data changed".to_owned());
+                changes.push(format!(
+                    "{}: account data changed",
+                    self.document.source_info().label
+                ));
             }
             if changes.len() <= CHANGE_REVIEW_LIMIT {
                 changes.extend(collect_change_summaries(
@@ -271,9 +274,11 @@ impl SundialApp {
                     self.document.json_changed_from(&self.persisted_document),
                     self.document.account_changed_from(&self.persisted_document),
                 ) {
-                    (true, true) => "settings.json and investment.sqlite3",
-                    (false, true) => "investment.sqlite3",
-                    _ => "settings.json",
+                    (true, true) => {
+                        format!("settings.json and {}", self.document.source_info().label)
+                    }
+                    (false, true) => self.document.source_info().label.to_owned(),
+                    _ => "settings.json".to_owned(),
                 };
                 ui.label(if truncated {
                     format!(

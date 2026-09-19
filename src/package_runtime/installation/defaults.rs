@@ -45,11 +45,10 @@ impl SettingsResetPlan {
         require_closed()?;
         self.check_current()?;
         let root = fs::canonicalize(&self.install).map_err(|e| e.to_string())?;
-        let settings = self
-            .copy
-            .location
-            .directory(&root)
-            .join("Sunrise/settings.json");
+        // Guard the file this actually replaces below. Rebuilding a Sunrise path here checked a
+        // different file from the one written, which for a Dawn copy is Dawn/settings.json. The
+        // root is canonical, so the file has to be resolved the same way to be compared with it.
+        let settings = fs::canonicalize(&self.copy.settings_path).map_err(|e| e.to_string())?;
         backup::checked_path(&root, &settings)?;
         let directory = root.join(".sunrise/backups");
         backup::checked_directory(&root, &directory)?;

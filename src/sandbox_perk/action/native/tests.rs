@@ -908,3 +908,95 @@ fn client_recovered_key_names_hash_to_their_keys() {
         assert_eq!(super::fields::keys::client_name(*hash), Some(*name));
     }
 }
+
+/// Every edit allocates its target afresh rather than writing through one that another node
+/// may share, so each one leaves the allocation it replaced behind. An authored program is
+/// stored as its block list, and `validate` counts every block against the allocation cap,
+/// so without compaction an editing session grows its own saved recipe until no frame can
+/// validate it and the program can no longer be edited at all.
+#[test]
+fn repeated_edits_do_not_grow_a_graph_past_what_its_root_reaches() {
+    let class = nodes::condition(2).unwrap().class;
+    let mut graph = Graph::read(&template(true, 2).unwrap(), 0, class).unwrap();
+    let opened = graph.blocks.len();
+    // The kill node's label array, reallocated the way every label edit reallocates it.
+    for _ in 0..64 {
+        graph.create_target(0, 0xD0 + 8, 0x808094B3, true).unwrap();
+    }
+    assert!(
+        graph.blocks.len() > opened + 60,
+        "an edit should leave its replaced allocation behind, found {} blocks",
+        graph.blocks.len()
+    );
+    let edited = graph.emit().unwrap();
+    // What the program actually consists of: emitting writes the blocks the root reaches and
+    // nothing else, so reading those bytes back is the graph with no allocation left over.
+    let reachable = Graph::read(&edited, 0, class).unwrap().blocks.len();
+    graph.compact();
+    assert_eq!(graph.blocks.len(), reachable);
+    // Compaction drops only what the root cannot reach, so the program is the same one.
+    assert_eq!(graph.emit().unwrap(), edited);
+    graph.validate().unwrap();
+}
+
+/// Reading a native object memoizes by resource position, so two nodes that pointed at one
+/// resource share a single block here. Writing through that block would change both nodes,
+/// and the other one is usually elsewhere in the program entirely.
+#[test]
+fn an_edit_through_a_shared_allocation_copies_it_first() {
+    let class = nodes::condition(2).unwrap().class;
+    let mut graph = Graph::read(&template(true, 2).unwrap(), 0, class).unwrap();
+    let (field, target) = graph.blocks[0]
+        .links
+        .iter()
+        .map(|(field, target)| (*field, *target))
+        .next()
+        .expect("the kill node owns an allocation");
+    // A second owner sharing all of the first one's allocations, as a read of two nodes
+    // naming one resource produces.
+    let sibling = graph.blocks.len();
+    graph.blocks.push(graph.blocks[0].clone());
+    let untouched = graph.blocks[target].bytes.clone();
+
+    let copy = graph.make_unique(sibling, field).unwrap();
+    assert_ne!(
+        copy, target,
+        "a shared allocation must be copied before a write"
+    );
+    assert_eq!(
+        graph.blocks[0].links[&field], target,
+        "the other owner keeps its own"
+    );
+    graph.blocks[copy].bytes.fill(0xAB);
+    assert_eq!(graph.blocks[target].bytes, untouched);
+
+    // Nothing else reaches it now, so the next edit writes in place instead of copying again.
+    assert_eq!(graph.make_unique(sibling, field).unwrap(), copy);
+}
+
+/// The node editors re-emit the record they were given on every frame, so reading one has to
+/// return the bytes it was read from. If it did not, merely opening a stock effect would read
+/// as an edit and adopt it into an authored program the reader never asked for.
+#[test]
+fn reading_and_re_emitting_a_node_template_returns_the_same_bytes() {
+    let mut checked = 0;
+    for (condition, node) in nodes::CONDITIONS
+        .iter()
+        .map(|node| (true, node))
+        .chain(nodes::EFFECTS.iter().map(|node| (false, node)))
+    {
+        let Some(bytes) = template(condition, node.kind) else {
+            continue;
+        };
+        let graph = Graph::read(&bytes, 0, node.class).unwrap();
+        assert_eq!(
+            graph.emit().unwrap(),
+            bytes,
+            "kind {} ({}) does not survive a read and re-emit",
+            node.kind,
+            node.name
+        );
+        checked += 1;
+    }
+    assert!(checked > 20, "only {checked} templates were covered");
+}
