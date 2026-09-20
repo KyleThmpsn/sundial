@@ -3,6 +3,7 @@ use crate::{
     catalog::{Catalog, InventoryDefinition},
 };
 use eframe::egui;
+mod dawn;
 
 #[derive(Clone)]
 struct RewardDraft {
@@ -22,6 +23,10 @@ enum Edit {
 
 impl SundialApp {
     pub(super) fn draw_pending_rewards(&mut self, ui: &mut egui::Ui) {
+        if self.document.dawn_account().is_some() {
+            self.draw_dawn_reward_debts(ui);
+            return;
+        }
         let Some(document) = self.document.native_account() else {
             return;
         };
@@ -48,8 +53,7 @@ impl SundialApp {
         let editable = account::can_mutate_character_inventory(&self.document)
             && account::profile_items_editable(&self.document);
         let mut edit = None;
-        ui.strong("Pending Rewards");
-        ui.label("Sunrise delivers queued rewards in game when inventory space is available.");
+        ui.strong("Reward Queue");
         ui.add_space(6.0);
         ui.add_enabled_ui(editable && !characters.is_empty(), |ui| {
             if draw_add_reward(ui, &self.manifest, &characters, &mut draft) {
@@ -276,8 +280,12 @@ fn draw_add_reward(
             .definition_hash
             .and_then(|hash| catalog.inventory_definition(u64::from(hash)))
             .is_some_and(|definition| valid_reward(definition, draft.kind, class));
-        add = ui
-            .add_enabled(valid, egui::Button::new("Add Reward"))
+        let response = ui.add_enabled(valid, egui::Button::new("Add Reward"));
+        let help =
+            "Save to queue this reward for delivery in game when inventory space is available.";
+        add = response
+            .on_hover_text(help)
+            .on_disabled_hover_text(help)
             .clicked();
     });
     add

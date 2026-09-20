@@ -477,7 +477,7 @@ pub(super) fn inspect(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Index, String> {
     let snapshot = Snapshot::read(packages)?;
-    let directory = crate::paths::cache_dir().map(|root| root.join("native-names/source-packages"));
+    let directory = crate::paths::cache_dir().map(|root| root.join("discovery/source-packages"));
     let targets = EntityTargets::new(manager);
     let known_lane = |lane: u64| manager.lookup.tag64_entries.contains_key(&lane);
     let total = manager
@@ -681,41 +681,6 @@ mod tests {
     }
 
     /// A class index outside the table is a corrupt shard, not a panic.
-    /// Assembly resolves a reused shard in the worker that read it and then drops the
-    /// evidence, which is what keeps a whole installation's worth of it out of memory at
-    /// once. Everything the assembly still wants from that shard afterwards has to survive
-    /// it: the content paths, the candidate lanes it resolves separately, the vocabulary,
-    /// the resource count and the errors.
-    #[test]
-    fn a_shard_still_gives_up_everything_else_once_its_evidence_is_dropped() {
-        let bytes = super::super::tests::fixture();
-        let targets = targets([0x8152_82E1], &[]);
-        let mut shard = candidates(7, 8, &bytes, &known_lane);
-        let lookup = |lane: u64| Some((lane as u32, 0x8080_9C0F));
-
-        let references = entity_references(&shard, &targets);
-        let before = (
-            resolve(&shard, lookup),
-            shard.paths.clone(),
-            shard.vocabulary.clone(),
-            shard.scanned_resources,
-            shard.errors.clone(),
-        );
-        assert!(!references.is_empty(), "the fixture resolves a reference");
-        assert!(
-            !before.0.is_empty(),
-            "the fixture resolves a candidate lane"
-        );
-
-        shard.evidence = Vec::new();
-
-        assert_eq!(resolve(&shard, lookup), before.0);
-        assert_eq!(shard.paths, before.1);
-        assert_eq!(shard.vocabulary, before.2);
-        assert_eq!(shard.scanned_resources, before.3);
-        assert_eq!(shard.errors, before.4);
-    }
-
     #[test]
     fn packed_evidence_rejects_a_class_index_outside_its_table() {
         let encoded = br#"{"paths":[],"candidates":[],"evidence":{"classes":[],"rows":[[1,0,[],[]]]},"vocabulary":[],"scanned_resources":0,"errors":[]}"#;

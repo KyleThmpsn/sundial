@@ -25,13 +25,18 @@ pub(super) struct RuntimeScan {
     pub(super) truncated: bool,
 }
 
-pub(super) fn append_sunrise_runtime_files(report: &mut String, install: &Path) {
-    report.push_str("Sunrise Runtime Folders\n-----------------------\n");
+pub(super) fn append_runtime_files(report: &mut String, install: &Path) {
+    report.push_str("Runtime Folders\n---------------\n");
     let roots = [
         ("game_root_data", install.join("data")),
         ("game_root_cache", install.join("cache")),
-        ("root", install.join("Sunrise")),
-        ("bin_x64", install.join("bin").join("x64").join("Sunrise")),
+        ("sunrise_root", install.join("Sunrise")),
+        (
+            "sunrise_bin_x64",
+            install.join("bin").join("x64").join("Sunrise"),
+        ),
+        ("dawn_root", install.join("Dawn")),
+        ("dawn_bin_x64", install.join("bin").join("x64").join("Dawn")),
     ];
     for (label, root) in roots {
         writeln!(report, "[{label}] {}", root.display()).expect("writing to a String cannot fail");

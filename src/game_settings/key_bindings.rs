@@ -186,7 +186,7 @@ pub(super) fn draw_key_bindings(
         if settings.get(KEY_BINDING_SOURCE_KEY).and_then(Value::as_str) == Some("computer") {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "Bindings edited here will not apply while the source is Computer. Switch Binding Source to Account to have Sunrise use them.",
+                "Bindings edited here will not apply while the source is Computer. Switch Binding Source to Account to have the active runtime use them.",
             );
         }
         ui.add_space(8.0);

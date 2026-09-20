@@ -2,12 +2,13 @@
 //!
 //! The writer replaces the whole account graph, and `item_rolls` cascades from
 //! `character_items`, so a save would drop every roll and reset every column added after this
-//! build was written. Reading them here and putting them back keeps a database Sundial saved as
-//! complete as the one it opened.
+//! build was written. Known bookkeeping is restored here. The schema guard refuses unknown
+//! extensions to the rewritten graph before saving.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{Connection, params};
+use sundial_account::{EntityId, ProfileState};
 
 use super::error::DawnAccountError;
 
@@ -40,6 +41,12 @@ pub(super) struct ItemRoll {
     pub owned_rows: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ProfileRow {
+    pub soid: String,
+    pub serial: i64,
+}
+
 /// Everything a save has to put back that this build does not otherwise represent.
 /// `appearance` is a float, so this compares by value rather than deriving `Eq`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -51,13 +58,16 @@ pub(super) struct Carried {
     /// `character_items.mutation_serial`, by instance SOID. That column is UNIQUE, so it is a
     /// stable key across a save; position is not.
     pub item_mutation_serials: BTreeMap<String, i64>,
-    /// `profile_items.mutation_serial`, by instance SOID.
-    pub profile_mutation_serials: BTreeMap<String, i64>,
+    /// Session-local row identity, not SOID. Non-instanced stacks all have SOID zero.
+    pub profile_rows: BTreeMap<EntityId, ProfileRow>,
     /// `item_rolls`, which cascades away when its item row is deleted.
     pub item_rolls: Vec<ItemRoll>,
 }
 
-pub(super) fn read(connection: &Connection) -> Result<Carried, DawnAccountError> {
+pub(super) fn read(
+    connection: &Connection,
+    profile: &ProfileState,
+) -> Result<Carried, DawnAccountError> {
     let mut characters = BTreeMap::new();
     let mut statement = connection.prepare(
         "SELECT soid,last_selected,level,accepted,preview_available,appearance,last_destination,         content_bypass,next_inventory_serial,vendor_campaigns FROM characters",
@@ -94,14 +104,22 @@ pub(super) fn read(connection: &Connection) -> Result<Carried, DawnAccountError>
     }
     drop(statement);
 
-    let mut profile_mutation_serials = BTreeMap::new();
-    let mut statement =
-        connection.prepare("SELECT instance_soid,mutation_serial FROM profile_items")?;
+    let mut profile_rows = BTreeMap::new();
+    let mut statement = connection.prepare(
+        "SELECT position,instance_soid,mutation_serial FROM profile_items ORDER BY position",
+    )?;
     for row in statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        Ok((
+            row.get::<_, usize>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })? {
-        let (soid, serial) = row?;
-        profile_mutation_serials.insert(soid, serial);
+        let (position, soid, serial) = row?;
+        let item = profile.profile_items().get(position).ok_or_else(|| {
+            DawnAccountError::Unwritable("Profile inventory changed. Reload before saving".into())
+        })?;
+        profile_rows.insert(item.id, ProfileRow { soid, serial });
     }
     drop(statement);
 
@@ -130,7 +148,7 @@ pub(super) fn read(connection: &Connection) -> Result<Carried, DawnAccountError>
         characters,
         postmaster,
         item_mutation_serials,
-        profile_mutation_serials,
+        profile_rows,
         item_rolls,
     })
 }
@@ -162,12 +180,6 @@ pub(super) fn restore(
     for (soid, serial) in &carried.item_mutation_serials {
         transaction.execute(
             "UPDATE character_items SET mutation_serial=?2 WHERE instance_soid=?1",
-            params![soid, serial],
-        )?;
-    }
-    for (soid, serial) in &carried.profile_mutation_serials {
-        transaction.execute(
-            "UPDATE profile_items SET mutation_serial=?2 WHERE instance_soid=?1",
             params![soid, serial],
         )?;
     }

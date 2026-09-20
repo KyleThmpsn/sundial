@@ -1,16 +1,41 @@
-//! Label list editing at every binding site the stock perks author, not just the kill node.
-//!
-//! A node can carry several label binding sites, each with four set operations. The kill
-//! filter was one such site. The stock perks author 52 of them across 16 node classes, and
-//! every one already has a named vocabulary in `activation::LABEL_SITES`, so each list is
-//! editable here from the words the game uses at that exact site.
+//! Label editing over the active registry, with stock usage as a guide rather than a limit.
 use super::*;
 use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, cell};
 
+use sundial::investment::discovery::labels::Registry;
 use sundial::package_authoring::sandbox_perk::activation;
+use sundial::ui::catalog::labels as picker;
 
-/// Every label binding site on this node that has a stock vocabulary, each as its four set
-/// operations. The kill node draws its own sites next to its presets and is skipped here.
+fn registry(ui: &egui::Ui) -> (Option<Arc<Registry>>, Option<String>) {
+    ui.data(|data| data.get_temp(egui::Id::new("installed-label-registry")))
+        .unwrap_or_default()
+}
+
+pub(in crate::app::custom_perks::workbench::program::native) fn draw_single(
+    ui: &mut egui::Ui,
+    value: &mut u32,
+) {
+    let (registry, error) = registry(ui);
+    crate::app::custom_perks::workbench::controls::column(ui, |ui| {
+        egui::ComboBox::from_id_salt("registered-label")
+            .width(COLUMN_WIDTH)
+            .truncate()
+            .selected_text(picker::title(*value))
+            .show_ui(ui, |ui| {
+                if let Some(error) = error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                picker::select_one(ui, registry.as_deref(), value);
+                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                    let response = hex_key(ui, "label-hash", value);
+                    pickers::name_response(ui, &response, "Label as Hex");
+                });
+            });
+        pickers::name_combo(ui, "registered-label", "Label");
+    });
+}
+
+/// All four operations at every binding site. The kill node draws these beside its presets.
 pub(super) fn draw_sites(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     if graph.blocks[index].class == trigger::CLASS {
         return Ok(());
@@ -31,9 +56,6 @@ pub(super) fn draw_row_sites(
     let fold = Fold::of(ui, index, row);
     let mut unset = 0;
     for (binding, _) in native::labels::bindings(class)? {
-        if activation::site_labels(class, binding).is_empty() {
-            continue;
-        }
         let at = row * stride + binding;
         let lists = native::labels::source(graph, index, at)?;
         let caption = site_caption(class, binding);
@@ -47,9 +69,6 @@ pub(super) fn draw_row_sites(
     }
     fold.draw(ui, unset);
     for &source in added_label_sites(class) {
-        if activation::site_labels(class, source).is_empty() {
-            continue;
-        }
         let at = row * stride + source;
         let current = read_list(graph, index, at)?;
         ui.push_id(("added-labels", row, source), |ui| {
@@ -58,7 +77,7 @@ pub(super) fn draw_row_sites(
                 class,
                 source,
                 0,
-                "Adds labels",
+                "Adds Labels",
                 "Labels added to the event when this action's filter passes. Other perks can read them.",
                 &current,
             )? {
@@ -102,10 +121,9 @@ pub(super) struct Fold {
 }
 
 impl Fold {
-    /// A wrapping row hands its contents a child `Ui`, so this state needs an id of its own
-    /// rather than one derived from the surrounding layout.
+    /// Independent editors can both use block zero, so scope the fold to its editing surface.
     pub fn of(ui: &egui::Ui, index: usize, row: usize) -> Self {
-        let id = egui::Id::new(("label-sites-unset", index, row));
+        let id = ui.make_persistent_id(("label-sites-unset", index, row));
         Self {
             id,
             unfolded: ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false)),
@@ -147,6 +165,9 @@ pub(super) fn draw_site_group(
     lists: &[Vec<u32>; 4],
     unfolded: bool,
 ) -> Result<Option<(usize, Vec<u32>)>, String> {
+    if !unfolded && lists.iter().all(Vec::is_empty) {
+        return Ok(None);
+    }
     let mut edited = None;
     let mut failed = None;
     ui.horizontal_wrapped(|ui| {
@@ -170,6 +191,20 @@ pub(super) fn draw_site_group(
             }
         }
     });
+    let (registry, _) = registry(ui);
+    if let Some(registry) = registry {
+        let mut checked = lists.clone();
+        if let Some((operation, labels)) = &edited {
+            checked[*operation] = labels.clone();
+        }
+        let problem = match registry.conflict(&checked) {
+            Ok(problem) => problem.map(str::to_owned),
+            Err(error) => Some(error),
+        };
+        if let Some(problem) = problem {
+            ui.colored_label(ui.visuals().warn_fg_color, problem);
+        }
+    }
     if let Some(error) = failed {
         return Err(error);
     }
@@ -246,9 +281,7 @@ pub(super) fn draw_labels(
     current: &[u32],
 ) -> Result<Option<Vec<u32>>, String> {
     let vocabulary = activation::site_labels(class, binding);
-    if vocabulary.is_empty() {
-        return Ok(None);
-    }
+    let (registry, error) = registry(ui);
     let mut chosen = current.to_vec();
     let summary = if chosen.is_empty() {
         "none".to_owned()
@@ -256,7 +289,7 @@ pub(super) fn draw_labels(
         chosen
             .iter()
             .map(|hash| {
-                activation::site_label_name(*hash)
+                sundial::investment::discovery::labels::name(*hash)
                     .map_or_else(|| format!("0x{hash:08X}"), plain_label)
             })
             .collect::<Vec<_>>()
@@ -269,34 +302,17 @@ pub(super) fn draw_labels(
     // spelling the operation inside every one of them filled the pane and wrapped each
     // control onto several lines. The full reading stays on hover.
     cell(ui, name, hint, |ui| {
-        // A site can carry nineteen labels. The default popup shows nine and hides the
-        // rest behind a scroll with no visible bar, so the popup is tall enough for
-        // every stock list.
         egui::ComboBox::from_id_salt(salt)
-                .width(COLUMN_WIDTH)
-                .height(480.0)
-                .truncate()
-                .selected_text(summary.clone())
-                .show_ui(ui, |ui| {
-                    ui.small(hint);
-                    for (hash, label, uses) in vocabulary {
-                        let mut on = chosen.contains(hash);
-                        if ui
-                            .checkbox(&mut on, plain_label(label))
-                            .on_hover_text(format!(
-                                "{uses} stock perks use this label here. The engine's token is \"{label}\"."
-                            ))
-                            .changed()
-                        {
-                            changed = true;
-                            if on {
-                                chosen.push(*hash);
-                            } else {
-                                chosen.retain(|candidate| candidate != hash);
-                            }
-                        }
-                    }
-                })
+            .width(COLUMN_WIDTH)
+            .height(380.0)
+            .truncate()
+            .selected_text(summary.clone())
+            .show_ui(ui, |ui| {
+                if let Some(error) = error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                changed = picker::select_many(ui, registry.as_deref(), vocabulary, &mut chosen);
+            })
             .response
             .on_hover_text(format!("{name}: {summary}\n{hint}"));
         pickers::name_combo(ui, salt, name);
@@ -335,13 +351,48 @@ pub(super) fn set_labels(
     operation: usize,
     labels: &[u32],
 ) -> Result<(), String> {
+    if operation >= 4 {
+        return Err("Invalid label operation.".into());
+    }
     let at = binding + operation * 16;
+    if read_list(graph, index, at)? == labels {
+        return Ok(());
+    }
+    let original = graph.blocks[index]
+        .links
+        .get(&(at + 8))
+        .map(|target| {
+            graph.blocks[*target]
+                .bytes
+                .chunks_exact(24)
+                .enumerate()
+                .map(|(number, row)| {
+                    let links = graph.blocks[*target]
+                        .links
+                        .range(number * 24..(number + 1) * 24)
+                        .map(|(at, target)| (at - number * 24, *target))
+                        .collect::<BTreeMap<_, _>>();
+                    (
+                        u32::from_le_bytes(row[..4].try_into().unwrap()),
+                        (row.to_vec(), links),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut changed = graph.clone();
     changed.create_target(index, at + 8, 0x808094B3, true)?;
     let rows = changed.blocks[index].links[&(at + 8)];
     changed.resize_array(rows, labels.len())?;
     for (row, label) in labels.iter().enumerate() {
         let offset = row * 24;
+        if let Some((previous, links)) = original.get(label) {
+            changed.blocks[rows].bytes[offset..offset + 24].copy_from_slice(previous);
+            changed.blocks[rows]
+                .links
+                .extend(links.iter().map(|(at, target)| (offset + at, *target)));
+            continue;
+        }
         changed.blocks[rows].bytes[offset..offset + 4].copy_from_slice(&label.to_le_bytes());
         changed.blocks[rows].bytes[offset + 16..offset + 24]
             .copy_from_slice(&u64::from(activation::LABEL_GLOBALS).to_le_bytes());
@@ -354,6 +405,43 @@ pub(super) fn set_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_label_sets_preserves_retained_rows_and_shared_owners() {
+        let class = 0x80803DE7;
+        let binding = 0xD0;
+        let mut graph = Graph::read(&native::template(true, 2).unwrap(), 0, class).unwrap();
+        set_labels(&mut graph, 0, binding, 0, &[0x962EA19B, 0xE17576C9]).unwrap();
+        let rows = graph.blocks[0].links[&(binding + 8)];
+        // Metadata belongs to each retained row, not to its position in a new selection.
+        graph.blocks[rows].bytes[4..8].fill(0xA5);
+        graph.create_target(rows, 8, 0, false).unwrap();
+        let path = graph.blocks[rows].links[&8];
+        graph.blocks[path].bytes = b"test registry\0".to_vec();
+        let retained = graph.blocks[rows].bytes[..24].to_vec();
+        let original_rows = graph.blocks[rows].clone();
+        let sibling = graph.blocks.len();
+        graph.blocks.push(graph.blocks[0].clone());
+        set_labels(&mut graph, 0, binding, 0, &[0xC20DD425, 0x962EA19B]).unwrap();
+        assert_eq!(graph.blocks[rows], original_rows);
+        assert_eq!(graph.blocks[sibling].links[&(binding + 8)], rows);
+        let changed = graph.blocks[0].links[&(binding + 8)];
+        assert_eq!(&graph.blocks[changed].bytes[24..48], &retained);
+        assert_eq!(graph.blocks[changed].links[&32], path);
+        let read = Graph::read(&graph.emit().unwrap(), 0, class).unwrap();
+        let rows = read.blocks[0].links[&(binding + 8)];
+        assert_eq!(
+            read.blocks[read.blocks[rows].links[&32]].bytes,
+            b"test registry\0"
+        );
+        assert_eq!(
+            native::labels::source(&read, 0, binding).unwrap()[0],
+            vec![0xC20DD425, 0x962EA19B]
+        );
+        let before = graph.clone();
+        set_labels(&mut graph, 0, binding, 0, &[0xC20DD425, 0x962EA19B]).unwrap();
+        assert_eq!(graph, before);
+    }
 
     /// Every stock binding site with a vocabulary is reachable from its node's own editor,
     /// not only the kill node's, and a write there survives a reload.

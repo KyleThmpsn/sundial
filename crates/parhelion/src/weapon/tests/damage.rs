@@ -73,7 +73,7 @@ fn recognized_modern_damage_override_stays_in_place() {
         investment + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET,
     )
     .unwrap();
-    definition[rows + 2..rows + ITEM_SANDBOX_PERK_ROW_SIZE].fill(0x5A);
+    definition[rows + 2..rows + 8].fill(0x5A);
 
     set_weapon_fixed_damage_type(
         &mut definition,
@@ -89,7 +89,7 @@ fn recognized_modern_damage_override_stays_in_place() {
         MODERN_SOLAR_DAMAGE_PERK_INDEX
     );
     assert!(
-        definition[rows + 2..rows + ITEM_SANDBOX_PERK_ROW_SIZE]
+        definition[rows + 2..rows + 8]
             .iter()
             .all(|byte| *byte == 0x5A)
     );

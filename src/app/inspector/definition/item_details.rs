@@ -1,5 +1,9 @@
 //! Native classifications and complete ordered metadata, separate from the item summary.
 
+use super::matches::CatalogHashMatches;
+use crate::app::inspector::{
+    draw_catalog_hash_link, hash_detail_field, hash_metadata_section, item_definition_name_cell,
+};
 use eframe::egui;
 
 use crate::{
@@ -177,7 +181,13 @@ pub(super) fn draw_stat_group(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             ui.weak(metadata.stat_group_index.map_or_else(|| "No stat-group reference is decoded.".into(), |index| format!("Stat-group index {index} is referenced but could not be resolved.")));
             return;
         };
-        ui.label(format!("Group {} · {} · Maximum {}", metadata.stat_group_index.map_or_else(|| "Unknown".into(), |index| index.to_string()), format_hash_hex(group.hash), group.maximum_value));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Group {} · Maximum {}", metadata.stat_group_index.map_or_else(|| "Unknown".into(), |index| index.to_string()), group.maximum_value));
+            draw_catalog_hash_link(ui, catalog, group.hash, format_hash_hex(group.hash));
+        });
+        if let Some(index) = metadata.stat_group_index {
+            draw_item_hash_list(ui, catalog, ("stat-group-users", hash), "Items Using This Stat Group", &catalog.items_with_stat_group(index));
+        }
         ui.weak("These curves produce presentation values from investment stats, not final gameplay values after plugs or runtime effects.");
         for (row, stat) in group.scaled_stats.iter().enumerate() {
             let definition = catalog.item_stat_definition(stat.definition_index);
@@ -285,6 +295,111 @@ fn draw_rows(ui: &mut egui::Ui, id: &str, headings: &[&str], rows: Vec<Vec<Strin
                     }
                 });
         });
+}
+
+/// A collapsible list of item links, capped so a group shared by hundreds of items stays usable.
+pub(super) fn draw_item_hash_list(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    id: impl std::hash::Hash,
+    title: &str,
+    hashes: &[u64],
+) {
+    const LIMIT: usize = 200;
+    if hashes.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(format!("{title} ({})", hashes.len()))
+        .id_salt(id)
+        .show(ui, |ui| {
+            for hash in hashes.iter().take(LIMIT) {
+                ui.horizontal(|ui| {
+                    item_definition_name_cell(ui, catalog, *hash, 220.0);
+                    draw_catalog_hash_link(ui, catalog, *hash, format_hash_hex(*hash));
+                });
+            }
+            if hashes.len() > LIMIT {
+                ui.weak(format!("{} more not listed.", hashes.len() - LIMIT));
+            }
+        });
+}
+
+/// A stat group or power-cap row inspected by its own hash: what it holds and which items use it.
+/// These rows have no view of their own on the Items pages, so this is how an index printed on
+/// an item becomes navigable.
+pub(super) fn draw_structure_matches(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    matches: &CatalogHashMatches<'_>,
+) {
+    if let Some((index, group)) = matches.item_stat_group {
+        ui.add_space(8.0);
+        hash_metadata_section(ui, "Item Stat Group", true, |ui| {
+            egui::Grid::new(("hash_stat_group", index))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    hash_detail_field(ui, "Stat Group Index", index.to_string(), true);
+                    hash_detail_field(ui, "Maximum Value", group.maximum_value.to_string(), true);
+                    hash_detail_field(
+                        ui,
+                        "Scaled Stats",
+                        group.scaled_stats.len().to_string(),
+                        true,
+                    );
+                });
+            for stat in &group.scaled_stats {
+                let name = catalog
+                    .item_stat_definition(stat.definition_index)
+                    .map_or("Unresolved Stat", |definition| definition.name.as_str());
+                ui.label(format!(
+                    "{name} · Index {} · {} · {}",
+                    stat.definition_index,
+                    if stat.is_linear {
+                        "Linear"
+                    } else {
+                        "Interpolated"
+                    },
+                    if stat.display_as_numeric {
+                        "Numeric"
+                    } else {
+                        "Bar"
+                    }
+                ));
+            }
+            draw_item_hash_list(
+                ui,
+                catalog,
+                ("stat-group-items", index),
+                "Items Using This Stat Group",
+                &matches.stat_group_items,
+            );
+        });
+    }
+    if let Some((index, definition)) = matches.power_cap_definition {
+        ui.add_space(8.0);
+        hash_metadata_section(ui, "Power Cap Definition", true, |ui| {
+            egui::Grid::new(("hash_power_cap", index))
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    hash_detail_field(ui, "Cap Table Index", index.to_string(), true);
+                    hash_detail_field(
+                        ui,
+                        "Power Cap",
+                        version_cap_text(Some(definition.power_cap)),
+                        true,
+                    );
+                });
+            draw_item_hash_list(
+                ui,
+                catalog,
+                ("power-cap-items", index),
+                "Items Versioned Under This Cap",
+                &matches.power_cap_items,
+            );
+        });
+    }
 }
 
 #[cfg(test)]

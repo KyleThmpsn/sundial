@@ -59,25 +59,25 @@ impl SundialApp {
                     Err(error) => {
                         self.json_editor.set_application_error(error.clone());
                         if report_status {
-                            self.set_status(format!("Advanced JSON not applied: {error}"), true);
+                            self.set_status(format!("JSON not applied: {error}"), true);
                         }
                         return false;
                     }
                 };
                 self.raw_json_document = document.clone();
                 self.document.replace_json(document);
-                self.record_edit("Advanced JSON Applied");
+                self.record_edit("JSON Applied");
                 self.clear_picker_state();
                 if report_status {
                     if let Some(warning) = compatibility_warning {
                         self.set_status(
                             format!(
-                                "Advanced JSON applied with the existing compatibility warning: {warning}. Click Save to write it"
+                                "JSON applied with the existing compatibility warning: {warning}. Click Save to write it"
                             ),
                             true,
                         );
                     } else {
-                        self.set_status("Advanced JSON applied. Click Save to write it", false);
+                        self.set_status("JSON applied. Click Save to write it", false);
                     }
                 }
                 self.json_editor.mark_synced();
@@ -139,25 +139,25 @@ impl SundialApp {
         }
 
         self.sync_raw_json_if_stale();
-        let account_source_kind = self.document.source_kind();
+        let account_source = self.document.source_info();
         let (response, close_requested) = ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of((
                 "sundial_json_editor",
                 self.json_editor_window_generation,
             )),
             egui::ViewportBuilder::default()
-                .with_title("Sundial: All Settings (JSON)")
+                .with_title("Sundial: JSON Editor")
                 .with_inner_size([960.0, 720.0])
                 .with_min_inner_size([640.0, 420.0]),
             |child_ctx, class| {
                 let close_requested = child_ctx.input(|input| input.viewport().close_requested());
                 let mut response = json_editor::JsonEditorResponse::default();
                 if class == egui::ViewportClass::Embedded {
-                    egui::Window::new("All Settings (JSON)")
+                    egui::Window::new("JSON Editor")
                         .id(egui::Id::new("embedded_json_editor_window"))
                         .default_size([960.0, 720.0])
                         .show(child_ctx, |ui| {
-                            draw_json_account_source_notice(ui, account_source_kind);
+                            draw_json_account_source_notice(ui, &account_source);
                             response = json_editor::draw(
                                 ui,
                                 &mut self.raw_json,
@@ -168,7 +168,7 @@ impl SundialApp {
                         });
                 } else {
                     egui::CentralPanel::default().show(child_ctx, |ui| {
-                        draw_json_account_source_notice(ui, account_source_kind);
+                        draw_json_account_source_notice(ui, &account_source);
                         response = json_editor::draw(
                             ui,
                             &mut self.raw_json,

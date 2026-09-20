@@ -21,6 +21,7 @@ pub fn weapon_bucket_capacities(
 }
 pub use crate::package_runtime::tft;
 pub use crate::package_runtime::{is_valid_package_tag, resolve_live_named_tag};
+
 pub use crate::weapon_dyes::{WeaponDyeColors, load_weapon_dye_colors};
 
 /// Native icon-definition layouts shared by Sundial's reader and package-authoring utilities.
@@ -345,6 +346,11 @@ pub fn validate_shadowkeep_packages_directory(packages: &Path) -> Result<PathBuf
     Ok(packages)
 }
 
+/// Identify the active module, not stale settings or account folders left by another runtime.
+pub fn uses_dawn(install: &Path) -> bool {
+    crate::package_runtime::installed_runtime_is_dawn(install)
+}
+
 /// Checks that the selected installation advertises the runtime hooks required by authoring.
 /// Package headers, generated manifest rows and client cache state are separate install checks.
 pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String> {
@@ -358,7 +364,7 @@ pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String>
     crate::package_runtime::validate_package_authoring_runtime(install)
 }
 
-pub use crate::investment::native_content::open_packages as open_shadowkeep_package_manager;
+pub use crate::investment::discovery::open_packages as open_shadowkeep_package_manager;
 
 /// Reports whether the Destiny 2 client is currently running.
 pub fn destiny_is_running() -> Result<bool, String> {

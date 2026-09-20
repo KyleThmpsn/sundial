@@ -2,12 +2,12 @@ use super::*;
 use sundial::package_authoring::sandbox_perk::dependencies;
 use sundial::package_authoring::sandbox_perk::program::properties;
 
-pub(super) use sundial::investment::native_content::Catalog as Data;
+pub(super) use sundial::investment::discovery::Catalog as Data;
 
 enum Event {
     Progress(usize, usize),
     Keys(Result<Arc<properties::KeyIndex>, String>),
-    Labels(Result<Arc<sundial::investment::native_content::labels::Registry>, String>),
+    Labels(Result<Arc<sundial::investment::discovery::labels::Registry>, String>),
     Ready(Result<Box<Data>, String>),
 }
 
@@ -16,7 +16,7 @@ pub(super) struct Discovery {
     pub data: Option<Data>,
     pub keys: Option<Arc<properties::KeyIndex>>,
     pub key_error: Option<String>,
-    pub labels: Option<Arc<sundial::investment::native_content::labels::Registry>>,
+    pub labels: Option<Arc<sundial::investment::discovery::labels::Registry>>,
     pub label_error: Option<String>,
     packages: Option<PathBuf>,
     discard_result: bool,
@@ -60,8 +60,8 @@ impl Discovery {
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.worker = Some(thread::spawn(move || {
-            let result = sundial::investment::native_content::discover(&packages, |event| {
-                use sundial::investment::native_content::DiscoveryEvent;
+            let result = sundial::investment::discovery::discover(&packages, |event| {
+                use sundial::investment::discovery::DiscoveryEvent;
                 let event = match event {
                     DiscoveryEvent::Progress(current, total) => Event::Progress(current, total),
                     DiscoveryEvent::Keys(result) => Event::Keys(result),

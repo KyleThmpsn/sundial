@@ -89,12 +89,18 @@ fn draw_choices(
                 };
                 let response = ui
                     .add_enabled_ui(enabled && choice.issue.is_none(), |ui| {
-                        catalog.draw_authoring_choice_row(
+                        let icon = crate::artwork_browser::preview::icon(
+                            ui,
+                            catalog,
+                            choice.recipe.icon.as_ref(),
+                        );
+                        catalog.draw_authoring_choice_row_with_icon(
                             ui,
                             choice.recipe.template_plug.parse_u32().ok(),
                             &choice.recipe.name,
                             Some(&detail),
                             false,
+                            icon,
                         )
                     })
                     .inner;

@@ -21,7 +21,7 @@ mod tests;
 pub(crate) use super::components::{draw_lock_button, draw_trash_button, draw_unlock_button};
 pub(crate) use catalog_picker::{
     catalog_item_tooltip, catalog_item_tooltip_available, catalog_item_tooltip_immediate,
-    draw_catalog_item_tooltip, draw_item_tooltip,
+    draw_catalog_item_tooltip, draw_item_tooltip_with_icon,
 };
 pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request, draw_definition_picker_with_open_request_and_footer,
@@ -50,6 +50,7 @@ pub(crate) use plug_picker::{
 
 pub(crate) use catalog_picker::{
     CatalogPickerRow, catalog_button, draw_catalog_picker_row, draw_picker_row,
+    draw_picker_row_with_icon,
 };
 use catalog_picker::{picker_secondary_text, single_line_text};
 use layout::{picker_list_height, popup_direction, spaced_picker_list_height};

@@ -1,0 +1,304 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.ravenous-horizon",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0x30F1D32B",
+    "expected_name": "Gnawing Hunger"
+  },
+  "icon_donor": {
+    "item_hash": "0x27F408DC",
+    "expected_name": "Still Hungry"
+  },
+  "identity": {
+    "item_hash": "0xF2F4F9B3",
+    "collectible_hash": "0xD2F7622C",
+    "unlock_hash": "0xA9B6152A",
+    "pattern_global_id_hash": "0x20FA12BA",
+    "name_hash": "0x57AC8AA3",
+    "type_hash": "0xFD637FB6",
+    "flavor_hash": "0x99E69B52",
+    "source_hash": "0x51422531",
+    "collection_name_hash": "0x7A225A60",
+    "collection_description_hash": "0x4881DADD",
+    "inventory_hint_hash": "0xE8BD3D9E",
+    "collection_requirement_hash": "0x9C0256B6"
+  },
+  "name": "Ravenous Horizon",
+  "flavor": "Something is waiting beyond the horizon. It is hungry.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "collection_destination": {
+      "ammo": "special",
+      "family": "auto_rifles"
+    },
+    "lore": "Its first firing test left the facility in ruin.\n\nThe second took us somewhere else.\n\nThere was no third.",
+    "icon_edit": {
+      "color_replacements": [
+        {
+          "source": [
+            126,
+            62,
+            151
+          ],
+          "replacement": [
+            78,
+            44,
+            92
+          ],
+          "range_percent": 25,
+          "hue_range_degrees": 20
+        }
+      ],
+      "cleared_color": [
+        140,
+        69,
+        167
+      ],
+      "hue_shift_degrees": 180,
+      "saturation": 25
+    },
+    "investment_stats": [
+      {
+        "definition_index": 14,
+        "value": 100
+      },
+      {
+        "definition_index": 15,
+        "value": 100
+      },
+      {
+        "definition_index": 16,
+        "value": 100
+      },
+      {
+        "definition_index": 22,
+        "value": 100
+      },
+      {
+        "definition_index": 24,
+        "value": 100
+      },
+      {
+        "definition_index": 25,
+        "value": 100
+      },
+      {
+        "definition_index": 26,
+        "value": 100
+      },
+      {
+        "definition_index": 27,
+        "value": 100
+      },
+      {
+        "definition_index": 30,
+        "value": 100
+      },
+      {
+        "definition_index": 31,
+        "value": 100
+      },
+      {
+        "definition_index": 32,
+        "value": 25
+      }
+    ],
+    "inventory_slot": null,
+    "ammo_type": "special",
+    "modern_damage_type": null,
+    "additional_behaviors": [
+      {
+        "behavior": "malfeasance-graph"
+      }
+    ],
+    "power_cap_group": 15,
+    "rarity": null,
+    "stat_group_index": null,
+    "art_arrangements": [
+      {
+        "character_class": -1,
+        "arrangement": 3119
+      }
+    ],
+    "render_dye_rows": [
+      [],
+      [
+        {
+          "channel_index": 4,
+          "dye_reference_index": 9484
+        },
+        {
+          "channel_index": 5,
+          "dye_reference_index": 9485
+        },
+        {
+          "channel_index": 6,
+          "dye_reference_index": 9486
+        }
+      ],
+      []
+    ],
+    "socket_columns": [
+      {
+        "choices": [
+          "0x6AC988C7"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x3203BACE",
+          "0x6DAFD49E",
+          "0xDA3C553C",
+          "0xC1B79779"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x40D0CED4",
+          "0x5D0B018E",
+          "0x7060EDB4",
+          "0x5555AD70"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x7EF5DDB9"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xCC2B41AE",
+          "0x77DA660F",
+          "0x05B1A720"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xEE3B47FE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x2A9E6F05"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x0AA78FAF"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      {
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xDD5CB37A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "socket_plug_variants": [
+      {
+        "replace_effects": true,
+        "socket_index": 10,
+        "choice_index": 0,
+        "source_plug_hash": "0xDD5CB37A",
+        "name": "Event Horizon",
+        "classification_donor_hash": "0xDD5CB37A",
+        "icon": {
+          "source": "image",
+          "name": "destiny-icons\\general\\destiny.svg",
+          "image": {
+            "png_base64": "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"
+          }
+        },
+        "description": "Precision final blows collapse the target into a lingering Void anchor.",
+        "sandbox_perks": [
+          {
+            "program": {
+              "name": "Event Horizon",
+              "trigger": "precision_kill",
+              "duration_ms": 250,
+              "cooldown_ms": 1000,
+              "chance_permyriad": 10000,
+              "actions": [
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2159556319
+                  },
+                  "position": "event"
+                }
+              ]
+            },
+            "source_perk_index": 421,
+            "runtime_values": [],
+            "action_float_values": []
+          }
+        ]
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

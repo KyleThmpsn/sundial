@@ -117,6 +117,10 @@ pub(crate) struct Progression {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CollectionStateSnapshot {
     pub(crate) is_native: bool,
+    /// The view came from a Dawn account. Dawn shares the native progression view with Sunrise
+    /// SQLite, so flags and values read and write the same way, but Sunrise's seasonal machinery
+    /// (artifact mods, derived seasonal values, reward queues) has no verified Dawn support.
+    pub(crate) is_dawn: bool,
     pub(crate) flags: HashSet<(u8, usize)>,
     pub(crate) values: HashMap<(u8, usize), i32>,
     pub(crate) flag_overrides: HashMap<usize, u8>,
@@ -228,6 +232,18 @@ impl CollectionStateSnapshot {
     }
 }
 
+/// Whether a progression view was produced by a Dawn account.
+pub(crate) fn is_dawn_progression_view(document: &Value) -> bool {
+    document["_native_progression"]["runtime"] == "dawn"
+}
+
+/// Whether a progression view supports Sunrise's coordinated seasonal authoring: the artifact,
+/// derived seasonal values and reward claims. Only a Sunrise SQLite account does. Dawn carries
+/// the same native view but none of the machinery behind it.
+pub(crate) fn supports_seasonal_authoring(document: &Value) -> bool {
+    document.get("_native_progression").is_some() && !is_dawn_progression_view(document)
+}
+
 pub(crate) fn collection_state_snapshot(document: &Value) -> Option<CollectionStateSnapshot> {
     let policy = parse(document).ok()?;
     let mut flags = HashSet::new();
@@ -271,6 +287,7 @@ pub(crate) fn collection_state_snapshot(document: &Value) -> Option<CollectionSt
         .collect();
     let mut snapshot = CollectionStateSnapshot {
         is_native: document.get("_native_progression").is_some(),
+        is_dawn: is_dawn_progression_view(document),
         flags,
         values,
         account_progressions: policy.unlocks.account_progressions,
@@ -798,6 +815,28 @@ mod tests {
             runtime_writers: Vec::new(),
             tested_by: Vec::new(),
         }
+    }
+
+    /// Dawn shares the native view with Sunrise SQLite, so it reads as native. It must not read
+    /// as seasonal-capable: every affordance that routes through Sunrise's seasonal editor is
+    /// refused for Dawn, and the UI has to know before offering it.
+    #[test]
+    fn dawn_views_are_native_but_never_seasonal() {
+        let dawn = json!({"_native_progression": {"runtime": "dawn", "character_slot": 0}});
+        let sqlite = json!({"_native_progression": {"character_slot": 0}});
+        let settings = json!({});
+        let snapshot = collection_state_snapshot(&dawn).unwrap();
+        assert!(snapshot.is_native && snapshot.is_dawn);
+        assert!(is_dawn_progression_view(&dawn));
+        assert!(!supports_seasonal_authoring(&dawn));
+
+        let snapshot = collection_state_snapshot(&sqlite).unwrap();
+        assert!(snapshot.is_native && !snapshot.is_dawn);
+        assert!(supports_seasonal_authoring(&sqlite));
+
+        let snapshot = collection_state_snapshot(&settings).unwrap();
+        assert!(!snapshot.is_native && !snapshot.is_dawn);
+        assert!(!supports_seasonal_authoring(&settings));
     }
 
     #[test]

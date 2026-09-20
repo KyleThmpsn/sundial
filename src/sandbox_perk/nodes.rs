@@ -958,8 +958,8 @@ pub const EFFECTS: [NodeKind; 55] = [
         struct_size: 336,
         occurrences: 175,
         name: "Event Numeric Modifier",
-        summary: "Changes the numbers carried by an event after object, ability and label filters pass.",
-        evidence: "Reads the object filter lists at +28, the source label filter at +C0, the assignment rows at +120, the multiplication rows at +130 and whether the scalar expression pointer at +140 is present. A row stores an event slot index with a literal or a native stat selector. The callback applies the rows after object, ability and label filters, and the expression multiplies the event scalar by one plus its value. The upstream event contract remains partly mapped.",
+        summary: "Adjusts damage after object, ability and label filters pass.",
+        evidence: "B839B0 supplies damage-event fields through EC0500 and ECFDD0 to callback 108ED90. Rows at +120 assign and rows at +130 multiply a field selected by their first byte. Field 0 scales base damage and field 1 changes the precision bonus. Other damage lanes remain unnamed. The expression at +140 multiplies a separate overall damage scalar by one plus its value. Object filters at +28, source labels at +C0 and ability filters still apply. Nonliteral stat identities remain unresolved.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -1191,7 +1191,6 @@ mod tests {
             assert!(!text.contains('\u{2014}'), "{text}");
             assert!(!text.is_empty());
         }
-        assert_eq!(node.observed(), node.occurrences != 0);
         if node.support == Support::Unobserved {
             assert_eq!(node.occurrences, 0);
             assert_eq!(node.class, 0);

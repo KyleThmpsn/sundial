@@ -67,7 +67,7 @@ pub(crate) fn validate_elements(elements: &[ModernDamageType]) -> AuthoringResul
         .any(|element| element_perk_index(*element).is_none())
     {
         return Err(invalid(
-            "Variable damage cycles Arc, Solar and Void only. Kinetic has no Fundamentals row.",
+            "This Fundamentals-based switcher cycles Arc, Solar and Void. Use a Perk Workbench Set Damage Type action to author Kinetic damage.",
         ));
     }
     let unique = ordered_elements(elements);
@@ -211,6 +211,7 @@ pub(crate) fn expand_overrides(
                 choice_index: 0,
                 source_plug_hash: FUNDAMENTALS_PLUG_HASH,
                 name: Some(format!("The Fundamentals ({})", labels.join(" / "))),
+                icon: None,
                 classification_donor_hash: None,
                 description: Some(format!(
                     "Hold Reload to step the weapon's damage type through {}.",
@@ -345,6 +346,7 @@ mod tests {
                 choice_index: 0,
                 source_plug_hash: 0x1234_5678,
                 name: None,
+                icon: None,
                 classification_donor_hash: None,
                 description: None,
                 additional_sandbox_perks: Vec::new(),

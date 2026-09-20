@@ -15,10 +15,12 @@
 mod app;
 mod appended_tags;
 mod artifact;
+pub(crate) mod artwork_browser;
 mod asset_packages;
 mod badge;
 mod badge_icon;
 mod block_codec;
+mod branding;
 mod capabilities;
 mod chain;
 pub mod collection;
@@ -55,16 +57,17 @@ pub use app::Parhelion;
 pub use artifact::ArtifactMetadata;
 pub(crate) use badge::SunriseProjectMetadata;
 pub(crate) use badge::{
-    SUNRISE_BADGE_DESCRIPTION, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME,
-    SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement,
-    append_badge_icon_row, author_sunrise_badge_graph, sunrise_badge_collectible_parents,
+    SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES,
+    SunriseBadgePlacement, append_badge_icon_row, author_sunrise_badge_graph,
+    sunrise_badge_collectible_parents,
 };
+#[cfg(test)]
 pub(crate) use badge_icon::build_badge_icon_plan;
 pub(crate) use capabilities::{
     CombatProfileAction, SupportedPlugSet, apply_combat_profile_action, authored_inventory_slot,
     presentation_donor_candidate_is_compatible, recipe_combat_profile_action,
     reconcile_presentation_donor, selected_presentation_donor_is_compatible,
-    validate_socket_column_overrides_with_socket_types, validate_stat_overrides,
+    validate_socket_column_overrides_with_variants, validate_stat_overrides,
     weapon_authoring_capabilities,
 };
 pub(crate) use chain::{PackageIdentity, PatchChain, PatchFile};

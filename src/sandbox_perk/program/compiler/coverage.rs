@@ -5,6 +5,58 @@ use crate::sandbox_perk::{
 };
 
 #[test]
+fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
+    let mut program = Program {
+        trigger: Trigger::Always,
+        duration_ms: 0,
+        actions: vec![
+            Action::adjust_component(1),
+            Action::AbilityProperty {
+                target: 2,
+                key: 0x1234_5678,
+                option: 0,
+            },
+        ],
+        ..Program::default()
+    };
+    let compiled = assemble(&program, None).unwrap();
+    let decoded = action::decode(&compiled.payload).unwrap();
+    let effect = decoded.effects().find(|effect| effect.kind == 8).unwrap();
+    let limit = u32_at(&compiled.payload, effect.offset + 12).unwrap();
+    assert!(
+        f32::from_bits(limit) < 0.0,
+        "a new grant must not stop at zero"
+    );
+
+    // Named states, both ability versions and unknown native bytes survive reopening.
+    // In particular, a saved zero limit must not turn into the new no-limit default.
+    for (state, version, limit) in [(0, 0, -1.0_f32), (1, 0, 0.5), (2, 1, 0.0), (255, 254, -0.0)] {
+        if let Action::AdjustComponent {
+            flag,
+            option,
+            limit_bits,
+            ..
+        } = &mut program.actions[0]
+        {
+            *flag = state;
+            *option = version;
+            *limit_bits = limit.to_bits();
+        }
+        if let Action::AbilityProperty { option, .. } = &mut program.actions[1] {
+            *option = version;
+        }
+        let compiled = assemble(&program, None).unwrap();
+        let decoded = action::decode(&compiled.payload).unwrap();
+        let recovered = decompile::decompile(&decoded, &program.name, |tag| tag).unwrap();
+        assert_eq!(recovered.actions, program.actions);
+        assert_eq!(
+            assemble(&recovered, None).unwrap().payload,
+            compiled.payload
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
 fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
     let packages = std::path::PathBuf::from(
@@ -364,7 +416,7 @@ fn invalid_native_headers_and_numeric_values_are_rejected_before_emission() {
 
 #[test]
 fn inspected_stock_conditions_reuse_probability_and_complete_nested_values() {
-    use crate::investment::native_content::conditions;
+    use crate::investment::discovery::conditions;
     for kind in [6, 26, 28] {
         let mut node = NativeNode::condition(kind).unwrap();
         node.bytes[..4].copy_from_slice(&0.125f32.to_le_bytes());

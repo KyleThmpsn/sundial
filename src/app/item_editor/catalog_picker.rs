@@ -42,6 +42,15 @@ pub(crate) fn draw_picker_row(
     catalog: Option<&Catalog>,
     row: CatalogPickerRow<'_>,
 ) -> egui::Response {
+    draw_picker_row_with_icon(ui, catalog, row, None)
+}
+
+pub(crate) fn draw_picker_row_with_icon(
+    ui: &mut egui::Ui,
+    catalog: Option<&Catalog>,
+    row: CatalogPickerRow<'_>,
+    icon: Option<crate::investment::IconOverride>,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row.row_height),
         egui::Sense::click(),
@@ -88,11 +97,17 @@ pub(crate) fn draw_picker_row(
         egui::pos2(rect.left() + PADDING, rect.center().y - icon_size / 2.0),
         egui::vec2(icon_size, icon_size),
     );
-    if let Some(texture) = catalog.and_then(|catalog| catalog.icon_texture(ui.ctx(), row.hash)) {
+    let texture = match icon {
+        Some(icon) => icon.texture(),
+        None => catalog
+            .and_then(|catalog| catalog.icon_texture(ui.ctx(), row.hash))
+            .map(|t| t.id()),
+    };
+    if let Some(texture) = texture {
         ui.painter()
             .rect_filled(icon_rect, 0.0, crate::app::ui::package_icon_backdrop(ui));
         ui.painter().image(
-            texture.id(),
+            texture,
             icon_rect,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
@@ -101,8 +116,10 @@ pub(crate) fn draw_picker_row(
 
     let text_left = icon_rect.right() + ui.spacing().icon_spacing;
     let text_width = (rect.right() - PADDING - text_left).max(0.0);
-    let primary_font = egui::TextStyle::Button.resolve(ui.style());
-    let secondary_font = egui::TextStyle::Body.resolve(ui.style());
+    let primary_font =
+        crate::app::ui::destiny_font_id(ui, egui::TextStyle::Button.resolve(ui.style()));
+    let secondary_font =
+        crate::app::ui::destiny_font_id(ui, egui::TextStyle::Body.resolve(ui.style()));
     let primary_galley = limited_line_galley(
         ui,
         row.primary,
@@ -209,6 +226,16 @@ pub(crate) fn draw_item_tooltip(
     hash: u64,
     authored: Option<crate::investment::PlugTooltip<'_>>,
 ) {
+    draw_item_tooltip_with_icon(ui, catalog, hash, authored, None);
+}
+
+pub(crate) fn draw_item_tooltip_with_icon(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    authored: Option<crate::investment::PlugTooltip<'_>>,
+    icon_override: Option<crate::investment::IconOverride>,
+) {
     let name = authored
         .and_then(|text| text.name)
         .or_else(|| catalog.display_name(hash));
@@ -222,12 +249,20 @@ pub(crate) fn draw_item_tooltip(
         .and_then(|text| text.description)
         .or_else(|| catalog.description(hash))
         .filter(|description| !description.trim().is_empty());
-    let icon_diagnostic = catalog.icon_diagnostic(hash);
+    let icon_diagnostic = icon_override
+        .is_none()
+        .then(|| catalog.icon_diagnostic(hash))
+        .flatten();
     ui.set_max_width(320.0);
-    let icon = catalog.icon_texture(ui.ctx(), hash);
+    let icon = match icon_override {
+        Some(icon) => icon.texture().map(|id| (id, egui::Vec2::splat(96.0))),
+        None => catalog
+            .icon_texture(ui.ctx(), hash)
+            .map(|texture| (texture.id(), texture.size_vec2())),
+    };
     ui.horizontal_top(|ui| {
         if let Some(icon) = icon {
-            ui.add(egui::Image::new(&icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
+            ui.add(egui::Image::new(icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
         }
         ui.vertical(|ui| {
             ui.vertical(|ui| {
@@ -246,7 +281,9 @@ pub(crate) fn draw_item_tooltip(
                             .monospace()
                             .weak(),
                     )
-                    .on_hover_text(if authored.is_some() {
+                    .on_hover_text(if icon_override.is_some() {
+                        "Perk template"
+                    } else if authored.is_some() {
                         "Icon and presentation source"
                     } else {
                         "Item definition"

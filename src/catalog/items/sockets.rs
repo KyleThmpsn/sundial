@@ -207,6 +207,14 @@ pub(crate) enum SocketOptionSourceKind {
 }
 
 impl SocketDef {
+    /// Native row order is essential. Picker pools are sorted and cannot encode ownership bits.
+    pub(crate) fn ordered_randomized_choices(&self) -> &[u64] {
+        self.sources
+            .iter()
+            .find(|s| s.valid && matches!(s.kind, SocketOptionSourceKind::RandomizedSet { .. }))
+            .map_or(&[], |s| s.ordered_members.as_slice())
+    }
+
     pub(crate) fn display_label(&self, index: usize) -> String {
         if self.label.is_empty() {
             format!("Socket {}", index + 1)

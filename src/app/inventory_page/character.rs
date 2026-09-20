@@ -89,6 +89,9 @@ impl SundialApp {
             draw_schema_notice(ui, mode, InventoryPageKind::Character);
         }
         ui.add_space(4.0);
+        if self.document.account_is_dawn() && self.draw_dawn_inventory_tabs(ui) {
+            return;
+        }
         if self.document.native_account().is_some() {
             let id = ui.make_persistent_id("character-inventory-material-tab");
             let mut materials = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));

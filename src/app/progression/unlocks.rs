@@ -476,7 +476,7 @@ fn edit_blocked(
     snapshot: &CollectionStateSnapshot,
     catalog: &Catalog,
 ) -> Option<(&'static str, &'static str)> {
-    if snapshot.is_native()
+    if snapshot.seasonal_authoring()
         && ((value && seasonal::is_derived_value(index))
             || (!value
                 && catalog
@@ -485,7 +485,7 @@ fn edit_blocked(
     {
         return Some((
             "Seasonal",
-            "Edit this in Seasonal. Its saved fields must be updated together.",
+            "Managed by Seasonal where supported. These linked fields cannot be edited individually.",
         ));
     }
     if (value && definition.bank() == 4) || (!value && definition.bank() == 5) {

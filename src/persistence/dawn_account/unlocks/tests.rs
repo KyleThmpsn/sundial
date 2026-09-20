@@ -56,7 +56,21 @@ fn an_account_unlock_sets_one_durable_flag_and_advances_the_revision() {
         apply_authored_unlocks(&path, &[unlock(UnlockScope::Account.bank(), 11_930)]).unwrap();
 
     assert_eq!(receipt.changed, 1);
-    assert!(receipt.backup.is_some_and(|backup| backup.exists()));
+    let backup = receipt
+        .backup
+        .as_ref()
+        .expect("changed account has a backup");
+    assert!(backup.exists());
+    assert!(
+        backup
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&format!(
+                "player-state-v{}-",
+                super::super::contract::SCHEMA_VERSION
+            ))
+    );
     assert_eq!(
         flags(&path),
         vec![(0, ACCOUNT_SOID.to_owned(), 11_930, i64::from(FLAG_SET))]

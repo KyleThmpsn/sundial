@@ -14,6 +14,313 @@ pub(super) fn draw_hash_progression_matches(
     draw_objective_owners(ui, catalog, matches);
     draw_objective_traits(ui, catalog, matches);
     draw_progression_readers(ui, catalog, matches);
+    draw_record_matches(ui, catalog, matches);
+    draw_seasonal_matches(ui, catalog, document, matches);
+    draw_mission_matches(ui, document, matches);
+}
+
+/// Artifact mods and Season Pass rewards inspected by their item or collectible hash. The
+/// Seasonal page renders the same definitions for Sunrise; here they resolve by hash on either
+/// runtime, with ownership read from the loaded view.
+fn draw_seasonal_matches(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    document: Option<&Value>,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let Some(season) = catalog.seasonal() else {
+        return;
+    };
+    let snapshot = document.and_then(collection_state_snapshot);
+    if !matches.artifact_mods.is_empty() {
+        ui.add_space(8.0);
+        hash_metadata_section(
+            ui,
+            &format!("Artifact Mods ({})", matches.artifact_mods.len()),
+            true,
+            |ui| {
+                for entry in &matches.artifact_mods {
+                    metadata_subsection(
+                        ui,
+                        &format!(
+                            "Column {} · Sale Row {}",
+                            entry.column() + 1,
+                            entry.sale_index
+                        ),
+                        |ui| {
+                            egui::Grid::new(("hash_artifact_mod", entry.sale_index))
+                                .num_columns(2)
+                                .spacing([16.0, 4.0])
+                                .show(ui, |ui| {
+                                    hash_detail_field(
+                                        ui,
+                                        "Points Required",
+                                        entry.points_required().to_string(),
+                                        true,
+                                    );
+                                    hash_detail_field(
+                                        ui,
+                                        "Character Flag Slot",
+                                        entry.character_slot.to_string(),
+                                        true,
+                                    );
+                                    if let Some(snapshot) = snapshot.as_ref() {
+                                        let owned =
+                                            snapshot.artifact_mask(season, true) & entry.bit() != 0;
+                                        hash_detail_field(
+                                            ui,
+                                            "Owned by Selected Character",
+                                            if owned { "Yes" } else { "No" },
+                                            false,
+                                        );
+                                    }
+                                });
+                            draw_catalog_hash_link(ui, catalog, entry.item_hash, "Mod Item");
+                            draw_catalog_hash_link(
+                                ui,
+                                catalog,
+                                entry.collectible_hash,
+                                "Collectible",
+                            );
+                            if let Some(flag) =
+                                catalog.unlock_flag_definition(usize::from(entry.flag_definition))
+                            {
+                                draw_catalog_hash_link(ui, catalog, flag.hash, "Unlock Flag");
+                            }
+                            if snapshot
+                                .as_ref()
+                                .is_some_and(CollectionStateSnapshot::is_dawn)
+                            {
+                                ui.label(crate::app::progression::seasonal::DAWN_UNAVAILABLE);
+                            }
+                        },
+                    );
+                }
+            },
+        );
+    }
+    if let Some(grant) = matches.season_pass_reward {
+        ui.add_space(8.0);
+        hash_metadata_section(ui, "Season Pass Reward", true, |ui| {
+            hash_detail_field(ui, "Grant", grant.label(), false);
+            if let crate::investment::seasonal::RewardGrant::ClassPackage(items) = grant {
+                for item in items {
+                    draw_catalog_hash_link(ui, catalog, *item, "Package Item");
+                }
+            }
+            ui.weak("The Season Pass ranks that grant it are listed under Progression Reward References.");
+        });
+    }
+}
+
+/// A mission Dawn tracks by the FNV-1a hash of its scenario package name, with the saved state
+/// the loaded Dawn account holds for it.
+fn draw_mission_matches(
+    ui: &mut egui::Ui,
+    document: Option<&Value>,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let Some(scenario) = matches.mission_scenario else {
+        return;
+    };
+    ui.add_space(8.0);
+    hash_metadata_section(ui, "Dawn Mission", true, |ui| {
+        hash_detail_field(ui, "Scenario Package", scenario, false);
+        let saved = document
+            .and_then(|document| document["_dawn_activity"]["missions"].as_array())
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| {
+                        row["hash"]
+                            .as_u64()
+                            .and_then(|hash| u32::try_from(hash).ok())
+                            == u32::try_from(matches.inspected_hash).ok()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let Some(document) = document else {
+            ui.weak("No account is loaded.");
+            return;
+        };
+        if document.get("_dawn_activity").is_none() {
+            ui.weak("Missions are tracked by Dawn accounts only.");
+        } else if saved.is_empty() {
+            ui.weak("Not started on this account or the selected character.");
+        } else {
+            egui::Grid::new(("hash_dawn_mission", scenario))
+                .num_columns(5)
+                .striped(true)
+                .spacing([16.0, 3.0])
+                .show(ui, |ui| {
+                    for title in [
+                        "Scope",
+                        "Completed",
+                        "Progress",
+                        "Activity Index",
+                        "Checkpoint",
+                    ] {
+                        ui.strong(title);
+                    }
+                    ui.end_row();
+                    for row in saved {
+                        ui.label(row["scope"].as_str().unwrap_or("?"));
+                        ui.label(yes_no(row["completed"].as_bool().unwrap_or(false)));
+                        ui.monospace(row["progress"].to_string());
+                        ui.monospace(row["activity"].to_string());
+                        ui.monospace(format!("{:08X}", row["checkpoint"].as_u64().unwrap_or(0)));
+                        ui.end_row();
+                    }
+                });
+        }
+    });
+}
+
+/// The Dawn vendor a progression definition backs, with the reputation the loaded account holds.
+fn draw_dawn_vendor(
+    ui: &mut egui::Ui,
+    document: Option<&Value>,
+    definition: &ProgressionDefinition,
+) {
+    let Some((vendor, personal, per_package)) =
+        crate::app::dawn_state::vendors::vendor_for_progression(definition.definition_index)
+    else {
+        return;
+    };
+    // A Sunrise account keeps this definition as an ordinary faction progression; the vendor
+    // join is Dawn's, so it is shown for Dawn views and for package browsing without an account.
+    if document.is_some_and(|document| {
+        !crate::persistence::progression::is_dawn_progression_view(document)
+    }) {
+        return;
+    }
+    ui.add_space(8.0);
+    metadata_subsection(ui, "Dawn Vendor", |ui| {
+        egui::Grid::new(("hash_dawn_vendor", vendor))
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                hash_detail_field(ui, "Vendor Index", vendor.to_string(), true);
+                hash_detail_field(ui, "Progress Scope", if personal { "Character" } else { "Account" }, false);
+                hash_detail_field(ui, "Points per Package", per_package.to_string(), true);
+                let rows = document
+                    .and_then(|document| document["_dawn_activity"]["vendors"].as_array())
+                    .map(|rows| {
+                        rows.iter()
+                            .filter(|row| row["vendor"].as_u64() == Some(u64::from(vendor)))
+                            .collect::<Vec<_>>()
+                    });
+                match rows {
+                    None => hash_detail_field(ui, "Reputation", "No account loaded", false),
+                    Some(rows) if rows.is_empty() => {
+                        hash_detail_field(ui, "Reputation", "Not started", false);
+                    }
+                    Some(rows) => {
+                        for row in rows {
+                            let points = row["points"].as_i64().unwrap_or(0);
+                            let rewards = row["rewards"].as_i64().unwrap_or(0);
+                            let available = (points / i64::from(per_package) - rewards).max(0);
+                            hash_detail_field(
+                                ui,
+                                &format!("Reputation ({})", row["scope"].as_str().unwrap_or("?")),
+                                format!("{points} points · {rewards} packages claimed · {available} available"),
+                                false,
+                            );
+                        }
+                    }
+                }
+            });
+    });
+}
+
+fn record_heading(catalog: &Catalog, index: usize, record: &RecordDefinition) -> String {
+    let name = if record.name.trim().is_empty() {
+        catalog.display_name(record.hash)
+    } else {
+        Some(record.name.as_str())
+    };
+    name.map_or_else(
+        || format!("Record #{index}"),
+        |name| format!("{name} · Record #{index}"),
+    )
+}
+
+fn draw_record_detail(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    index: usize,
+    record: &RecordDefinition,
+) {
+    egui::Grid::new(("hash_record", index))
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            if let Some(path) = record.paths.first() {
+                hash_detail_field(ui, "Path", path.join(" / "), false);
+            }
+            hash_detail_field(ui, "Objectives", record.objectives.len().to_string(), true);
+            hash_detail_field(ui, "Intervals", record.interval_count.to_string(), true);
+            if let Some(runtime) = &record.runtime {
+                hash_detail_field(ui, "Score", runtime.score.to_string(), true);
+            }
+        });
+    for objective_index in &record.objectives {
+        if let Some(objective) = catalog.objectives().get(*objective_index) {
+            draw_catalog_hash_link(
+                ui,
+                catalog,
+                objective.hash,
+                format!("Objective #{objective_index}"),
+            );
+        }
+    }
+    if let Some(flag) = record
+        .completion_flag
+        .and_then(|flag| catalog.unlock_flag_definition(usize::from(flag)))
+    {
+        draw_catalog_hash_link(ui, catalog, flag.hash, "Completion Flag");
+    }
+}
+
+/// Records (triumphs) that carry this hash, and those that reach it through an objective or
+/// their completion flag. The Triumphs page renders the same definitions; this makes them
+/// reachable by hash.
+fn draw_record_matches(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
+    if !matches.record_matches.is_empty() {
+        ui.add_space(8.0);
+        hash_metadata_section(
+            ui,
+            &format!("Records ({})", matches.record_matches.len()),
+            matches.record_matches.len() <= 3,
+            |ui| {
+                for (index, record) in &matches.record_matches {
+                    metadata_subsection(ui, &record_heading(catalog, *index, record), |ui| {
+                        draw_record_detail(ui, catalog, *index, record);
+                    });
+                }
+            },
+        );
+    }
+    if !matches.record_references.is_empty() {
+        ui.add_space(8.0);
+        hash_metadata_section(
+            ui,
+            &format!("Record References ({})", matches.record_references.len()),
+            false,
+            |ui| {
+                for (index, record, kind) in &matches.record_references {
+                    metadata_subsection(
+                        ui,
+                        &format!("{} · via {kind}", record_heading(catalog, *index, record)),
+                        |ui| {
+                            draw_catalog_hash_link(ui, catalog, record.hash, "Record");
+                            draw_record_detail(ui, catalog, *index, record);
+                        },
+                    );
+                }
+            },
+        );
+    }
 }
 
 fn draw_progression_definitions(
@@ -573,9 +880,17 @@ fn draw_hash_progression_definition(
         ui.add_space(8.0);
         draw_hash_progression_persistence_summary(ui, document, index, definition);
     }
+    draw_dawn_vendor(ui, document, definition);
 
     if let Some(help) = crate::app::progression::seasonal::progression_help(index)
-        && document.is_some_and(|document| document.get("_native_progression").is_some())
+        && document.is_some_and(crate::persistence::progression::is_dawn_progression_view)
+    {
+        ui.label(help);
+        ui.label(crate::app::progression::seasonal::DAWN_UNAVAILABLE);
+        ui.add_space(8.0);
+    }
+    if let Some(help) = crate::app::progression::seasonal::progression_help(index)
+        && document.is_some_and(crate::persistence::progression::supports_seasonal_authoring)
     {
         ui.label(help);
         if let Some(snapshot) = document.and_then(collection_state_snapshot)

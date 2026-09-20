@@ -108,6 +108,15 @@ pub(super) fn draw_hash_item_package_metadata(
                     );
                 });
         }
+        if let Some(index) = metadata.socket_entry_list_index {
+            super::super::item_details::draw_item_hash_list(
+                ui,
+                catalog,
+                ("socket-entry-list-sharers", item_hash),
+                "Items Sharing This Socket Entry List",
+                &catalog.items_with_socket_entry_list(index),
+            );
+        }
     });
 }
 

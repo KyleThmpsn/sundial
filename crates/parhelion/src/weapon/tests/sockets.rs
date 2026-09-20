@@ -95,16 +95,6 @@ fn socket_columns_serialize_variable_length_ordered_members_without_touching_oth
 }
 
 #[test]
-fn inherited_randomized_socket_columns_are_normalized_to_curated_defaults() {
-    let data = synthetic_socket_definition();
-    let mut columns = vec![None, None, None];
-
-    normalize_inherited_randomized_socket_columns(&data, &mut columns).unwrap();
-
-    assert_eq!(columns, vec![None, Some(vec![11]), None]);
-}
-
-#[test]
 fn inherited_program_only_socket_columns_remain_inherited() {
     let mut data = synthetic_socket_definition();
     let resource = relative_target(&data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET).unwrap();

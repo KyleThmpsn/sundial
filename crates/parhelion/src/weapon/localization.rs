@@ -6,6 +6,7 @@ pub(super) fn author_project_localized_strings(
     index: Vec<u8>,
     weapons: &[WeaponCloneSpec],
     custom_plugs: &[ResolvedCustomPlug],
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<AuthoredLocalization> {
     let (table_count, _, table_rows, table_class) = array_at(&index, 8)?;
     let table_end = table_rows
@@ -29,7 +30,7 @@ pub(super) fn author_project_localized_strings(
     }
     let donor_header_tag = TagHash(read_u32(&index, donor_row + 4)?);
     let donor_header = read_tag(manager, donor_header_tag, "localization donor header")?;
-    let header_values = project_authored_localized_values(weapons, custom_plugs, 0)?;
+    let header_values = project_authored_localized_values(weapons, custom_plugs, 0, branding)?;
     let merged_header = rewrite_localized_header(&donor_header, &header_values)?;
     let mut locale_data = Vec::with_capacity(LOCALIZATION_LOCALE_COUNT);
     let mut custom_part_template = None;
@@ -47,7 +48,8 @@ pub(super) fn author_project_localized_strings(
             custom_part_template =
                 Some(donor_data[donor_parts..donor_parts + LOCALIZATION_PART_ROW_SIZE].to_vec());
         }
-        let custom_values = project_authored_localized_values(weapons, custom_plugs, locale_index)?;
+        let custom_values =
+            project_authored_localized_values(weapons, custom_plugs, locale_index, branding)?;
         let payload = rewrite_localized_data(
             &donor_data,
             custom_part_template
@@ -69,6 +71,7 @@ pub(super) fn project_authored_localized_values<'a>(
     weapons: &'a [WeaponCloneSpec],
     custom_plugs: &'a [ResolvedCustomPlug],
     locale_index: usize,
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<Vec<(u32, &'a str)>> {
     let mut custom_values = Vec::with_capacity(weapons.len() * 4 + custom_plugs.len() + 2);
     for weapon in weapons {
@@ -153,8 +156,8 @@ pub(super) fn project_authored_localized_values<'a>(
         }
     }
     custom_values.extend([
-        (SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_DESCRIPTION),
-        (SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NAME),
+        (SUNRISE_BADGE_DESCRIPTION_HASH, branding.description()),
+        (SUNRISE_BADGE_NAME_HASH, branding.name()),
     ]);
     let mut badges = BTreeMap::new();
     for weapon in weapons {

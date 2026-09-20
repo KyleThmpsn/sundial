@@ -108,7 +108,7 @@ pub(crate) fn prune_automatic_backups(
         }
         let destination = if name.ends_with(".json") {
             &mut json_backups
-        } else if name.ends_with(".sqlite3") {
+        } else if name.ends_with(".sqlite3") || name.ends_with(".db") {
             &mut sqlite_backups
         } else {
             continue;

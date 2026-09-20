@@ -46,7 +46,7 @@ impl UpdateCheck {
                     return;
                 };
                 ui.heading(format!("Sundial {}", release.version));
-                ui.label(format!("Installed version: v{}", env!("CARGO_PKG_VERSION")));
+                ui.label(format!("Installed version: {}", crate::version::display()));
                 ui.add_space(8.0);
                 ui.strong("Release Notes");
                 egui::ScrollArea::vertical()

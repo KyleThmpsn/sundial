@@ -155,10 +155,12 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
     use crate::app::account_workspace::WorkspaceDocument;
     let catalog = catalog();
     let definitions = [collectible(0, 0, false), collectible(1, 1, false)];
-    for native in [false, true] {
+    for runtime in 0..3 {
+        let native = runtime == 1;
+        let dawn = runtime == 2;
         let directory = crate::test_support::TestDirectory::new("bulk-account-routing");
         let path = directory.0.join("settings.json");
-        let json = json!({"version":if native {18} else {8},"state":{"characters":[],"unlocks":{"future":true}}});
+        let json = json!({"version":if dawn {6} else if native {18} else {8},"state":{"characters":[],"unlocks":{"future":true}}});
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
         if native {
             crate::persistence::sqlite_account::tests::create_fixture(
@@ -166,7 +168,12 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
                 3,
             );
         }
-        let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
+        if dawn {
+            crate::persistence::dawn_account::tests::create_fixture(
+                &directory.0.join("player-state.db"),
+            );
+        }
+        let mut workspace = WorkspaceDocument::load(json.clone(), &path, dawn);
         for acquired in [true, false] {
             let mut view = workspace.progression_view(0);
             assert_eq!(
@@ -176,7 +183,10 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
                 2
             );
             workspace.apply_progression_view(0, view).unwrap();
-            if native {
+            if dawn {
+                assert_eq!(workspace.json(), &json);
+                workspace.save_dawn().unwrap();
+            } else if native {
                 assert_eq!(workspace.json(), &json);
                 crate::persistence::sqlite_account::tests::save_fixture_document(
                     workspace.native_account_mut().unwrap(),
@@ -188,7 +198,7 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
             workspace = WorkspaceDocument::load(
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
                 &path,
-                false,
+                dawn,
             );
             let snapshot = collection_state_snapshot(&workspace.progression_view(0)).unwrap();
             for definition in &definitions {

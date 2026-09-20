@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "id": "c9ea6eb3-d909-4999-9c9f-3b05ef743d09",
+  "name": "Scatter Matrix",
+  "description": "Final blows release SIVA swarms from the target.",
+  "template_plug": "0xDD5CB37A",
+  "icon": {
+    "source": "image",
+    "name": "destiny-icons\\explore\\sleeper_nodes.svg",
+    "image": {
+      "png_base64": "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"
+    }
+  },
+  "classification": "0xDD5CB37A",
+  "effects": [
+    {
+      "program": {
+        "name": "Scatter Matrix",
+        "trigger": "weapon_kill",
+        "duration_ms": 250,
+        "cooldown_ms": 1500,
+        "chance_permyriad": 10000,
+        "actions": [
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          },
+          {
+            "operation": "spawn",
+            "asset": {
+              "graph": 2169712604
+            },
+            "position": "event"
+          }
+        ]
+      },
+      "source_perk_index": 421,
+      "runtime_values": [],
+      "action_float_values": []
+    }
+  ]
+}

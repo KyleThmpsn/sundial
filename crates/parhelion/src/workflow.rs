@@ -251,6 +251,7 @@ fn plan_snapshot(
         let compilation = compile_with_progress(
             source.path(),
             &project,
+            crate::branding::Branding::detect(install_directory),
             &mut |phase, label, completed, total| {
                 progress(BuildProgress::artifact(
                     match phase {

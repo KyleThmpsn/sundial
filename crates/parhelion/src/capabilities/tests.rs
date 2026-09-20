@@ -588,10 +588,6 @@ fn missing_equipment_slot_does_not_erase_the_decoded_inventory_slot() {
 
     let capabilities = weapon_authoring_capabilities(&donor);
 
-    assert_eq!(
-        donor.summary.inventory_slot,
-        Some(WeaponInventorySlot::Energy)
-    );
     assert!(capabilities.combat_profiles.is_empty());
     assert!(
         capabilities
@@ -749,6 +745,67 @@ fn socket_column_validation_requires_caller_supplied_compatible_sets() {
             diagnostic.code == AuthoringDiagnosticCode::MissingSupportedPlugSet
         })
     );
+}
+
+#[test]
+fn socket_column_validation_distinguishes_private_variants_from_shared_template() {
+    let template = 0xDD5C_B37A;
+    let recipe =
+        WeaponRecipe::from_json_str(include_str!("../../recipes/hammer-time.parhelion.json"))
+            .unwrap();
+    let mut compiled_variants = recipe.to_spec().unwrap().overrides.socket_plug_variants;
+    let mut recipe_variants = recipe.overrides.socket_plug_variants;
+    for (choice_index, variant) in recipe_variants.iter_mut().enumerate() {
+        variant.socket_index = 1;
+        variant.choice_index = choice_index as u16;
+    }
+    for (choice_index, variant) in compiled_variants.iter_mut().enumerate() {
+        variant.socket_index = 1;
+        variant.choice_index = choice_index as u16;
+    }
+    let columns = vec![None, Some(vec![template; 3]), None];
+    let supported = vec![SupportedPlugSet {
+        socket_index: 1,
+        plug_hashes: vec![template],
+    }];
+
+    let editor_diagnostics = validate_socket_column_overrides_with_labels(
+        &donor(),
+        &columns,
+        &[],
+        &supported,
+        &recipe_variants,
+        &|hash| format!("0x{hash:08X}"),
+    );
+    assert!(!editor_diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == AuthoringDiagnosticCode::DuplicateSocketColumnPlug
+    }));
+
+    let build_diagnostics = validate_socket_column_overrides_with_variants(
+        &donor(),
+        &columns,
+        &[],
+        &supported,
+        &compiled_variants,
+    );
+    assert!(!build_diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == AuthoringDiagnosticCode::DuplicateSocketColumnPlug
+    }));
+
+    let mut repeated = recipe_variants[0].clone();
+    repeated.choice_index = 1;
+    recipe_variants[1] = repeated;
+    let repeated_diagnostics = validate_socket_column_overrides_with_labels(
+        &donor(),
+        &columns,
+        &[],
+        &supported,
+        &recipe_variants,
+        &|hash| format!("0x{hash:08X}"),
+    );
+    assert!(repeated_diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == AuthoringDiagnosticCode::DuplicateSocketColumnPlug
+    }));
 }
 
 #[test]

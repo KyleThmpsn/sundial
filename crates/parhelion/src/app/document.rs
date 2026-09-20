@@ -305,6 +305,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn refresh_recipe_library(&mut self) {
+        self.perk_workbench.saved_weapons_changed();
         let Some(library) = self.recipe_library.as_ref() else {
             return;
         };

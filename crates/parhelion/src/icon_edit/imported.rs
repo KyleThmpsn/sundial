@@ -43,7 +43,7 @@ impl ImportedIcon {
         Self::from_normalized(fit(&source, ICON_EDGE, ICON_EDGE))
     }
 
-    fn from_normalized(rgba: RgbaImage) -> Result<Self, String> {
+    pub(super) fn from_normalized(rgba: RgbaImage) -> Result<Self, String> {
         let mut png = Cursor::new(Vec::new());
         rgba.write_to(&mut png, ImageFormat::Png)
             .map_err(|error| format!("Could not encode imported icon: {error}"))?;
@@ -53,7 +53,7 @@ impl ImportedIcon {
         })))
     }
 
-    pub(super) fn fit_to(&self, width: u32, height: u32) -> RgbaImage {
+    pub(crate) fn fit_to(&self, width: u32, height: u32) -> RgbaImage {
         fit(&self.0.rgba, width, height)
     }
 }

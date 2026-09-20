@@ -10,6 +10,11 @@ fn windows_data_dir() -> Option<PathBuf> {
         .map(|path| path.join("Sundial"))
 }
 
+#[cfg(windows)]
+fn windows_cache_dir() -> Option<PathBuf> {
+    windows_data_dir().map(|path| path.join("cache"))
+}
+
 pub(crate) fn config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -37,7 +42,7 @@ pub(crate) fn data_dir() -> Option<PathBuf> {
 pub(crate) fn cache_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        windows_data_dir()
+        windows_cache_dir()
     }
     #[cfg(not(windows))]
     {

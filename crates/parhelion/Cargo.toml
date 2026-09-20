@@ -13,7 +13,7 @@ autoexamples = false
 [features]
 default = []
 # Long-term community work is opt-in and excluded from normal app builds.
-community-recipes = ["dep:ureq"]
+community-recipes = []
 
 [lints]
 workspace = true
@@ -32,7 +32,9 @@ sha2 = "0.10.9"
 sundial = { path = "../.." }
 tempfile = "3.20.0"
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
-ureq = { version = "3.4.0", default-features = false, features = ["rustls"], optional = true }
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+resvg = { version = "0.45.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8.9"

@@ -22,6 +22,7 @@ struct Table<'a> {
     name_width: f32,
     auto_expand: bool,
     enabled: bool,
+    delivery_supported: bool,
     navigation_changed: bool,
     single: Option<(RecordDefinition, bool)>,
 }
@@ -127,7 +128,7 @@ impl Table<'_> {
                 ui.set_min_size(egui::vec2(132.0, TABLE_CELL_HEIGHT));
                 if ui
                     .add_enabled(
-                        self.enabled,
+                        self.enabled && (self.delivery_supported || row.status == Status::Completed || row.record.runtime.as_ref().is_none_or(|runtime| runtime.rewards.is_empty() && runtime.interval_items.iter().all(Option::is_none))),
                         egui::Button::new(if row.status == Status::Completed {
                             "Reset"
                         } else {
@@ -136,7 +137,7 @@ impl Table<'_> {
                         .small(),
                     )
                     .on_hover_ui(|ui| {
-                        ui.label(if row.status == Status::Completed { "Resets progress and subtracts this Triumph's score. Previously queued or delivered rewards remain. Undo restores the whole completion edit." } else { "Updates progress, completion, and Triumph score. Item rewards go to Pending Rewards for the selected character." });
+                        ui.label(if row.status == Status::Completed { "Resets progress and subtracts this Triumph's score. Previously queued or delivered rewards remain. Undo restores the whole completion edit." } else if !self.delivery_supported { "Updates progress, completion, and Triumph score. Triumphs that grant items must be claimed in game because Sundial does not support Dawn progression reward claims." } else { "Updates progress, completion, and Triumph score. Item rewards go to the Reward Queue for the selected character." });
                         if let Some(runtime) = &row.record.runtime {
                             let score = if row.record.completion_flag.is_some() {u64::from(runtime.score)} else {runtime.interval_scores.iter().map(|score|u64::from(*score)).sum()};
                             ui.label(format!("{score} Triumph Points"));
@@ -212,6 +213,7 @@ pub(super) fn draw(
     name_width: f32,
     auto_expand: bool,
     enabled: bool,
+    delivery_supported: bool,
 ) -> (bool, Option<(RecordDefinition, bool)>) {
     let mut table = Table {
         rows,
@@ -221,6 +223,7 @@ pub(super) fn draw(
         name_width,
         auto_expand,
         enabled,
+        delivery_supported,
         navigation_changed: false,
         single: None,
     };

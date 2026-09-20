@@ -11,7 +11,7 @@ use super::{
     RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 117;
+pub(super) const CACHE_SCHEMA: u32 = 118;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +41,9 @@ pub(super) struct CatalogContents {
     pub(super) item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     #[serde(default)]
     pub(super) item_stat_definitions: Vec<ItemStatDefinition>,
+    /// The six character stat rows in character screen order; `None` only in test catalogs.
+    #[serde(default)]
+    pub(super) character_stat_rows: Option<[u16; 6]>,
     pub(super) power_cap_definitions: Vec<super::PowerCapDefinition>,
     pub(super) item_stat_groups: Vec<ItemStatGroup>,
     #[serde(default)]

@@ -141,24 +141,23 @@ pub(in crate::app::custom_perks) fn draw(ui: &mut egui::Ui, canvas: Canvas<'_, '
                 if !editable && stock.is_none() {
                     ui.small("Turn on Experimental Features in Preferences to edit this effect.");
                 }
-                if !editable && program.native.is_none() {
-                    ui.add(
-                        egui::Label::new(super::guidance::summary_with_assets(
-                            program,
-                            editing
-                                .as_ref()
-                                .map(|editing| &editing.workbench.keys.catalog),
-                            editing
-                                .as_ref()
-                                .map(|editing| &editing.workbench.asset_labels),
-                        ))
-                        .wrap(),
+                if program.native.is_none() && (!editable || program.actions.len() > 1) {
+                    let summary = super::guidance::summary_with_assets(
+                        program,
+                        editing
+                            .as_ref()
+                            .map(|editing| &editing.workbench.keys.catalog),
+                        editing
+                            .as_ref()
+                            .map(|editing| &editing.workbench.asset_labels),
                     );
-                    ui.add_space(8.0);
+                    // Truncated labels already expose their full text on hover.
+                    ui.add(egui::Label::new(egui::RichText::new(&summary).weak()).truncate());
                 }
                 if let Some(description) = description {
                     ui.add(egui::Label::new(description).wrap());
                 }
+                ui.add_space(4.0);
                 output.edit_action = draw_program_rows(ui, program, labels, editing);
             }
             Backend::Stock {
@@ -244,6 +243,7 @@ pub(super) fn row<R>(
     hint: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    ui.add_space(3.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
@@ -271,27 +271,39 @@ pub(super) fn row<R>(
 /// rather than a second outline of equal weight.
 fn block(ui: &mut egui::Ui, salt: impl std::hash::Hash, content: impl FnOnce(&mut egui::Ui)) {
     ui.push_id(salt, |ui| {
-        crate::app::style::block(ui.style()).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            content(ui);
-        });
+        crate::app::style::block(ui.style())
+            .fill(ui.visuals().window_fill())
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                content(ui);
+            });
     });
 }
 
 /// A condition row's content, aligned with the effect blocks but without a frame of its
 /// own, so a single control does not sit inside two outlines.
-fn plain(ui: &mut egui::Ui, salt: impl std::hash::Hash, content: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn plain<R>(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     ui.push_id(salt, |ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.add_space(ui.spacing().item_spacing.y / 2.0);
-                content(ui);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        content(ui)
+                    })
+                    .inner
             },
-        );
-    });
+        )
+        .inner
+    })
+    .inner
 }
 
 pub(super) const ACTIVATION_HINT: &str =

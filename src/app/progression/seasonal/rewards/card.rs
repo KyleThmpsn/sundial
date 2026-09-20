@@ -44,7 +44,7 @@ impl Status {
         match self {
             Self::Claimed => "This reward is marked as claimed in the account.",
             Self::Reached => {
-                "The required rank has been reached. Claim this reward to add it to Pending Rewards."
+                "The required rank has been reached. Claim this reward to add it to the Reward Queue."
             }
             Self::Locked => "Increase seasonal XP to reach this reward's rank.",
             Self::Unknown => "The saved claim state could not be read for this reward.",

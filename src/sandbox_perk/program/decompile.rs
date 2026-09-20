@@ -631,8 +631,8 @@ fn adjust_component_of(effect: &DecodedEffect) -> Result<Action, Unsupported> {
     };
     Ok(Action::AdjustComponent {
         target: selector_fact(effect, "Target Selector").unwrap_or(0),
-        flag: selector_fact(effect, "Flag Byte").unwrap_or(0),
-        option: selector_fact(effect, "Option Byte").unwrap_or(0),
+        flag: selector_fact(effect, "Ability State").unwrap_or(0),
+        option: selector_fact(effect, "Ability Version").unwrap_or(0),
         scale_bits,
         limit_bits,
         value_bits,

@@ -1136,6 +1136,79 @@ fn behavior_label(
     format!("{} ({})", entry.source_name, perks.join(", "))
 }
 
+fn behavior_tooltip(
+    entry: &crate::weapon_behavior::Behavior,
+    catalog: Option<&InvestmentCatalog>,
+) -> String {
+    let mut sections = vec![entry.source_name.to_owned(), entry.summary.to_owned()];
+    if let Some(catalog) = catalog {
+        let mut seen = std::collections::BTreeSet::new();
+        for plug in [entry.intrinsic_plug, entry.trait_plug]
+            .into_iter()
+            .flatten()
+        {
+            if !seen.insert(plug) {
+                continue;
+            }
+            let name = catalog.plug_label(plug, false);
+            let description = catalog
+                .perk_description(plug)
+                .unwrap_or("No perk description is available in the installed catalog.");
+            sections.push(format!("{name}\n{description}"));
+        }
+    }
+    if let Some(caution) = entry.caution {
+        sections.push(caution.to_owned());
+    }
+    sections.push("Perk descriptions describe the original weapon. Include Its Perks adds those plugs. Test the transferred behavior in game.".into());
+    sections.join("\n\n")
+}
+
+/// Prefer the firing graph over the smaller state-only record for the same weapon.
+/// Keep an already selected state-only choice visible without changing the saved recipe.
+fn offered_behaviors(
+    sources: &[&'static crate::weapon_behavior::Behavior],
+    selected: Option<&'static crate::weapon_behavior::Behavior>,
+) -> Vec<&'static crate::weapon_behavior::Behavior> {
+    use crate::weapon_behavior::BehaviorSource;
+    let mut offered: Vec<&'static crate::weapon_behavior::Behavior> = Vec::new();
+    for entry in sources {
+        if let Some(kept) = offered
+            .iter_mut()
+            .find(|kept| kept.source_item_hash == entry.source_item_hash)
+        {
+            if matches!(entry.source, BehaviorSource::Graph { .. }) {
+                *kept = entry;
+            }
+        } else {
+            offered.push(entry);
+        }
+    }
+    if let Some(selected) = selected
+        && !offered.iter().any(|entry| entry.id == selected.id)
+    {
+        offered.push(selected);
+    }
+    offered.sort_by_key(|entry| (entry.source_name, entry.owner_tag().is_some()));
+    offered
+}
+
+fn behavior_choice_label(
+    entry: &crate::weapon_behavior::Behavior,
+    catalog: Option<&InvestmentCatalog>,
+) -> String {
+    let label = behavior_label(entry, catalog);
+    if entry.owner_tag().is_some()
+        && crate::weapon_behavior::CATALOG.iter().any(|other| {
+            other.source_item_hash == entry.source_item_hash && other.owner_tag().is_none()
+        })
+    {
+        format!("{label} · State Only")
+    } else {
+        label
+    }
+}
+
 /// Copies another weapon's built-in behavior onto this one.
 ///
 /// This sits with the damage type and the other weapon-wide choices, so it is one line: a label
@@ -1156,21 +1229,11 @@ pub(super) fn draw_unique_behavior_control(
             "Copies another weapon's built-in behavior onto this one, including onto a different weapon type. Some Exotics keep half of what makes them special in the weapon rather than in a perk. Test the combination in game.",
         );
     });
-    // One entry per source weapon, in the order a reader would look for them.
-    let mut offered: Vec<&'static crate::weapon_behavior::Behavior> = Vec::new();
-    for entry in sources {
-        if !offered
-            .iter()
-            .any(|kept| kept.source_item_hash == entry.source_item_hash)
-        {
-            offered.push(entry);
-        }
-    }
-    offered.sort_by_key(|entry| entry.source_name);
     let selected = selected_unique_behavior(overrides);
+    let offered = offered_behaviors(sources, selected);
     let selected_text = selected.map_or_else(
         || NO_BEHAVIOR.to_owned(),
-        |entry| behavior_label(entry, catalog),
+        |entry| behavior_choice_label(entry, catalog),
     );
     ui.add_enabled_ui(!offered.is_empty(), |ui| {
         egui::ComboBox::from_id_salt("recipe_unique_behavior")
@@ -1194,8 +1257,8 @@ pub(super) fn draw_unique_behavior_control(
                 for entry in offered {
                     let chosen = selected.is_some_and(|current| current.id == entry.id);
                     if ui
-                        .selectable_label(chosen, behavior_label(entry, catalog))
-                        .on_hover_text(entry.summary)
+                        .selectable_label(chosen, behavior_choice_label(entry, catalog))
+                        .on_hover_text(behavior_tooltip(entry, catalog))
                         .clicked()
                         && !chosen
                     {
@@ -1215,7 +1278,12 @@ pub(super) fn draw_unique_behavior_control(
                         }
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(selected.map_or_else(
+                || "Keep only this weapon's own behavior.".to_owned(),
+                |entry| behavior_tooltip(entry, catalog),
+            ));
     });
 }
 
@@ -1284,6 +1352,43 @@ fn draw_unique_behavior_projectile_speed(
 #[cfg(test)]
 mod tests {
     use super::behavior_label;
+
+    #[test]
+    fn picker_prefers_firing_graph_but_preserves_selected_state_record() {
+        use crate::weapon_behavior::{behavior, catalog_for_type};
+        let sources = catalog_for_type("Auto Rifle").collect::<Vec<_>>();
+        let offered = super::offered_behaviors(&sources, None);
+        assert!(offered.iter().any(|entry| entry.id == "cerberus-1-graph"));
+        assert!(!offered.iter().any(|entry| entry.id == "cerberus-plus-one"));
+        let original = behavior("cerberus-plus-one").unwrap();
+        let offered = super::offered_behaviors(&sources, Some(original));
+        assert!(offered.iter().any(|entry| entry.id == original.id));
+        assert!(super::behavior_choice_label(original, None).ends_with("State Only"));
+        assert!(!super::behavior_tooltip(original, None).contains("Shared with"));
+        assert!(
+            !super::behavior_tooltip(behavior("tarrabah").unwrap(), None)
+                .contains("element switch")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn behavior_tooltip_includes_both_native_perk_descriptions() {
+        let packages =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
+                .unwrap();
+        let entry = crate::weapon_behavior::behavior("tarrabah").unwrap();
+        let tooltip = super::behavior_tooltip(entry, Some(&catalog));
+        for plug in [entry.intrinsic_plug.unwrap(), entry.trait_plug.unwrap()] {
+            assert!(tooltip.contains(catalog.item_display_name(plug).unwrap()));
+            assert!(tooltip.contains(catalog.perk_description(plug).unwrap()));
+        }
+        assert!(super::behavior_label(entry, Some(&catalog)).contains("Ravenous Beast"));
+        assert!(super::behavior_label(entry, Some(&catalog)).contains("Bottomless Appetite"));
+        assert!(!tooltip.contains("element switch"));
+    }
     use crate::weapon_behavior::CATALOG;
 
     /// Without an installation the plug hashes cannot be turned into names, and a bare hash or an

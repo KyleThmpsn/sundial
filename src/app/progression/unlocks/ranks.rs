@@ -57,7 +57,7 @@ fn rows(
         let rank =
             definition.and_then(|definition| snapshot.as_ref()?.progression_rank(definition));
         let seasonal = scope == ProgressionScope::Account
-            && document.get("_native_progression").is_some()
+            && crate::persistence::progression::supports_seasonal_authoring(document)
             && (38..=41).contains(&saved.definition_index);
         Row {
             saved,
@@ -190,7 +190,7 @@ pub(super) fn draw(
                             let previous = row.saved.lanes;
                             let mut lanes = previous.unwrap_or([0; 3]);
                             let edited = if row.seasonal {
-                                table_cell(ui, 100.0, "Seasonal").on_hover_text("Edit in Seasonal");
+                                table_cell(ui, 100.0, "Seasonal").on_hover_text("Managed by Seasonal where supported. These linked fields cannot be edited individually.");
                                 false
                             } else if cache.scope == ProgressionScope::Unreplicated {
                                 table_cell(ui, 100.0, "Not Saved");

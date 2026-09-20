@@ -22,8 +22,8 @@
 /// adjustment scale.
 #[must_use]
 pub fn component_target(selector: u8, flag: u8, option: u8) -> Option<&'static str> {
-    // The flag and option bytes select something else about the adjustment. No stock node
-    // contradicts the selector's ability, so they are not part of this reading.
+    // The flag gates ability activity and the option selects its current/base version.
+    // Neither changes the ability slot named here.
     let _ = (flag, option);
     match selector {
         0 => Some("Grenade Energy"),
@@ -46,8 +46,10 @@ pub fn component_target(selector: u8, flag: u8, option: u8) -> Option<&'static s
 /// maneuverability"), Hydraulic Boosters ("Improves High Jump") and Move to Survive ("Blink
 /// further"). Kind 8 never uses it, so it stays out of `component_target`.
 ///
-/// Slot 4 stays unnamed. Its witnesses disagree: Linear Actuators and Hydraulic Boosters
-/// describe sprinting, Last Stand describes weapon performance and recovery.
+/// Slot 4 addresses the movement bank. Its property records separately change sprint speed,
+/// slide mode and turning. The native bank handler 105D680 writes those distinct movement
+/// fields. Last Stand's weapon and recovery bonuses are separate actions, not alternative
+/// meanings of this slot.
 #[must_use]
 pub fn ability_slot(selector: u8) -> Option<&'static str> {
     match selector {
@@ -55,6 +57,7 @@ pub fn ability_slot(selector: u8) -> Option<&'static str> {
         1 => Some("Super"),
         2 => Some("Melee"),
         3 => Some("Jump"),
+        4 => Some("Movement"),
         7 => Some("Class Ability"),
         _ => None,
     }

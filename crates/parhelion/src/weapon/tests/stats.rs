@@ -120,7 +120,13 @@ fn materializes_missing_investment_stats_without_shifting_the_donor_payload() {
     );
     let (count, header, rows, class) = array_at(&definition, resource).unwrap();
     assert_eq!(count, 3);
-    assert_eq!(header, original_len);
+    assert_eq!(
+        (header, &definition[header - 8..header]),
+        (
+            original_len.next_multiple_of(16) + 16,
+            NESTED_ARRAY_TRAILER.as_slice()
+        )
+    );
     assert_eq!(class, ITEM_INVESTMENT_STAT_ROW_CLASS);
     assert_eq!(read_u8(&definition, rows).unwrap(), 13);
     assert_eq!(read_i32(&definition, rows + 4).unwrap(), 0);
@@ -133,7 +139,7 @@ fn materializes_missing_investment_stats_without_shifting_the_donor_payload() {
         50
     );
     assert_eq!(
-        definition[rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 8],
+        definition[rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 2],
         0xA5,
         "unknown bytes on preserved rows must survive materialization"
     );
@@ -178,7 +184,7 @@ fn removes_inherited_investment_rows_without_rewriting_retained_row_bytes() {
     assert_eq!(class, ITEM_INVESTMENT_STAT_ROW_CLASS);
     assert_eq!(read_u8(&definition, rows).unwrap(), 16);
     assert_eq!(read_i32(&definition, rows + 4).unwrap(), 44);
-    assert_eq!(definition[rows + 8], 0xA5);
+    assert_eq!(definition[rows + 2], 0xA5);
     assert!(set_weapon_stats(&mut definition, &[], &[13]).is_err());
 }
 
@@ -225,4 +231,138 @@ fn authors_distinct_native_power_cap_version_rows() {
         [0, 0]
     );
     assert!(set_weapon_power_cap_groups(&mut definition, &[11]).is_err());
+}
+
+fn stats_with_programs() -> (Vec<u8>, [usize; 2]) {
+    let mut data = synthetic_weapon_with_investment_stats();
+    let resource = relative_target(&data, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
+    let row = array_at(&data, resource).unwrap().2 + ITEM_INVESTMENT_STAT_ROW_SIZE;
+    let mut targets = [0; 2];
+    for (lane, offset) in [8, 24].into_iter().enumerate() {
+        while data.len() % 16 != 0 {
+            data.push(0);
+        }
+        data.extend_from_slice(&[0; 8]);
+        data.extend_from_slice(&NESTED_ARRAY_TRAILER);
+        let header = data.len();
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.extend_from_slice(&0x8080_7D31_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&[1, 0, 0, 0, 17, 0, 0, 0]);
+        write_u64(&mut data, row + offset, 1).unwrap();
+        write_relative_pointer(&mut data, row + offset + 8, header).unwrap();
+        targets[lane] = header;
+    }
+    (data, targets)
+}
+
+#[test]
+fn stat_companion_programs_survive_growth_and_same_size_row_moves() {
+    let (source, targets) = stats_with_programs();
+    for (overrides, removed) in [(vec![(20, 5)], vec![]), (vec![(20, 5)], vec![13])] {
+        let mut authored = source.clone();
+        set_weapon_stats(&mut authored, &overrides, &removed).unwrap();
+        let resource = relative_target(&authored, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
+        let (count, header, rows, _) = array_at(&authored, resource).unwrap();
+        let row = (0..count)
+            .map(|i| rows + i * ITEM_INVESTMENT_STAT_ROW_SIZE)
+            .find(|row| read_u8(&authored, *row).unwrap() == 16)
+            .unwrap();
+        assert_eq!(
+            stat_program_targets(&authored, rows, count).unwrap()[&16],
+            targets.map(Some)
+        );
+        for (offset, target) in [16, 32].into_iter().zip(targets) {
+            assert_eq!(relative_target(&authored, row + offset).unwrap(), target);
+            assert_eq!(&authored[target..target + 24], &source[target..target + 24]);
+        }
+        if removed.is_empty() {
+            assert_eq!(&authored[header - 8..header], &NESTED_ARRAY_TRAILER);
+        }
+    }
+}
+
+#[test]
+fn independent_stat_replacement_clears_inherited_programs_and_rejects_invalid_input_atomically() {
+    let (mut data, _) = stats_with_programs();
+    let original = data.clone();
+    assert!(replace_custom_plug_stats(&mut data, &[(256, 5)]).is_err());
+    assert_eq!(data, original);
+    replace_custom_plug_stats(&mut data, &[(16, 50)]).unwrap();
+    let resource = relative_target(&data, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
+    let (count, _, rows, _) = array_at(&data, resource).unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(read_u8(&data, rows).unwrap(), 16);
+    assert_eq!(read_i32(&data, rows + 4).unwrap(), 50);
+    assert_eq!(
+        stat_program_targets(&data, rows, count).unwrap()[&16],
+        [None, None]
+    );
+}
+
+#[test]
+fn stat_companion_program_validation_rejects_dangling_targets_without_mutation() {
+    let (mut data, _) = stats_with_programs();
+    let resource = relative_target(&data, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
+    let row = array_at(&data, resource).unwrap().2 + ITEM_INVESTMENT_STAT_ROW_SIZE;
+    write_i64(&mut data, row + 32, i64::MAX).unwrap();
+    let before = data.clone();
+    assert!(apply_custom_plug_stats(&mut data, &[(20, 5)]).is_err());
+    assert_eq!(data, before);
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+fn stock_stat_companion_programs_survive_growth() {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let sources = sources::load_project_sources(&packages).unwrap();
+    let mut checked = 0;
+    let mut programs = 0;
+    for index in 0..sources.stock_item_count {
+        let tag = TagHash(
+            read_u32(
+                &sources.stock_item_table,
+                sources.item_rows + index * ITEM_ROW_SIZE + 16,
+            )
+            .unwrap(),
+        );
+        let mut data = sources.manager.read_tag(tag).unwrap();
+        let Ok(resource) = relative_target(&data, ITEM_INVESTMENT_STAT_POINTER_OFFSET) else {
+            continue;
+        };
+        if resource < 4
+            || read_u32(&data, resource - 4).ok() != Some(ITEM_INVESTMENT_STAT_RESOURCE_CLASS)
+        {
+            continue;
+        }
+        if read_u64(&data, resource).unwrap() == 0 {
+            continue;
+        }
+        let (count, _, rows, class) = array_at(&data, resource).unwrap();
+        assert_eq!(class, ITEM_INVESTMENT_STAT_ROW_CLASS);
+        let targets = stat_program_targets(&data, rows, count).unwrap();
+        if !targets.values().flatten().any(Option::is_some) {
+            continue;
+        }
+        let original = data.clone();
+        let extra = (0..=u8::MAX)
+            .map(u16::from)
+            .find(|stat| !targets.contains_key(stat))
+            .unwrap();
+        set_weapon_stats(&mut data, &[(extra, 7)], &[]).unwrap();
+        let (new_count, header, new_rows, _) = array_at(&data, resource).unwrap();
+        assert_eq!(new_count, count + 1);
+        assert_eq!(&data[header - 8..header], &NESTED_ARRAY_TRAILER);
+        let copied = stat_program_targets(&data, new_rows, new_count).unwrap();
+        for (stat, pointers) in targets {
+            assert_eq!(copied[&stat], pointers);
+            for target in pointers.into_iter().flatten() {
+                assert_eq!(&data[target..original.len()], &original[target..]);
+                programs += 1;
+            }
+        }
+        checked += 1;
+    }
+    assert!(programs >= 62);
+    eprintln!("Verified {checked} stock stat arrays with {programs} numeric programs");
 }

@@ -77,6 +77,7 @@ pub(in crate::app) fn upsert_private_perk_runtime_values(
                 choice_index: key.choice_index,
                 source_plug_hash: HexHash::new(key.source_plug_hash),
                 name: None,
+                icon: None,
                 classification_donor_hash: None,
                 description: None,
                 additional_sandbox_perks: Vec::new(),

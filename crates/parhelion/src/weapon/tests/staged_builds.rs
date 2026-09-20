@@ -3,6 +3,7 @@ use super::*;
 mod activation;
 mod ammo;
 mod collection_conditions;
+mod companions;
 mod donors;
 mod hud;
 mod ornaments;

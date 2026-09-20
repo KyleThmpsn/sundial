@@ -308,6 +308,7 @@ fn recipe(
             description: Some(
                 "A staged projectile experiment. Gameplay compatibility is unverified.".into(),
             ),
+            icon: None,
             classification_donor_hash: None,
             investment_stats: Vec::new(),
             additional_sandbox_perks: if effect.cluster {

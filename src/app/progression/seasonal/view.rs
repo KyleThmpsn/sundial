@@ -47,6 +47,11 @@ pub(in crate::app) fn draw(
     catalog: &Catalog,
     state: &mut super::super::UiState,
 ) -> bool {
+    if document["_native_progression"]["runtime"] == "dawn" {
+        ui.heading("Seasonal Unavailable");
+        ui.label(super::DAWN_UNAVAILABLE);
+        return false;
+    }
     let changed = draw_season(ui, document, catalog, &mut state.seasonal, state.read_only);
     if changed {
         state.cached_progression = None;
@@ -85,7 +90,7 @@ fn draw_season(
     };
     if document.get("_native_progression").is_none() {
         ui.heading("Seasonal Progression");
-        ui.label("Seasonal authoring requires a current Sunrise SQLite account. The existing JSON account controls remain available in Unlocks and Investment.");
+        ui.label("Seasonal authoring requires a supported Sunrise database account. The existing JSON account controls remain available in Unlocks and Investment.");
         return false;
     }
     let Some(snapshot) = collection_state_snapshot(document) else {

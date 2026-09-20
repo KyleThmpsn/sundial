@@ -18,6 +18,7 @@ pub(crate) enum Background {
     #[default]
     Transparent,
     Sunrise,
+    Dawn,
     Solid {
         color: [u8; 3],
     },
@@ -115,12 +116,25 @@ impl Composition {
             + f32::from(self.offset[0]) * width as f32 / 100.0;
         let top = (height as f32 - source.height() as f32 * scale) * 0.5
             + f32::from(self.offset[1]) * height as f32 / 100.0;
+        // A bilinear lookup alone skips narrow rays and other details when shrinking.
+        // Filter to the displayed footprint first. This only allocates a smaller image,
+        // so Cover and zoom still cannot create an oversized intermediate canvas.
+        let filtered = (scale < 1.0).then(|| {
+            crate::image_import::resize(
+                &source,
+                (source.width() as f32 * scale).ceil().max(1.0) as u32,
+                (source.height() as f32 * scale).ceil().max(1.0) as u32,
+            )
+        });
+        let sampling = filtered.as_ref().unwrap_or(&source);
+        let sample_x = sampling.width() as f32 / source.width() as f32;
+        let sample_y = sampling.height() as f32 / source.height() as f32;
         RgbaImage::from_fn(width, height, |x, y| {
             let mut background = self.background.pixel(x, y, width, height);
             let px = (x as f32 + 0.5 - left) / scale;
             let py = (y as f32 + 0.5 - top) / scale;
             if px >= 0.0 && py >= 0.0 && px < source.width() as f32 && py < source.height() as f32 {
-                let foreground = sample(&source, px - 0.5, py - 0.5);
+                let foreground = sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5);
                 image::Pixel::blend(&mut background, &foreground);
             }
             background
@@ -133,6 +147,7 @@ impl Background {
         match self {
             Self::Transparent => Rgba([0; 4]),
             Self::Sunrise => crate::badge_icon::card_background(x, y, width, height),
+            Self::Dawn => crate::branding::dawn_background(y, height),
             Self::Solid { color } => Rgba([color[0], color[1], color[2], 255]),
             Self::Gradient { start, end, angle } => {
                 let radians = f32::from(*angle).to_radians();
@@ -193,6 +208,28 @@ fn sample(image: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shrinking_preserves_thin_detail_coverage_without_transparent_color_bleed() {
+        for phase in 0..8 {
+            let source = RgbaImage::from_fn(768, 96, |x, _| {
+                Rgba(if (x + phase) % 8 < 2 {
+                    [255, 255, 255, 255]
+                } else {
+                    [255, 0, 0, 0]
+                })
+            });
+            let result = Composition::default().render(&source, 96, 12);
+            for x in 4..92 {
+                let pixel = result.get_pixel(x, 6);
+                assert!(
+                    (60..=68).contains(&pixel[3]),
+                    "phase {phase}, x {x}: {pixel:?}"
+                );
+                assert_eq!(&pixel.0[..3], &[255; 3]);
+            }
+        }
+    }
 
     #[test]
     fn crop_fill_and_position_control_the_visible_image_without_stretching() {

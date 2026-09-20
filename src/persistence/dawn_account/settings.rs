@@ -26,12 +26,29 @@ pub(super) enum SettingColumn {
     Real,
 }
 
+/// Conversion between one storage-neutral value and Dawn's representation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SettingEncoding {
+    #[default]
+    Direct,
+    BindingSource,
+    VerticalSyncMode,
+}
+
+/// The exact Dawn row and representation behind one storage-neutral preference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SettingLocation {
+    pub key: String,
+    pub column: SettingColumn,
+    pub encoding: SettingEncoding,
+}
+
 /// Where each modelled setting came from, so an edit goes back to exactly that row and column.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct SettingsIndex {
-    /// The verbatim Dawn key text and its column, by model key. The text is recorded rather than
-    /// rebuilt: the reader lowercases and splits Dawn's names, and that has no safe inverse.
-    pub preferences: BTreeMap<AccountSettingKey, (String, SettingColumn)>,
+    /// The verbatim Dawn key, column and encoding behind each model key. These are recorded rather
+    /// than rebuilt because some PC rows project into different storage-neutral groups.
+    pub preferences: BTreeMap<AccountSettingKey, SettingLocation>,
     /// The `key_bindings.action` ordinal each action name was read from.
     pub actions: BTreeMap<String, i64>,
 }
@@ -49,14 +66,14 @@ pub(super) fn save(
         }
         match key {
             AccountSettingKey::Preference { .. } => {
-                let Some((text, column)) = index.preferences.get(key) else {
+                let Some(location) = index.preferences.get(key) else {
                     // The model only ever holds keys the reader took from this database, so a key
                     // with no recorded row would mean writing one Dawn never had.
                     return Err(DawnAccountError::Unwritable(format!(
                         "setting {key:?} was not read from this database and cannot be written"
                     )));
                 };
-                write_preference(transaction, text, *column, value)?;
+                write_preference(transaction, location, value)?;
             }
             AccountSettingKey::KeyBinding { action, slot } => {
                 let Some(ordinal) = index.actions.get(action.as_ref()) else {
@@ -73,17 +90,42 @@ pub(super) fn save(
 
 fn write_preference(
     transaction: &rusqlite::Transaction<'_>,
-    key: &str,
-    column: SettingColumn,
+    location: &SettingLocation,
     value: &AccountSettingValue,
 ) -> Result<(), DawnAccountError> {
+    let key = location.key.as_str();
+    let column = location.column;
+    let value = match (location.encoding, value) {
+        (SettingEncoding::Direct, value) => value.clone(),
+        (SettingEncoding::BindingSource, AccountSettingValue::Text(value)) => {
+            AccountSettingValue::Boolean(match value.as_ref() {
+                "account" => false,
+                "computer" => true,
+                _ => {
+                    return Err(DawnAccountError::Unwritable(format!(
+                        "setting {key} cannot hold binding source {value:?}"
+                    )));
+                }
+            })
+        }
+        (SettingEncoding::VerticalSyncMode, AccountSettingValue::Unsigned(value))
+            if *value <= 2 =>
+        {
+            AccountSettingValue::Unsigned(*value)
+        }
+        (encoding, value) => {
+            return Err(DawnAccountError::Unwritable(format!(
+                "setting {key} uses {encoding:?} and cannot hold {value:?}"
+            )));
+        }
+    };
     let updated = match (column, value) {
         (SettingColumn::Integer, AccountSettingValue::Boolean(set)) => transaction.execute(
             "UPDATE settings_values SET integer_value=?2,real_value=NULL WHERE key=?1",
-            params![key, i64::from(*set)],
+            params![key, i64::from(set)],
         )?,
         (SettingColumn::Integer, AccountSettingValue::Unsigned(number)) => {
-            let Ok(number) = i64::try_from(*number) else {
+            let Ok(number) = i64::try_from(number) else {
                 return Err(DawnAccountError::Unwritable(format!(
                     "setting {key} holds {number}, which is larger than Dawn stores"
                 )));

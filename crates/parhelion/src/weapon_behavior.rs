@@ -169,7 +169,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0x131AF65A),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Shared with Vigilance Wing and Skyburner's Oath. Untested.",
+        summary: "Copies the weapon's state record, not its firing or projectile graph. Gameplay transfer is untested.",
     },
     Behavior {
         id: "cerberus-plus-one",
@@ -193,7 +193,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0x4CDDCE02),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Shared with Prometheus Lens. Untested.",
+        summary: "Copies the weapon's state record, not its four-barrel firing graph. Gameplay transfer is untested.",
     },
     Behavior {
         id: "symmetry",
@@ -217,7 +217,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0x0796FC77),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Shared with Divinity. Untested.",
+        summary: "Copies the weapon's state record, not its firing or projectile graph. Gameplay transfer is untested.",
     },
     Behavior {
         id: "lord-of-wolves",
@@ -257,7 +257,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0xAADFDE43),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Shared with Twilight Oath. Untested.",
+        summary: "Copies the weapon's state record, not its firing or projectile graph. Gameplay transfer is untested.",
     },
     Behavior {
         id: "travelers-chosen",
@@ -273,7 +273,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: None,
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "No element switch on a sidearm. Other effects untested.",
+        summary: "Copies Traveler's Chosen's state record. Its gameplay effect on another weapon has not been verified.",
     },
     Behavior {
         id: "two-tailed-fox",
@@ -285,11 +285,11 @@ pub const CATALOG: &[Behavior] = &[
             content_group: 0x0BCC_6D9A,
             family_types: &["Rocket Launcher"],
         },
-        intrinsic_plug: None,
-        trait_plug: None,
+        intrinsic_plug: Some(0xD985_E346),
+        trait_plug: Some(0x2E59_CD3D),
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "No element switch on a rocket launcher. Other effects untested.",
+        summary: "Copies Two-Tailed Fox's state record. This does not copy its two-rocket firing graph. Its gameplay effect on another weapon has not been verified.",
     },
     Behavior {
         id: "tarrabah",
@@ -301,11 +301,11 @@ pub const CATALOG: &[Behavior] = &[
             content_group: 0xC7A3_45AF,
             family_types: &["Submachine Gun", "Auto Rifle"],
         },
-        intrinsic_plug: None,
-        trait_plug: None,
+        intrinsic_plug: Some(0x976D_834D),
+        trait_plug: Some(0xC7BC_3D87),
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "No element switch on a submachine gun. Other effects untested.",
+        summary: "Copies Tarrabah's state record. Ravenous Beast behavior on another weapon has not been verified.",
     },
     Behavior {
         id: "ace-of-spades-graph",
@@ -2222,5 +2222,30 @@ mod tests {
         assert!(
             catalog_for_type("Scout Rifle").any(|entry| entry.owner_tag() == Some(0x8152_9461))
         );
+    }
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn source_perk_metadata_matches_installed_weapons() {
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(path.parent().unwrap(), false, |_| {})
+                .unwrap();
+        for id in ["tarrabah", "two-tailed-fox", "cerberus-plus-one"] {
+            let entry = behavior(id).unwrap();
+            let donor = catalog.weapon_donor(entry.source_item_hash).unwrap();
+            for plug in [entry.intrinsic_plug, entry.trait_plug] {
+                let plug = plug.expect("the behavior includes its native perks");
+                assert!(
+                    donor
+                        .sockets
+                        .iter()
+                        .any(|socket| socket.native_default == Some(plug))
+                );
+                assert!(!catalog.perk_description(plug).unwrap().is_empty());
+                println!("{}: {}", entry.source_name, catalog.plug_label(plug, false));
+            }
+        }
     }
 }

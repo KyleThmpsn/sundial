@@ -1,6 +1,33 @@
 use super::*;
 use crate::presentation::{Artwork, Badge};
 
+#[test]
+fn runtime_badge_text_changes_without_changing_collection_identities() {
+    use crate::branding::Branding;
+    let spec = crate::WeaponRecipe::every_end().to_spec().unwrap();
+    let weapons = [spec];
+    for locale in 0..LOCALIZATION_LOCALE_COUNT {
+        let sunrise =
+            project_authored_localized_values(&weapons, &[], locale, Branding::Sunrise).unwrap();
+        let dawn =
+            project_authored_localized_values(&weapons, &[], locale, Branding::Dawn).unwrap();
+        assert_eq!(
+            sunrise.iter().map(|(hash, _)| hash).collect::<Vec<_>>(),
+            dawn.iter().map(|(hash, _)| hash).collect::<Vec<_>>()
+        );
+        for ((hash, old), (_, new)) in sunrise.iter().zip(&dawn) {
+            match *hash {
+                SUNRISE_BADGE_NAME_HASH => {
+                    assert_eq!(*old, "Project Sunrise");
+                    assert_eq!(*new, "Dawn");
+                }
+                SUNRISE_BADGE_DESCRIPTION_HASH => assert_eq!(*new, "Ardens aurora semper oritur."),
+                _ => assert_eq!(old, new),
+            }
+        }
+    }
+}
+
 pub(super) fn artwork(seed: u8) -> Artwork {
     let image = image::RgbaImage::from_fn(96, 96, |x, y| {
         image::Rgba([
@@ -43,11 +70,16 @@ fn personalization_roundtrips_embedded_artwork_and_multiline_lore() {
     assert_eq!(spec.overrides.badge, recipe.overrides.badge);
     assert_eq!(spec.overrides.corner_icon, recipe.overrides.corner_icon);
     assert_eq!(spec.overrides.lore, recipe.overrides.lore);
-    let values = project_authored_localized_values(&[spec.clone()], &[], 0)
-        .unwrap()
-        .into_iter()
-        .map(|(h, v)| (h, v.to_owned()))
-        .collect::<BTreeMap<_, _>>();
+    let values = project_authored_localized_values(
+        &[spec.clone()],
+        &[],
+        0,
+        crate::branding::Branding::Sunrise,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|(h, v)| (h, v.to_owned()))
+    .collect::<BTreeMap<_, _>>();
     assert_eq!(
         values[&crate::presentation::text_hash(&spec.namespace, "lore")],
         recipe.overrides.lore.unwrap()
@@ -73,7 +105,9 @@ fn personal_badges_share_text_but_reject_conflicting_settings_and_over_capacity(
             .unwrap();
     second.overrides.badge = first.overrides.badge.clone();
     let pair = [first.clone(), second.clone()];
-    let values = project_authored_localized_values(&pair, &[], 0).unwrap();
+    let values =
+        project_authored_localized_values(&pair, &[], 0, crate::branding::Branding::Sunrise)
+            .unwrap();
     assert_eq!(
         values
             .iter()

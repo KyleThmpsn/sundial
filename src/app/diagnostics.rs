@@ -25,7 +25,7 @@ const LOG_FILE_NAME: &str = "sundial-troubleshooting.log";
 mod activity;
 mod runtime;
 
-use runtime::append_sunrise_runtime_files;
+use runtime::append_runtime_files;
 #[cfg(test)]
 use runtime::scan_runtime_folder;
 
@@ -48,7 +48,8 @@ pub(super) struct ReportContext<'a> {
     pub install_path: &'a Path,
     pub settings_path: &'a Path,
     pub settings_layout: &'a str,
-    pub sunrise_version: &'a str,
+    pub runtime_name: &'a str,
+    pub runtime_version: &'a str,
     pub settings_schema: Option<u64>,
     pub account_source: &'a AccountSourceInfo,
     pub catalog: CatalogSummary<'a>,
@@ -71,7 +72,7 @@ pub(super) fn build_report(context: &ReportContext<'_>) -> String {
     append_workspace_section(&mut report, context);
     append_persistence_compatibility(&mut report, context.install_path);
     append_settings_candidates(&mut report, context.install_path);
-    append_sunrise_runtime_files(&mut report, context.install_path);
+    append_runtime_files(&mut report, context.install_path);
     append_package_summary(&mut report, context.install_path);
     report.push_str(
         "Recent Sundial Activity (Newest First)\n-------------------------------------\n",
@@ -102,12 +103,12 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
             "destiny_executable",
             &install.join("destiny2.exe"),
         );
-        append_path(&mut report, "sunrise_module", &sunrise_module_path(install));
+        append_path(&mut report, "runtime_module", &sunrise_module_path(install));
         append_path(&mut report, "packages_directory", &install.join("packages"));
         writeln!(report).expect("writing to a String cannot fail");
         append_persistence_compatibility(&mut report, install);
         append_settings_candidates(&mut report, install);
-        append_sunrise_runtime_files(&mut report, install);
+        append_runtime_files(&mut report, install);
         append_package_summary(&mut report, install);
     } else {
         report.push_str("selected_install = unavailable\n\n");
@@ -119,7 +120,7 @@ pub(super) fn build_startup_failure_report(install_path: Option<&Path>, error: &
 fn report_header() -> String {
     let mut report = String::new();
     writeln!(report, "Sundial Troubleshooting Log").expect("writing to a String cannot fail");
-    writeln!(report, "format_version = 4").expect("writing to a String cannot fail");
+    writeln!(report, "format_version = 5").expect("writing to a String cannot fail");
     writeln!(
         report,
         "generated_unix_seconds = {}",
@@ -196,7 +197,7 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
     );
     append_path(
         report,
-        "sunrise_module",
+        "runtime_module",
         &sunrise_module_path(context.install_path),
     );
     append_path(
@@ -267,17 +268,19 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
         .expect("writing to a String cannot fail");
     writeln!(
         report,
-        "settings_schema = {}",
+        "settings_json_schema = {}",
         context.settings_schema.map_or_else(
             || "missing_or_invalid".to_owned(),
             |value| value.to_string()
         )
     )
     .expect("writing to a String cannot fail");
+    writeln!(report, "detected_runtime_name = {}", context.runtime_name)
+        .expect("writing to a String cannot fail");
     writeln!(
         report,
-        "detected_sunrise_version = {}",
-        context.sunrise_version
+        "detected_runtime_version = {}",
+        context.runtime_version
     )
     .expect("writing to a String cannot fail");
     writeln!(
@@ -409,11 +412,20 @@ fn append_settings_candidates(report: &mut String, install: &Path) {
         writeln!(report, "[{}]", layout.preference_value())
             .expect("writing to a String cannot fail");
         append_path(report, "settings_json", &settings);
-        append_path(
-            report,
-            "investment_database",
-            &crate::persistence::investment_path(&settings),
-        );
+        match layout {
+            SettingsLayout::DawnRoot | SettingsLayout::DawnBinX64 => append_path(
+                report,
+                "player_state_database",
+                &crate::persistence::dawn_path(&settings),
+            ),
+            SettingsLayout::GameRoot | SettingsLayout::Root | SettingsLayout::BinX64 => {
+                append_path(
+                    report,
+                    "investment_database",
+                    &crate::persistence::investment_path(&settings),
+                );
+            }
+        }
     }
     writeln!(report).expect("writing to a String cannot fail");
 }

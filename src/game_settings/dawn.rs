@@ -12,24 +12,36 @@ use std::{
 
 const OMEGA: &str = "/experiments/omega";
 const CLIENT: &str = "/client";
-const OMEGA_FLAGS: [(&str, &str); 9] = [
-    ("coo_executor", "Omega Lua Executor"),
-    ("directive_ui", "Directive UI"),
+const OMEGA_FLAGS: [(&str, &str, bool); 12] = [
+    ("coo_executor", "Omega Lua Executor", false),
+    ("directive_ui", "Directive UI", false),
     (
         "ikora_carrier_model_suppression",
         "Ikora Carrier Model Suppression",
+        false,
     ),
-    ("ikora_vfx_rebind", "Ikora VFX Rebind"),
-    ("scene_authority", "Scene Authority"),
-    ("gate_authority", "Gate Authority"),
-    ("portal_mutation", "Portal Mutation"),
-    ("synthetic_stage_machine", "Synthetic Stage Machine"),
-    ("unsafe_diagnostics", "Unsafe Diagnostics"),
+    ("ikora_vfx_rebind", "Ikora VFX Rebind", false),
+    ("scene_authority", "Scene Authority", false),
+    ("gate_authority", "Gate Authority", false),
+    ("portal_mutation", "Portal Mutation", false),
+    ("synthetic_stage_machine", "Synthetic Stage Machine", false),
+    ("unsafe_diagnostics", "Unsafe Diagnostics", false),
+    ("open_world_census", "Open World Census", false),
+    ("forest_candy_drops", "Forest Candy Drops", false),
+    ("forest_reward_coffers", "Forest Reward Coffers", false),
 ];
-const CLIENT_FLAGS: [(&str, &str); 2] = [
-    ("roster_force_authored", "Force Authored Roster"),
-    ("seed_authored_sensors", "Seed Authored Sensors"),
+const CLIENT_FLAGS: [(&str, &str, bool); 7] = [
+    ("fade_release", "Release Transition Fade", true),
+    ("force_join_request_ready", "Force Join Request Ready", true),
+    ("region_private", "Private Regions", false),
+    ("pin_replicated_record", "Pin Replicated Record", true),
+    ("roster_force_authored", "Force Authored Roster", false),
+    ("hold_spawn", "Hold Spawn During Loading", true),
+    ("seed_authored_sensors", "Seed Authored Sensors", false),
 ];
+const CLIENT_SPAWN_HOLD_MS: &str = "/client/spawn_hold_ms";
+const DEFAULT_SPAWN_HOLD_MS: u64 = 30_000;
+const MAXIMUM_SPAWN_HOLD_MS: u64 = 600_000;
 
 /// Limits a Dawn runtime compiles in, mirrored from its account and inventory state headers.
 const CHARACTER_CAPACITY: usize = 3;
@@ -128,7 +140,7 @@ pub(crate) fn executor_enabled(json: &Value) -> bool {
 pub(crate) fn settings_issues(json: &Value) -> Vec<String> {
     let mut issues = Vec::new();
     if super::schema_version(json) != Some(6) {
-        issues.push("This detected Dawn runtime expects settings schema v6.".into());
+        issues.push("This detected Dawn runtime expects configuration schema v6.".into());
     }
     if json
         .pointer("/state/activity/default_destination/previous_activity_index")
@@ -157,12 +169,22 @@ pub(crate) fn settings_issues(json: &Value) -> Vec<String> {
         (OMEGA, OMEGA_FLAGS.as_slice()),
         (CLIENT, CLIENT_FLAGS.as_slice()),
     ] {
-        for (key, _) in fields {
+        for (key, _, _) in fields {
             let path = format!("{group}/{key}");
             if json.pointer(&path).is_some_and(|v| !v.is_boolean()) {
                 issues.push(format!("{} must be true or false.", dotted(&path)));
             }
         }
+    }
+    if let Some(value) = json.pointer(CLIENT_SPAWN_HOLD_MS)
+        && value
+            .as_u64()
+            .is_none_or(|value| value == 0 || value > MAXIMUM_SPAWN_HOLD_MS)
+    {
+        issues.push(format!(
+            "{} must be from 1 to {MAXIMUM_SPAWN_HOLD_MS}.",
+            dotted(CLIENT_SPAWN_HOLD_MS)
+        ));
     }
     issues.append(&mut account_issues(json));
     issues
@@ -170,9 +192,10 @@ pub(crate) fn settings_issues(json: &Value) -> Vec<String> {
 
 /// Reports account data a Dawn runtime imports but then refuses to resolve.
 ///
-/// Dawn imports settings.json once and never reads it again, so a shape it accepts at import but
-/// rejects while preparing a loadout leaves the client waiting through investment sign-in until it
-/// times out. These checks mirror the limits Dawn compiles in.
+/// Dawn reads runtime configuration from settings.json on every boot, but imports its account seed
+/// only when it creates player-state.db. A seed shape it accepts but cannot resolve can leave that
+/// first boot waiting through investment sign-in until it times out. These checks mirror the limits
+/// Dawn compiles in.
 pub(crate) fn account_issues(json: &Value) -> Vec<String> {
     let mut issues = Vec::new();
     let Some(characters) = json.pointer("/state/characters").and_then(Value::as_array) else {
@@ -317,6 +340,30 @@ fn set_flag(json: &mut Value, group: &str, key: &str, enabled: bool) -> bool {
         .as_object_mut()
         .expect("checked group")
         .insert(key.into(), Value::Bool(enabled));
+    true
+}
+
+fn set_unsigned(json: &mut Value, group: &str, key: &str, value: u64) -> bool {
+    if !editable_group(json, group)
+        || json
+            .pointer(&format!("{group}/{key}"))
+            .and_then(Value::as_u64)
+            == Some(value)
+    {
+        return false;
+    }
+    let mut target = json;
+    for part in group.trim_start_matches('/').split('/') {
+        target = target
+            .as_object_mut()
+            .expect("checked object")
+            .entry(part)
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    target
+        .as_object_mut()
+        .expect("checked group")
+        .insert(key.into(), Value::from(value));
     true
 }
 

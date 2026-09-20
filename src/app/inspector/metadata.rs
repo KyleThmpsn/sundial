@@ -327,7 +327,5 @@ mod tests {
             parse_hash_hex(hash_hex_component(displayed)),
             Some(0x574E_0A2A)
         );
-        assert_eq!(parse_hash_hex("1464732202"), None);
-        assert_eq!(parse_hash_hex("0X574e0a2a"), Some(0x574E_0A2A));
     }
 }

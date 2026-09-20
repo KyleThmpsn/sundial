@@ -106,6 +106,7 @@ impl Payloads {
         if self.private_perk_tags.is_empty()
             && self.weapon_tags.is_empty()
             && self.grafted_graphs.is_empty()
+            && assets.hud_asset_start == assets.badge.new_tags.len()
         {
             return Ok(None);
         }
@@ -135,7 +136,7 @@ impl Payloads {
             RUNTIME_DEPENDENCY_COMPANION,
             "investment runtime dependency index",
         )?;
-        let mut additions = Vec::new();
+        let mut additions = assets.perk_icon_dependencies.clone();
         for index in assets.hud_asset_start..assets.badge.new_tags.len() {
             additions.push(
                 AppendedTagAllocator::new(PARHELION_ASSET_PACKAGE_ID, 0).assigned_tag(

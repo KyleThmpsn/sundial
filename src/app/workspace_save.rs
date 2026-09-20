@@ -155,9 +155,6 @@ mod tests {
     #[derive(Default)]
     struct TestContext {
         events: Vec<&'static str>,
-        sqlite_fails: bool,
-        json_fails: bool,
-        rollback_fails: bool,
     }
 
     #[test]
@@ -211,10 +208,7 @@ mod tests {
 
     #[test]
     fn sqlite_failure_stops_before_json_save() {
-        let mut context = TestContext {
-            sqlite_fails: true,
-            ..TestContext::default()
-        };
+        let mut context = TestContext::default();
 
         let error = coordinate_source_saves(
             &mut context,
@@ -236,7 +230,6 @@ mod tests {
         .err()
         .expect("the injected SQLite failure should be returned");
 
-        assert!(context.sqlite_fails);
         assert_eq!(context.events, ["save sqlite"]);
         assert_eq!(error.message, "sqlite failed");
         assert!(error.sqlite_rollback.is_none());
@@ -244,10 +237,7 @@ mod tests {
 
     #[test]
     fn json_failure_after_sqlite_save_restores_sqlite() {
-        let mut context = TestContext {
-            json_fails: true,
-            ..TestContext::default()
-        };
+        let mut context = TestContext::default();
 
         let error = coordinate_source_saves(
             &mut context,
@@ -270,7 +260,6 @@ mod tests {
         .err()
         .expect("the injected JSON failure should be returned");
 
-        assert!(context.json_fails);
         assert_eq!(
             context.events,
             ["save sqlite", "save json", "restore sqlite"]
@@ -281,11 +270,7 @@ mod tests {
 
     #[test]
     fn rollback_failure_is_preserved_for_critical_status() {
-        let mut context = TestContext {
-            json_fails: true,
-            rollback_fails: true,
-            ..TestContext::default()
-        };
+        let mut context = TestContext::default();
 
         let error = coordinate_source_saves(
             &mut context,
@@ -307,7 +292,6 @@ mod tests {
         .err()
         .expect("the injected JSON failure should be returned");
 
-        assert!(context.rollback_fails);
         assert!(matches!(
             error.sqlite_rollback,
             Some(Err(ref rollback)) if rollback == "rollback failed"

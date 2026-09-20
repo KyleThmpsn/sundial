@@ -554,8 +554,8 @@ fn component_role(effect: &DecodedEffect) -> Option<&'static str> {
     };
     super::component_target(
         selector("Target Selector")?,
-        selector("Flag Byte")?,
-        selector("Option Byte")?,
+        selector("Ability State")?,
+        selector("Ability Version")?,
     )
 }
 

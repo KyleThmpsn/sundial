@@ -48,9 +48,9 @@ impl Workbench {
                             .or_insert(choice.representative_hash);
                     }
                 }
-                controls::column(ui, |ui| {
+                controls::sized(ui, controls::NARROW_COLUMN, |ui| {
                     egui::ComboBox::from_id_salt("perk-type")
-                        .width(controls::COLUMN_WIDTH)
+                        .width(controls::NARROW_COLUMN)
                         .truncate()
                         .selected_text(&type_name)
                         .show_ui(ui, |ui| {
@@ -82,63 +82,36 @@ impl Workbench {
             if description.clicked() {
                 self.page = if open { Page::Effects } else { Page::Basics };
             }
-            if let Some(catalog) = catalog {
-                // The same source the type control above reads. Taking it from there by
-                // assuming that control already ran made the icon picker depend on the order
-                // of two blocks that only happen to share a condition.
-                let choices = self.templates.get_or_insert_with(|| {
-                    catalog.perk_template_choices_from(
-                        crate::package_profile::is_stock_item_definition,
+            if let Some(picked) = pickers::browser_with_toolbar(
+                ui,
+                ("perk-icons", &recipe.id),
+                "Change Icon…",
+                "Choose Perk Icon",
+                &mut self.icon_query,
+                |ui, query, opened, height| {
+                    self.icons.draw(
+                        ui,
+                        query,
+                        opened,
+                        height,
+                        icons::Browser {
+                            packages: self.discovery.packages(),
+                            catalog,
+                            current: recipe.icon.as_ref(),
+                        },
                     )
-                });
-                let hash = recipe.template_plug.parse_u32().unwrap_or_default();
-                if let Some(picked) = pickers::popup(
-                    ui,
-                    "perk-icon",
-                    "Change Icon…",
-                    &mut self.icon_query,
-                    |ui, query, reset, height| {
-                        crate::app::style::workbench_style(ui);
-                        let choices = choices
-                            .iter()
-                            .filter(|choice| {
-                                pickers::matches(
-                                    query,
-                                    &format!(
-                                        "{} {}",
-                                        choice.representative_name, choice.representative_type_name
-                                    ),
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        pickers::results(
-                            ui,
-                            "perk-icon-results",
-                            choices.len(),
-                            height,
-                            reset,
-                            sundial::investment::authoring_choice_row_height(ui),
-                            |ui, index| {
-                                let choice = choices[index];
-                                catalog
-                                    .draw_authoring_choice_row(
-                                        ui,
-                                        Some(choice.representative_hash),
-                                        &choice.representative_name,
-                                        Some(&choice.representative_type_name),
-                                        hash == choice.representative_hash,
-                                    )
-                                    .clicked()
-                                    .then_some(choice.representative_hash)
-                            },
-                        )
-                    },
-                ) {
-                    // Changing the icon must not silently change the selected type.
-                    if recipe.classification.is_none() {
-                        recipe.classification = Some(recipe.template_plug.clone());
+                },
+            ) {
+                match picked {
+                    icons::Selection::Local(_) => unreachable!("Perk picker embeds local icons"),
+                    icons::Selection::Icon(icon) => recipe.icon = Some(icon),
+                    icons::Selection::Perk(hash) => {
+                        if recipe.classification.is_none() {
+                            recipe.classification = Some(recipe.template_plug.clone());
+                        }
+                        recipe.template_plug = hash.into();
+                        recipe.icon = None;
                     }
-                    recipe.template_plug = picked.into();
                 }
             }
         });

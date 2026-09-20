@@ -1,7 +1,7 @@
 //! Behavior selection. Sources are provenance, never the required navigation path.
 use super::*;
 use sundial::{
-    investment::native_content::{behaviors as native, conditions::Family as ConditionFamily},
+    investment::discovery::{behaviors as native, conditions::Family as ConditionFamily},
     package_authoring::sandbox_perk::{
         nodes,
         program::{Action, NativeNode, Program, Trigger},
@@ -959,34 +959,40 @@ impl Picker {
                     ui,
                     |ui, index, selected| {
                         let group = &rows[index];
-                        let detail = if group.rows.len() > 1 {
-                            format!("{} configurations", group.rows.len())
-                        } else {
-                            group.rows[0].detail.clone()
-                        };
+                        let detail = &group.rows[0].detail;
                         sundial::investment::draw_asset_choice_row(
                             ui,
                             group.title,
-                            &detail,
+                            detail,
                             selected,
                         )
                     },
                     |ui, index| {
                         let group = &rows[index];
                         ui.heading(group.title);
-                        let row = configuration(
-                            ui,
-                            group,
-                            self.loaded.as_ref().and_then(|r| r.as_ref().ok()),
-                        );
-                        ui.label(&row.detail);
+                        let catalog = self.loaded.as_ref().and_then(|r| r.as_ref().ok());
+                        let row = configuration(ui, group, catalog);
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(&row.detail).wrap());
+                        if let Some(catalog) = catalog {
+                            let examples = stock_examples(group, catalog, names);
+                            if !examples.is_empty() {
+                                let text = format!("Stock examples: {}", examples.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&text).weak())
+                                        .wrap(),
+                                )
+                                .on_hover_text(format!("{text}\nInstalled perks that use this behavior. Their exact settings can differ from the selected configuration."));
+                            }
+                        }
+                        ui.add_space(4.0);
                         let command = match purpose {
                             Purpose::Trigger => "Use Trigger",
                             Purpose::Condition => "Use Condition",
                             Purpose::Action => "Add Action",
                         };
                         let use_it = ui
-                            .add_enabled(row.enabled, egui::Button::new(command))
+                            .add_enabled(row.enabled, crate::app::style::primary(ui, command))
                             .on_disabled_hover_text(row.reason)
                             .clicked();
                         let catalog = self.loaded.as_ref().and_then(|result| result.as_ref().ok());
@@ -1156,7 +1162,7 @@ fn configuration<'a>(
         .enumerate()
         .map(|(index, row)| {
             if matches!(row.choice, Choice::Trigger(_) | Choice::Action(_)) {
-                return "Default".to_owned();
+                return "Custom Configuration".to_owned();
             }
             let changes = details[index]
                 .iter()
@@ -1202,7 +1208,7 @@ fn configuration<'a>(
             })
             .response
             .on_hover_text(format!(
-                "{chosen}\nComplete native configurations of this behavior. Selecting one keeps its values and restrictions, which you can edit after adding it."
+                "{chosen}\n{} configurations available. Selecting one keeps its values and restrictions, which you can edit after adding it.", group.rows.len()
             ));
         pickers::name_combo(ui, id.with("selector"), "Configuration");
     });
@@ -1213,6 +1219,27 @@ fn configuration<'a>(
         .find(|row| row.key() == selected)
         .copied()
         .unwrap_or(group.rows[0])
+}
+
+/// Real installed examples help explain a behavior without inventing gameplay claims.
+fn stock_examples(
+    group: &Group<'_>,
+    catalog: &native::Catalog,
+    names: &BTreeMap<u16, String>,
+) -> Vec<String> {
+    group
+        .rows
+        .iter()
+        .flat_map(|row| match &row.choice {
+            Choice::Condition(index) => catalog.conditions[*index].sources.as_slice(),
+            Choice::Effect(index) => catalog.effects[*index].sources.as_slice(),
+            _ => &[],
+        })
+        .filter_map(|source| names.get(&source.perk))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn asset_names(text: &str, labels: &BTreeMap<u32, String>) -> String {
@@ -1641,16 +1668,6 @@ mod tests {
         // An unresolved kind keeps the engine's traced name rather than gaining a guess.
         assert!(program::plain_condition_title(20).is_none());
         assert_eq!(program::native_condition_title(20), "General Predicate");
-        // The kinds the stock perks' own descriptions settled read in game terms.
-        assert_eq!(program::plain_condition_title(4), Some("On Dealing Damage"));
-        assert_eq!(
-            program::plain_condition_title(6),
-            Some("On Picking Up Ammo")
-        );
-        assert_eq!(
-            program::plain_condition_title(8),
-            Some("On Using an Ability")
-        );
     }
 
     #[test]

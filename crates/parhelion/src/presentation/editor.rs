@@ -1,4 +1,5 @@
 //! A private artwork draft. Only Apply changes the recipe.
+mod browser;
 mod controls;
 mod crop;
 mod preview;
@@ -34,7 +35,15 @@ impl Kind {
             Self::Watermark => Background::Transparent,
         }
     }
-    pub(crate) fn default_artwork(self) -> Artwork {
+    fn default_artwork(self, branding: crate::branding::Branding) -> Artwork {
+        if branding == crate::branding::Branding::Dawn {
+            return match self {
+                Self::Badge => branding.badge(),
+                Self::Watermark => branding.corner(),
+            }
+            .expect("bundled Dawn artwork is valid")
+            .expect("Dawn supplies runtime artwork");
+        }
         let bytes: &[u8] = match self {
             Self::Badge => include_bytes!("../../../../assets/parhelion/sunrise-badge-source.png"),
             Self::Watermark => include_bytes!(
@@ -63,6 +72,9 @@ enum ContextPreview {
 
 pub(crate) struct Editor {
     pub(crate) kind: Kind,
+    browser: crate::artwork_browser::Picker,
+    browsing: bool,
+    browser_query: String,
     source: Artwork,
     composition: Composition,
     tab: Tab,
@@ -91,13 +103,26 @@ impl Drop for Editor {
 }
 
 impl Editor {
+    #[cfg(test)]
     pub(crate) fn new(kind: Kind, current: Option<Artwork>) -> Self {
-        let source = current.unwrap_or_else(|| kind.default_artwork());
+        Self::with_branding(kind, current, crate::branding::Branding::Sunrise)
+    }
+
+    pub(crate) fn with_branding(
+        kind: Kind,
+        current: Option<Artwork>,
+        branding: crate::branding::Branding,
+    ) -> Self {
+        let source = current.unwrap_or_else(|| kind.default_artwork(branding));
         let mut composition = source
             .composition()
             .cloned()
             .unwrap_or_else(|| Composition {
-                background: kind.background(),
+                background: if kind == Kind::Badge && branding == crate::branding::Branding::Dawn {
+                    Background::Dawn
+                } else {
+                    kind.background()
+                },
                 ..Default::default()
             });
         if kind == Kind::Watermark {
@@ -105,6 +130,12 @@ impl Editor {
         }
         Self {
             kind,
+            browser: crate::artwork_browser::Picker::for_purpose(match kind {
+                Kind::Badge => crate::artwork_browser::Purpose::Badge,
+                Kind::Watermark => crate::artwork_browser::Purpose::Watermark,
+            }),
+            browsing: false,
+            browser_query: String::new(),
             source,
             composition,
             tab: Tab::default(),
@@ -176,6 +207,7 @@ impl Editor {
     }
 
     fn poll(&mut self) {
+        self.browser.poll();
         if let Some(result) = receive(&mut self.importing) {
             match result {
                 Ok(Some(source)) => {

@@ -190,7 +190,7 @@ fn new_draft_clears_search_and_is_visible_above_a_long_library() {
             },
             |ctx| {
                 egui::CentralPanel::default()
-                    .show(ctx, |ui| workbench.draw_library(ui, None, true));
+                    .show(ctx, |ui| workbench.draw_library(ui, None, true, None));
             },
         );
     }

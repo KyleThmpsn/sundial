@@ -619,7 +619,7 @@ fn exact_asset_tag(query: &str) -> Option<u32> {
         .flatten()
 }
 
-pub(in crate::app::custom_perks) use sundial::investment::native_content::technical_name;
+pub(in crate::app::custom_perks) use sundial::investment::discovery::technical_name;
 /// Shared detail panel for authored actions and stock projectile replacements.
 pub(in crate::app::custom_perks) use sundial::ui::catalog::assets::asset_details;
 

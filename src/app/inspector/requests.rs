@@ -2,6 +2,36 @@ use eframe::egui;
 
 const HASH_INSPECTION_REQUEST_ID: &str = "catalog_hash_inspection_request";
 const HASH_INSPECTION_CONTEXT_ID: &str = "catalog_hash_inspection_context";
+const OWNED_QUANTITIES_ID: &str = "catalog_hash_inspection_owned_quantities";
+const OWNED_QUANTITIES_REQUEST_ID: &str = "catalog_hash_inspection_owned_quantities_request";
+
+/// Quantities the loaded account holds per item hash. A window that wants them asks each frame
+/// it draws them; the app answers by publishing a fresh map, so no window carries the account
+/// and nothing is computed while no window is showing them.
+pub(in crate::app) type OwnedQuantities = std::sync::Arc<std::collections::HashMap<u64, i64>>;
+
+pub(in crate::app) fn request_owned_quantities(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_REQUEST_ID), true));
+}
+
+pub(in crate::app) fn take_owned_quantities_request(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(egui::Id::new(OWNED_QUANTITIES_REQUEST_ID)))
+        .unwrap_or(false)
+}
+
+pub(in crate::app) fn publish_owned_quantities(ctx: &egui::Context, quantities: OwnedQuantities) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_ID), quantities));
+}
+
+/// Withdraws the published map, so a window shows the quantities as unavailable rather than
+/// keeping a previous account's numbers.
+pub(in crate::app) fn clear_owned_quantities(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove_temp::<OwnedQuantities>(egui::Id::new(OWNED_QUANTITIES_ID)));
+}
+
+pub(in crate::app) fn owned_quantities(ctx: &egui::Context) -> Option<OwnedQuantities> {
+    ctx.data(|data| data.get_temp::<OwnedQuantities>(egui::Id::new(OWNED_QUANTITIES_ID)))
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(in crate::app) struct DefinitionInspectionContext {
@@ -64,6 +94,23 @@ mod tests {
         request_definition(&context, 0x574E_0A2A);
         assert_eq!(take_definition_request(&context), Some(0x574E_0A2A));
         assert_eq!(take_definition_request(&context), None);
+    }
+
+    #[test]
+    fn owned_quantities_are_published_on_request_and_readable_by_any_window() {
+        let ctx = egui::Context::default();
+        assert!(!take_owned_quantities_request(&ctx));
+        request_owned_quantities(&ctx);
+        assert!(take_owned_quantities_request(&ctx));
+        assert!(
+            !take_owned_quantities_request(&ctx),
+            "a request is consumed once"
+        );
+        assert!(owned_quantities(&ctx).is_none());
+        publish_owned_quantities(&ctx, std::sync::Arc::new([(7_u64, 12_i64)].into()));
+        assert_eq!(owned_quantities(&ctx).unwrap().get(&7), Some(&12));
+        clear_owned_quantities(&ctx);
+        assert!(owned_quantities(&ctx).is_none());
     }
 
     #[test]

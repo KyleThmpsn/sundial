@@ -4,8 +4,8 @@ use super::background_tasks::CatalogTaskKind;
 use super::platform::load_logo_texture;
 use super::save_support::SaveAction;
 use super::{
-    CREDITS_URL, ConfirmationDialog, DISPLAY_VERSION, MAIN_SIDEBAR_WIDTH, PROJECT_URL,
-    PreferencesTab, SUNRISE_URL, SundialApp, TIGER_PKG_URL, ViewMode, persistence_compatibility,
+    CREDITS_URL, ConfirmationDialog, DAWN_URL, MAIN_SIDEBAR_WIDTH, PROJECT_URL, PreferencesTab,
+    SUNRISE_URL, SundialApp, TIGER_PKG_URL, ViewMode, display_version, persistence_compatibility,
 };
 use crate::updates::UpdateStatus;
 use eframe::egui;
@@ -112,7 +112,7 @@ impl SundialApp {
                     self.select_view(ViewMode::Progression);
                 }
                 for (view, label) in [
-                    (ViewMode::AdvancedJson, "All Settings (JSON)"),
+                    (ViewMode::AdvancedJson, "JSON Editor"),
                     (ViewMode::Preferences, "Preferences"),
                 ] {
                     if ui.selectable_label(self.view_mode == view, label).clicked() {
@@ -214,8 +214,10 @@ impl SundialApp {
                         runtime.name(),
                         runtime.version.as_deref().unwrap_or("version unknown")
                     )];
-                    if let Some(schema) = runtime.schema {
-                        details.push(format!("Settings v{schema}"));
+                    if let Some(schema) =
+                        runtime_settings_schema_detail(runtime.dawn, runtime.schema)
+                    {
+                        details.push(schema);
                     }
                     if account_source.kind != AccountSourceKind::Json {
                         details.push(format!(
@@ -257,9 +259,11 @@ impl SundialApp {
                 ui.vertical_centered(|ui| {
                     ui.image((logo.id(), egui::vec2(64.0, 64.0)));
                     ui.heading("Sundial");
-                    ui.weak(DISPLAY_VERSION);
+                    ui.weak(display_version());
                     ui.add_space(8.0);
-                    ui.label("Edit Project Sunrise accounts and settings, and create custom weapon packages.");
+                    ui.label(
+                        "Edit accounts and settings, and create custom weapon packages for Project Sunrise and Dawn.",
+                    );
                     ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
                     ui.add_space(8.0);
                     match &update_status {
@@ -295,6 +299,8 @@ impl SundialApp {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.label("Built for ");
                     ui.hyperlink_to("Project Sunrise", SUNRISE_URL);
+                    ui.label(" and ");
+                    ui.hyperlink_to("Dawn", DAWN_URL);
                     ui.label(".");
                 });
                 ui.add_space(6.0);
@@ -360,6 +366,13 @@ impl SundialApp {
     }
 }
 
+fn runtime_settings_schema_detail(dawn: bool, schema: Option<u64>) -> Option<String> {
+    (!dawn)
+        .then_some(schema)
+        .flatten()
+        .map(|schema| format!("Settings v{schema}"))
+}
+
 struct SidebarFooter {
     about: egui::Response,
     activity_log: egui::Response,
@@ -391,4 +404,19 @@ fn sidebar_footer(ui: &mut egui::Ui, available_update: Option<&str>) -> SidebarF
         }
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_tooltip_omits_the_settings_schema_for_dawn() {
+        assert_eq!(runtime_settings_schema_detail(true, Some(6)), None);
+        assert_eq!(
+            runtime_settings_schema_detail(false, Some(6)).as_deref(),
+            Some("Settings v6")
+        );
+        assert_eq!(runtime_settings_schema_detail(false, None), None);
+    }
 }

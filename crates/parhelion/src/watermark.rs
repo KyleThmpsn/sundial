@@ -1,15 +1,17 @@
-//! Shared authoring plan for Parhelion's Project Sunrise weapon-icon watermark.
+//! Shared authoring plan for Parhelion's runtime-specific weapon-icon watermark.
 //!
 //! Shadowkeep item icon rows select a complete icon container. The container keeps the donor's
 //! primary weapon art and rarity background in separate fields, while offset `0x20` selects the
 //! season/expansion overlay layer. This module authors that layer once and then clones only the
-//! requested donor containers, selecting the authored rarity background and Sunrise watermark.
+//! requested donor containers, selecting the authored rarity background and runtime watermark.
 
 mod custom;
+mod dawn;
 mod placement;
-pub(crate) use custom::build_presented_watermark_plan;
 pub(crate) use custom::preview as render_custom_corner_preview;
 pub(crate) use custom::render as render_custom_corner;
+pub(crate) use custom::{Presentation, build_presented_watermark_plan};
+pub(crate) use dawn::render as render_dawn_texture;
 
 use image::ImageFormat;
 use sha1::{Digest, Sha1};
@@ -218,6 +220,7 @@ pub fn build_watermark_plan(
         current_entry_count,
         appended_ordinal_base,
         icon_requests,
+        crate::branding::Branding::Sunrise,
         &|index| format!("Icon Donor: {}", icon_requests[index].donor_container_tag),
     )
 }
@@ -228,11 +231,12 @@ fn build_watermark_plan_with_context(
     current_entry_count: usize,
     appended_ordinal_base: usize,
     icon_requests: &[WeaponIconRequest],
+    branding: crate::branding::Branding,
     request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
     if icon_requests.is_empty() {
         return Err(invalid(
-            "A Sunrise weapon watermark plan needs at least one donor icon container",
+            "A weapon watermark plan needs at least one donor icon container",
         ));
     }
     let donor_layer = read_and_validate_watermark_donor(manager)?;
@@ -260,9 +264,7 @@ fn build_watermark_plan_with_context(
             width,
             height,
         )?;
-        let pixels = decode_authored_texture(texture_index, width, height)?;
-        validate_authored_texture(texture_index, width, height, &donor_pixels, &pixels)?;
-        let output = render_output_texture(texture_index)?;
+        let output = authored_texture(branding, texture_index, width, height, &donor_pixels)?;
         let (width, height) = output.dimensions();
         let pixels = output.into_raw();
         resize_texture_header(&mut header, width, height, pixels.len())?;
@@ -526,6 +528,22 @@ fn build_watermark_plan_with_context(
     })
 }
 
+fn authored_texture(
+    branding: crate::branding::Branding,
+    index: usize,
+    width: u32,
+    height: u32,
+    donor: &[u8],
+) -> AuthoringResult<image::RgbaImage> {
+    // The serialized texture graph is shared by both runtimes. Only Sunrise's
+    // authored glyph is a pixel-limited edit of the audited stock alpha mask.
+    if branding == crate::branding::Branding::Sunrise {
+        let pixels = decode_authored_texture(index, width, height)?;
+        validate_authored_texture(index, width, height, donor, &pixels)?;
+    }
+    branding.texture(index)
+}
+
 /// Returns an item-icon table row that selects an authored watermarked container.
 ///
 /// Shadowkeep's 24-byte item-icon row stores the item identity at `+0x00` and the complete icon
@@ -752,7 +770,7 @@ fn display_set_difference(values: &[String]) -> String {
     }
 }
 
-fn validate_icon_layer(
+pub(crate) fn validate_icon_layer(
     manager: &PackageManager,
     layer_tag: TagHash,
     container_tag: TagHash,
@@ -1350,7 +1368,7 @@ fn validate_plan(context: WatermarkPlanValidation<'_>) -> AuthoringResult<()> {
             })
     {
         return Err(validation(
-            "Sunrise weapon watermark append plan failed its structural validation",
+            "Weapon watermark append plan failed its structural validation",
         ));
     }
     Ok(())

@@ -4,6 +4,7 @@ use super::*;
 /// private program is authored over a declaration-only source row. 464 is The Fundamentals' Void
 /// effect: a plain, always-present sandbox-perk action with no entity assets.
 const DECLARATION_ONLY_TEMPLATE_PERK_INDEX: usize = 464;
+mod damage_markers;
 mod sharing;
 
 /// Validated stock rows and decoded tables behind one private socket plug donor.
@@ -349,6 +350,7 @@ pub(super) fn plan(
                         })
                         .transpose()?;
                     let mut private_perks = Vec::with_capacity(variant.sandbox_perks.len());
+                    let mut effect_indices = Vec::new();
                     let edited = variant
                         .sandbox_perks
                         .iter()
@@ -389,6 +391,7 @@ pub(super) fn plan(
                                 }),
                         );
                     for (perk, hidden) in effects {
+                        effect_indices.push(perk.source_perk_index);
                         if !variant.replace_effects
                             && !hidden
                             && !source.perk_indices.contains(&perk.source_perk_index)
@@ -435,6 +438,12 @@ pub(super) fn plan(
                             }
                             Err(error) => return Err(invalid(error)),
                         };
+                        if damage_markers::keeps_stock_identity(&perk) {
+                            // A stock elemental marker is both an identity and a runtime action.
+                            // Retain that identity on this private plug without changing the
+                            // shared marker's payload or presentation. Edited effects still clone.
+                            continue;
+                        }
                         let perk_role = format!(
                             "socket/{}/choice/{}/perk/{}/definition",
                             variant.socket_index, variant.choice_index, perk.source_perk_index
@@ -477,6 +486,8 @@ pub(super) fn plan(
                         source_definition: source.definition,
                         source_strings: source.strings,
                         source_icon_container: source.icon_container,
+                        authored_icon_container: None,
+                        icon: variant.icon.clone(),
                         authored_item_hash,
                         authored_item_index,
                         authored_definition_tag,
@@ -491,6 +502,7 @@ pub(super) fn plan(
                         authored_description_hash,
                         authored_description: variant.description,
                         additional_sandbox_perks: variant.additional_sandbox_perks,
+                        effect_indices,
                         sandbox_perks: private_perks,
                     });
                     Ok(())
@@ -566,28 +578,18 @@ pub(super) fn author_payloads(
             }
             if custom_plug.replace_effects || !custom_plug.additional_sandbox_perks.is_empty() {
                 let mut perks = if custom_plug.replace_effects {
-                    custom_plug
-                        .sandbox_perks
-                        .iter()
-                        .map(|perk| {
-                            u16::try_from(perk.source_index)
-                                .map_err(|_| invalid("Authored effect index is too large"))
-                        })
-                        .collect::<AuthoringResult<Vec<_>>>()?
+                    custom_plug.effect_indices.clone()
                 } else {
                     weapon_sandbox_perks(&definition)?
                 };
                 if !custom_plug.replace_effects {
                     perks.extend_from_slice(&custom_plug.additional_sandbox_perks);
                 }
-                let original_rows = if custom_plug.replace_effects {
-                    Vec::new()
-                } else {
-                    weapon_sandbox_perk_rows(&definition)?
-                        .into_iter()
-                        .map(<[u8]>::to_vec)
-                        .collect::<Vec<_>>()
-                };
+                if custom_plug.replace_effects {
+                    // Independent effects must not inherit their presentation donor's conditions.
+                    set_item_string_sandbox_perk_count(&mut strings, 0, sandbox_perk_string_template)?;
+                    set_weapon_base_sandbox_perks(&mut definition, &[], sandbox_perk_definition_template)?;
+                }
                 set_weapon_base_sandbox_perks_with_strings(
                     &mut definition,
                     &mut strings,
@@ -595,16 +597,7 @@ pub(super) fn author_payloads(
                     sandbox_perk_definition_template,
                     sandbox_perk_string_template,
                 )?;
-                let resource = relative_target(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET)?;
-                let (_, _, rows, _) =
-                    array_at(&definition, resource + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET)?;
-                for (index, row) in original_rows.iter().enumerate() {
-                    write_bytes(
-                        &mut definition,
-                        rows + index * ITEM_SANDBOX_PERK_ROW_SIZE,
-                        row,
-                    )?;
-                }
+
             }
             for perk in &custom_plug.sandbox_perks {
                 let authored_runtime_tag = clone_private_sandbox_perk_runtime(
@@ -657,6 +650,10 @@ pub(super) fn author_payloads(
                                     string_hash,
                                 }
                             }),
+                            icon_index: custom_plug
+                                .authored_icon_container
+                                .map(|_| read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET))
+                                .transpose()?,
                             category_source_index: custom_plug.classification_perk_index,
                             hidden: perk.hidden,
                         },

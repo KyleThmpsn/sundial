@@ -604,8 +604,14 @@ fn component_value_adjustment_facts(payload: &[u8], node: usize) -> Result<Vec<F
             "Target Selector",
             FactValue::Selector(byte(payload, node, 2)?),
         ),
-        Fact::new("Flag Byte", FactValue::Selector(byte(payload, node, 3)?)),
-        Fact::new("Option Byte", FactValue::Selector(byte(payload, node, 4)?)),
+        Fact::new(
+            "Ability State",
+            FactValue::Selector(byte(payload, node, 3)?),
+        ),
+        Fact::new(
+            "Ability Version",
+            FactValue::Selector(byte(payload, node, 4)?),
+        ),
         Fact::new("Scale", FactValue::Number(float(payload, node, 8)?)),
         Fact::new("Limit", FactValue::Number(float(payload, node, 0x0C)?)),
         Fact::new(
@@ -794,29 +800,33 @@ const EVENT_MODIFIER_ROW_SIZE: usize = 12;
 /// Selector byte value that marks a literal row value rather than a native stat.
 const LITERAL_VALUE: u8 = 0xFF;
 
-const ASSIGN_LABELS: [&str; 4] = [
-    "Assign Slot 0",
-    "Assign Slot 1",
+const ASSIGN_LABELS: [&str; 5] = [
+    "Assign Base Damage Scale",
+    "Assign Precision Bonus",
     "Assign Slot 2",
     "Assign Slot 3",
+    "Assign Slot 4",
 ];
-const ASSIGN_STAT_LABELS: [&str; 4] = [
-    "Assign Slot 0 From Stat",
-    "Assign Slot 1 From Stat",
-    "Assign Slot 2 From Stat",
-    "Assign Slot 3 From Stat",
+const ASSIGN_STAT_LABELS: [&str; 5] = [
+    "Assign Base Damage Scale from Stat",
+    "Assign Precision Bonus from Stat",
+    "Assign Slot 2 from Stat",
+    "Assign Slot 3 from Stat",
+    "Assign Slot 4 from Stat",
 ];
-const MULTIPLY_LABELS: [&str; 4] = [
-    "Multiply Slot 0",
-    "Multiply Slot 1",
+const MULTIPLY_LABELS: [&str; 5] = [
+    "Multiply Base Damage Scale",
+    "Multiply Precision Bonus",
     "Multiply Slot 2",
     "Multiply Slot 3",
+    "Multiply Slot 4",
 ];
-const MULTIPLY_STAT_LABELS: [&str; 4] = [
-    "Multiply Slot 0 From Stat",
-    "Multiply Slot 1 From Stat",
-    "Multiply Slot 2 From Stat",
-    "Multiply Slot 3 From Stat",
+const MULTIPLY_STAT_LABELS: [&str; 5] = [
+    "Multiply Base Damage Scale from Stat",
+    "Multiply Precision Bonus from Stat",
+    "Multiply Slot 2 from Stat",
+    "Multiply Slot 3 from Stat",
+    "Multiply Slot 4 from Stat",
 ];
 
 /// Kind 40: the source label filter, the assigned and multiplied event slots and whether
@@ -912,8 +922,8 @@ fn event_scalar_facts(payload: &[u8], node: usize, facts: &mut Vec<Fact>) -> Res
 fn event_modifier_rows(
     payload: &[u8],
     descriptor: usize,
-    literal_labels: &[&'static str; 4],
-    stat_labels: &[&'static str; 4],
+    literal_labels: &[&'static str; 5],
+    stat_labels: &[&'static str; 5],
     facts: &mut Vec<Fact>,
 ) -> Result<(), String> {
     if u64_at(payload, descriptor)? == 0 && i64_at(payload, descriptor + 8)? == 0 {
@@ -925,7 +935,9 @@ fn event_modifier_rows(
     }
     for index in 0..count {
         let row = rows + index * EVENT_MODIFIER_ROW_SIZE;
-        let slot = usize::try_from(u32_at(payload, row)?).unwrap_or(usize::MAX);
+        // The native callback reads a signed byte, not the following three retained bytes.
+        // Negative or out-of-contract selectors remain in the graph without a named fact.
+        let slot = usize::from(bytes_at::<1>(payload, row)?[0]);
         let selector = bytes_at::<1>(payload, row + 8)?[0];
         let Some(literal) = literal_labels.get(slot) else {
             continue;

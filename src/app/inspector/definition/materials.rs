@@ -9,12 +9,18 @@ pub(super) fn draw_hash_material_requirements(
     if requirements.is_empty() {
         return;
     }
+    super::super::requests::request_owned_quantities(ui.ctx());
+    let owned = super::super::requests::owned_quantities(ui.ctx());
+    if owned.is_none() {
+        // The app answers on its next pass; make sure there is one.
+        ui.ctx().request_repaint();
+    }
     egui::CollapsingHeader::new(format!("Material Requirements ({})", requirements.len()))
         .id_salt((id, "material_requirements"))
         .default_open(false)
         .show(ui, |ui| {
             egui::Grid::new(("hash_material_requirements", id))
-                .num_columns(7)
+                .num_columns(8)
                 .spacing([16.0, 3.0])
                 .striped(true)
                 .show(ui, |ui| {
@@ -22,6 +28,7 @@ pub(super) fn draw_hash_material_requirements(
                     ui.strong("Name");
                     ui.strong("Hash");
                     ui.strong("Quantity");
+                    ui.strong("Owned").on_hover_text("What the loaded account's shared inventory holds of this material, summed across stacks.");
                     ui.strong("Consume on Action").on_hover_text("Whether the package marks this material for deletion when the action succeeds.");
                     ui.strong("Omit Requirement").on_hover_text("Whether the package omits this row from the requirements check.");
                     ui.strong("Condition");
@@ -36,6 +43,22 @@ pub(super) fn draw_hash_material_requirements(
                             format_hash_hex(requirement.item_hash),
                         );
                         ui.monospace(requirement.quantity.to_string());
+                        match owned.as_deref() {
+                            Some(owned) => {
+                                let held = owned.get(&requirement.item_hash).copied().unwrap_or(0);
+                                let short = held < i64::from(requirement.quantity);
+                                let text = egui::RichText::new(held.to_string()).monospace();
+                                if short {
+                                    ui.label(text.color(ui.visuals().warn_fg_color))
+                                        .on_hover_text("Fewer than the requirement.");
+                                } else {
+                                    ui.label(text);
+                                }
+                            }
+                            None => {
+                                ui.weak("-");
+                            }
+                        }
                         ui.label(yes_no(requirement.delete_on_action));
                         ui.label(yes_no(requirement.omit_from_requirements));
                         ui.monospace(format!("0x{:04X}", requirement.condition));

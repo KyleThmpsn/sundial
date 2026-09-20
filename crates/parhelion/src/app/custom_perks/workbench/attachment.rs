@@ -12,6 +12,7 @@ fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
         replace_effects: false,
         name: None,
         description: None,
+        icon: None,
         classification_donor_hash: None,
         investment_stats: Vec::new(),
         additional_sandbox_perks: Vec::new(),
@@ -306,10 +307,10 @@ impl Workbench {
         let mut result = None;
         ui.add_enabled_ui(self.editor.is_none(), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Destination");
+                ui.label("Weapon Socket");
                 sundial::investment::draw_authoring_info_icon(
                     ui,
-                    "Apply to Weapon copies this perk into the chosen socket choice. Save the weapon recipe afterwards.",
+                    "Apply to Weapon copies this perk into the chosen socket choice. Save Recipe to keep it. Library edits do not update weapon copies automatically.",
                 );
                 // A destination names a socket, a choice and the perk that sits there, so
                 // the reading runs long. A combo takes the width of its selected text, and
@@ -368,8 +369,13 @@ impl Workbench {
                         ui.add(
                             egui::Label::new(egui::RichText::new(issue).color(ui.visuals().warn_fg_color))
                                 .truncate(),
+                        );
+                    } else {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("Apply a copy, then Save Recipe.").weak())
+                                .truncate(),
                         )
-                        .on_hover_text(issue);
+                        .on_hover_text("This copies the current perk into the selected weapon socket. Save Recipe keeps that change. Save to Library is separate and does not update weapon copies.");
                     }
                 });
             });
@@ -454,8 +460,11 @@ impl PackageAuthoringApp {
             self.perk_workbench = workbench;
             return;
         }
-        if workbench.open && workbench.authored_templates.is_none() {
-            workbench.load_authored_templates(self.recipe_library.as_ref(), &self.recipe);
+        if workbench.open
+            && workbench.authored_templates.is_none()
+            && let Some(catalog) = &self.catalog
+        {
+            workbench.load_authored_templates(self.recipe_library.as_ref(), &self.recipe, catalog);
         }
         let change = workbench.show(
             ctx,

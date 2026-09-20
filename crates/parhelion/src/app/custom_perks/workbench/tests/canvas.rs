@@ -32,6 +32,33 @@ fn stat_bonus_table_preserves_signed_deltas() {
     assert_eq!(recipe, before);
 }
 
+#[test]
+fn action_asset_and_location_share_a_column_without_overflow_or_mutation() {
+    for width in [340.0, 440.0, 640.0, 900.0] {
+        let mut workbench = Workbench::default();
+        let mut action = Action::Spawn {
+            asset: Asset::default(),
+            position: Position::Owner,
+        };
+        let before = action.clone();
+        let (output, screen) = panel(width, |ui| {
+            workbench.draw_action_block(ui, None, false, &mut action, 0, 1);
+        });
+        assert_fits_horizontally(&output, screen);
+        assert_no_text_overlap(&output);
+        let asset = placements(&output, "Choose Object or Effect…")[0].1;
+        let location = placements(&output, "At Your Position")[0].1;
+        let asset_label = placements(&output, "Object or Effect *")[0].1;
+        let location_label = placements(&output, "Spawn Location")[0].1;
+        assert!((asset_label.right() - location_label.right()).abs() < 1.0);
+        assert!(asset.left() > asset_label.right());
+        assert!(location.left() > location_label.right());
+        assert!(asset.bottom() < location.top());
+        assert_visible(&output, "Object or Effect *", screen);
+        assert_eq!(action, before);
+    }
+}
+
 /// Text shapes may not overlap each other. A wrapped label inside a one-line row is the
 /// usual way this breaks, and it reads as garbled text on screen.
 fn assert_no_text_overlap(output: &egui::FullOutput) {

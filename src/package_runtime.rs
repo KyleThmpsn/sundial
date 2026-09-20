@@ -60,6 +60,13 @@ pub(crate) fn installed_sunrise_module_version(install: &Path) -> Option<String>
     sunrise_module_version(&bytes)
 }
 
+pub(crate) fn installed_runtime_is_dawn(install: &Path) -> bool {
+    fs::read(sunrise_module_path(install))
+        .ok()
+        .and_then(|bytes| runtime_version(&bytes))
+        .is_some_and(|(name, _)| name == "Dawn")
+}
+
 fn sunrise_module_version(bytes: &[u8]) -> Option<String> {
     runtime_version(bytes).map(|(_, version)| version)
 }

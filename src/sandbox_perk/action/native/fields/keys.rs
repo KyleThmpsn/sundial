@@ -5,6 +5,9 @@
 //! is the Orb of Light pickup. A key is named only where the descriptions agree, and each
 //! entry keeps the perks that establish it so a reader can check the claim.
 
+mod abilities;
+pub use abilities::for_slot as ability_properties;
+
 /// One key the stock perks use at a site, with the perks that name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventKey {
@@ -143,13 +146,6 @@ const WARMIND_CELL_CHANCE: EventKey = EventKey {
     name: "Warmind Cell Spawn Chance",
     evidence: "Added to by Blessing of Rasputin when a Warmind Cell is collected (\"increases the chances that your next final blow with a Seraph weapon will create a Warmind Cell\") and initialised by the five Seraph weapon perks that read it.",
 };
-// Ability Property (kind 7) keys, in the ability bank the slot byte selects.
-const GRENADE_CHARGES: EventKey = EventKey {
-    hash: 0xBDA0_ACD6,
-    name: "Grenade Charges",
-    evidence: "Written by And Another Thing (\"an additional grenade charge\"), Fusion Harness (\"extra Fusion Grenade\") and New Tricks.",
-};
-
 // The general predicate's key at +D4 is the engine state it checks, in the same namespace
 // as the compiled comparison variables: is_arc, is_void, super_active, iron_sights,
 // weapon_firing, charged_with_light_stacks, melee_energy and nearby_enemy_count all hash to
@@ -329,7 +325,7 @@ pub const SITES: &[(u32, usize, &[EventKey])] = &[
             WEAPON_ALTERNATE_STATE,
         ],
     ),
-    (0x8080_3E1D, 0x4, &[GRENADE_CHARGES]),
+    (0x8080_3E1D, 0x4, abilities::ALL),
     (0x8080_3DEA, 0x8, &[ORB_EVENT, BARRIER_EVENT, RESURRECTION]),
     (0x8080_3DEA, 0xC, &[ORB_CONTEXT, BARRIER_CONTEXT]),
     (
@@ -372,13 +368,19 @@ pub fn known(class: u32, offset: usize) -> &'static [EventKey] {
         .map_or(&[], |(_, _, keys)| *keys)
 }
 
-/// The name of a key, when a stock perk establishes it at any site.
+/// Metadata for a mapped key, including keys unavailable in the current choice list.
 #[must_use]
-pub fn name(hash: u32) -> Option<&'static str> {
+pub fn entry(hash: u32) -> Option<&'static EventKey> {
     SITES
         .iter()
         .flat_map(|(_, _, keys)| keys.iter())
         .find(|key| key.hash == hash)
+}
+
+/// The name of a key, when a stock perk establishes it at any site.
+#[must_use]
+pub fn name(hash: u32) -> Option<&'static str> {
+    entry(hash)
         .map(|key| key.name)
         .or_else(|| client_name(hash))
 }

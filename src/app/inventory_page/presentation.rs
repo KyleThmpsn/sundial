@@ -147,17 +147,15 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             }
         };
     if !editable {
-        ui.weak(
-            "Guided controls are disabled. All Settings (JSON) remains available for inspection.",
-        );
+        ui.weak("Guided controls are disabled. JSON Editor remains available for inspection.");
     }
 }
 
 pub(super) fn draw_section_error(ui: &mut egui::Ui, error: &str) {
     ui.colored_label(ui.visuals().error_fg_color, error);
     ui.weak(
-            "This section was left untouched. Repair it in All settings (JSON) before using guided controls.",
-        );
+        "This section was left untouched. Repair it in JSON Editor before using guided controls.",
+    );
 }
 
 pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error: &str) {
@@ -166,7 +164,7 @@ pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error
         format!("{source} could not be read: {error}"),
     );
     ui.weak(
-            "The other inventory source remains visible, but additions are disabled until this is repaired in All settings (JSON).",
+            "The other inventory source remains visible, but additions are disabled until this is repaired in JSON Editor.",
         );
 }
 

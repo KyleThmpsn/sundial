@@ -447,7 +447,12 @@ static CACHE: index_cache::Cache<Index> = index_cache::Cache::new();
 /// Opening a single effect must not trigger installation-wide name discovery.
 /// A missing full index is reported separately from missing native references.
 pub fn cached_only(packages: &Path) -> Result<Option<Arc<Index>>, String> {
-    index_cache::cached_only(packages, "native-names", "tft-v5", &CACHE)
+    index_cache::cached_only(
+        packages,
+        crate::sandbox_perk::CACHE_DIRECTORY,
+        "tft-v5",
+        &CACHE,
+    )
 }
 
 /// Cache only names and evidence. Compilation always resolves live package tags.
@@ -458,7 +463,7 @@ pub fn cached(
 ) -> Result<Arc<Index>, String> {
     index_cache::cached(
         packages,
-        "native-names",
+        crate::sandbox_perk::CACHE_DIRECTORY,
         "tft-v5",
         &CACHE,
         || shards::inspect(packages, manager, progress),

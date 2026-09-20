@@ -9,8 +9,9 @@ use rusqlite::{Connection, OptionalExtension};
 use sundial_account::{
     AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCapabilities,
     AccountSettingsState, Character, CharacterAbilities, CharacterCapabilities, CharacterMetadata,
-    CharacterState, DefinitionHash, EntityId, EquipmentSlot, FiniteF64, InstanceSoid, ItemInstance,
-    ItemPlugs, KEY_BINDING_ACTIONS, KeyBindingSlot, ProfileCapabilities, ProfileItem, ProfileState,
+    CharacterState, DefinitionHash, DismantleReward, EntityId, EquipmentSlot, FiniteF64,
+    InstanceSoid, ItemInstance, ItemPlugs, KEY_BINDING_ACTIONS, KeyBindingSlot,
+    ProfileCapabilities, ProfileItem, ProfileState,
 };
 
 use super::contract;
@@ -190,15 +191,44 @@ pub(super) fn profile(connection: &Connection) -> Incompatible<ProfileState> {
                 "profile item {position} quantity is out of range"
             ))));
         };
-        // The stack's durable identity travels with it. Position cannot stand in for it, because
-        // adding or removing a stack renumbers every later position. A stack with no readable
-        // identity is carried as having none and the writer allocates one, which repairs a
-        // database an earlier Sundial wrote zeroes into rather than refusing to open it.
+        // Dawn's ordinary stacks legitimately use zero. Only socket action sources need a
+        // nonzero identity, which Dawn canonicalizes using its installed socket relation.
+        let Some(soid) = contract::parse_soid(soid) else {
+            return Ok(Err(row(format!(
+                "profile item {position} has an invalid identity"
+            ))));
+        };
         items.push(ProfileItem {
             id: ids.next(),
             definition_hash: DefinitionHash::new(hash),
             quantity,
-            instance_soid: contract::parse_soid(soid).and_then(InstanceSoid::try_from_u64),
+            instance_soid: InstanceSoid::try_from_u64(soid),
+        });
+    }
+    let mut rewards = Vec::new();
+    let mut query = connection.prepare(
+        "SELECT position,definition_hash,quantity FROM dismantle_rewards ORDER BY position",
+    )?;
+    for row_data in query.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, u32>(1)?,
+            r.get::<_, i32>(2)?,
+        ))
+    })? {
+        let (position, hash, quantity) = row_data?;
+        if position != rewards.len() as i64 {
+            return Ok(Err(row(
+                "dismantle reward positions are not contiguous from zero",
+            )));
+        }
+        rewards.push(DismantleReward {
+            id: ids.next(),
+            definition_hash: DefinitionHash::new(hash),
+            quantity,
+            rarities: Vec::new(),
+            gear_class: None,
+            masterworked: None,
         });
     }
     let capabilities = ProfileCapabilities {
@@ -206,11 +236,11 @@ pub(super) fn profile(connection: &Connection) -> Incompatible<ProfileState> {
         profile_item_capacity: Some(contract::PROFILE_ITEM_CAPACITY),
         enforce_loaded_profile_item_capacity: true,
         dismantle_rewards_writable: false,
-        dismantle_reward_capacity: None,
+        dismantle_reward_capacity: Some(contract::DISMANTLE_REWARD_CAPACITY),
         filtered_dismantle_rewards: false,
         combined_dismantle_gear_class: false,
     };
-    match ProfileState::try_new(capabilities, items, Vec::new()) {
+    match ProfileState::try_new(capabilities, items, rewards) {
         Ok(state) => Ok(Ok(state)),
         Err(error) => Ok(Err(row(error.to_string()))),
     }
@@ -471,7 +501,7 @@ fn read_items(connection: &Connection, ids: &mut Ids) -> Incompatible<Vec<Loaded
 pub(super) fn settings(
     connection: &Connection,
 ) -> Incompatible<(AccountSettingsState, super::settings::SettingsIndex)> {
-    use super::settings::{SettingColumn, SettingsIndex};
+    use super::settings::{SettingColumn, SettingEncoding, SettingLocation, SettingsIndex};
     let mut values: BTreeMap<AccountSettingKey, AccountSettingValue> = BTreeMap::new();
     let mut index = SettingsIndex::default();
 
@@ -486,16 +516,63 @@ pub(super) fn settings(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    let seed_version = match rows.iter().find(|(key, _, _)| key == "pc.seedVersion") {
+        None => 0,
+        Some((_, Some(version @ 0..=1), None)) => *version,
+        Some((_, integer, real)) => {
+            return Ok(Err(row(format!(
+                "setting pc.seedVersion must be integer 0 or 1, found {integer:?}/{real:?}"
+            ))));
+        }
+    };
     for (key, integer, real) in rows {
-        let Some((group, name)) = key.split_once('.') else {
-            // Dawn stores a few ungrouped switches such as "configured". They carry no editable
-            // preference, so they stay in the file rather than becoming account settings.
-            continue;
-        };
-        let Some(group) = setting_group(group) else {
-            continue;
+        let (model_key, encoding) = match key.as_str() {
+            // Dawn keeps this initialization gate durable, but it is not a player preference.
+            "pc.seedVersion" => continue,
+            // Before the first PC seed completes, Dawn mirrors the old social row. Afterwards the
+            // dedicated PC row is authoritative. Expose exactly the value Dawn sends to the game.
+            "pc.voiceChatEnabled" if seed_version == 1 => (
+                AccountSettingKey::preference(AccountSettingGroup::Social, "voice_chat_enabled"),
+                SettingEncoding::Direct,
+            ),
+            "pc.voiceChatEnabled" => continue,
+            "social.voiceChatEnabled" if seed_version == 1 => continue,
+            "pc.verticalSyncMode" => (
+                AccountSettingKey::preference(
+                    AccountSettingGroup::Display,
+                    "vertical_sync_interval",
+                ),
+                SettingEncoding::VerticalSyncMode,
+            ),
+            "pc.fieldOfViewAdjustment" => (
+                AccountSettingKey::preference(AccountSettingGroup::Display, "field_of_view"),
+                SettingEncoding::Direct,
+            ),
+            "pc.useLocalKeyBindings" => (
+                AccountSettingKey::preference(AccountSettingGroup::Root, "key_binding_source"),
+                SettingEncoding::BindingSource,
+            ),
+            _ => {
+                let Some((group, name)) = key.split_once('.') else {
+                    // Dawn stores ungrouped switches such as "configured". They carry no editable
+                    // preference, so they stay in the file rather than becoming account settings.
+                    continue;
+                };
+                let Some(group) = setting_group(group) else {
+                    continue;
+                };
+                (
+                    AccountSettingKey::preference(group, snake_case(name)),
+                    SettingEncoding::Direct,
+                )
+            }
         };
         let value = match (integer, real) {
+            // Dawn carries the native signed scalar without applying the menu's FOV range. Keep
+            // an out-of-range negative value opaque instead of inventing a control for it.
+            (Some(integer), None) if key == "pc.fieldOfViewAdjustment" && integer < 0 => {
+                continue;
+            }
             (Some(integer), None) => match u64::try_from(integer) {
                 Ok(integer) => AccountSettingValue::Unsigned(integer),
                 Err(_) => {
@@ -520,17 +597,41 @@ pub(super) fn settings(
         };
         // Dawn stores every preference as a number, while the storage-neutral model types each
         // one. Offering the alternatives and keeping the first the account crate accepts avoids
-        // mirroring its table here. A preference it does not model stays in the database.
+        // mirroring the full table here. A preference it does not model stays in the database.
         let column = if integer.is_some() {
             SettingColumn::Integer
         } else {
             SettingColumn::Real
         };
-        let model_key = AccountSettingKey::preference(group, snake_case(name));
-        if let Some(value) = first_supported(&model_key, value) {
-            index
-                .preferences
-                .insert(model_key.clone(), (key.clone(), column));
+        let value = match (encoding, value) {
+            (SettingEncoding::BindingSource, AccountSettingValue::Unsigned(0)) => {
+                Some(AccountSettingValue::text("account"))
+            }
+            (SettingEncoding::BindingSource, AccountSettingValue::Unsigned(1)) => {
+                Some(AccountSettingValue::text("computer"))
+            }
+            (SettingEncoding::VerticalSyncMode, AccountSettingValue::Unsigned(value))
+                if value <= 2 =>
+            {
+                Some(AccountSettingValue::Unsigned(value))
+            }
+            (SettingEncoding::VerticalSyncMode, AccountSettingValue::Unsigned(value)) => {
+                return Ok(Err(row(format!(
+                    "setting {key} holds {value}, which is outside Dawn's 0 to 2 range"
+                ))));
+            }
+            (SettingEncoding::Direct, value) => first_supported(&model_key, value),
+            _ => None,
+        };
+        if let Some(value) = value {
+            index.preferences.insert(
+                model_key.clone(),
+                SettingLocation {
+                    key: key.clone(),
+                    column,
+                    encoding,
+                },
+            );
             values.insert(model_key, value);
         }
     }

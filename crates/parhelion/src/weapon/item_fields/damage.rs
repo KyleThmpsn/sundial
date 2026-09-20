@@ -117,7 +117,12 @@ pub(in crate::weapon) fn set_weapon_fixed_damage_type(
         .position(|perk| fixed_damage_perk(*perk).is_some());
     let requested = family.base_sandbox_perk_index(damage_type.shared());
     match (existing, requested) {
-        (Some(index), Some(requested)) => perks[index] = requested,
+        (Some(index), Some(requested)) => {
+            if perks[index] != requested {
+                replace_weapon_sandbox_perk_index(data, perks[index], requested)?;
+                perks[index] = requested;
+            }
+        }
         (None, Some(requested)) => perks.push(requested),
         (Some(index), None) => {
             perks.remove(index);
@@ -275,6 +280,7 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
         )?;
     }
 
+    let original_perks = weapon_sandbox_perks(data)?;
     let authored_slot = overrides.inventory_slot.unwrap_or(donor_slot);
     let base_damage = weapon_damage_descriptor(data)?;
     let requested_damage = overrides
@@ -345,9 +351,10 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
         }
     }
     let actual_damage = weapon_damage_descriptor(data)?;
-    set_item_string_sandbox_perk_count(
+    remap_item_string_sandbox_perks(
         strings,
-        weapon_sandbox_perks(data)?.len(),
+        &original_perks,
+        &weapon_sandbox_perks(data)?,
         sandbox_perk_string_template,
     )?;
     if weapon_inventory_slot(data)? != authored_slot || actual_damage != requested_damage {

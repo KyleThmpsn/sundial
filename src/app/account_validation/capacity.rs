@@ -37,6 +37,7 @@ pub(in crate::app) fn validate_new_bucket_overflows(
     persisted: &WorkspaceDocument,
     catalog: &crate::catalog::Catalog,
 ) -> Result<(), String> {
+    validate_profile_action_sources(candidate, persisted, catalog)?;
     let before = collect(persisted, catalog);
     for (key, usage) in collect(candidate, catalog) {
         let Some(capacity) = usage.metadata.authored_row_capacity().map(usize::from) else {
@@ -59,6 +60,41 @@ pub(in crate::app) fn validate_new_bucket_overflows(
             usage.metadata.bucket_label().to_lowercase(),
             usage.rows,
             usage.rows - capacity,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_profile_action_sources<C: AccountCatalog>(
+    candidate: &WorkspaceDocument,
+    persisted: &WorkspaceDocument,
+    catalog: &C,
+) -> Result<(), String> {
+    if !candidate.account_is_dawn() {
+        return Ok(());
+    }
+    let count = |document: &WorkspaceDocument| -> Result<usize, String> {
+        let rows = account::profile_items(document)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        Ok(rows
+            .iter()
+            .filter(|row| {
+                let hash = u64::from(row.definition_hash);
+                catalog.inventory_metadata(hash).is_some_and(|metadata| {
+                    metadata.scope == InventoryScope::Profile
+                        && metadata.stackability == crate::catalog::ItemStackability::Stackable
+                        && matches!(metadata.native_bucket_id, 13 | 14)
+                        && catalog.contains_plug(hash)
+                })
+            })
+            .count())
+    };
+    let current = count(candidate)?;
+    let limit = crate::persistence::dawn_account::PROFILE_ACTION_SOURCE_CAPACITY;
+    if current > limit && current > count(persisted)? {
+        return Err(format!(
+            "Dawn supports only {limit} shader and ornament socket-action stacks combined. This edit would create {current}. Remove a stack before adding another"
         ));
     }
     Ok(())

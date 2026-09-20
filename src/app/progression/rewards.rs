@@ -10,12 +10,17 @@ pub(super) fn queue(
     catalog: &Catalog,
     rewards: impl IntoIterator<Item = (u64, i32)>,
 ) -> Result<(), String> {
+    if document["_native_progression"]["runtime"] == "dawn" {
+        return Err(
+            "Dawn progression reward claims are not supported by Sundial. Claim item rewards in game.".into(),
+        );
+    }
     if document.get("_native_progression").is_none() {
-        return Err("This account format has no Pending Rewards queue".into());
+        return Err("This account format has no Reward Queue".into());
     }
     let context = document
         .get("_reward_context")
-        .ok_or("This account format has no Pending Rewards queue")?;
+        .ok_or("This account format has no Reward Queue")?;
     let character = context["character"]
         .as_u64()
         .ok_or("Select a character to receive the rewards")?;

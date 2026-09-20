@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "namespace": "parhelion.suros-renaissance",
+  "collection_placement": "sunrise_badge",
+  "donor": {
+    "item_hash": "0xAA45882A",
+    "expected_name": "SUROS Regime"
+  },
+  "icon_donor": {
+    "item_hash": "0x63AA21E6",
+    "expected_name": "SUROS Chrome"
+  },
+  "identity": {
+    "item_hash": "0x6123E5F5",
+    "collectible_hash": "0xE1B03B9A",
+    "unlock_hash": "0x6D6AB2F4",
+    "pattern_global_id_hash": "0x5675F6AC",
+    "name_hash": "0x979AFF11",
+    "type_hash": "0xEA099CB4",
+    "flavor_hash": "0x32D0319C",
+    "source_hash": "0x9346BC87",
+    "collection_name_hash": "0xFFC0FF26",
+    "collection_description_hash": "0xBDC951FF",
+    "inventory_hint_hash": "0xABF0306C",
+    "collection_requirement_hash": "0x319D3E14"
+  },
+  "name": "SUROS Renaissance",
+  "flavor": "Some things never go out of style. We’ve made sure you’re one of them.",
+  "source": "Source: Guardians Make Their Own Fate",
+  "overrides": {
+    "lore": "The SUROS Renaissance gives a Golden Age classic a second life. Beneath the Regime’s familiar lines, its prized smart-matter frame has been adapted to accommodate Omolon’s superheated polymer ammunition. Its restorative systems have been preserved with the same care as its distinctive styling. The engineers at SUROS believe fine craftsmanship should be enjoyed for generations, preferably by the same Guardian.",
+    "icon_edit": {
+      "cleared_color": [
+        242,
+        227,
+        112
+      ]
+    },
+    "investment_stats": [
+      {
+        "definition_index": 3,
+        "value": 65
+      },
+      {
+        "definition_index": 11,
+        "value": 50
+      },
+      {
+        "definition_index": 14,
+        "value": 100
+      },
+      {
+        "definition_index": 15,
+        "value": 95
+      },
+      {
+        "definition_index": 16,
+        "value": 74
+      },
+      {
+        "definition_index": 22,
+        "value": 74
+      },
+      {
+        "definition_index": 24,
+        "value": 100
+      },
+      {
+        "definition_index": 26,
+        "value": 74
+      },
+      {
+        "definition_index": 27,
+        "value": 74
+      },
+      {
+        "definition_index": 30,
+        "value": 77
+      },
+      {
+        "definition_index": 31,
+        "value": 77
+      },
+      {
+        "definition_index": 32,
+        "value": 18
+      }
+    ],
+    "inventory_slot": null,
+    "ammo_type": null,
+    "modern_damage_type": null,
+    "variable_damage": {
+      "elements": [
+        "void",
+        "arc",
+        "solar"
+      ]
+    },
+    "additional_behaviors": [
+      {
+        "behavior": "hard-light-graph"
+      }
+    ],
+    "power_cap_group": null,
+    "rarity": null,
+    "stat_group_index": null,
+    "art_arrangements": [
+      {
+        "character_class": -1,
+        "arrangement": 2756
+      }
+    ],
+    "render_dye_rows": [
+      [],
+      [],
+      [
+        {
+          "channel_index": 4,
+          "dye_reference_index": 8785
+        },
+        {
+          "channel_index": 5,
+          "dye_reference_index": 8786
+        },
+        {
+          "channel_index": 6,
+          "dye_reference_index": 8787
+        }
+      ]
+    ],
+    "socket_columns": [
+      {
+        "choices": [
+          "0xD738A749"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xC1B79779",
+          "0x3203BACE",
+          "0x5778AFAD",
+          "0x52FFCEDC"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x065F4ED0",
+          "0x7554E3EE",
+          "0xBB4B892F",
+          "0x5D0B018E"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x9C3304DA",
+          "0x522356C5",
+          "0xEF30F2DE"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      {
+        "choices": [
+          "0x384C05E9"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xAEBAE371",
+          "0xFF2480A0",
+          "0xAFD04FB1",
+          "0x93F987C9"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [],
+        "socket_type": 65535,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xDD5CB37A"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xA9CA6B03",
+          "0x3C890041",
+          "0x50BAF5B4"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0xD1470356"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      {
+        "choices": [
+          "0x05B1A720",
+          "0xDD070E81"
+        ],
+        "socket_type": 92,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      }
+    ],
+    "socket_plug_variants": [
+      {
+        "replace_effects": true,
+        "socket_index": 8,
+        "choice_index": 0,
+        "source_plug_hash": "0xDD5CB37A",
+        "name": "Scatter Matrix",
+        "classification_donor_hash": "0xDD5CB37A",
+        "icon": {
+          "source": "image",
+          "name": "destiny-icons\\explore\\sleeper_nodes.svg",
+          "image": {
+            "png_base64": "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"
+          }
+        },
+        "description": "Final blows release SIVA swarms from the target.",
+        "sandbox_perks": [
+          {
+            "program": {
+              "name": "Scatter Matrix",
+              "trigger": "weapon_kill",
+              "duration_ms": 250,
+              "cooldown_ms": 1500,
+              "chance_permyriad": 10000,
+              "actions": [
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                },
+                {
+                  "operation": "spawn",
+                  "asset": {
+                    "graph": 2169712604
+                  },
+                  "position": "event"
+                }
+              ]
+            },
+            "source_perk_index": 421,
+            "runtime_values": [],
+            "action_float_values": []
+          }
+        ]
+      }
+    ],
+    "raw_payload_patches": []
+  }
+}

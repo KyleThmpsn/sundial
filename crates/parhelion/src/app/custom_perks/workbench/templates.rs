@@ -10,8 +10,35 @@ impl Workbench {
         &mut self,
         library: Option<&RecipeLibrary>,
         draft: &WeaponRecipe,
+        catalog: &InvestmentCatalog,
     ) {
-        let (templates, warnings) = load(library, draft);
+        self.initialize();
+        let (mut templates, mut warnings) = load_saved(library);
+        if let Some(perks) = &self.library {
+            let recipes = templates.iter().filter_map(|entry| {
+                let hash = entry.variant.source_plug_hash.parse_u32().unwrap_or_default();
+                if !entry.variant.replace_effects && catalog.item_definition_tag(hash).is_none() {
+                    warnings.push(format!("Could not import a custom perk from {} because its stock template {hash:08X} is unavailable. The weapon recipe is unchanged.", entry.weapon));
+                    None
+                } else {
+                    Some(from_variant(&entry.variant, catalog))
+                }
+            }).collect::<Vec<_>>();
+            match perks.import_embedded(recipes) {
+                Ok(report) => {
+                    warnings.extend(report.errors);
+                    if report.added > 0 {
+                        self.message = Some(format!(
+                            "Added {} custom perks from saved weapon recipes to the library.",
+                            report.added
+                        ));
+                    }
+                }
+                Err(error) => warnings.push(error),
+            }
+            warnings.extend(self.scan_library());
+        }
+        append_templates(&mut templates, draft.clone());
         self.authored_templates = Some(templates);
         if !warnings.is_empty() {
             self.error = Some(warnings.join("\n"));
@@ -129,6 +156,7 @@ pub(super) fn from_variant(
     let mut recipe = PerkRecipe::new();
     let hash = variant.source_plug_hash.parse_u32().unwrap_or_default();
     recipe.template_plug = variant.source_plug_hash.clone();
+    recipe.icon = variant.icon.clone();
     recipe.name = variant
         .name
         .clone()
@@ -194,8 +222,14 @@ pub(super) fn load(
     library: Option<&RecipeLibrary>,
     draft: &WeaponRecipe,
 ) -> (Vec<AuthoredTemplate>, Vec<String>) {
+    let (mut templates, warnings) = load_saved(library);
+    append_templates(&mut templates, draft.clone());
+    (templates, warnings)
+}
+
+fn load_saved(library: Option<&RecipeLibrary>) -> (Vec<AuthoredTemplate>, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut recipes = vec![draft.clone()];
+    let mut recipes = Vec::new();
     if let Some(library) = library {
         match library.scan() {
             Ok(scan) => {
@@ -212,16 +246,84 @@ pub(super) fn load(
     }
     let mut templates: Vec<AuthoredTemplate> = Vec::new();
     for recipe in recipes {
-        for mut variant in recipe.overrides.socket_plug_variants {
-            variant.socket_index = 0;
-            variant.choice_index = 0;
-            if !templates.iter().any(|template| template.variant == variant) {
-                templates.push(AuthoredTemplate {
-                    weapon: recipe.name.clone(),
-                    variant,
-                });
-            }
-        }
+        append_templates(&mut templates, recipe);
     }
     (templates, warnings)
+}
+
+fn append_templates(templates: &mut Vec<AuthoredTemplate>, recipe: WeaponRecipe) {
+    for mut variant in recipe.overrides.socket_plug_variants {
+        variant.socket_index = 0;
+        variant.choice_index = 0;
+        if !templates.iter().any(|template| template.variant == variant) {
+            templates.push(AuthoredTemplate {
+                weapon: recipe.name.clone(),
+                variant,
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_LIBRARY_ROOT"]
+    fn saved_weapon_perks_migrate_to_files_without_changing_weapons_or_importing_drafts() {
+        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let root = PathBuf::from(std::env::var_os("PARHELION_LIBRARY_ROOT").unwrap());
+        let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let weapons = RecipeLibrary::open(temp.path().join("recipes")).unwrap();
+        let mut originals = Vec::new();
+        for entry in std::fs::read_dir(root.join("recipes")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.to_string_lossy().ends_with(".parhelion.json") {
+                let bytes = std::fs::read(&path).unwrap();
+                let copied = weapons.root().join(path.file_name().unwrap());
+                std::fs::write(&copied, &bytes).unwrap();
+                originals.push((copied, bytes));
+            }
+        }
+        let perks = Library::open(temp.path().join("perks")).unwrap();
+        // Seed existing standalone files to exercise duplicate detection across formats.
+        for entry in std::fs::read_dir(root.join("perks")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.to_string_lossy().ends_with(".perk.json") {
+                Library::read(&path).unwrap();
+                std::fs::copy(&path, perks.root().join(path.file_name().unwrap())).unwrap();
+            }
+        }
+        let initial = perks.scan().unwrap().entries.len();
+        let mut workbench = Workbench {
+            initialized: true,
+            library: Some(perks),
+            ..Default::default()
+        };
+        let mut draft = WeaponRecipe::every_end();
+        let mut unsaved = PerkRecipe::new();
+        unsaved.name = "Unsaved Draft Must Not Be Imported".into();
+        draft.overrides.socket_plug_variants = vec![unsaved.at_socket(0, 0)];
+        workbench.load_authored_templates(Some(&weapons), &draft, &catalog);
+        assert!(workbench.error.is_none(), "{:?}", workbench.error);
+        assert!(
+            !workbench
+                .entries
+                .iter()
+                .any(|entry| entry.recipe.name == unsaved.name)
+        );
+        let count = workbench.entries.len();
+        assert!(count >= initial);
+        workbench.load_authored_templates(Some(&weapons), &draft, &catalog);
+        assert!(workbench.error.is_none(), "{:?}", workbench.error);
+        assert_eq!(workbench.entries.len(), count);
+        for (path, bytes) in originals {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        println!(
+            "{initial} existing standalone perks, {} new embedded perks, {count} total. Refresh is idempotent and saved weapons are unchanged.",
+            count - initial
+        );
+    }
 }

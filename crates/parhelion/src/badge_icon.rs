@@ -96,6 +96,7 @@ pub struct BadgeIconPlan {
 /// `current_entry_count` is the destination package's entry count before any append operation.
 /// `appended_ordinal_base` is the number of tags the caller will place before this plan in the
 /// same `new_tags` slice. No assigned destination tag is hardcoded.
+#[cfg(test)]
 pub fn build_badge_icon_plan(
     manager: &PackageManager,
     destination_package_id: u16,
@@ -118,9 +119,27 @@ pub(crate) fn build_icon_plan(
     appended_ordinal_base: usize,
     artwork: Option<&crate::presentation::Artwork>,
 ) -> AuthoringResult<BadgeIconPlan> {
+    build_icon_plan_with_branding(
+        manager,
+        destination_package_id,
+        current_entry_count,
+        appended_ordinal_base,
+        artwork,
+        crate::branding::Branding::Sunrise,
+    )
+}
+
+pub(crate) fn build_icon_plan_with_branding(
+    manager: &PackageManager,
+    destination_package_id: u16,
+    current_entry_count: usize,
+    appended_ordinal_base: usize,
+    artwork: Option<&crate::presentation::Artwork>,
+    branding: crate::branding::Branding,
+) -> AuthoringResult<BadgeIconPlan> {
     let donor = read_and_validate_donor(manager)?;
-    let low_data = render_artwork(artwork, &donor.low_data, LOW_WIDTH, LOW_HEIGHT)?;
-    let high_data = render_artwork(artwork, &donor.high_data, HIGH_WIDTH, HIGH_HEIGHT)?;
+    let low_data = render_artwork(artwork, &donor.low_data, LOW_WIDTH, LOW_HEIGHT, branding)?;
+    let high_data = render_artwork(artwork, &donor.high_data, HIGH_WIDTH, HIGH_HEIGHT, branding)?;
     validate_pixel_buffer(
         &low_data,
         &donor.low_data,
@@ -442,6 +461,7 @@ fn render_card(
     donor: &[u8],
     width: u32,
     height: u32,
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<Vec<u8>> {
     let expected_size = width as usize * height as usize * 4;
     if donor.len() != expected_size {
@@ -453,7 +473,10 @@ fn render_card(
     let geometry = card_geometry(source, width, height)?;
     let resized =
         image::imageops::resize(source, geometry.side, geometry.side, FilterType::Lanczos3);
-    let mut card = RgbaImage::from_fn(width, height, |x, y| card_background(x, y, width, height));
+    let mut card = RgbaImage::from_fn(width, height, |x, y| match branding {
+        crate::branding::Branding::Dawn => crate::branding::dawn_background(y, height),
+        crate::branding::Branding::Sunrise => card_background(x, y, width, height),
+    });
     for (source_x, source_y, pixel) in resized.enumerate_pixels() {
         let target = card.get_pixel_mut(geometry.x + source_x, geometry.y + source_y);
         *target = composite_onto_opaque(*pixel, *target);
@@ -467,6 +490,7 @@ fn render_artwork(
     donor: &[u8],
     width: u32,
     height: u32,
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<Vec<u8>> {
     if let Some(artwork) = artwork.filter(|a| a.composition().is_some()) {
         if donor.len() != (width * height * 4) as usize {
@@ -480,7 +504,7 @@ fn render_artwork(
         ));
     }
     let source = artwork.map_or_else(decode_source, |a| Ok(a.pixels().clone()))?;
-    render_card(&source, donor, width, height)
+    render_card(&source, donor, width, height, branding)
 }
 
 pub(crate) fn preview_mask(manager: &PackageManager) -> AuthoringResult<Vec<u8>> {
@@ -491,6 +515,14 @@ pub(crate) fn preview(
     artwork: Option<&crate::presentation::Artwork>,
     mask: Option<&[u8]>,
 ) -> AuthoringResult<RgbaImage> {
+    preview_with_branding(artwork, mask, crate::branding::Branding::Sunrise)
+}
+
+pub(crate) fn preview_with_branding(
+    artwork: Option<&crate::presentation::Artwork>,
+    mask: Option<&[u8]>,
+    branding: crate::branding::Branding,
+) -> AuthoringResult<RgbaImage> {
     let fallback;
     let mask = if let Some(mask) = mask {
         mask
@@ -498,7 +530,7 @@ pub(crate) fn preview(
         fallback = vec![255; HIGH_DATA_SIZE];
         &fallback
     };
-    let pixels = render_artwork(artwork, mask, HIGH_WIDTH, HIGH_HEIGHT)?;
+    let pixels = render_artwork(artwork, mask, HIGH_WIDTH, HIGH_HEIGHT, branding)?;
     RgbaImage::from_raw(HIGH_WIDTH, HIGH_HEIGHT, pixels)
         .ok_or_else(|| invalid("Badge preview has unexpected dimensions"))
 }
@@ -857,7 +889,14 @@ mod tests {
             (HIGH_WIDTH, HIGH_HEIGHT, HIGH_DATA_SIZE, 86usize),
         ] {
             let donor = vec![255; expected_size];
-            let data = render_card(&source, &donor, width, height).expect("card should render");
+            let data = render_card(
+                &source,
+                &donor,
+                width,
+                height,
+                crate::branding::Branding::Sunrise,
+            )
+            .expect("card should render");
             assert_eq!(data.len(), expected_size);
             assert!(data.chunks_exact(4).all(|pixel| pixel[3] == 255));
             assert!(data.chunks_exact(4).enumerate().any(|(index, pixel)| {
@@ -907,7 +946,14 @@ mod tests {
             }
         }
 
-        let data = render_card(&source, &donor, width, height).expect("card should render");
+        let data = render_card(
+            &source,
+            &donor,
+            width,
+            height,
+            crate::branding::Branding::Sunrise,
+        )
+        .expect("card should render");
         assert!(
             data.chunks_exact(4)
                 .zip(donor.chunks_exact(4))
@@ -1034,6 +1080,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_badge_background_matches_the_active_runtime() {
+        use crate::{branding::Branding, presentation::Artwork};
+        let artwork = Artwork::from_png(include_bytes!(
+            "../../../assets/parhelion/dawn-badge-source.png"
+        ))
+        .unwrap();
+        assert!(artwork.composition().is_none());
+        let donor = vec![255; (HIGH_WIDTH * HIGH_HEIGHT * 4) as usize];
+        for branding in [Branding::Sunrise, Branding::Dawn] {
+            let pixels =
+                render_artwork(Some(&artwork), &donor, HIGH_WIDTH, HIGH_HEIGHT, branding).unwrap();
+            let preview = preview_with_branding(Some(&artwork), Some(&donor), branding).unwrap();
+            assert_eq!(preview.as_raw(), &pixels);
+            let expected = match branding {
+                Branding::Sunrise => card_background(2, 100, HIGH_WIDTH, HIGH_HEIGHT),
+                Branding::Dawn => crate::branding::dawn_background(100, HIGH_HEIGHT),
+            };
+            assert_eq!(*preview.get_pixel(2, 100), expected);
+        }
+    }
+
+    #[test]
     #[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
     fn edited_badge_preview_matches_emitted_pixels_and_custom_backgrounds() {
         use crate::presentation::{
@@ -1079,7 +1147,14 @@ mod tests {
             assert_eq!(plan.new_tags[2].payload, preview.as_raw().as_slice());
             assert_eq!(
                 plan.new_tags[0].payload,
-                render_artwork(Some(&artwork), &donor.low_data, LOW_WIDTH, LOW_HEIGHT).unwrap()
+                render_artwork(
+                    Some(&artwork),
+                    &donor.low_data,
+                    LOW_WIDTH,
+                    LOW_HEIGHT,
+                    crate::branding::Branding::Sunrise
+                )
+                .unwrap()
             );
             assert!(
                 preview

@@ -132,6 +132,7 @@ impl LibraryIcons {
         self.pending = missing.iter().cloned().collect();
         self.worker = Some(thread::spawn(move || {
             let manager = open_shadowkeep_package_manager(&packages);
+            let branding = crate::branding::Branding::for_packages(&packages);
             for (path, key) in missing {
                 let result = manager.as_ref().map_err(Clone::clone).and_then(|manager| {
                     crate::icon_edit::render_weapon_icon_preview_from_manager(
@@ -140,6 +141,7 @@ impl LibraryIcons {
                         key.rarity,
                         &key.edit,
                         key.corner_icon.as_ref(),
+                        branding,
                     )
                 });
                 if sender.send((path, key, result)).is_err() {

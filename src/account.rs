@@ -50,6 +50,9 @@ pub struct AuthoredSocketChange {
 
 /// Checks that package transactions use the active account source.
 pub fn validate_authored_cleanup_backend(path: &Path) -> Result<(), String> {
+    if is_dawn_database(path) {
+        return Ok(());
+    }
     if is_database(path) {
         let settings = path
             .parent()
@@ -80,11 +83,28 @@ fn is_database(path: &Path) -> bool {
         .is_some_and(|name| name == "investment.sqlite3")
 }
 
-/// Dawn keeps its whole account here. Its settings.json is the seed it consumed on first boot and
-/// never reads again, so nothing about a Dawn account is decided from that file.
+/// Dawn keeps its whole account here. It imports the account members from settings.json only when
+/// it creates this database, so later account state is never decided from the JSON seed. Dawn still
+/// reads unrelated runtime configuration from settings.json on every startup.
 fn is_dawn_database(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|name| name == crate::persistence::DAWN_DATABASE_NAME)
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    #[test]
+    fn dawn_database_is_not_parsed_as_json_during_backend_validation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(crate::persistence::DAWN_DATABASE_NAME);
+        std::fs::write(&path, b"SQLite format 3\0not JSON").unwrap();
+
+        validate_authored_cleanup_backend(&path).unwrap();
+    }
 }
 /// Returns journal bytes. SQLite uses a complete logical snapshot including uncheckpointed WAL data.
 pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {

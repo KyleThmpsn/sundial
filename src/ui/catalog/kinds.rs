@@ -2,7 +2,7 @@
 use crate::{
     investment::{
         PerkSources,
-        native_content::kinds::{Family, users},
+        discovery::kinds::{Family, users},
     },
     sandbox_perk::{
         dependencies,

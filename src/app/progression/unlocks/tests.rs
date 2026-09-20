@@ -35,6 +35,43 @@ fn item_context_values_are_not_offered_ineffective_account_overrides() {
     );
 }
 
+/// Sunrise manages an artifact mod's flag through Seasonal, so the flag itself is locked there.
+/// Dawn has no Seasonal, so the same flag has to stay editable directly or it cannot be changed
+/// at all.
+#[test]
+fn artifact_mod_flags_are_locked_for_sunrise_and_direct_for_dawn() {
+    let catalog = Catalog::for_test(vec![], Default::default()).with_test_seasonal(
+        crate::investment::seasonal::Definition {
+            power_steps: vec![100],
+            point_steps: vec![100],
+            mods: vec![crate::investment::seasonal::ArtifactMod {
+                sale_index: 0,
+                category_index: 0,
+                item_hash: 1,
+                collectible_hash: 2,
+                flag_definition: 0,
+                character_slot: 9,
+            }],
+            reward_grants: Default::default(),
+        },
+    );
+    let definition = UnlockDefinition {
+        code: 3,
+        ..Default::default()
+    };
+    let sunrise =
+        collection_state_snapshot(&json!({"_native_progression": {"character_slot": 0}})).unwrap();
+    assert_eq!(
+        edit_blocked(false, 0, &definition, &sunrise, &catalog).map(|reason| reason.0),
+        Some("Seasonal")
+    );
+    let dawn = collection_state_snapshot(
+        &json!({"_native_progression": {"runtime": "dawn", "character_slot": 0}}),
+    )
+    .unwrap();
+    assert!(edit_blocked(false, 0, &definition, &dawn, &catalog).is_none());
+}
+
 #[test]
 fn content_rows_preserve_unnamed_entries_and_use_record_roles() {
     let context = crate::catalog::ProgressionContextDef {

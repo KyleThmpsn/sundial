@@ -214,7 +214,7 @@ fn blocked(
                 value && super::super::seasonal::is_derived_value(index)
             }))
     {
-        Some("Edit this value in Seasonal")
+        Some("Managed by Seasonal where supported")
     } else if !native
         && key.bank == 5
         && !key.family

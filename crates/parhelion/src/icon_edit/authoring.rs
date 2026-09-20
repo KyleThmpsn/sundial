@@ -160,7 +160,7 @@ pub(crate) fn build_weapon_icon_edit_plan(
     }))
 }
 
-pub(super) fn read_primary_layer_tag(
+pub(crate) fn read_primary_layer_tag(
     manager: &PackageManager,
     container_tag: TagHash,
 ) -> AuthoringResult<TagHash> {
@@ -201,7 +201,7 @@ pub(super) fn read_primary_layer_tag(
     Ok(primary_layer_tag)
 }
 
-pub(super) fn read_icon_layer(
+pub(crate) fn read_icon_layer(
     manager: &PackageManager,
     layer_tag: TagHash,
     container_tag: TagHash,
@@ -235,7 +235,7 @@ pub(super) fn read_icon_layer(
     Ok(payload)
 }
 
-pub(super) fn texture_reference_offsets(
+pub(crate) fn texture_reference_offsets(
     layer: &[u8],
     layer_tag: TagHash,
 ) -> AuthoringResult<Vec<(usize, TagHash)>> {

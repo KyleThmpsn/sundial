@@ -81,7 +81,7 @@ mod account_settings;
 
 mod account_details;
 mod account_workspace;
-use account_workspace::{AccountSourceKind, WorkspaceDocument};
+use account_workspace::{AccountSourceInfo, AccountSourceKind, WorkspaceDocument};
 
 mod account_validation;
 
@@ -100,6 +100,7 @@ mod ui;
 
 mod inspector;
 
+mod dawn_state;
 mod inventory_page;
 
 mod progression;
@@ -109,8 +110,11 @@ mod collections_page;
 const PROJECT_URL: &str = "https://github.com/kylethmpsn/sundial";
 const CREDITS_URL: &str = "https://github.com/kylethmpsn/sundial#credits-and-license";
 const SUNRISE_URL: &str = "https://github.com/stanuwu/Sunrise";
+const DAWN_URL: &str = "https://github.com/isinternets/Dawn";
 const TIGER_PKG_URL: &str = "https://github.com/v4nguard/tiger-pkg";
-const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+fn display_version() -> &'static str {
+    crate::version::display()
+}
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
 use crate::account_contract::WEAPON_SLOTS;
 const ITEM_PICKER_MIN_HEIGHT: f32 = 320.0;
@@ -286,6 +290,8 @@ enum ProgressionSection {
     Unlocks,
     Investment,
     Seasonal,
+    Vendors,
+    Missions,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -616,7 +622,8 @@ impl SundialApp {
             install_path: &self.install_path,
             settings_path: &self.settings_path,
             settings_layout: self.settings_layout.preference_value(),
-            sunrise_version: &self.sunrise_version,
+            runtime_name: self.runtime_name(),
+            runtime_version: &self.sunrise_version,
             settings_schema: game_settings::schema_version(&self.document),
             account_source: &account_source,
             catalog: diagnostics::CatalogSummary {
@@ -826,20 +833,35 @@ fn preserve_inactive_json_account_domains(defaults: &mut Value, source: &Value) 
     }
 }
 
-fn draw_json_account_source_notice(ui: &mut egui::Ui, source: AccountSourceKind) {
+fn draw_json_account_source_notice(ui: &mut egui::Ui, source: &AccountSourceInfo) {
     let (title, message) = match source {
-        AccountSourceKind::Json => return,
-        AccountSourceKind::Sqlite => (
-            "Account Data",
-            "As of schema v18, most account data is stored in investment.sqlite3. Some settings, including player identity and runtime configuration, are still read from settings.json.",
+        AccountSourceInfo {
+            kind: AccountSourceKind::Json,
+            ..
+        } => return,
+        AccountSourceInfo {
+            kind: AccountSourceKind::Sqlite,
+            ..
+        } => (
+            "Account Data Is Stored Separately",
+            "As of Sunrise settings schema v18, account data and player preferences are stored in investment.sqlite3. This editor changes settings.json only, including player identity and runtime configuration."
+                .to_owned(),
         ),
-        AccountSourceKind::Dawn => (
-            "Dawn Account Data",
-            "This install runs Dawn, so account data lives in player-state.db beside settings.json. Dawn reads settings.json once when it first creates that database and never again, so edits made here are written to player-state.db.",
+        AccountSourceInfo {
+            kind: AccountSourceKind::Dawn,
+            ..
+        } => (
+            "Account Data Is Stored Separately",
+            "Dawn stores account data and player preferences in player-state.db. This editor changes settings.json only, including player identity, language and runtime configuration."
+                .to_owned(),
         ),
-        AccountSourceKind::Blocked => (
+        AccountSourceInfo {
+            kind: AccountSourceKind::Blocked,
+            detail,
+            ..
+        } => (
             "Account Database Unavailable",
-            "Sundial couldn't load investment.sqlite3. Database-backed account editing is unavailable.",
+            format!("{detail} The JSON Editor changes settings.json only."),
         ),
     };
     let (background, border, foreground) = if ui.visuals().dark_mode {
@@ -974,7 +996,7 @@ impl SundialApp {
                 ViewMode::Progression => self.draw_progression_page(ui),
                 ViewMode::AdvancedJson => {
                     if self.json_editor_window_open {
-                        ui.heading("All Settings");
+                        ui.heading("JSON Editor");
                         ui.label("The JSON editor is open in a separate window.");
                         if ui.button("Dock in Main Window").clicked() {
                             self.set_json_editor_window_open(false);
@@ -982,7 +1004,8 @@ impl SundialApp {
                         }
                     } else {
                         self.sync_raw_json_if_stale();
-                        draw_json_account_source_notice(ui, self.document.source_kind());
+                        let account_source = self.document.source_info();
+                        draw_json_account_source_notice(ui, &account_source);
                         let response = json_editor::draw(
                             ui,
                             &mut self.raw_json,
@@ -1039,6 +1062,9 @@ impl SundialApp {
     }
 
     fn draw_supporting_windows(&mut self, ctx: &egui::Context) {
+        if inspector::take_owned_quantities_request(ctx) {
+            self.publish_owned_quantities(ctx);
+        }
         if let Some(hash) = inspector::take_definition_request(ctx) {
             let context = inspector::take_definition_context(ctx, hash);
             self.hash_inspection.open_with_context(hash, context);
@@ -1245,3 +1271,22 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
 
 #[cfg(test)]
 mod tests;
+
+impl SundialApp {
+    /// What the account holds per item hash, for the inspector's owned-quantity columns. Runs
+    /// only on a window's request. An account that cannot be read, such as a blocked one,
+    /// withdraws the map so the column reads as unavailable rather than as zero.
+    fn publish_owned_quantities(&self, ctx: &egui::Context) {
+        let Ok(Some(items)) = account_workspace::profile_items(&self.document) else {
+            inspector::clear_owned_quantities(ctx);
+            return;
+        };
+        let mut quantities = std::collections::HashMap::new();
+        for item in items {
+            *quantities
+                .entry(u64::from(item.definition_hash))
+                .or_insert(0) += i64::from(item.quantity);
+        }
+        inspector::publish_owned_quantities(ctx, std::sync::Arc::new(quantities));
+    }
+}

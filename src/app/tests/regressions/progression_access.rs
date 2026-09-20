@@ -2,6 +2,74 @@ use super::*;
 use crate::catalog::Catalog;
 
 #[test]
+fn dawn_progression_pages_use_the_live_database() {
+    let directory = TestDirectory::new("dawn-progression-pages");
+    let mut app = app(directory.0.clone());
+    crate::persistence::dawn_account::tests::create_fixture(&directory.0.join("player-state.db"));
+    app.document = crate::app::account_workspace::WorkspaceDocument::load(
+        serde_json::json!({"version":6}),
+        &directory.0.join("settings.json"),
+        true,
+    );
+    app.manifest = progression_catalog();
+    app.preferences.experimental_progression = true;
+    app.select_view(ViewMode::Progression);
+    let before = app.document.clone();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    for (section, name) in [
+        (ProgressionSection::Collections, "collections"),
+        (ProgressionSection::Triumphs, "triumphs"),
+        (ProgressionSection::Seasonal, "seasonal"),
+        (ProgressionSection::Unlocks, "unlocks"),
+        (ProgressionSection::Investment, "investment"),
+    ] {
+        app.progression_section = section;
+        app.progression_ui.reset_navigation();
+        for _ in 0..3 {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.draw_app_chrome(ctx, None);
+                    app.draw_active_view(ctx);
+                },
+            );
+            let labels: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !labels
+                    .iter()
+                    .any(|label| label.contains("Invalid progression settings"))
+            );
+            assert!(!super::inventory_recovery::button(&output, "Seasonal").1);
+            if section == ProgressionSection::Seasonal {
+                assert!(
+                    labels
+                        .iter()
+                        .any(|label| label.contains("Seasonal Unavailable"))
+                );
+                assert!(!labels.contains(&"Apply XP"));
+            }
+            crate::app::tests::capture::write(&ctx, &output, &format!("dawn-progression-{name}"));
+        }
+        assert_eq!(app.document, before);
+        assert!(!app.dirty);
+    }
+}
+
+#[test]
 fn progression_browsing_remains_available_when_editing_is_disabled_or_reset() {
     let directory = TestDirectory::new("progression-access");
     let mut app = app(directory.0.clone());

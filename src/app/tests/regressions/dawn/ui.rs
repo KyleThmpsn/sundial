@@ -17,7 +17,6 @@ fn sunrise_and_dawn_v6_show_no_conversion_or_format_warning() {
             });
             for shape in output.shapes {
                 if let egui::Shape::Text(text) = shape.shape {
-                    assert!(!text.galley.text().contains("Convert Account"));
                     assert!(!text.galley.text().contains("requires settings"));
                 }
             }

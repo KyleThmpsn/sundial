@@ -24,6 +24,9 @@ impl Job {
         indices: Vec<usize>,
         rank: Option<i32>,
     ) -> Result<Self, String> {
+        if document["_native_progression"]["runtime"] == "dawn" {
+            return Err("Dawn Season Pass reward claims are not supported by Sundial. Claim Season Pass rewards in game.".into());
+        }
         let mut candidate = document.clone();
         let mut rank_change = None;
         if let Some(rank) = rank {
@@ -143,6 +146,12 @@ fn claim(
     catalog: &Catalog,
     reward: &ProgressionRewardDefinition,
 ) -> Result<bool, String> {
+    if document["_native_progression"]["runtime"] == "dawn" {
+        return Err(
+            "Dawn Season Pass reward claims are not supported by Sundial. Claim Season Pass rewards in game."
+                .into(),
+        );
+    }
     let snapshot = collection_state_snapshot(document).ok_or("Progression state unavailable")?;
     let definition = catalog
         .seasonal()

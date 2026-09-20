@@ -12,9 +12,22 @@ mod view;
 pub(in crate::app) use editing::{Edit, apply};
 pub(in crate::app) use view::{UiState, draw};
 
+pub(in crate::app) const DAWN_UNAVAILABLE: &str = "Seasonal authoring is unavailable for Dawn. Dawn's runtime has no verified support for the coordinated seasonal XP, artifact and Season Pass editor.";
+
 impl CollectionStateSnapshot {
     pub(in crate::app) fn is_native(&self) -> bool {
         self.is_native
+    }
+
+    pub(in crate::app) fn is_dawn(&self) -> bool {
+        self.is_dawn
+    }
+
+    /// Sunrise's coordinated seasonal authoring applies to this account. A Dawn account is
+    /// native too, but the seasonal editor refuses it, so every affordance that would route an
+    /// edit through it has to ask this rather than `is_native`.
+    pub(in crate::app) fn seasonal_authoring(&self) -> bool {
+        self.is_native && !self.is_dawn
     }
 
     pub(in crate::app) fn native_flag(
@@ -83,16 +96,16 @@ pub(in crate::app) fn is_derived_value(index: usize) -> bool {
 pub(in crate::app) fn progression_help(index: usize) -> Option<&'static str> {
     match index {
         rules::POWER_PROGRESSION => Some(
-            "This is Sunrise's authoritative seasonal XP. Use Seasonal to update the pass, HUD, and artifact counters together.",
+            "This is the seasonal XP source. Use Seasonal to update the pass, HUD, and artifact counters together.",
         ),
         rules::POINTS_PROGRESSION => Some(
-            "Sunrise copies seasonal XP here when it refreshes seasonal state. Use Seasonal to change the authoritative XP.",
+            "This counter mirrors seasonal XP. Use Seasonal to update the linked XP counters together.",
         ),
         rules::PASS_PROGRESSION => Some(
-            "Sunrise caps this copy of seasonal XP at rank 100. Reward eligibility uses the authoritative seasonal XP.",
+            "This copy of seasonal XP is capped at rank 100. Reward eligibility uses the seasonal XP source.",
         ),
         rules::HUD_PROGRESSION => Some(
-            "Sunrise rebuilds this HUD bar from seasonal XP. It repeats every 100,000 XP before rank 100, then tracks XP above the pass cap.",
+            "This HUD bar repeats every 100,000 XP before rank 100, then tracks XP above the pass cap. Use Seasonal to update it with the linked XP counters.",
         ),
         _ => None,
     }

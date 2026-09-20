@@ -192,6 +192,7 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
+            character_stat_rows: None,
             power_cap_definitions: Vec::new(),
             item_stat_groups: Vec::new(),
             trait_definitions: Vec::new(),
@@ -256,8 +257,11 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
     );
 }
 
+/// A failed section names itself and costs only itself: the scan helper falls back to a default
+/// and the enrichment helper hands back what it was given, so neither takes the rest of the
+/// catalog down with it.
 #[test]
-fn progression_scan_failures_fall_back_without_discarding_other_sections() {
+fn a_failed_progression_section_is_reported_without_discarding_the_others() {
     let mut errors = Vec::new();
     let flags = retain_progression_scan("Unlock flag definitions", Ok(vec![1, 2]), &mut errors);
     let values: Vec<u8> = retain_progression_scan(
@@ -265,34 +269,23 @@ fn progression_scan_failures_fall_back_without_discarding_other_sections() {
         Err("table unavailable".into()),
         &mut errors,
     );
-
-    assert_eq!(flags, vec![1, 2]);
-    assert!(values.is_empty());
-    assert_eq!(errors, vec!["Unlock value definitions: table unavailable"]);
-}
-
-#[test]
-fn optional_unlock_display_failure_keeps_core_definitions() {
-    let definitions = vec![UnlockDefinition {
-        hash: 0x1234_5678,
-        code: 1,
-        compact_slot: Some(26),
-        name: None,
-        description: None,
-        runtime_writers: Vec::new(),
-        tested_by: Vec::new(),
-    }];
-    let mut errors = Vec::new();
-
     let retained = retain_progression_enrichment(
         "Unlock flag displays",
         Err("table unavailable".into()),
-        definitions.clone(),
+        vec![0x1234_5678_u32],
         &mut errors,
     );
 
-    assert_eq!(retained, definitions);
-    assert_eq!(errors, vec!["Unlock flag displays: table unavailable"]);
+    assert_eq!(flags, vec![1, 2]);
+    assert!(values.is_empty());
+    assert_eq!(retained, vec![0x1234_5678]);
+    assert_eq!(
+        errors,
+        vec![
+            "Unlock value definitions: table unavailable",
+            "Unlock flag displays: table unavailable"
+        ]
+    );
 }
 
 #[test]
@@ -485,6 +478,7 @@ fn inventory_apis_resolve_profile_only_items_and_keep_character_items_safe() {
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
+            character_stat_rows: None,
             power_cap_definitions: Vec::new(),
             item_stat_groups: Vec::new(),
             trait_definitions: Vec::new(),
@@ -555,6 +549,7 @@ fn equipment_browse_and_search_return_every_compatible_item() {
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
+            character_stat_rows: None,
             power_cap_definitions: Vec::new(),
             item_stat_groups: Vec::new(),
             trait_definitions: Vec::new(),
@@ -764,6 +759,7 @@ fn plug_selection_catalog() -> Catalog {
             icon_containers: HashMap::new(),
             item_package_metadata: HashMap::new(),
             item_stat_definitions: Vec::new(),
+            character_stat_rows: None,
             power_cap_definitions: Vec::new(),
             item_stat_groups: Vec::new(),
             trait_definitions: Vec::new(),
@@ -1034,4 +1030,15 @@ fn overridden_cosmetic_sockets_restore_only_their_socket_pool() {
     assert!(cosmetic.contains(&1));
     assert!(cosmetic.contains(&2));
     assert_eq!(catalog.gear_type_options_for_type(&item, 999), vec![2]);
+}
+#[test]
+fn missing_character_stat_rows_degrade_with_a_diagnostic() {
+    let mut warnings = Vec::new();
+    let rows: Option<[u16; 6]> = super::scan::retain_progression_scan(
+        "Character stat rows",
+        Err("short constants blob".into()),
+        &mut warnings,
+    );
+    assert_eq!(rows, None);
+    assert_eq!(warnings, ["Character stat rows: short constants blob"]);
 }

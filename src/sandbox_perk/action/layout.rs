@@ -200,7 +200,7 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
         fields: &[
             Field::new("Target Selector", 2, Byte),
             Field::new("Property Key", 4, Key),
-            Field::new("Option Byte", 8, Byte),
+            Field::new("Operation", 8, Byte),
         ],
     },
     Layout {

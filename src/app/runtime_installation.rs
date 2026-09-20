@@ -256,11 +256,9 @@ impl SundialApp {
                 ui.label(plan.copy().settings_path.display().to_string());
                 ui.label("The current settings.json will be backed up to .sunrise/backups before replacement.");
                 if plan.copy().dawn {
-                    // Dawn consumed this file once to seed player-state.db and has not read it
-                    // since, so replacing it does not touch saved progress.
-                    ui.label("Dawn already imported this file into player-state.db, so your saved progress is not affected.");
-                }
-                if plan.schema < 18 {
+                    ui.label("This replaces Dawn runtime configuration, player identity and language. Dawn will read the restored file on its next startup.");
+                    ui.label("Existing characters, inventory, equipment, progression and player preferences remain in player-state.db.");
+                } else if plan.schema < 18 {
                     ui.colored_label(ui.visuals().warn_fg_color, "These defaults include the JSON account. Its saved progress and unlocks will return to defaults.");
                     ui.label("If you have custom Parhelion packages installed, reinstall them afterward to restore their Collections entries and unlocks.");
                 } else {

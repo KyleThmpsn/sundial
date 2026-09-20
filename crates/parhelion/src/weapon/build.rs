@@ -93,7 +93,7 @@ pub(super) fn canonical_project_weapons(
             "A build can contain at most 24 custom badges within Sunrise’s presentation node capacity",
         ));
     }
-    project_authored_localized_values(&weapons, &[], 0)?;
+    project_authored_localized_values(&weapons, &[], 0, crate::branding::Branding::Sunrise)?;
     weapons.sort_by(|left, right| {
         (
             left.namespace.as_bytes(),
@@ -137,20 +137,26 @@ pub(crate) fn build_weapon_project_after_catalog_validation(
     package_directory: &Path,
     project: &WeaponProjectSpec,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
-    compile_with_progress(package_directory, project, &mut |_, _, _, _| {})
+    compile_with_progress(
+        package_directory,
+        project,
+        crate::branding::Branding::for_packages(package_directory),
+        &mut |_, _, _, _| {},
+    )
 }
 
 /// Compiles catalog-validated recipes and reports real shared and per-weapon operations.
 pub(crate) fn compile_with_progress(
     package_directory: &Path,
     project: &WeaponProjectSpec,
+    branding: crate::branding::Branding,
     report: &mut dyn FnMut(Phase, &str, usize, usize),
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut progress = Progress::new(SHARED_OPERATIONS + 1 + 3 * project.weapons.len(), report);
     let weapons = progress.step("Validating Recipe Identities", || {
         canonical_project_weapons(project)
     })?;
-    compile_canonical(package_directory, &weapons, &mut progress)
+    compile_canonical(package_directory, &weapons, branding, &mut progress)
 }
 
 /// Keep allocation, table mutation, and final package validation in their native order.
@@ -161,12 +167,18 @@ pub(super) fn build_weapon_project_canonical(
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut report = |_: Phase, _: &str, _: usize, _: usize| {};
     let mut progress = Progress::new(SHARED_OPERATIONS + 3 * weapons.len(), &mut report);
-    compile_canonical(package_directory, weapons, &mut progress)
+    compile_canonical(
+        package_directory,
+        weapons,
+        crate::branding::Branding::for_packages(package_directory),
+        &mut progress,
+    )
 }
 
 fn compile_canonical(
     package_directory: &Path,
     weapons: &[WeaponCloneSpec],
+    branding: crate::branding::Branding,
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut sources = progress.step("Loading Source Tables", || {
@@ -183,7 +195,7 @@ fn compile_canonical(
         progress,
     )?;
     let templates = progress.step("Reading Perk Templates", || PerkTemplates::read(&sources))?;
-    let custom_plugs = progress.step("Planning Private Perks", || {
+    let mut custom_plugs = progress.step("Planning Private Perks", || {
         custom_plugs::plan(&sources, &resolved, &templates.strings)
     })?;
     let assets = progress.step("Planning Artwork", || {
@@ -191,7 +203,16 @@ fn compile_canonical(
             &sources.manager,
             &resolved,
             weapons.len(),
-            custom_plugs.len(),
+            &mut custom_plugs,
+            branding,
+        )
+    })?;
+    let icons = progress.step("Compiling Icons", || {
+        assets::author_icon_rows(
+            &sources.stock_item_icons,
+            &resolved,
+            &assets,
+            &mut custom_plugs,
         )
     })?;
     let (runtime, custom_payloads) = runtime::author(
@@ -203,17 +224,15 @@ fn compile_canonical(
         assets.weapon_runtime_start,
         progress,
     )?;
-    let icons = progress.step("Compiling Icons", || {
-        assets::author_icon_rows(&sources.stock_item_icons, &resolved, &assets)
-    })?;
     let localization = progress.step("Compiling Text", || {
         let localization = author_project_localized_strings(
             &sources.manager,
             std::mem::take(&mut sources.localized_index),
             weapons,
             &custom_plugs,
+            branding,
         )?;
-        validate_authored_localization_values(&localization, weapons, &custom_plugs)?;
+        validate_authored_localization_values(&localization, weapons, &custom_plugs, branding)?;
         Ok(localization)
     })?;
 

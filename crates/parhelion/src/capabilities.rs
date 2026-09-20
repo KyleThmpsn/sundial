@@ -14,8 +14,11 @@ use sundial::investment::{
 };
 
 use crate::ModernDamageType;
-use crate::recipe::{RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides};
-use crate::weapon::variable_damage::resting_element;
+use crate::recipe::{
+    RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides,
+    WeaponSocketPlugVariantRecipe,
+};
+use crate::weapon::{WeaponSocketPlugVariantOverride, variable_damage::resting_element};
 
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -621,18 +624,39 @@ pub fn validate_socket_column_overrides(
 
 /// Validates socket choices after applying any explicit native socket-type overrides.
 #[must_use]
+#[cfg(test)]
 pub fn validate_socket_column_overrides_with_socket_types(
     donor: &WeaponDonor,
     overrides: &[Option<Vec<u32>>],
     socket_types: &[Option<u16>],
     supported_plug_sets: &[SupportedPlugSet],
 ) -> Vec<AuthoringDiagnostic> {
-    validate_socket_column_overrides_with_labels(
+    validate_socket_column_overrides_with_choice_identity(
         donor,
         overrides,
         socket_types,
         supported_plug_sets,
         &|hash| format!("0x{hash:08X}"),
+        &|_, _, _| true,
+    )
+}
+
+pub(crate) fn validate_socket_column_overrides_with_variants(
+    donor: &WeaponDonor,
+    overrides: &[Option<Vec<u32>>],
+    socket_types: &[Option<u16>],
+    supported_plug_sets: &[SupportedPlugSet],
+    variants: &[WeaponSocketPlugVariantOverride],
+) -> Vec<AuthoringDiagnostic> {
+    validate_socket_column_overrides_with_choice_identity(
+        donor,
+        overrides,
+        socket_types,
+        supported_plug_sets,
+        &|hash| format!("0x{hash:08X}"),
+        &|socket_index, left_choice, right_choice| {
+            compiled_choices_resolve_to_same_plug(variants, socket_index, left_choice, right_choice)
+        },
     )
 }
 
@@ -641,7 +665,28 @@ pub(crate) fn validate_socket_column_overrides_with_labels(
     overrides: &[Option<Vec<u32>>],
     socket_types: &[Option<u16>],
     supported_plug_sets: &[SupportedPlugSet],
+    variants: &[WeaponSocketPlugVariantRecipe],
     plug_label: &dyn Fn(u32) -> String,
+) -> Vec<AuthoringDiagnostic> {
+    validate_socket_column_overrides_with_choice_identity(
+        donor,
+        overrides,
+        socket_types,
+        supported_plug_sets,
+        plug_label,
+        &|socket_index, left_choice, right_choice| {
+            recipe_choices_resolve_to_same_plug(variants, socket_index, left_choice, right_choice)
+        },
+    )
+}
+
+fn validate_socket_column_overrides_with_choice_identity(
+    donor: &WeaponDonor,
+    overrides: &[Option<Vec<u32>>],
+    socket_types: &[Option<u16>],
+    supported_plug_sets: &[SupportedPlugSet],
+    plug_label: &dyn Fn(u32) -> String,
+    choices_resolve_to_same_plug: &dyn Fn(usize, usize, usize) -> bool,
 ) -> Vec<AuthoringDiagnostic> {
     let mut diagnostics = Vec::new();
     if overrides.is_empty() {
@@ -676,15 +721,15 @@ pub(crate) fn validate_socket_column_overrides_with_labels(
         if invalid_plug_set_indices.contains(&socket_index) {
             continue;
         }
-        validate_socket_column(
+        diagnostics.extend(validate_socket_column(
             donor,
             socket_index,
             value.as_deref(),
             socket_types.get(socket_index).copied().flatten(),
             plug_sets.get(&socket_index).copied(),
-            &mut diagnostics,
             plug_label,
-        );
+            choices_resolve_to_same_plug,
+        ));
     }
     diagnostics
 }
@@ -741,9 +786,10 @@ fn validate_socket_column(
     choices: Option<&[u32]>,
     socket_type_override: Option<u16>,
     supported: Option<&SupportedPlugSet>,
-    diagnostics: &mut Vec<AuthoringDiagnostic>,
     plug_label: &dyn Fn(u32) -> String,
-) {
+    choices_resolve_to_same_plug: &dyn Fn(usize, usize, usize) -> bool,
+) -> Vec<AuthoringDiagnostic> {
+    let mut diagnostics = Vec::new();
     let field = AuthoringField::SocketColumn { socket_index };
     let socket = donor.sockets.get(socket_index);
     if socket.is_none() && socket_type_override.is_none() {
@@ -761,13 +807,13 @@ fn validate_socket_column(
                 message: format!("Added socket {socket_index} must contain at least one plug"),
             });
         }
-        return;
+        return diagnostics;
     };
     if socket.is_some_and(|socket| socket.socket_type != u16::MAX)
         && socket_type_override == Some(u16::MAX)
         && choices.is_empty()
     {
-        return;
+        return diagnostics;
     }
     let maximum = socket_type_override.map_or_else(
         || socket.map_or(0, |socket| socket.max_authored_choices),
@@ -782,7 +828,7 @@ fn validate_socket_column(
                 donor.summary.name
             ),
         });
-        return;
+        return diagnostics;
     }
     if choices.is_empty() {
         diagnostics.push(AuthoringDiagnostic {
@@ -790,7 +836,7 @@ fn validate_socket_column(
             code: AuthoringDiagnosticCode::EmptySocketColumn,
             message: format!("Socket {socket_index} must contain at least one plug"),
         });
-        return;
+        return diagnostics;
     }
     if choices.len() > maximum {
         diagnostics.push(AuthoringDiagnostic {
@@ -804,7 +850,15 @@ fn validate_socket_column(
             ),
         });
     }
-    validate_socket_choice_values(socket_index, choices, supported, diagnostics, plug_label);
+    validate_socket_choice_values(
+        socket_index,
+        choices,
+        supported,
+        &mut diagnostics,
+        plug_label,
+        choices_resolve_to_same_plug,
+    );
+    diagnostics
 }
 
 fn validate_socket_choice_values(
@@ -813,22 +867,31 @@ fn validate_socket_choice_values(
     supported: Option<&SupportedPlugSet>,
     diagnostics: &mut Vec<AuthoringDiagnostic>,
     plug_label: &dyn Fn(u32) -> String,
+    choices_resolve_to_same_plug: &dyn Fn(usize, usize, usize) -> bool,
 ) {
     let field = AuthoringField::SocketColumn { socket_index };
-    let mut seen = BTreeSet::new();
-    for &hash in choices {
+    let mut seen = BTreeMap::<u32, Vec<usize>>::new();
+    for (choice_index, &hash) in choices.iter().enumerate() {
         if hash == 0 {
             diagnostics.push(AuthoringDiagnostic {
                 field,
                 code: AuthoringDiagnosticCode::ZeroPlugHash,
                 message: format!("Socket {socket_index} cannot use plug hash zero"),
             });
-        } else if !seen.insert(hash) {
-            diagnostics.push(AuthoringDiagnostic {
-                field,
-                code: AuthoringDiagnosticCode::DuplicateSocketColumnPlug,
-                message: format!("Socket {socket_index} contains plug 0x{hash:08X} more than once"),
-            });
+        } else {
+            let previous = seen.entry(hash).or_default();
+            if previous.iter().any(|&other_choice| {
+                choices_resolve_to_same_plug(socket_index, other_choice, choice_index)
+            }) {
+                diagnostics.push(AuthoringDiagnostic {
+                    field,
+                    code: AuthoringDiagnosticCode::DuplicateSocketColumnPlug,
+                    message: format!(
+                        "Socket {socket_index} contains plug 0x{hash:08X} more than once"
+                    ),
+                });
+            }
+            previous.push(choice_index);
         }
     }
     let Some(supported) = supported else {
@@ -858,6 +921,44 @@ fn validate_socket_choice_values(
                 "Plug {} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game.", plug_label(hash)
             ),
         });
+    }
+}
+
+fn recipe_choices_resolve_to_same_plug(
+    variants: &[WeaponSocketPlugVariantRecipe],
+    socket_index: usize,
+    left_choice: usize,
+    right_choice: usize,
+) -> bool {
+    let variant_at = |choice_index| {
+        variants.iter().find(|variant| {
+            usize::from(variant.socket_index) == socket_index
+                && usize::from(variant.choice_index) == choice_index
+        })
+    };
+    match (variant_at(left_choice), variant_at(right_choice)) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.same_definition(right),
+        _ => false,
+    }
+}
+
+fn compiled_choices_resolve_to_same_plug(
+    variants: &[WeaponSocketPlugVariantOverride],
+    socket_index: usize,
+    left_choice: usize,
+    right_choice: usize,
+) -> bool {
+    let variant_at = |choice_index| {
+        variants.iter().find(|variant| {
+            usize::from(variant.socket_index) == socket_index
+                && usize::from(variant.choice_index) == choice_index
+        })
+    };
+    match (variant_at(left_choice), variant_at(right_choice)) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.same_definition(right),
+        _ => false,
     }
 }
 

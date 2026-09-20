@@ -5,6 +5,7 @@ use crate::perk::{
     library::{Entry, Library},
 };
 use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 
 pub(super) mod assets;
 mod attachment;
@@ -15,14 +16,16 @@ mod discovery;
 mod engine;
 mod forms;
 mod guidance;
+use crate::artwork_browser as icons;
 mod library;
-pub(super) mod pickers;
+pub(super) use crate::app::pickers;
 mod program;
 mod properties;
 mod reading;
 mod selection;
 mod stats;
 mod templates;
+mod test_plan;
 #[cfg(test)]
 mod tests;
 
@@ -50,11 +53,14 @@ struct Document {
     target: Option<attachment::Target>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_effect: Option<EffectDraft>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modified: Option<SystemTime>,
 }
 
 impl Document {
     fn new(recipe: PerkRecipe, baseline: Option<Vec<u8>>) -> Self {
         Self {
+            modified: baseline.is_none().then(SystemTime::now),
             origin: Some(recipe.clone()),
             recipe,
             baseline,
@@ -106,6 +112,7 @@ pub(in crate::app) struct Workbench {
     selected: usize,
     page: Page,
     query: String,
+    library_order: library::Order,
     template_query: String,
     effect_query: String,
     effect_purpose: guidance::Purpose,
@@ -113,6 +120,7 @@ pub(in crate::app) struct Workbench {
     effect_order: guidance::EffectOrder,
     stat_query: String,
     icon_query: String,
+    icons: icons::Picker,
     asset_query: String,
     property_query: String,
     removal_query: String,
@@ -142,6 +150,8 @@ pub(in crate::app) struct Workbench {
     picker: Option<selection::Picker>,
     /// A perk the reader asked to delete from Custom Perks, awaiting confirmation.
     pending_delete: Option<library::PendingDelete>,
+    /// Bundled custom perks captured before the reader confirms a guarded restore.
+    pending_restore_defaults: Option<crate::perk::library::RestoreDefaults>,
     reveal_document: bool,
     header_action: Option<HeaderAction>,
 }
@@ -153,6 +163,10 @@ enum HeaderAction {
 }
 
 impl Workbench {
+    pub(in crate::app) fn saved_weapons_changed(&mut self) {
+        self.authored_templates = None;
+    }
+
     fn perk_issue(&self, recipe: &PerkRecipe) -> Option<String> {
         recipe.validate().err().or_else(|| {
             recipe.effects.iter().find_map(|effect| {
@@ -169,6 +183,7 @@ impl Workbench {
 
     pub(in crate::app) fn busy(&self) -> bool {
         self.discovery.busy()
+            || self.icons.busy()
             || self
                 .editor
                 .as_ref()
@@ -203,6 +218,7 @@ impl Workbench {
         if let Some(document) = self.documents.get_mut(self.selected) {
             document.recipe = document.restored();
             document.pending_effect = None;
+            document.modified = None;
         }
         self.error = None;
         self.message = Some("Changes discarded.".into());
@@ -212,6 +228,7 @@ impl Workbench {
     pub(in crate::app) fn invalidate(&mut self) {
         self.capture_effect_draft();
         self.discovery.invalidate();
+        self.icons.invalidate();
         self.behaviors = behaviors::Picker::default();
         self.keys = program::Keys::default();
         self.ingredients = None;
@@ -285,6 +302,19 @@ impl Workbench {
             self.discovery.start(packages, ctx);
         }
         self.discovery.poll();
+        self.icons.poll();
+        program::native::label_choices(
+            ctx,
+            self.discovery.labels.clone(),
+            self.discovery.label_error.clone(),
+        );
+        program::native::script_choices(
+            ctx,
+            self.discovery
+                .data
+                .as_ref()
+                .map(|data| data.scripts.clone()),
+        );
         let ingredients = catalog.map(|catalog| {
             let abilities = self
                 .discovery
@@ -404,16 +434,13 @@ impl Workbench {
                             egui::vec2(library_width, body_height),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
-                                ui.set_max_width(library_width);
-                                if let (Some(catalog), Some(donor)) = (catalog, donor) {
-                                    egui::CollapsingHeader::new("Current Weapon Perks").show(
-                                        ui,
-                                        |ui| {
-                                            self.draw_weapon_perks(ui, weapon, donor, catalog);
-                                        },
-                                    );
-                                }
-                                self.draw_library(ui, catalog, experimental);
+                                ui.set_width(library_width);
+                                self.draw_library(
+                                    ui,
+                                    catalog,
+                                    experimental,
+                                    donor.map(|donor| (weapon, donor)),
+                                );
                             },
                         );
                         ui.separator();
@@ -461,6 +488,7 @@ impl Workbench {
                                         .find(|document| document.recipe.id == document_id)
                                     {
                                         document.recipe = recipe;
+                                        document.modified = Some(SystemTime::now());
                                     }
                                     self.message = None;
                                     self.persist_drafts();
@@ -472,6 +500,9 @@ impl Workbench {
                 ui.separator();
                 attachment = self.draw_attachment(ui, weapon, donor, catalog);
             });
+        if open {
+            self.handle_save_shortcut(ctx);
+        }
         match self.header_action.take() {
             Some(HeaderAction::Save(copy)) => self.save(copy),
             Some(HeaderAction::Discard) => self.discard_changes(),
@@ -502,13 +533,34 @@ impl Workbench {
     ) -> f32 {
         let top = ui.cursor().top();
         let editing = self.editor.is_some();
-        let saveable = !editing && self.library.is_some();
+        let save_issue = self.save_issue();
+        let saveable = save_issue.is_none();
         let dirty = self.documents.get(self.selected).is_some_and(|document| {
             document.recipe != document.restored() || document.pending_effect.is_some()
         }) || editing;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 crate::app::style::more_menu(ui, |ui| {
+                    if ui
+                        .add_enabled(
+                            !editing && !recipe.effects.is_empty(),
+                            egui::Button::new("Copy Test Plan"),
+                        )
+                        .on_hover_text(
+                            "Copy an in-game checklist derived from this perk's triggers, actions and lifetime.",
+                        )
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(test_plan::render(
+                            recipe,
+                            &self.perk_names,
+                            Some(&self.keys.catalog),
+                            &self.asset_labels,
+                        ));
+                        self.message = Some("Copied the in-game test plan.".into());
+                        self.message_path = None;
+                        ui.close_menu();
+                    }
                     if ui
                         .add_enabled(saveable, egui::Button::new("Save as New Perk"))
                         .clicked()
@@ -532,11 +584,11 @@ impl Workbench {
                         ui.close_menu();
                     }
                 });
-                let save = crate::app::style::primary(ui, "Save Perk");
+                let save = crate::app::style::primary(ui, "Save to Library");
                 if ui
                     .add_enabled(saveable, save)
-                    .on_hover_text("Keep this perk in Custom Perks.")
-                    .on_disabled_hover_text("Apply or discard the open parameter edits first.")
+                    .on_hover_text("Save this perk in Custom Perks for reuse (Ctrl+S). Weapon copies stay unchanged. Apply to Weapon updates the selected socket.")
+                    .on_disabled_hover_text(save_issue.unwrap_or_default())
                     .clicked()
                 {
                     self.header_action = Some(HeaderAction::Save(false));
@@ -553,7 +605,8 @@ impl Workbench {
                     .on_hover_text(detail);
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if let Some(catalog) = catalog {
+                    if !self.icons.preview(ui, self.discovery.packages(), recipe.icon.as_ref())
+                        && let Some(catalog) = catalog {
                         catalog.draw_perk_icon(
                             ui,
                             recipe.template_plug.parse_u32().unwrap_or_default(),
@@ -617,6 +670,7 @@ impl Workbench {
         };
         if document.pending_effect.as_ref() != Some(&draft) {
             document.pending_effect = Some(draft);
+            document.modified = Some(SystemTime::now());
             self.persist_drafts();
         }
     }

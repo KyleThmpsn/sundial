@@ -57,13 +57,14 @@ impl SundialApp {
         }
         if section == ProfileInventorySection::PendingRewards
             && self.document.native_account().is_none()
+            && self.document.dawn_account().is_none()
         {
             section = ProfileInventorySection::SharedItems;
         }
 
         ui.horizontal(|ui| {
             ui.heading("Profile Inventory");
-            crate::ui_help::info(ui, "Items shared by the account and available to every character. Storage and limits follow the active Sunrise account source.");
+            crate::ui_help::info(ui, "Items shared by the account and available to every character. Storage and limits follow the active Sunrise or Dawn account source.");
         });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Profile);
@@ -82,11 +83,13 @@ impl SundialApp {
                     ProfileInventorySection::DismantleRewards,
                     "Dismantle Rewards",
                 );
-                if self.document.native_account().is_some() {
+                if self.document.native_account().is_some()
+                    || self.document.dawn_account().is_some()
+                {
                     ui.selectable_value(
                         &mut section,
                         ProfileInventorySection::PendingRewards,
-                        "Pending Rewards",
+                        "Reward Queue",
                     );
                 }
             });

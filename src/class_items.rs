@@ -6,8 +6,9 @@ mod titan;
 mod warlock;
 
 // The installed Shadowkeep investment data does not expose the API-generated
-// class restriction directly. These build-specific, hash-only lists keep armor
-// browsing class-correct without shipping a manifest database or game assets.
+// class restriction directly. These build-specific lists are generated from the
+// public manifest for installed hashes, keeping browsing class-correct without a
+// runtime dependency on a manifest database.
 pub(crate) fn class_type(hash: u64) -> Option<u64> {
     let hash = u32::try_from(hash).ok()?;
     if titan::HASHES.binary_search(&hash).is_ok() {

@@ -15,6 +15,42 @@ const SCHEMA: u32 = 1;
 /// Its effects are always replaced by the explicit authored effect list.
 pub const DEFAULT_PLUG_LAYOUT: u32 = 0x45A0_BDD7;
 
+/// Package artwork stays a reference. Downloaded artwork travels with the recipe.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Icon {
+    Texture {
+        tag: HexHash,
+    },
+    Image {
+        name: String,
+        image: crate::icon_edit::ImportedIcon,
+    },
+}
+
+impl Icon {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Texture { tag } => {
+                let tag = tiger_pkg::TagHash(tag.parse_u32().map_err(|error| error.to_string())?);
+                if !sundial::package_authoring::is_valid_package_tag(tag)
+                    || !crate::package_profile::is_stock_item_definition(tag.0)
+                    || (crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
+                        ..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+                        .contains(&tag.pkg_id())
+                {
+                    return Err("Perk icon must reference an installed stock texture.".into());
+                }
+            }
+            Self::Image { name, .. } if name.len() > 512 => {
+                return Err("Perk icon name is too long.".into());
+            }
+            Self::Image { .. } => {}
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerkRecipe {
@@ -23,6 +59,8 @@ pub struct PerkRecipe {
     pub name: String,
     pub description: String,
     pub template_plug: HexHash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<crate::perk::Icon>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<HexHash>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -53,6 +91,7 @@ impl PerkRecipe {
             name: "New Perk".into(),
             description: String::new(),
             template_plug: DEFAULT_PLUG_LAYOUT.into(),
+            icon: None,
             classification: None,
             stats: Vec::new(),
             effects: Vec::new(),
@@ -115,6 +154,7 @@ impl PerkRecipe {
             } else {
                 self.description.clone()
             }),
+            icon: self.icon.clone(),
             classification_donor_hash: self.classification.clone(),
             investment_stats: self.stats.clone(),
             additional_sandbox_perks: Vec::new(),

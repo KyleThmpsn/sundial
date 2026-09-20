@@ -4,6 +4,9 @@
 //! Dawn player-state database run the same storage-neutral commands. Each adapter still owns its
 //! own reading, writing and safety contract.
 
+pub(crate) mod progression;
+pub(crate) mod snapshot;
+
 use sundial_account::{
     AccountSettingsCapabilities, AccountSettingsState, CharacterAbilities, CharacterCapabilities,
     CharacterState, EntityId, ProfileCapabilities, ProfileState,
@@ -22,6 +25,19 @@ pub(crate) trait NativeAccountDocument {
 
     /// Allocates the next identity for a newly created entity.
     fn next_entity_id(&self) -> Result<EntityId, String>;
+
+    /// Plan an item identity without consuming it on a failed edit.
+    fn next_item_identity(&self) -> Result<sundial_account::InstanceSoid, String> {
+        self.characters()
+            .next_available_instance_soid(
+                sundial_account::InstanceSoid::try_from_u64(0x4000_0000_0000_0001)
+                    .expect("the generated identity start is nonzero"),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Commit an identity only after its item was successfully added.
+    fn observe_item_identity(&mut self, _identity: sundial_account::InstanceSoid) {}
 
     /// Abilities a format stores per item rather than per character.
     ///
@@ -65,6 +81,12 @@ impl<T: NativeAccountDocument> NativeAccountDocument for Box<T> {
     }
     fn next_entity_id(&self) -> Result<EntityId, String> {
         (**self).next_entity_id()
+    }
+    fn next_item_identity(&self) -> Result<sundial_account::InstanceSoid, String> {
+        (**self).next_item_identity()
+    }
+    fn observe_item_identity(&mut self, identity: sundial_account::InstanceSoid) {
+        (**self).observe_item_identity(identity);
     }
     fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
         (**self).persisted_item_abilities(id)
