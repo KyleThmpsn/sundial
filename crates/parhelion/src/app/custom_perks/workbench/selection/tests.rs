@@ -213,6 +213,14 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
     let mut perk = PerkRecipe::new();
     perk.name = "Uninstalled Test Perk".into();
     perk.description = "Saved locally and never installed.".into();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(96, 96, image::Rgba([245, 250, 255, 255]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    perk.icon = Some(crate::perk::Icon::Image {
+        name: "Saved Selection".into(),
+        image: crate::icon_edit::ImportedIcon::from_bytes(&png.into_inner()).unwrap(),
+    });
     perk.effects.push(PerkRecipe::effect(405));
     perk.stats.push(WeaponStatOverride {
         definition_index: 255,
@@ -230,6 +238,7 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
         ..Default::default()
     };
     let ctx = egui::Context::default();
+    let icon = selected_icon(&ctx, app.catalog.as_ref().unwrap(), &perk);
     let before = app.recipe.clone();
     let native_socket_type = donor.sockets[0].socket_type;
     let socket_type = app.recipe.overrides.socket_columns[0]
@@ -251,6 +260,7 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
     open_from_plug(&ctx, &mut app, "Existing Choice", false);
     let output = settle(&ctx, &mut app, 900.0);
     label(&output, "Uninstalled Test Perk", false);
+    assert_icon_drawn(&ctx, &output, icon, "Uninstalled Test Perk");
     let picker = app.perk_workbench.picker.as_ref().unwrap();
     assert_eq!(
         picker.choices.len(),
@@ -293,6 +303,8 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
         app.recipe
     );
     assert_eq!(std::fs::read(&saved.path).unwrap(), saved.baseline);
+    let output = settle(&ctx, &mut app, 900.0);
+    assert_icon_drawn(&ctx, &output, icon, "Uninstalled Test Perk");
 
     open_context_workbench(&ctx, &mut app, "Uninstalled Test Perk", 1);
     assert_eq!(
@@ -310,6 +322,47 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
 
     verify_creation_and_stale_destination(&ctx, &mut app, &donor);
     verify_empty_picker(&mut app, &donor);
+}
+
+fn selected_icon(
+    ctx: &egui::Context,
+    catalog: &InvestmentCatalog,
+    perk: &PerkRecipe,
+) -> egui::TextureId {
+    let mut icon = None;
+    let _ = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            icon = crate::artwork_browser::preview::icon(ui, catalog, perk.icon.as_ref());
+        });
+    });
+    let Some(sundial::investment::IconOverride::Texture(id)) = icon else {
+        panic!("Saved image must be available immediately");
+    };
+    id
+}
+
+fn assert_icon_drawn(
+    ctx: &egui::Context,
+    output: &egui::FullOutput,
+    icon: egui::TextureId,
+    name: &str,
+) {
+    let text = label(output, name, false);
+    assert!(
+        ctx.tessellate(output.shapes.clone(), output.pixels_per_point)
+            .iter()
+            .any(|shape| {
+                let egui::epaint::Primitive::Mesh(mesh) = &shape.primitive else {
+                    return false;
+                };
+                mesh.texture_id == icon
+                    && mesh
+                        .vertices
+                        .iter()
+                        .any(|vertex| vertex.pos.x < text.left() && vertex.pos.y <= text.bottom())
+            }),
+        "The saved icon must be painted beside {name}"
+    );
 }
 
 fn verify_creation_and_stale_destination(

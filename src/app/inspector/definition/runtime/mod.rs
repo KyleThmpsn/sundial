@@ -1,7 +1,7 @@
 //! On-demand, read-only package inspection. No recipe or account state is involved.
 
 mod dyes;
-use crate::investment::native_content::inspection as loader;
+use crate::investment::discovery::inspection as loader;
 mod perks;
 #[cfg(test)]
 mod tests;

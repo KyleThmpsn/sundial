@@ -3,10 +3,16 @@ use eframe::egui;
 
 pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -> bool {
     ui.heading("Dawn");
-    ui.label("Settings for the detected Dawn runtime.");
+    ui.label("Runtime configuration for the detected Dawn installation.");
+    ui.label(
+        "Dawn reads these controls from Dawn/settings.json at startup. Player preferences and key bindings are stored in player-state.db and appear on the other Game Settings tabs.",
+    );
     ui.label(format!("DLL: {}", runtime.dll_path.display()));
     if super::super::schema_version(json) != Some(6) {
-        ui.colored_label(ui.visuals().error_fg_color, "This runtime requires schema v6. Load compatible settings before editing these controls.");
+        ui.colored_label(
+            ui.visuals().error_fg_color,
+            "Dawn runtime configuration requires JSON schema v6. Load compatible configuration before editing these controls.",
+        );
         return false;
     }
     ui.add_space(10.0);
@@ -35,9 +41,9 @@ pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -
         );
     }
     ui.add_space(10.0);
-    egui::CollapsingHeader::new("Advanced Experiments").show(ui, |ui| {
+    egui::CollapsingHeader::new("Advanced Runtime Configuration").show(ui, |ui| {
         ui.label(
-            "These flags are separate from the executor choice. Missing flags default to off.",
+            "These controls are separate from the executor choice. Missing values use Dawn's compiled defaults.",
         );
         ui.strong("Omega");
         for flag in &OMEGA_FLAGS[1..] {
@@ -48,6 +54,7 @@ pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -
         for flag in CLIENT_FLAGS {
             changed |= draw_flag(ui, json, CLIENT, flag);
         }
+        changed |= draw_spawn_hold(ui, json);
     });
     for error in settings_issues(json) {
         ui.add_space(8.0);
@@ -56,13 +63,18 @@ pub(crate) fn draw(ui: &mut egui::Ui, json: &mut Value, runtime: &mut Runtime) -
     changed
 }
 
-fn draw_flag(ui: &mut egui::Ui, json: &mut Value, group: &str, (key, label): (&str, &str)) -> bool {
+fn draw_flag(
+    ui: &mut egui::Ui,
+    json: &mut Value,
+    group: &str,
+    (key, label, default): (&str, &str, bool),
+) -> bool {
     let path = format!("{group}/{key}");
     let invalid = json.pointer(&path).is_some_and(|v| !v.is_boolean());
     let mut enabled = json
         .pointer(&path)
         .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or(default);
     let mut changed = false;
     ui.push_id(&path, |ui| {
         ui.add_enabled_ui(editable_group(json, group), |ui| {
@@ -76,8 +88,49 @@ fn draw_flag(ui: &mut egui::Ui, json: &mut Value, group: &str, (key, label): (&s
             if invalid {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(ui.visuals().error_fg_color, "Must be true or false.");
-                    if ui.button("Set Off").clicked() {
-                        changed |= set_flag(json, group, key, false);
+                    if ui.button("Use Default").clicked() {
+                        changed |= set_flag(json, group, key, default);
+                    }
+                });
+            }
+        });
+    });
+    changed
+}
+
+fn draw_spawn_hold(ui: &mut egui::Ui, json: &mut Value) -> bool {
+    let invalid = json.pointer(CLIENT_SPAWN_HOLD_MS).is_some_and(|value| {
+        value
+            .as_u64()
+            .is_none_or(|value| value == 0 || value > MAXIMUM_SPAWN_HOLD_MS)
+    });
+    let mut milliseconds = json
+        .pointer(CLIENT_SPAWN_HOLD_MS)
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=MAXIMUM_SPAWN_HOLD_MS).contains(value))
+        .unwrap_or(DEFAULT_SPAWN_HOLD_MS);
+    let mut changed = false;
+    ui.push_id(CLIENT_SPAWN_HOLD_MS, |ui| {
+        ui.add_enabled_ui(editable_group(json, CLIENT), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Spawn Hold (Milliseconds)");
+                if ui
+                    .add(egui::DragValue::new(&mut milliseconds).range(1..=MAXIMUM_SPAWN_HOLD_MS))
+                    .on_hover_text(dotted(CLIENT_SPAWN_HOLD_MS))
+                    .changed()
+                {
+                    changed |= set_unsigned(json, CLIENT, "spawn_hold_ms", milliseconds);
+                }
+            });
+            if invalid {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("Must be from 1 to {MAXIMUM_SPAWN_HOLD_MS}."),
+                    );
+                    if ui.button("Use Default").clicked() {
+                        changed |=
+                            set_unsigned(json, CLIENT, "spawn_hold_ms", DEFAULT_SPAWN_HOLD_MS);
                     }
                 });
             }

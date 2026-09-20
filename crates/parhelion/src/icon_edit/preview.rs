@@ -62,6 +62,17 @@ impl WatermarkPreview {
 }
 
 impl LoadedIconPreview {
+    pub(super) fn set_branding(
+        &mut self,
+        branding: crate::branding::Branding,
+    ) -> Result<(), String> {
+        let image = branding.watermark().map_err(|error| error.to_string())?;
+        self.authored_watermark = DecodedIconImage {
+            size: [image.width() as usize, image.height() as usize],
+            rgba: image.into_raw(),
+        };
+        Ok(())
+    }
     pub(super) fn source_primary(&self, edit: &WeaponIconEdit) -> DecodedIconImage {
         let mut primary = self.primary.clone();
         if let Some(imported) = &edit.imported_image {
@@ -142,7 +153,14 @@ pub(crate) fn render_weapon_icon_preview(
     corner: Option<&crate::presentation::Artwork>,
 ) -> Result<egui::ColorImage, String> {
     let manager = open_shadowkeep_package_manager(package_directory)?;
-    render_weapon_icon_preview_from_manager(&manager, container_tag, rarity, edit, corner)
+    render_weapon_icon_preview_from_manager(
+        &manager,
+        container_tag,
+        rarity,
+        edit,
+        corner,
+        crate::branding::Branding::for_packages(package_directory),
+    )
 }
 
 pub(crate) fn render_weapon_icon_preview_from_manager(
@@ -151,8 +169,10 @@ pub(crate) fn render_weapon_icon_preview_from_manager(
     rarity: crate::AuthoredWeaponRarity,
     edit: &WeaponIconEdit,
     corner: Option<&crate::presentation::Artwork>,
+    branding: crate::branding::Branding,
 ) -> Result<egui::ColorImage, String> {
     let mut preview = load_icon_preview(manager, container_tag, rarity)?;
+    preview.set_branding(branding)?;
     if let Some(corner) = corner {
         preview.authored_watermark.rgba =
             crate::watermark::render_custom_corner(corner, 0).map_err(|error| error.to_string())?;

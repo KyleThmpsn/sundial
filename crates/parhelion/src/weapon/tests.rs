@@ -23,6 +23,7 @@ mod sockets;
 mod staged_builds;
 
 mod damage;
+mod sandbox_perks;
 
 mod fixtures;
 use fixtures::*;

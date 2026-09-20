@@ -15,6 +15,34 @@ use super::{DawnAccountDocument, DawnAccountDocumentLoad, DawnAccountSnapshot};
 /// refuses to start when the file is busy, corrupt, or newer than it understands. Sundial mirrors
 /// that stance rather than repairing anything it finds.
 pub(crate) fn load(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> {
+    match load_inner(path) {
+        Err(error) if incompatible_data(&error) => Ok(DawnAccountDocumentLoad::Incompatible(
+            DawnAccountIncompatibility::Row {
+                detail: error.to_string(),
+            },
+        )),
+        result => result,
+    }
+}
+
+fn incompatible_data(error: &DawnAccountError) -> bool {
+    match error {
+        DawnAccountError::Account(_) | DawnAccountError::Unwritable(_) => true,
+        DawnAccountError::Sqlite(error) => match error {
+            rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::QueryReturnedNoRows => true,
+            rusqlite::Error::SqliteFailure(_, Some(message)) => {
+                message.starts_with("no such table:") || message.starts_with("no such column:")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> {
     if !path.try_exists().unwrap_or(false) {
         return Ok(DawnAccountDocumentLoad::Missing);
     }
@@ -22,6 +50,8 @@ pub(crate) fn load(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountEr
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
+    // Hold one read snapshot for the revision, account graph and progression banks.
+    connection.execute_batch("BEGIN")?;
 
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 0 {
@@ -49,22 +79,39 @@ pub(crate) fn load(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountEr
     let characters = read!(reader::characters(&connection));
     let (settings, settings_index) = read!(reader::settings(&connection));
     let loaded_settings = settings.clone();
-    let carried = super::carried::read(&connection)?;
+    let carried = super::carried::read(&connection, &profile)?;
+    let activity = super::activity::ActivityState::load(&connection)?;
+    let progression = super::progression::Progression::load(&connection)?;
+    let loaded_dismantle = super::dismantle::rows(&profile);
+    let reward_debts = super::rewards::load(&connection)?;
+    let reward_sequence = super::rewards::sequence(&connection)?;
 
     Ok(DawnAccountDocumentLoad::Loaded(Box::new(
         DawnAccountDocument {
             path: PathBuf::from(path),
             metadata,
             allocators,
+            loaded_characters: characters.clone(),
+            loaded_profile: profile.clone(),
             snapshot: DawnAccountSnapshot {
                 primary_soid,
                 profile,
                 characters,
                 settings,
             },
+            loaded_carried: carried.clone(),
             carried,
+            loaded_activity: activity.clone(),
+            activity,
             settings_index,
             loaded_settings,
+            loaded_progression: progression.clone(),
+            progression,
+            loaded_dismantle,
+            loaded_reward_debts: reward_debts.clone(),
+            reward_debts,
+            reward_sequence,
+            editor_cancelled_debts: Default::default(),
         },
     )))
 }

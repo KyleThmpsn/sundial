@@ -59,12 +59,15 @@ fn rows(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String
         // The preset and the two sites are three separate readings. Run together they read
         // as one list of nine near identical rows, so a site stands off from the one before
         // it by more than the gap between its own rows.
-        ui.add_space(if group == 0 { 2.0 } else { 10.0 });
         let lists = native::labels::source(graph, index, binding)?;
+        unset += unset_operations(&lists);
+        if !fold.unfolded && lists.iter().all(Vec::is_empty) {
+            continue;
+        }
+        ui.add_space(if group == 0 { 2.0 } else { 10.0 });
         // Both sites offer the same four set operations, so the operation alone names two
         // rows the same. The site's own word leads, as it does on every other node.
         let caption = site_caption(graph.blocks[index].class, binding);
-        unset += unset_operations(&lists);
         if let Some((operation, labels)) = draw_site_group(
             ui,
             graph.blocks[index].class,
@@ -94,20 +97,8 @@ fn set(
     {
         return Err("The selected condition is not a kill filter.".into());
     }
-    // Always allocate independent rows. A source can share its label array with another
-    // condition, whose filter must remain untouched. The compiler rebuilds the masks.
     let mut changed = graph.clone();
-    changed.create_target(index, LABELS + 8, 0x808094B3, true)?;
-    let rows = changed.blocks[index].links[&(LABELS + 8)];
-    changed.resize_array(rows, labels.len())?;
-    for (row, label) in labels.iter().enumerate() {
-        let offset = row * 24;
-        changed.blocks[rows].bytes[offset..offset + 4].copy_from_slice(&label.to_le_bytes());
-        changed.blocks[rows].bytes[offset + 16..offset + 24].copy_from_slice(
-            &u64::from(sundial::package_authoring::sandbox_perk::activation::LABEL_GLOBALS)
-                .to_le_bytes(),
-        );
-    }
+    set_labels(&mut changed, index, LABELS, 0, labels)?;
     changed.blocks[index].bytes[WEAPON] = u8::from(requires_weapon);
     changed.validate()?;
     *graph = changed;
@@ -118,6 +109,61 @@ fn set(
 mod tests {
     use super::*;
     use sundial::package_authoring::sandbox_perk::activation;
+
+    #[test]
+    fn folded_empty_filter_groups_do_not_leave_a_blank_row() {
+        let bytes = native::template(true, 2).unwrap();
+        let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
+        for binding in [LABELS, VICTIM] {
+            for operation in 0..4 {
+                set_labels(&mut graph, 0, binding, operation, &[]).unwrap();
+            }
+        }
+        set(
+            &mut graph,
+            0,
+            PerkActivation::PrecisionWeaponKill.labels(),
+            true,
+        )
+        .unwrap();
+        let before = graph.clone();
+        let ctx = egui::Context::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::app::style::workbench_style(ui);
+                    draw(ui, &mut graph, 0).unwrap();
+                });
+            },
+        );
+        let rect = |name: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == name => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing {name}"))
+        };
+        let last_filter = rect("Kill matches any");
+        let more = rect("7 more filters");
+        assert!(
+            more.top() - last_filter.bottom() <= 12.0,
+            "Hidden filters reserved a blank row"
+        );
+        assert!(more.top() >= last_filter.bottom());
+        assert_eq!(graph, before);
+    }
 
     #[test]
     fn changing_a_kill_filter_preserves_shared_siblings_and_other_requirements() {
@@ -135,9 +181,11 @@ mod tests {
             expected.bytes[LABELS..LABELS + 8]
                 .copy_from_slice(&(choice.labels().len() as u64).to_le_bytes());
             expected.bytes[WEAPON] = u8::from(choice.requires_weapon());
-            expected
-                .links
-                .insert(LABELS + 8, edited.blocks[0].links[&(LABELS + 8)]);
+            if let Some(target) = edited.blocks[0].links.get(&(LABELS + 8)) {
+                expected.links.insert(LABELS + 8, *target);
+            } else {
+                expected.links.remove(&(LABELS + 8));
+            }
             assert_eq!(edited.blocks[0], expected);
             assert_eq!(
                 native::labels::source(&edited, 0, LABELS).unwrap()[0],

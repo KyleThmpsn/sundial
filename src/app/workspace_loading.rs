@@ -102,13 +102,18 @@ impl SundialApp {
         document: WorkspaceDocument,
         automatic: bool,
     ) {
+        let runtime_name = if document.account_is_dawn() {
+            "Dawn"
+        } else {
+            "Sunrise"
+        };
         let blocked_reason = document.account_editing_blocked().map(str::to_owned);
         let warning = validate_workspace_document(&document).err();
         self.replace_loaded_document(document);
         let action = if automatic { "Refreshed" } else { "Reloaded" };
         if let Some(reason) = blocked_reason {
             self.set_status(
-                format!("{action} Sunrise data, but account editing is blocked: {reason}"),
+                format!("{action} {runtime_name} data, but account editing is blocked: {reason}"),
                 true,
             );
         } else if let Some(warning) = warning {
@@ -119,9 +124,12 @@ impl SundialApp {
                 true,
             );
         } else if automatic {
-            self.set_status("Refreshed Sunrise data after returning to Sundial", false);
+            self.set_status(
+                format!("Refreshed {runtime_name} data after returning to Sundial"),
+                false,
+            );
         } else {
-            self.set_status("Reloaded Sunrise data", false);
+            self.set_status(format!("Reloaded {runtime_name} data"), false);
         }
         if self.preferences.troubleshooting_logging {
             let _ = self.append_troubleshooting_snapshot();

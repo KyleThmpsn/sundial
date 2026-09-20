@@ -81,6 +81,7 @@ pub(in crate::catalog) struct ItemScanContext<'a> {
     pub icon_containers_by_index: &'a [Option<u32>],
     pub inventory_buckets: &'a HashMap<u8, InventoryBucketDescriptor>,
     pub item_stat_definitions: &'a [ItemStatDefinition],
+    pub character_stat_rows: Option<&'a [u16; 6]>,
     pub stat_names: &'a [String],
     pub sandbox_perk_catalog: Option<&'a [bool]>,
     pub perk_descriptions: &'a HashMap<u16, String>,
@@ -278,6 +279,7 @@ pub(in crate::catalog) fn scan_items(
         icon_containers_by_index,
         inventory_buckets,
         item_stat_definitions,
+        character_stat_rows,
         stat_names,
         sandbox_perk_catalog,
         perk_descriptions,
@@ -513,7 +515,8 @@ pub(in crate::catalog) fn scan_items(
             }
         }
         if name.trim().is_empty() {
-            let Some((derived_name, derived_type_name)) = stat_allocation_labels(&item, stat_names)
+            let Some((derived_name, derived_type_name)) = character_stat_rows
+                .and_then(|rows| stat_allocation_labels(&item, rows, stat_names))
             else {
                 attach_item_objective_owners(
                     objectives,

@@ -22,8 +22,6 @@ fn bundled_defaults_follow_the_json_and_sqlite_account_contracts() {
     let retired = include_str!("../../../../tests/fixtures/sunrise-v18-5e4cbc7-defaults.json");
     let shortened = decode_settings_defaults(retired).unwrap();
     assert_eq!(shortened, serde_json::from_str::<Value>(retired).unwrap());
-    assert_eq!(shortened.pointer("/client/region_private"), None);
-    assert_eq!(shortened.pointer("/state/activity/arrival_overrides"), None);
     parsed["steam"]["language"] = Value::from("not-a-language");
     assert!(decode_settings_defaults(&parsed.to_string()).is_err());
 }

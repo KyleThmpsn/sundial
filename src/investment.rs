@@ -16,12 +16,12 @@ pub use lore::{LoreEntry, load_item_lore};
 mod perk_patterns;
 mod perk_sources;
 pub use perk_sources::{PerkSource, PerkSources};
+pub mod discovery;
 mod ingredients;
-pub mod native_content;
 pub use ingredients::{IngredientCatalog, IngredientSource};
 pub(crate) mod seasonal;
 pub use controls::{
-    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, PlugChoicePickerButton,
+    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, IconOverride, PlugChoicePickerButton,
     PlugChoicePickerOptions, PlugSelection, PlugTooltip, WeaponDonorPickerAction,
     WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, authoring_button_width,
     authoring_choice_row_height, authoring_socket_label_width, authoring_socket_reset_width,

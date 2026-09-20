@@ -381,37 +381,27 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         0x80803DFD | 0x80803E01 => {
             vec![(8, 1, Byte, "Slot Mask"), (0x10, 1, Byte, "Player Filter")]
         }
-        // The general predicate's inline restrictions, read off the stock perks that set them
-        // (see `values.rs`): a player state mask at +38, a weapon state at +81, and four
-        // floats only the health perks touch (Pulse Monitor, Armor of the Colossus, Underdog,
-        // Eye of the Storm), whose bounds are not established beyond that. The key at +D4 and
-        // the float pair at +D8/+DC form a named value range, the same contract as 0x80803DE5.
-        // Across 1613 stock actions every keyed row keeps +D8 at or below +DC (298 of 298) and
-        // unkeyed rows sit at (1, 1). A second selector byte at +80 takes five stock values and
-        // is not named yet (see the template field map under docs).
-        //
-        // These fields cover both predicate kinds, so the counts below are over all 537 stock
-        // rows: 293 of the plain kind and 244 of the nested one.
-        //
-        // A second float pair sits at +10 and +14. Both hold -1 in 532 of the 537 rows, which
-        // reads as no bound. Five rows set them, holding three distinct pairs, and in each the
-        // first stays at or below the second: (0, 0.3) twice and (80, 100) once in the plain
-        // kind, (0, 40) twice in the nested one.
-        //
-        // From +88 to +BC the node carries seven float pairs at a stride of eight. The first
-        // of every pair defaults to 1 and the second to 0, the identities of multiplication
-        // and addition, so each pair reads as a factor and a term. The defaults are near
-        // universal rather than absolute: +B0 and +B8 hold them in all 537 rows, and the rest
-        // move in between one and six rows each. Which quantity each pair scales is not
-        // resolved, so the labels number them.
+        // 107FC20 passes pairs beginning at +18/+20 to F006B0/F08390 (normalized
+        // health/shields), +28 to F0B4D0 (living teammate fraction) and +30 to
+        // EFD430 (fireteam size including the owner). Last Stand and Celerity
+        // require a zero living fraction and at least two fireteam members.
+        // EF5EB0 reads the three weapon ability interfaces at +84/+8C/+94.
+        // EF9060 reads magazine fractions at +9C/+A4/+AC. Reservoir Burst and
+        // Together Forever check a full Energy magazine. These are min/max
+        // pairs starting at +84, not multiply/add pairs starting at +88.
+        // +BC is a separate byte selector and must not be edited as a float.
         0x80803DCE | 0x80803DCC => {
             let mut fields = vec![
                 (0x10, 4, Float, "Second Range Minimum"),
                 (0x14, 4, Float, "Second Range Maximum"),
-                (0x18, 4, Float, "Health Value 1"),
-                (0x1C, 4, Float, "Health Value 2"),
-                (0x20, 4, Float, "Health Value 3"),
-                (0x24, 4, Float, "Health Value 4"),
+                (0x18, 4, Float, "Minimum Health Fraction"),
+                (0x1C, 4, Float, "Maximum Health Fraction"),
+                (0x20, 4, Float, "Minimum Shield Fraction"),
+                (0x24, 4, Float, "Maximum Shield Fraction"),
+                (0x28, 4, Float, "Minimum Living Fireteam Fraction"),
+                (0x2C, 4, Float, "Maximum Living Fireteam Fraction"),
+                (0x30, 4, Float, "Minimum Fireteam Size"),
+                (0x34, 4, Float, "Maximum Fireteam Size"),
                 (0x38, 1, Byte, "Player State"),
                 (0x81, 1, Byte, "Weapon State"),
                 (0xD4, 4, Key, "Named Key"),
@@ -420,20 +410,42 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
                 (0xE0, 4, Float, "Hold Duration"),
                 (0xF8, 1, Flag, "Invert Result"),
             ];
-            const PAIRS: [(usize, &str, &str); 8] = [
-                // The same identity defaults appear once below the run of seven.
-                (0x2C, "Health Factor", "Health Term"),
-                (0x88, "Pair 1 Factor", "Pair 1 Term"),
-                (0x90, "Pair 2 Factor", "Pair 2 Term"),
-                (0x98, "Pair 3 Factor", "Pair 3 Term"),
-                (0xA0, "Pair 4 Factor", "Pair 4 Term"),
-                (0xA8, "Pair 5 Factor", "Pair 5 Term"),
-                (0xB0, "Pair 6 Factor", "Pair 6 Term"),
-                (0xB8, "Pair 7 Factor", "Pair 7 Term"),
+            const PAIRS: [(usize, &str, &str); 7] = [
+                (
+                    0x84,
+                    "Minimum Kinetic Weapon Interface Value",
+                    "Maximum Kinetic Weapon Interface Value",
+                ),
+                (
+                    0x8C,
+                    "Minimum Energy Weapon Interface Value",
+                    "Maximum Energy Weapon Interface Value",
+                ),
+                (
+                    0x94,
+                    "Minimum Power Weapon Interface Value",
+                    "Maximum Power Weapon Interface Value",
+                ),
+                (
+                    0x9C,
+                    "Minimum Kinetic Magazine Fraction",
+                    "Maximum Kinetic Magazine Fraction",
+                ),
+                (
+                    0xA4,
+                    "Minimum Energy Magazine Fraction",
+                    "Maximum Energy Magazine Fraction",
+                ),
+                (
+                    0xAC,
+                    "Minimum Power Magazine Fraction",
+                    "Maximum Power Magazine Fraction",
+                ),
+                (0xB4, "Minimum Global Value", "Maximum Global Value"),
             ];
-            for (offset, factor, term) in PAIRS {
-                fields.push((offset, 4, Float, factor));
-                fields.push((offset + 4, 4, Float, term));
+            for (offset, minimum, maximum) in PAIRS {
+                fields.push((offset, 4, Float, minimum));
+                fields.push((offset + 4, 4, Float, maximum));
             }
             fields
         }
@@ -510,7 +522,9 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // The assignment and multiplication arrays share this exact row contract.
         // Selector 255 uses the literal, other values select a native stat.
         0x80803E22 => vec![
-            (0, 4, Unsigned, "Event Slot"),
+            // 108EFFD/108F06D reads only the signed selector byte. Preserve the
+            // next three bytes instead of treating them as part of the index.
+            (0, 1, Byte, "Damage Field"),
             (4, 4, Float, "Literal Value"),
             (8, 1, Byte, "Stat Selector"),
         ],
@@ -545,8 +559,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // The same traced lanes read by component_value_adjustment_facts.
         0x80803E4D => vec![
             (2, 1, Byte, "Target Selector"),
-            (3, 1, Byte, "Flag Byte"),
-            (4, 1, Byte, "Option Byte"),
+            (3, 1, Byte, "Ability State"),
+            (4, 1, Byte, "Ability Version"),
             (8, 4, Float, "Scale"),
             (0x0C, 4, Float, "Limit"),
             (0x48, 1, Byte, "Input Selector"),
@@ -839,6 +853,55 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damage_lane_and_predicate_bound_edits_preserve_neighboring_native_bytes() {
+        let mut row = Block {
+            class: 0x80803E22,
+            count: Some(2),
+            bytes: vec![0xA5; 24],
+            links: Default::default(),
+        };
+        let before = row.bytes.clone();
+        let selector = describe(row.class)
+            .unwrap()
+            .into_iter()
+            .find(|field| field.label == "Damage Field")
+            .unwrap();
+        selector.write(&mut row, 1, &[1]).unwrap();
+        assert_eq!(row.bytes[12], 1);
+        assert_eq!(&row.bytes[..12], &before[..12]);
+        assert_eq!(&row.bytes[13..], &before[13..]);
+
+        for class in [0x80803DCE, 0x80803DCC] {
+            let mut block = Block {
+                class,
+                count: None,
+                bytes: vec![0xA5; schema::record(class).unwrap().size],
+                links: Default::default(),
+            };
+            let fields = describe(class).unwrap();
+            for (label, offset, value) in [
+                ("Maximum Living Fireteam Fraction", 0x2C, 0.0f32),
+                ("Minimum Fireteam Size", 0x30, 2.0),
+                ("Minimum Energy Magazine Fraction", 0xA4, 1.0),
+                ("Maximum Global Value", 0xB8, 0.5),
+            ] {
+                let before = block.bytes.clone();
+                let field = fields.iter().find(|field| field.label == label).unwrap();
+                field.write(&mut block, 0, &value.to_le_bytes()).unwrap();
+                assert_eq!(&block.bytes[offset..offset + 4], &value.to_le_bytes());
+                assert_eq!(&block.bytes[..offset], &before[..offset]);
+                assert_eq!(&block.bytes[offset + 4..], &before[offset + 4..]);
+            }
+            // +BC is a separate native selector, never the end of a float pair.
+            assert!(!fields.iter().any(|field| {
+                field.format == Format::Float
+                    && field.offset <= 0xBC
+                    && field.offset + field.width > 0xBC
+            }));
+        }
+    }
 
     /// A declared field whose bytes fall outside the record is dropped by `insert` without a
     /// word, so a name recovered for a lane that does not exist never reaches the workbench

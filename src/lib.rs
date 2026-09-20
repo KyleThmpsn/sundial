@@ -48,6 +48,7 @@ pub mod ui;
 mod ui_help;
 mod unnamed_plugs;
 mod updates;
+pub mod version;
 mod weapon_dyes;
 mod weapon_entity;
 mod weapon_runtime;

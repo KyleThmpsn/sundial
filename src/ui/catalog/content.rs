@@ -1,7 +1,7 @@
 //! TFT paths and resolved perk references, using the shared catalog inspector.
 use super::{BrowserList, assets};
 use crate::{
-    investment::{WeaponSandboxPerkChoice, native_content::Catalog},
+    investment::{WeaponSandboxPerkChoice, discovery::Catalog},
     package_runtime::tft,
     sandbox_perk::dependencies,
 };

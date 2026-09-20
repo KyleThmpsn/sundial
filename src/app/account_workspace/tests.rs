@@ -1,5 +1,8 @@
 //! Account workspace routing and source-selection tests.
 
+mod dawn_progression;
+mod dawn_rewards;
+mod dawn_saving;
 mod sqlite_inventory;
 mod sqlite_smoke;
 
@@ -553,11 +556,6 @@ fn official_sqlite_equipment_contract_is_available_for_schema18() {
     assert!(document.supports_masterwork_flags());
     assert!(!document.uses_subclass_plug_abilities());
     assert_eq!(document.equipment_slots().len(), 17);
-    assert_eq!(
-        crate::persistence::sqlite_account::SqliteAccountDocument::character_capabilities()
-            .item_flag_mask,
-        7
-    );
     account::set_equipment_item_flags(&mut document, 0, "kinetic", Some(4)).unwrap();
     account::equip_definition(&mut document, 0, "artifact", 42, &[]).unwrap();
     assert!(

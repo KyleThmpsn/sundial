@@ -34,6 +34,7 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
         choice_index: 0,
         source_plug_hash: MICRO_MISSILE.into(),
         name: Some(format!("Added Socket Private Perk {count}")),
+        icon: None,
         classification_donor_hash: None,
         description: None,
         additional_sandbox_perks: Vec::new(),

@@ -543,11 +543,12 @@ mod tests {
             item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 12),
             Some(EMOTE_BUCKET_HASH)
         );
+        // The override needs both halves: another definition in that bucket, and that
+        // definition in another bucket, both miss it.
         assert_eq!(item_bucket_hash(42, 12), None);
-        assert_eq!(item_bucket_hash(42, 49), Some(0x59CA_1EA2));
-        assert_eq!(
+        assert_ne!(
             item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 0),
-            bucket_hash(0)
+            Some(EMOTE_BUCKET_HASH)
         );
     }
 }

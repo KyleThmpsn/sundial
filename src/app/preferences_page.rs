@@ -260,7 +260,7 @@ impl SundialApp {
         if ui
             .checkbox(
                 &mut self.preferences.always_open_json_editor_in_second_window,
-                "Open All Settings (JSON) in a Second Window",
+                "Open JSON Editor in a Second Window",
             )
             .changed()
         {
@@ -407,14 +407,16 @@ impl SundialApp {
         {
             self.open_package_authoring(ctx);
         }
-        ui.add_space(6.0);
-        preferences_changed |= ui
-            .checkbox(
-                &mut self.preferences.experimental_extended_fov,
-                "Allow Field of View up to 155",
-            )
-            .changed();
-        ui.label("Extends the Display slider on Sunrise schema 16 or newer. Existing saved values are preserved when disabled.");
+        if !self.dawn_account_runtime() {
+            ui.add_space(6.0);
+            preferences_changed |= ui
+                .checkbox(
+                    &mut self.preferences.experimental_extended_fov,
+                    "Allow Field of View up to 155",
+                )
+                .changed();
+            ui.label("Extends the Display slider on Sunrise schema 16 or newer. Existing saved values are preserved when disabled.");
+        }
         ui.add_space(6.0);
         let power_above_cap_response = ui.horizontal(|ui| {
             let response = ui.checkbox(

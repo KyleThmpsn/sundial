@@ -30,9 +30,19 @@ pub(super) fn draw_perks(
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
             for (row, perk) in metadata.sandbox_perks.iter().enumerate() {
-                egui::CollapsingHeader::new(format!("Perk Index {}", perk.perk_index))
+                // A declaration-only row still reaches the client's perk bank, so it is shown
+                // with its liveness rather than hidden.
+                let heading = if perk.active {
+                    format!("Perk Index {}", perk.perk_index)
+                } else {
+                    format!("Perk Index {} · Declaration Only", perk.perk_index)
+                };
+                egui::CollapsingHeader::new(heading)
                     .id_salt((row, perk.perk_index))
                     .show(ui, |ui| {
+                        if !perk.active {
+                            ui.weak("Inactive in the native registry's own lookup. The row carries no runtime action but is still projected into the replicated perk bank.");
+                        }
                         let loaded = state.draw_request(ui, RuntimeTarget::Perk(perk.perk_index));
                         if let Some(Ok(LoadedDetails::Perk(details))) = loaded.as_deref() {
                             draw_details(ui, catalog, details, &mut state.view);

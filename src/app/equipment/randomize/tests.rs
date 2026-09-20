@@ -1,6 +1,7 @@
 //! Equipment randomizer behavior and invariant tests.
 
 mod capacity;
+mod dawn;
 mod native_sanity;
 mod socket_shape;
 

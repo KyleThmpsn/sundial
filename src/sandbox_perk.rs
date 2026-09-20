@@ -24,7 +24,7 @@ pub mod nodes;
 pub mod program;
 pub mod projectile;
 
-pub(crate) const CACHE_DIRECTORY: &str = "perks/cache";
+pub(crate) const CACHE_DIRECTORY: &str = "discovery";
 
 /// Package class for the finished sandbox-perk catalog.
 pub const FINISHED_SANDBOX_PERK_CATALOG_CLASS: u32 = 0x8080_5C97;
@@ -111,6 +111,8 @@ pub struct FinishedSandboxPerkName {
 pub struct FinishedSandboxPerkPresentation {
     pub name: Option<FinishedSandboxPerkName>,
     pub description: Option<FinishedSandboxPerkName>,
+    /// Item-icon table row used by the weapon tooltip, separate from the plug's own icon.
+    pub icon_index: Option<u16>,
     /// Copy the native tooltip grouping field from a classified donor's visible perk.
     pub category_source_index: Option<usize>,
     /// Additional effects belong to the composite plug, not separate tooltip entries.
@@ -338,6 +340,9 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
         write_u16(&mut authored_detail, 8, description.bank_index)?;
         write_u16(&mut authored_detail, 10, 0)?;
         write_u32(&mut authored_detail, 12, description.string_hash)?;
+    }
+    if let Some(icon_index) = presentation.icon_index {
+        write_u16(&mut authored_detail, 16, icon_index)?;
     }
     if let Some(index) = presentation.category_source_index {
         let source = finished_sandbox_perk_with_layout(payload, layout, index)?

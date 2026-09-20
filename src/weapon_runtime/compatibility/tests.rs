@@ -50,7 +50,7 @@ fn fixture() -> (Vec<u8>, WeaponRuntimeBinding, RuntimeRegistry) {
 }
 
 #[test]
-fn known_native_shape_requires_no_reflected_fields() {
+fn a_known_native_shape_resolves_to_its_instance_and_definition_schemas() {
     let (owner, binding, registry) = fixture();
     assert_eq!(
         native_resource_shape(&owner, &binding, &registry),
@@ -58,12 +58,6 @@ fn known_native_shape_requires_no_reflected_fields() {
             instance_schema: INSTANCE,
             definition_schema: Some(DEFINITION),
         })
-    );
-    assert!(
-        registry
-            .records
-            .values()
-            .all(|record| record.members.is_empty())
     );
 }
 

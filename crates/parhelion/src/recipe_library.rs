@@ -20,7 +20,7 @@ const EVERY_END_FILE_NAME: &str = "every-end.parhelion.json";
 const EVERY_END_TEMPLATE: &str = include_str!("../recipes/every-end.parhelion.json");
 const SECOND_SUN_FILE_NAME: &str = "second-sun.parhelion.json";
 const SECOND_SUN_TEMPLATE: &str = include_str!("../recipes/second-sun.parhelion.json");
-pub(crate) const BUNDLED_RECIPES: [(&str, &str); 15] = [
+pub(crate) const BUNDLED_RECIPES: [(&str, &str); 18] = [
     (EVERY_END_FILE_NAME, EVERY_END_TEMPLATE),
     (SECOND_SUN_FILE_NAME, SECOND_SUN_TEMPLATE),
     (
@@ -74,6 +74,18 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 15] = [
     (
         "reclamation-order.parhelion.json",
         include_str!("../recipes/reclamation-order.parhelion.json"),
+    ),
+    (
+        "hammer-time.parhelion.json",
+        include_str!("../recipes/hammer-time.parhelion.json"),
+    ),
+    (
+        "ravenous-horizon.parhelion.json",
+        include_str!("../recipes/ravenous-horizon.parhelion.json"),
+    ),
+    (
+        "suros-renaissance.parhelion.json",
+        include_str!("../recipes/suros-renaissance.parhelion.json"),
     ),
 ];
 const LIBRARY_STATE_SCHEMA: u32 = 1;

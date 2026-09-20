@@ -390,6 +390,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
                 socket_index: TRAIT_SOCKET_INDEX as u16,
                 choice_index: 0,
                 source_plug_hash: MICRO_MISSILE_PLUG_HASH,
+                icon: None,
                 classification_donor_hash: None,
                 description: None,
                 additional_sandbox_perks: Vec::new(),

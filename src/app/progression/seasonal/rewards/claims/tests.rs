@@ -68,6 +68,41 @@ fn document() -> Value {
 }
 
 #[test]
+fn dawn_seasonal_authoring_and_item_claims_are_refused_without_mutation() {
+    use crate::app::account_workspace::WorkspaceDocument;
+    let dir = crate::test_support::TestDirectory::new("dawn-seasonal-xp");
+    crate::persistence::dawn_account::tests::create_fixture(&dir.0.join("player-state.db"));
+    let path = dir.0.join("settings.json");
+    let seed = json!({"version":6});
+    let workspace = WorkspaceDocument::load(seed.clone(), &path, true);
+    let catalog = catalog();
+    let mut view = workspace.progression_view(0);
+    let before = view.clone();
+    for edit in [
+        crate::app::progression::seasonal::Edit::Experience(100000),
+        crate::app::progression::seasonal::Edit::Reset,
+        crate::app::progression::seasonal::Edit::Mod {
+            sale_index: 0,
+            owned: true,
+        },
+    ] {
+        assert!(
+            crate::app::progression::seasonal::apply(&mut view, &catalog, edit)
+                .unwrap_err()
+                .contains("unavailable for Dawn")
+        );
+        assert_eq!(view, before);
+    }
+    assert!(
+        claim(&mut view, &catalog, &reward())
+            .unwrap_err()
+            .contains("Dawn Season Pass reward claims")
+    );
+    assert!(Job::new(&view, &catalog, vec![0], Some(100)).is_err());
+    assert_eq!(view, before);
+}
+
+#[test]
 fn season_pass_consumables_are_claimed_once_and_full_stacks_remain_unclaimed() {
     let catalog = super::super::super::super::rewards::tests::catalog()
         .with_test_progression(

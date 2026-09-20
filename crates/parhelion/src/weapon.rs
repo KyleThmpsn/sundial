@@ -199,11 +199,10 @@ use crate::tag_payload::{
 };
 use crate::{
     AuthoringError, AuthoringResult, ExtendedOverlayArtifact, NewTagSpec, ReplacementSpec,
-    SUNRISE_BADGE_DESCRIPTION, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME,
-    SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement,
-    SunriseProjectMetadata, SupportedPlugSet, WeaponIconRequest, append_badge_icon_row,
-    author_sunrise_badge_graph, build_badge_icon_plan, item_icon_row_with_container,
-    sunrise_badge_collectible_parents, validate_socket_column_overrides_with_socket_types,
+    SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES,
+    SunriseBadgePlacement, SunriseProjectMetadata, SupportedPlugSet, WeaponIconRequest,
+    append_badge_icon_row, author_sunrise_badge_graph, item_icon_row_with_container,
+    sunrise_badge_collectible_parents, validate_socket_column_overrides_with_variants,
     validate_stat_overrides,
 };
 
@@ -250,7 +249,7 @@ const ITEM_STRING_SANDBOX_PERK_RESOURCE_CLASS: u32 = 0x8080_5D08;
 const ITEM_STRING_SANDBOX_PERK_DESCRIPTOR_OFFSET: usize = 0x08;
 const ITEM_STRING_SANDBOX_PERK_ROW_CLASS: u32 = 0x8080_5D0A;
 const ITEM_STRING_SANDBOX_PERK_ROW_SIZE: usize = 0x20;
-const ITEM_STRING_SANDBOX_PERK_EMPTY_EXPRESSION_TAG: u32 = 0x811C_9DC5;
+const ITEM_STRING_SANDBOX_PERK_EMPTY_NAME_HASH: u32 = 0x811C_9DC5;
 const PRIVATE_PERK_RESIDENCY_DONOR_ACTION_TAG: TagHash = TagHash(0x80B7_76B8);
 // This existing type-16 investment root is actually requested by the game. Its precomputed
 // dependency index, unlike the name map alone, schedules new action and graph data for loading.
@@ -869,8 +868,9 @@ pub struct WeaponSocketColumnOverride {
 
 /// One finished sandbox-perk chain cloned privately for an authored socket plug.
 ///
-/// Only this finished-perk row and its runtime action/entity chain become private. Other perks
-/// carried by the source plug continue to reference their stock rows.
+/// Only this finished-perk row and its runtime action/entity chain become private. Unmodified
+/// fixed-element markers retain their stock identities. Other perks carried by the source plug
+/// continue to reference their stock rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponSandboxPerkRuntimeOverride {
     pub program: Option<sundial::package_authoring::sandbox_perk::program::Program>,
@@ -911,13 +911,14 @@ pub struct WeaponSocketPlugVariantOverride {
     /// Stock plug supplying category, tier, inspection template and item-type text.
     /// Its perks and runtime are not transferred.
     pub classification_donor_hash: Option<u32>,
+    pub icon: Option<crate::perk::Icon>,
     pub description: Option<String>,
     pub additional_sandbox_perks: Vec<u16>,
     pub sandbox_perks: Vec<WeaponSandboxPerkRuntimeOverride>,
 }
 
 impl WeaponSocketPlugVariantOverride {
-    fn same_definition(&self, other: &Self) -> bool {
+    pub(crate) fn same_definition(&self, other: &Self) -> bool {
         let mut other = other.clone();
         other.socket_index = self.socket_index;
         other.choice_index = self.choice_index;
@@ -1181,6 +1182,8 @@ struct ResolvedCustomPlug {
     source_definition: Vec<u8>,
     source_strings: Vec<u8>,
     source_icon_container: TagHash,
+    authored_icon_container: Option<TagHash>,
+    icon: Option<crate::perk::Icon>,
     authored_item_hash: u32,
     authored_item_index: u16,
     authored_definition_tag: TagHash,
@@ -1190,6 +1193,8 @@ struct ResolvedCustomPlug {
     authored_description_hash: Option<u32>,
     authored_description: Option<String>,
     additional_sandbox_perks: Vec<u16>,
+    /// Ordered source indices, including stock markers that need no private runtime clone.
+    effect_indices: Vec<u16>,
     classification: Option<crate::plug_classification::PlugClassification>,
     classification_item_index: Option<usize>,
     classification_perk_index: Option<usize>,
@@ -1270,7 +1275,7 @@ fn replace_custom_plug_stats(data: &mut Vec<u8>, values: &[(u16, i32)]) -> Autho
         return Err(invalid("A custom perk supports up to 16 stat bonuses"));
     }
     let resource = relative_target(data, ITEM_INVESTMENT_STAT_POINTER_OFFSET)?;
-    let mut removed = if read_u64(data, resource)? == 0 && read_i64(data, resource + 8)? == 0 {
+    let removed = if read_u64(data, resource)? == 0 && read_i64(data, resource + 8)? == 0 {
         Vec::new()
     } else {
         let (count, _, rows, class) = array_at(data, resource)?;
@@ -1281,8 +1286,13 @@ fn replace_custom_plug_stats(data: &mut Vec<u8>, values: &[(u16, i32)]) -> Autho
             .map(|index| read_u8(data, rows + index * ITEM_INVESTMENT_STAT_ROW_SIZE).map(u16::from))
             .collect::<AuthoringResult<Vec<_>>>()?
     };
-    removed.retain(|index| !values.iter().any(|(selected, _)| selected == index));
-    set_weapon_stats(data, values, &removed)
+    // Independent stats must not retain a donor's amount or activation programs,
+    // even when an authored stat uses the same definition index.
+    let mut authored = data.clone();
+    set_weapon_stats(&mut authored, &[], &removed)?;
+    set_weapon_stats(&mut authored, values, &[])?;
+    *data = authored;
+    Ok(())
 }
 
 /// Apply sparse stat edits without changing the source or accepting cache-truncated rows.
@@ -1337,6 +1347,7 @@ fn set_weapon_stats(
     let source_rows = data
         .get(rows..rows_end)
         .ok_or_else(|| invalid("Weapon investment-stat rows are truncated"))?;
+    let nested_targets = stat_program_targets(data, rows, count)?;
     let mut authored_rows = Vec::with_capacity(count);
     let mut donor_definitions = BTreeSet::new();
     for index in 0..count {
@@ -1430,21 +1441,26 @@ fn set_weapon_stats(
     }
     let authored_bytes = authored_rows.concat();
 
-    if authored_count == count && !empty_descriptor {
+    let authored_rows_start = if authored_count == count && !empty_descriptor {
         data.get_mut(rows..rows_end)
             .ok_or_else(|| invalid("Weapon investment-stat rows are truncated"))?
             .copy_from_slice(&authored_bytes);
+        rows
     } else {
         while data.len() % 16 != 0 {
             data.push(0);
         }
+        data.extend_from_slice(&[0; 8]);
+        data.extend_from_slice(&NESTED_ARRAY_TRAILER);
         let header = data.len();
         data.extend_from_slice(&[0_u8; 16]);
         write_u32(data, header + 8, ITEM_INVESTMENT_STAT_ROW_CLASS)?;
         data.extend_from_slice(&authored_bytes);
         set_array_count(data, resource, header, authored_count)?;
         write_relative_pointer(data, resource + 8, header)?;
-    }
+        header + 16
+    };
+    relocate_stat_programs(data, authored_rows_start, authored_count, &nested_targets)?;
 
     let (materialized_count, _, materialized_rows, materialized_class) = array_at(data, resource)?;
     if materialized_class != ITEM_INVESTMENT_STAT_ROW_CLASS

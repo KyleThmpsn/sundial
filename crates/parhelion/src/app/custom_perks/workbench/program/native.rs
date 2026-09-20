@@ -8,6 +8,26 @@ use sundial::package_authoring::sandbox_perk::action::native::{
 };
 
 mod behavior;
+mod masks;
+
+pub(in crate::app::custom_perks::workbench) fn label_choices(
+    ctx: &egui::Context,
+    registry: Option<Arc<sundial::investment::discovery::labels::Registry>>,
+    error: Option<String>,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new("installed-label-registry"), (registry, error));
+    });
+}
+
+/// Share the current installation's script choices with all nested native editors.
+/// Replaced every frame, including while discovery is pending, to avoid stale install data.
+pub(in crate::app::custom_perks::workbench) fn script_choices(
+    ctx: &egui::Context,
+    choices: Option<Arc<Vec<sundial::investment::discovery::scripts::Choice>>>,
+) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("installed-behavior-scripts"), choices));
+}
 
 /// Room for a traced key name, or for a value with its stock count beside it.
 const EVIDENCE_WIDTH: f32 = 230.0;
@@ -462,6 +482,182 @@ fn reference_name(
     Ok(name)
 }
 
+/// Use the same named native choices for typed actions and complete native records.
+pub(super) fn byte_field(ui: &mut egui::Ui, class: u32, offset: usize, value: &mut u8) {
+    let field = fields::describe(class)
+        .expect("typed action native schema")
+        .into_iter()
+        .find(|field| field.offset == offset && field.format == Format::Byte)
+        .expect("typed action byte field");
+    let contract = fields::contract(class, &field);
+    ui.push_id((class, offset), |ui| {
+        properties::field(
+            ui,
+            plain_field_label(class, &field.label),
+            contract.description,
+            |ui| {
+                *value = u8::try_from(selector(ui, class, &field, &contract, u32::from(*value)))
+                    .expect("byte selector is bounded to 255");
+            },
+        );
+    });
+}
+
+pub(super) fn ability_property(ui: &mut egui::Ui, slot: u8, value: &mut u32) {
+    properties::field(
+        ui,
+        "Property",
+        "The property must be defined by this ability. Hover a choice for its supported abilities.",
+        |ui| {
+            key_control(
+                ui,
+                "Property",
+                "An ability-bank property. Its behavior depends on the selected ability.",
+                fields::keys::ability_properties(slot),
+                value,
+            );
+        },
+    );
+}
+
+fn key_control(
+    ui: &mut egui::Ui,
+    label: &str,
+    description: &str,
+    known: &[fields::keys::EventKey],
+    value: &mut u32,
+) {
+    if known.is_empty() {
+        let raw = hex_key(ui, "native-event-key-hex", value);
+        pickers::name_response(ui, &raw, label);
+        return;
+    }
+    let reading = fields::keys::name(*value).map_or_else(
+        || {
+            // The FNV-1 basis is the hash of an empty name. Keep its exact value on read.
+            if matches!(*value, 0 | 0x811C9DC5) {
+                "None".to_owned()
+            } else {
+                format!("0x{value:08X}")
+            }
+        },
+        str::to_owned,
+    );
+    let evidence = known
+        .iter()
+        .find(|key| key.hash == *value)
+        .or_else(|| fields::keys::entry(*value))
+        .map_or(description, |key| key.evidence);
+    let hover = format!("{reading}\n{evidence}");
+    sized(ui, EVIDENCE_WIDTH, |ui| {
+        egui::ComboBox::from_id_salt("native-event-key")
+            .width(EVIDENCE_WIDTH)
+            .truncate()
+            .selected_text(reading)
+            .show_ui(ui, |ui| {
+                for key in known {
+                    ui.selectable_value(value, key.hash, key.name)
+                        .on_hover_text(key.evidence);
+                }
+                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                    let raw = hex_key(ui, "native-event-key-hex", value);
+                    pickers::name_response(ui, &raw, "Key as Hex");
+                });
+            })
+            .response
+            .on_hover_text(hover);
+        pickers::name_combo(ui, "native-event-key", label);
+    });
+}
+
+fn selector(
+    ui: &mut egui::Ui,
+    class: u32,
+    field: &fields::Field,
+    contract: &fields::ValueContract,
+    before: u32,
+) -> u32 {
+    let mut selected = before;
+    // Preserve unnamed stock choices alongside the recovered names.
+    let unnamed = contract
+        .observed
+        .iter()
+        .filter(|(value, _, _)| !contract.choices.iter().any(|(named, _)| named == value))
+        .collect::<Vec<_>>();
+    let stock = |value: u32| {
+        contract
+            .observed
+            .iter()
+            .find(|(candidate, _, _)| u32::from(*candidate) == value)
+            .map(|(_, count, _)| *count)
+    };
+    let reading: String = contract
+        .choices
+        .iter()
+        .find(|(value, _)| u32::from(*value) == selected)
+        .map_or_else(
+            || match stock(selected) {
+                Some(count) => format!("{selected} · {count} stock perks"),
+                // Zero is the template's own value and selects nothing named.
+                // Any other unnamed value is shown with what is known about
+                // it, which is only that no stock perk sets it.
+                None if selected == 0 => "Not Set".to_owned(),
+                None => format!("{selected} · not used by stock perks"),
+            },
+            |(_, name)| (*name).into(),
+        );
+    let hover = format!("{reading}\n{}", contract.description);
+    // A value's name can be a sentence's worth of words, and a combo takes the width
+    // of its selected text, so it is held to the shared value column with the whole
+    // reading and the field's description on hover.
+    column(ui, |ui| {
+        egui::ComboBox::from_id_salt("native-value-choice")
+            .width(COLUMN_WIDTH)
+            .truncate()
+            .selected_text(reading)
+            .show_ui(ui, |ui| {
+                for (value, name) in contract.choices {
+                    ui.selectable_value(&mut selected, u32::from(*value), *name)
+                        .on_hover_text(match stock(u32::from(*value)) {
+                            Some(count) => format!("{count} stock perks set this value."),
+                            None => "No stock perk sets this value.".to_owned(),
+                        });
+                }
+                for (value, count, perks) in unnamed {
+                    ui.selectable_value(
+                        &mut selected,
+                        u32::from(*value),
+                        format!("{value} · {count} stock perks"),
+                    )
+                    .on_hover_text(if perks.is_empty() {
+                        "What this value selects is not established. No named stock perk sets it."
+                            .to_owned()
+                    } else {
+                        format!("What this value selects is not established. Set by {perks}.")
+                    });
+                }
+                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Native Value");
+                        let mut drag = egui::DragValue::new(&mut selected);
+                        if field.width == 1 {
+                            drag = drag.range(0..=255);
+                        }
+                        ui.add(drag);
+                    });
+                });
+            })
+            .response
+            .on_hover_text(hover);
+        pickers::name_combo(
+            ui,
+            "native-value-choice",
+            plain_field_label(class, &field.label),
+        );
+    });
+    selected
+}
+
 fn scalar(
     ui: &mut egui::Ui,
     field: &fields::Field,
@@ -477,6 +673,23 @@ fn scalar(
         return Ok(());
     }
     let contract = fields::contract(block.class, field);
+    if block.class == 0x808094B3 && field.offset == 0 {
+        let mut value = u32::from_le_bytes(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "Invalid label width.")?,
+        );
+        let before = value;
+        behavior::labels::draw_single(ui, &mut value);
+        if value != before {
+            field.write(block, row, &value.to_le_bytes())?;
+        }
+        return Ok(());
+    }
+    if contract.bitmask {
+        return masks::draw(ui, field, block, row, &contract);
+    }
     // A selector with no recovered names still has the values the game itself sets. Offering
     // those keeps the control a choice rather than a blind 0 to 255 spinner, and says plainly
     // that a count is evidence of use and not of meaning.
@@ -552,86 +765,7 @@ fn scalar(
                     .map_err(|_| "Invalid native mask width.")?,
             )
         };
-        let mut selected = before;
-        // Values the stock perks set that no name covers stay selectable with their
-        // evidence, so the census is never hidden behind a named list. The kind 8 input
-        // selector is 255 in most stock actions, and 255 has no client-traced name.
-        let unnamed = contract
-            .observed
-            .iter()
-            .filter(|(value, _, _)| !contract.choices.iter().any(|(named, _)| named == value))
-            .collect::<Vec<_>>();
-        let stock = |value: u32| {
-            contract
-                .observed
-                .iter()
-                .find(|(candidate, _, _)| u32::from(*candidate) == value)
-                .map(|(_, count, _)| *count)
-        };
-        let reading: String = contract
-            .choices
-            .iter()
-            .find(|(value, _)| u32::from(*value) == selected)
-            .map_or_else(
-                || match stock(selected) {
-                    Some(count) => format!("{selected} · {count} stock perks"),
-                    // Zero is the template's own value and selects nothing named.
-                    // Any other unnamed value is shown with what is known about
-                    // it, which is only that no stock perk sets it.
-                    None if selected == 0 => "Not Set".to_owned(),
-                    None => format!("{selected} · not used by stock perks"),
-                },
-                |(_, name)| (*name).into(),
-            );
-        let hover = format!("{reading}\n{}", contract.description);
-        // A value's name can be a sentence's worth of words, and a combo takes the width
-        // of its selected text, so it is held to the shared value column with the whole
-        // reading and the field's description on hover.
-        column(ui, |ui| {
-            egui::ComboBox::from_id_salt("native-value-choice")
-                .width(COLUMN_WIDTH)
-                .truncate()
-                .selected_text(reading)
-                .show_ui(ui, |ui| {
-                    for (value, name) in contract.choices {
-                        ui.selectable_value(&mut selected, u32::from(*value), *name)
-                            .on_hover_text(match stock(u32::from(*value)) {
-                                Some(count) => format!("{count} stock perks set this value."),
-                                None => "No stock perk sets this value.".to_owned(),
-                            });
-                    }
-                    for (value, count, perks) in unnamed {
-                        ui.selectable_value(
-                            &mut selected,
-                            u32::from(*value),
-                            format!("{value} · {count} stock perks"),
-                        )
-                        .on_hover_text(if perks.is_empty() {
-                            "What this value selects is not established. No named stock perk sets it."
-                                .to_owned()
-                        } else {
-                            format!("What this value selects is not established. Set by {perks}.")
-                        });
-                    }
-                    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Native Value");
-                            let mut drag = egui::DragValue::new(&mut selected);
-                            if bytes.len() == 1 {
-                                drag = drag.range(0..=255);
-                            }
-                            ui.add(drag);
-                        });
-                    });
-                })
-                .response
-                .on_hover_text(hover);
-            pickers::name_combo(
-                ui,
-                "native-value-choice",
-                plain_field_label(block.class, &field.label),
-            );
-        });
+        let selected = selector(ui, block.class, field, &contract, before);
         if selected != before {
             if bytes.len() == 1 {
                 let value =
@@ -646,7 +780,16 @@ fn scalar(
     // A key whose stock values are named is chosen by name, with the hex value kept under
     // Advanced for any other key.
     if field.format == Format::Key {
-        let known = fields::keys::known(block.class, field.offset);
+        let known = if block.class == 0x80803E1D && field.offset == 4 {
+            let stride = schema::record(block.class)?.size;
+            let slot = *block
+                .bytes
+                .get(row * stride + 2)
+                .ok_or("Missing ability slot.")?;
+            fields::keys::ability_properties(slot)
+        } else {
+            fields::keys::known(block.class, field.offset)
+        };
         if !known.is_empty() {
             let mut value = u32::from_le_bytes(
                 bytes
@@ -655,44 +798,13 @@ fn scalar(
                     .map_err(|_| "Invalid native key width.")?,
             );
             let before = value;
-            let reading = known.iter().find(|key| key.hash == value).map_or_else(
-                || {
-                    // The FNV-1 basis is the hash of the empty name, which is
-                    // how the stock templates leave a key unset.
-                    if matches!(value, 0 | 0x811C9DC5) {
-                        "None".to_owned()
-                    } else {
-                        format!("0x{value:08X}")
-                    }
-                },
-                |key| key.name.to_owned(),
+            key_control(
+                ui,
+                plain_field_label(block.class, &field.label),
+                contract.description,
+                known,
+                &mut value,
             );
-            let hover = format!("{reading}\n{}", contract.description);
-            // A key reads by its traced name, which is long enough to carry the combo
-            // across the pane, so the allocation bounds it and the name stays on hover.
-            sized(ui, EVIDENCE_WIDTH, |ui| {
-                egui::ComboBox::from_id_salt("native-event-key")
-                    .width(EVIDENCE_WIDTH)
-                    .truncate()
-                    .selected_text(reading)
-                    .show_ui(ui, |ui| {
-                        for key in known {
-                            ui.selectable_value(&mut value, key.hash, key.name)
-                                .on_hover_text(key.evidence);
-                        }
-                        egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                            let raw = hex_key(ui, "native-event-key-hex", &mut value);
-                            pickers::name_response(ui, &raw, "Key as Hex");
-                        });
-                    })
-                    .response
-                    .on_hover_text(hover);
-                pickers::name_combo(
-                    ui,
-                    "native-event-key",
-                    plain_field_label(block.class, &field.label),
-                );
-            });
             if value != before {
                 field.write(block, row, &value.to_le_bytes())?;
             }
@@ -757,13 +869,6 @@ fn scalar(
             let before = value;
             let response = hex_key(ui, "native-key", &mut value);
             pickers::name_response(ui, &response, name);
-            if block.class == 0x808094B3 && field.offset == 0 {
-                if let Some(name) =
-                    sundial::package_authoring::sandbox_perk::action::label_name(value)
-                {
-                    ui.weak(name);
-                }
-            }
             (value != before).then(|| value.to_le_bytes().to_vec())
         }
         Format::Byte => {

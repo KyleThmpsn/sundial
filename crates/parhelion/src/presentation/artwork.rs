@@ -2,7 +2,7 @@ use super::composition::Composition;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ImageFormat, RgbaImage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{fmt, io::Cursor, path::Path, sync::Arc};
+use std::{fmt, io::Cursor, sync::Arc};
 
 pub(crate) const WIDTH: u32 = 512;
 pub(crate) const HEIGHT: u32 = 512;
@@ -30,10 +30,10 @@ impl Artwork {
         let source = crate::image_import::decode_png(bytes)?;
         Self::normalized(crate::image_import::fit(&source, WIDTH, HEIGHT))
     }
-    pub(crate) fn from_path(path: &Path) -> Result<Self, String> {
+    #[cfg(test)]
+    pub(crate) fn from_path(path: &std::path::Path) -> Result<Self, String> {
         let bytes = crate::image_import::read_path(path)?;
-        let source = crate::image_import::decode_source(&bytes)?;
-        Self::from_source(source)
+        Self::from_source(crate::image_import::decode_source(&bytes)?)
     }
     pub(crate) fn from_source(source: RgbaImage) -> Result<Self, String> {
         if source.width() == 0 || source.height() == 0 {

@@ -181,6 +181,7 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                                 source_plug_hash: 0xDD5C_B37A.into(),
                                 name: Some(format!("Private Matrix Perk {profile} {index}")),
                                 description: Some("A private combination test perk.".to_owned()),
+                                icon: None,
                                 classification_donor_hash: None,
                                 investment_stats: Vec::new(),
                                 additional_sandbox_perks: Vec::new(),

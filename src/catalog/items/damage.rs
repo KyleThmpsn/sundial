@@ -387,16 +387,26 @@ mod tests {
         );
     }
 
+    /// The two decoders read different wire fields, so every slot has to arrive through both
+    /// without either mapping borrowing the other's numbering.
     #[test]
     fn inventory_bucket_and_equipment_slot_decode_independently() {
-        assert_eq!(
-            ItemWeaponInventorySlot::from_bucket_hash(ENERGY_BUCKET),
-            Some(ItemWeaponInventorySlot::Energy)
-        );
-        assert_eq!(
-            ItemWeaponInventorySlot::from_equipment_slot(7),
-            Some(ItemWeaponInventorySlot::Kinetic)
-        );
+        for (bucket, equipment_slot, expected) in [
+            (KINETIC_BUCKET, 7, ItemWeaponInventorySlot::Kinetic),
+            (ENERGY_BUCKET, 8, ItemWeaponInventorySlot::Energy),
+            (POWER_BUCKET, 9, ItemWeaponInventorySlot::Power),
+        ] {
+            assert_eq!(
+                ItemWeaponInventorySlot::from_bucket_hash(bucket),
+                Some(expected)
+            );
+            assert_eq!(
+                ItemWeaponInventorySlot::from_equipment_slot(equipment_slot),
+                Some(expected)
+            );
+        }
+        assert_eq!(ItemWeaponInventorySlot::from_bucket_hash(0), None);
+        assert_eq!(ItemWeaponInventorySlot::from_equipment_slot(6), None);
     }
 
     #[test]

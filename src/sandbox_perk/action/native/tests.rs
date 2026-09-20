@@ -78,6 +78,9 @@ fn nested_modifier_edits_reach_the_decoder_without_touching_other_rows() {
     let mut graph = Graph::read(&fixture.bytes, offset, class).unwrap();
     let assignments = graph.blocks[0].links[&0x128];
     let multipliers = graph.blocks[0].links[&0x138];
+    // The engine ignores these three bytes when reading the field selector. They must
+    // neither hide the decoded fact nor be overwritten by an adjacent value edit.
+    graph.blocks[assignments].bytes[1..4].copy_from_slice(&[0xA5, 0x5A, 0xFF]);
     let multiplier_before = graph.blocks[multipliers].clone();
     let field = fields::describe(0x80803E22)
         .unwrap()
@@ -92,13 +95,13 @@ fn nested_modifier_edits_reach_the_decoder_without_touching_other_rows() {
     assert!(
         facts
             .iter()
-            .any(|fact| fact.label == "Assign Slot 1"
+            .any(|fact| fact.label == "Assign Precision Bonus"
                 && fact.value == action::FactValue::Number(1.25))
     );
     assert!(
         facts
             .iter()
-            .any(|fact| fact.label == "Multiply Slot 0 From Stat"
+            .any(|fact| fact.label == "Multiply Base Damage Scale from Stat"
                 && fact.value == action::FactValue::Selector(17))
     );
     assert_eq!(graph.blocks[multipliers], multiplier_before);

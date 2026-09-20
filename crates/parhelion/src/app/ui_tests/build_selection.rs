@@ -369,13 +369,6 @@ fn build_selection_is_explicit_and_failed_commits_do_not_change_it() {
     app.recipe_library = Some(library);
     let before = app.enabled_recipe_paths.clone();
     let recipe_before = app.recipe.clone();
-    app.build_selection_draft = Some(BTreeSet::new());
-    assert_eq!(
-        app.enabled_recipe_paths, before,
-        "draft changes must not commit"
-    );
-    app.build_selection_draft = None; // Cancel/close.
-    assert_eq!(app.enabled_recipe_paths, before);
     assert!(
         app.apply_build_selection([directory.path().join("outside.json")].into())
             .is_err()

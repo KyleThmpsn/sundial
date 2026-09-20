@@ -379,6 +379,7 @@ pub(super) fn synthetic_weapon_definition(
 
 pub(super) fn synthetic_sandbox_perk_definition_template() -> [u8; ITEM_SANDBOX_PERK_ROW_SIZE] {
     let mut template = [0xA5; ITEM_SANDBOX_PERK_ROW_SIZE];
+    template[8..].fill(0);
     write_u16(&mut template, 0, MODERN_ARC_DAMAGE_PERK_INDEX).unwrap();
     template
 }
@@ -397,7 +398,7 @@ pub(super) fn synthetic_weapon_with_investment_stats() -> Vec<u8> {
     write_i32(&mut data, rows + 4, 0).unwrap();
     data[rows + ITEM_INVESTMENT_STAT_ROW_SIZE] = 16;
     write_i32(&mut data, rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 4, 44).unwrap();
-    data[rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 8] = 0xA5;
+    data[rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 2] = 0xA5;
     data
 }
 

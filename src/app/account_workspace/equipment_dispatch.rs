@@ -28,7 +28,9 @@ impl WorkspaceDocument {
     pub(in crate::app) fn equipment_slots(
         &self,
     ) -> &'static [crate::account_contract::EquipmentSlotContract] {
-        if self.uses_json_account() {
+        if self.account_is_dawn() {
+            crate::account_contract::EQUIPMENT_SLOTS
+        } else if self.uses_json_account() {
             crate::app::inventory::schema_mode(self.json()).equipment_slots()
         } else {
             crate::account_contract::ALL_EQUIPMENT_SLOTS

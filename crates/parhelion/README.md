@@ -1,18 +1,22 @@
 # Parhelion
 
-Parhelion is an **experimental** custom investment global package builder bundled with [Sundial](../../README.md) (basically, a weapons workbench). Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox.
+Parhelion is an **experimental** weapons workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox.
 
 Weapons are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test your weapons in-game after installing them.
+
+See Sundial's [Compatibility](../../README.md#compatibility) section for supported game and runtime versions. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error.
 
 ## Contents
 
 - [Getting Started](#getting-started)
 - [Making Weapons](#making-weapons)
   - [Stats and Power](#stats-and-power)
-  - [Perks and Custom Perks](#perks-and-custom-perks)
+  - [Perks and Sockets](#perks-and-sockets)
+  - [Custom Perk Workbench](#custom-perk-workbench)
   - [Unique Weapon Behavior](#unique-weapon-behavior)
   - [Ornaments, Icons and Shaders](#ornaments-icons-and-shaders)
   - [Collections Placement](#collections-placement)
+- [Bundled Custom Weapons and Perks](#bundled-custom-weapons-and-perks)
 - [Recipes and Sharing](#recipes-and-sharing)
 - [Generated Packages](#generated-packages)
 - [Backups and Recovery](#backups-and-recovery)
@@ -45,7 +49,9 @@ You can choose the weapon slot, damage type, and ammo type separately. The edito
 
 Changing an Exotic base weapon to a non-exotic rarity removes its exotic equip restriction. Choosing Exotic rarity applies the normal exotic weapon restriction. Other unique-equip restrictions are preserved.
 
-Installing unlocks your weapons in Collections and adds them to the **Project Sunrise badge**. Get a copy from Collections to add it to your inventory.
+Installing unlocks your weapons in Collections and, by default, adds them to the **Project Sunrise** or **Dawn** badge for your active runtime. Get a copy from Collections to add it to your inventory.
+
+You can also write flavor text and a custom **Lore** tab on **Weapon**.
 
 ### Stats and Power
 
@@ -55,27 +61,47 @@ Installing unlocks your weapons in Collections and adds them to the **Project Su
 
 **Power Cap** sets the weapon's infusion limit. Current Power is a separate thing and is edited in Sundial, not here.
 
-### Perks and Custom Perks
+### Perks and Sockets
 
-A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Put your default first. Only one choice per socket is active at a time. Drag a choice by its handle to reorder it, since the first choice is the one that starts equipped. Drag it onto a different socket to put that perk there instead, which replaces what the socket held and leaves the perk you dragged where it was.
+A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Only one choice per socket is active at a time. Drag a choice by its handle to reorder it, or right-click it to make it the default. The first choice starts equipped. Dragging onto a choice in another socket replaces that destination choice and keeps the original in place.
 
 Use a socket's **… > Remove Socket** command to remove its choices and custom perk assignments. Other sockets keep their positions. For a removed base socket, click **Restore Socket** to bring back the base weapon's choices and role. Added sockets must be removed from last to first.
 
-A **custom perk** is one you author yourself rather than borrow from another weapon. Click **Use Custom Perk…** above the socket list to open the **Custom Perk Workbench**, where **Create Custom Perk…** starts a new one and an existing perk can be reopened for editing.
+### Custom Perk Workbench
 
-Custom perk authoring is still in early development. Build one weapon at a time and test it in-game, since a perk that looks right in the editor can still do nothing or crash the game.
+A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the main Parhelion menu, or click **Use Custom Perk…** above the socket list. Use **New Perk** in the workbench or **Create Custom Perk…** in the socket picker to start from scratch. You can also reopen an existing perk for editing.
 
-A prebuilt example ships with Parhelion. **Micro-Missile Frame** is an intrinsic version of Micro-Missile for experimenting with other weapon types, including Sidearms and Shotguns. Build and install a weapon that uses it, then test the combination in-game. Once packages are refreshed, it appears like any other plug in Sundial's plug picker. As usual, which plugs appear depends on the socket filters you've selected.
+Each effect is a small program that describes what starts it, what it does, and when it ends. You can reuse a complete stock effect, turn supported behavior into an editable program, or create a new perk from scratch by combining triggers, conditions, actions, projectiles, player effects, and more. Guided forms help configure supported behavior, while the node canvas shows how the parts connect. **Engine Catalog…** lets you browse behavior recovered from stock perks in the installed game.
+
+Match the perk's **Type** to its socket. Use **Trait** for normal perk columns and **Intrinsic** for the weapon's intrinsic frame.
+
+To create and use a custom perk:
+
+1. Open **Custom Perk Workbench…** from the main menu, or **Use Custom Perk…** above the socket list, then choose **New Perk**. You can also open a saved or bundled perk in the workbench. To start from a specific socket choice, click that choice and use **Use Custom Perk… > Create Custom Perk…**.
+2. Give the perk a name and description, then use **Change Icon…** if you want different artwork.
+3. Build effects from scratch or reuse stock behavior, then configure how each effect starts, acts, and ends. Stock examples show where the same behavior appears in the game.
+4. Click **Save to Library** to keep the perk under **Custom Perks** for reuse.
+5. Under **Weapon Socket**, choose the socket and choice you want to use, then click **Apply to Weapon** and save the weapon recipe.
+
+Saving a perk to the library and applying it to a weapon are separate. **Save to Library** updates the reusable perk document. **Apply to Weapon** copies the current perk into the selected socket choice, and later library edits do not change that weapon copy automatically. Applying a perk does not save the weapon recipe for you. Use **Save as New Perk** when you want to experiment without replacing the saved original.
+
+Parhelion includes several [bundled custom perks](#bundled-custom-perks) that are ready to inspect and use in your own recipes. A custom perk is included in a build only when a selected weapon uses it. Once the packages are installed, it appears like any other plug in Sundial's plug picker. As usual, which plugs appear depends on your plug selection mode.
 
 To add a saved custom perk to another weapon:
 
-1. Open the weapon you want to edit, then choose **Use Custom Perk…**.
-2. Select the socket, then choose a perk. It replaces that socket's first choice.
+1. Open the weapon you want to edit, then click the socket choice you want to replace. Use **+ Add Choice** first if you want another option.
+2. Choose **Use Custom Perk…**, then select a perk from the picker.
 3. Save the recipe.
 
-The perk's settings are copied into this recipe. The original recipe isn't changed and doesn't need to be included in the build.
+The picker includes saved custom perks and perks embedded in your weapon recipes. It copies the selected perk's settings into this recipe. The source weapon isn't changed and doesn't need to be included in the build.
+
+Use **Duplicate**, **Import…**, and **Export…** in the custom perk library to reuse or share perk documents. **Copy Test Plan** copies a checklist to your clipboard based on the perk's triggers, actions, and lifetime. Use it to guide your in-game testing. **Restore Default Custom Perks…** replaces edits to the bundled examples and restores any that are missing. Changed defaults are backed up first, while your other custom perks and weapon recipes are left alone.
 
 A perk can only do what the weapon it sits on supports. If a perk depends on a reload, a magazine, or a firing behavior your weapon doesn't have, it does nothing. [Unique Weapon Behavior](#unique-weapon-behavior) covers the other half of that problem, where the behavior lives in the weapon rather than the perk.
+
+Custom perk authoring is still in early development. Destiny's perk system contains thousands of technical building blocks across actions, conditions, values, projectiles, assets, and weapon-specific behavior. Those pieces can be arranged in effectively countless combinations. Parhelion maps that technical data into controls you can use, but the work is ongoing. More behavior will be added as it is understood, and some names, assumptions, or mappings may turn out to be incomplete or wrong.
+
+A successful build proves that the generated packages are structurally valid, not that every combination behaves as expected in game. A perk that looks right in the editor can still do nothing, behave differently, or crash the game. Try one new combination at a time, use **Copy Test Plan** to check each behavior, and keep a working recipe before experimenting further.
 
 ### Unique Weapon Behavior
 
@@ -83,13 +109,13 @@ Some Exotics keep part of what makes them special in the weapon itself rather th
 
 Pick a source the same way you pick an appearance donor. The list shows the Exotics your weapon can borrow from, with a note where the result has not been confirmed in-game yet. Choose **None** to go back to your weapon's own behavior.
 
-**Include Its Perks** is on by default. It puts the source weapon's intrinsic and Exotic trait into your weapon's matching sockets, because several Exotics keep the other half of the behavior there. Those sockets are filled when the weapon is built, so they do not appear in the perks section while you edit. Turn it off to take the weapon half on its own, for example to get bouncing rounds without the perk that comes with them. If you have already chosen your own perk for one of those sockets, Parhelion tells you rather than replacing your choice.
+**Include Its Perks** is on by default. It adds the source weapon's intrinsic and Exotic trait to your weapon's matching sockets, because several Exotics keep the other half of the behavior there. These perks appear in **Perks & Sockets** while you edit. Check the choices and defaults after selecting a behavior, especially if you have already customized those sockets. Turn it off to borrow just the weapon's runtime behavior.
 
-A behavior can go on any weapon, including a different weapon type than the Exotic it came from. The picker warns you where a source is known to land badly, such as a frame that expects its own ammo or a perk that reads a scope the host weapon does not have.
+You can try a behavior on a different weapon type than the Exotic it came from, but some combinations only partly work or do nothing. The picker warns about known dependencies, such as a frame that expects its own ammo or a perk that reads a scope the host weapon does not have.
 
 Damage switching is set by the damage type rather than here. Choose **Variable (Hold Reload)** and your weapon gets The Fundamentals and the behavior that drives it, while keeping its own appearance. Choosing Hard Light or Borealis as a Unique Weapon Behavior does the same and locks the damage type, since those two switch damage as well as fire differently.
 
-If a behavior launches something and your weapon normally fires instantly, Parhelion raises the launch speed so the shots travel a useful distance. Without that they crawl, because a weapon that fires instantly supplies almost no speed for them to inherit. **Projectile Speed Multiplier** sets how much, and the raise stops at that figure. A behavior that already launches faster keeps its own speed, so Skyburner's Oath, Lord of Wolves, Devil's Ruin, Bastion, Legend of Acrius, Tractor Cannon and Symmetry come out unchanged at the default. A behavior that launches slower than most, like Trinity Ghoul, stays slower after the raise. Raise the number past a source's own speed to move that one too. The default is a starting point rather than a measured figure, so change it a little at a time and test in game.
+If a borrowed behavior launches projectiles and your base weapon normally fires instantly, those projectiles may travel very slowly. **Projectile Speed Multiplier** raises their launch speed, with the increase capped at the value you choose. Sources already above that value keep their own speed. The default is a starting point, so adjust it a little at a time and test in-game.
 
 For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 
@@ -98,7 +124,7 @@ For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 3. Leave **Include Its Perks** on. Malfeasance keeps the detonation in its perk, so the weapon half alone will not finish the job.
 4. Save, build, install, and get a copy from Collections.
 
-This is new and most combinations have not been tested, so treat it as experimental. Build one weapon at a time and test it in-game before committing to a larger build.
+This is new and most combinations have not been tested, so treat it as experimental. Try one new combination at a time and test it in-game before adding more.
 
 ### Ornaments, Icons and Shaders
 
@@ -108,6 +134,10 @@ On **Appearance**, use **Change Icon** to choose another weapon's icon. Use **Ed
 
 The background follows your weapon's rarity. Icon edits don't recolor the 3D weapon model, but you can use shaders and appearance choices for that.
 
+Custom perks, badges, and watermarks share an icon browser. Choose from game assets, use **Add Icon…** to load your own, or choose **Download destiny-icons** for the optional [destiny-icons](https://github.com/justrealmilk/destiny-icons) collection. Imported artwork is stored with the recipe or perk document.
+
+Use **Edit Artwork…** under **Release Watermark** on **Appearance** to customize the small watermark on the weapon's inventory icon. Custom badges have the same artwork editor on **Collections**. Both support crop, placement, rotation, and flipping, and badges also offer background colors and gradients.
+
 Adding a shader choice lets it recolor supported dye channels, including channels normally locked by an Exotic appearance. The original colors remain when no shader is selected. Explicit render-dye overrides in Advanced Gameplay take precedence.
 
 To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Import HUD PNG…** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
@@ -116,9 +146,56 @@ To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Imp
 
 **Collections** chooses where your weapon appears in the game's Collections. By default it uses the stock page for the base weapon's family, which adds no new pages. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
 
+Enable **Custom Badge** to group weapons under your own badge, with a name, description, and artwork. Use the same badge settings for each member, or select an existing badge with **Choose from Library**. You can also choose whether the weapon appears in the default Sunrise or Dawn badge.
+
 Custom pages come out of a limited budget. The tab shows how many nodes you have used and how many remain, and it tells you when a build would go over. Remove a custom badge or an added page to get back under the limit.
 
 Placement is presentation only. It does not change ammo, stats, or gameplay.
+
+## Bundled Custom Weapons and Perks
+
+Parhelion includes these examples to show a taste of what the workbench can do. Use them as references, inspiration, or starting points for your own creations. Open one to see how its donors, sockets, stats, presentation, and custom behavior fit together.
+
+### Bundled Weapons
+
+- **Hammer Time**: An Exotic Grenade Launcher that moves Wendigo GL3's Heavy frame into the Energy slot with Special ammo. Three custom trait choices switch between Solar hammers, massive Arc bolts, and Void Nova Bombs, each setting the damage type and rewarding final blows with ability energy or invisibility.
+- **SUROS Renaissance**: SUROS Regime with Hard Light's ricocheting rounds, **Variable (Hold Reload)** damage switching, and Scatter Matrix's SIVA swarms on final blows. It combines borrowed Exotic behavior with a custom perk.
+- **Ravenous Horizon**: A Special-ammo Auto Rifle that grafts Malfeasance's runtime behavior onto Gnawing Hunger, with Event Horizon creating a lingering Void anchor on precision final blows. It combines an Exotic's hidden behavior with a custom kill effect.
+- **Redacted**: An Arc Special-ammo Rocket Sidearm with Interregnum XVI's appearance and Micro-Missile Frame. It shows how a custom intrinsic and advanced gameplay donors can create an entirely new archetype.
+- **Reclamation Order**: An Exotic Void Sword in the Energy slot that uses Special ammo, combining Black Talon gameplay with Traitor's Fate appearance. It is the clearest example of moving a Heavy weapon family into an otherwise impossible loadout.
+- **Vaultbreaker**: A Legendary Arc Shotgun that combines Prophet of Doom, The Fourth Horseman, and Micro-Missile Frame. It is a useful reference for grafting custom projectile behavior onto a conventional weapon family.
+- **Second Sun**: A Legendary Solar Rocket Launcher that combines The Wardcliff Coil's salvo with Truth's appearance. It shows how Exotic gameplay and presentation donors can be separated and recast as a Legendary.
+- **Dead Air**: An Exotic Solar Trace Rifle in the Kinetic slot, built from Coldheart. It shows how slot and damage type can be authored independently and expands the stock weapon with substantially more perk columns and choices.
+- **Still Here**: A Solar Machine Gun moved into the Energy slot with Special ammo, based on Hammerhead. It demonstrates cross-slot and cross-ammo authoring on a Heavy weapon family.
+- **Good Company**: A Legendary Arc Pulse Rifle built from Vigilance Wing, preserving its five-round burst while dropping the Exotic rarity. Its expanded perk columns show how a familiar weapon can become a configurable Legendary.
+- **Stay**: A Legendary Kinetic Sniper Rifle combining Whisper of the Worm's gameplay with Alone as a god's appearance. It shows how Exotic weapon behavior can anchor a conventional-looking Legendary.
+- **Periapsis**: A Legendary Solar Hand Cannon built from Ancient Gospel in Sunshot's shell. It demonstrates borrowing Exotic presentation while keeping a Legendary weapon and a custom trait mix.
+- **June Ninth**: A Void Submachine Gun in the Kinetic slot, pairing The Recluse with Imminent Storm's appearance. It is a clean example of separating weapon slot, damage type, and visual donor.
+- **Night Shift**: A Void Fusion Rifle moved into the Kinetic slot, based on Loaded Question. It highlights cross-slot authoring while retaining its native weapon behavior.
+- **Unsent**: An Arc Special-ammo Bow with Hush gameplay and Le Monarque's appearance. It demonstrates changing ammo and element while keeping bow-specific behavior and perk choices.
+- **Every End**: A Solar Auto Rifle that combines Arc Logic's gameplay with Foregone Conclusion's appearance and heavily tuned stats. It is a broad reference for changing presentation, element, stats, and perk choices together.
+- **Holdover**: A Legendary Solar Scout Rifle with No Feelings gameplay and Polaris Lance's appearance. It demonstrates using an Exotic model independently from its gameplay.
+- **Last Watch**: A Kinetic Shotgun pairing Threat Level with Perfect Paradox and an aggressive close-range perk suite. It shows how far a familiar weapon can be pushed without changing its weapon family.
+
+### Bundled Custom Perks
+
+These library examples are Traits. Redacted and Vaultbreaker use Intrinsic versions of Micro-Missile Frame in their frame sockets.
+
+- **Borrowed Time**: Adds a grenade charge and grants grenade energy on final blows.
+- **Chicken**: Final blows turn enemies into chickens.
+- **Chromatic Instinct**: Precision, grenade, and melee final blows switch damage to Arc, Solar, and Void respectively.
+- **Closed Circuit**: Final blows grant grenade energy. Grenade final blows move ammunition from reserves into the magazine.
+- **Constellation**: Precision final blows have a chance to create an Orb of Light.
+- **Deadeye Dividend**: Precision final blows return a round and overflow the magazine by one.
+- **Event Horizon**: Precision final blows collapse the target into a lingering Void anchor.
+- **Hammer of Sol Frame**: Fires explosive Solar hammers. Final blows grant grenade energy.
+- **Loaded Dice**: Final blows periodically roll ammo drops, with Primary common, Special scarce, and Heavy rare.
+- **Micro-Missile Frame**: Fires fast, straight-flying micro-missiles and increases movement speed while equipped.
+- **Runaway Reactor**: Final blows stack damage, rate of fire, and reload speed bonuses.
+- **Scatter Matrix**: Final blows release seven SIVA swarms from the target.
+- **Scavenger's Rhythm**: Any final blow transfers ammunition from reserves into the magazine.
+- **Storm Cannon Frame**: Fires massive Arc bolts. Final blows grant melee energy.
+- **Void Nova Frame**: Fires high-velocity Void Nova Bombs. Final blows grant invisibility.
 
 ## Recipes and Sharing
 
@@ -138,9 +215,9 @@ These are examples of files Parhelion generates. Your selected recipes determine
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa0_0.pkg` | Holds new artwork and other assets used by your weapons, including Sunrise badge and watermark assets. |
+| `w64_parhelion_assets_0aa0_0.pkg` | Holds new artwork and other assets used by your weapons, including Sunrise or Dawn badge and watermark assets. |
 | `w64_investment_0361_7.pkg` | Connects weapons and perks to their in-game behavior. |
-| `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and Sunrise badge progression. |
+| `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and badge progression. |
 | `w64_investment_globals_client_0593_4.pkg` | Registers custom items and connects them to their Collections entries. |
 | `w64_investment_globals_client_0709_4.pkg` | Provides item and perk information shown in menus. |
 | `w64_investment_globals_client_0913_4.pkg` | Stores weapon names, descriptions, and other custom text. |
@@ -212,6 +289,6 @@ Some behavior is split between the weapon and its perk. Check that **Include Its
 
 ### What Should I Include in a Bug Report?
 
-Include the recipe, what you did, what happened, and your Sundial and Sunrise versions. Add any error messages or screenshots. Use **Preferences… > Activity Log… > Copy Log** for recent events, or **Open Log Folder** to find `parhelion.log`. For install or recovery issues, keep the matching backup and build manifest too.
+Include the recipe, what you did, what happened, and the versions of Sundial and your runtime (Sunrise or Dawn). Add any error messages or screenshots. Use **Preferences… > Activity Log… > Copy Log** for recent events, or **Open Log Folder** to find `parhelion.log`. For install or recovery issues, keep the matching backup and build manifest too.
 
 See the [Sundial README](../../README.md) for bug reports, credits, and licensing.

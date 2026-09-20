@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "bb7e57d5-866f-4f1a-b03a-eeb8aa905907",
+  "name": "Constellation",
+  "description": "Precision final blows have a chance to create an Orb of Light.",
+  "template_plug": "0xDD5CB37A",
+  "icon": {
+    "source": "image",
+    "name": "destiny-icons\\general\\destiny.svg",
+    "image": {
+      "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAFRUlEQVR4nOydDXabMAzH/+TtHqMnKT3JyEnGTlJ2krknmXuSzAqipQwKNralNP69R9OXEPwhS/KXnBMKopxQEKUIQJhvCOByubTu5bu7andZd73yq62qyuKL48rfYCg7QfUQXP5qz02c4A93TRNewvD14jJi8IVIVQfVRqK1e3nmRH0x7vp164Lgiv+J8Do4f6YV1ScJU6IdjmO2MqGRg41vTufK/2vpg2ol8T+REp7SY9AIC+VEbHxTFoVQLSSeovI/ZMRdvzUKgs0NtfoaaegwK/tploFQW+ebiT9cWBVQXrjh0VUjHR0GR/5GNclE7V7+Ii8Ggv7hoIM9wsNY5qkAqPJr5Me4zDz5fIHHIY94z69x1ws8++EZzO0ab2X+xhmhVlBDMRu9kmZyXw/9zp5MXuvy2I8+oIViuMWThjY7br/ey9/RzNUXnLhl1VAKV+Qz/HlmzdYKaUFNGvADSjlQ+SMdNzCtNNpnQ49UfsxnpOKRBNBAIRHNR6PYH9RqBYC4+dJqZpug9YBMNIhHA6WQBlgoI4XjVOqMbVmSFIYEYFCQ4joS/o2CFC8nXjK0KOSGJg7N6AN6FHLT05+rAHipzKKQCzsuT057QT0KuejHf94EULQgG2a6OP9hHOA+eEARQkrsfPXvv4EYC6FHITaG6/YDiyNhd+MZRQgx6dbWvVenIlgI9CWLQijWXU9ru+KIT+eCaKBQTFIw17rb2hu7azKuaIMXFkOr37XVZvdsaNGGXexq9VO8p6NZGzoU5uxu9VOCVsTIqbgFDvq3hfINXZl4qgLjIIIXZNizkzZYROaGYgksDlQ+cWhFjBNOIoTYrAi1Rjje9n6JXTFiW/B6a/DWbleIpTiFmJuF7dIo9MJ2NNbzQoiyJsytK7iburJgbhCPHvvS3IPFUNYoRFuUPyiEZuG9mEulrwvvhe4VOsf0UVF3RXDGevjzuPAsgzhjDrLVPeJwyOEuEcUHzAkMcnuYt6yjvgXrtr+GfzTQaqTjEZLsCwpc3Hme22UWyJFe1nnlfV/zY1JUPpFyY5avP2iwUDGs8r7PonsXzQULucN+vEOofEgmgEB/0C71TuhZbEq2tIE+O6/1zwNNzxkJSeIDprhC0/781uMrHXbEEXOEIznvsYdjdnzHNygvid2fkkMANfwdaYfIwdwBlR9tsPUZyTfnBpqiDgtOOQR6RmA4alLTM5JcA0YCpxasu8gEmBBtuISf+ZCl9RM5BdAiPF7LYBgZ7xIEV3yL8PFD9AHXGtkEQESKTDfg06nw7oC/Y6jsBscn8JJ2O+fkFkAL3VGLxENM579FVgEQgmdS7CGb7R+RCFHqoZcemZHQgBrpz+UJYmlhKDXZNYDtq4U+DASQipKMudgSCwMBsqvciDZnLGF+CMk4YQs9WAghKQBNZqiHEGImiDiwLSQ22aYe5kgfVWAhj5WqfKIIQDgP0sfVWMhjIIi0BrxAHtE8FA0QRrQXREgPyKQGYCOajyzLgYUwGk7MMpDDQhgNGmAhh4EwGgTwijvm3n2AuPCLExbm3n2AhTDi4wBCalZUegxAaDm41eJOuWcBWChAiwAM8tNDAVp6QRpmRUVQ4YSJ3JNyGhwwoen09B756KAETRpQI9OWRS2tn1CjAbxl0SA9HRShpiUQGbQg+/bzLVT9gsbRU1c2sIh4ykks1P2ECQsh5KiDLc45I1/2osoETYn448oWQ+UbKEStAEYORjz2fMqjWtQLgJgcS0CvNbaF0eNGfr/+JgQwhwVSYwhPJWhly9A/t1DpU25SAF+J8kNuwhQBCPMPAAD//0KHJjwAAAAGSURBVAMALUP1lAhPbbEAAAAASUVORK5CYII="
+    }
+  },
+  "classification": "0xDD5CB37A",
+  "effects": [
+    {
+      "program": {
+        "name": "Constellation",
+        "trigger": "precision_kill",
+        "duration_ms": 250,
+        "cooldown_ms": 1000,
+        "chance_permyriad": 3333,
+        "actions": [
+          {
+            "operation": "native",
+            "kind": 5,
+            "bytes": "0x05000100010000000000803F00000000000000000000000002AEEF8000000000"
+          }
+        ]
+      },
+      "source_perk_index": 421,
+      "runtime_values": [],
+      "action_float_values": []
+    }
+  ]
+}

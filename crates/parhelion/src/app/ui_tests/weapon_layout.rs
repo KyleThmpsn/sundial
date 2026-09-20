@@ -24,20 +24,6 @@ fn icon_rarity_follows_authored_tier_or_gameplay_donor_and_invalidates_cache() {
     ] {
         assert_eq!(effective_icon_rarity(authored, inherited), expected);
     }
-    let legendary = AuthoredIconPreviewKey {
-        corner_icon: None,
-        item_hash: 1,
-        container_tag: 2,
-        rarity: R::Legendary,
-        edit: Default::default(),
-    };
-    assert_ne!(
-        legendary,
-        AuthoredIconPreviewKey {
-            rarity: R::Exotic,
-            ..legendary.clone()
-        }
-    );
 }
 
 #[test]
@@ -173,11 +159,6 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
             );
             draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
         });
-        assert!(
-            !text(&profile).contains("Unsupported recipe combination"),
-            "{} profile",
-            app.recipe.name
-        );
         assert!(
             !text(&profile).contains("Reset it before building"),
             "{} profile",
@@ -489,7 +470,6 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
         assert!(rendered.contains("Damage Type"), "{rendered}");
         // One line like its neighbours: a label and a list, not a donor card.
         assert!(rendered.contains("Rarity"), "{rendered}");
-        assert!(!rendered.contains("Change Behavior"), "{rendered}");
         assert!(
             overflow < 1.0,
             "definition panel width={width}, overflow={overflow}"

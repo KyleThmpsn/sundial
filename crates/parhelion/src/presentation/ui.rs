@@ -4,12 +4,38 @@ use super::editor::{self, Kind};
 
 #[derive(Default)]
 pub(crate) struct Editor {
+    branding: crate::branding::Branding,
     badge: ImageEditor,
     corner: ImageEditor,
     lore: lore::Preview,
     artwork: Option<editor::Editor>,
 }
 impl Editor {
+    /// Discard recipe-specific previews and dialogs without forgetting the active runtime.
+    pub(crate) fn reset(&mut self) {
+        let branding = self.branding;
+        *self = Self::default();
+        self.set_branding(branding);
+    }
+
+    pub(crate) fn branding(&self) -> crate::branding::Branding {
+        self.branding
+    }
+
+    pub(crate) fn set_branding(&mut self, branding: crate::branding::Branding) {
+        if self.branding != branding {
+            self.branding = branding;
+            self.badge = ImageEditor {
+                branding,
+                ..Default::default()
+            };
+            self.corner = ImageEditor {
+                branding,
+                ..Default::default()
+            };
+            self.artwork = None;
+        }
+    }
     pub(crate) fn editing(&self) -> bool {
         self.artwork.is_some()
     }
@@ -19,6 +45,7 @@ impl Editor {
         ctx: &egui::Context,
         draft: &mut crate::WeaponRecipeOverrides,
         packages: &std::path::Path,
+        catalog: Option<&sundial::investment::InvestmentCatalog>,
         icon: Option<(
             tiger_pkg::TagHash,
             crate::AuthoredWeaponRarity,
@@ -30,7 +57,7 @@ impl Editor {
         };
         editor.load_context(ctx, packages, icon);
         let kind = editor.kind;
-        match editor.show(ctx) {
+        match editor.show_with_sources(ctx, packages, catalog) {
             Some(editor::Action::Apply(artwork)) => {
                 let target = match kind {
                     Kind::Badge => draft.badge.as_mut().map(|badge| &mut badge.icon),
@@ -65,11 +92,17 @@ impl Editor {
         let mut enabled = draft.badge.is_some();
         if ui.checkbox(&mut enabled, "Custom Badge").changed() {
             draft.badge = enabled.then(Badge::default);
-            self.badge = ImageEditor::default();
+            self.badge = ImageEditor {
+                branding: self.branding,
+                ..Default::default()
+            };
         }
         let mut include = !draft.exclude_from_sunrise_badge;
         if ui
-            .checkbox(&mut include, "Include in Project Sunrise Badge")
+            .checkbox(
+                &mut include,
+                format!("Include in {} Badge", self.branding.name()),
+            )
             .changed()
         {
             draft.exclude_from_sunrise_badge = !include;
@@ -85,7 +118,10 @@ impl Editor {
                                 .clicked()
                             {
                                 *badge = existing.clone();
-                                self.badge = ImageEditor::default();
+                                self.badge = ImageEditor {
+                                    branding: self.branding,
+                                    ..Default::default()
+                                };
                             }
                         }
                     });
@@ -106,9 +142,20 @@ impl Editor {
                 &mut badge.icon,
                 "Badge Artwork",
                 Kind::Badge,
-                "Use Sunrise Artwork",
+                if self.branding == crate::branding::Branding::Dawn {
+                    "Use Dawn Artwork"
+                } else {
+                    "Use Sunrise Artwork"
+                },
             ) {
-                self.artwork = Some(editor::Editor::new(Kind::Badge, badge.icon.clone()));
+                self.artwork = Some(editor::Editor::with_branding(
+                    Kind::Badge,
+                    badge
+                        .icon
+                        .clone()
+                        .or_else(|| self.branding.badge().ok().flatten()),
+                    self.branding,
+                ));
             }
         }
     }
@@ -123,11 +170,19 @@ impl Editor {
             &mut draft.corner_icon,
             "Release Watermark",
             Kind::Watermark,
-            "Use Sunrise Watermark",
+            if self.branding == crate::branding::Branding::Dawn {
+                "Use Dawn Watermark"
+            } else {
+                "Use Sunrise Watermark"
+            },
         ) {
-            self.artwork = Some(editor::Editor::new(
+            self.artwork = Some(editor::Editor::with_branding(
                 Kind::Watermark,
-                draft.corner_icon.clone(),
+                draft
+                    .corner_icon
+                    .clone()
+                    .or_else(|| self.branding.corner().ok().flatten()),
+                self.branding,
             ));
         }
         ui.weak("Release watermarks use the image silhouette. A transparent PNG works best.");
@@ -167,6 +222,7 @@ impl Editor {
 
 #[derive(Default)]
 struct ImageEditor {
+    branding: crate::branding::Branding,
     preview: Option<(Option<Artwork>, egui::TextureHandle)>,
     error: Option<String>,
 }
@@ -186,13 +242,24 @@ impl ImageEditor {
                 .is_none_or(|(cached, _)| cached != draft)
             {
                 let rendered = match kind {
-                    Kind::Badge => crate::badge_icon::preview(draft.as_ref(), None)
+                    Kind::Badge => self
+                        .branding
+                        .badge()
+                        .and_then(|default| {
+                            crate::badge_icon::preview_with_branding(
+                                draft.as_ref().or(default.as_ref()),
+                                None,
+                                self.branding,
+                            )
+                        })
                         .map(|image| editor::color_image(&image))
                         .map_err(|e| e.to_string()),
                     Kind::Watermark => match draft.as_ref() {
                         Some(artwork) => crate::watermark::render_custom_corner_preview(artwork)
                             .map(|image| editor::color_image(&image)),
-                        None => crate::watermark::render_output_texture(0)
+                        None => self
+                            .branding
+                            .watermark()
                             .map(|image| editor::color_image(&image)),
                     }
                     .map_err(|e| e.to_string()),

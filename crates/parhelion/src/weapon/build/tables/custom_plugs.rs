@@ -10,6 +10,9 @@ impl WeaponTables {
         metadata_layout: KeyedAuxiliaryLayout,
     ) -> AuthoringResult<()> {
         for (custom_ordinal, custom_plug) in custom_plugs.iter().enumerate() {
+            let icon_container = custom_plug
+                .authored_icon_container
+                .unwrap_or(custom_plug.source_icon_container);
             self.item_table = append_index_row(
                 std::mem::take(&mut self.item_table),
                 custom_plug.source_item_index,
@@ -43,14 +46,14 @@ impl WeaponTables {
                 custom_plug.source_item_index,
                 expected_item_count,
                 custom_plug.source_icon_container,
-                custom_plug.source_icon_container,
+                icon_container,
             )?;
             validate_dense_item_presentation(
                 &self.dense,
                 custom_plug.source_item_index,
                 expected_item_count + 1,
                 custom_plug.source_icon_container,
-                custom_plug.source_icon_container,
+                icon_container,
             )?;
             if let Some(classification_index) = custom_plug.classification_item_index {
                 set_dense_item_presentation_type(

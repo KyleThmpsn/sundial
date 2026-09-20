@@ -3,6 +3,7 @@ mod canvas;
 mod entry;
 mod guidance;
 mod identity;
+mod library_controls;
 mod navigation;
 use super::attachment::{Change, Target};
 use super::*;
@@ -164,10 +165,8 @@ fn the_engine_catalog_opens_as_its_own_window_with_a_kind_selected() {
         ..Default::default()
     };
     workbench.open_engine_catalog();
-    workbench.engine.kinds.selected = Some((
-        sundial::investment::native_content::kinds::Family::Effects,
-        1,
-    ));
+    workbench.engine.kinds.selected =
+        Some((sundial::investment::discovery::kinds::Family::Effects, 1));
     let ctx = egui::Context::default();
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {

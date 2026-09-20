@@ -69,7 +69,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
             text.galley
                 .job
                 .text
-                .contains("Sunrise Pending Rewards doesn’t support granting consumables.")
+                .contains("Sunrise's Reward Queue doesn’t support granting consumables.")
         }));
         let text = texts
             .iter()
@@ -294,20 +294,45 @@ fn skipping_conflicts_rebuilds_score_rewards_and_freed_inventory_capacity() {
 
 #[test]
 fn native_record_progress_score_and_stage_claims_round_trip_both_accounts() {
-    for native in [false, true] {
+    for runtime in 0..3 {
+        let native = runtime == 1;
+        let dawn = runtime == 2;
         for interval in [false, true] {
-            assert_runtime_round_trip(native, interval);
+            assert_runtime_round_trip(native, dawn, interval);
         }
     }
 }
 
-fn assert_runtime_round_trip(native: bool, interval: bool) {
+fn save_record_workspace(
+    workspace: &mut crate::app::account_workspace::WorkspaceDocument,
+    directory: &std::path::Path,
+    path: &std::path::Path,
+    json: &Value,
+    native: bool,
+    dawn: bool,
+    step: usize,
+) {
+    if dawn {
+        assert_eq!(workspace.json(), json);
+        workspace.save_dawn().unwrap();
+    } else if native {
+        assert_eq!(workspace.json(), json);
+        crate::persistence::sqlite_account::tests::save_fixture_document(
+            workspace.native_account_mut().unwrap(),
+            &directory.join(format!("backup-{step}.sqlite3")),
+        );
+    } else {
+        std::fs::write(path, serde_json::to_vec(workspace.json()).unwrap()).unwrap();
+    }
+}
+
+fn assert_runtime_round_trip(native: bool, dawn: bool, interval: bool) {
     use crate::app::account_workspace::WorkspaceDocument;
     let catalog = runtime_catalog(interval);
     let record = &catalog.records().unwrap()[0];
     let directory = crate::test_support::TestDirectory::new("record-runtime-routing");
     let path = directory.0.join("settings.json");
-    let json = json!({"version":if native {18}else{8},"future":true,"state":{"characters":[]}});
+    let json = json!({"version":if dawn {6} else if native {18}else{8},"future":true,"state":{"characters":[]}});
     std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
     if native {
         crate::persistence::sqlite_account::tests::create_fixture(
@@ -315,7 +340,12 @@ fn assert_runtime_round_trip(native: bool, interval: bool) {
             3,
         );
     }
-    let mut workspace = WorkspaceDocument::load(json.clone(), &path, false);
+    if dawn {
+        crate::persistence::dawn_account::tests::create_fixture(
+            &directory.0.join("player-state.db"),
+        );
+    }
+    let mut workspace = WorkspaceDocument::load(json.clone(), &path, dawn);
     let mut view = workspace.progression_view(0);
     let _ =
         crate::app::progression::mutations::set_unlock_value(&mut view, "objective_values", 10, 91);
@@ -330,19 +360,19 @@ fn assert_runtime_round_trip(native: bool, interval: bool) {
         let mut view = workspace.progression_view(0);
         edit::apply_record(&mut view, &catalog, record, complete).unwrap();
         workspace.apply_progression_view(0, view).unwrap();
-        if native {
-            assert_eq!(workspace.json(), &json);
-            crate::persistence::sqlite_account::tests::save_fixture_document(
-                workspace.native_account_mut().unwrap(),
-                &directory.0.join(format!("backup-{step}.sqlite3")),
-            );
-        } else {
-            std::fs::write(&path, serde_json::to_vec(workspace.json()).unwrap()).unwrap();
-        }
+        save_record_workspace(
+            &mut workspace,
+            &directory.0,
+            &path,
+            &json,
+            native,
+            dawn,
+            step,
+        );
         workspace = WorkspaceDocument::load(
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
             &path,
-            false,
+            dawn,
         );
         let snapshot = collection_state_snapshot(&workspace.progression_view(0)).unwrap();
         assert_eq!(
@@ -438,7 +468,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
     assert!(
         edit::apply_record(&mut legacy, &catalog, record, true)
             .unwrap_err()
-            .contains("no Pending Rewards queue")
+            .contains("no Reward Queue")
     );
     assert_eq!(legacy, original);
 }

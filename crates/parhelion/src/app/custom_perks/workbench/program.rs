@@ -181,7 +181,7 @@ pub(super) fn trigger_label(trigger: Trigger, retained: bool) -> &'static str {
     }
 }
 
-mod native;
+pub(super) mod native;
 pub(super) use native::draw_complete;
 #[cfg(test)]
 mod tests;
@@ -790,7 +790,11 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
             format!("{}: {}", action.label(), f32::from_bits(*value_bits))
         }
         Action::AbilityProperty { key, option, .. } => {
-            format!("{}: 0x{key:08X} index {option}", action.label())
+            let operation = if *option == 0 { "apply" } else { "remove" };
+            let property =
+                sundial::package_authoring::sandbox_perk::action::native::fields::keys::name(*key)
+                    .map_or_else(|| format!("0x{key:08X}"), str::to_owned);
+            format!("{}: {operation} {property}", action.label())
         }
         Action::TransmatContext { key } | Action::OverrideHostKey { key, .. } => {
             format!("{}: 0x{key:08X}", action.label())
@@ -872,7 +876,7 @@ fn action_description(action: &Action) -> &'static str {
             "Writes the accumulator that this program's Accumulator condition counts toward its threshold."
         }
         Action::AbilityProperty { .. } => {
-            "Changes one named property inside the selected ability's bank. The ability follows the selector, established from the stock exotics that set each slot. The property key and index are carried as the game stores them."
+            "Applies or removes a named property on the base ability. The change is reversed when the effect ends."
         }
         Action::TransmatContext { .. } => {
             "Plays the transmat effect the key names. What consumes the key is not resolved, so it is carried as the game stores it."
@@ -999,7 +1003,7 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         // Kind 48: the referenced resource is a behavior script whose path names it, such
         // as apply_tiered_charge_of_light, the one 17 Charged with Light mods run.
         48 => {
-            "Run one of the game's own scripts, such as applying a stack of Charged with Light. The scripts on offer are the ones stock perks run, chosen by name."
+            "Run an object-behavior script from the installed game packages, such as applying a stack of Charged with Light. Some scripts need specific game state or an owning object. Test the combination in game."
         }
         53 => "Add to, replace or multiply the named values that match.",
         54 => {
@@ -1411,13 +1415,51 @@ impl Workbench {
                         let title = action_title(action);
                         ui.strong(format!("{}. {}", index + 1, title))
                             .on_hover_text(action_description(action));
-                        if let Some(asset) = action.asset_mut() {
-                            self.draw_asset_picker(ui, catalog, asset, scope);
-                        }
                     },
                 );
             });
         });
+        if let Some(asset) = action.asset_mut() {
+            let label = match scope {
+                AssetScope::Projectiles => "Projectile",
+                AssetScope::Spawnable => "Object or Effect",
+                AssetScope::Any => "Attachment",
+            };
+            let missing = asset.graph == 0;
+            properties::row_with(
+                ui,
+                label,
+                "The asset this action uses.",
+                properties::Emphasis::Plain,
+                |ui| {
+                    if missing {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{label} *"))
+                                    .color(ui.visuals().warn_fg_color),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(
+                            "Required. Choose an asset for this action before applying the perk.",
+                        );
+                    }
+                    missing
+                },
+                |ui| {
+                    let width = ui.available_width().min(controls::COLUMN_WIDTH);
+                    controls::sized(ui, width, |ui| {
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_justify(true),
+                            |ui| {
+                                self.draw_asset_picker(ui, catalog, asset, scope);
+                            },
+                        );
+                    })
+                },
+            );
+        }
         // What the action is about stays in view, the way the native editors lead with
         // their named fields. Only the technical bytes wait behind Properties.
         match action {
@@ -1437,6 +1479,8 @@ impl Workbench {
             Action::Property { .. } => self.draw_property_action(ui, action),
             Action::AdjustComponent {
                 target,
+                flag,
+                option,
                 scale_bits,
                 value_bits,
                 ..
@@ -1444,6 +1488,8 @@ impl Workbench {
                 properties::field(ui, "Ability", "Which ability's energy is adjusted.", |ui| {
                     draw_component_target(ui, target);
                 });
+                native::byte_field(ui, 0x80803E4D, 3, flag);
+                native::byte_field(ui, 0x80803E4D, 4, option);
                 properties::field(
                     ui,
                     "Scale",
@@ -1530,19 +1576,16 @@ impl Workbench {
                     },
                 );
             }
-            Action::AbilityProperty { target, key, .. } => {
+            Action::AbilityProperty {
+                target,
+                key,
+                option,
+            } => {
                 properties::field(ui, "Ability", "Which ability's property changes.", |ui| {
                     draw_ability_slot(ui, target);
                 });
-                properties::field(
-                    ui,
-                    "Property Key",
-                    "The property key at +0x04. Pick an installed key or enter one.",
-                    |ui| {
-                        let control = hex_key(ui, "ability-property-key", key);
-                        pickers::name_response(ui, &control, "Property Key");
-                    },
-                );
+                native::byte_field(ui, 0x80803E1D, 8, option);
+                native::ability_property(ui, *target, key);
             }
             Action::AddRounds {
                 rounds,
@@ -1612,12 +1655,8 @@ impl Workbench {
                     ..
                 } => draw_attach_technical_fields(ui, mode, keys, float_bits),
                 Action::AdjustComponent {
-                    flag,
-                    option,
-                    limit_bits,
-                    input,
-                    ..
-                } => draw_component_technical_fields(ui, flag, option, limit_bits, input),
+                    limit_bits, input, ..
+                } => draw_component_technical_fields(ui, limit_bits, input),
                 Action::SetDamageType {
                     keep_after_removal, ..
                 } => {
@@ -1653,17 +1692,6 @@ impl Workbench {
                         |ui| {
                             let control = ui.checkbox(apply_to_player, "");
                             pickers::name_response(ui, &control, "Apply to Player");
-                        },
-                    );
-                }
-                Action::AbilityProperty { option, .. } => {
-                    properties::field(
-                        ui,
-                        "Property Index",
-                        "Byte +0x08, which selects the property of that ability. Stock nodes store 26 distinct values and none of them is named.",
-                        |ui| {
-                            let control = ui.add(egui::DragValue::new(option).range(0..=255));
-                            pickers::name_response(ui, &control, "Property Index");
                         },
                     );
                 }
@@ -1728,6 +1756,7 @@ impl Workbench {
                     );
                 }
                 Action::Spawn { .. }
+                | Action::AbilityProperty { .. }
                 | Action::Pattern { .. }
                 | Action::ExtendTimers { .. }
                 | Action::TransmatContext { .. }
@@ -1849,7 +1878,6 @@ fn has_technical_fields(action: &Action) -> bool {
             | Action::Property { .. }
             | Action::AdjustComponent { .. }
             | Action::UpdateAccumulator { .. }
-            | Action::AbilityProperty { .. }
             | Action::SetDamageType { .. }
             | Action::OverrideHostKey { .. }
     )
@@ -1861,7 +1889,7 @@ fn draw_ability_slot(ui: &mut egui::Ui, target: &mut u8) {
     use sundial::package_authoring::sandbox_perk::action::ability_slot;
     let current = ability_slot(*target).map_or_else(|| format!("Selector {target}"), str::to_owned);
     let hover = format!("Ability: {current}");
-    // Five ability names are a short vocabulary, and an unmapped selector keeps its own
+    // The ability names are a short vocabulary, and an unmapped selector keeps its own
     // spinner beside the control, so this one stays in a narrow column.
     sized(ui, NARROW_COLUMN, |ui| {
         egui::ComboBox::from_id_salt("ability-slot")
@@ -1870,7 +1898,7 @@ fn draw_ability_slot(ui: &mut egui::Ui, target: &mut u8) {
             .selected_text(current)
             .show_ui(ui, |ui| {
                 crate::app::style::workbench_style(ui);
-                for selector in [0_u8, 1, 2, 3, 7] {
+                for selector in [0_u8, 1, 2, 3, 4, 7] {
                     if let Some(role) = ability_slot(selector) {
                         ui.selectable_value(target, selector, role);
                     }
@@ -1913,39 +1941,16 @@ fn draw_component_target(ui: &mut egui::Ui, target: &mut u8) {
     });
 }
 
-/// The bytes of a Component Value Adjustment whose role is not mapped, edited as numbers.
-fn draw_component_technical_fields(
-    ui: &mut egui::Ui,
-    flag: &mut u8,
-    option: &mut u8,
-    limit_bits: &mut u32,
-    input: &mut u8,
-) {
+/// Value-program controls shared with the complete native editor.
+fn draw_component_technical_fields(ui: &mut egui::Ui, limit_bits: &mut u32, input: &mut u8) {
     egui::CollapsingHeader::new("Advanced")
         .id_salt("component-technical-fields")
         .show(ui, |ui| {
-            for (label, value, hint) in [
-                ("Flag Byte", flag, "Byte +0x03. Stock nodes store 0 and 1."),
-                (
-                    "Option Byte",
-                    option,
-                    "Byte +0x04. Stock nodes store 0 and 1.",
-                ),
-                (
-                    "Input Selector",
-                    input,
-                    "Byte +0x48. Stock nodes store 255 in 106 of 179 cases, otherwise 0, 6 or 11.",
-                ),
-            ] {
-                properties::field(ui, label, hint, |ui| {
-                    let control = ui.add(egui::DragValue::new(value).range(0..=255));
-                    pickers::name_response(ui, &control, label);
-                });
-            }
+            native::byte_field(ui, 0x80803E4D, 0x48, input);
             properties::field(
                 ui,
                 "Limit",
-                "Float +0x0C. When non-zero, movement toward it is limited.",
+                "Negative values disable the limit. Zero is a real limit. The adjustment moves toward the limit without overshooting it.",
                 |ui| {
                     let control = float_field(ui, limit_bits);
                     pickers::name_response(ui, &control, "Limit");
@@ -1956,36 +1961,40 @@ fn draw_component_technical_fields(
 
 /// The position selector of a spawn action. The event position needs a kill trigger.
 fn draw_spawn_position(ui: &mut egui::Ui, kill_trigger: bool, position: &mut Position) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Spawn Location");
-        let reading = position_label(kill_trigger, *position);
-        // The longest reading is a short sentence, so the control keeps the shared value
-        // column instead of taking the width of that sentence.
-        column(ui, |ui| {
-            egui::ComboBox::from_id_salt("spawn-position")
-                .width(COLUMN_WIDTH)
-                .truncate()
-                .selected_text(reading)
-                .show_ui(ui, |ui| {
-                    crate::app::style::workbench_style(ui);
-                    ui.selectable_value(
-                        position,
-                        Position::Owner,
-                        position_label(kill_trigger, Position::Owner),
-                    );
-                    ui.add_enabled_ui(kill_trigger, |ui| {
+    properties::field(
+        ui,
+        "Spawn Location",
+        "Where the object or effect is created.",
+        |ui| {
+            let reading = position_label(kill_trigger, *position);
+            // The longest reading is a short sentence, so the control keeps the shared value
+            // column instead of taking the width of that sentence.
+            column(ui, |ui| {
+                egui::ComboBox::from_id_salt("spawn-position")
+                    .width(COLUMN_WIDTH)
+                    .truncate()
+                    .selected_text(reading)
+                    .show_ui(ui, |ui| {
+                        crate::app::style::workbench_style(ui);
                         ui.selectable_value(
                             position,
-                            Position::Event,
-                            position_label(kill_trigger, Position::Event),
+                            Position::Owner,
+                            position_label(kill_trigger, Position::Owner),
                         );
-                    });
-                })
-                .response
-                .on_hover_text(format!("Spawn Location: {reading}"));
-            pickers::name_combo(ui, "spawn-position", "Spawn Location");
-        });
-    });
+                        ui.add_enabled_ui(kill_trigger, |ui| {
+                            ui.selectable_value(
+                                position,
+                                Position::Event,
+                                position_label(kill_trigger, Position::Event),
+                            );
+                        });
+                    })
+                    .response
+                    .on_hover_text(format!("Spawn Location: {reading}"));
+                pickers::name_combo(ui, "spawn-position", "Spawn Location");
+            });
+        },
+    );
 }
 
 pub(super) fn position_label(kill_trigger: bool, position: Position) -> &'static str {

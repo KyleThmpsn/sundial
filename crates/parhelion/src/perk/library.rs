@@ -1,6 +1,10 @@
 //! Atomic saves with optimistic concurrency checks for independent perk documents.
 use super::PerkRecipe;
+mod embedded;
+mod restore;
+pub use embedded::ImportReport;
 use fs2::FileExt;
+pub(crate) use restore::RestoreDefaults;
 use std::{
     collections::BTreeSet,
     fs,
@@ -17,6 +21,7 @@ pub struct Entry {
     pub recipe: PerkRecipe,
     pub path: PathBuf,
     pub baseline: Vec<u8>,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Default)]
@@ -100,6 +105,9 @@ impl Library {
             recipe,
             path: path.to_owned(),
             baseline,
+            modified: fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
         })
     }
 
@@ -111,6 +119,9 @@ impl Library {
         self.save_checked(&path, &bytes, expected)?;
         Ok(Entry {
             recipe: recipe.clone(),
+            modified: fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
             path,
             baseline: bytes,
         })
@@ -190,7 +201,7 @@ impl Library {
         let target = resolve_path_for_comparison(path).map_err(|error| error.to_string())?;
         let root = resolve_path_for_comparison(self.root()).map_err(|error| error.to_string())?;
         if path_is_within(&target, &root) {
-            return Err("Choose an export location outside My Perks. Use Save Perk or Save Copy to update the library.".into());
+            return Err("Choose an export location outside My Perks. Use Save to Library or Save as New Perk to update the library.".into());
         }
         let bytes = serde_json::to_vec_pretty(recipe).map_err(|error| error.to_string())?;
         sundial::package_authoring::replace_authoring_file(path, &bytes)
@@ -232,3 +243,6 @@ fn bundled_recipes() -> Result<Vec<(&'static str, PerkRecipe)>, String> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

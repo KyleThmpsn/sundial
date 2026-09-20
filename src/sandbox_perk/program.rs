@@ -463,22 +463,22 @@ pub enum Action {
     /// or class ability energy.
     ///
     /// Every field mirrors a byte of the native Component Value Adjustment node. The target
-    /// selector names the ability (see `action::component_target`). The flag, option and
-    /// input bytes are a separate axis whose role is not mapped, so the workbench shows them
-    /// as technical controls and the compiler writes them verbatim.
+    /// selector names the ability (see `action::component_target`). State, ability version
+    /// and value-program input have independent contracts in `action::native::fields`.
+    /// The compiler preserves their native bytes, including unknown values.
     AdjustComponent {
         /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2 and 7.
         target: u8,
-        /// The flag byte at `+0x03`.
+        /// Ability state at `+0x03`: 0 any, 1 inactive, 2 active. Other values skip the action.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
         flag: u8,
-        /// The option byte at `+0x04`.
+        /// Ability version at `+0x04`: zero current, nonzero base/original ability.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
         option: u8,
         /// The scale at `+0x08`, kept as a bit pattern so recipe equality stays exact.
         #[serde(with = "float_bit")]
         scale_bits: u32,
-        /// The limit at `+0x0C`, kept as a bit pattern. Zero means no limit is applied.
+        /// The limit at `+0x0C`, kept as a bit pattern. Negative disables it, zero is a limit.
         #[serde(default, skip_serializing_if = "is_zero", with = "float_bit")]
         limit_bits: u32,
         /// The constant the value program pushes, kept as a bit pattern.
@@ -491,16 +491,16 @@ pub enum Action {
     /// Changes a named property inside one ability's bank, the way stock exotics grant an
     /// extra grenade charge or improve a jump.
     ///
-    /// The ability follows the target selector (see `action::ability_slot`). The property key
-    /// and the option byte that selects which property of that ability changes are carried
-    /// verbatim, since their meanings are not resolved.
+    /// The ability follows the target selector (see `action::ability_slot`). The key names
+    /// an ability property, and the operation adds or removes a reference to that property.
+    /// The engine reverses the operation when the effect ends.
     AbilityProperty {
         /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2, 3, 4 and 7.
         target: u8,
         /// The property key at `+0x04`, a 32-bit hash.
         #[serde(with = "hex_key")]
         key: u32,
-        /// The property index at `+0x08`. Stock nodes store 26 distinct values.
+        /// Operation at `+0x08`: zero applies a property reference, nonzero removes one.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
         option: u8,
     },
@@ -774,9 +774,8 @@ impl Action {
         }
     }
 
-    /// An add-rounds action shaped like Triple Tap's: one round into this weapon's magazine.
     /// An adjustment of the given ability's energy, with the scale and value stock energy
-    /// perks use most.
+    /// perks use most and no limit on movement toward a target value.
     #[must_use]
     pub const fn adjust_component(target: u8) -> Self {
         Self::AdjustComponent {
@@ -784,7 +783,7 @@ impl Action {
             flag: 0,
             option: 0,
             scale_bits: 0x3F80_0000,
-            limit_bits: 0,
+            limit_bits: 0xBF80_0000,
             value_bits: 0x3F80_0000,
             input: no_input(),
         }

@@ -95,9 +95,14 @@ impl AccountSettingKey {
             | "sound_effects_volume"
             | "dialogue_volume"
             | "music_volume" => Audio,
-            "brightness" | "show_fps" | "hdr_mode" | "vertical_sync_interval" | "field_of_view" => {
-                Display
-            }
+            "brightness"
+            | "show_fps"
+            | "hdr_mode"
+            | "vertical_sync_interval"
+            | "field_of_view"
+            | "motion_blur"
+            | "film_grain"
+            | "chromatic_aberration" => Display,
             "subtitles_mode"
             | "colorblind_mode"
             | "helmet_mode"
@@ -345,6 +350,11 @@ fn validate_preference(
         (Display, "field_of_view", AccountSettingValue::Unsigned(value)) => {
             (FIELD_OF_VIEW_MINIMUM..=FIELD_OF_VIEW_MAXIMUM).contains(value)
         }
+        (
+            Display,
+            "motion_blur" | "film_grain" | "chromatic_aberration",
+            AccountSettingValue::Boolean(_),
+        ) => true,
 
         (
             Interface,

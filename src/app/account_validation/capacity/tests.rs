@@ -3,6 +3,8 @@ use crate::catalog::{Catalog, ItemStackability};
 use serde_json::json;
 use std::collections::HashMap;
 
+mod dawn;
+
 fn catalog() -> Catalog {
     Catalog::for_test_with_inventory(
         vec![],

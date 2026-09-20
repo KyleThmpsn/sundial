@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "id": "34e1d44d-29cd-49ca-88c6-a85c34dfa8a7",
+  "name": "Storm Cannon Frame",
+  "description": "Fires massive Arc bolts and deals Arc damage. Final blows grant melee energy.",
+  "template_plug": "0xDD5CB37A",
+  "icon": {
+    "source": "image",
+    "name": "destiny-icons\\general\\destiny.svg",
+    "image": {
+      "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAFRUlEQVR4nOydDXabMAzH/+TtHqMnKT3JyEnGTlJ2krknmXuSzAqipQwKNralNP69R9OXEPwhS/KXnBMKopxQEKUIQJhvCOByubTu5bu7andZd73yq62qyuKL48rfYCg7QfUQXP5qz02c4A93TRNewvD14jJi8IVIVQfVRqK1e3nmRH0x7vp164Lgiv+J8Do4f6YV1ScJU6IdjmO2MqGRg41vTufK/2vpg2ol8T+REp7SY9AIC+VEbHxTFoVQLSSeovI/ZMRdvzUKgs0NtfoaaegwK/tploFQW+ebiT9cWBVQXrjh0VUjHR0GR/5GNclE7V7+Ii8Ggv7hoIM9wsNY5qkAqPJr5Me4zDz5fIHHIY94z69x1ws8++EZzO0ab2X+xhmhVlBDMRu9kmZyXw/9zp5MXuvy2I8+oIViuMWThjY7br/ey9/RzNUXnLhl1VAKV+Qz/HlmzdYKaUFNGvADSjlQ+SMdNzCtNNpnQ49UfsxnpOKRBNBAIRHNR6PYH9RqBYC4+dJqZpug9YBMNIhHA6WQBlgoI4XjVOqMbVmSFIYEYFCQ4joS/o2CFC8nXjK0KOSGJg7N6AN6FHLT05+rAHipzKKQCzsuT057QT0KuejHf94EULQgG2a6OP9hHOA+eEARQkrsfPXvv4EYC6FHITaG6/YDiyNhd+MZRQgx6dbWvVenIlgI9CWLQijWXU9ru+KIT+eCaKBQTFIw17rb2hu7azKuaIMXFkOr37XVZvdsaNGGXexq9VO8p6NZGzoU5uxu9VOCVsTIqbgFDvq3hfINXZl4qgLjIIIXZNizkzZYROaGYgksDlQ+cWhFjBNOIoTYrAi1Rjje9n6JXTFiW/B6a/DWbleIpTiFmJuF7dIo9MJ2NNbzQoiyJsytK7iburJgbhCPHvvS3IPFUNYoRFuUPyiEZuG9mEulrwvvhe4VOsf0UVF3RXDGevjzuPAsgzhjDrLVPeJwyOEuEcUHzAkMcnuYt6yjvgXrtr+GfzTQaqTjEZLsCwpc3Hme22UWyJFe1nnlfV/zY1JUPpFyY5avP2iwUDGs8r7PonsXzQULucN+vEOofEgmgEB/0C71TuhZbEq2tIE+O6/1zwNNzxkJSeIDprhC0/781uMrHXbEEXOEIznvsYdjdnzHNygvid2fkkMANfwdaYfIwdwBlR9tsPUZyTfnBpqiDgtOOQR6RmA4alLTM5JcA0YCpxasu8gEmBBtuISf+ZCl9RM5BdAiPF7LYBgZ7xIEV3yL8PFD9AHXGtkEQESKTDfg06nw7oC/Y6jsBscn8JJ2O+fkFkAL3VGLxENM579FVgEQgmdS7CGb7R+RCFHqoZcemZHQgBrpz+UJYmlhKDXZNYDtq4U+DASQipKMudgSCwMBsqvciDZnLGF+CMk4YQs9WAghKQBNZqiHEGImiDiwLSQ22aYe5kgfVWAhj5WqfKIIQDgP0sfVWMhjIIi0BrxAHtE8FA0QRrQXREgPyKQGYCOajyzLgYUwGk7MMpDDQhgNGmAhh4EwGgTwijvm3n2AuPCLExbm3n2AhTDi4wBCalZUegxAaDm41eJOuWcBWChAiwAM8tNDAVp6QRpmRUVQ4YSJ3JNyGhwwoen09B756KAETRpQI9OWRS2tn1CjAbxl0SA9HRShpiUQGbQg+/bzLVT9gsbRU1c2sIh4ykks1P2ECQsh5KiDLc45I1/2osoETYn448oWQ+UbKEStAEYORjz2fMqjWtQLgJgcS0CvNbaF0eNGfr/+JgQwhwVSYwhPJWhly9A/t1DpU25SAF+J8kNuwhQBCPMPAAD//0KHJjwAAAAGSURBVAMALUP1lAhPbbEAAAAASUVORK5CYII="
+    }
+  },
+  "classification": "0xDD5CB37A",
+  "effects": [
+    {
+      "projectiles": [
+        {
+          "source_graph": 2169668321,
+          "donor_graph": 2164129207
+        }
+      ],
+      "source_perk_index": 1178,
+      "runtime_values": [
+        {
+          "locator": {
+            "binding_hash": 70743405,
+            "resource_index": 0,
+            "root": "component_instance",
+            "root_schema": 2155887475,
+            "path": [
+              {
+                "name_hash": 1347310080,
+                "type_handle": 2155887475,
+                "byte_offset": 0
+              },
+              {
+                "name_hash": 1347307776,
+                "type_handle": 2155886537,
+                "byte_offset": 240
+              },
+              {
+                "name_hash": 1347311104,
+                "type_handle": 2155886537,
+                "byte_offset": 84
+              }
+            ],
+            "type_handle": 2155886537,
+            "value_offset": 84,
+            "byte_size": 4
+          },
+          "value": {
+            "kind": "float32_bits",
+            "value": 1065353216
+          }
+        },
+        {
+          "locator": {
+            "binding_hash": 70743405,
+            "resource_index": 0,
+            "root": "component_definition",
+            "root_schema": 2155886735,
+            "path": [
+              {
+                "name_hash": 1347310080,
+                "type_handle": 2155886735,
+                "byte_offset": 0
+              },
+              {
+                "name_hash": 1347311104,
+                "type_handle": 2155886735,
+                "byte_offset": 136
+              }
+            ],
+            "type_handle": 2155886735,
+            "value_offset": 136,
+            "byte_size": 4
+          },
+          "value": {
+            "kind": "float32_bits",
+            "value": 1065353216
+          }
+        }
+      ],
+      "action_float_values": []
+    },
+    {
+      "source_perk_index": 83,
+      "runtime_values": [],
+      "action_float_values": []
+    },
+    {
+      "source_perk_index": 405,
+      "runtime_values": [],
+      "action_float_values": []
+    },
+    {
+      "source_perk_index": 203,
+      "runtime_values": [],
+      "action_float_values": []
+    },
+    {
+      "program": {
+        "name": "Ride the Lightning",
+        "trigger": "weapon_kill",
+        "duration_ms": 250,
+        "cooldown_ms": 0,
+        "chance_permyriad": 10000,
+        "actions": [
+          {
+            "operation": "adjust_component",
+            "target": 2,
+            "scale_bits": 1.0,
+            "limit_bits": -1.0,
+            "value_bits": 0.1
+          }
+        ]
+      },
+      "source_perk_index": 422,
+      "runtime_values": [],
+      "action_float_values": []
+    }
+  ]
+}

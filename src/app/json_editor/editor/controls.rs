@@ -17,7 +17,7 @@ pub(super) fn draw_toolbar(
     response: &mut JsonEditorResponse,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.heading("All Settings");
+        ui.heading("JSON Editor");
         ui.menu_button("Editor", |ui| {
             state.draw_tool_menu(ui, text, response);
             ui.separator();
@@ -44,11 +44,11 @@ pub(super) fn draw_toolbar(
                 ui.label(egui::RichText::new("Unsaved Changes").color(ui.visuals().warn_fg_color));
             }
         }
-        crate::ui_help::info(ui, "Edit JSON directly. Save validates and writes the account file.\n\nCtrl+S: Save\nCtrl+F: Find\nCtrl+H: Replace\nF3 / Shift+F3: Next / previous match\nCtrl+G: Go to path\nCtrl+Shift+F: Format JSON\nCtrl+Z / Ctrl+Y: Undo / redo text edits");
+        crate::ui_help::info(ui, "Edit settings.json directly. Save validates and writes settings.json.\n\nCtrl+S: Save\nCtrl+F: Find\nCtrl+H: Replace\nF3 / Shift+F3: Next / previous match\nCtrl+G: Go to path\nCtrl+Shift+F: Format JSON\nCtrl+Z / Ctrl+Y: Undo / redo text edits");
     });
     if state.reset_pending {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Discard the JSON Draft and Restore the Current Account?");
+            ui.label("Discard the JSON Draft and Restore the Current JSON?");
             response.reset = ui
                 .button(egui::RichText::new("Discard Edits").color(ui.visuals().error_fg_color))
                 .clicked();

@@ -771,22 +771,6 @@ fn source_fingerprint_covers_sparse_stock_generations_and_detects_changes() {
 }
 
 #[test]
-fn batch_request_keeps_every_enabled_recipe_explicit() {
-    let recipes = vec![
-        WeaponRecipe::every_end(),
-        WeaponRecipe::new_weapon("parhelion.second").unwrap(),
-    ];
-    let request = BatchBuildRequest {
-        package_directory: PathBuf::from("packages"),
-        staging_root: PathBuf::from("staging"),
-        ignore_installed_authored_overlays: true,
-        recipes: recipes.clone(),
-    };
-
-    assert_eq!(request.recipes, recipes);
-}
-
-#[test]
 fn batch_snapshot_is_sorted_stable_and_sensitive_to_dirty_edits() {
     let second = WeaponRecipe::second_sun().unwrap();
     let every = WeaponRecipe::every_end();

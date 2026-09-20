@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    DISPLAY_VERSION, InstallSelection, PendingFutureSchemaLoad, Preferences, SettingsLayout,
-    SettingsPathResolution, SundialApp, diagnostics, draw_future_schema_warning, load_logo_texture,
+    InstallSelection, PendingFutureSchemaLoad, Preferences, SettingsLayout, SettingsPathResolution,
+    SundialApp, diagnostics, display_version, draw_future_schema_warning, load_logo_texture,
     settings::{
         load_workspace_json, missing_settings_message, resolve_settings_path,
         settings_path_for_install,
@@ -269,7 +269,7 @@ impl StartupApp {
                 &logo,
                 CatalogLoadingView {
                     product_name: "Sundial",
-                    version: DISPLAY_VERSION,
+                    version: display_version(),
                     message: self.progress.message,
                     completed: self.progress.completed,
                     total: self.progress.total,
@@ -289,7 +289,7 @@ impl StartupApp {
                         ui.vertical_centered(|ui| {
                             ui.image((logo.id(), egui::vec2(72.0, 72.0)));
                             ui.heading("Sundial");
-                            ui.weak(DISPLAY_VERSION);
+                            ui.weak(display_version());
                             ui.add_space(18.0);
 
                             if let Some(install_path) = self.pending_settings_choice.clone() {

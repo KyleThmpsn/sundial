@@ -58,7 +58,7 @@ impl PackageAuthoringApp {
                 .color(ui.visuals().weak_text_color())
         };
         ui.label(label).on_hover_text(format!(
-            "{used} / {NODE_CAPACITY} nodes used.\n924 stock nodes + 4 Project Sunrise nodes + {} custom badge nodes + {} added pages. Recipes sharing a badge or page use the same nodes.", budget.badges * 4, budget.pages));
+            "{used} / {NODE_CAPACITY} nodes used.\n924 stock nodes + 4 {} nodes + {} custom badge nodes + {} added pages. Recipes sharing a badge or page use the same nodes.", self.presentation_editor.branding().name(), budget.badges * 4, budget.pages));
         if !included {
             let with_draft = NodeBudget::new(members.into_iter().chain([current]));
             if with_draft.used() > used {

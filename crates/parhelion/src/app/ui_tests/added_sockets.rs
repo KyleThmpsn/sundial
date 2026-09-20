@@ -167,6 +167,7 @@ fn extra_choice_context_menu_promotes_its_private_definition() {
             choice_index: 1,
             source_plug_hash: source.into(),
             name: Some("Alternate Choice".into()),
+            icon: None,
             classification_donor_hash: None,
             description: None,
             additional_sandbox_perks: vec![],
@@ -313,7 +314,6 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         let (output, overflow) =
             render(width, |ui| app.draw_socket_columns_panel(ui, Some(&donor)));
         assert!(text(&output).contains("Added"));
-        assert!(!text(&output).contains("normalize the recipe"));
         assert!(
             overflow < 1.0,
             "Added socket overflow at {width}: {overflow}"

@@ -49,7 +49,8 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         key_bindings,
         runtime_capabilities,
     } = context;
-    let runtime_available = super::runtime::available(json_document);
+    let dawn_available = dawn.is_some();
+    let runtime_available = !dawn_available && super::runtime::available(json_document);
     if *tab == Tab::Sunrise && !runtime_available {
         *tab = Tab::Player;
     }
@@ -60,7 +61,11 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         ui.heading("Game Settings");
         crate::ui_help::info(
             ui,
-            "Edit the settings Project Sunrise applies to Destiny 2.",
+            if dawn.is_some() {
+                "Edit Dawn runtime configuration and database-backed player preferences."
+            } else {
+                "Edit the settings Project Sunrise applies to Destiny 2."
+            },
         );
     });
     ui.add_space(8.0);
@@ -119,7 +124,8 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
                 draw_display(
                     ui,
                     settings,
-                    extended_fov && (runtime_available || !json_account),
+                    !dawn_available && extended_fov && (runtime_available || !json_account),
+                    if dawn_available { 2 } else { 4 },
                 )
             }),
             Tab::Interface => draw_account_settings(ui, account_settings, draw_interface),
@@ -160,7 +166,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         ui.heading("Player");
         crate::ui_help::info(
             ui,
-            "Change the player identity and language Project Sunrise reports to Destiny 2.",
+            "Change the player identity and language reported to Destiny 2.",
         );
     });
     ui.add_space(8.0);
@@ -212,7 +218,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
             ui.strong("Game Language");
             crate::ui_help::info(
                 ui,
-                "Controls the language Sunrise reports to Destiny 2 through Steam.",
+                "Controls the language reported to Destiny 2 through Steam.",
             );
         });
         ui.label("Fully restart Destiny 2 to apply language changes.");

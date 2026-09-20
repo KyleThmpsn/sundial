@@ -5,6 +5,7 @@ mod list;
 pub use list::BrowserList;
 pub mod assets;
 pub mod content;
+pub mod labels;
 
 use eframe::egui;
 pub fn search(ui: &mut egui::Ui, query: &mut String, opened: bool, width: f32, hint: &str) -> bool {

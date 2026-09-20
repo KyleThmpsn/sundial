@@ -126,10 +126,26 @@ pub struct PlugTooltip<'a> {
     pub classification_hash: Option<u32>,
 }
 
+/// A private recipe's icon must never fall back to a different donor while it loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconOverride {
+    Pending,
+    Texture(egui::TextureId),
+}
+impl IconOverride {
+    pub(crate) fn texture(self) -> Option<egui::TextureId> {
+        match self {
+            Self::Pending => None,
+            Self::Texture(id) => Some(id),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlugChoicePickerButton<'a> {
     pub text: &'a str,
     pub icon_hash: Option<u32>,
+    pub icon_override: Option<IconOverride>,
     /// Effective authored text; omitted for stock choices. Never changes the stock catalog.
     pub tooltip: Option<PlugTooltip<'a>>,
     /// Exact compact trigger width in logical pixels. Zero keeps the natural button width.
@@ -157,6 +173,42 @@ pub fn authoring_choice_row_height(ui: &egui::Ui) -> f32 {
 }
 
 impl InvestmentCatalog {
+    pub fn texture_icon(&self, ctx: &egui::Context, tag: u32) -> Option<egui::TextureHandle> {
+        self.catalog.texture_icon(ctx, tag)
+    }
+
+    pub fn draw_perk_row_with_icon(
+        &self,
+        ui: &mut egui::Ui,
+        hash: u32,
+        name: &str,
+        selected: bool,
+        tooltip: PlugTooltip<'_>,
+        icon: Option<IconOverride>,
+    ) -> egui::Response {
+        authoring_bridge::draw_perk_row(ui, &self.catalog, hash, name, selected, tooltip, icon)
+    }
+
+    pub fn draw_authoring_choice_row_with_icon(
+        &self,
+        ui: &mut egui::Ui,
+        hash: Option<u32>,
+        name: &str,
+        description: Option<&str>,
+        selected: bool,
+        icon: Option<IconOverride>,
+    ) -> egui::Response {
+        authoring_bridge::draw_authoring_choice_row(
+            ui,
+            &self.catalog,
+            hash,
+            name,
+            description,
+            selected,
+            icon,
+        )
+    }
+
     /// Compact native catalog row with the shared authored perk tooltip.
     pub fn draw_perk_row(
         &self,
@@ -166,7 +218,7 @@ impl InvestmentCatalog {
         selected: bool,
         tooltip: PlugTooltip<'_>,
     ) -> egui::Response {
-        authoring_bridge::draw_perk_row(ui, &self.catalog, hash, name, selected, tooltip)
+        authoring_bridge::draw_perk_row(ui, &self.catalog, hash, name, selected, tooltip, None)
     }
 
     /// The native catalog icon, sized for the surrounding authoring control.
@@ -190,6 +242,7 @@ impl InvestmentCatalog {
             name,
             description,
             selected,
+            None,
         )
     }
 

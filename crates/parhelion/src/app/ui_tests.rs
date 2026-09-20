@@ -4,6 +4,7 @@ use super::*;
 mod accessibility;
 mod added_sockets;
 mod authoring_safety;
+mod branding;
 mod build_flow;
 mod build_selection;
 mod library;
@@ -16,6 +17,25 @@ mod runtime_editing;
 mod runtime_layout;
 mod socket_account_updates;
 mod weapon_layout;
+
+#[test]
+fn runtime_badge_controls_follow_dawn_and_sunrise_without_rewriting_the_recipe() {
+    use crate::branding::Branding;
+    let mut editor = crate::presentation::ui::Editor::default();
+    let mut draft = crate::WeaponRecipeOverrides::default();
+    let original = draft.clone();
+    for branding in [Branding::Dawn, Branding::Sunrise] {
+        editor.set_branding(branding);
+        let (output, overflow) = render(460.0, |ui| {
+            editor.draw_badge(ui, &mut draft, &[]);
+            editor.draw_corner(ui, &mut draft);
+        });
+        assert_eq!(overflow, 0.0);
+        let labels = text(&output);
+        assert!(labels.contains(&format!("Include in {} Badge", branding.name())));
+        assert_eq!(draft, original);
+    }
+}
 
 fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
     WeaponRuntimeField {

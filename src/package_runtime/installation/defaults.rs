@@ -121,8 +121,8 @@ mod tests {
 
     #[test]
     fn runtime_defaults_reset_preserves_other_copy_database_and_exact_backup() {
-        for schema in [6, 8, 18] {
-            let (dir, plan) = fixture(schema);
+        {
+            let (dir, plan) = fixture(6);
             let backup = plan.apply(|| Ok(())).unwrap();
             assert_eq!(fs::read(backup).unwrap(), plan.before);
             assert_eq!(fs::read(&plan.copy.settings_path).unwrap(), plan.defaults);

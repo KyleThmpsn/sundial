@@ -32,17 +32,18 @@ pub(crate) use collections::{
 };
 use icons::IconRuntime;
 pub(crate) use icons::scan_item_icon_containers;
-use items::PowerCapDefinition;
+#[cfg(test)]
+pub(crate) use items::AttunementChoice;
+pub(crate) use items::PowerCapDefinition;
 #[cfg(test)]
 pub(crate) use items::SocketDef;
 pub(crate) use items::{
     AbilityChoice, AbilityOptions, InventoryDefinition, InventoryMetadata, InventoryScope,
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemDef, ItemInvestmentStat,
-    ItemPackageMetadata, ItemRarity, ItemStatDefinition, ItemStatGroup, ItemWeaponAmmoType,
-    ItemWeaponInventorySlot, format_in_game_investment_stat, interpolate_investment_stat_display,
+    ItemPackageMetadata, ItemRarity, ItemStackability, ItemStatDefinition, ItemStatGroup,
+    ItemWeaponAmmoType, ItemWeaponInventorySlot, format_in_game_investment_stat,
+    interpolate_investment_stat_display,
 };
-#[cfg(test)]
-pub(crate) use items::{AttunementChoice, ItemStackability};
 use items::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
     intern_socket_pools, sort_plug_options,
@@ -154,6 +155,7 @@ pub(crate) struct Catalog {
     icon_containers: HashMap<u64, u32>,
     item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     item_stat_definitions: Vec<ItemStatDefinition>,
+    character_stat_rows: Option<[u16; 6]>,
     power_cap_definitions: Vec<PowerCapDefinition>,
     item_stat_groups: Vec<ItemStatGroup>,
     trait_definitions: Vec<ObjectiveOwnerTraitDef>,
@@ -417,6 +419,28 @@ impl Catalog {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_test_stat_groups(mut self, groups: Vec<ItemStatGroup>) -> Self {
+        self.item_stat_groups = groups;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_power_caps(mut self, caps: Vec<PowerCapDefinition>) -> Self {
+        self.power_cap_definitions = caps;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_item_package_metadata(
+        mut self,
+        hash: u64,
+        metadata: ItemPackageMetadata,
+    ) -> Self {
+        self.item_package_metadata.insert(hash, metadata);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_test(
         items: Vec<ItemDef>,
         metadata: HashMap<u64, ItemPackageMetadata>,
@@ -543,6 +567,7 @@ impl Catalog {
             icon_containers,
             item_package_metadata,
             item_stat_definitions,
+            character_stat_rows,
             power_cap_definitions,
             item_stat_groups,
             trait_definitions,
@@ -643,6 +668,7 @@ impl Catalog {
             icon_containers,
             item_package_metadata,
             item_stat_definitions,
+            character_stat_rows,
             power_cap_definitions,
             item_stat_groups,
             trait_definitions,
@@ -820,6 +846,51 @@ impl Catalog {
 
     pub(crate) fn item_package_metadata(&self, hash: u64) -> Option<&ItemPackageMetadata> {
         self.item_package_metadata.get(&hash)
+    }
+
+    /// The stat group carrying this hash, with its table index.
+    pub(crate) fn item_stat_group_by_hash(&self, hash: u64) -> Option<(usize, &ItemStatGroup)> {
+        self.item_stat_groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.hash == hash)
+    }
+
+    /// Items whose metadata references this stat-group table index, in hash order.
+    pub(crate) fn items_with_stat_group(&self, group_index: u16) -> Vec<u64> {
+        self.items_where(|metadata| metadata.stat_group_index == Some(group_index))
+    }
+
+    /// Items sharing one socket entry list, in hash order.
+    pub(crate) fn items_with_socket_entry_list(&self, index: u16) -> Vec<u64> {
+        self.items_where(|metadata| metadata.socket_entry_list_index == Some(index))
+    }
+
+    /// The power-cap table row carrying this hash, with its table index.
+    pub(crate) fn power_cap_definition_by_hash(
+        &self,
+        hash: u32,
+    ) -> Option<(usize, &PowerCapDefinition)> {
+        self.power_cap_definitions
+            .iter()
+            .enumerate()
+            .find(|(_, definition)| definition.hash == hash)
+    }
+
+    /// Items whose version rows index this power-cap table row, in hash order.
+    pub(crate) fn items_with_power_cap_group(&self, index: u16) -> Vec<u64> {
+        self.items_where(|metadata| metadata.power_cap_groups.contains(&index))
+    }
+
+    fn items_where(&self, keep: impl Fn(&ItemPackageMetadata) -> bool) -> Vec<u64> {
+        let mut hashes = self
+            .item_package_metadata
+            .iter()
+            .filter(|(_, metadata)| keep(metadata))
+            .map(|(hash, _)| *hash)
+            .collect::<Vec<_>>();
+        hashes.sort_unstable();
+        hashes
     }
 
     pub(crate) fn item_hash_for_index(&self, index: usize) -> Option<u64> {

@@ -163,7 +163,7 @@ pub(super) fn draw_combat_profile_control(
                         variable_damage_available || variable,
                         egui::SelectableLabel::new(variable, VARIABLE_DAMAGE_LABEL),
                     )
-                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon keeps its own appearance.")
+                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon keeps its own appearance. Kinetic damage can be authored separately with a Perk Workbench Set Damage Type action.")
                     .on_disabled_hover_text("This weapon family has no element-switch behavior to graft. Rifles and sniper rifles support it.")
                     .clicked()
                 && !variable
@@ -281,7 +281,7 @@ fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipe
         }
         draw_authoring_info_icon(
             ui,
-            "Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one.",
+            "Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one. Kinetic damage can be authored separately with a Perk Workbench Set Damage Type action.",
         );
     });
     changed
@@ -417,7 +417,7 @@ pub(super) fn draw_rarity_control(
         let label = ui.label("Rarity");
         draw_authoring_info_icon(
             ui,
-            "Exotic weapons appear under Exotics in Collections. Other rarities use their weapon-type page. Both appear on the Sunrise badge. Choose perks separately below. Trace rifles require Exotic rarity because this game version has no other Collections page for them.",
+            "Exotic weapons appear under Exotics in Collections. Other rarities use their weapon-type page. Both appear on your runtime’s badge. Choose perks separately below. Trace rifles require Exotic rarity because this game version has no other Collections page for them.",
         );
         label
     }).inner;

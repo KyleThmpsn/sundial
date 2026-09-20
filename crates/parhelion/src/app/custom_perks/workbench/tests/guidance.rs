@@ -104,7 +104,4 @@ fn effect_orders_keep_the_same_results_and_only_change_their_order() {
         order_by(EffectOrder::Kind),
         ["absolution", "outlaw", "rampage"]
     );
-    // Grouping by item type keeps both weapon perks together.
-    let grouped = order_by(EffectOrder::Kind);
-    assert_eq!(grouped.len(), rows.len());
 }

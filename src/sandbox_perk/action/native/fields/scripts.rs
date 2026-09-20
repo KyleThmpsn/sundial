@@ -23,19 +23,25 @@ impl Script {
     /// The script's file name in title case, the name a reader picks it by.
     #[must_use]
     pub fn title(&self) -> String {
-        let file = self.path.rsplit('\\').next().unwrap_or(self.path);
-        let stem = file.split('.').next().unwrap_or(file);
-        stem.split('_')
-            .filter(|word| !word.is_empty())
-            .map(|word| {
-                let mut chars = word.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
-                })
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        title(self.path)
     }
+}
+
+/// Readable title for a native script path. The stored native path remains unchanged.
+#[must_use]
+pub fn title(path: &str) -> String {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    let stem = file.split('.').next().unwrap_or(file);
+    stem.split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub const SCRIPTS: &[Script] = &[

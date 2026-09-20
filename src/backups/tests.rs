@@ -2,6 +2,36 @@ use super::*;
 use crate::test_support::TestDirectory;
 use std::io::Write;
 
+#[test]
+fn dawn_retention_keeps_manual_modified_and_other_account_backups() {
+    let dir = TestDirectory::new("dawn-retention");
+    let root = dir.0.join("backups");
+    let source = dir.0.join("Dawn/player-state.db");
+    let backup = |source: &Path, automatic| {
+        create(
+            &root,
+            source,
+            "player-state-v5",
+            "db",
+            automatic,
+            |_, file| file.write_all(b"fixture").map_err(|e| e.to_string()),
+        )
+        .unwrap()
+    };
+    let first = backup(&source, true);
+    let second = backup(&source, true);
+    let manual = backup(&source, false);
+    let modified = backup(&source, true);
+    let other = backup(&dir.0.join("other/player-state.db"), true);
+    fs::write(&modified, b"modified").unwrap();
+    assert_eq!(prune_automatic_backups(&root, &source, 0).unwrap(), 2);
+    assert!(!first.exists());
+    assert!(!second.exists());
+    for path in [manual, modified, other] {
+        assert!(path.exists());
+    }
+}
+
 fn flat_backup(root: &Path, source: &Path, automatic: bool) -> PathBuf {
     create(
         root,

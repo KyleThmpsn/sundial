@@ -55,6 +55,7 @@ fn variant(socket_index: u16) -> WeaponSocketPlugVariantRecipe {
         choice_index: 0,
         source_plug_hash: HexHash::new(20),
         name: Some("Saved Perk".into()),
+        icon: None,
         classification_donor_hash: None,
         description: None,
         investment_stats: vec![],

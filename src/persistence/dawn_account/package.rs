@@ -4,10 +4,10 @@
 //! Dawn abandons the whole character loadout over a single unresolvable item, so anything the
 //! account still holds from a removed package has to go with it.
 //!
-//! Dawn keeps that account in `player-state.db`. Its settings.json is the seed it consumed on its
-//! first boot and never reads again, so cleaning that file removes nothing: it reports success
-//! while the account keeps the orphan, and the next launch fails at `family4 stage=prepare
-//! step=loadout`.
+//! Dawn keeps that account in `player-state.db`. It imports the JSON account seed only when it
+//! creates the database, so cleaning account members in settings.json later removes nothing. The
+//! operation reports success while the account keeps the orphan, and the next launch fails at
+//! `family4 stage=prepare step=loadout`. Dawn's unrelated runtime configuration remains in JSON.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

@@ -50,9 +50,11 @@ impl SundialApp {
             }
             picker_anchor = Some(response);
         });
-        ui.label(
-            "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together.",
-        );
+        ui.label(if self.document.dawn_account().is_some() {
+            "Materials credited when Dawn dismantles weapons or armor. Dawn supports up to eight material policies without rarity or gear filters."
+        } else {
+            "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together."
+        });
         if filtered {
             ui.weak(
                 "Leave a filter on Any to match every rarity, gear class, or masterwork state.",

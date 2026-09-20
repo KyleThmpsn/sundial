@@ -81,6 +81,7 @@ pub(super) fn randomize_full_loadout(
                 pick_avoiding(&mut rng, equipped_candidates, &used_hashes).ok_or_else(|| {
                     format!("No usable non-exotic item is available for the {slot} slot")
                 })?;
+            prepare_generated_equipment(&mut updated, character_index, slot)?;
             if slot == SUBCLASS_SLOT {
                 equip_subclass_with_default_abilities(
                     &mut updated,
@@ -140,7 +141,7 @@ pub(super) fn randomize_full_loadout(
     if generated_slots == 0 {
         return Err("No usable item definitions were found for this character".to_owned());
     }
-    settings::validate_workspace_document(&updated)
+    validate_generated_document(&updated)
         .map_err(|error| format!("The generated loadout did not pass validation: {error}"))?;
     crate::app::account_validation::validate_new_bucket_overflows(&updated, document, catalog)?;
     *document = updated;
@@ -178,7 +179,12 @@ fn held_items_to_generate(
     Ok(HELD_ITEMS_PER_SLOT
         .saturating_sub(held_in_bucket)
         .min(available)
-        .min(account::character_inventory_capacity(document).saturating_sub(inventory.len())))
+        .min(
+            account::character_inventory_capacity(document).saturating_sub(
+                account::character_inventory_storage_len(document, character_index)
+                    .map_err(|error| error.to_string())?,
+            ),
+        ))
 }
 
 fn loadout_candidates(

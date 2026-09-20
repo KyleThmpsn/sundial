@@ -4,7 +4,7 @@ use super::{
     cache::CatalogContents,
     icons::scan_item_icon_containers,
     items::{
-        ItemScan, ItemScanContext, item_power_cap, scan_ability_displays,
+        ItemScan, ItemScanContext, item_power_cap, scan_ability_displays, scan_character_stat_rows,
         scan_inventory_bucket_descriptors, scan_items, scan_perk_descriptions,
         scan_power_cap_definitions, scan_sandbox_perk_catalog, scan_stat_definitions,
         scan_stat_groups,
@@ -84,6 +84,11 @@ pub(super) fn scan_packages(
         .collect::<Vec<_>>();
     let sandbox_perk_catalog = scan_sandbox_perk_catalog(manager, root, globals_data)?;
     let mut progression = progression::read(&sources, &mut localized_cache, report);
+    let character_stat_rows = retain_progression_scan(
+        "Character stat rows",
+        scan_character_stat_rows(manager, root, &item_stat_definitions).map(Some),
+        &mut progression.errors,
+    );
     let perk_descriptions = retain_progression_scan(
         "Perk descriptions",
         scan_perk_descriptions(manager, globals_data, localized_tags, &mut localized_cache),
@@ -126,6 +131,7 @@ pub(super) fn scan_packages(
             icon_containers_by_index: &icon_containers_by_index,
             inventory_buckets: &inventory_buckets,
             item_stat_definitions: &item_stat_definitions,
+            character_stat_rows: character_stat_rows.as_ref(),
             stat_names: &stat_names,
             sandbox_perk_catalog: Some(&sandbox_perk_catalog),
             perk_descriptions: &perk_descriptions,
@@ -205,6 +211,7 @@ pub(super) fn scan_packages(
         icon_containers: item_scan.icon_containers,
         item_package_metadata: item_scan.item_package_metadata,
         item_stat_definitions,
+        character_stat_rows,
         power_cap_definitions,
         item_stat_groups,
         trait_definitions: progression.trait_definitions,

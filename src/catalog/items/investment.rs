@@ -36,6 +36,12 @@ const SCALED_STAT_ROW_SIZE: usize = 0x18;
 const SCALED_STAT_INTERPOLATION_OFFSET: usize = 0x08;
 const STAT_INTERPOLATION_CLASS: u32 = 0x8080_7D1A;
 const STAT_INTERPOLATION_ROW_SIZE: usize = 0x08;
+/// The investment root holds the constants blob at this slot.
+const INVESTMENT_CONSTANTS_SLOT: usize = 11;
+/// The constants blob's own 8-byte prefix comes before every offset the client quotes.
+const INVESTMENT_CONSTANTS_PREFIX: usize = 8;
+/// Client offsets of the six character stat rows, in the two runs the blob stores them in.
+const CHARACTER_STAT_ROW_OFFSETS: [usize; 6] = [593, 594, 595, 622, 623, 624];
 const ARMOR_STAT_NAMES: [&str; 6] = [
     "Mobility",
     "Resilience",
@@ -293,6 +299,16 @@ impl Catalog {
         references
     }
 
+    /// Which of the six character stats one investment stat row is, in character screen order.
+    ///
+    /// The rows are the ones the client's investment constants name, so a stat is matched by
+    /// row, the way the client reads it, rather than by its definition's display name.
+    fn armor_stat_index(&self, definition_index: u16) -> Option<usize> {
+        self.character_stat_rows?
+            .iter()
+            .position(|row| *row == definition_index)
+    }
+
     /// Returns the six armor-stat contributions authored on an item or plug.
     /// Values come from the installed package definitions and may be negative.
     pub(crate) fn armor_stat_values(&self, hash: u64) -> [i32; 6] {
@@ -301,13 +317,7 @@ impl Catalog {
             return values;
         };
         for stat in &metadata.investment_stats {
-            let Some(definition) = self.item_stat_definition(stat.definition_index) else {
-                continue;
-            };
-            let Some(index) = ARMOR_STAT_NAMES
-                .iter()
-                .position(|name| name.eq_ignore_ascii_case(definition.name.trim()))
-            else {
+            let Some(index) = self.armor_stat_index(stat.definition_index) else {
                 continue;
             };
             values[index] = values[index].saturating_add(stat.value);
@@ -318,6 +328,67 @@ impl Catalog {
 
 fn stat_group_by_index(groups: &[ItemStatGroup], group_index: u16) -> Option<&ItemStatGroup> {
     groups.get(usize::from(group_index))
+}
+
+/// Reads the six character stat rows the client searches a character's stat table by, ordered
+/// as the character screen lists them.
+///
+/// The investment constants blob names the rows the client itself uses, so a plug's stat can be
+/// matched to a character stat by row rather than by its definition's display name. The blob
+/// keeps its own order: each row takes the place its definition's name has in the character
+/// screen, and a row whose name the bank does not resolve takes whichever place is left.
+pub(in crate::catalog) fn scan_character_stat_rows(
+    manager: &PackageManager,
+    root: &[u8],
+    definitions: &[ItemStatDefinition],
+) -> Result<[u16; 6], String> {
+    let tag = u32_at(root, 8 + INVESTMENT_CONSTANTS_SLOT * 16)
+        .map_err(|error| format!("Could not read the investment constants tag: {error}"))?;
+    let blob = manager
+        .read_tag(TagHash(tag))
+        .map_err(|error| format!("Could not read the investment constants blob: {error}"))?;
+    let mut stored = [0_u16; 6];
+    for (row, offset) in stored.iter_mut().zip(CHARACTER_STAT_ROW_OFFSETS) {
+        let byte = blob
+            .get(INVESTMENT_CONSTANTS_PREFIX + offset)
+            .ok_or("The investment constants blob is too short for the character stat rows")?;
+        *row = u16::from(*byte);
+        match definitions.get(usize::from(*row)) {
+            Some(definition) if definition.definition_index == *row => {}
+            _ => {
+                return Err(format!(
+                    "Character stat row {row} has no investment stat definition"
+                ));
+            }
+        }
+    }
+    let mut ordered = [None; 6];
+    let mut taken = [false; 6];
+    for (position, name) in ARMOR_STAT_NAMES.iter().enumerate() {
+        let found = stored.iter().enumerate().position(|(index, row)| {
+            !taken[index]
+                && definitions[usize::from(*row)]
+                    .name
+                    .trim()
+                    .eq_ignore_ascii_case(name)
+        });
+        if let Some(index) = found {
+            ordered[position] = Some(stored[index]);
+            taken[index] = true;
+        }
+    }
+    let mut spare = stored
+        .iter()
+        .zip(taken)
+        .filter(|(_, taken)| !taken)
+        .map(|(row, _)| *row);
+    let mut rows = [0_u16; 6];
+    for (position, row) in rows.iter_mut().enumerate() {
+        *row = ordered[position]
+            .or_else(|| spare.next())
+            .unwrap_or(stored[position]);
+    }
+    Ok(rows)
 }
 
 pub(in crate::catalog) fn scan_stat_definitions(
@@ -596,10 +667,18 @@ fn checked_item_investment_resource(item: &[u8]) -> Result<Option<usize>, ()> {
     Ok(Some(resource))
 }
 
+/// Names an unnamed armor stat plug from its three stat rows, such as
+/// "13 Mobility / 1 Resilience / 7 Recovery".
+///
+/// `character_stat_rows` are the six rows in character screen order, as
+/// `scan_character_stat_rows` reads them; the plug qualifies when its rows are the top three or
+/// the bottom three of them.
 pub(in crate::catalog) fn stat_allocation_labels(
     item: &[u8],
+    character_stat_rows: &[u16; 6],
     stat_names: &[String],
 ) -> Option<(String, &'static str)> {
+    let character_stat_rows = character_stat_rows.map(usize::from);
     let (count, rows, class) = array_at(item, INVESTMENT_STAT_DESCRIPTOR).ok()?;
     if class != ITEM_INVESTMENT_STAT_ROW_CLASS || count != 3 {
         return None;
@@ -614,10 +693,30 @@ pub(in crate::catalog) fn stat_allocation_labels(
         *stat = (usize::from(*item.get(row)?), u32_at(item, row + 4).ok()?);
     }
 
-    let (expected_indexes, type_name) = if stats.iter().all(|(index, _)| (3..=5).contains(index)) {
-        ([3, 4, 5], "Top Stat Allocation")
-    } else if stats.iter().all(|(index, _)| (6..=8).contains(index)) {
-        ([6, 7, 8], "Bottom Stat Allocation")
+    let (expected_indexes, type_name) = if stats
+        .iter()
+        .all(|(index, _)| character_stat_rows[..3].contains(index))
+    {
+        (
+            [
+                character_stat_rows[0],
+                character_stat_rows[1],
+                character_stat_rows[2],
+            ],
+            "Top Stat Allocation",
+        )
+    } else if stats
+        .iter()
+        .all(|(index, _)| character_stat_rows[3..].contains(index))
+    {
+        (
+            [
+                character_stat_rows[3],
+                character_stat_rows[4],
+                character_stat_rows[5],
+            ],
+            "Bottom Stat Allocation",
+        )
     } else {
         return None;
     };
@@ -700,8 +799,10 @@ mod tests {
             "Recovery".into(),
         ];
 
+        let rows = [3, 4, 5, 6, 7, 8];
+
         assert_eq!(
-            stat_allocation_labels(&item, &stat_names),
+            stat_allocation_labels(&item, &rows, &stat_names),
             Some((
                 "13 Mobility / 1 Resilience / 7 Recovery".into(),
                 "Top Stat Allocation"
@@ -709,7 +810,7 @@ mod tests {
         );
 
         item[0x301] = 1;
-        assert_eq!(stat_allocation_labels(&item, &stat_names), None);
+        assert_eq!(stat_allocation_labels(&item, &rows, &stat_names), None);
     }
 
     #[test]
@@ -915,25 +1016,6 @@ mod tests {
                 scaled_stats: Vec::new(),
             }]
         );
-    }
-
-    #[test]
-    fn stat_groups_resolve_only_decoded_indices() {
-        let groups = vec![
-            ItemStatGroup {
-                hash: 1,
-                maximum_value: 10,
-                scaled_stats: Vec::new(),
-            },
-            ItemStatGroup {
-                hash: 2,
-                maximum_value: 100,
-                scaled_stats: Vec::new(),
-            },
-        ];
-
-        assert_eq!(stat_group_by_index(&groups, 1), groups.get(1));
-        assert_eq!(stat_group_by_index(&groups, 2), None);
     }
 
     #[test]

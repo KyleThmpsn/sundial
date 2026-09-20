@@ -26,10 +26,28 @@ impl SundialApp {
                     (ProgressionSection::Seasonal, "Seasonal"),
                     (ProgressionSection::Unlocks, "Unlocks"),
                     (ProgressionSection::Investment, "Investment"),
+                    (ProgressionSection::Vendors, "Vendors"),
+                    (ProgressionSection::Missions, "Missions"),
                 ] {
-                    changed |= ui
-                        .selectable_value(&mut self.progression_section, section, label)
-                        .changed();
+                    if matches!(
+                        section,
+                        ProgressionSection::Vendors | ProgressionSection::Missions
+                    ) && !self.document.account_is_dawn()
+                    {
+                        continue;
+                    }
+                    let unavailable =
+                        section == ProgressionSection::Seasonal && self.document.account_is_dawn();
+                    let response = ui.add_enabled(
+                        !unavailable,
+                        egui::SelectableLabel::new(self.progression_section == section, label),
+                    );
+                    if unavailable {
+                        response.on_disabled_hover_text(super::seasonal::DAWN_UNAVAILABLE);
+                    } else if response.clicked() && self.progression_section != section {
+                        self.progression_section = section;
+                        changed = true;
+                    }
                 }
                 changed
             })
@@ -39,6 +57,16 @@ impl SundialApp {
             self.collections_ui.reset_navigation();
         }
         ui.separator();
+        if self.draw_dawn_progression_section(ui, read_only) {
+            return;
+        }
+        if self.progression_section == ProgressionSection::Seasonal
+            && self.document.account_is_dawn()
+        {
+            ui.heading("Seasonal Unavailable");
+            ui.label(super::seasonal::DAWN_UNAVAILABLE);
+            return;
+        }
         let artifact_context = if self.progression_section == ProgressionSection::Seasonal {
             let artifact = ui
                 .horizontal_wrapped(|ui| {
@@ -70,6 +98,7 @@ impl SundialApp {
                 )
         };
         let changed = match self.progression_section {
+            ProgressionSection::Vendors | ProgressionSection::Missions => false,
             ProgressionSection::Seasonal => {
                 super::seasonal::draw(ui, &mut document, &self.manifest, &mut self.progression_ui)
             }

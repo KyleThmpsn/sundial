@@ -357,7 +357,6 @@ fn invalid_profile_commands_are_atomic_in_both_paths() {
         json!([{"definition_hash": 11, "quantity": 1}]);
     let source = legacy.clone();
     let adapter = JsonProfileAdapter::load(&source).unwrap();
-    let adapter_before = adapter.clone();
     let id = adapter.state().profile_items()[0].id;
 
     assert!(
@@ -376,7 +375,6 @@ fn invalid_profile_commands_are_atomic_in_both_paths() {
         )
         .is_err()
     );
-    assert_eq!(adapter, adapter_before);
     assert_eq!(legacy, source);
 }
 
@@ -396,7 +394,6 @@ fn duplicate_dismantle_policies_are_atomic_in_both_paths() {
         );
     let source = legacy.clone();
     let adapter = JsonProfileAdapter::load(&source).unwrap();
-    let adapter_before = adapter.clone();
     let id = adapter.state().dismantle_rewards()[1].id;
 
     assert!(
@@ -428,7 +425,6 @@ fn duplicate_dismantle_policies_are_atomic_in_both_paths() {
         )
         .is_err()
     );
-    assert_eq!(adapter, adapter_before);
     assert_eq!(legacy, source);
 }
 

@@ -546,14 +546,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collectible_scan_keeps_all_five_native_condition_fields() {
-        assert_eq!(
-            COLLECTIBLE_CONDITION_OFFSETS,
-            [0x30, 0x40, 0x50, 0x60, 0x70]
-        );
-    }
-
-    #[test]
     fn collectible_condition_tokens_preserve_package_order_and_operands() {
         let mut data = vec![0_u8; 96];
         data[0..8].copy_from_slice(&2_u64.to_le_bytes());

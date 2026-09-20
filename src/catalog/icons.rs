@@ -30,6 +30,7 @@ const FAILED_ICON_RETRY_DELAY: Duration = Duration::from_secs(5);
 const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
 /// Namespaces the overlay-free copy of an item icon so both variants can stay cached.
 const ARTWORK_ICON_CACHE_PREFIX: u64 = 1_u64 << 62;
+const TEXTURE_ICON_CACHE_PREFIX: u64 = 1_u64 << 61;
 
 /// The cache key of an artwork icon. The cleared color is part of the key: two requests for
 /// one item with different cleared colors composite differently, so they must not read each
@@ -70,11 +71,14 @@ struct IconLoadRequest {
 enum IconLayers {
     /// Everything the client draws, including the season watermark and any foreground overlay.
     All,
+    Texture,
     /// The artwork layer alone, without the rarity plate, watermark or foreground overlay, and
     /// with one flat color cleared from the artwork itself. Authoring controls use this to show
     /// an appearance rather than the stock item presentation around it, which an authored weapon
     /// replaces with its own.
-    Artwork { cleared_color: Option<[u8; 3]> },
+    Artwork {
+        cleared_color: Option<[u8; 3]>,
+    },
 }
 
 struct IconLoadResult {
@@ -115,6 +119,25 @@ impl Catalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         runtime.texture(context, &self.install_path, hash, container)
+    }
+
+    pub(crate) fn texture_icon(
+        &self,
+        context: &eframe::egui::Context,
+        tag: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture_with(
+            context,
+            &self.install_path,
+            TEXTURE_ICON_CACHE_PREFIX | u64::from(tag),
+            tag,
+            true,
+            IconLayers::Texture,
+        )
     }
 
     /// Loads an item icon as artwork alone, optionally clearing one flat color from it.
@@ -542,6 +565,12 @@ fn load_catalog_icon(
     native_size: bool,
     layers: IconLayers,
 ) -> Result<LoadedCatalogIcon, String> {
+    if layers == IconLayers::Texture {
+        return load_texture_icon(manager, container_tag).map(|image| LoadedCatalogIcon {
+            image,
+            warnings: Vec::new(),
+        });
+    }
     let container = manager
         .read_tag(container_tag)
         .map_err(|error| format!("Could not read icon container: {error}"))?;
@@ -574,7 +603,7 @@ fn load_catalog_icon(
         .flatten();
     let cleared = match layers {
         IconLayers::Artwork { cleared_color } => cleared_color,
-        IconLayers::All => None,
+        IconLayers::All | IconLayers::Texture => None,
     };
     let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_LAYER_OFFSET, cleared)?
         .ok_or("Item icon has no primary texture")?;
@@ -669,6 +698,21 @@ fn load_catalog_icon_layer_at(
         )
         .ok_or("Icon texture offset overflowed")?;
     let texture_tag = TagHash(u32_at(&layer, texture)?);
+    load_texture_icon_with_color(manager, texture_tag, cleared).map(Some)
+}
+
+fn load_texture_icon(
+    manager: &PackageManager,
+    texture_tag: TagHash,
+) -> Result<eframe::egui::ColorImage, String> {
+    load_texture_icon_with_color(manager, texture_tag, None)
+}
+
+fn load_texture_icon_with_color(
+    manager: &PackageManager,
+    texture_tag: TagHash,
+    cleared: Option<[u8; 3]>,
+) -> Result<eframe::egui::ColorImage, String> {
     let header = manager
         .read_tag(texture_tag)
         .map_err(|error| format!("Could not read icon layer texture header: {error}"))?;
@@ -682,7 +726,7 @@ fn load_catalog_icon_layer_at(
     let data = manager
         .read_tag(data_tag)
         .map_err(|error| format!("Could not read icon layer texture: {error}"))?;
-    decode_catalog_texture(&header, &data, cleared).map(Some)
+    decode_catalog_texture(&header, &data, cleared)
 }
 
 #[cfg(test)]
@@ -780,6 +824,7 @@ mod tests {
             artwork_cache_key(hash, None),
             hash,
             STAT_ICON_CACHE_PREFIX | hash,
+            TEXTURE_ICON_CACHE_PREFIX | hash,
         ];
         for (index, key) in keys.iter().enumerate() {
             for later in &keys[index + 1..] {

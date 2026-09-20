@@ -343,22 +343,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_arrays_are_derived_from_the_profile() {
+    fn the_parhelion_asset_package_is_a_standalone_authored_package() {
         assert!(is_authored_standalone_package_id(
             PARHELION_ASSET_PACKAGE_ID
         ));
-        assert_eq!(
-            CANONICAL_PACKAGE_IDS,
-            CANONICAL_PACKAGES.map(|profile| profile.package_id)
-        );
-        assert_eq!(
-            &CANONICAL_ARTIFACT_FILE_NAMES[..CANONICAL_PACKAGES.len()],
-            &CANONICAL_PACKAGES.map(|profile| profile.authored_file_name)
-        );
-        assert_eq!(
-            CANONICAL_ARTIFACT_FILE_NAMES[CANONICAL_PACKAGES.len()],
-            PARHELION_ASSET_FILE_NAME
-        );
     }
 
     #[test]
@@ -457,14 +445,26 @@ mod tests {
         }
     }
 
+    /// Round-tripping through `encode` proved nothing on its own: both sides read the same four
+    /// constants, so a wrong offset moved the writer and the reader together and the test still
+    /// passed. The offsets are the game's, so they are spelled out here as literals instead.
     #[test]
-    fn package_header_prefix_round_trips() {
+    fn a_package_header_prefix_reads_each_field_from_its_own_offset() {
+        let mut bytes = [0_u8; PACKAGE_HEADER_PREFIX_SIZE];
+        bytes[0..2].copy_from_slice(&SHADOWKEEP_HEADER_VERSION.to_le_bytes());
+        bytes[4..6].copy_from_slice(&0x0914_u16.to_le_bytes());
+        bytes[8..16].copy_from_slice(&0x1234_5678_9ABC_DEF0_u64.to_le_bytes());
+        bytes[0x20..0x22].copy_from_slice(&AUTHORED_PATCH_ID.to_le_bytes());
         let header = PackageHeaderPrefix {
             version: SHADOWKEEP_HEADER_VERSION,
             package_id: 0x0914,
             build_signature: 0x1234_5678_9ABC_DEF0,
             patch_id: AUTHORED_PATCH_ID,
         };
-        assert_eq!(PackageHeaderPrefix::parse(&header.encode()), header);
+
+        assert_eq!(PackageHeaderPrefix::parse(&bytes), header);
+        // `encode` is the inverse, and is what the install and workflow fixtures build headers
+        // with, so it is pinned to the same literal bytes rather than to its own reader.
+        assert_eq!(header.encode(), bytes);
     }
 }

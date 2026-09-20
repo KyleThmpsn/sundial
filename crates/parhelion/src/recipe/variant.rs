@@ -29,6 +29,7 @@ impl WeaponSocketPlugVariantRecipe {
             name: self.name.clone(),
             description: self.description.clone(),
             additional_sandbox_perks: self.additional_sandbox_perks.clone(),
+            icon: self.icon.clone(),
             classification_donor_hash: self
                 .classification_donor_hash
                 .as_ref()

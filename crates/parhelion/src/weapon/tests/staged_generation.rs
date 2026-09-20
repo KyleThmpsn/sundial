@@ -17,24 +17,19 @@ fn stock_companion_neighbor_is_preserved_without_weakening_array_checks() {
     write_u64(&mut segment, 16, 1).unwrap();
     write_u32(&mut segment, 24, ITEM_STRING_SANDBOX_PERK_ROW_CLASS).unwrap();
     write_u16(&mut segment, 32, u16::MAX).unwrap();
-    write_u32(
-        &mut segment,
-        36,
-        ITEM_STRING_SANDBOX_PERK_EMPTY_EXPRESSION_TAG,
-    )
-    .unwrap();
+    write_u32(&mut segment, 36, ITEM_STRING_SANDBOX_PERK_EMPTY_NAME_HASH).unwrap();
     let before = segment.clone();
-    validate_item_string_sandbox_perk_segment(&segment).unwrap();
+    validate_item_string_sandbox_perk_template(&segment).unwrap();
     assert_eq!(segment, before);
     for offset in [8, 24, 28, 32, 36, 40] {
         let mut broken = segment.clone();
         broken[offset] ^= 1;
         assert!(
-            validate_item_string_sandbox_perk_segment(&broken).is_err(),
+            validate_item_string_sandbox_perk_template(&broken).is_err(),
             "byte {offset}"
         );
     }
-    assert!(validate_item_string_sandbox_perk_segment(&segment[..segment.len() - 1]).is_err());
+    assert!(validate_item_string_sandbox_perk_template(&segment[..segment.len() - 1]).is_err());
 }
 
 #[test]

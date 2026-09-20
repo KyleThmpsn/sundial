@@ -59,6 +59,7 @@ pub(in crate::app::progression::seasonal) fn draw(
     progression: &ProgressionDefinition,
     editable: bool,
 ) -> bool {
+    let editable = editable && document["_native_progression"]["runtime"] != "dawn";
     let snapshot = collection_state_snapshot(document);
     let experience = snapshot
         .as_ref()
@@ -140,7 +141,7 @@ pub(in crate::app::progression::seasonal) fn draw(
                     "Claim Reward"
                 }),
             )
-            .on_hover_text("Add this reward to Pending Rewards for the selected character")
+            .on_hover_text("Add this reward to the Reward Queue for the selected character")
             .clicked()
         {
             request = Some((
@@ -198,7 +199,7 @@ fn draw_job(
             counts.push((false, format!("Rank {before} → {after}")));
         }
         if job.queued() > 0 {
-            counts.push((true, format!("{} Pending Rewards", job.queued())));
+            counts.push((true, format!("{} Rewards Queued", job.queued())));
         }
         if !job.issues.is_empty() {
             counts.push((true, format!("{} Unclaimed", job.issues.len())));
@@ -272,7 +273,7 @@ fn draw_progress(ui: &mut egui::Ui, experience: Option<Experience>, claimed: usi
             || "Season Pass".into(), |experience| format!("Rank {}", experience.rank),
         )).size(22.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::ui_help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their required rank. Claims add supported items to Pending Rewards for the selected character.");
+            crate::ui_help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their required rank. Claims add supported items to the Reward Queue for the selected character.");
             ui.weak(format!("{claimed} / {total} Claimed"));
         });
     });

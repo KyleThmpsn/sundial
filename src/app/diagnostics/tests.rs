@@ -36,7 +36,8 @@ fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_conte
         install_path: install,
         settings_path: &settings,
         settings_layout: "bin_x64",
-        sunrise_version: "test",
+        runtime_name: "Sunrise",
+        runtime_version: "0.5",
         settings_schema: Some(8),
         account_source: &WorkspaceDocument::load(json!({"version": 8}), &settings, false)
             .source_info(),
@@ -62,6 +63,10 @@ fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_conte
     });
 
     assert!(report.contains("runtime.toml"));
+    assert!(report.contains("format_version = 5"));
+    assert!(report.contains("detected_runtime_name = Sunrise"));
+    assert!(report.contains("detected_runtime_version = 0.5"));
+    assert!(report.contains("settings_json_schema = 8"));
     assert!(report.contains(
         "progression_counts = flags:5 values:6 progressions:7 objectives:8 expressions:9"
     ));
@@ -69,10 +74,13 @@ fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_conte
     assert!(report.contains("[Error] Earlier failure"));
     assert_report_paths(&report);
     assert_account_source_details(&report);
-    assert!(!report.contains("Sunrise .bin files"));
     assert!(report.contains("alternate_runtime_persistence_detected = true"));
     assert!(report.contains("detection_evidence = runtime_state_header"));
     assert!(report.contains("runtime_state_header = recognized | format_version=1"));
+    assert_report_privacy(&report);
+}
+
+fn assert_report_privacy(report: &str) {
     assert!(report.contains("w64_investment_globals_client_058c_4.pkg"));
     assert!(!report.contains("w64_other_0001_0.pkg"));
     assert!(!report.contains("not-in-report"));
@@ -91,8 +99,6 @@ fn assert_report_paths(report: &str) {
 }
 
 fn assert_account_source_details(report: &str) {
-    assert!(!report.contains("state_db"));
-    assert!(!report.contains("state_sqlite3"));
     assert!(report.contains("account_source = settings.json"));
     assert!(report.contains("active_account_json = "));
     assert!(!report.contains("active_account_database = "));
@@ -100,11 +106,18 @@ fn assert_account_source_details(report: &str) {
 }
 
 #[test]
-fn account_candidates_use_data_directory_in_every_supported_layout() {
+fn account_candidates_cover_sunrise_and_dawn_storage() {
     let directory = TestDirectory::new("diagnostic-account-candidates");
     for layout in SettingsLayout::ALL {
         let settings = settings_path_for_install(&directory.0, layout);
-        let database = crate::persistence::investment_path(&settings);
+        let database = match layout {
+            SettingsLayout::DawnRoot | SettingsLayout::DawnBinX64 => {
+                crate::persistence::dawn_path(&settings)
+            }
+            SettingsLayout::GameRoot | SettingsLayout::Root | SettingsLayout::BinX64 => {
+                crate::persistence::investment_path(&settings)
+            }
+        };
         fs::create_dir_all(database.parent().unwrap()).unwrap();
         fs::write(settings, b"private settings").unwrap();
         fs::write(database, b"private account").unwrap();
@@ -125,8 +138,16 @@ fn account_candidates_use_data_directory_in_every_supported_layout() {
             "{report}"
         );
     }
-    assert!(!report.contains("state.db"));
-    assert!(!report.contains("state_sqlite3"));
+    for relative in ["Dawn/player-state.db", "bin/x64/Dawn/player-state.db"] {
+        let path = directory.0.join(relative.split('/').collect::<PathBuf>());
+        assert!(
+            report.contains(&format!(
+                "player_state_database = {} | kind=file",
+                path.display()
+            )),
+            "{report}"
+        );
+    }
     assert!(!report.contains("private"));
     assert!(!report.contains("missing"));
 }
@@ -181,6 +202,45 @@ fn account_paths_follow_loaded_json_sqlite_and_blocked_sources() {
     }
 }
 
+#[test]
+fn account_paths_follow_loaded_and_blocked_dawn_sources() {
+    for layout in [SettingsLayout::DawnRoot, SettingsLayout::DawnBinX64] {
+        let directory = TestDirectory::new("diagnostic-active-dawn-account");
+        let settings = settings_path_for_install(&directory.0, layout);
+        let database = crate::persistence::dawn_path(&settings);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, br#"{"version":6}"#).unwrap();
+        crate::persistence::dawn_account::tests::create_fixture(&database);
+
+        let source = WorkspaceDocument::load(json!({"version": 6}), &settings, true).source_info();
+        assert_eq!(source.kind, AccountSourceKind::Dawn);
+        let mut report = String::new();
+        append_path_section(&mut report, &context(&directory.0, &settings, &source));
+        append_workspace_section(&mut report, &context(&directory.0, &settings, &source));
+        assert!(report.contains(&format!(
+            "active_account_database = {} | kind=file",
+            database.display()
+        )));
+        assert!(report.contains("account_contract = SQLite · Dawn schema 5"));
+        assert!(report.contains("detected_runtime_name = Dawn"));
+        assert!(report.contains("settings_json_schema = 6"));
+
+        let missing_settings = settings_path_for_install(&directory.0.join("missing"), layout);
+        let blocked =
+            WorkspaceDocument::load(json!({"version": 6}), &missing_settings, true).source_info();
+        assert_eq!(blocked.kind, AccountSourceKind::Blocked);
+        let mut report = String::new();
+        append_path_section(
+            &mut report,
+            &context(&directory.0, &missing_settings, &blocked),
+        );
+        assert!(report.contains(&format!(
+            "required_account_database = {} | missing",
+            crate::persistence::dawn_path(&missing_settings).display()
+        )));
+    }
+}
+
 fn context<'a>(
     install: &'a Path,
     settings: &'a Path,
@@ -190,11 +250,16 @@ fn context<'a>(
         install_path: install,
         settings_path: settings,
         settings_layout: "test",
-        sunrise_version: "test",
-        settings_schema: Some(if source.kind == AccountSourceKind::Json {
-            8
+        runtime_name: if source.kind == AccountSourceKind::Dawn {
+            "Dawn"
         } else {
-            18
+            "Sunrise"
+        },
+        runtime_version: "test",
+        settings_schema: Some(match source.kind {
+            AccountSourceKind::Json => 8,
+            AccountSourceKind::Dawn => 6,
+            AccountSourceKind::Sqlite | AccountSourceKind::Blocked => 18,
         }),
         account_source: source,
         catalog: CatalogSummary {
@@ -220,25 +285,31 @@ fn context<'a>(
 }
 
 #[test]
-fn runtime_report_includes_game_root_database_sidecars_and_cache_once() {
+fn runtime_report_includes_sunrise_05_and_dawn_storage() {
     let directory = TestDirectory::new("diagnostic-game-root-data");
     for relative in [
         "data/investment.sqlite3",
         "data/investment.sqlite3-wal",
         "data/investment.sqlite3-shm",
         "cache/build_data.bin",
+        "Sunrise/data/investment.sqlite3",
+        "Dawn/player-state.db",
+        "Dawn/player-state.db-wal",
+        "Dawn/player-state.db-shm",
     ] {
         let path = directory.0.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"private runtime bytes").unwrap();
     }
     let mut report = String::new();
-    append_sunrise_runtime_files(&mut report, &directory.0);
+    append_runtime_files(&mut report, &directory.0);
     for file in [
-        "investment.sqlite3",
         "investment.sqlite3-wal",
         "investment.sqlite3-shm",
         "build_data.bin",
+        "player-state.db",
+        "player-state.db-wal",
+        "player-state.db-shm",
     ] {
         assert_eq!(
             report.matches(&format!("{file} | kind=file")).count(),
@@ -246,8 +317,10 @@ fn runtime_report_includes_game_root_database_sidecars_and_cache_once() {
             "{report}"
         );
     }
+    assert_eq!(report.matches("investment.sqlite3 | kind=file").count(), 2);
+    assert!(report.contains("[sunrise_root]"));
+    assert!(report.contains("[dawn_root]"));
     assert!(!report.contains("private runtime bytes"));
-    assert!(!report.contains("Sunrise .bin files"));
 }
 
 #[test]

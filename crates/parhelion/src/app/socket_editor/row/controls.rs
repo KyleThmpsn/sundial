@@ -158,6 +158,7 @@ pub(super) fn draw_active(
                     button: PlugChoicePickerButton {
                         text: add_label,
                         icon_hash: None,
+                        icon_override: None,
                         tooltip: None,
                         width: add_width as u16,
                     },
@@ -373,6 +374,7 @@ fn draw_choice(
                         tooltip,
                         text: &button_label,
                         icon_hash: Some(hash),
+                        icon_override: crate::artwork_browser::preview::icon(ui, catalog, variant.and_then(|variant| variant.icon.as_ref())),
                         width: picker_width,
                     },
                 },

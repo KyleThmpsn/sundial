@@ -65,7 +65,6 @@ pub(crate) fn decode(
     Ok(decoded)
 }
 
-// Filter premultiplied pixels to prevent hidden RGB in transparent PNGs from bleeding at edges.
 pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     if source.dimensions() == (width, height) {
         return source.clone();
@@ -74,6 +73,22 @@ pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
         .min(f64::from(height) / f64::from(source.height()));
     let fitted_width = ((f64::from(source.width()) * scale).round() as u32).clamp(1, width);
     let fitted_height = ((f64::from(source.height()) * scale).round() as u32).clamp(1, height);
+    let resized = resize(source, fitted_width, fitted_height);
+    let mut canvas = RgbaImage::new(width, height);
+    image::imageops::replace(
+        &mut canvas,
+        &resized,
+        i64::from((width - fitted_width) / 2),
+        i64::from((height - fitted_height) / 2),
+    );
+    canvas
+}
+
+// Filter premultiplied pixels to prevent hidden RGB in transparent PNGs from bleeding at edges.
+pub(crate) fn resize(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    if source.dimensions() == (width, height) {
+        return source.clone();
+    }
     let mut premultiplied = source.clone();
     for pixel in premultiplied.pixels_mut() {
         let alpha = u32::from(pixel[3]);
@@ -81,12 +96,7 @@ pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
             *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
         }
     }
-    let mut resized = image::imageops::resize(
-        &premultiplied,
-        fitted_width,
-        fitted_height,
-        FilterType::Lanczos3,
-    );
+    let mut resized = image::imageops::resize(&premultiplied, width, height, FilterType::Lanczos3);
     for pixel in resized.pixels_mut() {
         let alpha = u32::from(pixel[3]);
         for channel in &mut pixel.0[..3] {
@@ -97,14 +107,7 @@ pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
             };
         }
     }
-    let mut canvas = RgbaImage::new(width, height);
-    image::imageops::replace(
-        &mut canvas,
-        &resized,
-        i64::from((width - fitted_width) / 2),
-        i64::from((height - fitted_height) / 2),
-    );
-    canvas
+    resized
 }
 
 #[cfg(test)]

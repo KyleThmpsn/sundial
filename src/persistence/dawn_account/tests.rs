@@ -24,6 +24,15 @@ pub(crate) fn create_fixture(path: &Path) {
          INSERT INTO settings_values VALUES
             ('controls.mouseLookSensitivity',15,NULL),
             ('controls.adsSensitivityModifier',NULL,1.0),
+            ('display.motionBlur',1,NULL),
+            ('display.filmGrain',0,NULL),
+            ('display.chromaticAberration',1,NULL),
+            ('social.voiceChatEnabled',0,NULL),
+            ('pc.seedVersion',1,NULL),
+            ('pc.voiceChatEnabled',1,NULL),
+            ('pc.verticalSyncMode',1,NULL),
+            ('pc.fieldOfViewAdjustment',85,NULL),
+            ('pc.useLocalKeyBindings',0,NULL),
             ('configured',1,NULL);
          INSERT INTO key_bindings VALUES(0,109,NULL),(3,60,NULL);",
     )
@@ -102,6 +111,47 @@ fn settings_and_key_bindings_become_storage_neutral_keys() {
         values.get(&sensitivity),
         Some(&sundial_account::AccountSettingValue::Unsigned(15))
     );
+    for (name, expected) in [
+        ("motion_blur", true),
+        ("film_grain", false),
+        ("chromatic_aberration", true),
+    ] {
+        assert_eq!(
+            values.get(&sundial_account::AccountSettingKey::preference(
+                sundial_account::AccountSettingGroup::Display,
+                name,
+            )),
+            Some(&sundial_account::AccountSettingValue::Boolean(expected))
+        );
+    }
+    assert_eq!(
+        values.get(&sundial_account::AccountSettingKey::preference(
+            sundial_account::AccountSettingGroup::Display,
+            "vertical_sync_interval",
+        )),
+        Some(&sundial_account::AccountSettingValue::Unsigned(1))
+    );
+    assert_eq!(
+        values.get(&sundial_account::AccountSettingKey::preference(
+            sundial_account::AccountSettingGroup::Display,
+            "field_of_view",
+        )),
+        Some(&sundial_account::AccountSettingValue::Unsigned(85))
+    );
+    assert_eq!(
+        values.get(&sundial_account::AccountSettingKey::preference(
+            sundial_account::AccountSettingGroup::Root,
+            "key_binding_source",
+        )),
+        Some(&sundial_account::AccountSettingValue::text("account"))
+    );
+    assert_eq!(
+        values.get(&sundial_account::AccountSettingKey::preference(
+            sundial_account::AccountSettingGroup::Social,
+            "voice_chat_enabled",
+        )),
+        Some(&sundial_account::AccountSettingValue::Boolean(true))
+    );
     let binding = sundial_account::AccountSettingKey::key_binding(
         "fire",
         sundial_account::KeyBindingSlot::Primary,
@@ -116,6 +166,56 @@ fn settings_and_key_bindings_become_storage_neutral_keys() {
             .keys()
             .all(|key| !format!("{key:?}").contains("configured"))
     );
+}
+
+#[test]
+fn voice_chat_follows_dawns_active_seed_row() {
+    use sundial_account::{
+        AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCommand,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("player-state.db");
+    create_fixture(&path);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "UPDATE settings_values SET integer_value=0 WHERE key='pc.seedVersion';
+             UPDATE settings_values SET integer_value=0 WHERE key='social.voiceChatEnabled';
+             UPDATE settings_values SET integer_value=1 WHERE key='pc.voiceChatEnabled';",
+        )
+        .unwrap();
+
+    let key = AccountSettingKey::preference(AccountSettingGroup::Social, "voice_chat_enabled");
+    let mut document = loaded(&path);
+    assert_eq!(
+        document.settings().values().get(&key),
+        Some(&AccountSettingValue::Boolean(false))
+    );
+    document
+        .settings_mut()
+        .apply_all(
+            DawnAccountDocument::settings_capabilities(),
+            [AccountSettingsCommand::Set {
+                key,
+                value: AccountSettingValue::Boolean(true),
+            }],
+        )
+        .unwrap();
+    super::writer::save(&mut document).unwrap();
+
+    let database = Connection::open(&path).unwrap();
+    let value = |key: &str| {
+        database
+            .query_row(
+                "SELECT integer_value FROM settings_values WHERE key=?1",
+                rusqlite::params![key],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(value("social.voiceChatEnabled"), 1);
+    assert_eq!(value("pc.voiceChatEnabled"), 1);
 }
 
 #[test]
@@ -370,6 +470,15 @@ fn a_settings_edit_is_written_to_the_column_it_was_read_from() {
         AccountSettingKey::preference(AccountSettingGroup::Controls, "mouse_look_sensitivity");
     let real_key =
         AccountSettingKey::preference(AccountSettingGroup::Controls, "ads_sensitivity_modifier");
+    let motion_blur = AccountSettingKey::preference(AccountSettingGroup::Display, "motion_blur");
+    let vertical_sync =
+        AccountSettingKey::preference(AccountSettingGroup::Display, "vertical_sync_interval");
+    let field_of_view =
+        AccountSettingKey::preference(AccountSettingGroup::Display, "field_of_view");
+    let binding_source =
+        AccountSettingKey::preference(AccountSettingGroup::Root, "key_binding_source");
+    let voice_chat =
+        AccountSettingKey::preference(AccountSettingGroup::Social, "voice_chat_enabled");
     document
         .settings_mut()
         .apply_all(
@@ -382,6 +491,26 @@ fn a_settings_edit_is_written_to_the_column_it_was_read_from() {
                 AccountSettingsCommand::Set {
                     key: real_key,
                     value: AccountSettingValue::Decimal(FiniteF64::new(1.25).unwrap()),
+                },
+                AccountSettingsCommand::Set {
+                    key: motion_blur,
+                    value: AccountSettingValue::Boolean(false),
+                },
+                AccountSettingsCommand::Set {
+                    key: vertical_sync,
+                    value: AccountSettingValue::Unsigned(2),
+                },
+                AccountSettingsCommand::Set {
+                    key: field_of_view,
+                    value: AccountSettingValue::Unsigned(105),
+                },
+                AccountSettingsCommand::Set {
+                    key: binding_source,
+                    value: AccountSettingValue::text("computer"),
+                },
+                AccountSettingsCommand::Set {
+                    key: voice_chat,
+                    value: AccountSettingValue::Boolean(false),
                 },
             ],
         )
@@ -400,6 +529,12 @@ fn a_settings_edit_is_written_to_the_column_it_was_read_from() {
     // Each value goes back to its own column, and the other stays NULL.
     assert_eq!(read("controls.mouseLookSensitivity"), (Some(22), None));
     assert_eq!(read("controls.adsSensitivityModifier"), (None, Some(1.25)));
+    assert_eq!(read("display.motionBlur"), (Some(0), None));
+    assert_eq!(read("pc.verticalSyncMode"), (Some(2), None));
+    assert_eq!(read("pc.fieldOfViewAdjustment"), (Some(105), None));
+    assert_eq!(read("pc.useLocalKeyBindings"), (Some(1), None));
+    assert_eq!(read("pc.voiceChatEnabled"), (Some(0), None));
+    assert_eq!(read("social.voiceChatEnabled"), (Some(0), None));
     // An ungrouped switch Dawn keeps and Sundial does not model is untouched.
     assert_eq!(read("configured"), (Some(1), None));
 

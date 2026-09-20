@@ -488,6 +488,9 @@ pub(crate) fn validate_socket_plug_variant_shapes(
         if let Some(name) = &variant.name {
             validate_localized_text("Private socket-plug name", name)?;
         }
+        if let Some(icon) = &variant.icon {
+            icon.validate().map_err(invalid)?;
+        }
         // An explicit empty string clears the donor description. None inherits it.
         if let Some(description) = &variant.description
             && !description.is_empty()
@@ -1026,11 +1029,12 @@ pub(crate) fn validate_catalog_with_progress<'a>(
                     plug_hashes: set.plug_hashes,
                 })
                 .collect::<Vec<_>>();
-            diagnostics.extend(validate_socket_column_overrides_with_socket_types(
+            diagnostics.extend(validate_socket_column_overrides_with_variants(
                 &donor,
                 &overrides,
                 &socket_types,
                 &supported,
+                &spec.overrides.socket_plug_variants,
             ));
         }
 
@@ -1274,8 +1278,9 @@ pub(super) fn validate_authored_localization_values(
     localization: &AuthoredLocalization,
     weapons: &[WeaponCloneSpec],
     custom_plugs: &[ResolvedCustomPlug],
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<()> {
-    let header_values = project_authored_localized_values(weapons, custom_plugs, 0)?;
+    let header_values = project_authored_localized_values(weapons, custom_plugs, 0, branding)?;
     let custom_values = header_values.as_slice();
     let merged_count = LOCALIZATION_DONOR_STRING_HASHES.len() + custom_values.len();
     let (table_count, _, table_rows, table_class) = array_at(&localization.index, 8)?;
@@ -1334,7 +1339,8 @@ pub(super) fn validate_authored_localization_values(
 
     let mut locale_tags = BTreeSet::new();
     for (locale_index, locale) in localization.locale_data.iter().enumerate() {
-        let locale_values = project_authored_localized_values(weapons, custom_plugs, locale_index)?;
+        let locale_values =
+            project_authored_localized_values(weapons, custom_plugs, locale_index, branding)?;
         let header_tag_offset = LOCALIZATION_DATA_TAG_START + locale_index * 4;
         let (part_count, _, _, part_class) = array_at(&locale.payload, 8)?;
         let (aux_count, _, _, aux_class) =

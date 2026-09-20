@@ -41,7 +41,9 @@ pub(in crate::app) fn draw(
         .id()
         .with(("reward_filter", progression.definition_index));
     let mut filter = ui.data_mut(|data| data.get_temp::<Filter>(id).unwrap_or_default());
-    ui.label(if season {
+    ui.label(if document.is_some_and(|value| value["_native_progression"]["runtime"] == "dawn") {
+        "Dawn claim flags are shown from player-state.db. Changing a flag does not deliver an item. Claim Season Pass rewards in game."
+    } else if season {
         "Claim flags record reward delivery. Changing a flag does not grant an item. Rank eligibility checks XP only. Claim in Sunrise to apply its delivery, class, and inventory-space checks."
     } else {
         "Claim references and native bank values are shown here. A flag edit does not grant the linked item."

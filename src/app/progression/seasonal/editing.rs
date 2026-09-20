@@ -23,8 +23,11 @@ pub(in crate::app) fn apply(
     catalog: &Catalog,
     edit: Edit,
 ) -> Result<bool, String> {
+    if document["_native_progression"]["runtime"] == "dawn" {
+        return Err(super::DAWN_UNAVAILABLE.into());
+    }
     if document.get("_native_progression").is_none() {
-        return Err("Seasonal authoring requires a current Sunrise SQLite account".into());
+        return Err("Seasonal authoring requires a supported Sunrise database account".into());
     }
     let definition = catalog
         .seasonal()

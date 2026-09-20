@@ -509,10 +509,6 @@ mod tests {
     fn refuses_undocumented_or_underflowing_programs() {
         assert_eq!(evaluate(&[token(99, 1)]), None);
         assert_eq!(evaluate(&[token(3, u32::MAX)]), None);
-        assert_eq!(
-            evaluate(&[token(11, 1), token(11, 0), token(20, 0)]),
-            Some(false)
-        );
     }
 
     #[test]

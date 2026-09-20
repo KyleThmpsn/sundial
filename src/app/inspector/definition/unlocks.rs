@@ -154,7 +154,7 @@ fn draw_hash_unlock_definition(
                 };
                 hash_detail_field(
                     ui,
-                    if snapshot.is_native()
+                    if snapshot.seasonal_authoring()
                         && (crate::app::progression::seasonal::is_derived_value(index)
                             && value_definition
                             || !value_definition
@@ -182,9 +182,19 @@ fn draw_hash_unlock_definition(
                 );
             }
         });
+    if let Some(snapshot) = editor.snapshot
+        && snapshot.is_dawn()
+        && ((value_definition && crate::app::progression::seasonal::is_derived_value(index))
+            || (!value_definition
+                && catalog
+                    .seasonal()
+                    .is_some_and(|season| season.mod_for_flag(index).is_some())))
+    {
+        ui.label(DAWN_SEASONAL_NOTE);
+    }
     if editor
         .snapshot
-        .is_some_and(CollectionStateSnapshot::is_native)
+        .is_some_and(CollectionStateSnapshot::seasonal_authoring)
     {
         if value_definition && crate::app::progression::seasonal::is_derived_value(index) {
             ui.label("Sunrise rebuilds this value from seasonal XP and character artifact ownership. Use Seasonal to change its inputs.");
@@ -207,6 +217,9 @@ fn draw_hash_unlock_definition(
     draw_hash_unlock_readers(ui, catalog, definition_kind, index, definition);
 }
 
+/// Shown on Dawn for a flag or value Sunrise would manage through Seasonal.
+pub(super) const DAWN_SEASONAL_NOTE: &str = "Dawn: this is stored as a plain durable flag or value. Sundial does not maintain seasonal XP, artifact points or Season Pass counters for Dawn, so an edit here changes only this entry.";
+
 fn draw_unlock_state_editor(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -220,12 +233,12 @@ fn draw_unlock_state_editor(
         return;
     };
     ui.label(metadata_label_text(ui, "Edit Availability"));
-    if snapshot.is_native()
+    if snapshot.seasonal_authoring()
         && value_definition
         && crate::app::progression::seasonal::is_derived_value(index)
     {
         ui.weak("Use Seasonal XP or Artifact Mods");
-    } else if snapshot.is_native()
+    } else if snapshot.seasonal_authoring()
         && !value_definition
         && let Some(season) = catalog.seasonal()
         && let Some(entry) = season.mod_for_flag(index)

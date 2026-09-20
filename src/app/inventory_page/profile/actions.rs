@@ -35,15 +35,27 @@ impl SundialApp {
     fn apply_profile_action(&mut self, edit: Edit) -> Result<&'static str, String> {
         match edit {
             Edit::AddItem { hash, picker_key } => {
-                account::add_profile_item(&mut self.document, definition_hash(hash)?, 1)
-                    .map_err(|error| error.to_string())?;
+                crate::app::account_validation::apply_with_bucket_limits(
+                    &mut self.document,
+                    &self.manifest,
+                    |document| {
+                        account::add_profile_item(document, definition_hash(hash)?, 1)
+                            .map_err(|error| error.to_string())
+                    },
+                )?;
                 self.searches.remove(&picker_key);
                 Ok("Added a shared profile item")
             }
             Edit::Item { location, action } => {
                 let removed = matches!(action, ProfileItemAction::Remove);
-                account::apply_profile_item_action(&mut self.document, location, action)
-                    .map_err(|error| error.to_string())?;
+                crate::app::account_validation::apply_with_bucket_limits(
+                    &mut self.document,
+                    &self.manifest,
+                    |document| {
+                        account::apply_profile_item_action(document, location, action)
+                            .map_err(|error| error.to_string())
+                    },
+                )?;
                 if removed {
                     self.searches.retain(|key, _| {
                         key.starts_with("profile-items:add:") || !key.starts_with("profile-items:")

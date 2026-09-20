@@ -1,6 +1,11 @@
 use super::*;
 use crate::presentation::Artwork;
 
+pub(crate) struct Presentation<'a> {
+    pub(crate) artwork: &'a [Option<Artwork>],
+    pub(crate) branding: crate::branding::Branding,
+}
+
 /// Keep each distinct corner treatment in its own validated native icon graph.
 pub(crate) fn build_presented_watermark_plan(
     manager: &PackageManager,
@@ -8,9 +13,10 @@ pub(crate) fn build_presented_watermark_plan(
     current_entry_count: usize,
     appended_ordinal_base: usize,
     requests: &[WeaponIconRequest],
-    artwork: &[Option<Artwork>],
+    presentation: Presentation<'_>,
     request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
+    let Presentation { artwork, branding } = presentation;
     if requests.len() != artwork.len() || requests.is_empty() {
         return Err(invalid(
             "Release watermark artwork must match the weapon icon requests",
@@ -42,10 +48,18 @@ pub(crate) fn build_presented_watermark_plan(
             current_entry_count,
             base,
             &selected,
+            branding,
             &|index| request_context(members[index]),
         )?;
-        if let Some(artwork) = artwork {
-            apply_artwork(&mut plan, &artwork, current_entry_count, base).map_err(|error| {
+        if artwork.is_some() || branding == crate::branding::Branding::Dawn {
+            apply_artwork(
+                &mut plan,
+                artwork.as_ref(),
+                branding,
+                current_entry_count,
+                base,
+            )
+            .map_err(|error| {
                 let owners = members
                     .iter()
                     .map(|&index| request_context(index))
@@ -74,12 +88,16 @@ pub(crate) fn build_presented_watermark_plan(
 
 fn apply_artwork(
     plan: &mut WatermarkPlan,
-    artwork: &Artwork,
+    artwork: Option<&Artwork>,
+    branding: crate::branding::Branding,
     current_entry_count: usize,
     appended_ordinal_base: usize,
 ) -> AuthoringResult<()> {
     for index in 0..TEXTURE_DIMENSIONS.len() {
-        let pixels = render(artwork, index)?;
+        let pixels = match artwork {
+            Some(artwork) => render(artwork, index)?,
+            None => branding.texture(index)?.into_raw(),
+        };
         let texture = &mut plan.new_tags[index * TAGS_PER_TEXTURE].payload;
         if pixels.len() != texture.len() {
             return Err(validation(

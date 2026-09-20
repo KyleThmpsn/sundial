@@ -1,5 +1,7 @@
 //! Allocate icon assets before runtime tags and keep request-to-row ordering explicit.
 use super::*;
+#[cfg(test)]
+mod tests;
 
 pub(super) struct Plan {
     pub custom_badges: BTreeMap<String, TagHash>,
@@ -10,16 +12,18 @@ pub(super) struct Plan {
     pub hud_table: Option<ReplacementSpec>,
     pub hud_asset_start: usize,
     pub weapon_icon_containers: Vec<TagHash>,
+    pub perk_icon_dependencies: Vec<TagHash>,
 }
 
 pub(super) fn plan(
     manager: &PackageManager,
     resolved: &[resolve::ResolvedWeapon],
     weapon_count: usize,
-    custom_plug_count: usize,
+    custom_plugs: &mut [ResolvedCustomPlug],
+    branding: crate::branding::Branding,
 ) -> AuthoringResult<Plan> {
     let weapon_tag_ordinal_base = weapon_count
-        .checked_add(custom_plug_count)
+        .checked_add(custom_plugs.len())
         .ok_or_else(|| invalid("Authored host-tag count overflowed"))?
         .checked_mul(2)
         .ok_or_else(|| invalid("Authored host-tag count overflowed"))?;
@@ -44,10 +48,13 @@ pub(super) fn plan(
         HOST_EXPECTED_ENTRY_COUNT,
         weapon_tag_ordinal_base,
         &icon_requests,
-        &resolved
-            .iter()
-            .map(|donor| donor.weapon.overrides.corner_icon.clone())
-            .collect::<Vec<_>>(),
+        crate::watermark::Presentation {
+            branding,
+            artwork: &resolved
+                .iter()
+                .map(|donor| donor.weapon.overrides.corner_icon.clone())
+                .collect::<Vec<_>>(),
+        },
         &|index| {
             format!(
                 "{}\nIcon Resource: {}",
@@ -71,7 +78,14 @@ pub(super) fn plan(
                 .map_err(|error| error.context(donor.weapon.icon_error_context()))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let mut badge_icon_plan = build_badge_icon_plan(manager, PARHELION_ASSET_PACKAGE_ID, 0, 0)?;
+    let default_badge = branding.badge()?;
+    let mut badge_icon_plan = crate::badge_icon::build_icon_plan(
+        manager,
+        PARHELION_ASSET_PACKAGE_ID,
+        0,
+        0,
+        default_badge.as_ref(),
+    )?;
     let mut badges = BTreeMap::new();
     for donor in resolved {
         if let Some(badge) = &donor.weapon.overrides.badge {
@@ -88,12 +102,13 @@ pub(super) fn plan(
     }
     let mut custom_badges = BTreeMap::new();
     for (name, badge) in badges {
-        let plan = crate::badge_icon::build_icon_plan(
+        let plan = crate::badge_icon::build_icon_plan_with_branding(
             manager,
             PARHELION_ASSET_PACKAGE_ID,
             0,
             badge_icon_plan.new_tags.len(),
-            badge.icon.as_ref(),
+            badge.icon.as_ref().or(default_badge.as_ref()),
+            branding,
         )
         .map_err(|error| error.context(badge_context(resolved, &name)))?;
         custom_badges.insert(name, plan.container_tag);
@@ -131,6 +146,33 @@ pub(super) fn plan(
                 .join("\n\n")
         ))
     })?;
+    let mut perk_icon_dependencies = Vec::new();
+    for plug in custom_plugs {
+        if let Some(icon) = &plug.icon {
+            let container = crate::icon_edit::package_icons::author(
+                manager,
+                icon,
+                plug.source_icon_container,
+                &mut badge_icon_plan.new_tags,
+                &mut badge_icon_plan.reference_overrides,
+            )?;
+            plug.authored_icon_container = Some(container);
+            let companion = crate::shared_tag_memory::adjacent_companion_tag(container)?;
+            let dependencies = crate::shared_tag_memory::validate_shared_tag_companion_payload(
+                &badge_icon_plan.new_tags[usize::from(companion.entry_index())].payload,
+                companion,
+                container,
+            )?;
+            // Private glyph textures are enrolled below with the appended assets. Any
+            // untouched donor layers still need their stock textures kept resident too.
+            perk_icon_dependencies.extend(
+                dependencies
+                    .into_iter()
+                    .map(TagHash)
+                    .filter(|tag| tag.pkg_id() != PARHELION_ASSET_PACKAGE_ID),
+            );
+        }
+    }
     let weapon_runtime_tag_start = HOST_EXPECTED_ENTRY_COUNT
         .checked_add(weapon_tag_ordinal_base)
         .and_then(|count| count.checked_add(watermark_plan.new_tags.len()))
@@ -144,6 +186,7 @@ pub(super) fn plan(
         hud_table,
         hud_asset_start,
         weapon_icon_containers: authored_weapon_icon_containers,
+        perk_icon_dependencies,
     })
 }
 
@@ -158,6 +201,7 @@ pub(super) fn author_icon_rows(
     stock_icons: &[u8],
     resolved: &[resolve::ResolvedWeapon],
     assets: &Plan,
+    custom_plugs: &mut [ResolvedCustomPlug],
 ) -> AuthoringResult<IconRows> {
     let (mut authored_item_icons, badge_icon_index) =
         append_badge_icon_row(stock_icons.to_vec(), assets.badge.container_tag)?;
@@ -198,6 +242,23 @@ pub(super) fn author_icon_rows(
         )?;
         authored_item_icons = icons;
         custom_badges.insert(name.clone(), index);
+    }
+    for plug in custom_plugs {
+        if let Some(container) = plug.authored_icon_container {
+            let source_index = read_u16(&plug.source_strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
+            let (icons, index) = append_authored_weapon_icon_row(
+                authored_item_icons,
+                source_index,
+                plug.authored_item_hash,
+                container,
+            )?;
+            authored_item_icons = icons;
+            write_u16(
+                &mut plug.source_strings,
+                ITEM_STRING_ICON_INDEX_OFFSET,
+                index,
+            )?;
+        }
     }
     Ok(IconRows {
         custom_badges,

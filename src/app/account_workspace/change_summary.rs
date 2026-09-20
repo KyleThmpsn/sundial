@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 use sundial_account::{
-    AccountSettingKey, AccountSettingValue, DismantleReward, ItemInstance, ProfileItem,
+    AccountSettingKey, AccountSettingValue, AccountSettingsState, DismantleReward, ItemInstance,
+    ProfileItem,
 };
 
 use crate::persistence::sqlite_account::SqliteAccountDocument;
@@ -36,7 +37,13 @@ pub(super) fn sqlite_change_summaries(
     summarize_profile_items(before, after, limit, &mut changes);
     summarize_dismantle_rewards(before, after, limit, &mut changes);
     summarize_characters(before, after, limit, &mut changes);
-    summarize_account_settings(before, after, limit, &mut changes);
+    summarize_account_settings(
+        "investment.sqlite3",
+        before.settings(),
+        after.settings(),
+        limit,
+        &mut changes,
+    );
     for (path, old, new) in [
         ("runtime", before.runtime(), after.runtime()),
         ("entitlements", before.entitlements(), after.entitlements()),
@@ -402,27 +409,27 @@ fn summarize_item(
     }
 }
 
-fn summarize_account_settings(
-    before: &SqliteAccountDocument,
-    after: &SqliteAccountDocument,
+pub(super) fn summarize_account_settings(
+    source: &str,
+    before: &AccountSettingsState,
+    after: &AccountSettingsState,
     limit: usize,
     changes: &mut Vec<String>,
 ) {
     for key in before
-        .settings()
         .values()
         .keys()
-        .chain(after.settings().values().keys())
+        .chain(after.values().keys())
         .collect::<BTreeSet<_>>()
     {
-        let before = before.settings().values().get(key);
-        let after = after.settings().values().get(key);
+        let before = before.values().get(key);
+        let after = after.values().get(key);
         if before != after {
             push_summary(
                 changes,
                 limit,
                 format!(
-                    "investment.sqlite3/account_settings/{}: {} -> {}",
+                    "{source}/account_settings/{}: {} -> {}",
                     account_setting_key_label(key),
                     account_setting_value_label(before),
                     account_setting_value_label(after)

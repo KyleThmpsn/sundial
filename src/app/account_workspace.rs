@@ -23,7 +23,9 @@ use sundial_account::{
     CharacterMetadataUpdate, KeyBindingSlot,
 };
 
-use change_summary::{account_members_except_settings, sqlite_change_summaries};
+use change_summary::{
+    account_members_except_settings, sqlite_change_summaries, summarize_account_settings,
+};
 
 use super::equipment::{EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue};
 use super::inventory::{
@@ -88,6 +90,18 @@ impl super::SundialApp {
 }
 
 impl WorkspaceDocument {
+    pub(super) fn dawn_account(&self) -> Option<&DawnAccountDocument> {
+        match &self.account {
+            AccountDocument::Dawn(document) => Some(document),
+            _ => None,
+        }
+    }
+    pub(super) fn dawn_account_mut(&mut self) -> Option<&mut DawnAccountDocument> {
+        match &mut self.account {
+            AccountDocument::Dawn(document) => Some(document),
+            _ => None,
+        }
+    }
     pub(super) fn native_account(&self) -> Option<&SqliteAccountDocument> {
         match &self.account {
             AccountDocument::Sqlite(document) => Some(document),
@@ -103,11 +117,10 @@ impl WorkspaceDocument {
     pub(super) fn progression_view(&self, index: usize) -> Value {
         match &self.account {
             AccountDocument::Sqlite(document) => document.progression_view(index),
-            // Dawn keeps progression in player-state.db durable_flags, and its settings.json is the
-            // seed it consumed on first boot. Serving that seed here presented values Dawn stopped
-            // reading long ago as if they were live, and an edit to them was only refused after the
-            // fact.
-            AccountDocument::Dawn(_) => Value::Null,
+            AccountDocument::Dawn(document) => document.progression_view(index),
+            // The inspector still opens on a blocked account. Naming the reason in the view
+            // lets it say why the account state is missing instead of showing "Unresolved".
+            AccountDocument::Blocked(reason) => serde_json::json!({ "_blocked": reason }),
             _ => self.json.clone(),
         }
     }
@@ -121,10 +134,7 @@ impl WorkspaceDocument {
             AccountDocument::Sqlite(document) => document
                 .apply_progression_view(index, &value)
                 .map_err(|e| e.to_string()),
-            AccountDocument::Dawn(_) => Err(
-                "Dawn keeps progression in player-state.db durable flags. Sundial writes those only through authored collection unlocks."
-                    .to_owned(),
-            ),
+            AccountDocument::Dawn(document) => document.apply_progression_view(index, &value),
             AccountDocument::Json => {
                 self.json = value;
                 Ok(())
@@ -147,7 +157,7 @@ impl WorkspaceDocument {
                 "{reason}. Reload after Dawn or Sundial is updated."
             )),
             Err(error) => AccountDocument::Blocked(format!(
-                "Sundial could not safely read player-state.db: {error}"
+                "Sundial could not safely read player-state.db: {error}. Reload after resolving the database error. No account data was changed."
             )),
         };
         Self {
@@ -268,6 +278,59 @@ impl WorkspaceDocument {
     }
 
     pub(super) fn account_change_summaries(&self, before: &Self, limit: usize) -> Vec<String> {
+        if let (AccountDocument::Dawn(current), AccountDocument::Dawn(previous)) =
+            (&self.account, &before.account)
+        {
+            let mut changes: Vec<_> = (0..current.characters().characters().len())
+                .filter(|&index| {
+                    current.progression_state_view(index) != previous.progression_state_view(index)
+                })
+                .take(limit)
+                .map(|index| {
+                    format!(
+                        "player-state.db/progression/character_{}: updated",
+                        index + 1
+                    )
+                })
+                .collect();
+            if changes.len() < limit
+                && current.profile().dismantle_rewards() != previous.profile().dismantle_rewards()
+            {
+                changes.push("player-state.db/dismantle_rewards: updated".into());
+            }
+            if changes.len() < limit
+                && current.profile().profile_items() != previous.profile().profile_items()
+            {
+                changes.push("player-state.db/profile_items: updated".into());
+            }
+            if changes.len() < limit && current.reward_debts() != previous.reward_debts() {
+                changes.push("player-state.db/reward_debts: updated".into());
+            }
+            if changes.len() < limit && current.activity_state() != previous.activity_state() {
+                changes.push("player-state.db/vendor and mission state: updated".into());
+            }
+            if changes.len() < limit
+                && (current.inventory_bookkeeping_differs(previous)
+                    || current.characters() != previous.characters())
+            {
+                changes.push("player-state.db/character inventory and saved rolls: updated".into());
+            }
+            if changes.len() < limit
+                && (0..current.characters().characters().len()).any(|index| {
+                    current.vendor_campaigns(index) != previous.vendor_campaigns(index)
+                })
+            {
+                changes.push("player-state.db/vendor campaign selections: updated".into());
+            }
+            summarize_account_settings(
+                "player-state.db",
+                previous.settings(),
+                current.settings(),
+                limit,
+                &mut changes,
+            );
+            return changes;
+        }
         if let (AccountDocument::Sqlite(current), AccountDocument::Sqlite(previous)) =
             (&self.account, &before.account)
         {
@@ -304,7 +367,7 @@ impl WorkspaceDocument {
             AccountDocument::Dawn(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Dawn,
                 label: "player-state.db",
-                detail: "This install runs Dawn, which keeps characters, inventory, equipment and preferences in player-state.db beside settings.json. Dawn reads settings.json once when it first creates that database and never again, so account edits go to player-state.db.".to_owned(),
+                detail: "This install runs Dawn. Characters, inventory, equipment, progression and player preferences are saved to player-state.db. Dawn still reads runtime configuration, player identity and language from settings.json at startup.".to_owned(),
                 database_path: self.database_path.clone(),
                 contract: DAWN_CONTRACT,
             },
@@ -391,7 +454,7 @@ impl WorkspaceDocument {
         match receipt {
             AccountSaveReceipt::Sqlite(receipt) => self.rollback_sqlite_save(receipt),
             AccountSaveReceipt::Dawn(receipt) => {
-                dawn_persistence::restore_backup(&self.database_path, &receipt.backup)
+                dawn_persistence::rollback_save(&self.database_path, receipt)
                     .map_err(|error| error.to_string())
             }
         }
@@ -686,9 +749,7 @@ pub(super) fn dismantle_rewards_available(document: &WorkspaceDocument) -> bool 
             mode.supports_dismantle_rewards() && !mode.is_future()
         }
         AccountDocument::Sqlite(_) => true,
-        // Dawn keeps dismantle rewards, but this build does not read them, so presenting the
-        // section would state "none" as fact about an account it has not looked at.
-        AccountDocument::Dawn(_) => false,
+        AccountDocument::Dawn(_) => true,
         AccountDocument::Blocked(_) => false,
     }
 }
@@ -724,7 +785,9 @@ pub(super) fn filtered_dismantle_rewards(document: &WorkspaceDocument) -> bool {
             super::inventory::schema_mode(&document.json).supports_filtered_dismantle_rewards()
         }
         AccountDocument::Sqlite(_) => true,
-        AccountDocument::Dawn(_) => true,
+        AccountDocument::Dawn(_) => {
+            DawnAccountDocument::profile_capabilities().filtered_dismantle_rewards
+        }
         AccountDocument::Blocked(_) => false,
     }
 }

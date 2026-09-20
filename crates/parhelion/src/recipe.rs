@@ -539,6 +539,9 @@ pub struct WeaponSocketPlugVariantRecipe {
     /// from a stock plug without replacing the selected runtime effects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification_donor_hash: Option<HexHash>,
+    /// Installed texture used by this private perk's independent icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<crate::perk::Icon>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Additional stock effects supplied only while this private plug is equipped.
@@ -548,6 +551,13 @@ pub struct WeaponSocketPlugVariantRecipe {
 }
 
 impl WeaponSocketPlugVariantRecipe {
+    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+        let mut other = other.clone();
+        other.socket_index = self.socket_index;
+        other.choice_index = self.choice_index;
+        *self == other
+    }
+
     #[must_use]
     pub fn effect_indices(&self, inherited: &[u16]) -> Vec<u16> {
         let mut indices = if self.replace_effects {

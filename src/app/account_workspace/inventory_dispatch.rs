@@ -33,7 +33,15 @@ pub(in crate::app) fn character_inventory(
             crate::app::inventory::character_inventory(&document.json, character_index)
         }
         AccountDocument::Sqlite(document) => sqlite::character_inventory(document, character_index),
-        AccountDocument::Dawn(document) => sqlite::character_inventory(document, character_index),
+        AccountDocument::Dawn(document) => {
+            let mut items = sqlite::character_inventory(document, character_index)?;
+            if let Some(items) = &mut items {
+                // Keep native locations intact while hiding recovery rows from ordinary item,
+                // equipment and transfer pickers. The Postmaster view reads them explicitly.
+                items.retain(|item| !document.is_postmaster(item.instance_soid));
+            }
+            Ok(items)
+        }
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
 }
@@ -57,6 +65,18 @@ pub(in crate::app) fn add_profile_item(
             sqlite::add_profile_item(document, definition_hash, quantity)
         }
     }
+}
+
+/// Storage occupancy includes Dawn Postmaster rows hidden from ordinary inventory pickers.
+pub(in crate::app) fn character_inventory_storage_len(
+    document: &WorkspaceDocument,
+    character_index: usize,
+) -> Result<usize, InventoryError> {
+    let items = match &document.account {
+        AccountDocument::Dawn(document) => sqlite::character_inventory(document, character_index)?,
+        _ => character_inventory(document, character_index)?,
+    };
+    Ok(items.map_or(0, |items| items.len()))
 }
 
 pub(in crate::app) fn apply_profile_item_action(

@@ -88,10 +88,11 @@ pub(crate) fn draw_authoring_choice_row(
     name: &str,
     description: Option<&str>,
     selected: bool,
+    icon: Option<crate::investment::IconOverride>,
 ) -> egui::Response {
-    let response = super::item_editor::draw_catalog_picker_row(
+    let response = super::item_editor::draw_picker_row_with_icon(
         ui,
-        catalog,
+        Some(catalog),
         super::item_editor::CatalogPickerRow {
             hash: u64::from(hash.unwrap_or_default()),
             primary: name,
@@ -101,13 +102,14 @@ pub(crate) fn draw_authoring_choice_row(
             row_height: crate::investment::authoring_choice_row_height(ui),
             selected,
         },
+        icon,
     );
     if let Some(hash) = hash {
-        if catalog.display_name(u64::from(hash)) == Some(name) {
+        if icon.is_none() && catalog.display_name(u64::from(hash)) == Some(name) {
             catalog_item_tooltip(response, catalog, u64::from(hash))
         } else {
             response.on_hover_ui(|ui| {
-                super::item_editor::draw_item_tooltip(
+                super::item_editor::draw_item_tooltip_with_icon(
                     ui,
                     catalog,
                     u64::from(hash),
@@ -116,6 +118,7 @@ pub(crate) fn draw_authoring_choice_row(
                         description,
                         classification_hash: None,
                     }),
+                    icon,
                 );
             })
         }
@@ -579,6 +582,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
         ..
     } = options;
     let current_hash = current_hash.map(u64::from);
+    let icon_override = button.icon_override;
     let button_text = button.text;
     let button_icon_hash = button.icon_hash.map(u64::from);
     let button_tooltip = button.tooltip;
@@ -598,18 +602,28 @@ pub(crate) fn draw_supported_plug_choice_picker(
         .interact_size
         .y
         .max(16.0 + 2.0 * ui.spacing().button_padding.y);
-    let button = button_icon_hash.map_or_else(
-        || egui::Button::new(button_text),
-        |hash| {
-            catalog_button(
-                ui,
-                catalog,
-                hash,
-                button_text,
-                row_height - 2.0 * ui.spacing().button_padding.y,
-            )
-        },
-    );
+    let button = match icon_override {
+        Some(crate::investment::IconOverride::Texture(id)) => egui::Button::image_and_text(
+            egui::Image::new((
+                id,
+                egui::Vec2::splat(row_height - 2.0 * ui.spacing().button_padding.y),
+            )),
+            button_text,
+        ),
+        Some(crate::investment::IconOverride::Pending) => egui::Button::new(button_text),
+        None => button_icon_hash.map_or_else(
+            || egui::Button::new(button_text),
+            |hash| {
+                catalog_button(
+                    ui,
+                    catalog,
+                    hash,
+                    button_text,
+                    row_height - 2.0 * ui.spacing().button_padding.y,
+                )
+            },
+        ),
+    };
     let button = button
         .truncate()
         .min_size(egui::vec2(button_width.max(0.0), row_height));
@@ -625,11 +639,12 @@ pub(crate) fn draw_supported_plug_choice_picker(
     };
     let anchor = if let Some(tooltip) = button_tooltip {
         anchor.on_hover_ui(|ui| {
-            super::item_editor::draw_item_tooltip(
+            super::item_editor::draw_item_tooltip_with_icon(
                 ui,
                 catalog,
                 button_icon_hash.unwrap_or_default(),
                 Some(tooltip),
+                icon_override,
             );
         })
     } else {
@@ -731,14 +746,15 @@ pub(crate) fn draw_perk_row(
     name: &str,
     selected: bool,
     tooltip: crate::investment::PlugTooltip<'_>,
+    icon: Option<crate::investment::IconOverride>,
 ) -> egui::Response {
     let height =
         ui.spacing().interact_size.y.max(
             ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y,
         );
-    super::item_editor::draw_catalog_picker_row(
+    super::item_editor::draw_picker_row_with_icon(
         ui,
-        catalog,
+        Some(catalog),
         super::item_editor::CatalogPickerRow {
             hash: u64::from(hash),
             primary: name,
@@ -748,9 +764,16 @@ pub(crate) fn draw_perk_row(
             row_height: height,
             selected,
         },
+        icon,
     )
     .on_hover_ui(|ui| {
-        super::item_editor::draw_item_tooltip(ui, catalog, u64::from(hash), Some(tooltip));
+        super::item_editor::draw_item_tooltip_with_icon(
+            ui,
+            catalog,
+            u64::from(hash),
+            Some(tooltip),
+            icon,
+        );
     })
 }
 

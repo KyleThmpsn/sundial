@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn chosen_icon_round_trips_without_changing_type_or_effects() {
+    let mut perk = PerkRecipe::new();
+    perk.effects.push(PerkRecipe::effect(1178));
+    let template = perk.template_plug.clone();
+    perk.icon = Some(Icon::Texture {
+        tag: 0x80B464EB.into(),
+    });
+    let library_dir = tempfile::tempdir().unwrap();
+    let library = library::Library::open(library_dir.path().into()).unwrap();
+    let entry = library.save(&perk, None).unwrap();
+    let loaded = library::Library::read(&entry.path).unwrap().recipe;
+    assert_eq!(loaded, perk);
+    let weapon = weapon_with_perk(&loaded);
+    let restored = crate::WeaponRecipe::from_json_str(&weapon.to_json_pretty().unwrap()).unwrap();
+    let variant = &restored.to_spec().unwrap().overrides.socket_plug_variants[0];
+    assert_eq!(variant.icon, perk.icon);
+    assert_eq!(loaded.template_plug, template);
+    assert_eq!(loaded.classification, None);
+    assert_eq!(loaded.effects, perk.effects);
+    let mut legacy = serde_json::to_value(&perk).unwrap();
+    legacy.as_object_mut().unwrap().remove("icon");
+    assert!(
+        serde_json::from_value::<PerkRecipe>(legacy)
+            .unwrap()
+            .icon
+            .is_none()
+    );
+}
+
 fn weapon_with_perk(perk: &PerkRecipe) -> crate::WeaponRecipe {
     let mut weapon = crate::WeaponRecipe::new_weapon("parhelion.perk-validation").unwrap();
     weapon.overrides.socket_columns = vec![Some(crate::WeaponSocketColumnRecipe {

@@ -367,6 +367,7 @@ pub(super) fn draw_socket_override_diagnostics(
                     &parsed,
                     &socket_types,
                     &sets,
+                    &recipe.overrides.socket_plug_variants,
                     &|hash| catalog.plug_label(hash, true),
                 ) {
                     if diagnostic.code == AuthoringDiagnosticCode::DisabledSocketOverride

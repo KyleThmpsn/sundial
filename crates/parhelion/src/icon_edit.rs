@@ -6,14 +6,16 @@
 mod authoring;
 mod color_selection;
 mod editor;
+pub(crate) mod glyph;
 mod import_ui;
 mod imported;
+pub(crate) mod package_icons;
 mod preview;
 #[cfg(test)]
 mod tests;
 mod transforms;
 
-pub(crate) use authoring::build_weapon_icon_edit_plan;
+pub(crate) use authoring::{build_weapon_icon_edit_plan, texture_reference_offsets};
 pub use color_selection::IconColorReplacement;
 pub(crate) use editor::{WeaponIconEditor, WeaponIconEditorAction};
 pub use imported::ImportedIcon;

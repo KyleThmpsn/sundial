@@ -174,9 +174,9 @@ mod tests {
 
     #[test]
     fn release_selection_pins_notes_asset_and_digest_and_rejects_unsafe_metadata() {
-        let (name, _, _) = package("v0.5.0").unwrap();
-        let original = json!({"tag_name":"v0.5.0", "body":"## Changes\n- Native updating",
-            "assets":[{"name":name, "browser_download_url":format!("{DOWNLOAD_ROOT}v0.5.0/{name}"),
+        let (name, _, _) = package("v0.5").unwrap();
+        let original = json!({"tag_name":"v0.5", "body":"## Changes\n- Native updating",
+            "assets":[{"name":name, "browser_download_url":format!("{DOWNLOAD_ROOT}v0.5/{name}"),
             "size":1024, "digest":format!("sha256:{}", "a".repeat(64))}]});
         let parse_value =
             |value: &serde_json::Value| parse(&serde_json::to_vec(value).unwrap(), "0.4.1");

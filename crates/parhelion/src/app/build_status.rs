@@ -243,7 +243,7 @@ impl PackageAuthoringApp {
         };
         if !review.changes_account() {
             ui.label(
-                "No saved items, equipment slots, socket selections, or unlocks need changes.",
+                "No saved account data needs cleanup. The installed custom package set will still be replaced by this build.",
             );
             return;
         }

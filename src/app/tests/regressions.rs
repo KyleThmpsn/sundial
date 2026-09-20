@@ -3,6 +3,7 @@ mod account_smoke;
 mod character_fields;
 mod confirmation_layout;
 mod dawn;
+mod dawn_state;
 mod edit_tracking;
 mod inventory_recovery;
 mod loadout_safety;

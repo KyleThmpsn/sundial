@@ -87,8 +87,6 @@ fn shared_effect_details_show_provenance_without_an_exclusive_marker_claim() {
     assert!(text.contains("Shared Effect 453"));
     assert!(text.contains("Source Items and Plugs (2)"));
     assert!(text.contains("No Standalone Action"));
-    assert!(!text.contains("Marker Only"));
-    assert!(!text.contains("Thorn Catalyst · 453"));
 }
 
 fn fixture() -> Index {

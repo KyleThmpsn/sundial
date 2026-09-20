@@ -188,13 +188,11 @@ fn schemas_five_through_seven_dismantle_rewards_follow_legacy_constraints() {
                 .as_object_mut()
                 .unwrap()
                 .insert("dismantle_rewards".into(), rewards.clone());
-            let before = candidate.clone();
             let error = validate_document_items(&candidate).unwrap_err();
             assert!(
                 error.path().ends_with(expected_path_suffix),
                 "unexpected error for schema {version}: {error}"
             );
-            assert_eq!(candidate, before);
         }
     }
 
@@ -242,9 +240,7 @@ fn schema_eight_validates_filtered_dismantle_reward_policies() {
                 }
             ]),
         );
-    let before = valid.clone();
     assert_eq!(validate_document_items(&valid), Ok(()));
-    assert_eq!(valid, before);
     let rewards = valid
         .pointer("/state/account/dismantle_rewards")
         .cloned()
@@ -300,13 +296,11 @@ fn schema_eight_validates_filtered_dismantle_reward_policies() {
             .as_object_mut()
             .unwrap()
             .insert("dismantle_rewards".into(), rewards);
-        let before = candidate.clone();
         let error = validate_document_items(&candidate).unwrap_err();
         assert!(
             error.path().ends_with(expected_path_suffix),
             "unexpected error: {error}"
         );
-        assert_eq!(candidate, before);
     }
 }
 

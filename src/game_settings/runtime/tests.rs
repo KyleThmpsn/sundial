@@ -339,7 +339,7 @@ fn opening_sunrise_and_display_preserves_omissions_and_extended_fov() {
                 .unwrap()
                 .as_object()
                 .unwrap();
-            let edits = super::super::preferences::draw_display(ui, settings, false);
+            let edits = super::super::preferences::draw_display(ui, settings, false, 4);
             assert!(edits.into_vec().is_empty());
         });
     });

@@ -1,4 +1,5 @@
 use crate::catalog::*;
+use crate::investment::seasonal::{ArtifactMod, RewardGrant};
 #[derive(Debug, Default)]
 pub(super) struct CatalogHashMatchIndex {
     pub(super) progression_definitions: Vec<usize>,
@@ -12,9 +13,20 @@ pub(super) struct CatalogHashMatchIndex {
     pub(super) context_matches: Vec<(&'static str, usize, usize)>,
     pub(super) collectible_matches: Vec<usize>,
     pub(super) material_requirement_set_matches: Vec<usize>,
+    pub(super) record_matches: Vec<usize>,
+    /// Records that reference the hash through an objective or their completion flag.
+    pub(super) record_references: Vec<(usize, &'static str)>,
+    /// Artifact mods whose item or collectible carries the hash, as indices into the season.
+    pub(super) artifact_mods: Vec<usize>,
+    pub(super) season_pass_reward: bool,
+    /// The scenario package Dawn's mission table names with this hash.
+    pub(super) mission_scenario: Option<&'static str>,
+    pub(super) stat_group: Option<usize>,
+    pub(super) power_cap: Option<usize>,
 }
 
 pub(super) struct CatalogHashMatches<'a> {
+    pub(super) inspected_hash: u64,
     pub(super) progression_definitions: Vec<(usize, &'a ProgressionDefinition)>,
     pub(super) progression_reward_matches: Vec<(usize, &'a ProgressionDefinition, usize)>,
     pub(super) progression_faction_matches: Vec<(
@@ -36,6 +48,15 @@ pub(super) struct CatalogHashMatches<'a> {
     pub(super) context_matches: Vec<(&'static str, usize, &'a ProgressionContextDef)>,
     pub(super) collectible_matches: Vec<&'a CollectibleDef>,
     pub(super) material_requirement_set_matches: Vec<&'a MaterialRequirementSetDef>,
+    pub(super) record_matches: Vec<(usize, &'a RecordDefinition)>,
+    pub(super) record_references: Vec<(usize, &'a RecordDefinition, &'static str)>,
+    pub(super) artifact_mods: Vec<&'a ArtifactMod>,
+    pub(super) season_pass_reward: Option<&'a RewardGrant>,
+    pub(super) mission_scenario: Option<&'static str>,
+    pub(super) item_stat_group: Option<(usize, &'a ItemStatGroup)>,
+    pub(super) stat_group_items: Vec<u64>,
+    pub(super) power_cap_definition: Option<(usize, &'a PowerCapDefinition)>,
+    pub(super) power_cap_items: Vec<u64>,
     pub(super) bucket_items: Vec<&'a ItemDef>,
     pub(super) item: Option<&'a ItemDef>,
     pub(super) item_package_metadata: Option<&'a ItemPackageMetadata>,
@@ -196,6 +217,39 @@ impl CatalogHashMatchIndex {
                 .then_some(index)
             })
             .collect();
+        let records = catalog.records().unwrap_or_default();
+        let record_matches = records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.hash == hash)
+            .map(|(index, _)| index)
+            .collect();
+        let objective_indices = catalog
+            .objectives()
+            .iter()
+            .enumerate()
+            .filter(|(_, objective)| objective.hash == hash)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let record_references = records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.hash != hash)
+            .filter_map(|(index, record)| {
+                if record
+                    .objectives
+                    .iter()
+                    .any(|objective| objective_indices.contains(objective))
+                {
+                    return Some((index, "Objective"));
+                }
+                let completion = record
+                    .completion_flag
+                    .and_then(|flag| catalog.unlock_flag_definition(usize::from(flag)))
+                    .is_some_and(|flag| flag.hash == hash);
+                completion.then_some((index, "Completion Flag"))
+            })
+            .collect();
         Self {
             progression_definitions,
             progression_reward_matches,
@@ -208,6 +262,36 @@ impl CatalogHashMatchIndex {
             context_matches,
             collectible_matches,
             material_requirement_set_matches,
+            record_matches,
+            record_references,
+            artifact_mods: catalog
+                .seasonal()
+                .map(|season| {
+                    season
+                        .mods
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, entry)| {
+                            entry.item_hash == hash || entry.collectible_hash == hash
+                        })
+                        .map(|(index, _)| index)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            season_pass_reward: catalog
+                .seasonal()
+                .is_some_and(|season| season.reward_grants.contains_key(&hash)),
+            mission_scenario: u32::try_from(hash)
+                .ok()
+                .filter(|hash| *hash != 0)
+                .and_then(crate::app::dawn_state::missions::mission_scenario),
+            stat_group: catalog
+                .item_stat_group_by_hash(hash)
+                .map(|(index, _)| index),
+            power_cap: u32::try_from(hash)
+                .ok()
+                .and_then(|hash| catalog.power_cap_definition_by_hash(hash))
+                .map(|(index, _)| index),
         }
     }
 }
@@ -319,6 +403,7 @@ impl<'a> CatalogHashMatches<'a> {
             })
             .collect();
         Self {
+            inspected_hash: hash,
             progression_definitions,
             progression_reward_matches,
             progression_faction_matches,
@@ -330,6 +415,47 @@ impl<'a> CatalogHashMatches<'a> {
             context_matches,
             collectible_matches,
             material_requirement_set_matches,
+            record_matches: index
+                .record_matches
+                .iter()
+                .filter_map(|record_index| {
+                    Some((*record_index, catalog.records()?.get(*record_index)?))
+                })
+                .collect(),
+            record_references: index
+                .record_references
+                .iter()
+                .filter_map(|(record_index, kind)| {
+                    Some((*record_index, catalog.records()?.get(*record_index)?, *kind))
+                })
+                .collect(),
+            artifact_mods: index
+                .artifact_mods
+                .iter()
+                .filter_map(|mod_index| catalog.seasonal()?.mods.get(*mod_index))
+                .collect(),
+            season_pass_reward: index
+                .season_pass_reward
+                .then(|| catalog.seasonal()?.reward_grants.get(&hash))
+                .flatten(),
+            mission_scenario: index.mission_scenario,
+            item_stat_group: index.stat_group.and_then(|group_index| {
+                let group = catalog.item_stat_group_by_index(u16::try_from(group_index).ok()?)?;
+                Some((group_index, group))
+            }),
+            stat_group_items: index
+                .stat_group
+                .and_then(|group_index| u16::try_from(group_index).ok())
+                .map(|group_index| catalog.items_with_stat_group(group_index))
+                .unwrap_or_default(),
+            power_cap_definition: index.power_cap.and_then(|cap_index| {
+                Some((cap_index, catalog.power_cap_definitions().get(cap_index)?))
+            }),
+            power_cap_items: index
+                .power_cap
+                .and_then(|cap_index| u16::try_from(cap_index).ok())
+                .map(|cap_index| catalog.items_with_power_cap_group(cap_index))
+                .unwrap_or_default(),
             bucket_items: catalog.items_for_bucket(hash).collect(),
             item: catalog.item(hash),
             item_package_metadata: catalog.item_package_metadata(hash),
@@ -393,6 +519,33 @@ impl<'a> CatalogHashMatches<'a> {
             &mut groups,
             "Progression Reader Reference",
             self.context_matches.len(),
+        );
+        push_match_group(&mut groups, "Record", self.record_matches.len());
+        push_match_group(
+            &mut groups,
+            "Record Reference",
+            self.record_references.len(),
+        );
+        push_match_group(&mut groups, "Artifact Mod", self.artifact_mods.len());
+        push_match_group(
+            &mut groups,
+            "Season Pass Reward",
+            usize::from(self.season_pass_reward.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Dawn Mission",
+            usize::from(self.mission_scenario.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Item Stat Group",
+            usize::from(self.item_stat_group.is_some()),
+        );
+        push_match_group(
+            &mut groups,
+            "Power Cap Definition",
+            usize::from(self.power_cap_definition.is_some()),
         );
         push_match_group(&mut groups, "Collectible", self.collectible_matches.len());
         push_match_group(

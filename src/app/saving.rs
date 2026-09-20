@@ -89,8 +89,12 @@ impl SundialApp {
                     ),
                     None => String::new(),
                 };
+                let (retention_note, _) = self.apply_backup_retention();
                 self.set_status(
-                    format!("Save incomplete: {}{suffix}{rollback_note}", error.message),
+                    format!(
+                        "Save incomplete: {}{suffix}{rollback_note}{retention_note}",
+                        error.message
+                    ),
                     true,
                 );
                 return false;

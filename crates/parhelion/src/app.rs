@@ -1,3 +1,4 @@
+pub(crate) mod pickers;
 mod ui_state;
 #[cfg(test)]
 mod ui_tests;
@@ -74,8 +75,6 @@ use crate::{
 };
 
 const WINDOW_TITLE: &str = "Parhelion";
-const DISPLAY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
-
 fn load_parhelion_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
     let image = image::load_from_memory(include_bytes!("../../../assets/sundial-alt.png"))
         .expect("bundled Parhelion logo must be a valid PNG")
@@ -238,9 +237,11 @@ pub struct Parhelion {
 
 impl Default for Parhelion {
     fn default() -> Self {
-        let image = image::load_from_memory(include_bytes!("../../../assets/sundial-alt.png"))
-            .expect("bundled package-authoring icon must be valid PNG")
-            .into_rgba8();
+        let image = image::load_from_memory(include_bytes!(
+            "../../../assets/linux/io.github.kylethmpsn.Sundial-window.png"
+        ))
+        .expect("bundled package-authoring icon must be valid PNG")
+        .into_rgba8();
         let (width, height) = image.dimensions();
         let icon = egui::IconData {
             rgba: image.into_raw(),
@@ -265,6 +266,13 @@ impl PackageAuthoringUtility for Parhelion {
         preferences: PackageAuthoringPreferences,
     ) -> Result<(), String> {
         let packages = install_directory.join("packages");
+        let branding = crate::branding::Branding::detect(install_directory);
+        if self.app.presentation_editor.branding() != branding {
+            self.app.presentation_editor.set_branding(branding);
+            self.app.invalidate_results();
+            self.app.authored_icon_preview = None;
+            self.app.library_icons = library_view::LibraryIcons::default();
+        }
         if !packages.is_dir() {
             return Err(format!(
                 "The selected installation has no packages directory at {}",
@@ -683,7 +691,7 @@ impl PackageAuthoringApp {
             &logo,
             CatalogLoadingView {
                 product_name: WINDOW_TITLE,
-                version: DISPLAY_VERSION,
+                version: sundial::version::display(),
                 message: progress.message,
                 completed: progress.completed,
                 total: progress.total,
@@ -717,7 +725,7 @@ impl PackageAuthoringApp {
         self.runtime_dependencies.invalidate();
         self.perk_workbench.invalidate();
         self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
-        self.presentation_editor = crate::presentation::ui::Editor::default();
+        self.presentation_editor.reset();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
         self.appearance_ornaments = donor_view::ornaments::Ornaments::default();
@@ -757,7 +765,7 @@ impl PackageAuthoringApp {
 
     fn clear_presentation_picker_queries(&mut self) {
         self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
-        self.presentation_editor = crate::presentation::ui::Editor::default();
+        self.presentation_editor.reset();
         self.icon_donor_query.clear();
         self.render_gear_donor_query.clear();
         self.icon_editor = None;
@@ -808,10 +816,13 @@ impl PackageAuthoringApp {
                 self.recipe.overrides.icon_edit.clone(),
             ))
         })();
-        if self
-            .presentation_editor
-            .show(ctx, &mut self.recipe.overrides, &self.packages, icon)
-        {
+        if self.presentation_editor.show(
+            ctx,
+            &mut self.recipe.overrides,
+            &self.packages,
+            self.catalog.as_ref(),
+            icon,
+        ) {
             self.recipe_dirty = true;
             self.authored_icon_preview = None;
             self.invalidate_results();

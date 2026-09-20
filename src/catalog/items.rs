@@ -22,7 +22,6 @@ pub(crate) use damage::is_weapon_bucket;
 pub(crate) use damage::{ItemDamageProfile, ItemDamageType, ItemWeaponInventorySlot};
 pub(in crate::catalog) use damage::{item_damage_profile, resolve_default_plug_damage_profile};
 pub(in crate::catalog) use descriptions::scan_perk_descriptions;
-#[cfg(test)]
 pub(crate) use inventory::ItemStackability;
 pub(in crate::catalog) use inventory::scan_inventory_bucket_descriptors;
 pub(crate) use inventory::{InventoryDefinition, InventoryMetadata, InventoryScope};
@@ -30,7 +29,9 @@ pub(crate) use investment::{
     InvestmentStatDisplayPoint, ItemInvestmentStat, ItemStatDefinition, ItemStatGroup,
     format_in_game_investment_stat, interpolate_investment_stat_display,
 };
-pub(in crate::catalog) use investment::{scan_stat_definitions, scan_stat_groups};
+pub(in crate::catalog) use investment::{
+    scan_character_stat_rows, scan_stat_definitions, scan_stat_groups,
+};
 pub(crate) use perks::ItemSandboxPerk;
 pub(in crate::catalog) use perks::scan_sandbox_perk_catalog;
 pub(crate) use quality::PowerCapDefinition;

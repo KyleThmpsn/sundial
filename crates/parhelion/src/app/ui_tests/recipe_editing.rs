@@ -235,19 +235,6 @@ fn visible_plug_safety_selection_survives_menu_close() {
 }
 
 #[test]
-fn technical_visibility_does_not_restrict_workbench_plug_combinations() {
-    for mode in PlugSelectionMode::ALL {
-        let mut app = PackageAuthoringApp {
-            plug_selection_mode: mode,
-            ..Default::default()
-        };
-        app.set_show_experimental_options(true);
-        app.set_show_experimental_options(false);
-        assert_eq!(app.plug_selection_mode, mode);
-    }
-}
-
-#[test]
 fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     let mut app = PackageAuthoringApp {
         recipe: WeaponRecipe::from_json_str(include_str!(

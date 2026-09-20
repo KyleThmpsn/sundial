@@ -8,7 +8,8 @@ fn glyph_scale(index: usize) -> f64 {
 }
 
 fn glyph_down_shift(index: usize) -> f64 {
-    if matches!(index, 1 | 5) { 3.0 } else { 1.0 }
+    // Lift the tooltip mark one pixel to match the inventory mark's optical height.
+    if matches!(index, 1 | 5) { 2.0 } else { 1.0 }
 }
 
 fn glyph_height_scale(index: usize) -> f64 {
@@ -18,7 +19,8 @@ fn glyph_height_scale(index: usize) -> f64 {
 fn glyph_left_shift(index: usize) -> f64 {
     // Stock right-corner marks have a 4px visible right inset. The approved Sunrise
     // source has an 8px inset, so translate it directly without the old 15% enlargement.
-    if matches!(index, 1 | 5) { -4.0 } else { 2.0 }
+    // The inventory mark's optical center matches the stock 15.5px anchor.
+    if matches!(index, 1 | 5) { -4.0 } else { 3.0 }
 }
 
 pub(super) fn adjust_corner_glyph(
@@ -209,6 +211,37 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn optical_centers_match_stock_anchors_at_native_and_output_sizes() {
+        for (index, expected_x) in [(0, 15.5), (1, 40.5)] {
+            let source = image::load_from_memory(AUTHORED_TEXTURE_PNGS[index])
+                .unwrap()
+                .into_rgba8();
+            for scale in [1, super::super::OUTPUT_TEXTURE_SCALE] {
+                let pixels = place_glyph(
+                    index,
+                    source.width(),
+                    source.height(),
+                    source.as_raw().clone(),
+                    scale,
+                )
+                .unwrap();
+                let width = source.width() * scale;
+                let (mut mass, mut weighted_x, mut weighted_y) = (0.0, 0.0, 0.0);
+                for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+                    let weight = f64::from(pixel[0]) * f64::from(pixel[3]);
+                    mass += weight;
+                    weighted_x += (f64::from(index as u32 % width) + 0.5) * weight;
+                    weighted_y += (f64::from(index as u32 / width) + 0.5) * weight;
+                }
+                let x = weighted_x / mass / f64::from(scale);
+                let y = weighted_y / mass / f64::from(scale);
+                assert!((x - expected_x).abs() < 0.15, "lane {index}: x={x}");
+                assert!((y - 15.5).abs() < 0.15, "lane {index}: y={y}");
             }
         }
     }

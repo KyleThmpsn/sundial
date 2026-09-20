@@ -4,6 +4,27 @@ use crate::app::account_workspace as account;
 
 use super::*;
 
+pub(super) fn prepare_generated_equipment(
+    document: &mut account::WorkspaceDocument,
+    character_index: usize,
+    slot: &str,
+) -> Result<(), String> {
+    if let Some(dawn) = document.dawn_account_mut() {
+        dawn.renew_generated_equipment(character_index, slot)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_generated_document(
+    document: &account::WorkspaceDocument,
+) -> Result<(), String> {
+    settings::validate_workspace_document(document)?;
+    if let Some(dawn) = document.dawn_account() {
+        dawn.validate_item_state()?;
+    }
+    Ok(())
+}
+
 pub(super) fn apply_candidate(
     document: &mut account::WorkspaceDocument,
     catalog: &Catalog,
@@ -62,6 +83,7 @@ pub(super) fn apply_candidate(
             previous_item_preserved = true;
         }
     }
+    prepare_generated_equipment(&mut updated, character_index, slot)?;
     account::equip_definition(
         &mut updated,
         character_index,
@@ -79,7 +101,7 @@ pub(super) fn apply_candidate(
             hash,
         )?;
     }
-    settings::validate_workspace_document(&updated)
+    validate_generated_document(&updated)
         .map_err(|error| format!("The generated item did not pass validation: {error}"))?;
     crate::app::account_validation::validate_new_bucket_overflows(&updated, document, catalog)?;
     *document = updated;
@@ -198,10 +220,11 @@ pub(super) fn definition_inventory_add_blocker(
         Ok(inventory) => inventory,
         Err(error) => return Some(format!("Character inventory is unavailable: {error}")),
     };
-    if inventory
-        .as_ref()
-        .is_some_and(|items| items.len() >= account::character_inventory_capacity(document))
-    {
+    let stored = match account::character_inventory_storage_len(document, character_index) {
+        Ok(count) => count,
+        Err(error) => return Some(format!("Character inventory is unavailable: {error}")),
+    };
+    if stored >= account::character_inventory_capacity(document) {
         return Some("Character inventory is full".to_owned());
     }
     let Some(metadata) = catalog
@@ -348,7 +371,7 @@ pub(super) fn add_candidate_to_inventory(
         inventory::InventoryItemAction::SetPlugs(inventory::ItemPlugs::Authored(plugs)),
     )
     .map_err(|error| error.to_string())?;
-    settings::validate_workspace_document(&updated)
+    validate_generated_document(&updated)
         .map_err(|error| format!("The generated item did not pass validation: {error}"))?;
     *document = updated;
     Ok(format!("Added {} to character inventory", item.name))

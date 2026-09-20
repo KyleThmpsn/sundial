@@ -33,16 +33,17 @@ jobs:
         shell: bash
         run: |
           metadata=$(cargo metadata --no-deps --format-version 1 --locked)
-          version=$(printf '%s\n' "$metadata" | python3 -c '
+          cargo_version=$(printf '%s\n' "$metadata" | python3 -c '
           import json, sys
           metadata = json.load(sys.stdin)
           package, = [p for p in metadata["packages"] if p["name"] == "sundial" and p["id"] in metadata["workspace_members"]]
           sys.stdout.write(package["version"])
           ')
-          test -n "$version"
+          test -n "$cargo_version"
+          version=${cargo_version%.0}
           [[ "$(head -n 1 RELEASE_NOTES.md)" == "Sundial v$version "* ]]
           if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
-            printf 'Tag %s does not match Cargo version %s.\n' "$GITHUB_REF_NAME" "$version" >&2
+            printf 'Tag %s does not match release version %s (Cargo %s).\n' "$GITHUB_REF_NAME" "$version" "$cargo_version" >&2
             exit 1
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"

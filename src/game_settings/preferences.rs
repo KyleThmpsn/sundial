@@ -261,13 +261,14 @@ pub(super) fn draw_display(
     ui: &mut egui::Ui,
     settings: &Map<String, Value>,
     extended_fov: bool,
+    vertical_sync_maximum: u64,
 ) -> CommandBatch {
     let Some(values) = group(settings, "display") else {
         missing_group(ui, "display");
         return CommandBatch::default();
     };
     ui.heading("Display");
-    ui.label("Brightness and display overlays.");
+    ui.label("Brightness, synchronization, field of view and post-processing effects.");
     ui.add_space(8.0);
     egui::Grid::new("game_display_grid")
         .num_columns(2)
@@ -280,7 +281,10 @@ pub(super) fn draw_display(
             changed |= choice(ui, values, "hdr_mode", "HDR Mode", HDR_MODES);
             if show_presence_gated_preference(values, VERTICAL_SYNC_INTERVAL_KEY) {
                 let refresh_rate_hz = display_refresh_rate_hz();
-                let intervals = vertical_sync_intervals(refresh_rate_hz);
+                let intervals = vertical_sync_intervals(refresh_rate_hz)
+                    .into_iter()
+                    .filter(|(interval, _)| *interval <= vertical_sync_maximum)
+                    .collect::<Vec<_>>();
                 changed |= choice(
                     ui,
                     values,
@@ -315,6 +319,15 @@ pub(super) fn draw_display(
                 "calibration_alpha",
                 "Renderer Calibration Alpha",
             );
+            for (key, label) in [
+                ("motion_blur", "Motion Blur"),
+                ("film_grain", "Film Grain"),
+                ("chromatic_aberration", "Chromatic Aberration"),
+            ] {
+                if show_presence_gated_preference(values, key) {
+                    changed |= boolean(ui, values, key, label);
+                }
+            }
             changed
         })
         .inner

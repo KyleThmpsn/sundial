@@ -4,16 +4,19 @@ impl Editor {
     pub(super) fn draw_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(self.importing.is_none(), egui::Button::new("Import Image…"))
+                .add_enabled(
+                    self.importing.is_none(),
+                    egui::Button::new("Choose Artwork…"),
+                )
                 .clicked()
             {
-                self.import(ui.ctx());
+                self.browsing = true;
             }
             if self.importing.is_some() {
                 ui.spinner();
             }
         });
-        ui.weak("PNG or JPEG · source and edits are saved in the recipe.");
+        ui.weak("Source artwork and edits are saved in the recipe.");
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -80,29 +83,6 @@ impl Editor {
             };
         }
     }
-
-    fn import(&mut self, ctx: &egui::Context) {
-        let (tx, rx) = mpsc::channel();
-        self.importing = Some(rx);
-        self.error = None;
-        let ctx = ctx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("artwork-import".into())
-            .spawn(move || {
-                let result = rfd::FileDialog::new()
-                    .set_title("Import Artwork")
-                    .add_filter("PNG / JPEG Images", &["png", "jpg", "jpeg"])
-                    .pick_file()
-                    .map(|path| Artwork::from_path(&path))
-                    .transpose();
-                let _ = tx.send(result);
-                ctx.request_repaint();
-            });
-        if let Err(error) = spawned {
-            self.importing = None;
-            self.error = Some(format!("Could not import image: {error}"));
-        }
-    }
 }
 
 fn background_controls(ui: &mut egui::Ui, background: &mut Background) {
@@ -110,13 +90,14 @@ fn background_controls(ui: &mut egui::Ui, background: &mut Background) {
     let mut kind = match background {
         Background::Solid { .. } => 1,
         Background::Gradient { .. } => 2,
+        Background::Dawn => 3,
         _ => 0,
     };
     let old = kind;
     egui::ComboBox::from_id_salt("artwork-background")
-        .selected_text(["Sunrise", "Solid Color", "Gradient"][kind])
+        .selected_text(["Sunrise", "Solid Color", "Gradient", "Dawn"][kind])
         .show_ui(ui, |ui| {
-            for (i, label) in ["Sunrise", "Solid Color", "Gradient"]
+            for (i, label) in ["Sunrise", "Solid Color", "Gradient", "Dawn"]
                 .into_iter()
                 .enumerate()
             {
@@ -133,6 +114,7 @@ fn background_controls(ui: &mut egui::Ui, background: &mut Background) {
                 end: [51, 102, 111],
                 angle: 90,
             },
+            3 => Background::Dawn,
             _ => Background::Sunrise,
         };
     }
@@ -151,6 +133,9 @@ fn background_controls(ui: &mut egui::Ui, background: &mut Background) {
             if ui.button("Swap Colors").clicked() {
                 std::mem::swap(start, end);
             }
+        }
+        Background::Dawn => {
+            ui.weak("The standard blue card background.");
         }
         _ => {
             ui.weak("The standard purple card background.");

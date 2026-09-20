@@ -27,17 +27,17 @@ fn dawn_checks_every_known_boolean_and_preserves_unknown_extensions() {
         (OMEGA, OMEGA_FLAGS.as_slice()),
         (CLIENT, CLIENT_FLAGS.as_slice()),
     ] {
-        for (key, _) in fields {
+        for (key, _, default) in fields {
             for invalid in [Value::Null, json!(0), json!("false"), json!([]), json!({})] {
                 let mut document = defaults();
-                assert!(set_flag(&mut document, group, key, true));
+                assert!(set_flag(&mut document, group, key, !*default));
                 *document.pointer_mut(&format!("{group}/{key}")).unwrap() = invalid;
                 assert!(
                     settings_issues(&document)
                         .iter()
                         .any(|e| e.contains(&dotted(&format!("{group}/{key}"))))
                 );
-                assert!(set_flag(&mut document, group, key, false));
+                assert!(set_flag(&mut document, group, key, *default));
                 assert!(settings_issues(&document).is_empty());
             }
         }
@@ -54,6 +54,30 @@ fn dawn_checks_every_known_boolean_and_preserves_unknown_extensions() {
         .unwrap()
         .remove("coo_executor");
     assert_eq!(document, before);
+}
+
+#[test]
+fn dawn_client_defaults_and_spawn_hold_match_the_runtime_contract() {
+    let mut document = defaults();
+    document["client"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fade_release");
+    assert!(settings_issues(&document).is_empty());
+
+    document["client"]["spawn_hold_ms"] = json!(0);
+    assert!(
+        settings_issues(&document)
+            .iter()
+            .any(|issue| issue.contains("client.spawn_hold_ms"))
+    );
+    assert!(set_unsigned(
+        &mut document,
+        CLIENT,
+        "spawn_hold_ms",
+        DEFAULT_SPAWN_HOLD_MS
+    ));
+    assert!(settings_issues(&document).is_empty());
 }
 
 #[test]

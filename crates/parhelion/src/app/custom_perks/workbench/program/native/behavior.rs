@@ -4,11 +4,9 @@ use super::*;
 use crate::app::custom_perks::workbench::controls::{cell, cell_width, sized};
 use sundial::package_authoring::sandbox_perk::action::{self, DecodedCondition};
 
-mod labels;
+pub(super) mod labels;
 mod scripts;
 mod trigger;
-
-use sundial::package_authoring::sandbox_perk::activation::site_labels as activation_site_labels;
 
 /// Room for the longest engine variable a comparison can name.
 const VARIABLE_WIDTH: f32 = 230.0;
@@ -30,6 +28,17 @@ pub(super) fn draw(
 ) -> Result<Option<u32>, String> {
     let (payload, offsets) = graph.emit_with_offsets()?;
     let decoded = action::decode(&payload)?;
+    if decoded
+        .groups
+        .iter()
+        .map(|group| group.effects.len())
+        .sum::<usize>()
+        > 1
+    {
+        let summary = action::ActionSummary::new(&decoded);
+        ui.add(egui::Label::new(egui::RichText::new(&summary.headline).weak()).truncate())
+            .on_hover_text(summary.render());
+    }
     let blocks = offsets
         .into_iter()
         .map(|(index, offset)| (offset, index))
@@ -53,12 +62,13 @@ pub(super) fn draw(
                     for (number, effect) in group.effects.iter().enumerate() {
                         let index = block_at(&blocks, effect.offset)?;
                         crate::app::style::block(ui.style())
+                            .fill(ui.visuals().window_fill())
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 ui.push_id(index, |ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         let title = super::super::native_action_label(effect.kind, &graph.blocks[index].bytes);
-                                        ui.label(format!("{}. {title}", number + 1));
+                                        ui.strong(format!("{}. {title}", number + 1));
                                         sundial::investment::draw_authoring_info_icon(
                                             ui,
                                             super::super::native_action_reading(
@@ -143,7 +153,9 @@ fn conditions(
     pick: &mut ConditionPicker<'_>,
 ) -> Result<(), String> {
     canvas::row(ui, title, "Conditions for this part of the effect.", |ui| {
-        condition_rows(ui, graph, blocks, title, entries, pick)
+        canvas::plain(ui, title, |ui| {
+            condition_rows(ui, graph, blocks, title, entries, pick)
+        })
     })
 }
 
@@ -287,9 +299,7 @@ fn nested(ui: &mut egui::Ui, graph: &mut Graph, parent: usize) -> Result<(), Str
                 .iter()
                 .filter(|field| visible(field, class))
                 .collect();
-            let has_labels = native::labels::bindings(class)?
-                .iter()
-                .any(|(source, _)| !activation_site_labels(class, *source).is_empty());
+            let has_labels = !native::labels::bindings(class)?.is_empty();
             if !editable.is_empty() || has_labels {
                 let stride = schema::record(graph.blocks[parent].class)?.size;
                 let context = super::reference_name(graph, parent, at % stride, Some(child))?;
@@ -342,7 +352,17 @@ fn nested(ui: &mut egui::Ui, graph: &mut Graph, parent: usize) -> Result<(), Str
                             // Nested records carry label sites too: the weapon-family lists
                             // inside the ammunition and finder nodes, for example.
                             ui.push_id((child, row, "labels"), |ui| {
-                                labels::draw_row_sites(ui, graph, child, row)
+                                let target = graph.blocks[parent].links[&at];
+                                let before = graph.blocks[target].clone();
+                                labels::draw_row_sites(ui, graph, target, row)?;
+                                let after = &graph.blocks[target];
+                                if after.bytes != before.bytes || after.links != before.links {
+                                    let after =
+                                        std::mem::replace(&mut graph.blocks[target], before);
+                                    let private = graph.make_unique(parent, at)?;
+                                    graph.blocks[private] = after;
+                                }
+                                Ok::<_, String>(())
                             })
                             .inner?;
                         }
@@ -367,8 +387,8 @@ enum FieldView {
 
 fn primary(field: &fields::Field, ability: bool) -> bool {
     if ability {
-        // The selector byte names the ability. The input selector at +8 is 255 in nearly
-        // every stock action and has no traced name, so it waits under Advanced.
+        // Named state, version and input choices are handled by primary_for. Keep the
+        // ability target visible even when its current value has no recovered name.
         return field.offset == 2;
     }
     matches!(
@@ -401,6 +421,24 @@ fn primary_for(field: &fields::Field, block: &native::Block, ability: bool) -> b
     }
     if matches!(block.class, 0x80803E3F | 0x80803E3E) {
         return matches!(field.offset, 0x68 | 0x6C..=0x84);
+    }
+    if matches!(block.class, 0x80803DCE | 0x80803DCC) {
+        // Lead with the meaningful restrictions a stock/custom predicate actually uses.
+        // Unrestricted ranges stay editable in Advanced without adding fourteen controls
+        // to every ordinary state check. Keep both bounds together when either is changed.
+        let range = match field.offset {
+            0x18..=0x34 => Some((field.offset & !7, 0x30)),
+            0x9C..=0xB0 => Some((0x9C + ((field.offset - 0x9C) / 8) * 8, usize::MAX)),
+            _ => None,
+        };
+        if let Some((offset, count_offset)) = range {
+            let unrestricted_max = if offset == count_offset { 32.0f32 } else { 1.0 };
+            return block.bytes.get(offset..offset + 8).is_some_and(|pair| {
+                let minimum = f32::from_le_bytes(pair[..4].try_into().expect("range minimum"));
+                let maximum = f32::from_le_bytes(pair[4..].try_into().expect("range maximum"));
+                minimum != 0.0 || maximum != unrestricted_max
+            });
+        }
     }
     // The general predicate's value range bounds the value its named key reads (every keyed
     // stock row keeps the pair ordered, every unkeyed row leaves it at 1 and 1), so the
@@ -686,8 +724,7 @@ fn controls(
             .inner?;
         }
     }
-    // Every label list the stock perks author on this node kind, from that site's own
-    // vocabulary. The kill node draws its sites beside its presets instead.
+    // Every label list on this node. The kill node draws its sites beside its presets.
     if matches!(view, FieldView::Primary) {
         labels::draw_sites(ui, graph, index)?;
     }

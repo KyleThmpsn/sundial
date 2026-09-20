@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn empty_dawn_artwork_editors_use_dawn_sources_and_preserve_explicit_artwork() {
+    use crate::branding::Branding;
+    for kind in [Kind::Badge, Kind::Watermark] {
+        let expected = match kind {
+            Kind::Badge => Branding::Dawn.badge(),
+            Kind::Watermark => Branding::Dawn.corner(),
+        }
+        .unwrap()
+        .unwrap();
+        let dawn = Editor::with_branding(kind, None, Branding::Dawn);
+        assert_eq!(dawn.source, expected);
+        let sunrise = Editor::with_branding(kind, None, Branding::Sunrise);
+        assert_ne!(sunrise.source, dawn.source);
+        let custom = Editor::with_branding(kind, Some(sunrise.source.clone()), Branding::Dawn);
+        assert_eq!(
+            custom.source, sunrise.source,
+            "explicit recipe artwork must not be replaced"
+        );
+    }
+}
+
+#[test]
+fn imported_badges_default_to_the_active_runtime_background() {
+    let art = Artwork::from_png(include_bytes!(
+        "../../../../../assets/parhelion/dawn-badge-source.png"
+    ))
+    .unwrap();
+    assert!(art.composition().is_none());
+    let dawn = Editor::with_branding(
+        Kind::Badge,
+        Some(art.clone()),
+        crate::branding::Branding::Dawn,
+    );
+    assert_eq!(dawn.composition.background, Background::Dawn);
+    let sunrise = Editor::with_branding(
+        Kind::Badge,
+        Some(art.clone()),
+        crate::branding::Branding::Sunrise,
+    );
+    assert_eq!(sunrise.composition.background, Background::Sunrise);
+    let explicit = art
+        .with_composition(Composition {
+            background: Background::Transparent,
+            ..Default::default()
+        })
+        .unwrap();
+    let dawn = Editor::with_branding(Kind::Badge, Some(explicit), crate::branding::Branding::Dawn);
+    assert_eq!(dawn.composition.background, Background::Transparent);
+}
+
+#[test]
 fn finishing_or_closing_artwork_preview_waits_for_its_package_reader() {
     use std::sync::{
         Arc,

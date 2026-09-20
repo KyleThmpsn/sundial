@@ -29,8 +29,9 @@ pub(super) use progression::{
     progression_type_label, resolved_objective_table_text,
 };
 pub(super) use requests::{
-    DefinitionInspectionContext, request_definition, request_definition_with_context,
-    take_definition_context, take_definition_request,
+    DefinitionInspectionContext, clear_owned_quantities, publish_owned_quantities,
+    request_definition, request_definition_with_context, take_definition_context,
+    take_definition_request, take_owned_quantities_request,
 };
 
 #[cfg(test)]

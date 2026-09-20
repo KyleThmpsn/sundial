@@ -101,7 +101,7 @@ fn draw_job(
             counts.push((true, format!("{skipped} Skipped")));
         }
         if job.queued_count() > 0 {
-            counts.push((true, format!("{} Pending Rewards", job.queued_count())));
+            counts.push((true, format!("{} Rewards Queued", job.queued_count())));
         }
         crate::app::ui::review_header(ui, "Review Changes", &counts);
         crate::app::ui::review_body(ui, "triumph_review_body", |ui| {
@@ -358,6 +358,7 @@ pub(in crate::app::progression) fn draw(
         name_width,
         auto_expand,
         enabled,
+        document["_native_progression"]["runtime"] != "dawn",
     );
     if let Some(complete) = desired {
         state.job = Some(edit::Job::new(

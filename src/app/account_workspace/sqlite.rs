@@ -277,13 +277,9 @@ pub(super) fn add_inventory_item<D: NativeAccountDocument>(
     let entity_id = document
         .next_entity_id()
         .map_err(app_inventory_error::<D>)?;
-    let first_soid =
-        domain::InstanceSoid::try_from_u64(super::super::inventory::GENERATED_INSTANCE_SOID_START)
-            .expect("the generated SOID start is nonzero");
     let instance_soid = document
-        .characters()
-        .next_available_instance_soid(first_soid)
-        .map_err(domain_inventory_error::<D>)?;
+        .next_item_identity()
+        .map_err(app_inventory_error::<D>)?;
     document
         .characters_mut()
         .apply(
@@ -302,6 +298,7 @@ pub(super) fn add_inventory_item<D: NativeAccountDocument>(
             },
         )
         .map_err(domain_inventory_error::<D>)?;
+    document.observe_item_identity(instance_soid);
     Ok(InventoryItemLocation {
         character_index,
         item_index,
@@ -464,6 +461,7 @@ pub(super) fn equip_definition<D: NativeAccountDocument>(
     let character = character(document, character_index)?;
     let character_id = character.id;
     let slot_key = domain::EquipmentSlot::new(slot);
+    let mut created_identity = None;
     let command = if character
         .equipment
         .get(&slot_key)
@@ -482,14 +480,8 @@ pub(super) fn equip_definition<D: NativeAccountDocument>(
         let entity_id = document
             .next_entity_id()
             .map_err(|error| error.to_string())?;
-        let first_soid = domain::InstanceSoid::try_from_u64(
-            super::super::inventory::GENERATED_INSTANCE_SOID_START,
-        )
-        .expect("the generated SOID start is nonzero");
-        let instance_soid = document
-            .characters()
-            .next_available_instance_soid(first_soid)
-            .map_err(|error| error.to_string())?;
+        let instance_soid = document.next_item_identity()?;
+        created_identity = Some(instance_soid);
         domain::CharacterCommand::SetEquipmentItem {
             character_id,
             slot: slot_key,
@@ -504,7 +496,11 @@ pub(super) fn equip_definition<D: NativeAccountDocument>(
             }),
         }
     };
-    apply_character_command(document, command)
+    apply_character_command(document, command)?;
+    if let Some(identity) = created_identity {
+        document.observe_item_identity(identity);
+    }
+    Ok(())
 }
 
 pub(super) fn set_equipment_item_level<D: NativeAccountDocument>(

@@ -179,7 +179,7 @@ pub(in crate::app) fn collectible_acquisition_edit_available(
     catalog: &Catalog,
     desired: bool,
 ) -> bool {
-    if snapshot.is_native()
+    if snapshot.seasonal_authoring()
         && let Some(season) = catalog.seasonal()
         && let Some(entry) = season
             .mods
@@ -209,7 +209,7 @@ pub(in crate::app) fn set_collectible_acquisition_state(
     catalog: &Catalog,
     desired: bool,
 ) -> Result<(), String> {
-    if snapshot.is_native()
+    if snapshot.seasonal_authoring()
         && let Some(entry) = catalog.seasonal().and_then(|season| {
             season
                 .mods

@@ -7,6 +7,7 @@ mod presentation;
 mod progression;
 mod sandbox_perks;
 mod sockets;
+mod stats;
 
 pub(super) use classification::*;
 pub(crate) use classification::{weapon_equipment_slot, weapon_inventory_slot};
@@ -15,3 +16,4 @@ pub(super) use presentation::*;
 pub(super) use progression::*;
 pub(super) use sandbox_perks::*;
 pub(super) use sockets::*;
+pub(super) use stats::*;

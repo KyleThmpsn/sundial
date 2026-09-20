@@ -45,7 +45,7 @@ pub(crate) fn draw(
     let Some(object) = draft.value.as_object_mut() else {
         ui.colored_label(
             ui.visuals().error_fg_color,
-            "This row must be an object. Use All Settings (JSON) to inspect it.",
+            "This row must be an object. Use JSON Editor to inspect it.",
         );
         return None;
     };

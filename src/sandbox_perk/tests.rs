@@ -190,6 +190,7 @@ fn private_tooltip_edits_preserve_stock_rows_and_runtime_identity() {
                     bank_index: 56,
                     string_hash: 78,
                 }),
+                icon_index: Some(1234),
                 category_source_index: Some(0),
                 hidden,
             },
@@ -220,7 +221,8 @@ fn assert_private_tooltip_detail(detail: &[u8], source: &[u8], category: &[u8], 
         assert_eq!(u32_at(detail, 4).unwrap(), 34);
         assert_eq!(u32_at(detail, 8).unwrap(), 56);
         assert_eq!(u32_at(detail, 12).unwrap(), 78);
-        assert_eq!(&detail[16..20], &source[16..20]);
+        assert_eq!(&detail[16..18], &1234_u16.to_le_bytes());
+        assert_eq!(&detail[18..20], &source[18..20]);
         assert_eq!(&detail[20..24], &category[20..24]);
     }
 }

@@ -23,7 +23,7 @@ fn condition_choices_preserve_owned_records_and_report_nested_probability_source
     kill.bytes[6] = 1;
     let payload = graph.emit().unwrap();
     let decoded = decode(&payload).unwrap();
-    let choices = crate::investment::native_content::conditions::from_payload(&payload).unwrap();
+    let choices = crate::investment::discovery::conditions::from_payload(&payload).unwrap();
     let original = &decoded.groups[0].activation[0];
     let copied = choices
         .iter()
@@ -264,8 +264,8 @@ fn structural_kinds_now_read_their_traced_fields() {
         effects[0].facts,
         vec![
             Fact::new("Target Selector", FactValue::Selector(1)),
-            Fact::new("Flag Byte", FactValue::Selector(0)),
-            Fact::new("Option Byte", FactValue::Selector(0)),
+            Fact::new("Ability State", FactValue::Selector(0)),
+            Fact::new("Ability Version", FactValue::Selector(0)),
             Fact::new("Scale", FactValue::Number(0.1)),
             Fact::new("Limit", FactValue::Number(-1.0)),
             Fact::new("Input Selector", FactValue::Selector(0xFF)),
@@ -288,8 +288,11 @@ fn structural_kinds_now_read_their_traced_fields() {
         effects[2].facts,
         vec![
             Fact::new("Excludes Any Label", FactValue::Labels(vec![0xBF39_E12B])),
-            Fact::new("Assign Slot 1", FactValue::Number(1.2)),
-            Fact::new("Multiply Slot 0 From Stat", FactValue::Selector(0x0B)),
+            Fact::new("Assign Precision Bonus", FactValue::Number(1.2)),
+            Fact::new(
+                "Multiply Base Damage Scale from Stat",
+                FactValue::Selector(0x0B)
+            ),
         ]
     );
     let summary = ActionSummary::new(&action);
@@ -573,7 +576,7 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         assert!(
             fields
                 .iter()
-                .any(|f| f.offset == 0x18 && f.label == "Health Value 1")
+                .any(|f| f.offset == 0x18 && f.label == "Minimum Health Fraction")
         );
     }
     let class = 0x8080_3DCE;

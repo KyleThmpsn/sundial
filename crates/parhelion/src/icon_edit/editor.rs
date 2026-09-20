@@ -110,7 +110,11 @@ impl WeaponIconEditor {
         current: WeaponIconEdit,
     ) -> Self {
         let preview = open_shadowkeep_package_manager(package_directory)
-            .and_then(|manager| load_icon_preview(&manager, donor_container_tag, rarity));
+            .and_then(|manager| load_icon_preview(&manager, donor_container_tag, rarity))
+            .and_then(|mut preview| {
+                preview.set_branding(crate::branding::Branding::for_packages(package_directory))?;
+                Ok(preview)
+            });
         Self {
             donor_hash,
             donor_name: donor_name.into(),
