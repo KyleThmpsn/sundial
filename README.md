@@ -104,7 +104,7 @@ The executable is `target/release/sundial.exe` on Windows or `target/release/sun
 
 - [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it. Package-layout research was also informed by Sunrise and [Charm](https://github.com/MontagueM/Charm).
 - Thanks to [Solus](https://www.youtube.com/@Solus-yt) for creating the Project Sunrise logo used in Parhelion's badge and inspiring its watermark.
-- Thanks to [Flumoxxed](https://www.youtube.com/@flumx) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark.
+- Thanks to [soul](https://github.com/chnsw) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark, and to [Flumoxxed](https://www.youtube.com/@flumx) for the SVG!
 - [justrealmilk/destiny-icons](https://github.com/justrealmilk/destiny-icons) provides optional alternative icons for custom perks, badges, and watermarks.
 - Thanks to [Kjam0678](https://github.com/Kjam0678/panoptes/) for their work on the Panoptes fork, which inspired Sundial's socket-grid layout option and Randomize Loadout features.
 - Thanks to xSkullHD for the original Random Item design and contributions to Sundial's armor-stat targeting.
