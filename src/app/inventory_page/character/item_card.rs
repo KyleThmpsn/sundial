@@ -478,7 +478,8 @@ impl SundialApp {
                     ),
                     native_default,
                     self.plug_selection_mode,
-                );
+                )
+                .with_preview_plugs(current_plugs.iter().copied());
                 let searchable = picker_snapshot.choices.len() > 12;
                 let action = ui
                     .add_enabled_ui(editable, |ui| {

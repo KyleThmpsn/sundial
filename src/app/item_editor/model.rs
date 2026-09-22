@@ -134,6 +134,8 @@ pub(crate) struct PlugChoice {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlugPickerSnapshot {
+    pub preview: Option<crate::ui::model_preview::Loadout>,
+    pub preview_guarded: bool,
     pub socket_index: usize,
     pub socket_label: String,
     pub current_hash: Option<u64>,
@@ -144,4 +146,13 @@ pub(crate) struct PlugPickerSnapshot {
     pub native_default_label: Option<String>,
     pub choices: Vec<PlugChoice>,
     pub show_types: bool,
+}
+
+impl PlugPickerSnapshot {
+    pub(crate) fn with_preview_plugs(mut self, plugs: impl Iterator<Item = Option<u32>>) -> Self {
+        if let Some(preview) = &mut self.preview {
+            preview.plugs = plugs.collect();
+        }
+        self
+    }
 }

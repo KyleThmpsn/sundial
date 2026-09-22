@@ -8,8 +8,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::index_cache;
 use crate::{

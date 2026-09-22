@@ -6,91 +6,15 @@
   "template_plug": "0xDD5CB37A",
   "icon": {
     "source": "image",
-    "name": "destiny-icons\\general\\destiny.svg",
+    "name": "destiny-icons\\weapons\\damage_solar.svg",
     "image": {
-      "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAFRUlEQVR4nOydDXabMAzH/+TtHqMnKT3JyEnGTlJ2krknmXuSzAqipQwKNralNP69R9OXEPwhS/KXnBMKopxQEKUIQJhvCOByubTu5bu7andZd73yq62qyuKL48rfYCg7QfUQXP5qz02c4A93TRNewvD14jJi8IVIVQfVRqK1e3nmRH0x7vp164Lgiv+J8Do4f6YV1ScJU6IdjmO2MqGRg41vTufK/2vpg2ol8T+REp7SY9AIC+VEbHxTFoVQLSSeovI/ZMRdvzUKgs0NtfoaaegwK/tploFQW+ebiT9cWBVQXrjh0VUjHR0GR/5GNclE7V7+Ii8Ggv7hoIM9wsNY5qkAqPJr5Me4zDz5fIHHIY94z69x1ws8++EZzO0ab2X+xhmhVlBDMRu9kmZyXw/9zp5MXuvy2I8+oIViuMWThjY7br/ey9/RzNUXnLhl1VAKV+Qz/HlmzdYKaUFNGvADSjlQ+SMdNzCtNNpnQ49UfsxnpOKRBNBAIRHNR6PYH9RqBYC4+dJqZpug9YBMNIhHA6WQBlgoI4XjVOqMbVmSFIYEYFCQ4joS/o2CFC8nXjK0KOSGJg7N6AN6FHLT05+rAHipzKKQCzsuT057QT0KuejHf94EULQgG2a6OP9hHOA+eEARQkrsfPXvv4EYC6FHITaG6/YDiyNhd+MZRQgx6dbWvVenIlgI9CWLQijWXU9ru+KIT+eCaKBQTFIw17rb2hu7azKuaIMXFkOr37XVZvdsaNGGXexq9VO8p6NZGzoU5uxu9VOCVsTIqbgFDvq3hfINXZl4qgLjIIIXZNizkzZYROaGYgksDlQ+cWhFjBNOIoTYrAi1Rjje9n6JXTFiW/B6a/DWbleIpTiFmJuF7dIo9MJ2NNbzQoiyJsytK7iburJgbhCPHvvS3IPFUNYoRFuUPyiEZuG9mEulrwvvhe4VOsf0UVF3RXDGevjzuPAsgzhjDrLVPeJwyOEuEcUHzAkMcnuYt6yjvgXrtr+GfzTQaqTjEZLsCwpc3Hme22UWyJFe1nnlfV/zY1JUPpFyY5avP2iwUDGs8r7PonsXzQULucN+vEOofEgmgEB/0C71TuhZbEq2tIE+O6/1zwNNzxkJSeIDprhC0/781uMrHXbEEXOEIznvsYdjdnzHNygvid2fkkMANfwdaYfIwdwBlR9tsPUZyTfnBpqiDgtOOQR6RmA4alLTM5JcA0YCpxasu8gEmBBtuISf+ZCl9RM5BdAiPF7LYBgZ7xIEV3yL8PFD9AHXGtkEQESKTDfg06nw7oC/Y6jsBscn8JJ2O+fkFkAL3VGLxENM579FVgEQgmdS7CGb7R+RCFHqoZcemZHQgBrpz+UJYmlhKDXZNYDtq4U+DASQipKMudgSCwMBsqvciDZnLGF+CMk4YQs9WAghKQBNZqiHEGImiDiwLSQ22aYe5kgfVWAhj5WqfKIIQDgP0sfVWMhjIIi0BrxAHtE8FA0QRrQXREgPyKQGYCOajyzLgYUwGk7MMpDDQhgNGmAhh4EwGgTwijvm3n2AuPCLExbm3n2AhTDi4wBCalZUegxAaDm41eJOuWcBWChAiwAM8tNDAVp6QRpmRUVQ4YSJ3JNyGhwwoen09B756KAETRpQI9OWRS2tn1CjAbxl0SA9HRShpiUQGbQg+/bzLVT9gsbRU1c2sIh4ykks1P2ECQsh5KiDLc45I1/2osoETYn448oWQ+UbKEStAEYORjz2fMqjWtQLgJgcS0CvNbaF0eNGfr/+JgQwhwVSYwhPJWhly9A/t1DpU25SAF+J8kNuwhQBCPMPAAD//0KHJjwAAAAGSURBVAMALUP1lAhPbbEAAAAASUVORK5CYII="
+      "png_base64": "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"
     }
   },
   "classification": "0xDD5CB37A",
   "effects": [
     {
-      "projectiles": [
-        {
-          "source_graph": 2169668321,
-          "donor_graph": 2159716818
-        }
-      ],
-      "source_perk_index": 1178,
-      "runtime_values": [
-        {
-          "locator": {
-            "binding_hash": 70743405,
-            "resource_index": 0,
-            "root": "component_instance",
-            "root_schema": 2155887475,
-            "path": [
-              {
-                "name_hash": 1347310080,
-                "type_handle": 2155887475,
-                "byte_offset": 0
-              },
-              {
-                "name_hash": 1347307776,
-                "type_handle": 2155886537,
-                "byte_offset": 240
-              },
-              {
-                "name_hash": 1347311104,
-                "type_handle": 2155886537,
-                "byte_offset": 84
-              }
-            ],
-            "type_handle": 2155886537,
-            "value_offset": 84,
-            "byte_size": 4
-          },
-          "value": {
-            "kind": "float32_bits",
-            "value": 1065353216
-          }
-        },
-        {
-          "locator": {
-            "binding_hash": 70743405,
-            "resource_index": 0,
-            "root": "component_definition",
-            "root_schema": 2155886735,
-            "path": [
-              {
-                "name_hash": 1347310080,
-                "type_handle": 2155886735,
-                "byte_offset": 0
-              },
-              {
-                "name_hash": 1347311104,
-                "type_handle": 2155886735,
-                "byte_offset": 136
-              }
-            ],
-            "type_handle": 2155886735,
-            "value_offset": 136,
-            "byte_size": 4
-          },
-          "value": {
-            "kind": "float32_bits",
-            "value": 1065353216
-          }
-        }
-      ],
-      "action_float_values": []
-    },
-    {
       "source_perk_index": 84,
-      "runtime_values": [],
-      "action_float_values": []
-    },
-    {
-      "source_perk_index": 405,
       "runtime_values": [],
       "action_float_values": []
     },
@@ -117,6 +41,26 @@
         ]
       },
       "source_perk_index": 422,
+      "runtime_values": [],
+      "action_float_values": []
+    },
+    {
+      "program": {
+        "name": "Custom Effect",
+        "trigger": "drawn",
+        "duration_ms": 1000,
+        "cooldown_ms": 0,
+        "chance_permyriad": 10000,
+        "actions": [
+          {
+            "operation": "pattern",
+            "asset": {
+              "graph": 2159716792
+            }
+          }
+        ]
+      },
+      "source_perk_index": 421,
       "runtime_values": [],
       "action_float_values": []
     }

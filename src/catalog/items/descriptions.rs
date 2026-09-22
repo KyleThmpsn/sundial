@@ -1,6 +1,7 @@
 //! Shared localized effect descriptions for socket plugs and inventory mods.
+use crate::package_runtime::reader::PackageManager;
 use std::collections::HashMap;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::{InventoryMetadata, InventoryScope, ItemPackageMetadata, perks::item_perk_indices};
 use crate::{

@@ -22,9 +22,14 @@
   },
   "name": "Hammer Time",
   "flavor": "Every problem is a nail if you hit it hard enough.",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "lore": "problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem problem ",
+    "icon_edit": {
+      "hue_shift_degrees": -20,
+      "saturation": 5,
+      "green_balance": -8
+    },
     "investment_stats": [
       {
         "definition_index": 14,
@@ -68,7 +73,7 @@
       },
       {
         "definition_index": 32,
-        "value": 15
+        "value": 22
       },
       {
         "definition_index": 60,
@@ -86,7 +91,8 @@
       {
         "choices": [
           "0xE26DE4F4",
-          "0xD21B657A"
+          "0xD21B657A",
+          "0x6DF1332F"
         ],
         "socket_type": null,
         "choice_weight_bits": [],
@@ -95,7 +101,18 @@
         "randomized_plug_set_index": null,
         "randomized_selection_program": []
       },
-      null,
+      {
+        "choices": [
+          "0xB4C1CACD",
+          "0x6648162F"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
       {
         "choices": [
           "0xDD5CB37A",
@@ -121,13 +138,38 @@
         "randomized_plug_set_index": null,
         "randomized_selection_program": []
       },
-      null,
-      null,
-      null,
+      {
+        "choices": [
+          "0x2BF054ED",
+          "0xFD368D30",
+          "0x9DA139BF"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
       null,
       {
-        "choices": [],
-        "socket_type": 65535,
+        "choices": [
+          "0x16E5CAD7"
+        ],
+        "socket_type": null,
+        "choice_weight_bits": [],
+        "choice_conditions": [],
+        "reusable_plug_set_index": null,
+        "randomized_plug_set_index": null,
+        "randomized_selection_program": []
+      },
+      null,
+      {
+        "choices": [
+          "0x882F1653",
+          "0xFE63AC50"
+        ],
+        "socket_type": 92,
         "choice_weight_bits": [],
         "choice_conditions": [],
         "reusable_plug_set_index": null,
@@ -156,91 +198,15 @@
         "classification_donor_hash": "0xDD5CB37A",
         "icon": {
           "source": "image",
-          "name": "destiny-icons\\general\\destiny.svg",
+          "name": "destiny-icons\\weapons\\damage_solar.svg",
           "image": {
-            "png_base64": "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"
+            "png_base64": "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"
           }
         },
         "description": "Fires explosive Hammers of Sol and deals Solar damage. Final blows grant grenade energy.",
         "sandbox_perks": [
           {
-            "projectiles": [
-              {
-                "source_graph": 2169668321,
-                "donor_graph": 2159716818
-              }
-            ],
-            "source_perk_index": 1178,
-            "runtime_values": [
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_instance",
-                  "root_schema": 2155887475,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155887475,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347307776,
-                      "type_handle": 2155886537,
-                      "byte_offset": 240
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886537,
-                      "byte_offset": 84
-                    }
-                  ],
-                  "type_handle": 2155886537,
-                  "value_offset": 84,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              },
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_definition",
-                  "root_schema": 2155886735,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155886735,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886735,
-                      "byte_offset": 136
-                    }
-                  ],
-                  "type_handle": 2155886735,
-                  "value_offset": 136,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              }
-            ],
-            "action_float_values": []
-          },
-          {
             "source_perk_index": 84,
-            "runtime_values": [],
-            "action_float_values": []
-          },
-          {
-            "source_perk_index": 405,
             "runtime_values": [],
             "action_float_values": []
           },
@@ -269,6 +235,26 @@
             "source_perk_index": 422,
             "runtime_values": [],
             "action_float_values": []
+          },
+          {
+            "program": {
+              "name": "Custom Effect",
+              "trigger": "drawn",
+              "duration_ms": 1000,
+              "cooldown_ms": 0,
+              "chance_permyriad": 10000,
+              "actions": [
+                {
+                  "operation": "pattern",
+                  "asset": {
+                    "graph": 2159716792
+                  }
+                }
+              ]
+            },
+            "source_perk_index": 421,
+            "runtime_values": [],
+            "action_float_values": []
           }
         ]
       },
@@ -281,91 +267,15 @@
         "classification_donor_hash": "0xDD5CB37A",
         "icon": {
           "source": "image",
-          "name": "destiny-icons\\general\\destiny.svg",
+          "name": "destiny-icons\\weapons\\damage_arc.svg",
           "image": {
-            "png_base64": "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"
+            "png_base64": "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"
           }
         },
         "description": "Fires massive Arc bolts and deals Arc damage. Final blows grant melee energy.",
         "sandbox_perks": [
           {
-            "projectiles": [
-              {
-                "source_graph": 2169668321,
-                "donor_graph": 2164129207
-              }
-            ],
-            "source_perk_index": 1178,
-            "runtime_values": [
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_instance",
-                  "root_schema": 2155887475,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155887475,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347307776,
-                      "type_handle": 2155886537,
-                      "byte_offset": 240
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886537,
-                      "byte_offset": 84
-                    }
-                  ],
-                  "type_handle": 2155886537,
-                  "value_offset": 84,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              },
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_definition",
-                  "root_schema": 2155886735,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155886735,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886735,
-                      "byte_offset": 136
-                    }
-                  ],
-                  "type_handle": 2155886735,
-                  "value_offset": 136,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              }
-            ],
-            "action_float_values": []
-          },
-          {
             "source_perk_index": 83,
-            "runtime_values": [],
-            "action_float_values": []
-          },
-          {
-            "source_perk_index": 405,
             "runtime_values": [],
             "action_float_values": []
           },
@@ -394,6 +304,444 @@
             "source_perk_index": 422,
             "runtime_values": [],
             "action_float_values": []
+          },
+          {
+            "program": {
+              "name": "Arc Projectile",
+              "trigger": "drawn",
+              "duration_ms": 1000,
+              "cooldown_ms": 0,
+              "chance_permyriad": 10000,
+              "actions": [
+                {
+                  "operation": "pattern",
+                  "asset": {
+                    "graph": 2159549654,
+                    "values": [
+                      {
+                        "locator": {
+                          "graph_tag": 2159549654,
+                          "binding_hash": 70743405,
+                          "resource_index": 0,
+                          "root": "component_instance",
+                          "root_schema": 2155887475,
+                          "path": [
+                            {
+                              "name_hash": 1346912857,
+                              "type_handle": 2155887475,
+                              "byte_offset": 160
+                            }
+                          ],
+                          "type_handle": 2155887475,
+                          "value_offset": 160,
+                          "byte_size": 256
+                        },
+                        "value": {
+                          "kind": "bytes",
+                          "value": [
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            128,
+                            63,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            255,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            128,
+                            63,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            128,
+                            63,
+                            0,
+                            0,
+                            160,
+                            65,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            72,
+                            66,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            128,
+                            63,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0
+                          ]
+                        }
+                      },
+                      {
+                        "locator": {
+                          "graph_tag": 2159549654,
+                          "binding_hash": 70743405,
+                          "resource_index": 0,
+                          "root": "component_definition",
+                          "root_schema": 2155886735,
+                          "path": [
+                            {
+                              "name_hash": 1346912857,
+                              "type_handle": 2155886735,
+                              "byte_offset": 72
+                            }
+                          ],
+                          "type_handle": 2155886735,
+                          "value_offset": 72,
+                          "byte_size": 112
+                        },
+                        "value": {
+                          "kind": "bytes",
+                          "value": [
+                            14,
+                            160,
+                            12,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            1,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            32,
+                            65,
+                            255,
+                            255,
+                            255,
+                            255,
+                            1,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            72,
+                            66,
+                            0,
+                            0,
+                            0,
+                            1,
+                            205,
+                            204,
+                            76,
+                            61,
+                            1,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            160,
+                            65,
+                            0,
+                            0,
+                            128,
+                            63,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            130,
+                            116,
+                            95,
+                            62,
+                            130,
+                            116,
+                            95,
+                            191,
+                            130,
+                            116,
+                            223,
+                            62,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "source_perk_index": 421,
+            "runtime_values": [],
+            "action_float_values": []
           }
         ]
       },
@@ -406,91 +754,15 @@
         "classification_donor_hash": "0xDD5CB37A",
         "icon": {
           "source": "image",
-          "name": "destiny-icons\\general\\destiny.svg",
+          "name": "destiny-icons\\general\\damage_void.svg",
           "image": {
-            "png_base64": "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"
+            "png_base64": "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"
           }
         },
         "description": "Fires high-velocity Nova Bombs and deals Void damage. Final blows cloak the wielder in invisibility.",
         "sandbox_perks": [
           {
-            "projectiles": [
-              {
-                "source_graph": 2169668321,
-                "donor_graph": 2159716117
-              }
-            ],
-            "source_perk_index": 1178,
-            "runtime_values": [
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_instance",
-                  "root_schema": 2155887475,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155887475,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347307776,
-                      "type_handle": 2155886537,
-                      "byte_offset": 240
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886537,
-                      "byte_offset": 84
-                    }
-                  ],
-                  "type_handle": 2155886537,
-                  "value_offset": 84,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              },
-              {
-                "locator": {
-                  "binding_hash": 70743405,
-                  "resource_index": 0,
-                  "root": "component_definition",
-                  "root_schema": 2155886735,
-                  "path": [
-                    {
-                      "name_hash": 1347310080,
-                      "type_handle": 2155886735,
-                      "byte_offset": 0
-                    },
-                    {
-                      "name_hash": 1347311104,
-                      "type_handle": 2155886735,
-                      "byte_offset": 136
-                    }
-                  ],
-                  "type_handle": 2155886735,
-                  "value_offset": 136,
-                  "byte_size": 4
-                },
-                "value": {
-                  "kind": "float32_bits",
-                  "value": 1065353216
-                }
-              }
-            ],
-            "action_float_values": []
-          },
-          {
             "source_perk_index": 85,
-            "runtime_values": [],
-            "action_float_values": []
-          },
-          {
-            "source_perk_index": 405,
             "runtime_values": [],
             "action_float_values": []
           },
@@ -520,6 +792,26 @@
               ]
             },
             "source_perk_index": 421,
+            "runtime_values": [],
+            "action_float_values": []
+          },
+          {
+            "program": {
+              "name": "Nova Bomb",
+              "trigger": "drawn",
+              "duration_ms": 1000,
+              "cooldown_ms": 0,
+              "chance_permyriad": 10000,
+              "actions": [
+                {
+                  "operation": "pattern",
+                  "asset": {
+                    "graph": 2159716334
+                  }
+                }
+              ]
+            },
+            "source_perk_index": 422,
             "runtime_values": [],
             "action_float_values": []
           }

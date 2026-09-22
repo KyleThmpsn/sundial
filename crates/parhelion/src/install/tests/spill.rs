@@ -33,7 +33,7 @@ fn spill_packages_install_repeat_and_uninstall_with_backups() {
     }
     let plan = preview_uninstall(&fixture.target).unwrap();
     assert_eq!(plan.artifacts().len(), AUTHORED_PACKAGES.len() + 1);
-    uninstall_custom_packages(&plan, &fixture.backups, game_stopped).unwrap();
+    uninstall_fixture(&plan, &fixture.backups, game_stopped).unwrap();
     assert!(!fixture.target.join(SPILL_NAME).exists());
     assert_eq!(stock, fixture.source_artifact_json());
 }

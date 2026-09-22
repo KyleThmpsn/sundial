@@ -357,11 +357,18 @@ fn draw_property_value(
     text: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
 ) {
     let current = edits.first().map_or(&field.value, |edit| &edit.value);
-    let hint = format!(
+    let mut hint = format!(
         "{}\nOriginal: {}",
         field.path_label,
         value_text(&field.value)
     );
+    if let Some(meaning) = sundial::package_authoring::weapon_runtime::modifiers::field_meaning(
+        field.locator.type_handle,
+        field.locator.value_offset,
+    ) {
+        hint.push('\n');
+        hint.push_str(meaning.help);
+    }
     let (next, reset) = Workbench::property_row(ui, &field.name, &hint, |ui| {
         let next = match current {
             WeaponRuntimeValue::Float32Bits(bits) if f32::from_bits(*bits).is_finite() => {

@@ -10,6 +10,15 @@ pub(crate) enum Action {
 }
 
 impl UpdateCheck {
+    /// Whether the update window is on screen.
+    ///
+    /// `draw` returns before it reads its `blocker` or `can_save` arguments while this is false,
+    /// so the caller uses this to skip preparing them. Deciding the blocker means asking whether
+    /// the account has unsaved work, which is not cheap.
+    pub(crate) const fn is_open(&self) -> bool {
+        self.window_open
+    }
+
     pub(crate) fn draw(
         &mut self,
         ctx: &egui::Context,

@@ -286,15 +286,17 @@ impl Workbench {
         donor: Option<&WeaponDonor>,
         catalog: Option<&InvestmentCatalog>,
     ) -> Option<Change> {
-        let issue = self.perk_issue(&self.documents.get(self.selected)?.recipe);
+        let issue = self.validation_issue(&self.documents.get(self.selected)?.recipe);
+        if let Some(issue) = &issue {
+            self.draw_issue(ui, issue);
+        }
         let (Some(donor), Some(catalog)) = (donor, catalog) else {
-            if let Some(issue) = &issue {
-                ui.colored_label(ui.visuals().warn_fg_color, issue);
-            } else {
+            if issue.is_none() {
                 ui.weak("Open a weapon recipe to apply this perk.");
             }
             return None;
         };
+        let edit_issue = self.edit_issue();
         let document = self.documents.get_mut(self.selected)?;
         if let Some(target) = &document.target
             && target.check(weapon, donor).is_err()
@@ -347,11 +349,11 @@ impl Workbench {
                 });
                 // The action and anything standing in its way sit together at the right.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ready = document.target.is_some() && issue.is_none();
+                    let ready = document.target.is_some() && issue.is_none() && edit_issue.is_none();
                     let apply = crate::app::style::primary(ui, "Apply to Weapon");
                     if ui.add_enabled(ready, apply)
                         .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.")
-                        .on_disabled_hover_text(issue.as_deref().unwrap_or("Choose a destination socket and choice."))
+                        .on_disabled_hover_text(edit_issue.or_else(|| issue.as_ref().map(|issue| issue.message.as_str())).unwrap_or("Choose a destination socket and choice."))
                         .clicked() {
                         result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
                     }
@@ -365,12 +367,7 @@ impl Workbench {
                             result = Some(Change { target: target.clone(), perk: None });
                         }
                     }
-                    if let Some(issue) = &issue {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(issue).color(ui.visuals().warn_fg_color))
-                                .truncate(),
-                        );
-                    } else {
+                    if issue.is_none() {
                         ui.add(
                             egui::Label::new(egui::RichText::new("Apply a copy, then Save Recipe.").weak())
                                 .truncate(),

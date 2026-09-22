@@ -6,6 +6,7 @@ Sundial edits accounts and settings for [Project Sunrise](https://github.com/sta
 
 - Edit characters, equipment, subclasses, and inventories.
 - Search weapons, armor, cosmetics, and perks.
+- Inspect the definitions behind items, perks, and progression, with model previews.
 - Randomize loadouts and adjust armor stats.
 - Change game settings, progression, and Collections.
 - Use the JSON editor for settings not covered by the guided interface.
@@ -28,7 +29,7 @@ Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with i
 2. Run `sundial.exe` on Windows or `sundial` on Linux.
 3. Choose the Destiny 2 installation you use with Project Sunrise or Dawn.
 
-The first launch scans the game packages. Later launches use a cached catalog. Sundial rebuilds it when the package set changes. You can also rebuild it under **Preferences > Installation > Catalog**.
+The first launch scans the game packages. Later launches use a cached catalog. Sundial rebuilds it when the package set changes or when you update Sundial. You can also rebuild it under **Preferences > Installation > Catalog**.
 
 On Linux, the first package scan downloads a hash-verified decompression helper (`liblinoodle3.so`). The Linux archive also includes an optional `install.sh` for adding Sundial to your application launcher.
 
@@ -80,7 +81,7 @@ Broader choices can cause loading failures or crashes. Sundial warns before enab
 
 ### Why is the first launch slower?
 
-Sundial builds its catalog from your existing game packages, then caches it. It does not download a Destiny manifest or game assets. On Linux, the first scan also downloads the verified decompression helper described above.
+Sundial builds its catalog from your existing game packages, then caches it. The cache is tied to the version that wrote it, so the first launch after an update rebuilds it once. It does not download a Destiny manifest or game assets. On Linux, the first scan also downloads the verified decompression helper described above.
 
 ### What should I include when reporting a problem?
 
@@ -104,7 +105,7 @@ The executable is `target/release/sundial.exe` on Windows or `target/release/sun
 
 - [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it. Package-layout research was also informed by Sunrise and [Charm](https://github.com/MontagueM/Charm).
 - Thanks to [Solus](https://www.youtube.com/@Solus-yt) for creating the Project Sunrise logo used in Parhelion's badge and inspiring its watermark.
-- Thanks to [Flumoxxed](https://www.youtube.com/@flumx) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark.
+- Thanks to [soul](https://github.com/chnsw) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark, and to [Flumoxxed](https://www.youtube.com/@flumx) for the SVG!
 - [justrealmilk/destiny-icons](https://github.com/justrealmilk/destiny-icons) provides optional alternative icons for custom perks, badges, and watermarks.
 - Thanks to [Kjam0678](https://github.com/Kjam0678/panoptes/) for their work on the Panoptes fork, which inspired Sundial's socket-grid layout option and Randomize Loadout features.
 - Thanks to xSkullHD for the original Random Item design and contributions to Sundial's armor-stat targeting.

@@ -79,6 +79,8 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
 
+      # The D2 model importer is experimental and stays out of releases. Quality checks it
+      # on the upstream branch, and it builds locally with --features d2-model-importer.
       - name: Build Sundial
         run: cargo build --release --locked -p sundial-suite
 
@@ -124,6 +126,8 @@ jobs:
             libxkbcommon-dev \
             libxrandr-dev
 
+      # The D2 model importer is experimental and stays out of releases. Quality checks it
+      # on the upstream branch, and it builds locally with --features d2-model-importer.
       - name: Build Sundial
         run: cargo build --release --locked -p sundial-suite
 

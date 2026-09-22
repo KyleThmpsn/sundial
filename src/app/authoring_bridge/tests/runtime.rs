@@ -1,5 +1,6 @@
 use super::*;
 use crate::package_runtime::{installation::RuntimeLocation, tests::fixture};
+use std::collections::BTreeMap;
 
 fn preferences(root: &Path, layout: &str) -> crate::app::Preferences {
     crate::app::Preferences {
@@ -114,6 +115,92 @@ fn authored_unlocks_target_the_account_the_installed_runtime_reads() {
             assert!(!durable, "Sunrise keeps its unlocks with its settings");
             assert_eq!(target, path);
         }
+    }
+}
+
+#[test]
+fn replacement_cleanup_follows_the_runtime_and_does_not_fall_back_from_missing_dawn() {
+    for (brand, schema) in [("Sunrise", 8), ("Sunrise", 18), ("Dawn", 6)] {
+        let directory = fixture::install();
+        let root = directory.path();
+        fs::write(
+            root.join("steam_api64.dll"),
+            fixture::module_with_schema(brand, schema),
+        )
+        .unwrap();
+        let folder = if brand == "Dawn" { "Dawn" } else { "Sunrise" };
+        let settings = root.join(folder).join("settings.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        let original = serde_json::to_vec(&json!({"version":schema,"state": {
+            "account": {"primary_soid": "0x0000000000000001"},
+            "characters": [{"soid": "0x0000000000000002", "class": 0,
+                "equipment": {}, "inventory": [{"instance_soid": "0x0000000000000003",
+                    "definition_hash": 300, "level": 106, "quantity": 1, "plugs": null}]}]
+        }}))
+        .unwrap();
+        fs::write(&settings, &original).unwrap();
+        let dawn = crate::persistence::dawn_path(&settings);
+        let sunrise = crate::persistence::investment_path(&settings);
+        crate::persistence::dawn_account::tests::create_fixture(&dawn);
+        crate::persistence::sqlite_account::tests::create_fixture(&sunrise, 3);
+        let dawn_before = crate::account::read_authored_account_source(&dawn).unwrap();
+        let sunrise_before = crate::persistence::sqlite_account::snapshot::read(&sunrise).unwrap();
+        let review =
+            preview_account_cleanup(root, &BTreeSet::from([2715114534, 300]), &[]).unwrap();
+        let expected = match (brand, schema) {
+            ("Dawn", _) => &dawn,
+            (_, 18) => &sunrise,
+            _ => &settings,
+        };
+        assert_eq!(&review.settings_path, expected);
+        let removed = match (brand, schema) {
+            ("Dawn", _) => BTreeMap::from([(2715114534, 1)]),
+            _ => BTreeMap::from([(300, 1)]),
+        };
+        assert_eq!(review.removed_items, removed);
+        assert_eq!(fs::read(&settings).unwrap(), original);
+        assert_eq!(
+            crate::account::read_authored_account_source(&dawn).unwrap(),
+            dawn_before
+        );
+        assert_eq!(
+            crate::persistence::sqlite_account::snapshot::read(&sunrise).unwrap(),
+            sunrise_before
+        );
+        if brand == "Dawn" {
+            fs::remove_file(&dawn).unwrap();
+            assert!(preview_account_cleanup(root, &BTreeSet::from([300]), &[]).is_err());
+            assert!(!dawn.exists());
+        }
+    }
+}
+
+#[test]
+fn authored_account_operations_fail_closed_without_a_recognized_runtime() {
+    for module in [Some(b"unrecognized runtime".as_slice()), None] {
+        let directory = fixture::install();
+        let root = directory.path();
+        if let Some(module) = module {
+            fs::write(root.join("steam_api64.dll"), module).unwrap();
+        }
+        for folder in ["Dawn", "Sunrise"] {
+            let settings = root.join(folder).join("settings.json");
+            fs::create_dir_all(settings.parent().unwrap()).unwrap();
+            fs::write(&settings, br#"{"version":6,"state":{"characters":[]}}"#).unwrap();
+        }
+        let dawn = crate::persistence::dawn_path(&root.join("Dawn/settings.json"));
+        let sunrise = root.join("Sunrise/settings.json");
+        crate::persistence::dawn_account::tests::create_fixture(&dawn);
+        let dawn_before = crate::account::read_authored_account_source(&dawn).unwrap();
+        let sunrise_before = fs::read(&sunrise).unwrap();
+
+        assert!(preview_account_cleanup(root, &BTreeSet::from([300]), &[]).is_err());
+        assert!(authored_client_settings_path(root).is_err());
+        assert_eq!(
+            crate::account::read_authored_account_source(&dawn).unwrap(),
+            dawn_before
+        );
+        assert_eq!(fs::read(sunrise).unwrap(), sunrise_before);
     }
 }
 

@@ -1,5 +1,148 @@
 use super::*;
 
+/// What the exemplar search learns about each stock collectible, kept for the whole build.
+///
+/// The search walks every collectible row for every weapon, and everything it decodes per row
+/// is a property of that row alone. Without this a build read and decompressed two tags per
+/// row per weapon, serialised on one package reader. Each fact is filled in the first time a
+/// weapon needs it, at the same point in the walk the uncached search read it, so any error
+/// surfaces where it always did.
+pub(in crate::weapon) struct CollectionExemplarCache {
+    rows: Vec<ExemplarRow>,
+}
+
+#[derive(Default)]
+struct ExemplarRow {
+    definition: Option<ExemplarDefinition>,
+    family_hash: Option<u32>,
+    translation_group: Option<u32>,
+}
+
+/// The definition has been read. `weapon` is `None` where it is not a weapon, which the search
+/// skips, and `pattern` keeps its error until the walk reaches the point that raised it.
+struct ExemplarDefinition {
+    weapon: Option<(AuthoredWeaponRarity, Option<WeaponInventorySlot>)>,
+    pattern: Option<AuthoringResult<Option<u16>>>,
+}
+
+/// The stock tables the search reads, bundled so the cache can fill a row on demand.
+struct ExemplarTables<'a> {
+    manager: &'a PackageManager,
+    items: &'a [u8],
+    item_rows: usize,
+    item_count: usize,
+    item_strings: &'a [u8],
+    string_rows: usize,
+    collectibles: &'a [u8],
+    collectible_rows: usize,
+    sandbox_patterns: &'a [u8],
+}
+
+impl CollectionExemplarCache {
+    pub(in crate::weapon) fn new(collectible_count: usize) -> Self {
+        Self {
+            rows: (0..collectible_count)
+                .map(|_| ExemplarRow::default())
+                .collect(),
+        }
+    }
+
+    /// The item row this collectible names, or `None` when it points outside the item table.
+    fn item(tables: &ExemplarTables<'_>, index: usize) -> AuthoringResult<Option<usize>> {
+        let item = usize::from(read_u16(
+            tables.collectibles,
+            tables.collectible_rows + index * COLLECTIBLE_ROW_SIZE + COLLECTIBLE_ITEM_INDEX_OFFSET,
+        )?);
+        Ok((item < tables.item_count).then_some(item))
+    }
+
+    /// Reads the definition once and keeps what the search needs from it.
+    fn definition(
+        &mut self,
+        tables: &ExemplarTables<'_>,
+        index: usize,
+        item: usize,
+    ) -> AuthoringResult<&mut ExemplarDefinition> {
+        let row = &mut self.rows[index];
+        if row.definition.is_none() {
+            let definition = read_tag(
+                tables.manager,
+                TagHash(read_u32(
+                    tables.items,
+                    tables.item_rows + item * ITEM_ROW_SIZE + 16,
+                )?),
+                "Collections placement exemplar",
+            )?;
+            let weapon = weapon_rarity(&definition)
+                .ok()
+                .map(|rarity| (rarity, weapon_inventory_slot(&definition).ok()));
+            row.definition = Some(ExemplarDefinition {
+                weapon,
+                pattern: Some(weapon_pattern_index(&definition)),
+            });
+        }
+        Ok(row
+            .definition
+            .as_mut()
+            .expect("the definition was just read"))
+    }
+
+    fn family_hash(
+        &mut self,
+        tables: &ExemplarTables<'_>,
+        index: usize,
+        item: usize,
+    ) -> AuthoringResult<u32> {
+        if let Some(hash) = self.rows[index].family_hash {
+            return Ok(hash);
+        }
+        let strings = read_tag(
+            tables.manager,
+            TagHash(read_u32(
+                tables.item_strings,
+                tables.string_rows + item * ITEM_ROW_SIZE + 16,
+            )?),
+            "Collections exemplar type",
+        )?;
+        let hash = read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
+        self.rows[index].family_hash = Some(hash);
+        Ok(hash)
+    }
+
+    /// The pattern index the definition declared, raising its read error the first time only.
+    fn pattern(&mut self, index: usize) -> AuthoringResult<Option<u16>> {
+        let definition = self.rows[index]
+            .definition
+            .as_mut()
+            .expect("the definition is read before its pattern is asked for");
+        match &definition.pattern {
+            Some(Ok(pattern)) => Ok(*pattern),
+            Some(Err(_)) => Err(definition
+                .pattern
+                .take()
+                .expect("checked above")
+                .expect_err("checked above")),
+            // A failed build never asks twice; a successful read is copied out above.
+            None => unreachable!("a taken pattern error ends the build"),
+        }
+    }
+
+    fn translation_group(
+        &mut self,
+        tables: &ExemplarTables<'_>,
+        index: usize,
+        pattern: u16,
+    ) -> AuthoringResult<u32> {
+        if let Some(group) = self.rows[index].translation_group {
+            return Ok(group);
+        }
+        let group = sandbox_pattern_source_at(tables.sandbox_patterns, pattern)?
+            .weapon_translation_group_hash;
+        self.rows[index].translation_group = Some(group);
+        Ok(group)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::weapon) fn resolve_weapon_collection_donor(
     manager: &PackageManager,
@@ -12,12 +155,24 @@ pub(in crate::weapon) fn resolve_weapon_collection_donor(
     collectible_rows: usize,
     collectible_count: usize,
     sandbox_patterns: &[u8],
+    cache: &mut CollectionExemplarCache,
     gameplay_collectible: Option<usize>,
     gameplay: &[u8],
     gameplay_strings: &[u8],
     rarity: AuthoredWeaponRarity,
     slot: WeaponInventorySlot,
 ) -> AuthoringResult<Vec<usize>> {
+    let tables = ExemplarTables {
+        manager,
+        items,
+        item_rows,
+        item_count,
+        item_strings,
+        string_rows,
+        collectibles,
+        collectible_rows,
+        sandbox_patterns,
+    };
     let exotic = rarity == AuthoredWeaponRarity::Exotic;
     let prefer_gameplay = (weapon_rarity(gameplay)? == AuthoredWeaponRarity::Exotic) == exotic
         && (!exotic || weapon_inventory_slot(gameplay)? == slot);
@@ -40,57 +195,40 @@ pub(in crate::weapon) fn resolve_weapon_collection_donor(
     } else {
         Vec::new()
     };
+    // The walk keeps the uncached search's order and skip points exactly, so the candidate
+    // list, and with it the exemplar chosen, is the same one it always produced.
     for index in 0..collectible_count {
         if prefer_gameplay && Some(index) == gameplay_collectible {
             continue;
         }
-        let item = usize::from(read_u16(
-            collectibles,
-            collectible_rows + index * COLLECTIBLE_ROW_SIZE + COLLECTIBLE_ITEM_INDEX_OFFSET,
-        )?);
-        if item >= item_count {
+        let Some(item) = CollectionExemplarCache::item(&tables, index)? else {
             continue;
-        }
-        let definition = read_tag(
-            manager,
-            TagHash(read_u32(items, item_rows + item * ITEM_ROW_SIZE + 16)?),
-            "Collections placement exemplar",
-        )?;
-        let Ok(candidate_rarity) = weapon_rarity(&definition) else {
+        };
+        let Some((candidate_rarity, candidate_slot)) =
+            cache.definition(&tables, index, item)?.weapon
+        else {
             continue;
         };
         if (candidate_rarity == AuthoredWeaponRarity::Exotic) != exotic {
             continue;
         }
-        let Ok(candidate_slot) = weapon_inventory_slot(&definition) else {
+        let Some(candidate_slot) = candidate_slot else {
             continue;
         };
         if exotic {
             if candidate_slot != slot {
                 continue;
             }
-        } else {
-            let strings = read_tag(
-                manager,
-                TagHash(read_u32(
-                    item_strings,
-                    string_rows + item * ITEM_ROW_SIZE + 16,
-                )?),
-                "Collections exemplar type",
-            )?;
-            if read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)? != family_hash {
-                // Some collectible-free variants have no family text. Their native
-                // translation group can still identify compatible stock page exemplars.
-                if let Some(group) = fallback_group
-                    && let Some(pattern) = weapon_pattern_index(&definition)?
-                    && sandbox_pattern_source_at(sandbox_patterns, pattern)?
-                        .weapon_translation_group_hash
-                        == group
-                {
-                    fallback_candidates.push(index);
-                }
-                continue;
+        } else if cache.family_hash(&tables, index, item)? != family_hash {
+            // Some collectible-free variants have no family text. Their native
+            // translation group can still identify compatible stock page exemplars.
+            if let Some(group) = fallback_group
+                && let Some(pattern) = cache.pattern(index)?
+                && cache.translation_group(&tables, index, pattern)? == group
+            {
+                fallback_candidates.push(index);
             }
+            continue;
         }
         candidates.push(index);
     }

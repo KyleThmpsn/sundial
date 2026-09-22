@@ -267,7 +267,7 @@ pub(super) fn summary_with_assets(
                             "at the triggering event",
                     }
                 ),
-                Action::Attach { .. } => format!("Attach {name} to the weapon"),
+                Action::Attach { .. } => format!("Attach {name}"),
                 Action::Pattern { .. } => format!("Fire {name}"),
                 _ => program::action_text(action, keys),
             })

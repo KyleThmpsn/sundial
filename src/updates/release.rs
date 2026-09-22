@@ -56,14 +56,79 @@ pub(super) fn parse(body: &[u8], current: &str) -> Result<Option<Release>, Strin
         return Ok(None);
     }
     let asset = select_asset(&response);
+    let notes = response
+        .body
+        .filter(|body| !body.trim().is_empty())
+        .map_or_else(
+            || "No release notes were provided for this version.".into(),
+            |body| absolute_notes(&body, &response.tag_name),
+        );
     Ok(Some(Release {
         version: response.tag_name,
-        notes: response
-            .body
-            .filter(|body| !body.trim().is_empty())
-            .unwrap_or_else(|| "No release notes were provided for this version.".into()),
+        notes,
         asset,
     }))
+}
+
+/// GitHub resolves repository-relative links on the release page, but the in-app viewer
+/// hands a link to the browser as written. Pin such links to the released tree.
+fn absolute_notes(notes: &str, tag: &str) -> String {
+    let mut output = String::with_capacity(notes.len());
+    let mut rest = notes;
+    while let Some(start) = rest.find("](") {
+        let (head, tail) = rest.split_at(start + 2);
+        output.push_str(head);
+        let mut depth = 0usize;
+        let end = tail
+            .char_indices()
+            .find_map(|(index, character)| match character {
+                '(' => {
+                    depth += 1;
+                    None
+                }
+                ')' if depth == 0 => Some(index),
+                ')' => {
+                    depth -= 1;
+                    None
+                }
+                _ => None,
+            });
+        let Some(end) = end else {
+            rest = tail;
+            break;
+        };
+        let (target, after) = tail.split_at(end);
+        let (href, title) = target
+            .split_once(char::is_whitespace)
+            .map_or((target, None), |(href, title)| (href, Some(title)));
+        output.push_str(&absolute_link(href, tag));
+        if let Some(title) = title {
+            output.push(' ');
+            output.push_str(title);
+        }
+        rest = after;
+    }
+    output.push_str(rest);
+    output
+}
+
+fn absolute_link(href: &str, tag: &str) -> String {
+    let has_scheme = href.split_once(':').is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+    });
+    if href.is_empty() || href.starts_with('#') || href.starts_with("//") || has_scheme {
+        return href.to_owned();
+    }
+    if let Some(path) = href.strip_prefix('/') {
+        return format!("https://github.com/{path}");
+    }
+    format!(
+        "https://github.com/kylethmpsn/sundial/blob/{tag}/{}",
+        href.trim_start_matches("./")
+    )
 }
 
 fn select_asset(release: &Response) -> Result<Asset, String> {
@@ -217,6 +282,34 @@ mod tests {
             assert!(parse_value(&ignored).unwrap().is_none(), "{key}");
         }
         assert!(parse(b"{}", "0.4.1").is_err());
+    }
+
+    #[test]
+    fn relative_release_note_links_open_the_released_tree() {
+        let notes = "Read the [README](crates/parhelion/README.md \"Docs\") and \
+            [issues](https://github.com/KyleThmpsn/sundial/issues). \
+            [Host](/KyleThmpsn/sundial), [same page](#changes), [mail](mailto:a@b.c), \
+            [wiki](https://en.wikipedia.org/wiki/Sun_(star)), ![shot](./docs/shot.png), \
+            [broken](docs/never-closed";
+        assert_eq!(
+            absolute_notes(notes, "v0.5"),
+            "Read the [README](https://github.com/kylethmpsn/sundial/blob/v0.5/crates/parhelion/README.md \"Docs\") and \
+            [issues](https://github.com/KyleThmpsn/sundial/issues). \
+            [Host](https://github.com/KyleThmpsn/sundial), [same page](#changes), [mail](mailto:a@b.c), \
+            [wiki](https://en.wikipedia.org/wiki/Sun_(star)), ![shot](https://github.com/kylethmpsn/sundial/blob/v0.5/docs/shot.png), \
+            [broken](docs/never-closed"
+        );
+        let (name, _, _) = package("v0.5").unwrap();
+        let response = json!({"tag_name":"v0.5", "body":"See [it](crates/parhelion/README.md).",
+            "assets":[{"name":name, "browser_download_url":format!("{DOWNLOAD_ROOT}v0.5/{name}"),
+            "size":1024, "digest":format!("sha256:{}", "a".repeat(64))}]});
+        let release = parse(&serde_json::to_vec(&response).unwrap(), "0.4.1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            release.notes,
+            "See [it](https://github.com/kylethmpsn/sundial/blob/v0.5/crates/parhelion/README.md)."
+        );
     }
 
     #[test]

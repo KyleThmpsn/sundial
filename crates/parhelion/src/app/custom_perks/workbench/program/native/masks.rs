@@ -121,10 +121,21 @@ mod tests {
             assert!(contract.bitmask);
             let first = u32::from(contract.choices[0].0);
             let second = u32::from(contract.choices[1].0);
-            let unknown = 0x10;
+            let unknown = (0..8)
+                .map(|bit| 1u32 << bit)
+                .find(|bit| {
+                    contract
+                        .choices
+                        .iter()
+                        .all(|(known, _)| u32::from(*known) & bit == 0)
+                })
+                .expect("this filter still has unidentified bits");
             let original = graph.blocks[0].bytes.clone();
             write(&field, &mut graph.blocks[0], 0, first | second | unknown).unwrap();
-            assert!(summary(first | second | unknown, contract.choices).contains("0x10"));
+            assert!(
+                summary(first | second | unknown, contract.choices)
+                    .contains(&format!("0x{unknown:X}"))
+            );
             write(
                 &field,
                 &mut graph.blocks[0],

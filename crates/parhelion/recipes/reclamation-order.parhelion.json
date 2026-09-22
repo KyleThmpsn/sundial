@@ -26,7 +26,7 @@
   },
   "name": "Reclamation Order",
   "flavor": "\"Nothing inside was yours to bury.\"",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "icon_edit": {
       "hue_shift_degrees": -80,

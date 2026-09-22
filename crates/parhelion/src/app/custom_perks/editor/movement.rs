@@ -2,7 +2,9 @@ use super::super::workbench::Workbench;
 use super::*;
 use projectile::parameters::{self, Parameter};
 
-pub(super) fn mapped(loaded: &PrivatePerkRuntimeGraph) -> Vec<(u32, Parameter)> {
+pub(in crate::app::custom_perks) fn mapped(
+    loaded: &PrivatePerkRuntimeGraph,
+) -> Vec<(u32, Parameter)> {
     loaded
         .graphs
         .iter()
@@ -88,64 +90,10 @@ impl PerkEditor {
                 ui.push_id(
                     ("projectile-property", tag, owner, parameter.kind.label()),
                     |ui| {
-                        let current = parameter.value(&self.draft);
-                        let mut value = current.clone().unwrap_or(parameter.original());
-                        let modified = parameter.is_modified(&self.draft);
-                        let verified = parameter.kind == parameters::Kind::Speed;
-                        let (changed_value, reset) = Workbench::property_row_with(
-                            ui,
-                            parameter.kind.label(),
-                            parameter.kind.description(),
-                            |ui| {
-                                verified
-                                    && self.draw_verified_projectile_speed(
-                                        ui,
-                                        loaded,
-                                        tag,
-                                        parameter.owner_tag,
-                                    )
-                            },
-                            |ui| {
-                                let response = ui
-                                    .add_sized(
-                                        [100.0, ui.spacing().interact_size.y],
-                                        egui::DragValue::new(&mut value)
-                                            .speed(0.05)
-                                            .max_decimals(3)
-                                            .suffix(parameter.kind.suffix()),
-                                    )
-                                    .on_hover_text(format!(
-                                        "Original: {}{}\n{}",
-                                        parameter.original(),
-                                        parameter.kind.suffix(),
-                                        parameter.kind.description()
-                                    ));
-                                let changed_value = response.changed();
-                                crate::app::style::named_control(response, parameter.kind.label());
-                                // This frame's edit is written below, so the reset stays live on it.
-                                let reset = ui
-                                    .add_enabled(
-                                        modified || changed_value,
-                                        egui::Button::new("Reset"),
-                                    )
-                                    .on_hover_text("Restore this property's original value.")
-                                    .clicked();
-                                (changed_value, reset)
-                            },
-                        );
-                        let mut changed = false;
-                        if changed_value {
-                            self.parameter_error = parameter.set(&mut self.draft, value).err();
-                            changed = true;
-                        }
-                        if reset {
-                            self.parameter_error = parameter.reset(&mut self.draft).err();
-                            changed = true;
-                        }
-                        if let Err(error) = current {
-                            ui.colored_label(ui.visuals().error_fg_color, error);
-                        }
-                        if changed {
+                        if let Some(result) =
+                            draw_parameter(ui, loaded, tag, &parameter, &mut self.draft)
+                        {
+                            self.parameter_error = result.err();
                             self.value_text
                                 .retain(|(locator, _), _| !parameter.contains(locator));
                         }
@@ -175,5 +123,63 @@ impl PerkEditor {
                 self.parameter_error = Some(error);
             }
         }
+    }
+}
+
+/// The inline action card and full property editor share the same controls and byte edits.
+pub(in crate::app::custom_perks) fn draw_parameter(
+    ui: &mut egui::Ui,
+    loaded: &PrivatePerkRuntimeGraph,
+    tag: u32,
+    parameter: &Parameter,
+    draft: &mut Vec<WeaponRuntimeValueOverride>,
+) -> Option<Result<(), String>> {
+    let current = parameter.value(draft);
+    let mut value = current.clone().unwrap_or(parameter.original());
+    let modified = parameter.is_modified(draft);
+    let (changed, reset) = Workbench::property_row_with(
+        ui,
+        parameter.kind.label(),
+        parameter.kind.description(),
+        |ui| {
+            parameter.kind == parameters::Kind::Speed
+                && PerkEditor::draw_verified_projectile_speed(ui, loaded, tag, parameter.owner_tag)
+        },
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let response = ui
+                    .add_sized(
+                        [100.0, ui.spacing().interact_size.y],
+                        egui::DragValue::new(&mut value)
+                            .speed(0.05)
+                            .max_decimals(3)
+                            .suffix(parameter.kind.suffix()),
+                    )
+                    .on_hover_text(format!(
+                        "Original: {}{}\n{}",
+                        parameter.original(),
+                        parameter.kind.suffix(),
+                        parameter.kind.description()
+                    ));
+                let changed = response.changed();
+                crate::app::style::named_control(response, parameter.kind.label());
+                let reset = ui
+                    .add_enabled(modified || changed, egui::Button::new("Reset").small())
+                    .on_hover_text("Restore this property's original value.")
+                    .clicked();
+                (changed, reset)
+            })
+            .inner
+        },
+    );
+    if let Err(error) = current {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    }
+    if reset {
+        Some(parameter.reset(draft))
+    } else if changed {
+        Some(parameter.set(draft, value))
+    } else {
+        None
     }
 }

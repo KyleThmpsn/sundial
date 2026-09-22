@@ -3,8 +3,9 @@ use std::{
     mem::size_of,
 };
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::package_payload::{
     array_at, bool_at, i32_at, i64_at, relative_offset, u16_at, u32_at, u64_at,

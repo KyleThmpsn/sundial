@@ -26,7 +26,7 @@
   },
   "name": "Last Watch",
   "flavor": "\"We’ll be here when word comes.\"",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "icon_edit": {
       "hue_shift_degrees": 140,

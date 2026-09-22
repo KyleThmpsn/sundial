@@ -81,8 +81,13 @@ pub(super) fn row_with<R>(
     // One width for every labelled row, the same one the fixed width cells use. A
     // proportional column moved with the pane and shrank at each nesting level, so controls
     // that belong to one card started at a different place in every block of it.
-    let width = controls::CELL_LABEL_WIDTH.min((ui.available_width() - 100.0).max(100.0));
-    ui.horizontal(|ui| {
+    let stacked = ui.available_width() < 340.0;
+    let width = if stacked {
+        ui.available_width()
+    } else {
+        controls::CELL_LABEL_WIDTH.min((ui.available_width() - 100.0).max(100.0))
+    };
+    let draw = |ui: &mut egui::Ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(width, ui.spacing().interact_size.y),
             egui::Layout::right_to_left(egui::Align::Center),
@@ -107,8 +112,12 @@ pub(super) fn row_with<R>(
             },
         );
         value(ui)
-    })
-    .inner
+    };
+    if stacked {
+        ui.vertical(draw).inner
+    } else {
+        ui.horizontal(draw).inner
+    }
 }
 
 /// The perk editor windows sit beside this module tree rather than inside it, so the shared
@@ -137,9 +146,12 @@ impl Workbench {
 
 /// Component editing keeps the existing checked asset editor and draft flow.
 pub(super) fn edit_object(ui: &mut egui::Ui, asset: &Asset) -> bool {
-    ui.add_enabled(asset.graph != 0, egui::Button::new("Edit Components…"))
-        .on_disabled_hover_text("Choose an object to edit its components.")
-        .clicked()
+    ui.add_enabled(
+        !matches!(asset.graph, 0 | u32::MAX),
+        egui::Button::new("Edit Components…"),
+    )
+    .on_disabled_hover_text("Choose an object to edit its components.")
+    .clicked()
 }
 
 #[derive(Default)]
@@ -151,6 +163,92 @@ pub(super) struct Properties {
 }
 
 impl Properties {
+    fn load_error(&mut self, ui: &mut egui::Ui, tag: u32, error: String) {
+        let retry = ui
+            .horizontal_wrapped(|ui| {
+                ui.colored_label(ui.visuals().error_fg_color, "Could not load properties.");
+                ui.small_button("Retry").clicked()
+            })
+            .inner;
+        ui.add(egui::Label::new(error).wrap());
+        if retry {
+            self.graphs.remove(&tag);
+            self.request(ui, tag);
+        }
+    }
+
+    fn request(&mut self, ui: &egui::Ui, tag: u32) {
+        if self.pending.is_none() && self.packages.is_dir() && !self.graphs.contains_key(&tag) {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let packages = self.packages.clone();
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(super::super::editor::load_entity_parameters(&packages, tag));
+                ctx.request_repaint();
+            });
+            self.pending = Some((tag, receiver));
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+
+    pub fn movement(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        match self.graphs.get(&asset.graph) {
+            Some(Ok(loaded)) => {
+                let parameters = editor::movement::mapped(loaded);
+                let owners = parameters
+                    .iter()
+                    .map(|(tag, p)| (*tag, p.owner_tag))
+                    .collect::<BTreeSet<_>>();
+                for (tag, parameter) in parameters {
+                    ui.push_id(
+                        (
+                            "projectile-property",
+                            tag,
+                            parameter.owner_tag,
+                            parameter.kind.label(),
+                        ),
+                        |ui| {
+                            if owners.len() > 1
+                                && parameter.kind == projectile::parameters::Kind::Speed
+                            {
+                                ui.weak(format!(
+                                    "Projectile Component 0x{:08X}",
+                                    parameter.owner_tag
+                                ));
+                            }
+                            let id = ui.id().with("error");
+                            if let Some(result) = editor::movement::draw_parameter(
+                                ui,
+                                loaded,
+                                tag,
+                                &parameter,
+                                &mut asset.values,
+                            ) {
+                                ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
+                            }
+                            if let Some(error) = ui
+                                .ctx()
+                                .data(|data| data.get_temp::<Option<String>>(id))
+                                .flatten()
+                            {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                            }
+                        },
+                    );
+                }
+            }
+            Some(Err(error)) => {
+                self.load_error(ui, asset.graph, error.clone());
+            }
+            None => {
+                ui.small("Reading Projectile Properties…");
+                self.request(ui, asset.graph);
+            }
+        }
+    }
     pub fn sync(&mut self, packages: &Path, source: Option<&Arc<projectile::catalog::Catalog>>) {
         let same_source = match (&self.source, source) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -208,24 +306,77 @@ impl Properties {
                 }
             },
             Some(Err(error)) => {
-                ui.small("Property Values Unavailable").on_hover_text(error);
+                self.load_error(ui, asset.graph, error.clone());
             }
             None => {
                 ui.small("Reading Properties…");
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
-                if self.pending.is_none() && self.packages.is_dir() {
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    let packages = self.packages.clone();
-                    let tag = asset.graph;
-                    let ctx = ui.ctx().clone();
-                    std::thread::spawn(move || {
-                        let _ = sender
-                            .send(super::super::editor::load_entity_parameters(&packages, tag));
-                        ctx.request_repaint();
-                    });
-                    self.pending = Some((tag, receiver));
-                }
+                self.request(ui, asset.graph);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retry_reopens_a_failed_load_and_keeps_other_cached_results() {
+        let ctx = egui::Context::default();
+        let mut properties = Properties::default();
+        properties
+            .graphs
+            .insert(10, Err("Temporary read failure".into()));
+        properties.graphs.insert(20, Err("Separate failure".into()));
+        let mut asset = Asset {
+            graph: 10,
+            ..Default::default()
+        };
+        let frame = |properties: &mut Properties, asset: &mut Asset, events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| properties.movement(ui, asset));
+                },
+            )
+        };
+        let output = frame(&mut properties, &mut asset, vec![]);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Retry" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        for pressed in [true, false] {
+            frame(
+                &mut properties,
+                &mut asset,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert!(!properties.graphs.contains_key(&10));
+        assert!(properties.graphs.contains_key(&20));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(super::super::super::editor::tests::fixture()))
+            .unwrap();
+        properties.pending = Some((10, receiver));
+        properties.sync(Path::new(""), None);
+        assert!(properties.graphs[&10].is_ok());
+        assert!(properties.graphs[&20].is_err());
     }
 }

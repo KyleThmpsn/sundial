@@ -32,6 +32,7 @@ pub mod image_processing;
 pub mod investment;
 mod investment_localization;
 mod investment_schema;
+mod model_preview;
 mod native_weapon;
 pub mod package_authoring;
 mod package_payload;

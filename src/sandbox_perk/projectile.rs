@@ -2,8 +2,9 @@
 //! Replacing a projectile preserves the source action's trigger and host requirements.
 use std::collections::BTreeSet;
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::{SandboxPerkRuntimeAction, SandboxPerkRuntimeGraphSource};
 use crate::weapon_entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity};

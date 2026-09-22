@@ -120,7 +120,7 @@ impl Library {
         Ok(())
     }
 
-    fn read_restore_target(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
+    pub(super) fn read_restore_target(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
         self.check_root()?;
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -135,7 +135,7 @@ impl Library {
         }
     }
 
-    fn replace_restore_target(
+    pub(super) fn replace_restore_target(
         &self,
         path: &Path,
         expected: &Option<Vec<u8>>,
@@ -158,7 +158,7 @@ impl Library {
         }
     }
 
-    fn create_restore_backup(&self) -> Result<PathBuf, String> {
+    pub(super) fn create_restore_backup(&self) -> Result<PathBuf, String> {
         let parent = self
             .root
             .parent()

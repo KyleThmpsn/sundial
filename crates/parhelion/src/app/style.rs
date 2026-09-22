@@ -1,6 +1,27 @@
 //! Local workbench density and contrast; never changes Sundial's global theme.
 
 /// Name controls whose visible hint/icon is not an accessibility label.
+/// The family the host registers for the game's own symbols.
+const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
+
+/// Text drawn in a family that has the game's symbol glyphs.
+///
+/// Perk descriptions carry the Champion marks as private-use characters, `U+E070` and its
+/// neighbours. The default family has no glyph for those, so a tooltip quoting a perk's own words
+/// drew an empty box where the symbol belongs. Eriana's Vow says it fires shield-piercing rounds
+/// that way. The family is registered by the host, so this falls back to ordinary text when
+/// Parhelion is drawn without it.
+pub(crate) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let text = egui::RichText::new(text.into());
+    let family = egui::FontFamily::Name(DESTINY_TEXT_FONT_FAMILY.into());
+    if !ui.fonts(|fonts| fonts.families().contains(&family)) {
+        return text;
+    }
+    let mut font_id = egui::TextStyle::Body.resolve(ui.style());
+    font_id.family = family;
+    text.font(font_id)
+}
+
 pub(super) fn named_control(response: egui::Response, name: impl Into<String>) -> egui::Response {
     let name: String = name.into();
     response
@@ -33,6 +54,16 @@ pub(crate) fn workbench_style(ui: &mut egui::Ui) {
         style.visuals.warn_fg_color = egui::Color32::from_rgb(143, 74, 0);
         style.visuals.error_fg_color = egui::Color32::from_rgb(175, 0, 0);
     }
+}
+
+/// Perk descriptions, property hints and source rows are working information.
+/// Keep them at the reader's body size, including in independently opened dialogs.
+pub(crate) fn perk_workbench_style(ui: &mut egui::Ui) {
+    workbench_style(ui);
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    ui.style_mut()
+        .text_styles
+        .insert(egui::TextStyle::Small, body);
 }
 
 /// Compact header controls retain the normal Parhelion font.
@@ -144,6 +175,24 @@ pub(crate) fn list_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perk_text_follows_body_size_without_changing_the_global_theme() {
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| {
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(18.0));
+        });
+        let before = egui::TextStyle::Small.resolve(&ctx.style());
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                perk_workbench_style(ui);
+                assert_eq!(egui::TextStyle::Small.resolve(ui.style()).size, 18.0);
+            });
+        });
+        assert_eq!(egui::TextStyle::Small.resolve(&ctx.style()), before);
+    }
 
     fn luminance(color: egui::Color32) -> f32 {
         let channels = color.to_array()[..3]

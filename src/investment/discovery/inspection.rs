@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
@@ -14,7 +15,7 @@ use crate::{
         load_weapon_runtime_graph_for_entity,
     },
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeTarget {

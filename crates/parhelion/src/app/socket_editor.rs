@@ -1314,6 +1314,7 @@ pub(super) fn sync_behavior_socket_pins(
     recipe: &mut WeaponRecipe,
     pins: &mut BehaviorPins,
     donor: &WeaponDonor,
+    pins_intrinsic: &dyn Fn(&crate::weapon_behavior::Behavior) -> bool,
 ) {
     let donor_socket_types = donor
         .sockets
@@ -1336,9 +1337,14 @@ pub(super) fn sync_behavior_socket_pins(
             .map(|entry| entry.behavior.as_str())
     };
     let skip = recipe.overrides.skip_behavior_perks;
-    let mut required =
-        crate::weapon_behavior::socket_pins(behaviors(), skip, &socket_types, &placed);
-    let mut claimed = crate::weapon_behavior::claimed_plugs(behaviors(), skip);
+    let mut required = crate::weapon_behavior::socket_pins(
+        behaviors(),
+        skip,
+        &socket_types,
+        &placed,
+        pins_intrinsic,
+    );
+    let mut claimed = crate::weapon_behavior::claimed_plugs(behaviors(), skip, pins_intrinsic);
     // Variable damage carries The Fundamentals into a trait lane whether or not the element-switch
     // behavior is listed, which is how the build reads it.
     if recipe.overrides.variable_damage.is_some() {
@@ -1398,6 +1404,17 @@ pub(super) fn sync_behavior_socket_pins(
             choices.insert(0, plug);
             pins.0.insert((lane, plug));
             pinned = true;
+        }
+        // A weapon has one frame. A borrowed frame replaces the host's rather than sitting ahead
+        // of it, so while a behavior claims the intrinsic lane it holds borrowed frames alone,
+        // and once none does the lane goes back to the donor's own.
+        if *socket_type == crate::weapon_behavior::INTRINSIC_SOCKET_TYPE {
+            if choices.iter().any(|choice| claimed.contains(choice)) {
+                choices.retain(|choice| claimed.contains(choice));
+                pinned = true;
+            } else if choices.is_empty() {
+                choices.clone_from(&inherited);
+            }
         }
         // Only a lane a behavior just took is trimmed, and only because the socket cannot hold
         // more than it does. An untouched lane keeps everything the author put in it.

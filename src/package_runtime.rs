@@ -4,9 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::package_runtime::reader::PackageManager;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tiger_pkg::TagHash;
 #[cfg(windows)]
 use tiger_pkg::{DestinyVersion, GameVersion};
-use tiger_pkg::{PackageManager, TagHash};
 
 pub(crate) mod cache_file;
 pub(crate) mod index_cache;
@@ -14,6 +17,7 @@ pub(crate) mod installation;
 pub mod labels;
 pub(crate) mod loading;
 pub(crate) mod parallel;
+pub(crate) mod reader;
 pub(crate) mod references;
 pub(crate) mod snapshot;
 pub mod tft;
@@ -39,6 +43,76 @@ const PACKAGE_AUTHORING_RUNTIME_MARKERS: [(&[u8], &str); 2] = [
 const MANIFEST_CACHE_MARKERS: [(&str, &[u8]); 2] =
     [("Dawn", b"DAWNMANF"), ("Sunrise", b"SUNCMANF")];
 
+/// Runtime identity established from the installed DLL's version resources.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeBrand {
+    Sunrise,
+    Dawn,
+}
+
+impl RuntimeBrand {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sunrise => "Sunrise",
+            Self::Dawn => "Dawn",
+        }
+    }
+
+    pub const fn folder(self) -> &'static str {
+        self.name()
+    }
+}
+
+/// Immutable evidence for the runtime selected by the game's DLL precedence rules.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSnapshot {
+    brand: RuntimeBrand,
+    module_path: PathBuf,
+    dll_sha256: String,
+}
+
+impl RuntimeSnapshot {
+    pub fn from_verified_module(brand: RuntimeBrand, module_path: &Path) -> Result<Self, String> {
+        let module_path = fs::canonicalize(module_path).map_err(|error| {
+            format!(
+                "Could not resolve the verified {} runtime DLL {}: {error}",
+                brand.name(),
+                module_path.display()
+            )
+        })?;
+        let bytes = fs::read(&module_path).map_err(|error| {
+            format!(
+                "Could not read the verified {} runtime DLL {}: {error}",
+                brand.name(),
+                module_path.display()
+            )
+        })?;
+        Ok(Self::from_bytes(brand, module_path, &bytes))
+    }
+
+    fn from_bytes(brand: RuntimeBrand, module_path: PathBuf, bytes: &[u8]) -> Self {
+        Self {
+            brand,
+            module_path,
+            dll_sha256: format!("{:x}", Sha256::digest(bytes)),
+        }
+    }
+
+    pub const fn brand(&self) -> RuntimeBrand {
+        self.brand
+    }
+
+    pub fn module_path(&self) -> &Path {
+        &self.module_path
+    }
+
+    pub fn dll_sha256(&self) -> &str {
+        &self.dll_sha256
+    }
+}
+
 fn manifest_cache_marker(runtime: &str) -> &'static [u8] {
     MANIFEST_CACHE_MARKERS
         .iter()
@@ -60,11 +134,67 @@ pub(crate) fn installed_sunrise_module_version(install: &Path) -> Option<String>
     sunrise_module_version(&bytes)
 }
 
-pub(crate) fn installed_runtime_is_dawn(install: &Path) -> bool {
-    fs::read(sunrise_module_path(install))
-        .ok()
-        .and_then(|bytes| runtime_version(&bytes))
-        .is_some_and(|(name, _)| name == "Dawn")
+pub(crate) fn installed_runtime(install: &Path) -> Result<RuntimeSnapshot, String> {
+    let selected = sunrise_module_path(install);
+    let module_path = fs::canonicalize(&selected).map_err(|error| {
+        format!(
+            "Could not resolve the installed Sunrise or Dawn runtime DLL {}: {error}",
+            selected.display()
+        )
+    })?;
+    let bytes = fs::read(&module_path).map_err(|error| {
+        format!(
+            "Could not read the installed runtime DLL {}: {error}",
+            module_path.display()
+        )
+    })?;
+    let (name, _) = runtime_version(&bytes).ok_or_else(|| {
+        format!(
+            "The installed module has no recognized Sunrise or Dawn version resource: {}",
+            module_path.display()
+        )
+    })?;
+    let brand = if name == "Dawn" {
+        RuntimeBrand::Dawn
+    } else {
+        RuntimeBrand::Sunrise
+    };
+    Ok(RuntimeSnapshot::from_bytes(brand, module_path, &bytes))
+}
+
+pub(crate) fn verify_installed_runtime(
+    install: &Path,
+    expected: &RuntimeSnapshot,
+) -> Result<(), String> {
+    let selected = sunrise_module_path(install);
+    let module_path = fs::canonicalize(&selected).map_err(|error| {
+        format!(
+            "Could not recheck the installed runtime DLL {}: {error}",
+            selected.display()
+        )
+    })?;
+    if module_path != expected.module_path {
+        return Err(format!(
+            "The active runtime DLL changed from {} to {}",
+            expected.module_path.display(),
+            module_path.display()
+        ));
+    }
+    let bytes = fs::read(&module_path).map_err(|error| {
+        format!(
+            "Could not recheck the installed runtime DLL {}: {error}",
+            module_path.display()
+        )
+    })?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    if digest != expected.dll_sha256 {
+        return Err(format!(
+            "The installed {} runtime DLL changed after it was selected: {}",
+            expected.brand.name(),
+            module_path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn sunrise_module_version(bytes: &[u8]) -> Option<String> {
@@ -143,23 +273,25 @@ pub(crate) fn runtime_version_at_least(version: &str, minimum: &[u64]) -> bool {
 }
 
 pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), String> {
-    let module = sunrise_module_path(install);
-    let bytes = fs::read(&module).map_err(|error| {
+    let runtime = installed_runtime(install)?;
+    let bytes = fs::read(runtime.module_path()).map_err(|error| {
         format!(
             "Could not read the installed runtime DLL {}: {error}",
-            module.display()
+            runtime.module_path().display()
         )
     })?;
-    let (name, version) = runtime_version(&bytes).ok_or_else(|| {
+    let (_, version) = runtime_version(&bytes).ok_or_else(|| {
         format!(
-            "The installed module has no recognized Sunrise or Dawn version resource: {}",
-            module.display()
+            "The installed runtime DLL changed while it was being validated: {}",
+            runtime.module_path().display()
         )
     })?;
+    let name = runtime.brand().name();
     // These embedded markers are a capability advertisement, not proof that a particular
     // generated manifest or package set has already loaded successfully.
     let missing = missing_package_authoring_runtime_features(&bytes, name);
     if missing.is_empty() {
+        verify_installed_runtime(install, &runtime)?;
         Ok(())
     } else {
         Err(format!(
@@ -296,8 +428,9 @@ mod linux {
         sync::{Mutex, OnceLock},
     };
 
+    use crate::package_runtime::reader::PackageManager;
     use sha2::{Digest, Sha256};
-    use tiger_pkg::{DestinyVersion, GameVersion, PackageManager};
+    use tiger_pkg::{DestinyVersion, GameVersion};
 
     const LINOODLE_URL: &str = "https://raw.githubusercontent.com/v4nguard/tiger-pkg/657f41c0851001b2d371592b2f7a5cb9c686ddb4/liblinoodle3.so";
     const LINOODLE_FILE_NAME: &str = "liblinoodle3.so";

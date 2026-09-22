@@ -1,9 +1,30 @@
 use super::*;
+
+#[test]
+fn typed_callback_references_cannot_be_edited_as_independent_numbers() {
+    let class = 0x8080_3E3C;
+    let mut graph = Graph::read(&template(false, 33).unwrap(), 0, class).unwrap();
+    let before = graph.clone();
+    let fields = fields::describe(class).unwrap();
+    for offset in [0xA0, 0xA8, 0xAC, 0xB0] {
+        let field = fields.iter().find(|f| f.offset == offset).unwrap();
+        assert!(!field.editable);
+        assert!(
+            field
+                .write(&mut graph.blocks[0], 0, &vec![0xFF; field.width])
+                .is_err()
+        );
+    }
+    assert_eq!(graph, before);
+}
 use crate::sandbox_perk::nodes;
 
 #[test]
 fn mapped_gameplay_values_edit_only_their_native_lanes() {
     for (kind, offset, format, value) in [
+        (1, 0x20, fields::Format::Float, (-0.0f32).to_bits()),
+        (1, 0x2C, fields::Format::Float, 2.5f32.to_bits()),
+        (1, 0x30, fields::Format::Key, 0xE49D_441F),
         (8, 8, fields::Format::Float, 0.12345679f32.to_bits()),
         (8, 12, fields::Format::Float, (-0.0f32).to_bits()),
         (14, 0x6C, fields::Format::Integer, (-3i32) as u32),
@@ -13,6 +34,10 @@ fn mapped_gameplay_values_edit_only_their_native_lanes() {
     ] {
         let class = nodes::effect(kind).unwrap().class;
         let mut graph = Graph::read(&template(false, kind).unwrap(), 0, class).unwrap();
+        if kind == 1 {
+            // Existing non-finite parameter lanes survive edits to adjacent fields.
+            graph.blocks[0].bytes[0x24..0x28].copy_from_slice(&0x7FC12345u32.to_le_bytes());
+        }
         if kind == 8 {
             // Unknown padding and an untouched NaN payload must survive nearby numeric edits.
             graph.blocks[0].bytes[5..8].copy_from_slice(&[0xCC, 0x21, 0xFA]);
@@ -856,6 +881,9 @@ fn ability_slot_bits_and_radar_range_are_named_from_the_perks_that_set_them() {
         let value = f32::from_le_bytes(node.bytes[at..at + 4].try_into().unwrap());
         assert_eq!(value, -1.0, "float at +{at:X}");
     }
+    // The new named action must add radar detail, rather than starting with the
+    // subtractive operation inherited from the old anonymous zero-filled node.
+    assert_eq!(NativeNode::effect(20).unwrap().bytes[2], 1);
     // Kind 13's weights are the ammo types.
     let fields = super::fields::describe(0x8080_3E47).unwrap();
     for (offset, label) in [

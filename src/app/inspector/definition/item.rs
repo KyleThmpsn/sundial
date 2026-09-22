@@ -5,6 +5,7 @@ use tiger_pkg::TagHash;
 
 mod identity;
 mod overview;
+mod preview;
 mod sockets;
 mod technical;
 use identity::*;
@@ -16,6 +17,7 @@ use technical::*;
 pub(super) enum ItemPage {
     #[default]
     Overview,
+    Preview,
     Sockets,
     Runtime,
     Technical,
@@ -23,8 +25,9 @@ pub(super) enum ItemPage {
 }
 
 impl ItemPage {
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
         Self::Overview,
+        Self::Preview,
         Self::Sockets,
         Self::Runtime,
         Self::Technical,
@@ -34,6 +37,7 @@ impl ItemPage {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
+            Self::Preview => "Appearance",
             Self::Sockets => "Sockets",
             Self::Runtime => "Runtime",
             Self::Technical => "Technical",
@@ -68,8 +72,10 @@ pub(super) fn draw_hash_item_matches(
             matches.item_package_metadata,
             matches.inventory_metadata,
         );
+        preview::draw(ui, &content, page == ItemPage::Preview);
         match page {
             ItemPage::Overview => draw_overview(ui, &content),
+            ItemPage::Preview => {}
             ItemPage::Sockets => draw_sockets_page(ui, &content),
             ItemPage::Runtime => draw_runtime_page(ui, &content, runtime),
             ItemPage::Technical => draw_technical_page(ui, &content, runtime),

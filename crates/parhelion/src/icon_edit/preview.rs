@@ -9,13 +9,14 @@ use super::{
 use crate::tag_payload::{read_u16, read_u32, write_u32};
 use std::path::Path;
 use sundial::image_processing::{blend_rgba_pixel, decode_bc1};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::{
     icon_schema::{
         ICON_BACKGROUND_LAYER_OFFSET, ICON_FOREGROUND_LAYER_OFFSET, ICON_PRIMARY_LAYER_OFFSET,
     },
     is_valid_package_tag, open_shadowkeep_package_manager,
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 #[derive(Clone)]
 pub(super) struct DecodedIconImage {

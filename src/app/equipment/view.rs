@@ -638,7 +638,10 @@ impl SundialApp {
                     current_label,
                     native_default,
                     self.plug_selection_mode,
-                );
+                )
+                .with_preview_plugs(current_plugs.iter().map(|value| {
+                    parse_unsigned_value(value).and_then(|hash| u32::try_from(hash).ok())
+                }));
                 let searchable = snapshot.choices.len() > 12;
                 let action = ui
                     .add_enabled_ui(guided_editable, |ui| {

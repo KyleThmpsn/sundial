@@ -18,6 +18,7 @@ members = [
     "crates/sundial-account",
     "crates/sundial-suite",
     "crates/parhelion",
+    "crates/parhelion-import",
 ]
 default-members = [
     ".",
@@ -28,7 +29,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-only"
@@ -47,6 +48,7 @@ unsafe_op_in_unsafe_fn = "deny"
 workspace = true
 
 [dependencies]
+bcdec_rs = "0.2.0"
 eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_commonmark = { version = "0.20.0", default-features = false }
 egui-phosphor = "0.9.0"
@@ -82,3 +84,15 @@ winit = { version = "0.30.13", default-features = false }
 [profile.release]
 strip = true
 lto = "thin"
+
+# Full debug info produces a half-gigabyte PDB for each test binary on Windows, and writing it
+# dominates the edit-and-test cycle. Line tables still resolve panic backtraces and test failure
+# locations. Set `debug = true` here when a debugging session needs variable inspection.
+[profile.dev]
+debug = "line-tables-only"
+
+# Dependencies only; workspace crates keep opt-level 0 so their rebuilds stay fast. This is built
+# once and then cached, and it covers the bundled SQLite amalgamation, hashing, image decoding and
+# zip work that the persistence and package tests spend most of their time inside.
+[profile.dev.package."*"]
+opt-level = 2

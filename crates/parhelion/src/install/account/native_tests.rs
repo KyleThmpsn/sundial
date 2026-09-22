@@ -1,6 +1,6 @@
 use super::*;
 use sundial::package_authoring::account::{
-    preview_authored_account_cleanup, read_authored_account_source,
+    preview_authored_account_replacement_for_runtime, read_authored_account_source,
 };
 
 #[test]
@@ -43,7 +43,19 @@ fn native_account_journal_commits_recovers_and_refuses_concurrent_changes() {
             r.get(0)
         })
         .unwrap();
-    let proposal = preview_authored_account_cleanup(root, &BTreeSet::from([hash]), &[]).unwrap();
+    let module = root.join("bin/x64/steam_api64.dll");
+    fs::create_dir_all(module.parent().unwrap()).unwrap();
+    fs::write(&module, b"test runtime").unwrap();
+    let runtime = RuntimeSnapshot::from_verified_module(RuntimeBrand::Sunrise, &module).unwrap();
+    let proposal = preview_authored_account_replacement_for_runtime(
+        root,
+        &runtime,
+        &BTreeSet::from([hash]),
+        &[],
+        &[],
+        None,
+    )
+    .unwrap();
     assert_ne!(proposal.original_bytes, proposal.cleaned_bytes);
     let packages = fs::canonicalize(packages).unwrap();
     let record = prepare(&proposal, &packages, &backup).unwrap();
@@ -53,6 +65,7 @@ fn native_account_journal_commits_recovers_and_refuses_concurrent_changes() {
         state: InstallTransactionState::Pending,
         target_packages_directory: packages.clone(),
         backup_directory: backup.clone(),
+        runtime: None,
         account_cleanup: Some(record.clone()),
         client_settings: None,
         artifacts: vec![],

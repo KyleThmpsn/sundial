@@ -102,7 +102,6 @@ pub fn read(graph: &Graph, index: usize) -> Option<Comparison> {
 #[must_use]
 pub fn plain_variable(name: &str) -> &str {
     match name {
-        "Nearby Enemy Count" => "Nearby Enemies (Surrounded)",
         "Nearby Ally Count" => "Nearby Allies",
         // Osmosis ("changes this weapon's damage type to match your subclass") and
         // Elemental Capacitor ("based on the currently equipped subclass") gate their Arc,
@@ -159,7 +158,7 @@ pub struct Variable {
 pub const VARIABLES: &[Variable] = &[
     Variable {
         name: "nearby_enemy_count",
-        plain: "Nearby Enemies (Surrounded)",
+        plain: "Nearby Enemy Count",
         evidence: "Compared by Surrounded, Heavy Handed and Reactive Pulse, which all read \"surrounded\" or \"three or more enemies in close proximity\", each on > 2.",
         operation: ">",
         threshold: 2.0,
@@ -370,17 +369,11 @@ mod tests {
         let source = include_bytes!("predicate/nearby_enemy.bin");
         let mut graph = Graph::read(source, 0, 0x80803DCE).unwrap();
         assert_eq!(graph.emit().unwrap(), source);
-        assert_eq!(
-            describe(&graph).as_deref(),
-            Some("Nearby Enemies (Surrounded) > 2")
-        );
+        assert_eq!(describe(&graph).as_deref(), Some("Nearby Enemy Count > 2"));
         let comparison = comparisons(&graph, 0).remove(0);
         let before = graph.blocks[comparison.constant_block].bytes.clone();
         graph.blocks[comparison.constant_block].bytes[..4].copy_from_slice(&4.0f32.to_le_bytes());
-        assert_eq!(
-            describe(&graph).as_deref(),
-            Some("Nearby Enemies (Surrounded) > 4")
-        );
+        assert_eq!(describe(&graph).as_deref(), Some("Nearby Enemy Count > 4"));
         assert_eq!(
             &graph.blocks[comparison.constant_block].bytes[4..],
             &before[4..]

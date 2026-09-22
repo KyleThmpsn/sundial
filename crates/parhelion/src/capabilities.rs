@@ -173,7 +173,6 @@ pub(crate) fn presentation_donor_candidate_is_compatible(
 pub(crate) enum AppearanceCompatibility {
     Compatible,
     Blocked(&'static str),
-    Unchecked,
 }
 
 pub(crate) fn effective_weapon_translation_group(
@@ -195,15 +194,8 @@ pub(crate) fn appearance_compatibility(
     base: &WeaponDonorSummary,
     target: WeaponInventorySlot,
 ) -> AppearanceCompatibility {
-    use sundial::package_authoring::native_weapon::{
-        AnimationCompatibility, animation_compatibility,
-    };
-    if !candidate.type_name.trim().is_empty()
-        && !base.type_name.trim().is_empty()
-        && candidate.type_name != base.type_name
-    {
-        return AppearanceCompatibility::Blocked("Different weapon family");
-    }
+    // A different weapon family or animation group is allowed; `appearance_type_differs`
+    // and `appearance_animations_differ` drive the warning instead.
     if candidate.inventory_slot != Some(target)
         && candidate.inventory_slot != base.inventory_slot
         && !matches!(
@@ -219,18 +211,35 @@ pub(crate) fn appearance_compatibility(
     {
         return AppearanceCompatibility::Blocked("Different inventory slot");
     }
-    // Authored placement is an independent bucket field. Cross-slot
-    // appearance still requires a known, identical native animation group.
-    match animation_compatibility(
+    AppearanceCompatibility::Compatible
+}
+
+/// The appearance's native animation group is known and differs from the gameplay donor's.
+/// Allowed, but reload and fire animations may not line up with the model.
+#[must_use]
+pub(crate) fn appearance_animations_differ(
+    candidate: &WeaponDonorSummary,
+    base: &WeaponDonorSummary,
+) -> bool {
+    use sundial::package_authoring::native_weapon::{
+        AnimationCompatibility, animation_compatibility,
+    };
+    animation_compatibility(
         base.weapon_translation_group,
         candidate.weapon_translation_group,
-    ) {
-        AnimationCompatibility::Compatible => AppearanceCompatibility::Compatible,
-        AnimationCompatibility::DifferentGroups => {
-            AppearanceCompatibility::Blocked("Incompatible weapon animations")
-        }
-        AnimationCompatibility::Unchecked => AppearanceCompatibility::Unchecked,
-    }
+    ) == AnimationCompatibility::DifferentGroups
+}
+
+/// The appearance comes from another weapon family. Allowed, but the model may not render
+/// correctly and the game may crash.
+#[must_use]
+pub(crate) fn appearance_type_differs(
+    candidate: &WeaponDonorSummary,
+    base: &WeaponDonorSummary,
+) -> bool {
+    !candidate.type_name.trim().is_empty()
+        && !base.type_name.trim().is_empty()
+        && candidate.type_name != base.type_name
 }
 
 #[must_use]

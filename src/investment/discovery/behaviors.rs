@@ -48,7 +48,7 @@ pub fn discover(packages: &Path) -> Result<Catalog, String> {
 }
 
 fn read_with_manager(
-    manager: &tiger_pkg::PackageManager,
+    manager: &crate::package_runtime::reader::PackageManager,
     sources: &[(u16, u32)],
 ) -> Result<Catalog, String> {
     let mut actions = BTreeMap::<u32, Vec<u16>>::new();

@@ -82,7 +82,7 @@ impl PerkSources {
             .join("\n")
     }
 
-    fn names(&self, index: usize) -> Vec<&str> {
+    pub fn names(&self, index: usize) -> Vec<&str> {
         self.get(index)
             .iter()
             .map(|source| source.name.as_str())

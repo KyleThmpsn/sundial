@@ -820,6 +820,20 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     })
     .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
     let installed_donors = catalog.weapon_donors();
+    // Four lookups per weapon used to walk the whole donor list. Indexing once turns the pass
+    // from quadratic in the installed weapon count into a map lookup.
+    let donors_by_hash = installed_donors
+        .iter()
+        .map(|donor| (donor.hash, donor))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let installed_pattern_indices = installed_donors
+        .iter()
+        .filter_map(|donor| donor.weapon_pattern_index)
+        .collect::<BTreeSet<_>>();
+    let installed_stat_group_indices = installed_donors
+        .iter()
+        .filter_map(|donor| donor.stat_group_index)
+        .collect::<BTreeSet<_>>();
     // The base-item array may carry declaration-only rows: stock puts 479, whose metadata
     // liveness byte is zero and which has no runtime action, on Hard Light's intrinsic plug.
     // Requiring the active-only choice set here was stricter than the shipped data, so the
@@ -834,18 +848,21 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     let reusable_plug_set_count = catalog.reusable_plug_set_count();
     let socket_entry_list_count = catalog.socket_entry_list_count();
 
+    // The same for every weapon, and the check that reads it sits two loops deep, so it is
+    // built at most once for the whole pass and only when a variant actually replaces effects.
+    let mut perk_stat_choices = None;
     let total = specs.len();
     for (index, spec) in specs.into_iter().enumerate() {
         progress(false, &spec.text.name, index, total);
         (|| -> AuthoringResult<()> {
         if let Some(reference) = &spec.presentation_donor {
-            let gameplay = installed_donors
-                .iter()
-                .find(|donor| donor.hash == spec.donor_item_hash)
+            let gameplay = donors_by_hash
+                .get(&spec.donor_item_hash)
+                .copied()
                 .ok_or_else(|| invalid("Gameplay donor is not an installed weapon"))?;
-            let appearance = installed_donors
-                .iter()
-                .find(|donor| donor.hash == reference.item_hash)
+            let appearance = donors_by_hash
+                .get(&reference.item_hash)
+                .copied()
                 .ok_or_else(|| invalid("Geometry donor is not an installed weapon"))?;
             let target = spec
                 .overrides
@@ -923,9 +940,7 @@ pub(crate) fn validate_catalog_with_progress<'a>(
             )));
         }
         if let Some(weapon_pattern_index) = spec.overrides.weapon_pattern_index
-            && !installed_donors
-                .iter()
-                .any(|donor| donor.weapon_pattern_index == Some(weapon_pattern_index))
+            && !installed_pattern_indices.contains(&weapon_pattern_index)
         {
             return Err(invalid(format!(
                 "Weapon {:?} ({}) selects weapon-pattern index {weapon_pattern_index}, but no installed stock weapon represents it",
@@ -933,9 +948,7 @@ pub(crate) fn validate_catalog_with_progress<'a>(
             )));
         }
         if let Some(stat_group_index) = spec.overrides.stat_group_index
-            && !installed_donors
-                .iter()
-                .any(|donor| donor.stat_group_index == Some(stat_group_index))
+            && !installed_stat_group_indices.contains(&stat_group_index)
         {
             return Err(invalid(format!(
                 "Weapon {:?} ({}) selects stat-display group {stat_group_index}, but no installed stock weapon represents it",
@@ -959,8 +972,8 @@ pub(crate) fn validate_catalog_with_progress<'a>(
             let source_stats = catalog.item_stat_contributions(variant.source_plug_hash);
             for &(index, _) in &variant.investment_stats {
                 if variant.replace_effects
-                    && catalog
-                        .perk_stat_choices()
+                    && perk_stat_choices
+                        .get_or_insert_with(|| catalog.perk_stat_choices())
                         .iter()
                         .any(|stat| stat.definition_index == index)
                 {
@@ -1232,27 +1245,10 @@ pub(super) fn validate_authored_payloads(
                 .overrides
                 .stat_group_index
                 .is_none_or(|index| item_string_stat_group_index(strings).ok() == Some(index))
-            && socket_column_indices.is_none_or(|columns| {
-                let Ok(resource) = relative_target(definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)
-                else {
-                    return false;
-                };
-                let Ok((socket_count, _, socket_rows, _)) = array_at(definition, resource) else {
-                    return false;
-                };
-                let socket_types = (0..socket_count)
-                    .map(|lane| {
-                        read_u16(
-                            definition,
-                            socket_rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE,
-                        )
-                    })
-                    .collect::<AuthoringResult<Vec<_>>>();
-                socket_types.is_ok_and(|socket_types| {
-                    validate_weapon_socket_columns(definition, columns, &socket_types).is_ok()
-                })
-            })
         {
+            // The socket columns are checked once, here, rather than as a term in the chain
+            // above. A term can only be false, which sent a lane-specific fault to the catch-all
+            // below and then re-ran the whole check to reach the same answer.
             if let Some(columns) = socket_column_indices {
                 let resource = relative_target(definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
                 let (socket_count, _, socket_rows, _) = array_at(definition, resource)?;

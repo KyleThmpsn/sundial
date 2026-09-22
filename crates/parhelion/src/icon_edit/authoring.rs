@@ -10,6 +10,7 @@ use crate::{
     },
 };
 use std::collections::{BTreeMap, BTreeSet};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::{
     icon_schema::{
         ICON_DEFINITION_CLASS, ICON_DEFINITION_SIZE, ICON_LAYER_ARRAY_CLASS, ICON_LAYER_CLASS,
@@ -19,7 +20,7 @@ use sundial::package_authoring::{
     },
     is_valid_package_tag,
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 const TEXTURE_HEADER_SIZE: usize = 40;
 

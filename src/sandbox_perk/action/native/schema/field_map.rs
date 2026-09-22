@@ -1372,9 +1372,12 @@ fn write_fixed_values() {
 /// Floors for the template map, raised as contracts are recovered. Lowering one means a
 /// template lost named coverage, which needs a deliberate decision rather than silent drift.
 const STRICT_FLOOR: usize = 17;
-const LENIENT_FLOOR: usize = 43;
-/// Checked only when the captured stock survey is available locally.
-const MODE_REPRODUCIBLE_FLOOR: usize = 63;
+/// Tracks the measured 77 of 82 in `template-field-map-2026-09-16`. It sat at 43 long after the
+/// real figure passed it, which would have let a thirty-template regression through in silence.
+const LENIENT_FLOOR: usize = 77;
+/// Checked only when the captured stock survey is available locally. Tracks the measured 80 of
+/// 82 in the same report.
+const MODE_REPRODUCIBLE_FLOOR: usize = 80;
 
 #[test]
 fn template_field_map_does_not_regress() {

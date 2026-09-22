@@ -1,0 +1,3702 @@
+[
+  {
+    "source": 484515708,
+    "name": "Rufus's Fury",
+    "namespace": "parhelion.bulk.1ce11f7c",
+    "model_donor": 1251729046,
+    "donor": {
+      "expected_name": "Steelfeather Repeater",
+      "item_hash": "0x4A9BDE96"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  },
+  {
+    "source": 499643412,
+    "name": "Summum Bonum",
+    "namespace": "parhelion.bulk.1dc7f414",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 547165496,
+    "name": "Abyssal Edge",
+    "namespace": "parhelion.bulk.209d1538",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 613334176,
+    "name": "Forbearance",
+    "namespace": "parhelion.bulk.248ebca0",
+    "model_donor": 3850168899,
+    "donor": {
+      "expected_name": "Martyr's Retribution",
+      "item_hash": "0xE57CEA43"
+    },
+    "overrides": {
+      "modern_damage_type": "arc"
+    }
+  },
+  {
+    "source": 768621510,
+    "name": "Deliverance",
+    "namespace": "parhelion.bulk.2dd03bc6",
+    "model_donor": 253196586,
+    "donor": {
+      "expected_name": "Main Ingredient",
+      "item_hash": "0x0F17792A"
+    },
+    "overrides": {
+      "modern_damage_type": null
+    }
+  },
+  {
+    "source": 831719979,
+    "name": "Aurora Dawn",
+    "namespace": "parhelion.bulk.31930a2b",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 893582322,
+    "name": "Synanceia",
+    "namespace": "parhelion.bulk.3542fbf2",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 999767358,
+    "name": "Cataclysmic",
+    "namespace": "parhelion.bulk.3b973d3e",
+    "model_donor": 3419149443,
+    "donor": {
+      "expected_name": "Crooked Fang-4fr",
+      "item_hash": "0xCBCC1483"
+    },
+    "overrides": {
+      "modern_damage_type": "solar"
+    }
+  },
+  {
+    "source": 1085743380,
+    "name": "Sullen Claw",
+    "namespace": "parhelion.bulk.40b72114",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 1119734784,
+    "name": "Chroma Rush",
+    "namespace": "parhelion.bulk.42bdcc00",
+    "model_donor": 1251729046,
+    "donor": {
+      "expected_name": "Steelfeather Repeater",
+      "item_hash": "0x4A9BDE96"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  },
+  {
+    "source": 1175481703,
+    "name": "Falling Guillotine",
+    "namespace": "parhelion.bulk.46106d67",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 1298815317,
+    "name": "Brigand's Law",
+    "namespace": "parhelion.bulk.4d6a5955",
+    "model_donor": 805677041,
+    "donor": {
+      "expected_name": "Buzzard",
+      "item_hash": "0x3005A7F1"
+    },
+    "overrides": {
+      "modern_damage_type": "arc"
+    }
+  },
+  {
+    "source": 1392919471,
+    "name": "Trustee",
+    "namespace": "parhelion.bulk.530643af",
+    "model_donor": 3535742959,
+    "donor": {
+      "expected_name": "Randy's Throwing Knife",
+      "item_hash": "0xD2BF27EF"
+    },
+    "overrides": {
+      "modern_damage_type": "solar"
+    }
+  },
+  {
+    "source": 1456017061,
+    "name": "Nasreddin",
+    "namespace": "parhelion.bulk.56c90ea5",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 1471212226,
+    "name": "Acasia's Dejection",
+    "namespace": "parhelion.bulk.57b0eac2",
+    "model_donor": 19024058,
+    "donor": {
+      "expected_name": "Prometheus Lens",
+      "item_hash": "0x012248BA"
+    },
+    "overrides": {
+      "modern_damage_type": "solar"
+    }
+  },
+  {
+    "source": 1679868061,
+    "name": "Wastelander M5",
+    "namespace": "parhelion.bulk.6420c09d",
+    "model_donor": 1807343361,
+    "donor": {
+      "expected_name": "Hawthorne's Field-Forged Shotgun",
+      "item_hash": "0x6BB9DF01"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  },
+  {
+    "source": 1681583613,
+    "name": "Ergo Same",
+    "namespace": "parhelion.ergo-same",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Black Talon",
+      "item_hash": "0xE0794C51"
+    },
+    "overrides": {
+      "ammo_type": "special",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "energy",
+      "modern_damage_type": "void",
+      "rarity": "exotic",
+      "raw_payload_patches": [
+        {
+          "bytes": "FFFFFFFFFFFFFFFF00000000FFFF000000000000000000000000000000000000FFFF00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "offset": 1088,
+          "target": "item_definition"
+        },
+        {
+          "bytes": "FFFFFFFFFFFFFFFF00000000FFFF000000000000000000000000000000000000FFFF00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "offset": 1328,
+          "target": "item_definition"
+        }
+      ],
+      "socket_columns": [
+        {
+          "choices": [
+            "0x72E9AA21"
+          ],
+          "socket_type": 176
+        },
+        {
+          "choices": [
+            "0x37F1078F"
+          ],
+          "socket_type": 67
+        },
+        {
+          "choices": [
+            "0xD8168754"
+          ],
+          "socket_type": 159
+        },
+        null,
+        {
+          "choices": [
+            "0x0AF425C1"
+          ],
+          "socket_type": 176
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        {
+          "choices": [
+            "0x5957A904"
+          ],
+          "socket_type": 568
+        }
+      ],
+      "socket_plug_variants": [
+        {
+          "choice_index": 0,
+          "description": "Heavy attacks launch a fast-moving explosive Void projectile that attaches to surfaces and detonates after a delay.",
+          "name": "Unplanned Reprieve",
+          "sandbox_perks": [
+            {
+              "runtime_values": [],
+              "source_perk_index": 666
+            }
+          ],
+          "socket_index": 0,
+          "source_plug_hash": "0x72E9AA21"
+        }
+      ],
+      "weapon_pattern_donor_hash": "0x02222CBF",
+      "weapon_pattern_index": 395
+    }
+  },
+  {
+    "source": 1727427253,
+    "name": "Sola's Scar",
+    "namespace": "parhelion.bulk.66f672b5",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 1840231679,
+    "name": "Razor's Edge",
+    "namespace": "parhelion.bulk.6dafb4ff",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 1911060537,
+    "name": "Taipan-4fr",
+    "namespace": "parhelion.bulk.71e87839",
+    "model_donor": 3419149443,
+    "donor": {
+      "expected_name": "Crooked Fang-4fr",
+      "item_hash": "0xCBCC1483"
+    },
+    "overrides": {
+      "modern_damage_type": "void"
+    }
+  },
+  {
+    "source": 1937552980,
+    "name": "Doom of Chelchis",
+    "namespace": "parhelion.bulk.737cb654",
+    "model_donor": 3435238842,
+    "donor": {
+      "expected_name": "Song of Justice VI",
+      "item_hash": "0xCCC195BA"
+    },
+    "overrides": {
+      "modern_damage_type": "void"
+    }
+  },
+  {
+    "source": 2139640995,
+    "name": "Hero of Ages",
+    "namespace": "parhelion.bulk.7f8854a3",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 2171478765,
+    "name": "Fatebringer",
+    "namespace": "parhelion.bulk.816e22ed",
+    "model_donor": 2429822977,
+    "donor": {
+      "expected_name": "Austringer",
+      "item_hash": "0x90D42801"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  },
+  {
+    "source": 2253856036,
+    "name": "Chivalric Fire",
+    "namespace": "parhelion.bulk.86571d24",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 2344383760,
+    "name": "Eighty-Six",
+    "namespace": "parhelion.bulk.8bbc7510",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 2365263969,
+    "name": "Zephyr",
+    "namespace": "parhelion.bulk.8cfb1061",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 2508948099,
+    "name": "Caretaker",
+    "namespace": "parhelion.bulk.958b8283",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 2708806099,
+    "name": "BxR-55 Battler",
+    "namespace": "parhelion.bulk.a17519d3",
+    "model_donor": 188882152,
+    "donor": {
+      "expected_name": "Last Perdition",
+      "item_hash": "0x0B421CE8"
+    },
+    "overrides": {
+      "modern_damage_type": "solar"
+    }
+  },
+  {
+    "source": 2990047042,
+    "name": "Succession",
+    "namespace": "parhelion.bulk.b2387f42",
+    "model_donor": 1449922174,
+    "donor": {
+      "expected_name": "Tatara Gaze",
+      "item_hash": "0x566C0E7E"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  },
+  {
+    "source": 3000847393,
+    "name": "Unforgiven",
+    "namespace": "parhelion.bulk.b2dd4c21",
+    "model_donor": 105567493,
+    "donor": {
+      "expected_name": "Hard Truths",
+      "item_hash": "0x064AD505"
+    },
+    "overrides": {
+      "modern_damage_type": "void"
+    }
+  },
+  {
+    "source": 3257091166,
+    "name": "Half-Truths",
+    "namespace": "parhelion.bulk.c223445e",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3257091167,
+    "name": "The Other Half",
+    "namespace": "parhelion.bulk.c223445f",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3366545721,
+    "name": "Bequest",
+    "namespace": "parhelion.bequest",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3371413059,
+    "name": "Throne-Cleaver",
+    "namespace": "parhelion.bulk.c8f3ae43",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3428521585,
+    "name": "Insidious",
+    "namespace": "parhelion.bulk.cc5b1671",
+    "model_donor": 188882152,
+    "donor": {
+      "expected_name": "Last Perdition",
+      "item_hash": "0x0B421CE8"
+    },
+    "overrides": {
+      "modern_damage_type": "arc"
+    }
+  },
+  {
+    "source": 3551104348,
+    "name": "Double-Edged Answer",
+    "namespace": "parhelion.bulk.d3a98d5c",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3624641493,
+    "name": "The Slammer",
+    "namespace": "parhelion.bulk.d80ba3d5",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3637669759,
+    "name": "Geodetic HSm",
+    "namespace": "parhelion.bulk.d8d26f7f",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3652506829,
+    "name": "Stormchaser",
+    "namespace": "parhelion.bulk.d9b4d4cd",
+    "model_donor": 3419149443,
+    "donor": {
+      "expected_name": "Crooked Fang-4fr",
+      "item_hash": "0xCBCC1483"
+    },
+    "overrides": {
+      "modern_damage_type": "arc"
+    }
+  },
+  {
+    "source": 3668817296,
+    "name": "Dragoncult Sickle",
+    "namespace": "parhelion.bulk.daadb590",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3794274730,
+    "name": "Ill Omen",
+    "namespace": "parhelion.bulk.e22809aa",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 3886719505,
+    "name": "Buried Bloodline",
+    "namespace": "parhelion.bulk.e7aaa211",
+    "model_donor": 1289997971,
+    "donor": {
+      "expected_name": "Breachlight",
+      "item_hash": "0x4CE3CE93"
+    },
+    "overrides": {
+      "ammo_type": "special",
+      "inventory_slot": "energy",
+      "modern_damage_type": "void",
+      "rarity": "exotic",
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD5CB37A"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "socket_plug_variants": [
+        {
+          "additional_sandbox_perks": [
+            405
+          ],
+          "choice_index": 0,
+          "classification_donor_hash": "0xC68424BC",
+          "description": "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.",
+          "name": "Micro-Missile Frame",
+          "sandbox_perks": [
+            {
+              "action_float_values": [],
+              "runtime_values": [
+                {
+                  "locator": {
+                    "binding_hash": 2977329389,
+                    "byte_size": 112,
+                    "path": [
+                      {
+                        "byte_offset": 72,
+                        "name_hash": 1346912857,
+                        "type_handle": 2155886735
+                      }
+                    ],
+                    "resource_index": 0,
+                    "root": "component_definition",
+                    "root_schema": 2155886735,
+                    "type_handle": 2155886735,
+                    "value_offset": 72
+                  },
+                  "value": {
+                    "kind": "bytes",
+                    "value": [
+                      11,
+                      168,
+                      12,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      1,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      63,
+                      0,
+                      0,
+                      0,
+                      63,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      32,
+                      65,
+                      255,
+                      255,
+                      255,
+                      255,
+                      1,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      1,
+                      205,
+                      204,
+                      76,
+                      62,
+                      1,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      122,
+                      66,
+                      0,
+                      0,
+                      128,
+                      63,
+                      243,
+                      102,
+                      223,
+                      62,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      130,
+                      116,
+                      95,
+                      62,
+                      130,
+                      116,
+                      95,
+                      191,
+                      130,
+                      116,
+                      223,
+                      62,
+                      0,
+                      0,
+                      0,
+                      0,
+                      228,
+                      203,
+                      150,
+                      65,
+                      223,
+                      237,
+                      175,
+                      65
+                    ]
+                  }
+                },
+                {
+                  "locator": {
+                    "binding_hash": 2977329389,
+                    "byte_size": 256,
+                    "path": [
+                      {
+                        "byte_offset": 160,
+                        "name_hash": 1346912857,
+                        "type_handle": 2155887475
+                      }
+                    ],
+                    "resource_index": 0,
+                    "root": "component_instance",
+                    "root_schema": 2155887475,
+                    "type_handle": 2155887475,
+                    "value_offset": 160
+                  },
+                  "value": {
+                    "kind": "bytes",
+                    "value": [
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      128,
+                      63,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      255,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      128,
+                      63,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      128,
+                      63,
+                      0,
+                      0,
+                      122,
+                      66,
+                      51,
+                      51,
+                      51,
+                      63,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      128,
+                      63,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              ],
+              "source_perk_index": 1178
+            }
+          ],
+          "socket_index": 0,
+          "source_plug_hash": "0xDD5CB37A"
+        }
+      ]
+    }
+  },
+  {
+    "source": 3947966653,
+    "name": "The Call",
+    "namespace": "parhelion.bulk.eb5130bd",
+    "model_donor": 805677041,
+    "donor": {
+      "expected_name": "Buzzard",
+      "item_hash": "0x3005A7F1"
+    },
+    "overrides": {
+      "modern_damage_type": null
+    }
+  },
+  {
+    "source": 4066778670,
+    "name": "Thin Precipice",
+    "namespace": "parhelion.bulk.f2661e2e",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 4100144246,
+    "name": "False Idols",
+    "namespace": "parhelion.bulk.f4633c76",
+    "model_donor": 35794111,
+    "donor": {
+      "expected_name": "Steel Sybil Z-14",
+      "item_hash": "0xFC2FD6BF"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "art_arrangements": [
+        {
+          "arrangement": 4246,
+          "character_class": -1
+        }
+      ],
+      "inventory_slot": "power",
+      "investment_stats": [
+        {
+          "definition_index": 15,
+          "value": 75
+        },
+        {
+          "definition_index": 18,
+          "value": 70
+        },
+        {
+          "definition_index": 19,
+          "value": 70
+        },
+        {
+          "definition_index": 24,
+          "value": 50
+        },
+        {
+          "definition_index": 37,
+          "value": 40
+        },
+        {
+          "definition_index": 40,
+          "value": 50
+        }
+      ],
+      "modern_damage_type": "arc",
+      "power_cap_group": null,
+      "rarity": "legendary",
+      "raw_payload_patches": [],
+      "socket_columns": [
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xF8AFC186"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 176
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x37F1078F"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 67
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x10162A96"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 159
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0x6842D015"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        {
+          "choice_conditions": [],
+          "choice_weight_bits": [],
+          "choices": [
+            "0xDD070E81"
+          ],
+          "randomized_plug_set_index": null,
+          "randomized_selection_program": [],
+          "reusable_plug_set_index": null,
+          "socket_type": 92
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "stat_group_index": null,
+      "weapon_pattern_donor_hash": "0xFC2FD6BF",
+      "weapon_pattern_index": 146
+    }
+  },
+  {
+    "source": 4207066264,
+    "name": "Microcosm",
+    "namespace": "parhelion.bulk.fac2bc98",
+    "model_donor": 1600633250,
+    "donor": {
+      "expected_name": "Coldheart",
+      "item_hash": "0x50384F33"
+    },
+    "overrides": {
+      "ammo_type": "heavy",
+      "inventory_slot": "power",
+      "modern_damage_type": "kinetic",
+      "rarity": "exotic"
+    }
+  },
+  {
+    "source": 4248569242,
+    "name": "Heritage",
+    "namespace": "parhelion.bulk.fd3c059a",
+    "model_donor": 2326716489,
+    "donor": {
+      "expected_name": "Gunnora's Axe",
+      "item_hash": "0x8AAEE049"
+    },
+    "overrides": {
+      "modern_damage_type": "kinetic"
+    }
+  }
+]

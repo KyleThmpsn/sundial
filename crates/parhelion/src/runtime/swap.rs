@@ -4,6 +4,7 @@ use crate::{
     WeaponDonorReference, WeaponRecipe,
     weapon::{preflight_runtime_edits, runtime_hud_key},
 };
+use sundial::package_authoring::PackageManager;
 use sundial::{
     investment::WeaponDonorSummary,
     package_authoring::{
@@ -15,7 +16,6 @@ use sundial::{
         },
     },
 };
-use tiger_pkg::PackageManager;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Preview {

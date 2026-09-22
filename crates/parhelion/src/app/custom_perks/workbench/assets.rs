@@ -22,7 +22,9 @@ impl AssetScope {
                 "Starts at Spawn Location and uses the asset's native motion."
             }
             Self::Spawnable => "Created at Spawn Location.",
-            Self::Any => "Attached to the weapon for the effect's duration.",
+            Self::Any => {
+                "Attached to the selected object. Lifetime depends on its cleanup settings."
+            }
         }
     }
 
@@ -97,14 +99,14 @@ impl Order {
 }
 
 /// The comparable key for one result. Every order ends with the name, so results never
-/// reshuffle between frames.
+/// reshuffle between frames. `name` is already lowercase.
 fn asset_sort_key(
     order: Order,
     entry: &projectile::catalog::Entry,
     name: &str,
     direct_match: bool,
 ) -> (bool, u8, String, String) {
-    let name = name.to_lowercase();
+    let name = name.to_owned();
     match order {
         Order::BestMatch => (!direct_match, entry.label_rank(), String::new(), name),
         Order::Name => (false, 0, String::new(), name),
@@ -143,7 +145,12 @@ fn asset_usage(
 }
 
 impl Workbench {
-    /// A shared attachment's ancestry is not its identity or gameplay role in this effect.
+    /// An attachment with no name of its own is named after this effect. When the picker's
+    /// name already names this perk, as "Firefly Attachment" or "Shared by Ace of Spades
+    /// Catalyst, Firefly Attachment" do, the list uses that same name, so what a user
+    /// reads here is what they can search for. A name that comes from an ancestor
+    /// instead, which is not the entity's role in this effect, gives way to this effect's
+    /// own numbering.
     pub(super) fn program_asset_labels(
         &self,
         program: &sundial::package_authoring::sandbox_perk::program::NativeProgram,
@@ -182,7 +189,7 @@ impl Workbench {
                     });
                 (
                     asset.graph,
-                    if shared_attachment {
+                    if shared_attachment && !label.contains(context) {
                         format!("{context} Attachment {}", index + 1)
                     } else {
                         label
@@ -258,6 +265,129 @@ pub(super) struct Browser<'a> {
     pub asset_labels: &'a BTreeMap<u32, String>,
 }
 
+/// The result set for one (query, filter, order, visibility, search index) combination.
+type ResultCache = std::sync::Arc<((String, u8, u8, bool, usize), Vec<usize>)>;
+
+/// Everything a search can match for one asset, lowercased once. Typing then scans these
+/// strings and allocates nothing.
+struct AssetSearch {
+    /// The asset's lowercase label, for ordering and direct-match detection.
+    name: String,
+    /// The asset's own text: label, catalog search text, source hint and item names.
+    own: String,
+    /// Perks whose shared text in [`SearchIndex::perks`] also answers for this asset. Stored
+    /// as indices so a perk's behavior text is held once, not once per asset that uses it.
+    perks: Vec<u16>,
+    /// Whether the asset has a discovery identity, which the default visibility requires.
+    identified: bool,
+}
+
+/// One search index per catalog and label set, keyed by their sizes and identity.
+struct SearchIndex {
+    key: (usize, usize, usize, usize, usize),
+    assets: Vec<AssetSearch>,
+    /// Lowercase name and behavior text per referenced perk, shared by every asset using it.
+    perks: BTreeMap<u16, String>,
+}
+
+impl SearchIndex {
+    fn matches(&self, asset: &AssetSearch, word: &str) -> bool {
+        asset.own.contains(word)
+            || asset
+                .perks
+                .iter()
+                .any(|perk| self.perks.get(perk).is_some_and(|text| text.contains(word)))
+    }
+}
+
+impl Browser<'_> {
+    fn search_index(&self, ui: &egui::Ui, data: &discovery::Data) -> std::sync::Arc<SearchIndex> {
+        let key = (
+            std::sync::Arc::as_ptr(&data.perks) as usize,
+            data.asset_choices.len(),
+            self.asset_labels.len(),
+            self.perk_names.len(),
+            self.item_names.len(),
+        );
+        let cache_id = ui.make_persistent_id("asset-search-index");
+        if let Some(index) = ui
+            .data(|state| state.get_temp::<std::sync::Arc<SearchIndex>>(cache_id))
+            .filter(|index| index.key == key)
+        {
+            return index;
+        }
+        let mut perks = BTreeMap::new();
+        let assets = data
+            .asset_choices
+            .iter()
+            .map(|row| {
+                let entry = &data.effects.entries[row.index];
+                let name = self
+                    .asset_labels
+                    .get(&entry.graph)
+                    .map(|name| name.to_lowercase())
+                    .unwrap_or_default();
+                let mut own = row.search.to_lowercase();
+                let mut push = |text: &str| {
+                    own.push(' ');
+                    own.push_str(text);
+                };
+                push(&name);
+                if let Some(hint) = &entry.source_hint {
+                    push(&hint.to_lowercase());
+                    // The role in the words a perk's action list uses, so "attachment"
+                    // finds every attached asset whatever its kind, and "spawn" the spawned.
+                    if hint.starts_with("Attached") {
+                        push("attachment");
+                    } else if hint.starts_with("Spawned") {
+                        push("spawn");
+                    }
+                }
+                for item in entry.contexts.iter().filter_map(|context| context.item) {
+                    if let Some(item) = self.item_names.get(&item) {
+                        push(&item.name.to_lowercase());
+                    }
+                }
+                let mut referenced = entry
+                    .perk_indices
+                    .iter()
+                    .copied()
+                    .chain(entry.contexts.iter().filter_map(|context| context.perk))
+                    .collect::<Vec<_>>();
+                referenced.sort_unstable();
+                referenced.dedup();
+                for perk in &referenced {
+                    perks.entry(*perk).or_insert_with(|| {
+                        let mut text = self
+                            .perk_names
+                            .get(perk)
+                            .map(|name| name.to_lowercase())
+                            .unwrap_or_default();
+                        if let Some(behavior) = self.discovery.behavior(*perk) {
+                            text.push(' ');
+                            text.push_str(&guidance::behavior_search(behavior).to_lowercase());
+                        }
+                        text
+                    });
+                }
+                let identified = entry.has_discovery_identity_with(
+                    |index| self.perk_names.get(&index).cloned(),
+                    |item| self.item_names.get(&item).cloned(),
+                );
+                AssetSearch {
+                    name,
+                    own,
+                    perks: referenced,
+                    identified,
+                }
+            })
+            .collect();
+        let index = std::sync::Arc::new(SearchIndex { key, assets, perks });
+        ui.data_mut(|state| state.insert_temp(cache_id, index.clone()));
+        index
+    }
+}
+
 impl Browser<'_> {
     pub fn draw(
         &self,
@@ -277,6 +407,8 @@ impl Browser<'_> {
                 if let Some((current, total)) = self.discovery.progress {
                     ui.small(format!("{current} of {total} resources"));
                 }
+            } else {
+                ui.label("Native assets are unavailable. Choose a game installation to browse its objects and effects.");
             }
             return None;
         };
@@ -367,15 +499,13 @@ impl Browser<'_> {
                 .0
             })
             .inner;
+        let order_index = Order::ALL
+            .iter()
+            .position(|choice| *choice == order)
+            .unwrap_or(0) as u8;
         ui.data_mut(|state| {
             state.insert_temp(filter_id, filter);
-            state.insert_temp(
-                order_id,
-                Order::ALL
-                    .iter()
-                    .position(|choice| *choice == order)
-                    .unwrap_or(0) as u8,
-            );
+            state.insert_temp(order_id, order_index);
         });
         let normalized_query = query.trim().to_lowercase();
         let exact_graph = exact_asset_tag(&normalized_query);
@@ -383,88 +513,80 @@ impl Browser<'_> {
             .split_whitespace()
             .map(|word| word.strip_prefix("0x").unwrap_or(word))
             .collect::<Vec<_>>();
-        let mut choices = data
-            .asset_choices
-            .iter()
-            .filter(|row| {
-                let entry = &data.effects.entries[row.index];
-                scope.allows(entry.kind)
-                    && (visibility.0
-                        || exact_graph == Some(entry.graph)
-                        || entry.has_discovery_identity_with(
-                            |index| self.perk_names.get(&index).cloned(),
-                            |item| self.item_names.get(&item).cloned(),
-                        ))
-                    && (scope == AssetScope::Projectiles
-                        || match filter {
-                            1 => entry.kind == projectile::Kind::Projectile,
-                            2 => entry.kind == projectile::Kind::Emitter,
-                            3 => entry.kind == projectile::Kind::Entity,
-                            4 => {
-                                entry.kind == projectile::Kind::Pickup
-                                    || entry.pickup_role().is_some()
-                            }
-                            5 => entry.kind == projectile::Kind::Object,
-                            _ => true,
-                        })
-                    && normalized_query.split_whitespace().all(|word| {
-                        let word = word.strip_prefix("0x").unwrap_or(word);
-                        row.search.contains(word)
-                            || self
-                                .asset_labels
-                                .get(&entry.graph)
-                                .is_some_and(|name| name.to_lowercase().contains(word))
-                            || entry
-                                .source_hint
-                                .as_ref()
-                                .is_some_and(|hint| hint.to_lowercase().contains(word))
-                            || entry
-                                .perk_indices
-                                .iter()
-                                .copied()
-                                .chain(entry.contexts.iter().filter_map(|context| context.perk))
-                                .any(|index| {
-                                    self.perk_names
-                                        .get(&index)
-                                        .is_some_and(|name| name.to_lowercase().contains(word))
-                                        || self.discovery.behavior(index).is_some_and(|behavior| {
-                                            guidance::behavior_search(behavior)
-                                                .to_lowercase()
-                                                .contains(word)
-                                        })
+        // Filtering and ordering walk every asset, so the result is kept until the query,
+        // filter, order, visibility or catalog changes, and the walk itself reads one
+        // prepared lowercase haystack per asset rather than lowercasing labels, hints, perk
+        // names and behavior text on every keystroke. Frames in between only draw the rows
+        // in view.
+        let index = self.search_index(ui, data);
+        let cache_id = ui.make_persistent_id("asset-results");
+        let key = (
+            normalized_query.clone(),
+            filter,
+            order_index,
+            visibility.0,
+            std::sync::Arc::as_ptr(&index) as usize,
+        );
+        let results = ui
+            .data(|state| state.get_temp::<ResultCache>(cache_id))
+            .filter(|cache| cache.0 == key)
+            .unwrap_or_else(|| {
+                let mut indices = data
+                    .asset_choices
+                    .iter()
+                    .zip(&index.assets)
+                    .enumerate()
+                    .filter(|(_, (row, search))| {
+                        let entry = &data.effects.entries[row.index];
+                        scope.allows(entry.kind)
+                            && (visibility.0
+                                || exact_graph == Some(entry.graph)
+                                || search.identified)
+                            && (scope == AssetScope::Projectiles
+                                || match filter {
+                                    1 => entry.kind == projectile::Kind::Projectile,
+                                    2 => entry.kind == projectile::Kind::Emitter,
+                                    3 => entry.kind == projectile::Kind::Entity,
+                                    4 => {
+                                        entry.kind == projectile::Kind::Pickup
+                                            || entry.pickup_role().is_some()
+                                    }
+                                    5 => entry.kind == projectile::Kind::Object,
+                                    _ => true,
                                 })
-                            || entry
-                                .contexts
-                                .iter()
-                                .filter_map(|context| context.item)
-                                .filter_map(|item| self.item_names.get(&item))
-                                .any(|item| item.name.to_lowercase().contains(word))
+                            && words.iter().all(|word| index.matches(search, word))
                     })
-            })
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                indices.sort_by_cached_key(|&row| {
+                    let entry = &data.effects.entries[data.asset_choices[row].index];
+                    let name = index.assets[row].name.as_str();
+                    let direct_match = !normalized_query.is_empty()
+                        && (exact_graph == Some(entry.graph)
+                            || normalized_query
+                                .split_whitespace()
+                                .all(|word| name.contains(word)));
+                    asset_sort_key(order, entry, name, direct_match)
+                });
+                let cache: ResultCache = std::sync::Arc::new((key, indices));
+                ui.data_mut(|state| state.insert_temp(cache_id, cache.clone()));
+                cache
+            });
+        let choices = results
+            .1
+            .iter()
+            .map(|&index| &data.asset_choices[index])
             .collect::<Vec<_>>();
-        ui.put(
+        sundial::ui::catalog::toolbar_status(
+            ui,
             count_rect,
-            egui::Label::new(if choices.len() == 1 {
-                "1 Result".into()
+            if choices.len() == 1 {
+                "1 Result".to_owned()
             } else {
                 format!("{} Results", choices.len())
-            }),
+            },
         );
         ui.separator();
-        choices.sort_by_cached_key(|row| {
-            let entry = &data.effects.entries[row.index];
-            let name = self
-                .asset_labels
-                .get(&entry.graph)
-                .map(|name| name.to_lowercase())
-                .unwrap_or_default();
-            let direct_match = !normalized_query.is_empty()
-                && (exact_graph == Some(entry.graph)
-                    || normalized_query
-                        .split_whitespace()
-                        .all(|word| name.contains(word)));
-            asset_sort_key(order, entry, &name, direct_match)
-        });
         let keys = choices
             .iter()
             .map(|row| u64::from(data.effects.entries[row.index].graph))
@@ -474,6 +596,7 @@ impl Browser<'_> {
             height: (ui.available_height() - 4.0).max(110.0),
             reset: search_changed || visibility.1 || (filter, order) != before,
             row_height: sundial::investment::authoring_choice_row_height(ui),
+            select: None,
         }
         .draw_body(
             ui,
@@ -511,7 +634,10 @@ impl Browser<'_> {
                     ui.small(format!("Matched through its source. {reason}."))
                         .on_hover_text("The search words are not in this asset's own name.");
                 }
-                ui.heading(name);
+                ui.heading(&name);
+                sundial::ui::model_preview::selection(
+                    ui, self.discovery.packages(), entry.graph, &name,
+                );
                 ui.label(
                     entry
                         .pickup_role()
@@ -623,42 +749,64 @@ pub(in crate::app::custom_perks) use sundial::investment::discovery::technical_n
 /// Shared detail panel for authored actions and stock projectile replacements.
 pub(in crate::app::custom_perks) use sundial::ui::catalog::assets::asset_details;
 
-/// The native Create Entity fields the compiler writes verbatim. Their roles are not mapped,
-/// so these are technical controls with no gameplay claim attached.
+/// Share the native reader's target and removal contracts with the authored attach action.
 pub(super) fn draw_attach_technical_fields(
     ui: &mut egui::Ui,
     mode: &mut u8,
     keys: &mut [u32; 2],
     float_bits: &mut [u32; 4],
 ) {
+    use sundial::package_authoring::sandbox_perk::action::native::fields;
+    let native_fields = fields::describe(0x80803E45).expect("mapped attachment fields");
+    let field = |offset| {
+        native_fields
+            .iter()
+            .find(|field| field.offset == offset)
+            .unwrap()
+    };
+    let target = field(2);
+    let target_contract = fields::contract(0x80803E45, target);
+    properties::field(ui, &target.label, target_contract.description, |ui| {
+        let selected = target_contract
+            .choices
+            .iter()
+            .find(|(value, _)| *value == *mode)
+            .map_or_else(
+                || format!("Native Target {mode}"),
+                |(_, name)| (*name).to_owned(),
+            );
+        egui::ComboBox::from_id_salt("attach-target")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for &(value, name) in target_contract.choices {
+                    ui.selectable_value(mode, value, name);
+                }
+                for value in [2, 3] {
+                    ui.selectable_value(mode, value, format!("Native Event Target {value}"));
+                }
+            });
+    });
     let default = *mode == 1 && *keys == [EMPTY_KEY; 2] && *float_bits == [0; 4];
     egui::CollapsingHeader::new("Advanced")
         .id_salt("attach-technical-fields")
         .show(ui, |ui| {
-            properties::field(ui, "Attachment Mode", "Byte +0x02 of the Create Entity node. Stock actions store 0 through 3.", |ui| {
+            properties::field(ui, "Native Target", target_contract.description, |ui| {
                 ui.add(egui::DragValue::new(mode).range(0..=255));
             });
-                    for (index, label) in ["First Key", "Second Key"].into_iter().enumerate() {
-                        let hint = format!(
-                            "Key at +0x{:X} of the Create Entity node, written as a 32-bit hash. The empty hash is 0x{EMPTY_KEY:08X}.",
-                            0x18 + index * 4
-                        );
-                        properties::field(ui, label, &hint, |ui| {
-                            controls::hex_key(ui, ("attach", index), &mut keys[index]);
-                        });
-                    }
-                    for (index, label) in ["First Float", "Second Float", "Third Float", "Fourth Float"]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let hint = format!(
-                            "Float at +0x{:X} of the Create Entity node. Stock actions store 0 or 1.",
-                            0x20 + index * 4
-                        );
-                        properties::field(ui, label, &hint, |ui| {
-                            controls::float_field(ui, &mut float_bits[index]);
-                        });
-                    }
+            for (index, key) in keys.iter_mut().enumerate() {
+                let field = field(0x18 + index * 4);
+                let contract = fields::contract(0x80803E45, field);
+                properties::field(ui, &field.label, contract.description, |ui| {
+                    controls::hex_key(ui, ("attach", index), key);
+                });
+            }
+            for (index, bits) in float_bits.iter_mut().enumerate() {
+                let field = field(0x20 + index * 4);
+                let contract = fields::contract(0x80803E45, field);
+                properties::field(ui, &field.label, contract.description, |ui| {
+                    controls::float_field(ui, bits);
+                });
+            }
             if !default && ui.small_button("Reset Technical Fields").clicked() {
                 *mode = 1;
                 *keys = [EMPTY_KEY; 2];
@@ -742,6 +890,72 @@ mod tests {
         assert!(
             asset_sort_key(Order::Name, &matched, "hit", true)
                 > asset_sort_key(Order::Name, &named, "aaa", false)
+        );
+    }
+
+    /// A Discord report: Firefly's action list said "Firefly Attachment 2" and the picker
+    /// could not be searched for it. The entity is attached by Firefly and the Ace of
+    /// Spades Catalyst, so both names now say so, and the picker's search finds it.
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn a_stock_attachment_is_searchable_by_the_name_its_perk_gives_it() {
+        use std::path::PathBuf;
+        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
+                .unwrap();
+        let names = catalog
+            .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)
+            .into_iter()
+            .map(|choice| (choice.perk_index, choice.representative_name))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let data = sundial::investment::discovery::discover(&packages, |_| {}).unwrap();
+        let labels = data
+            .effects
+            .discovery_labels_with(|index| names.get(&index).cloned(), |_| None);
+        let firefly = data
+            .effects
+            .entries
+            .iter()
+            .find(|entry| entry.graph == 0x80C1_9A55)
+            .expect("Firefly's explosion attachment");
+        assert!(firefly.has_discovery_identity_with(|index| names.get(&index).cloned(), |_| None));
+        let label = &labels[&firefly.graph];
+        assert_eq!(
+            label,
+            "Shared by Ace of Spades Catalyst, Firefly Attachment"
+        );
+        assert!(crate::app::pickers::matches("firefly attachment", label));
+        // Every attachment a named weapon perk carries reads as one.
+        let attachments = data
+            .effects
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == projectile::Kind::Entity
+                    && entry.direct_name().is_none()
+                    && entry
+                        .source_hint
+                        .as_deref()
+                        .is_some_and(|role| role.starts_with("Attached Entity"))
+                    && entry
+                        .perk_indices
+                        .iter()
+                        .any(|index| names.contains_key(index))
+            })
+            .collect::<Vec<_>>();
+        assert!(attachments.len() > 50, "{} attachments", attachments.len());
+        for entry in &attachments {
+            let label = &labels[&entry.graph];
+            assert!(
+                label.contains("Attachment") && !label.starts_with("Unidentified"),
+                "0x{:08X}: {label}",
+                entry.graph
+            );
+        }
+        println!(
+            "{} attachments carried by named weapon perks are named after them",
+            attachments.len()
         );
     }
 

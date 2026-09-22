@@ -288,3 +288,121 @@ fn successful_cache_rename_is_commit_boundary_and_retained_quarantine_is_reporte
         );
     }
 }
+
+#[test]
+fn dawn_cache_is_backed_up_and_invalidated_without_touching_inactive_sunrise() {
+    for layout in 0..2 {
+        let root = tempfile::tempdir().unwrap();
+        let game_root = fs::canonicalize(root.path()).unwrap();
+        let inactive = game_root.join("bin/x64/Sunrise/cache/build_data.bin");
+        fs::create_dir_all(inactive.parent().unwrap()).unwrap();
+        fs::write(&inactive, b"inactive Sunrise cache").unwrap();
+        let module = game_root.join("bin/x64/steam_api64.dll");
+        fs::write(&module, b"test Dawn runtime").unwrap();
+        let runtime = RuntimeSnapshot::from_verified_module(RuntimeBrand::Dawn, &module).unwrap();
+        let candidates =
+            super::super::caches::runtime_build_cache_candidates(game_root, RuntimeBrand::Dawn);
+        let path = candidates.paths[layout].clone();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"stale Dawn cache").unwrap();
+        let file = discover_sunrise_build_cache(&candidates).unwrap();
+        let validated = ValidatedSunriseCache {
+            runtime,
+            runtime_snapshot_check: test_dawn_runtime_snapshot,
+            candidates,
+            file,
+        };
+        let backup = root.path().join("backup");
+        fs::create_dir(&backup).unwrap();
+        let original = backup_sunrise_cache(&validated, &backup).unwrap();
+        let report = invalidate_sunrise_cache(&original, DEFAULT_CACHE_INVALIDATION_OPS)
+            .unwrap()
+            .unwrap();
+        assert!(!path.exists());
+        assert_eq!(fs::read(report.backup_path).unwrap(), b"stale Dawn cache");
+        assert_eq!(fs::read(inactive).unwrap(), b"inactive Sunrise cache");
+    }
+}
+
+#[test]
+fn recorded_runtime_brand_cannot_redirect_recovery_cache_selection() {
+    let fixture = Fixture::new();
+    let game_root = fs::canonicalize(fixture.target.parent().unwrap()).unwrap();
+    let module = game_root.join("bin/x64/steam_api64.dll");
+    let recorded = RuntimeSnapshot::from_verified_module(RuntimeBrand::Dawn, &module).unwrap();
+    let sunrise_cache = fixture.write_sunrise_cache(b"active Sunrise cache");
+    let dawn_cache = game_root.join("Dawn/cache/build_data.bin");
+    fs::create_dir_all(dawn_cache.parent().unwrap()).unwrap();
+    fs::write(&dawn_cache, b"inactive Dawn cache").unwrap();
+
+    let error =
+        validate_sunrise_build_cache_for_runtime(game_root, recorded, test_runtime_snapshot)
+            .unwrap_err();
+
+    assert!(error.message.contains("runtime changed after preflight"));
+    assert_eq!(fs::read(sunrise_cache).unwrap(), b"active Sunrise cache");
+    assert_eq!(fs::read(dawn_cache).unwrap(), b"inactive Dawn cache");
+}
+
+#[test]
+fn dual_dawn_cache_layouts_are_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let candidates = super::super::caches::runtime_build_cache_candidates(
+        fs::canonicalize(root.path()).unwrap(),
+        RuntimeBrand::Dawn,
+    );
+    for path in &candidates.paths {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"cache").unwrap();
+    }
+    assert!(
+        discover_sunrise_build_cache(&candidates)
+            .unwrap_err()
+            .contains("Both supported")
+    );
+}
+
+#[test]
+fn installed_runtime_snapshot_selects_dawn_and_leaves_sunrise_inactive() {
+    let fixture = Fixture::new();
+    let game_root = fixture.target.parent().unwrap();
+    let dawn = game_root.join("bin/x64/Dawn/cache/build_data.bin");
+    let sunrise = game_root.join("bin/x64/Sunrise/cache/build_data.bin");
+    fs::create_dir_all(dawn.parent().unwrap()).unwrap();
+    fs::create_dir_all(sunrise.parent().unwrap()).unwrap();
+    fs::write(&dawn, b"Dawn cache").unwrap();
+    fs::write(&sunrise, b"Sunrise cache").unwrap();
+
+    let validated =
+        validate_sunrise_build_cache_with(&fixture.target, test_dawn_runtime_snapshot).unwrap();
+
+    assert_eq!(validated.runtime.brand(), RuntimeBrand::Dawn);
+    assert_eq!(
+        validated.file.unwrap().path,
+        fs::canonicalize(dawn).unwrap()
+    );
+    assert_eq!(fs::read(sunrise).unwrap(), b"Sunrise cache");
+}
+
+#[test]
+fn missing_or_unrecognized_runtime_never_falls_back_to_sunrise_cache() {
+    let fixture = Fixture::new();
+    let cache = fixture.write_sunrise_cache(b"inactive Sunrise cache");
+    let module = fixture
+        .target
+        .parent()
+        .unwrap()
+        .join("bin/x64/steam_api64.dll");
+
+    let error = validate_sunrise_build_cache(&fixture.target).unwrap_err();
+    assert!(
+        error.message.contains("no recognized Sunrise or Dawn"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&cache).unwrap(), b"inactive Sunrise cache");
+
+    fs::remove_file(module).unwrap();
+    let error = validate_sunrise_build_cache(&fixture.target).unwrap_err();
+    assert!(error.message.contains("Could not resolve"), "{error}");
+    assert_eq!(fs::read(cache).unwrap(), b"inactive Sunrise cache");
+}

@@ -143,7 +143,8 @@ use sundial::package_authoring::{
     weapon_runtime::{WeaponRuntimeValueOverride, resolve_weapon_runtime_field},
 };
 
-use tiger_pkg::{PackageManager, TagHash};
+use sundial::package_authoring::PackageManager;
+use tiger_pkg::TagHash;
 
 use sundial::{
     investment::{
@@ -644,6 +645,10 @@ impl WeaponInventorySlot {
 /// and embedded choices.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponCloneOverrides {
+    pub remove_lore: bool,
+    #[cfg(feature = "d2-model-importer")]
+    pub imported_graph: Option<parhelion_import::GraphReference>,
+    /// Optional Collections override. `None` derives the ammo and weapon-type destination.
     pub collection_destination: Option<crate::collection::Destination>,
     pub exclude_from_sunrise_badge: bool,
     pub badge: Option<crate::presentation::Badge>,
@@ -1041,6 +1046,7 @@ pub struct NewWeaponPlan {
     pub definition_tag: TagHash,
     pub string_tag: TagHash,
     pub icon_definition_tag: TagHash,
+    pub custom_plugs: Vec<NewCustomPlugPlan>,
     pub item_index: u16,
     pub collectible_hash: u32,
     pub collectible_index: u16,
@@ -1051,6 +1057,30 @@ pub struct NewWeaponPlan {
     pub template_item_hash: u32,
     pub template_definition_tag: TagHash,
     pub template_string_tag: TagHash,
+}
+
+/// Build-assigned identities for one private socket choice used by a weapon.
+#[derive(Clone, Debug)]
+pub struct NewCustomPlugPlan {
+    pub socket_index: usize,
+    pub choice_index: usize,
+    pub name: Option<String>,
+    pub item_hash: u32,
+    pub item_index: u16,
+    pub definition_tag: TagHash,
+    pub string_tag: TagHash,
+    pub icon_definition_tag: Option<TagHash>,
+    pub name_hash: Option<u32>,
+    pub description_hash: Option<u32>,
+    pub perks: Vec<NewPrivatePerkPlan>,
+}
+
+/// Private finished-perk and runtime identities allocated for one authored effect.
+#[derive(Clone, Copy, Debug)]
+pub struct NewPrivatePerkPlan {
+    pub source_perk_index: usize,
+    pub perk_hash: u32,
+    pub runtime_key: u32,
 }
 
 /// A coherent project compiled into five investment overlays, one standalone asset package,
@@ -1172,6 +1202,7 @@ struct ResolvedPrivateSandboxPerk {
 
 #[derive(Clone)]
 struct ResolvedCustomPlug {
+    cosmetic: bool,
     replace_effects: bool,
     investment_stats: Vec<(u16, i32)>,
     uses: Vec<CustomPlugUse>,

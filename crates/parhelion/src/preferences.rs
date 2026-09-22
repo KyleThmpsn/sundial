@@ -14,6 +14,8 @@ pub(crate) struct ParhelionPreferences {
     pub limit_package_backups: bool,
     pub package_backup_retention: usize,
     pub backup_recipe_snapshots: bool,
+    /// Opens the Technical Build window, which reports exactly what a staged build produced.
+    pub show_technical_build: bool,
 }
 
 impl Default for ParhelionPreferences {
@@ -23,6 +25,7 @@ impl Default for ParhelionPreferences {
             limit_package_backups: true,
             package_backup_retention: DEFAULT_PACKAGE_BACKUP_RETENTION,
             backup_recipe_snapshots: true,
+            show_technical_build: false,
         }
     }
 }

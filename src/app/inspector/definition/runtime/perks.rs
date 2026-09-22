@@ -25,10 +25,6 @@ pub(super) fn draw_perks(
         .id_salt(("inspector-sandbox-perks", item_hash))
         .show(ui, |ui| {
             ui.weak("Perks stored on this definition. Inspect a socket plug separately for its perks. These are not the combined effects of equipped plugs.");
-            let count = metadata.sandbox_perks.iter().filter(|perk| perk.perk_index != u16::MAX).count();
-            if let Some(warning) = crate::sandbox_perk::sunrise_perk_projection_warning(count) {
-                ui.colored_label(ui.visuals().warn_fg_color, warning);
-            }
             for (row, perk) in metadata.sandbox_perks.iter().enumerate() {
                 // A declaration-only row still reaches the client's perk bank, so it is shown
                 // with its liveness rather than hidden.

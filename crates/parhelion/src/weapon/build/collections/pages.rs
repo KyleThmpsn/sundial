@@ -200,8 +200,8 @@ fn append_objective(
     u16::try_from(count).map_err(|_| invalid("Collections objective index exceeds capacity"))
 }
 
-/// Explicit placement adds flags to the destination objectives directly, keeping every
-/// stock donor pool intact even when the destination is in another ammo branch.
+/// Resolved placement adds flags to the destination objectives directly, keeping every
+/// stock donor pool intact even when the authored ammo type selects another branch.
 pub(super) fn add_counts(
     objectives: &mut Vec<u8>,
     nodes: &[u8],

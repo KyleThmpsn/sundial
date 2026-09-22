@@ -165,6 +165,8 @@ fn fixture(state: &str) -> PackageAuthoringApp {
                     name: name.into(),
                     namespace: "parhelion.preview".into(),
                     item_hash: 1,
+                    item_definition_hash: 9,
+                    item_string_hash: 10,
                     icon_definition_hash: 2,
                     item_index: 3,
                     collectible_hash: 4,
@@ -173,6 +175,7 @@ fn fixture(state: &str) -> PackageAuthoringApp {
                     unlock_definition_index: 7,
                     unlock_bank: 1,
                     unlock_slot: 8,
+                    custom_plugs: Vec::new(),
                 })
                 .collect(),
             run_directory: PathBuf::from("C:/Parhelion/staging/review"),

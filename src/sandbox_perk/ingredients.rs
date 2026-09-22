@@ -1,7 +1,8 @@
 //! Perk indices supplied by native subclass ability definitions.
 use crate::package_payload::{native_array_at, u16_at, u32_at, u64_at};
+use crate::package_runtime::reader::PackageManager;
 use std::collections::BTreeSet;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct AbilitySource {

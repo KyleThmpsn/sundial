@@ -5,7 +5,8 @@
 //! inherited fields, so following the reflected base a second time is unnecessary.
 use std::collections::{BTreeMap, BTreeSet};
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::package_payload::{bytes_at, i64_at, relative_offset, u32_at, u64_at};
 

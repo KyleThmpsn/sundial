@@ -1,7 +1,8 @@
 //! Resolve the installed seasonal vendor and reward packages using Sunrise's native layouts.
 use std::collections::{BTreeMap, HashSet};
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::{
     catalog::{CollectibleDef, ProgressionDefinition, ProgressionScope, UnlockDefinition},

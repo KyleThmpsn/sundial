@@ -146,7 +146,7 @@ impl PackageAuthoringApp {
 
         egui::CollapsingHeader::new("Text Presentation")
             .id_salt(("parhelion-text-presentation", panel_scope.as_str()))
-            .default_open(self.recipe.overrides.lore.is_some())
+            .default_open(false)
             .show(ui, |ui| {
             ui.weak("Turning off optional text also removes its translations.");
             let mut custom_type = self.recipe.type_name.is_some();
@@ -251,6 +251,9 @@ impl PackageAuthoringApp {
                                 &mut self.recipe.overrides,
                                 &behaviors,
                                 self.catalog.as_ref(),
+                                &self.donor_summaries,
+                                donor.map(|donor| donor.summary.type_name.as_str()),
+                                &mut self.behavior_query,
                             );
                             // What the choice brings with it belongs under the choice. Drawn
                             // below the whole row it started at the panel's left edge, a column
@@ -488,7 +491,9 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_appearance_workspace(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Icon & Colors");
+        ui.heading("Appearance");
+        #[cfg(feature = "d2-model-importer")]
+        self.draw_imported_model_picker(ui);
         ui.label("These follow the appearance on the Weapon tab unless you choose another source.");
         ui.add_space(8.0);
         self.draw_appearance_ornaments(ui);
@@ -502,6 +507,9 @@ impl PackageAuthoringApp {
             ui.add_space(8.0);
             self.draw_render_gear_donor_picker(ui);
         }
+        ui.add_space(12.0);
+        ui.separator();
+        self.draw_appearance_preview(ui);
         ui.add_space(12.0);
         ui.separator();
         self.presentation_editor
@@ -594,7 +602,7 @@ impl PackageAuthoringApp {
             .collection_requirement_hash
             .clone()
             .unwrap_or_else(|| derived_hash(|identity| identity.collection_requirement_hash));
-        let icon_definition_hash = self
+        let build = self
             .recipe
             .identity
             .item_hash
@@ -610,83 +618,249 @@ impl PackageAuthoringApp {
                             .iter()
                             .find(|weapon| weapon.item_hash == item_hash)
                     })
-            })
-            .map(|weapon| format!("0x{:08X}", weapon.icon_definition_hash));
-        let icon_definition_is_available = icon_definition_hash.is_some();
-        let icon_definition_hash =
-            icon_definition_hash.unwrap_or_else(|| "Assigned During Build".to_owned());
-        let fields = [
-            ("Item", self.recipe.identity.item_hash.to_string(), true),
-            (
+            });
+        let game_fields = [
+            IdentityField::new("Item", self.recipe.identity.item_hash.to_string()),
+            IdentityField::new(
                 "Collectible",
                 self.recipe.identity.collectible_hash.to_string(),
-                true,
             ),
-            ("Unlock", self.recipe.identity.unlock_hash.to_string(), true),
-            (
-                "Pattern Global ID",
-                pattern_global_id_hash.to_string(),
-                true,
-            ),
-            (
-                "Name String",
-                self.recipe.identity.name_hash.to_string(),
-                true,
-            ),
-            ("Type String", type_hash.to_string(), true),
-            (
+            IdentityField::new("Unlock", self.recipe.identity.unlock_hash.to_string()),
+            IdentityField::new("Pattern Global ID", pattern_global_id_hash.to_string()),
+        ];
+        let text_fields = [
+            IdentityField::new("Name String", self.recipe.identity.name_hash.to_string()),
+            IdentityField::new("Type String", type_hash.to_string()),
+            IdentityField::new(
                 "Flavor String",
                 self.recipe.identity.flavor_hash.to_string(),
-                true,
             ),
-            (
+            IdentityField::new(
                 "Source String",
                 self.recipe.identity.source_hash.to_string(),
-                true,
             ),
-            (
-                "Collection Name String",
-                collection_name_hash.to_string(),
-                true,
-            ),
-            (
+            IdentityField::new("Collection Name String", collection_name_hash.to_string()),
+            IdentityField::new(
                 "Collection Description String",
                 collection_description_hash.to_string(),
-                true,
             ),
-            (
-                "Inventory Hint String",
-                inventory_hint_hash.to_string(),
-                true,
-            ),
-            (
+            IdentityField::new("Inventory Hint String", inventory_hint_hash.to_string()),
+            IdentityField::new(
                 "Collection Requirement String",
                 collection_requirement_hash.to_string(),
-                true,
-            ),
-            (
-                "Icon Definition",
-                icon_definition_hash,
-                icon_definition_is_available,
             ),
         ];
+        let package_fields = build.map_or_else(
+            || {
+                [
+                    "Item Definition Tag",
+                    "Item String Tag",
+                    "Icon Definition Tag",
+                    "Item Table Index",
+                    "Collectible Table Index",
+                    "Unlock Definition Index",
+                    "Unlock Flag",
+                ]
+                .into_iter()
+                .map(IdentityField::assigned_during_build)
+                .collect()
+            },
+            |build| {
+                vec![
+                    IdentityField::new(
+                        "Item Definition Tag",
+                        format!("0x{:08X}", build.item_definition_hash),
+                    ),
+                    IdentityField::new(
+                        "Item String Tag",
+                        format!("0x{:08X}", build.item_string_hash),
+                    ),
+                    IdentityField::new(
+                        "Icon Definition Tag",
+                        format!("0x{:08X}", build.icon_definition_hash),
+                    ),
+                    IdentityField::new("Item Table Index", build.item_index.to_string()),
+                    IdentityField::new(
+                        "Collectible Table Index",
+                        build.collectible_index.to_string(),
+                    ),
+                    IdentityField::new(
+                        "Unlock Definition Index",
+                        build.unlock_definition_index.to_string(),
+                    ),
+                    IdentityField::new(
+                        "Unlock Flag",
+                        format!("Bank {} · Slot {}", build.unlock_bank, build.unlock_slot),
+                    ),
+                ]
+            },
+        );
+        let mut presentation_fields = Vec::new();
+        if self.recipe.overrides.lore.is_some() {
+            presentation_fields.extend([
+                IdentityField::new(
+                    "Lore Entry",
+                    format!(
+                        "0x{:08X}",
+                        crate::presentation::text_hash(&self.recipe.namespace, "lore-entry")
+                    ),
+                ),
+                IdentityField::new(
+                    "Lore Text",
+                    format!(
+                        "0x{:08X}",
+                        crate::presentation::text_hash(&self.recipe.namespace, "lore")
+                    ),
+                ),
+            ]);
+        }
+        if let Some(badge) = &self.recipe.overrides.badge {
+            let badge_hash = |field: &str| crate::presentation::text_hash(&badge.name, field);
+            presentation_fields.extend([
+                IdentityField::new("Badge Icon", format!("0x{:08X}", badge_hash("badge-icon"))),
+                IdentityField::new(
+                    "Badge Objective",
+                    format!("0x{:08X}", badge_hash("badge-objective")),
+                ),
+                IdentityField::new(
+                    "Badge Name String",
+                    format!("0x{:08X}", badge_hash("badge-name")),
+                ),
+                IdentityField::new(
+                    "Badge Description String",
+                    format!("0x{:08X}", badge_hash("badge-description")),
+                ),
+            ]);
+            for (index, label) in [
+                "Badge Node 1",
+                "Badge Node 2",
+                "Badge Node 3",
+                "Badge Node 4",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                presentation_fields.push(IdentityField::new(
+                    label,
+                    format!(
+                        "0x{:08X}",
+                        crate::presentation::badge_node_hash(&badge.name, index)
+                    ),
+                ));
+            }
+            for (index, label) in [
+                "Badge Record 1",
+                "Badge Record 2",
+                "Badge Record 3",
+                "Badge Record 4",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                presentation_fields.push(IdentityField::new(
+                    label,
+                    format!("0x{:08X}", badge_hash(&format!("badge-record-{index}"))),
+                ));
+            }
+        }
+        if let Some(destination) = self.recipe.overrides.collection_destination
+            && destination.stock_exemplar().is_none()
+        {
+            presentation_fields.extend([
+                IdentityField::new(
+                    "Collection Page Node",
+                    format!("0x{:08X}", destination.hash("node")),
+                ),
+                IdentityField::new(
+                    "Collection Page Objective",
+                    format!("0x{:08X}", destination.hash("objective")),
+                ),
+            ]);
+        }
         if ui.available_width() >= 760.0 {
             ui.columns(2, |columns| {
-                draw_identity_group(
-                    &mut columns[0],
-                    "Game Records",
-                    fields[..4].iter().chain(fields[12..].iter()),
-                );
-                draw_identity_group(&mut columns[1], "Text References", fields[4..12].iter());
+                draw_identity_group(&mut columns[0], "Game Records", game_fields.iter());
+                columns[0].add_space(8.0);
+                draw_identity_group(&mut columns[0], "Build Locations", package_fields.iter());
+                if !presentation_fields.is_empty() {
+                    columns[0].add_space(8.0);
+                    draw_identity_group(
+                        &mut columns[0],
+                        "Presentation Records",
+                        presentation_fields.iter(),
+                    );
+                }
+                draw_identity_group(&mut columns[1], "Text References", text_fields.iter());
             });
         } else {
-            draw_identity_group(
-                ui,
-                "Game Records",
-                fields[..4].iter().chain(fields[12..].iter()),
-            );
+            draw_identity_group(ui, "Game Records", game_fields.iter());
             ui.add_space(8.0);
-            draw_identity_group(ui, "Text References", fields[4..12].iter());
+            draw_identity_group(ui, "Build Locations", package_fields.iter());
+            if !presentation_fields.is_empty() {
+                ui.add_space(8.0);
+                draw_identity_group(ui, "Presentation Records", presentation_fields.iter());
+            }
+            ui.add_space(8.0);
+            draw_identity_group(ui, "Text References", text_fields.iter());
+        }
+        if !self.recipe.overrides.socket_plug_variants.is_empty() {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.heading("Custom Perk Identities");
+            if let Some(build) = build {
+                for plug in &build.custom_plugs {
+                    let title = format!(
+                        "Socket {} · Choice {} · {}",
+                        plug.socket_index + 1,
+                        plug.choice_index + 1,
+                        plug.name.as_deref().unwrap_or("Custom Perk")
+                    );
+                    let mut fields = vec![
+                        IdentityField::new("Item", format!("0x{:08X}", plug.item_hash)),
+                        IdentityField::new("Item Table Index", plug.item_index.to_string()),
+                        IdentityField::new(
+                            "Definition Tag",
+                            format!("0x{:08X}", plug.definition_hash),
+                        ),
+                        IdentityField::new("String Tag", format!("0x{:08X}", plug.string_hash)),
+                    ];
+                    if let Some(hash) = plug.icon_definition_hash {
+                        fields.push(IdentityField::new(
+                            "Icon Definition Tag",
+                            format!("0x{hash:08X}"),
+                        ));
+                    }
+                    if let Some(hash) = plug.name_hash {
+                        fields.push(IdentityField::new("Name String", format!("0x{hash:08X}")));
+                    }
+                    if let Some(hash) = plug.description_hash {
+                        fields.push(IdentityField::new(
+                            "Description String",
+                            format!("0x{hash:08X}"),
+                        ));
+                    }
+                    for perk in &plug.perks {
+                        fields.extend([
+                            IdentityField::new(
+                                format!("Effect {} Definition", perk.source_perk_index),
+                                format!("0x{:08X}", perk.perk_hash),
+                            ),
+                            IdentityField::new(
+                                format!("Effect {} Runtime", perk.source_perk_index),
+                                format!("0x{:08X}", perk.runtime_key),
+                            ),
+                        ]);
+                    }
+                    ui.add_space(6.0);
+                    draw_identity_group(ui, &title, fields.iter());
+                }
+            } else {
+                let pending = [IdentityField::assigned_during_build(
+                    "Private Perk Identities",
+                )];
+                draw_identity_group(ui, "Build Required", pending.iter());
+            }
         }
     }
 
@@ -854,10 +1028,19 @@ impl PackageAuthoringApp {
         if let Some(donor) = donor {
             // A chosen behavior claims its sockets here rather than at build time, so the list
             // below is the weapon that gets built.
+            let catalog = self.catalog.as_ref();
             super::socket_editor::sync_behavior_socket_pins(
                 &mut self.recipe,
                 &mut self.behavior_pins,
                 donor,
+                &|entry| {
+                    crate::weapon_behavior::same_family(
+                        Some(&donor.summary.type_name),
+                        catalog
+                            .and_then(|catalog| catalog.item_type_name(entry.source_item_hash))
+                            .as_deref(),
+                    )
+                },
             );
             let show_experimental_options = self.show_experimental_options;
             let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()

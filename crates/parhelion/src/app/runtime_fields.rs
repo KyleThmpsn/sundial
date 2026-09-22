@@ -157,6 +157,42 @@ fn draw_runtime_value_editor_contents(
     current: &WeaponRuntimeValue,
     text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
 ) -> Option<WeaponRuntimeValue> {
+    if let Some(meaning) = sundial::package_authoring::weapon_runtime::modifiers::field_meaning(
+        locator.type_handle,
+        locator.value_offset,
+    )
+    .filter(|meaning| !meaning.choices.is_empty())
+    {
+        let number = match current {
+            WeaponRuntimeValue::Signed(value) => Some(*value),
+            WeaponRuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
+            _ => None,
+        };
+        if let Some(number) = number {
+            let mut selected = number;
+            let label = meaning
+                .choices
+                .iter()
+                .find(|(v, _)| *v == number)
+                .map_or_else(
+                    || format!("Native Value {number}"),
+                    |(_, name)| (*name).into(),
+                );
+            egui::ComboBox::from_id_salt(("component-modifier-choice", locator))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    for &(value, name) in meaning.choices {
+                        ui.selectable_value(&mut selected, value, name);
+                    }
+                })
+                .response
+                .on_hover_text(meaning.help);
+            return (selected != number).then_some(match current {
+                WeaponRuntimeValue::Signed(_) => WeaponRuntimeValue::Signed(selected),
+                _ => WeaponRuntimeValue::Unsigned(selected as u64),
+            });
+        }
+    }
     match (kind, current) {
         (WeaponRuntimeValueKind::Boolean, WeaponRuntimeValue::Boolean(current)) => {
             let mut value = *current;

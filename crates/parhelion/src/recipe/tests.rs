@@ -4,6 +4,16 @@ use sundial::package_authoring::weapon_runtime::{
 };
 
 #[test]
+fn absent_source_lore_round_trips_and_rejects_a_replacement() {
+    let mut recipe = WeaponRecipe::new_weapon("parhelion.no-lore-test").unwrap();
+    recipe.overrides.remove_lore = true;
+    let decoded = WeaponRecipe::from_json_str(&recipe.to_json_pretty().unwrap()).unwrap();
+    assert!(decoded.to_spec().unwrap().overrides.remove_lore);
+    recipe.overrides.lore = Some("Conflicting lore".into());
+    assert!(recipe.validate().is_err());
+}
+
+#[test]
 fn activation_recipe_round_trips_and_rejects_unsupported_effects() {
     use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
     let mut recipe = WeaponRecipe::new_weapon("parhelion.activation-test").unwrap();
@@ -842,4 +852,62 @@ fn variable_damage_round_trips_without_a_carrier_appearance() {
     assert!(recipe.validate().is_err());
     recipe.overrides.variable_damage = None;
     assert!(!recipe.to_json_pretty().unwrap().contains("variable_damage"));
+}
+
+/// A weapon built on another library weapon starts from that weapon's recipe: its stock donor
+/// and its changes, with this recipe's own settings on top and its own identity throughout.
+#[test]
+fn rebasing_keeps_the_bases_donor_and_changes_underneath_the_recipes_own() {
+    let mut base = WeaponRecipe::every_end();
+    base.overrides.ammo_type = Some(RecipeAmmoType::Special);
+    base.overrides.rarity = Some(RecipeRarity::Exotic);
+    base.overrides.max_stack_size = Some(3);
+    base.type_name = Some("Base Type".into());
+    let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
+        "Built On Base",
+        base.identity.item_hash.parse_u32().unwrap(),
+        &base.name,
+    )
+    .unwrap();
+    recipe.overrides.rarity = Some(RecipeRarity::Legendary);
+    recipe.overrides.additional_behaviors = vec![AdditionalBehaviorRecipe {
+        behavior: "graviton-lance-graph".into(),
+    }];
+    recipe.flavor = "Its own story.".into();
+
+    let rebased = recipe.rebased_onto(&base).unwrap();
+
+    assert_eq!(
+        rebased.donor, base.donor,
+        "the stock donor comes from the base"
+    );
+    assert_eq!(
+        rebased.identity, recipe.identity,
+        "the identity stays its own"
+    );
+    assert_eq!(rebased.namespace, recipe.namespace);
+    assert_eq!(rebased.name, "Built On Base");
+    assert_eq!(rebased.flavor, "Its own story.");
+    assert_eq!(
+        rebased.type_name.as_deref(),
+        Some("Base Type"),
+        "unset text inherits"
+    );
+    assert_eq!(rebased.overrides.ammo_type, Some(RecipeAmmoType::Special));
+    assert_eq!(rebased.overrides.max_stack_size, Some(3));
+    assert_eq!(
+        rebased.overrides.rarity,
+        Some(RecipeRarity::Legendary),
+        "own settings win"
+    );
+    assert_eq!(
+        rebased.overrides.socket_columns,
+        base.overrides.socket_columns
+    );
+    assert_eq!(
+        rebased.overrides.additional_behaviors,
+        recipe.overrides.additional_behaviors
+    );
+    assert_eq!(rebased.presentation_donor, base.presentation_donor);
+    assert!(rebased.to_spec().is_ok());
 }

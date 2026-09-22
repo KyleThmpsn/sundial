@@ -12,6 +12,7 @@ autoexamples = false
 
 [features]
 default = []
+d2-model-importer = ["dep:parhelion-import"]
 # Long-term community work is opt-in and excluded from normal app builds.
 community-recipes = []
 
@@ -19,8 +20,10 @@ community-recipes = []
 workspace = true
 
 [dependencies]
+parhelion-import = { path = "../parhelion-import", optional = true }
 fs2 = "0.4.3"
 base64 = "0.23.1"
+bcdec_rs = "0.2.0"
 egui = { version = "0.31.1", features = ["accesskit"] }
 egui-phosphor = "0.9.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }

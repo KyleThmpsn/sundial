@@ -490,6 +490,9 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
                 (0x0E, 0x80),
                 (0x0F, 0xBF),
             ],
+            // A new Enhanced Radar action adds the stock contribution. Loaded nodes
+            // retain their operation, including deliberately subtractive effects.
+            20 => &[(2, 1)],
             _ => &[],
         };
     }
@@ -505,6 +508,27 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
         27 => &[(8, 1)],
         // A finisher final blow, as Bulwark Finisher and Empowered Finish.
         42 => &[(8, 1)],
+        // Kind 26: the stock norm across 146 accumulator perks. Count Needed 1 fires on the
+        // first contribution, Resets At -1 never resets, and the clamps run -9998 to 100. A
+        // zero-filled node clamps its counter at zero, so it could never fire.
+        26 => &[
+            (0x20, 0x00),
+            (0x21, 0x00),
+            (0x22, 0x80),
+            (0x23, 0x3F),
+            (0x24, 0x00),
+            (0x25, 0x00),
+            (0x26, 0x80),
+            (0x27, 0xBF),
+            (0x28, 0x00),
+            (0x29, 0x38),
+            (0x2A, 0x1C),
+            (0x2B, 0xC6),
+            (0x2C, 0x00),
+            (0x2D, 0x00),
+            (0x2E, 0xC8),
+            (0x2F, 0x42),
+        ],
         _ => &[],
     }
 }

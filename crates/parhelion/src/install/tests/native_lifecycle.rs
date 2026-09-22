@@ -222,8 +222,7 @@ fn verify_native_lifecycle(version: u64) {
 
     verify_interrupted_uninstall_recovery(&fixture);
     let plan = preview_uninstall(&fixture.request.target_packages_directory).unwrap();
-    let report =
-        uninstall_custom_packages(&plan, &fixture.request.backup_root, game_stopped).unwrap();
+    let report = uninstall_fixture(&plan, &fixture.request.backup_root, game_stopped).unwrap();
     assert_eq!(report.removed_files.len(), fixture.manifest.artifacts.len());
     assert!(
         preview_uninstall(&fixture.request.target_packages_directory)
@@ -256,7 +255,8 @@ fn verify_interrupted_uninstall_recovery(fixture: &NativeFixture) {
             &fixture.request.backup_root,
             starts_during_rollback,
             Some(1),
-            DEFAULT_CACHE_INVALIDATION_OPS
+            DEFAULT_CACHE_INVALIDATION_OPS,
+            test_runtime_snapshot,
         )
         .is_err()
     );
@@ -271,6 +271,7 @@ fn verify_interrupted_uninstall_recovery(fixture: &NativeFixture) {
         target_packages_directory: fixture.request.target_packages_directory.clone(),
         backup_root: fixture.request.backup_root.clone(),
         game_running_check: game_stopped,
+        runtime_snapshot_check: fixture.request.runtime_snapshot_check,
     })
     .unwrap();
     assert!(matches!(outcome, RecoveryOutcome::Recovered { .. }));

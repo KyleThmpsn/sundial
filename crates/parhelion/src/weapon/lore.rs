@@ -23,6 +23,19 @@ pub(super) fn author(
     weapons: &[WeaponCloneSpec],
     items: &mut [NewTagSpec],
 ) -> AuthoringResult<Option<Plan>> {
+    for (ordinal, weapon) in weapons.iter().enumerate() {
+        if weapon.overrides.remove_lore {
+            if weapon.overrides.lore.is_some() {
+                return Err(invalid(
+                    "A weapon cannot both remove and replace its lore tab",
+                ));
+            }
+            let item = items
+                .get_mut(ordinal)
+                .ok_or_else(|| invalid("Missing item for lore removal"))?;
+            write_u64(&mut item.payload, BLOCK_POINTER, 0)?;
+        }
+    }
     if weapons.iter().all(|weapon| weapon.overrides.lore.is_none()) {
         return Ok(None);
     }

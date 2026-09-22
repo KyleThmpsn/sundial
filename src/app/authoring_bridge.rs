@@ -1,4 +1,5 @@
 //! Adapts Sundial's picker widgets, preferences, and account persistence for Parhelion.
+mod appearance_picker;
 
 use crate::account::{
     AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredSlotReplacement, AuthoredSocketChange,
@@ -19,9 +20,38 @@ pub(crate) fn preview_account_replacement(
     socket_changes: &[AuthoredSocketChange],
     slots: Option<&AuthoredSlotReplacement>,
 ) -> Result<AuthoredAccountCleanup, String> {
+    let runtime = crate::package_runtime::installed_runtime(install)?;
+    preview_account_replacement_with_runtime(
+        install,
+        &runtime,
+        hashes,
+        unlocks,
+        socket_changes,
+        slots,
+    )
+}
+
+pub(crate) fn preview_account_replacement_with_runtime(
+    install: &Path,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+    hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    socket_changes: &[AuthoredSocketChange],
+    slots: Option<&AuthoredSlotReplacement>,
+) -> Result<AuthoredAccountCleanup, String> {
     let preferences = crate::app::settings::load_preferences().preferences;
-    let settings_path = authored_unlock_settings_path(install, &preferences)?;
-    crate::account::preview_replacement(&settings_path, hashes, unlocks, socket_changes, slots)
+    let (target, durable) = authored_unlock_target_with_runtime(install, &preferences, runtime)?;
+    if durable {
+        crate::persistence::dawn_account::preview_replacement(
+            &target,
+            hashes,
+            unlocks,
+            socket_changes,
+            slots,
+        )
+    } else {
+        crate::account::preview_replacement(&target, hashes, unlocks, socket_changes, slots)
+    }
 }
 
 use std::{
@@ -79,6 +109,29 @@ pub fn draw_asset_choice_row(
         crate::ui_help::tooltip_title(ui, name);
         ui.label(super::ui::destiny_text(ui, detail));
     })
+}
+
+/// The same row without the hover copy of its own text, for lists whose rows say
+/// everything already.
+pub fn draw_asset_choice_row_plain(
+    ui: &mut egui::Ui,
+    name: &str,
+    detail: &str,
+    selected: bool,
+) -> egui::Response {
+    super::item_editor::draw_picker_row(
+        ui,
+        None,
+        super::item_editor::CatalogPickerRow {
+            hash: 0,
+            primary: name,
+            primary_max_rows: 1,
+            secondary: Some(detail),
+            icon_size: 0.0,
+            row_height: crate::investment::authoring_choice_row_height(ui),
+            selected,
+        },
+    )
 }
 
 pub(crate) fn draw_authoring_choice_row(
@@ -203,6 +256,14 @@ pub fn draw_authoring_info_icon(
     crate::ui_help::info(ui, tooltip)
 }
 
+/// Renders Sundial's compact warning glyph with hover help.
+pub fn draw_authoring_warning_icon(
+    ui: &mut egui::Ui,
+    tooltip: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    crate::ui_help::warning(ui, tooltip)
+}
+
 /// Opens a menu from a compact trigger showing an installed item's artwork beside its label.
 ///
 /// The trigger deliberately leaves out the stock watermark and foreground overlay: it stands for
@@ -238,7 +299,9 @@ pub(crate) enum InvestmentWeaponPickerAction {
 }
 
 const DONOR_HEADER_ICON_SIZE: f32 = 52.0;
+type AppearancePreview<'a> = dyn FnMut(&mut egui::Ui, Option<u32>) + 'a;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_weapon_donor_header_picker(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -246,6 +309,8 @@ pub(crate) fn draw_weapon_donor_header_picker(
     query: &mut String,
     candidates: &[&WeaponDonorSummary],
     options: WeaponDonorPickerOptions<'_>,
+    preview: Option<&mut AppearancePreview<'_>>,
+    default_weapon_type: Option<&str>,
 ) -> Option<InvestmentWeaponPickerAction> {
     let scope = ui.make_persistent_id(scope);
     let selected = options
@@ -325,6 +390,129 @@ pub(crate) fn draw_weapon_donor_header_picker(
         drop(catalog_item_tooltip(trigger, catalog, u64::from(hash)));
     }
     let action_button = action_button.expect("a donor header always draws its action button");
+    if let Some(preview) = preview {
+        return appearance_picker::draw(
+            ui,
+            catalog,
+            scope,
+            query,
+            candidates,
+            options,
+            &action_button,
+            preview,
+            default_weapon_type,
+        );
+    }
+    let action = draw_weapon_donor_picker_popup(
+        ui,
+        catalog,
+        scope,
+        query,
+        candidates,
+        options,
+        &action_button,
+        ItemFilterScope::WeaponDonor,
+    );
+    if secondary_button.is_some_and(|button| button.clicked()) {
+        return Some(InvestmentWeaponPickerAction::Secondary);
+    }
+    action
+}
+
+/// The same donor browser as the card header, opened from a plain dropdown that sits in a
+/// column of other dropdowns without a card around it.
+pub(crate) fn draw_weapon_donor_dropdown_picker(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    candidates: &[&WeaponDonorSummary],
+    options: WeaponDonorPickerOptions<'_>,
+) -> Option<InvestmentWeaponPickerAction> {
+    let scope = ui.make_persistent_id(scope);
+    let trigger = dropdown_button(ui, options.selected_label);
+    let trigger = match options.selected_hash {
+        Some(hash) => catalog_item_tooltip(trigger, catalog, u64::from(hash)),
+        None => trigger,
+    };
+    // Weapon type and damage filters without the dummy-weapon toggle: the caller already
+    // chose which weapons are offered.
+    draw_weapon_donor_picker_popup(
+        ui,
+        catalog,
+        scope,
+        query,
+        candidates,
+        options,
+        &trigger,
+        ItemFilterScope::Weapon,
+    )
+}
+
+/// A full-width button drawn like a combo box: framed, text on the left, caret on the right.
+fn dropdown_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, text));
+    if ui.is_rect_visible(rect) {
+        let visuals = *ui.style().interact(&response);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let icon = egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - padding.x - ui.spacing().icon_width * 0.5,
+                rect.center().y,
+            ),
+            egui::Vec2::splat(ui.spacing().icon_width),
+        );
+        let triangle = egui::Rect::from_center_size(
+            icon.center(),
+            egui::vec2(icon.width() * 0.7, icon.height() * 0.45),
+        );
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                triangle.left_top(),
+                triangle.right_top(),
+                triangle.center_bottom(),
+            ],
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+        let text_rect = egui::Rect::from_min_max(
+            rect.min + padding,
+            egui::pos2(icon.left() - padding.x, rect.max.y - padding.y),
+        );
+        ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(text_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        )
+        .add(
+            egui::Label::new(egui::RichText::new(text).color(visuals.text_color()))
+                .truncate()
+                .selectable(false),
+        );
+    }
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_weapon_donor_picker_popup(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: egui::Id,
+    query: &mut String,
+    candidates: &[&WeaponDonorSummary],
+    options: WeaponDonorPickerOptions<'_>,
+    trigger: &egui::Response,
+    filter_scope: ItemFilterScope,
+) -> Option<InvestmentWeaponPickerAction> {
     let action = draw_definition_picker_with_open_request_and_item_filter(
         ui,
         catalog,
@@ -334,19 +522,14 @@ pub(crate) fn draw_weapon_donor_header_picker(
             min: 220.0,
             max: 480.0,
         },
-        (Some(&action_button), false),
+        (Some(trigger), false),
         |ui, query_text, filter| {
             let items = candidates
                 .iter()
                 .filter_map(|donor| catalog.item(u64::from(donor.hash)))
                 .collect::<Vec<_>>();
-            let interacted = draw_item_filter_bar(
-                ui,
-                scope.with("filters"),
-                ItemFilterScope::WeaponDonor,
-                &items,
-                filter,
-            );
+            let interacted =
+                draw_item_filter_bar(ui, scope.with("filters"), filter_scope, &items, filter);
             let filtered = filtered_weapon_donors(catalog, candidates, filter);
             (
                 weapon_donor_choices(catalog, query_text, &filtered, options),
@@ -354,9 +537,6 @@ pub(crate) fn draw_weapon_donor_header_picker(
             )
         },
     );
-    if secondary_button.is_some_and(|button| button.clicked()) {
-        return Some(InvestmentWeaponPickerAction::Secondary);
-    }
     match action {
         Some(ItemEditorAction::SetDefinition { hash }) => {
             Some(InvestmentWeaponPickerAction::Select(hash))
@@ -421,7 +601,12 @@ fn weapon_donor_choices(
             .map(|donor| DefinitionChoice {
                 hash: u64::from(donor.hash),
                 name: donor.name.clone(),
-                type_name: donor.type_name.clone(),
+                // The second line is what choosing the row brings when the caller says so,
+                // otherwise the weapon type.
+                type_name: options
+                    .row_detail
+                    .and_then(|detail| detail(donor.hash))
+                    .unwrap_or_else(|| donor.type_name.clone()),
                 group: None,
             })
             .collect(),
@@ -449,17 +634,20 @@ fn synchronize_authored_collection_unlocks_with(
     preferences: &super::Preferences,
     unlocks: &[(usize, u8, u16)],
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
-    let (target, durable) = authored_unlock_target(install, preferences)?;
+    let runtime = crate::package_runtime::installed_runtime(install)?;
+    let (target, durable) = authored_unlock_target_with_runtime(install, preferences, &runtime)?;
     if durable {
         // The settings path guards its own writes this way. A durable account is the same
         // hazard: the runtime owns the database while it is up, and its uncheckpointed journal
         // would be written over.
         super::settings::require_game_closed(super::platform::destiny_is_running())?;
+        crate::package_runtime::verify_installed_runtime(install, &runtime)?;
         let receipt =
             crate::persistence::dawn_account::apply_authored_unlocks(&target, &dawn_rows(unlocks)?)
                 .map_err(|error| error.to_string())?;
         return Ok((target, receipt.backup, receipt.changed));
     }
+    crate::package_runtime::verify_installed_runtime(install, &runtime)?;
     crate::account::unlocks::synchronize_authored_collection_unlocks_at(
         &target,
         unlocks,
@@ -477,21 +665,25 @@ fn synchronize_authored_collection_unlocks_with(
 /// Which runtime is installed decides where the account lives, and only the DLL says so: a Dawn
 /// install keeps its unlocks in player-state.db beside its settings, while Sunrise keeps them in
 /// the settings document or the investment database next to it.
+fn authored_unlock_target_with_runtime(
+    install: &Path,
+    preferences: &super::Preferences,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+) -> Result<(PathBuf, bool), String> {
+    let settings_path = authored_runtime_settings_path(install, preferences, runtime)?;
+    if runtime.brand() == crate::package_runtime::RuntimeBrand::Dawn {
+        return Ok((crate::persistence::dawn_path(&settings_path), true));
+    }
+    Ok((settings_path, false))
+}
+
+#[cfg(test)]
 fn authored_unlock_target(
     install: &Path,
     preferences: &super::Preferences,
 ) -> Result<(PathBuf, bool), String> {
-    let inspection = crate::package_runtime::installation::RuntimeInspection::inspect(install);
-    if let Some(runtime) = inspection.launch_copy().filter(|runtime| runtime.dawn) {
-        // Dawn owns the folder named after it, so its settings and the account beside them are
-        // taken from the runtime itself. An installation that has also run Sunrise still holds
-        // that runtime's folder, and guessing between the two would write the unlock to whichever
-        // one happened to be preferred rather than to the one the game reads.
-        let settings_path = runtime.settings_path.clone();
-        crate::account::source::validate_runtime_document(install, &settings_path)?;
-        return Ok((crate::persistence::dawn_path(&settings_path), true));
-    }
-    Ok((authored_unlock_settings_path(install, preferences)?, false))
+    let runtime = crate::package_runtime::installed_runtime(install)?;
+    authored_unlock_target_with_runtime(install, preferences, &runtime)
 }
 
 /// The authored unlocks as the storage-neutral rows every account adapter shares.
@@ -514,7 +706,42 @@ fn dawn_rows(unlocks: &[(usize, u8, u16)]) -> Result<Vec<sundial_account::Author
 
 pub(crate) fn authored_client_settings_path(install: &Path) -> Result<PathBuf, String> {
     let preferences = super::settings::load_preferences().preferences;
-    authored_unlock_settings_path(install, &preferences)
+    let runtime = crate::package_runtime::installed_runtime(install)?;
+    authored_runtime_settings_path(install, &preferences, &runtime)
+}
+
+pub(crate) fn authored_client_settings_path_with_runtime(
+    install: &Path,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+) -> Result<PathBuf, String> {
+    let preferences = super::settings::load_preferences().preferences;
+    authored_runtime_settings_path(install, &preferences, runtime)
+}
+
+fn authored_runtime_settings_path(
+    install: &Path,
+    preferences: &super::Preferences,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+) -> Result<PathBuf, String> {
+    let selected_module = crate::package_runtime::sunrise_module_path(install);
+    let path = match runtime.brand() {
+        crate::package_runtime::RuntimeBrand::Dawn => selected_module
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "The selected Dawn runtime DLL has no parent directory: {}",
+                    selected_module.display()
+                )
+            })?
+            .join(runtime.brand().folder())
+            .join("settings.json"),
+        crate::package_runtime::RuntimeBrand::Sunrise => {
+            authored_unlock_settings_path(install, preferences)?
+        }
+    };
+    crate::account::source::validate_runtime_document(install, &path)?;
+    crate::package_runtime::verify_installed_runtime(install, runtime)?;
+    Ok(path)
 }
 
 fn authored_unlock_settings_path(
@@ -596,6 +823,8 @@ pub(crate) fn draw_supported_plug_choice_picker(
         Some(button_text),
         mode,
     );
+    snapshot.preview = options.preview.cloned();
+    snapshot.preview_guarded = false;
     snapshot.custom_current = current_hash.is_none() && button_tooltip.is_some();
     let row_height = ui
         .spacing()
@@ -721,6 +950,8 @@ fn plug_picker_snapshot_for_mode(
         mode,
     );
     super::item_editor::PlugPickerSnapshot {
+        preview: super::item_editor::appearance::loadout(catalog, item.hash),
+        preview_guarded: false,
         socket_index,
         socket_label: format!("Socket {} · type {socket_type}", socket_index + 1),
         current_hash,
@@ -805,6 +1036,20 @@ pub(crate) fn save_unlock_test_settings(
         .map(|receipt| receipt.backup)
         .map_err(Into::into)
     }
+}
+
+pub(crate) fn resolve_preview(
+    catalog: &Catalog,
+    loadout: &crate::ui::model_preview::Loadout,
+) -> crate::ui::model_preview::Appearance {
+    super::item_editor::appearance::resolve(catalog, loadout)
+}
+
+pub(crate) fn preview_loadout(
+    catalog: &Catalog,
+    hash: u32,
+) -> Option<crate::ui::model_preview::Loadout> {
+    super::item_editor::appearance::loadout(catalog, u64::from(hash))
 }
 
 #[cfg(test)]

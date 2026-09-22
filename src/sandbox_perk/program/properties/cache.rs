@@ -1,8 +1,9 @@
 //! Refresh key observations by package, then by action payload. Item names are joined later.
 use std::{path::Path, sync::Arc};
 
+use crate::package_runtime::reader::PackageManager;
 use sha2::{Digest, Sha256};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::*;
 use crate::{

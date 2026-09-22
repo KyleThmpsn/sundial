@@ -1,16 +1,32 @@
-//! Grafts an exotic behavior record between weapons that share a content component owner.
+//! Grafts stock weapon behavior records and firing graphs onto authored weapons.
 //!
 //! A weapon's behavior lives in its content variant block (class `0x80803ACE`), selected inside a
 //! shared per-family owner by the pattern row's content group hash. Each block holds one or more
 //! triples of relative pointers: a label array, a state array, and a behavior array. Pointing a
 //! target block's state and behavior slots at another block's records transplants the behavior.
-//! Confirmed in game across auto rifles, scout rifles, pulse rifles and sniper rifles.
+//! Some weapons only carry a distinct state array, while firing graphs are absolute tag references
+//! that can be transplanted independently. Full record grafts are confirmed in game across auto
+//! rifles, scout rifles, pulse rifles and sniper rifles. State-only transfers still need gameplay
+//! validation.
+//!
+//! What a record actually carries, from player reports on 2026-09-21:
+//!
+//! - **The record is a gesture, not the whole perk.** Symmetry's behavior on another weapon gave
+//!   the special reload, enough to make Hard Light swap to its alternate fire, and no Dynamic
+//!   Charge stacks from precision hits. Ten records serve fourteen exotics and several legendaries
+//!   share them, which fits a shared gesture primitive rather than an exotic's own perk. Expect a
+//!   record to move how a weapon is handled and to leave what the perk counts behind.
+//! - **A weapon has one firing graph, so two projectiles cannot coexist.** Thorn's behavior on
+//!   Lumina made it poison and cost it the orbs on kill and Noble Rounds. The graph slot at
+//!   `+0xF0` holds one tag, so grafting a weapon that fires something of its own replaces whatever
+//!   the host fired, including another exotic's rounds.
 use std::collections::BTreeSet;
 
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
 use crate::{AuthoringResult, error::invalid, weapon::WeaponRuntimeResourcePatch};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::weapon_entity::weapon_component_bindings;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 const BINDING: u32 = 0x5F0D_D954;
 const ARRAY_HEADER_CLASS: u32 = 0x8080_9FBD;
@@ -21,6 +37,8 @@ const BEHAVIOR_ARRAY_CLASS: u32 = 0x8080_3AD9;
 const VARIANT_BLOCK_CLASS: u32 = 0x8080_3ACE;
 /// A triple occupies three consecutive slots of sixteen bytes: label, state, behavior.
 const SLOT_STRIDE: usize = 0x10;
+/// One row of a block's label array: the label hash, then a fixed twenty bytes shared by every row.
+const LABEL_ROW_SIZE: usize = 0x18;
 
 /// What a grafted record was observed to do in game.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,9 +63,42 @@ pub enum BehaviorSource {
         /// Weapon types the owner covers, used to offer the record only where it can apply.
         family_types: &'static [&'static str],
     },
+    /// A distinct state array with no behavior array. The record is copied into another content
+    /// owner when needed, so it can be tried on any weapon family.
+    State { owner_tag: u32, content_group: u32 },
     /// The weapon's firing and projectile graph, named by tag at block `+0xF0`. A tag reference is
     /// absolute, so any weapon can point at it.
     Graph { tag: u32 },
+    /// A firing graph whose source weapon also carries a distinct state array. Both pieces are
+    /// transferred by one Unique Weapon Behavior choice.
+    GraphState {
+        tag: u32,
+        owner_tag: u32,
+        content_group: u32,
+    },
+}
+
+impl BehaviorSource {
+    /// Content-owner record carried by this source and whether its behavior array travels too.
+    const fn record_source(self) -> Option<(u32, u32, bool)> {
+        match self {
+            Self::Record {
+                owner_tag,
+                content_group,
+                ..
+            } => Some((owner_tag, content_group, true)),
+            Self::State {
+                owner_tag,
+                content_group,
+            }
+            | Self::GraphState {
+                owner_tag,
+                content_group,
+                ..
+            } => Some((owner_tag, content_group, false)),
+            Self::Graph { .. } => None,
+        }
+    }
 }
 
 /// One graftable behavior, identified by the weapon whose block carries it.
@@ -75,13 +126,36 @@ impl Behavior {
         matches!(self.effect, BehaviorEffect::ElementSwitch)
     }
 
-    /// The content owner a record belongs to. Graphs are not owner bound.
+    /// The content owner a copied record belongs to, if this behavior carries one.
     #[must_use]
     pub const fn owner_tag(&self) -> Option<u32> {
         match self.source {
-            BehaviorSource::Record { owner_tag, .. } => Some(owner_tag),
+            BehaviorSource::Record { owner_tag, .. }
+            | BehaviorSource::State { owner_tag, .. }
+            | BehaviorSource::GraphState { owner_tag, .. } => Some(owner_tag),
             BehaviorSource::Graph { .. } => None,
         }
+    }
+
+    /// The firing graph carried by this behavior, if any.
+    #[must_use]
+    pub const fn graph_tag(&self) -> Option<u32> {
+        match self.source {
+            BehaviorSource::Graph { tag } | BehaviorSource::GraphState { tag, .. } => Some(tag),
+            BehaviorSource::Record { .. } | BehaviorSource::State { .. } => None,
+        }
+    }
+
+    /// Whether this behavior includes a firing graph rather than only content-owner records.
+    #[must_use]
+    pub const fn has_graph(&self) -> bool {
+        self.graph_tag().is_some()
+    }
+
+    /// Whether this source carries the content owner's behavior array rather than state alone.
+    #[must_use]
+    pub const fn carries_behavior_record(&self) -> bool {
+        matches!(self.source, BehaviorSource::Record { .. })
     }
 
     /// Whether this source brings projectiles whose launch speed a graft can raise.
@@ -92,20 +166,23 @@ impl Behavior {
     /// multiplier it does not have writes nothing.
     #[must_use]
     pub fn launches_projectiles(&self) -> bool {
-        matches!(self.source, BehaviorSource::Graph { .. }) && LAUNCHING_SOURCES.contains(&self.id)
+        self.has_graph() && LAUNCHING_SOURCES.contains(&self.id)
     }
 
-    /// Whether a weapon of this type can graft this behavior. Graphs reach every weapon.
+    /// Whether a weapon of this type can graft this behavior. Copied states and graphs reach every
+    /// weapon family.
     #[must_use]
     pub fn reaches_type(&self, type_name: &str) -> bool {
         match self.source {
             BehaviorSource::Record { family_types, .. } => family_types.contains(&type_name),
-            BehaviorSource::Graph { .. } => true,
+            BehaviorSource::State { .. }
+            | BehaviorSource::Graph { .. }
+            | BehaviorSource::GraphState { .. } => true,
         }
     }
 }
 
-/// Every distinct behavior record found in the stock packages.
+/// Graftable stock behavior records and firing graphs.
 pub const CATALOG: &[Behavior] = &[
     Behavior {
         id: "hard-light",
@@ -199,7 +276,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "symmetry",
         name: "Symmetry Behavior",
         source_name: "Symmetry",
-        source_item_hash: 0x9C0A_F31B,
+        source_item_hash: 0xEF7D_3366,
         source: BehaviorSource::Record {
             owner_tag: 0x8152_9461,
             content_group: 0xFA9E_4076,
@@ -306,6 +383,23 @@ pub const CATALOG: &[Behavior] = &[
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
         summary: "Copies Tarrabah's state record. Ravenous Beast behavior on another weapon has not been verified.",
+    },
+    Behavior {
+        id: "drang-state",
+        name: "Drang State",
+        source_name: "Drang",
+        source_item_hash: 0x8CD0_74B0,
+        source: BehaviorSource::State {
+            owner_tag: 0x8152_AEA5,
+            content_group: 0xA908_85A4,
+        },
+        intrinsic_plug: Some(0x4D21_471C),
+        trait_plug: Some(0x9A65_D669),
+        effect: BehaviorEffect::Untested,
+        caution: Some(
+            "Drang's state transfer is package-backed but has not been verified in game.",
+        ),
+        summary: "Copies Drang's distinct state array and can include Together Forever.",
     },
     Behavior {
         id: "ace-of-spades-graph",
@@ -461,7 +555,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "eriana-s-vow-graph",
         name: "Eriana's Vow",
         source_name: "Eriana's Vow",
-        source_item_hash: 0x9BCF6E60,
+        source_item_hash: 0xD210C009,
         source: BehaviorSource::Graph { tag: 0x8152903D },
         intrinsic_plug: Some(0xBD33FC8B),
         trait_plug: Some(0x64929156),
@@ -631,7 +725,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "prometheus-lens-graph",
         name: "Prometheus Lens",
         source_name: "Prometheus Lens",
-        source_item_hash: 0x7FF347D1,
+        source_item_hash: 0x012248BA,
         source: BehaviorSource::Graph { tag: 0x80EF31F0 },
         intrinsic_plug: Some(0x220CDA80),
         trait_plug: Some(0xCEE0A2D2),
@@ -692,12 +786,16 @@ pub const CATALOG: &[Behavior] = &[
         name: "Sturm",
         source_name: "Sturm",
         source_item_hash: 0xAD4746D4,
-        source: BehaviorSource::Graph { tag: 0x80BBC07C },
+        source: BehaviorSource::GraphState {
+            tag: 0x80BB_C07C,
+            owner_tag: 0x8152_905A,
+            content_group: 0x6D7C_0BAC,
+        },
         intrinsic_plug: Some(0x1E3A82EC),
         trait_plug: Some(0x8565B49A),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Sturm's own firing and projectile graph.",
+        summary: "Copies Sturm's firing graph and distinct state array together. This combined transfer still needs an in-game test.",
     },
     Behavior {
         id: "sunshot-graph",
@@ -727,7 +825,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "symmetry-graph",
         name: "Symmetry",
         source_name: "Symmetry",
-        source_item_hash: 0x9C0AF31B,
+        source_item_hash: 0xEF7D3366,
         source: BehaviorSource::Graph { tag: 0x8161F5EC },
         intrinsic_plug: Some(0xF97737D0),
         trait_plug: Some(0x0796FC77),
@@ -775,7 +873,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "the-jade-rabbit-graph",
         name: "The Jade Rabbit",
         source_name: "The Jade Rabbit",
-        source_item_hash: 0xC07AC8FB,
+        source_item_hash: 0xE5296126,
         source: BehaviorSource::Graph { tag: 0x815294C1 },
         intrinsic_plug: Some(0xDAAD2BD4),
         trait_plug: Some(0x8E4A757E),
@@ -847,7 +945,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "tommy-s-matchbook-graph",
         name: "Tommy's Matchbook",
         source_name: "Tommy's Matchbook",
-        source_item_hash: 0xC13DCD47,
+        source_item_hash: 0x2E43BDEE,
         source: BehaviorSource::Graph { tag: 0x81A6B4A6 },
         intrinsic_plug: Some(0x394F676E),
         trait_plug: Some(0xE0DB8E4B),
@@ -866,6 +964,20 @@ pub const CATALOG: &[Behavior] = &[
         effect: BehaviorEffect::Untested,
         caution: None,
         summary: "Tractor Cannon's own firing and projectile graph.",
+    },
+    Behavior {
+        id: "travelers-chosen-graph",
+        name: "Traveler's Chosen",
+        source_name: "Traveler's Chosen",
+        // The exotic, which carries Gathering Light and Gift of the Traveler. The record entry
+        // above names a second sidearm of the same name whose only intrinsic is Adaptive Frame.
+        source_item_hash: 0x6E75_4BFC,
+        source: BehaviorSource::Graph { tag: 0x80BB_DC29 },
+        intrinsic_plug: Some(0x3A23_E13D),
+        trait_plug: Some(0x017C_54BA),
+        effect: BehaviorEffect::Untested,
+        caution: None,
+        summary: "Traveler's Chosen's own firing graph. Its state record is catalogued separately.",
     },
     Behavior {
         id: "trinity-ghoul-graph",
@@ -890,6 +1002,18 @@ pub const CATALOG: &[Behavior] = &[
         effect: BehaviorEffect::Untested,
         caution: None,
         summary: "Truth's own firing and projectile graph.",
+    },
+    Behavior {
+        id: "vigilance-wing-graph",
+        name: "Vigilance Wing",
+        source_name: "Vigilance Wing",
+        source_item_hash: 0xD84E_04AB,
+        source: BehaviorSource::Graph { tag: 0x80BB_C8AF },
+        intrinsic_plug: Some(0x8984_35DF),
+        trait_plug: Some(0xF72A_1183),
+        effect: BehaviorEffect::Untested,
+        caution: None,
+        summary: "Vigilance Wing's five-round burst, plus its Harsh Truths frame.",
     },
     Behavior {
         id: "wavesplitter-graph",
@@ -919,7 +1043,7 @@ pub const CATALOG: &[Behavior] = &[
         id: "witherhoard-graph",
         name: "Witherhoard",
         source_name: "Witherhoard",
-        source_item_hash: 0x965F2337,
+        source_item_hash: 0x8C8180D6,
         source: BehaviorSource::Graph { tag: 0x81A6AA30 },
         intrinsic_plug: Some(0xB6969154),
         trait_plug: Some(0x2C768973),
@@ -938,6 +1062,20 @@ pub const CATALOG: &[Behavior] = &[
         effect: BehaviorEffect::Untested,
         caution: None,
         summary: "Xenophage's own firing and projectile graph.",
+    },
+    Behavior {
+        id: "wardens-law-graph",
+        name: "Warden's Law",
+        source_name: "Warden's Law",
+        source_item_hash: 0x0DE9_C46D,
+        source: BehaviorSource::Graph { tag: 0x80EF_28E9 },
+        intrinsic_plug: Some(0xE9DD_FAA0),
+        trait_plug: None,
+        effect: BehaviorEffect::Untested,
+        caution: Some(
+            "The graph and Double Fire intrinsic form one behavior. Their transfer has not been verified in game.",
+        ),
+        summary: "Copies Warden's Law's twin-fire graph and can include Double Fire, which attaches both firing assets while the weapon is drawn.",
     },
 ];
 
@@ -982,6 +1120,53 @@ pub fn catalog_for_type(type_name: &str) -> impl Iterator<Item = &'static Behavi
 pub fn switches_element_for_type(_type_name: &str) -> bool {
     CATALOG.iter().any(Behavior::switches_element)
 }
+
+/// The behavior-carrying record for the same weapon as this firing graph.
+///
+/// Several exotics keep their special behavior in two halves: a firing and projectile graph at
+/// the block, and a record inside the content owner that carries the behavior array. The picker
+/// offers one choice per weapon and prefers the graph, so before this the record half was never
+/// applied and a perk that needed it did nothing at all. Graviton Lance was reported that way,
+/// with no detonation on a hand cannon, while Hard Light looked fine because element switching
+/// lives entirely in its record and reaches the weapon through its own control.
+fn paired_record(entry: &Behavior) -> Option<&'static Behavior> {
+    if !entry.has_graph() {
+        return None;
+    }
+    if let Some((_, record)) = SHARED_RECORDS.iter().find(|(graph, _)| *graph == entry.id) {
+        return behavior(record);
+    }
+    CATALOG.iter().find(|other| {
+        other.source_item_hash == entry.source_item_hash
+            && !other.has_graph()
+            && matches!(other.source, BehaviorSource::Record { .. })
+    })
+}
+
+/// The weapon whose behavior record travels with this choice, when one does.
+///
+/// A graph choice applies a record the author did not select and cannot decline, so the picker
+/// has to say so rather than describe only the firing side.
+#[must_use]
+pub fn paired_record_source(entry: &Behavior) -> Option<&'static str> {
+    paired_record(entry).map(|record| record.source_name)
+}
+
+/// Graphs whose weapon shares another weapon's behavior record, so the pair cannot be found by
+/// matching item hashes.
+///
+/// Ten records serve fourteen exotics. `parhelion-behavior-graft-plan-2026-09-16` lists which
+/// weapons share each one: record `0xD1C0` covers Graviton Lance, Vigilance Wing and Skyburner's
+/// Oath, `0xD820` covers Cerberus+1 and Prometheus Lens, and `0xE720` covers Symmetry and
+/// Divinity. All seven sit in content owner `0x81529461`, so the shared record extracts the same
+/// bytes whichever of them names it. Without this the four sharers transferred a firing graph
+/// with no behavior array, which is the half graft Graviton Lance was reported for.
+const SHARED_RECORDS: &[(&str, &str)] = &[
+    ("vigilance-wing-graph", "graviton-lance"),
+    ("skyburner-s-oath-graph", "graviton-lance"),
+    ("prometheus-lens-graph", "cerberus-plus-one"),
+    ("divinity-graph", "symmetry"),
+];
 
 /// Turns a recipe identifier into a catalogue entry this weapon's family can actually reach.
 fn resolve_request(id: &str, owner_tag: u32) -> AuthoringResult<Option<&'static Behavior>> {
@@ -1051,6 +1236,9 @@ const LAUNCHING_SOURCES: &[&str] = &[
     "the-queenbreaker-graph",
     "the-wardcliff-coil-graph",
     "tractor-cannon-graph",
+    // Measured, not assumed: its graph reads a launch speed under the hitscan sentinel, which is
+    // why the sidearm belongs here alongside the obvious launchers.
+    "travelers-chosen-graph",
     "trinity-ghoul-graph",
     "truth-graph",
     "wish-ender-graph",
@@ -1162,7 +1350,9 @@ fn element_switch_source() -> Option<(u32, u32)> {
                 content_group,
                 ..
             } => Some((owner_tag, content_group)),
-            BehaviorSource::Graph { .. } => None,
+            BehaviorSource::State { .. }
+            | BehaviorSource::Graph { .. }
+            | BehaviorSource::GraphState { .. } => None,
         })
 }
 
@@ -1182,6 +1372,101 @@ fn block_in_owner(owner: &[u8], group: u32) -> Option<usize> {
     None
 }
 
+/// The rows of a block's label array: the labels its kill and hit events carry.
+///
+/// Every block dumped so far names the weapon type in row zero and the weapon's own labels after
+/// it. Those own labels are what an exotic's perk keys on: Cosmology detonates only on a kill
+/// carrying "bucket 2", which Graviton Lance's block holds and a legendary pulse rifle's does
+/// not, so a graft that moved the graph, the record and the trait still never detonated.
+fn label_rows(owner: &[u8], block: usize) -> AuthoringResult<Vec<Vec<u8>>> {
+    let triple = first_triple(owner, block)?;
+    let target = slot_target(owner, triple)
+        .ok_or_else(|| invalid("Weapon variant block has no label array"))?;
+    if u32_at(owner, target + 8)? != LABEL_ARRAY_CLASS {
+        return Err(invalid("Weapon label array has an unexpected class"));
+    }
+    let count = usize::try_from(u64_at(owner, triple + 8)?)
+        .map_err(|_| invalid("Weapon label array count overflow"))?;
+    (0..count)
+        .map(|index| {
+            let start = target + 16 + index * LABEL_ROW_SIZE;
+            owner
+                .get(start..start + LABEL_ROW_SIZE)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| invalid("Weapon label array is truncated"))
+        })
+        .collect()
+}
+
+fn label_of(row: &[u8]) -> u32 {
+    u32::from_le_bytes(
+        row[..4]
+            .try_into()
+            .expect("a label row starts with its hash"),
+    )
+}
+
+/// The block of a behavior's own source weapon, read through its runtime entity.
+///
+/// A record can be shared between weapons, so the record's block is not always the source
+/// weapon's block, and only the source weapon's own block holds the labels its perk keys on.
+fn source_block(manager: &PackageManager, entry: &Behavior) -> AuthoringResult<(Vec<u8>, usize)> {
+    use sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_with_manager;
+    let runtime = load_weapon_runtime_entity_with_manager(manager, entry.source_item_hash)
+        .map_err(|error| invalid(format!("{}: {error}", entry.source_name)))?;
+    let source = content(manager, &runtime.payload)?;
+    let block = block_for_group(&source, runtime.weapon_content_group_hash)?;
+    Ok((source.owner, block))
+}
+
+/// Carries the source weapons' own labels onto the host.
+///
+/// A label array is a self-contained run, so a new one is appended holding the host's rows and
+/// the source rows the host lacks, and the host's label slot is pointed at it. Row zero of each
+/// source is its weapon type and stays behind: the host keeps its own type for every perk that
+/// filters on one. Nothing is appended when no source brings a label the host lacks.
+fn label_append(
+    content: &Content,
+    host_block: usize,
+    sources: &[(Vec<u8>, usize)],
+) -> AuthoringResult<Option<crate::weapon::WeaponRuntimeResourceAppend>> {
+    let host_rows = label_rows(&content.owner, host_block)?;
+    let mut known = host_rows
+        .iter()
+        .map(|row| label_of(row))
+        .collect::<BTreeSet<_>>();
+    let mut extra = Vec::new();
+    for (source_owner, source_block) in sources {
+        for row in label_rows(source_owner, *source_block)?.into_iter().skip(1) {
+            if known.insert(label_of(&row)) {
+                extra.push(row);
+            }
+        }
+    }
+    if extra.is_empty() {
+        return Ok(None);
+    }
+    let rows = host_rows.len() + extra.len();
+    let mut bytes = ARRAY_HEADER_CLASS.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&(rows as u64).to_le_bytes());
+    bytes.extend_from_slice(&LABEL_ARRAY_CLASS.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    for row in host_rows.iter().chain(&extra) {
+        bytes.extend_from_slice(row);
+    }
+    let triple = first_triple(&content.owner, host_block)?;
+    Ok(Some(crate::weapon::WeaponRuntimeResourceAppend {
+        binding_hash: BINDING,
+        resource_index: 0,
+        bytes,
+        slots: vec![(
+            slot_offset(triple, content.resource)?,
+            4,
+            i64::try_from(rows).map_err(|_| invalid("Weapon label array count overflow"))?,
+        )],
+    }))
+}
+
 /// One weapon's state array and behavior record, copied out of its owner.
 ///
 /// Every reference inside is a class word, an inline value or an absolute tag, so the run is
@@ -1190,37 +1475,44 @@ fn block_in_owner(owner: &[u8], group: u32) -> Option<usize> {
 pub(crate) struct Record {
     pub(crate) bytes: Vec<u8>,
     pub(crate) state_offset: usize,
-    pub(crate) behavior_offset: usize,
+    pub(crate) behavior_offset: Option<usize>,
 }
 
-fn extract_record(owner: &[u8], group: u32) -> AuthoringResult<Record> {
+fn extract_record(owner: &[u8], group: u32, include_behavior: bool) -> AuthoringResult<Record> {
     let block =
         block_in_owner(owner, group).ok_or_else(|| invalid("Behavior source block is missing"))?;
     let triple = first_triple(owner, block)?;
     let state = slot_target(owner, triple + SLOT_STRIDE)
         .ok_or_else(|| invalid("Behavior source has no state array"))?;
-    let behavior = slot_target(owner, triple + SLOT_STRIDE * 2)
-        .ok_or_else(|| invalid("Behavior source has no behavior record"))?;
-    if u32_at(owner, behavior + 8)? != BEHAVIOR_ARRAY_CLASS {
+    let behavior = include_behavior
+        .then(|| {
+            slot_target(owner, triple + SLOT_STRIDE * 2)
+                .ok_or_else(|| invalid("Behavior source has no behavior record"))
+        })
+        .transpose()?;
+    if let Some(behavior) = behavior
+        && u32_at(owner, behavior + 8)? != BEHAVIOR_ARRAY_CLASS
+    {
         return Err(invalid("Behavior source record has an unexpected class"));
     }
     let start = state
         .checked_sub(4)
         .ok_or_else(|| invalid("Behavior source array marker is missing"))?;
-    let rows = behavior
+    let last = behavior.unwrap_or(state);
+    let rows = last
         .checked_add(16)
         .ok_or_else(|| invalid("Behavior source record overflows"))?;
     let end = (rows..owner.len().saturating_sub(4))
         .step_by(4)
         .find(|at| u32_at(owner, *at).is_ok_and(|word| word == ARRAY_HEADER_CLASS))
         .ok_or_else(|| invalid("Behavior source record has no end marker"))?;
-    if end <= behavior || start >= state {
+    if end <= last || start >= state {
         return Err(invalid("Behavior source record has an unexpected layout"));
     }
     Ok(Record {
         bytes: owner[start..end].to_vec(),
         state_offset: state - start,
-        behavior_offset: behavior - start,
+        behavior_offset: behavior.map(|behavior| behavior - start),
     })
 }
 
@@ -1325,11 +1617,15 @@ pub(crate) fn first_triple(owner: &[u8], block: usize) -> AuthoringResult<usize>
 /// The source records a behavior graft copies.
 pub(crate) struct Graft {
     pub(crate) state_target: usize,
-    pub(crate) behavior_target: usize,
+    pub(crate) behavior_target: Option<usize>,
 }
 
 /// Locates the state and behavior records the source weapon's block points at.
-pub(crate) fn resolve(content: &Content, source_group: u32) -> AuthoringResult<Graft> {
+pub(crate) fn resolve(
+    content: &Content,
+    source_group: u32,
+    include_behavior: bool,
+) -> AuthoringResult<Graft> {
     let block = block_for_group(content, source_group)?;
     if u32_at(&content.owner, block + 0x10)? != source_group {
         return Err(invalid(
@@ -1339,9 +1635,15 @@ pub(crate) fn resolve(content: &Content, source_group: u32) -> AuthoringResult<G
     let triple = first_triple(&content.owner, block)?;
     let state_target = slot_target(&content.owner, triple + SLOT_STRIDE)
         .ok_or_else(|| invalid("Behavior source has no state array"))?;
-    let behavior_target = slot_target(&content.owner, triple + SLOT_STRIDE * 2)
-        .ok_or_else(|| invalid("Behavior source has no behavior record"))?;
-    if u32_at(&content.owner, behavior_target + 8)? != BEHAVIOR_ARRAY_CLASS {
+    let behavior_target = include_behavior
+        .then(|| {
+            slot_target(&content.owner, triple + SLOT_STRIDE * 2)
+                .ok_or_else(|| invalid("Behavior source has no behavior record"))
+        })
+        .transpose()?;
+    if let Some(behavior_target) = behavior_target
+        && u32_at(&content.owner, behavior_target + 8)? != BEHAVIOR_ARRAY_CLASS
+    {
         return Err(invalid("Behavior source record has an unexpected class"));
     }
     Ok(Graft {
@@ -1365,10 +1667,7 @@ fn slot_offset(slot: usize, resource: usize) -> AuthoringResult<u32> {
 pub fn requested_graphs(ids: &[String]) -> Vec<u32> {
     ids.iter()
         .filter_map(|id| behavior(id))
-        .filter_map(|entry| match entry.source {
-            BehaviorSource::Graph { tag } => Some(tag),
-            BehaviorSource::Record { .. } => None,
-        })
+        .filter_map(Behavior::graph_tag)
         .collect()
 }
 
@@ -1405,71 +1704,83 @@ pub(crate) fn patches(
             .first()
             .ok_or_else(|| invalid("Weapon content owner has no variant block"))?,
     };
-    let mut patches = Vec::with_capacity(behaviors.len() * 2);
+    let mut patches = Vec::with_capacity(behaviors.len() * 3);
+    // One block holds one behavior record, so the same record must not be written twice. Two
+    // requests resolve to it whenever a weapon's graph is chosen and element switching is on,
+    // because the graph pairs with the very record the element-switch request finds. Writing it
+    // twice put two edits over the same bytes and the overlap guard failed the whole build.
+    let mut applied_records = Vec::new();
+    let mut label_sources = Vec::new();
     for entry in behaviors {
-        // A record this family does not hold is copied in from the weapon that does.
-        let foreign = match entry {
-            None => element_switch_source(),
-            Some(entry) => match entry.source {
-                BehaviorSource::Record {
-                    owner_tag,
-                    content_group,
-                    ..
-                } if owner_tag != content.owner_tag => Some((owner_tag, content_group)),
-                _ => None,
-            },
-        };
-        if let Some((owner_tag, group)) = foreign {
-            let source = manager
-                .read_tag(TagHash(owner_tag))
-                .map_err(|error| invalid(error.to_string()))?;
-            let record = extract_record(&source, group)?;
-            let triple = first_triple(&content.owner, block)?;
-            appends.push(crate::weapon::WeaponRuntimeResourceAppend {
-                binding_hash: BINDING,
-                resource_index: 0,
-                bytes: record.bytes,
-                slots: vec![
-                    (
-                        slot_offset(triple + SLOT_STRIDE, content.resource)?,
-                        record.state_offset,
-                        1,
-                    ),
-                    (
-                        slot_offset(triple + SLOT_STRIDE * 2, content.resource)?,
-                        record.behavior_offset,
-                        0,
-                    ),
-                ],
-            });
-            continue;
+        // Every source weapon's own labels come along, whichever half of it is borrowed, because
+        // its perk may key on them wherever the behavior itself lives.
+        if let Some(entry) = entry {
+            label_sources.push(source_block(manager, entry)?);
         }
-        let Some(entry) = entry else {
-            return Err(invalid("No element-switch record is available to graft."));
-        };
-        match entry.source {
-            BehaviorSource::Graph { tag } => {
-                // The graph is named by tag at block +0xF0, so the patch is the tag itself.
-                patches.push(WeaponRuntimeResourcePatch {
+        let record_source = entry
+            .and_then(|entry| entry.source.record_source())
+            // A graph choice carries its weapon's behavior record too, so one pick brings both
+            // halves. Without this the firing side transferred and the behavior never ran.
+            .or_else(|| {
+                entry
+                    .and_then(paired_record)
+                    .and_then(|paired| paired.source.record_source())
+            })
+            .or_else(|| {
+                entry
+                    .is_none()
+                    .then(element_switch_source)
+                    .flatten()
+                    .map(|(owner_tag, content_group)| (owner_tag, content_group, true))
+            });
+        if let Some((owner_tag, group, include_behavior)) = record_source {
+            if applied_records.contains(&(owner_tag, group)) {
+                continue;
+            }
+            if !applied_records.is_empty() {
+                // One block holds one behavior record, so a second distinct one has nowhere to
+                // go. Without this the two writes landed on the same bytes and the build failed
+                // with an internal overlap message that named neither behavior.
+                return Err(invalid(
+                    "A weapon can carry one borrowed behavior record. Choose a single behavior that brings one, or pick a firing graph instead.",
+                ));
+            }
+            applied_records.push((owner_tag, group));
+            let triple = first_triple(&content.owner, block)?;
+            let source_owner = (owner_tag != content.owner_tag)
+                .then(|| {
+                    manager
+                        .read_tag(TagHash(owner_tag))
+                        .map_err(|error| invalid(error.to_string()))
+                })
+                .transpose()?;
+            if let Some(source) = &source_owner {
+                let record = extract_record(source, group, include_behavior)?;
+                let mut slots = vec![(
+                    slot_offset(triple + SLOT_STRIDE, content.resource)?,
+                    record.state_offset,
+                    1,
+                )];
+                if let Some(behavior_offset) = record.behavior_offset {
+                    slots.push((
+                        slot_offset(triple + SLOT_STRIDE * 2, content.resource)?,
+                        behavior_offset,
+                        0,
+                    ));
+                }
+                appends.push(crate::weapon::WeaponRuntimeResourceAppend {
                     binding_hash: BINDING,
                     resource_index: 0,
-                    offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
-                    bytes: tag.to_le_bytes().to_vec(),
-                    graph_values: graph_values(
-                        manager,
-                        host_graph(&content, block),
-                        tag,
-                        speed_boost,
-                    )?,
+                    bytes: record.bytes,
+                    slots,
                 });
-            }
-            BehaviorSource::Record { content_group, .. } => {
-                let triple = first_triple(&content.owner, block)?;
-                let graft = resolve(&content, content_group)?;
-                for (slot, target, count) in [
-                    (triple + SLOT_STRIDE, graft.state_target, 1),
-                    (triple + SLOT_STRIDE * 2, graft.behavior_target, 0),
-                ] {
+            } else {
+                let graft = resolve(&content, group, include_behavior)?;
+                let mut targets = vec![(triple + SLOT_STRIDE, graft.state_target, 1)];
+                if let Some(behavior_target) = graft.behavior_target {
+                    targets.push((triple + SLOT_STRIDE * 2, behavior_target, 0));
+                }
+                for (slot, target, count) in targets {
                     patches.push(WeaponRuntimeResourcePatch {
                         binding_hash: BINDING,
                         resource_index: 0,
@@ -1479,7 +1790,22 @@ pub(crate) fn patches(
                     });
                 }
             }
+        } else if entry.is_none() {
+            return Err(invalid("No element-switch record is available to graft."));
         }
+
+        if let Some(tag) = entry.and_then(Behavior::graph_tag) {
+            patches.push(WeaponRuntimeResourcePatch {
+                binding_hash: BINDING,
+                resource_index: 0,
+                offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
+                bytes: tag.to_le_bytes().to_vec(),
+                graph_values: graph_values(manager, host_graph(&content, block), tag, speed_boost)?,
+            });
+        }
+    }
+    if let Some(append) = label_append(&content, block, &label_sources)? {
+        appends.push(append);
     }
     Ok(Grafted { patches, appends })
 }
@@ -1517,6 +1843,7 @@ pub(crate) fn effective_socket_types(
 pub(crate) fn claimed_plugs<'a>(
     behaviors: impl IntoIterator<Item = &'a str>,
     skip_behavior_perks: bool,
+    pins_intrinsic: &dyn Fn(&Behavior) -> bool,
 ) -> BTreeSet<u32> {
     if skip_behavior_perks {
         return BTreeSet::new();
@@ -1524,9 +1851,29 @@ pub(crate) fn claimed_plugs<'a>(
     behaviors
         .into_iter()
         .filter_map(behavior)
-        .flat_map(|entry| [entry.intrinsic_plug, entry.trait_plug])
+        .flat_map(|entry| {
+            [
+                entry.intrinsic_plug.filter(|_| pins_intrinsic(entry)),
+                entry.trait_plug,
+            ]
+        })
         .flatten()
         .collect()
+}
+
+/// Whether a source weapon's intrinsic frame belongs in a host of this type.
+///
+/// A frame plug is written for its own weapon family: a pulse frame on an auto rifle body
+/// leaves the weapon unable to fire at all. So the frame only travels with a graft when the
+/// source and host are the same kind of weapon; otherwise the host keeps its own frame and the
+/// graft brings the graph or record and the trait alone. An unknown type on either side keeps
+/// the frame, so a host that cannot be classified builds as it always has.
+#[must_use]
+pub(crate) fn same_family(host_type: Option<&str>, source_type: Option<&str>) -> bool {
+    match (host_type, source_type) {
+        (Some(host), Some(source)) => host.trim().eq_ignore_ascii_case(source.trim()),
+        _ => true,
+    }
 }
 
 /// The socket lanes each grafted behavior claims, and the plug it puts first in them.
@@ -1539,11 +1886,13 @@ pub(crate) fn claimed_plugs<'a>(
 /// socket counts as one of them. `placed` is what each lane already holds: a perk the author put
 /// in a socket of their own already satisfies the behavior, and pinning a second copy into the
 /// donor's own trait lane would show the same perk twice and reshuffle a list they arranged.
+/// `pins_intrinsic` says whether a behavior's frame plug fits this host; see [`same_family`].
 pub(crate) fn socket_pins<'a>(
     behaviors: impl IntoIterator<Item = &'a str>,
     skip_behavior_perks: bool,
     socket_types: &[u16],
     placed: &[Vec<u32>],
+    pins_intrinsic: &dyn Fn(&Behavior) -> bool,
 ) -> Vec<(usize, u32)> {
     if skip_behavior_perks {
         return Vec::new();
@@ -1566,7 +1915,10 @@ pub(crate) fn socket_pins<'a>(
     let mut pins = Vec::new();
     for entry in behaviors.into_iter().filter_map(behavior) {
         for (plug, kind) in [
-            (entry.intrinsic_plug, INTRINSIC_SOCKET_TYPE),
+            (
+                entry.intrinsic_plug.filter(|_| pins_intrinsic(entry)),
+                INTRINSIC_SOCKET_TYPE,
+            ),
             (entry.trait_plug, TRAIT_SOCKET_TYPE),
         ] {
             let Some(plug) = plug else { continue };
@@ -1619,10 +1971,12 @@ pub(crate) fn authored_socket_choices(
 ///
 /// A graph moves the firing and projectile side, but several exotics keep half of the behavior in
 /// their perk, so the plugs travel with the graft unless the author turned them off. The plug
-/// leads the socket rather than emptying it, so an author's own choices stay behind it.
+/// leads the socket rather than emptying it, so an author's own choices stay behind it. The
+/// frame plug travels only where `pins_intrinsic` allows; see [`same_family`].
 pub(crate) fn expand_socket_columns(
     overrides: &crate::weapon::WeaponCloneOverrides,
     socket_types: &[u16],
+    pins_intrinsic: &dyn Fn(&Behavior) -> bool,
 ) -> crate::AuthoringResult<crate::weapon::WeaponCloneOverrides> {
     use crate::weapon::WeaponSocketColumnOverride;
     let pins = socket_pins(
@@ -1630,15 +1984,13 @@ pub(crate) fn expand_socket_columns(
         overrides.skip_behavior_perks,
         &effective_socket_types(&authored_socket_roles(overrides), socket_types),
         &authored_socket_choices(overrides),
+        pins_intrinsic,
     );
-    if pins.is_empty() {
-        return Ok(overrides.clone());
-    }
     let mut expanded = overrides.clone();
-    if expanded.socket_columns.is_empty() {
+    if !pins.is_empty() && expanded.socket_columns.is_empty() {
         expanded.socket_columns = vec![None; socket_types.len()];
     }
-    if expanded.socket_columns.len() < socket_types.len() {
+    if !pins.is_empty() && expanded.socket_columns.len() < socket_types.len() {
         return Err(invalid(format!(
             "The recipe lists {} socket columns but the base weapon has {} sockets.",
             expanded.socket_columns.len(),
@@ -1658,6 +2010,24 @@ pub(crate) fn expand_socket_columns(
             });
         column.choices.retain(|choice| *choice != plug);
         column.choices.insert(0, plug);
+    }
+    // A weapon has one frame. A borrowed frame replaces the host's rather than sitting ahead of
+    // it, so the intrinsic lane holds the borrowed frames alone.
+    let claimed = claimed_plugs(
+        overrides.additional_behaviors.iter().map(String::as_str),
+        overrides.skip_behavior_perks,
+        pins_intrinsic,
+    );
+    let types = effective_socket_types(&authored_socket_roles(overrides), socket_types);
+    for (lane, column) in expanded.socket_columns.iter_mut().enumerate() {
+        if types.get(lane) != Some(&INTRINSIC_SOCKET_TYPE) {
+            continue;
+        }
+        if let Some(column) = column
+            && column.choices.iter().any(|choice| claimed.contains(choice))
+        {
+            column.choices.retain(|choice| claimed.contains(choice));
+        }
     }
     Ok(expanded)
 }
@@ -1694,6 +2064,94 @@ mod tests {
         (owner, block)
     }
 
+    /// A synthetic owner whose one block carries these labels, with the arrays spaced so rows
+    /// never overlap the next array's marker.
+    fn owner_with_labels(labels: &[u32]) -> (Vec<u8>, usize) {
+        let mut owner = vec![0_u8; 0x400];
+        let block = 0x40;
+        owner[block + 8..block + 12].copy_from_slice(&0x1C0_u32.to_le_bytes());
+        owner[block + 0x10..block + 0x14].copy_from_slice(&0xAABB_CCDD_u32.to_le_bytes());
+        for (at, class) in [
+            (0x200_usize, LABEL_ARRAY_CLASS),
+            (0x300, STATE_ARRAY_CLASS),
+            (0x340, BEHAVIOR_ARRAY_CLASS),
+        ] {
+            owner[at - 4..at].copy_from_slice(&ARRAY_HEADER_CLASS.to_le_bytes());
+            owner[at + 8..at + 12].copy_from_slice(&class.to_le_bytes());
+        }
+        owner[0x200..0x208].copy_from_slice(&(labels.len() as u64).to_le_bytes());
+        for (index, label) in labels.iter().enumerate() {
+            let row = 0x210 + index * LABEL_ROW_SIZE;
+            owner[row..row + 4].copy_from_slice(&label.to_le_bytes());
+            owner[row + 16..row + 20].copy_from_slice(&0x80C7_0CA1_u32.to_le_bytes());
+        }
+        let triple = block + 0x170;
+        for (slot, target, count) in [
+            (triple, 0x200_usize, labels.len() as i64),
+            (triple + SLOT_STRIDE, 0x300, 1),
+            (triple + SLOT_STRIDE * 2, 0x340, 0),
+        ] {
+            let relative = target as i64 - slot as i64;
+            owner[slot..slot + 8].copy_from_slice(&relative.to_le_bytes());
+            owner[slot + 8..slot + 16].copy_from_slice(&count.to_le_bytes());
+        }
+        (owner, block)
+    }
+
+    const PULSE_RIFLE: u32 = 0x937F_E7FA;
+    const AUTO_RIFLE: u32 = 0xDEE5_98FE;
+    const BUCKET_1: u32 = 0x2E65_81A6;
+    const BUCKET_2: u32 = 0x2E65_81A5;
+
+    #[test]
+    fn label_rows_read_every_row_of_the_block_array() {
+        let (owner, block) = owner_with_labels(&[PULSE_RIFLE, BUCKET_2]);
+        let rows = label_rows(&owner, block).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| label_of(row)).collect::<Vec<_>>(),
+            vec![PULSE_RIFLE, BUCKET_2]
+        );
+        assert!(rows.iter().all(|row| row.len() == LABEL_ROW_SIZE));
+    }
+
+    #[test]
+    fn a_graft_appends_the_source_labels_the_host_lacks_and_keeps_the_hosts_type() {
+        let (host, host_block) = owner_with_labels(&[AUTO_RIFLE, BUCKET_1]);
+        let (source, source_block) = owner_with_labels(&[PULSE_RIFLE, BUCKET_2]);
+        let content = content_for(host, host_block);
+        let append = label_append(&content, host_block, &[(source, source_block)])
+            .unwrap()
+            .expect("bucket 2 is new to the host");
+        assert_eq!(append.binding_hash, BINDING);
+        assert_eq!(append.slots, vec![(0x1B0, 4, 3)]);
+        assert_eq!(u32_at(&append.bytes, 0).unwrap(), ARRAY_HEADER_CLASS);
+        assert_eq!(u64_at(&append.bytes, 4).unwrap(), 3);
+        assert_eq!(u32_at(&append.bytes, 12).unwrap(), LABEL_ARRAY_CLASS);
+        let labels = (0..3)
+            .map(|index| u32_at(&append.bytes, 20 + index * LABEL_ROW_SIZE).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec![AUTO_RIFLE, BUCKET_1, BUCKET_2]);
+        assert_eq!(append.bytes.len(), 20 + 3 * LABEL_ROW_SIZE);
+    }
+
+    #[test]
+    fn a_source_with_nothing_new_appends_no_label_array() {
+        let (host, host_block) = owner_with_labels(&[PULSE_RIFLE, BUCKET_2]);
+        let (source, source_block) = owner_with_labels(&[PULSE_RIFLE, BUCKET_2]);
+        let content = content_for(host, host_block);
+        assert!(
+            label_append(&content, host_block, &[(source, source_block)])
+                .unwrap()
+                .is_none()
+        );
+        let (typed_only, typed_block) = owner_with_labels(&[PULSE_RIFLE]);
+        assert!(
+            label_append(&content, host_block, &[(typed_only, typed_block)])
+                .unwrap()
+                .is_none()
+        );
+    }
+
     fn content_for(owner: Vec<u8>, block: usize) -> Content {
         Content {
             owner_tag: 0x8152_9461,
@@ -1726,21 +2184,29 @@ mod tests {
     #[test]
     fn resolve_reads_both_source_records() {
         let (owner, block) = owner_with_triple(true);
-        let graft = resolve(&content_for(owner, block), 0xAABB_CCDD).unwrap();
+        let graft = resolve(&content_for(owner, block), 0xAABB_CCDD, true).unwrap();
         assert_eq!(graft.state_target, 0x240);
-        assert_eq!(graft.behavior_target, 0x280);
+        assert_eq!(graft.behavior_target, Some(0x280));
     }
 
     #[test]
     fn resolve_rejects_a_source_without_a_behavior_record() {
         let (owner, block) = owner_with_triple(false);
-        assert!(resolve(&content_for(owner, block), 0xAABB_CCDD).is_err());
+        assert!(resolve(&content_for(owner, block), 0xAABB_CCDD, true).is_err());
+    }
+
+    #[test]
+    fn resolve_accepts_a_state_without_a_behavior_record() {
+        let (owner, block) = owner_with_triple(false);
+        let graft = resolve(&content_for(owner, block), 0xAABB_CCDD, false).unwrap();
+        assert_eq!(graft.state_target, 0x240);
+        assert_eq!(graft.behavior_target, None);
     }
 
     #[test]
     fn resolve_rejects_a_content_group_the_owner_does_not_hold() {
         let (owner, block) = owner_with_triple(true);
-        assert!(resolve(&content_for(owner, block), 0x1234_5678).is_err());
+        assert!(resolve(&content_for(owner, block), 0x1234_5678, true).is_err());
     }
 
     /// Pins the offsets confirmed in game, so a change to the reader cannot silently move them.
@@ -1771,9 +2237,9 @@ mod tests {
         let BehaviorSource::Record { content_group, .. } = source.source else {
             panic!("Hard Light's element switch is a record");
         };
-        let graft = resolve(&content, content_group).unwrap();
+        let graft = resolve(&content, content_group, true).unwrap();
         assert_eq!(graft.state_target, 0xC520);
-        assert_eq!(graft.behavior_target, 0xC540);
+        assert_eq!(graft.behavior_target, Some(0xC540));
 
         // SUROS Regime's block exposes its triple where the verified patches wrote.
         let target = block_for_group(&content, SUROS_GROUP).unwrap();
@@ -1787,7 +2253,7 @@ mod tests {
             hex_bytes("80AD0000000000000100000000000000")
         );
         assert_eq!(
-            slot_bytes(graft.behavior_target, triple + SLOT_STRIDE * 2, 0).unwrap(),
+            slot_bytes(graft.behavior_target.unwrap(), triple + SLOT_STRIDE * 2, 0,).unwrap(),
             hex_bytes("90AD0000000000000000000000000000")
         );
     }
@@ -1816,20 +2282,25 @@ mod tests {
 
     #[test]
     fn graph_behaviors_reach_every_weapon_and_records_do_not() {
-        let graphs = CATALOG
+        let graphs = CATALOG.iter().filter(|entry| entry.has_graph()).count();
+        // The census in `exotic-behavior-variant-blocks` lists 53 distinct exclusive graph
+        // tags. Vigilance Wing and Traveler's Chosen were absent while this floor sat at 50,
+        // so it now tracks the census rather than leaving room for a silent gap.
+        let tags = CATALOG
             .iter()
-            .filter(|entry| matches!(entry.source, BehaviorSource::Graph { .. }))
-            .count();
+            .filter_map(Behavior::graph_tag)
+            .collect::<std::collections::BTreeSet<_>>();
         assert!(
-            graphs >= 50,
-            "the catalogue should carry every exotic graph"
+            graphs >= 54 && tags.len() >= 53,
+            "the catalogue should carry every exotic graph: {graphs} entries, {} tags",
+            tags.len()
         );
         // A graph is a tag reference, so no owner bounds it.
         assert!(
             CATALOG
                 .iter()
-                .filter(|entry| matches!(entry.source, BehaviorSource::Graph { .. }))
-                .all(|entry| entry.owner_tag().is_none() && entry.reaches_type("Sword"))
+                .filter(|entry| entry.has_graph())
+                .all(|entry| entry.reaches_type("Sword"))
         );
         // Records stay inside their family.
         assert!(
@@ -1837,6 +2308,90 @@ mod tests {
                 .iter()
                 .filter(|entry| matches!(entry.source, BehaviorSource::Record { .. }))
                 .all(|entry| entry.owner_tag().is_some())
+        );
+    }
+
+    /// Reported by a user: Graviton Lance's perks on a hand cannon never triggered, with no
+    /// detonation at all, while Hard Light's element switch worked. The picker offers one choice
+    /// per weapon and prefers the firing graph, so the record half holding the behavior array
+    /// was never applied. A graph choice now carries it.
+    #[test]
+    fn a_graph_choice_carries_its_weapons_behavior_record() {
+        let graph = behavior("graviton-lance-graph").expect("the graph half is catalogued");
+        let record = behavior("graviton-lance").expect("the record half is catalogued");
+        assert!(graph.has_graph() && !record.has_graph());
+        assert!(record.carries_behavior_record());
+        assert_eq!(graph.source_item_hash, record.source_item_hash);
+
+        let paired = paired_record(graph).expect("the graph pairs with its record");
+        assert_eq!(paired.id, record.id);
+        assert_eq!(paired.source.record_source(), record.source.record_source());
+
+        // A weapon whose behavior is only a graph has nothing to pair, and a record never
+        // pairs with itself.
+        assert!(paired_record(behavior("truth-graph").expect("graph only")).is_none());
+        assert!(paired_record(record).is_none());
+    }
+
+    /// The four exotics that share another weapon's behavior record must still find it. Matching
+    /// on item hash cannot see the pairing, so they transferred a firing graph and nothing else.
+    #[test]
+    fn graphs_that_share_a_record_still_find_it() {
+        for (graph, record) in SHARED_RECORDS {
+            let entry = behavior(graph).unwrap_or_else(|| panic!("{graph} is catalogued"));
+            let paired = paired_record(entry).unwrap_or_else(|| panic!("{graph} pairs"));
+            assert_eq!(paired.id, *record);
+            assert!(paired.carries_behavior_record());
+            // The sharers have no record of their own, which is why the table is needed.
+            assert!(!CATALOG.iter().any(|other| {
+                other.source_item_hash == entry.source_item_hash && other.carries_behavior_record()
+            }));
+        }
+    }
+
+    /// Every exotic the census credits with a behavior record must reach one, by its own record
+    /// or by the record it shares. This is what the half graft report came down to.
+    #[test]
+    fn every_graph_the_census_credits_with_a_record_reaches_one() {
+        let credited = [
+            "Vigilance Wing",
+            "Skyburner's Oath",
+            "Divinity",
+            "Prometheus Lens",
+            "Graviton Lance",
+            "Cerberus+1",
+            "Symmetry",
+            "Lord of Wolves",
+            "Izanagi's Burden",
+            "Hard Light",
+            "Borealis",
+        ];
+        let unreached = CATALOG
+            .iter()
+            .filter(|entry| entry.has_graph() && credited.contains(&entry.source_name))
+            .filter(|entry| paired_record(entry).is_none())
+            .map(|entry| entry.source_name)
+            .collect::<Vec<_>>();
+        assert!(unreached.is_empty(), "graphs with no record: {unreached:?}");
+    }
+
+    /// Every weapon offered as both halves must pair, or the half-applied graft returns.
+    #[test]
+    fn every_weapon_with_two_halves_pairs_them() {
+        let unpaired = CATALOG
+            .iter()
+            .filter(|entry| entry.has_graph())
+            .filter(|entry| {
+                CATALOG.iter().any(|other| {
+                    other.source_item_hash == entry.source_item_hash
+                        && other.carries_behavior_record()
+                }) && paired_record(entry).is_none()
+            })
+            .map(|entry| entry.source_name)
+            .collect::<Vec<_>>();
+        assert!(
+            unpaired.is_empty(),
+            "graphs with an unpaired record: {unpaired:?}"
         );
     }
 
@@ -1867,7 +2422,8 @@ mod tests {
             TRAIT_SOCKET_TYPE,
             TRAIT_SOCKET_TYPE,
         ];
-        let expanded = expand_socket_columns(&overrides_for("malfeasance-graph"), &types).unwrap();
+        let expanded =
+            expand_socket_columns(&overrides_for("malfeasance-graph"), &types, &|_| true).unwrap();
         let entry = behavior("malfeasance-graph").unwrap();
         assert_eq!(
             expanded.socket_columns[0]
@@ -1886,11 +2442,40 @@ mod tests {
     }
 
     #[test]
+    fn a_graft_from_another_family_leaves_the_hosts_frame_in_place() {
+        let types = [INTRINSIC_SOCKET_TYPE, 65, TRAIT_SOCKET_TYPE];
+        let overrides = overrides_for("graviton-lance-graph");
+        let entry = behavior("graviton-lance-graph").unwrap();
+        let expanded = expand_socket_columns(&overrides, &types, &|_| false).unwrap();
+        assert!(
+            expanded.socket_columns[0].is_none(),
+            "a pulse frame must not be pinned into another family's intrinsic socket"
+        );
+        assert_eq!(
+            expanded.socket_columns[2]
+                .as_ref()
+                .map(|c| c.choices.clone()),
+            Some(vec![entry.trait_plug.unwrap()])
+        );
+        let claimed = claimed_plugs(["graviton-lance-graph"], false, &|_| false);
+        assert!(!claimed.contains(&entry.intrinsic_plug.unwrap()));
+        assert!(claimed.contains(&entry.trait_plug.unwrap()));
+    }
+
+    #[test]
+    fn family_comparison_keeps_the_frame_only_for_the_same_kind_of_weapon() {
+        assert!(same_family(Some("Pulse Rifle"), Some("pulse rifle ")));
+        assert!(!same_family(Some("Auto Rifle"), Some("Pulse Rifle")));
+        assert!(same_family(None, Some("Pulse Rifle")));
+        assert!(same_family(Some("Auto Rifle"), None));
+    }
+
+    #[test]
     fn the_author_can_keep_the_graft_without_its_perks() {
         let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
         let mut overrides = overrides_for("malfeasance-graph");
         overrides.skip_behavior_perks = true;
-        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        let expanded = expand_socket_columns(&overrides, &types, &|_| true).unwrap();
         assert!(expanded.socket_columns.is_empty());
     }
 
@@ -1910,13 +2495,50 @@ mod tests {
             }),
             None,
         ];
-        // The author's own choice is kept, behind the perk the behavior needs first.
-        let expanded = expand_socket_columns(&overrides, &types).unwrap();
-        let intrinsic = behavior("malfeasance-graph")
-            .and_then(|entry| entry.intrinsic_plug)
+        // The frame lane holds the borrowed frame alone; a trait lane keeps the author's own
+        // choice behind the perk the behavior needs first.
+        overrides.socket_columns[1] = Some(column(vec![0x2345_6789], None));
+        let expanded = expand_socket_columns(&overrides, &types, &|_| true).unwrap();
+        let entry = behavior("malfeasance-graph").unwrap();
+        let intrinsic = entry
+            .intrinsic_plug
             .expect("the graft names an intrinsic plug");
         assert_eq!(
             expanded.socket_columns[0]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([intrinsic].as_slice())
+        );
+        assert_eq!(
+            expanded.socket_columns[1]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([entry.trait_plug.unwrap(), 0x2345_6789].as_slice())
+        );
+    }
+
+    #[test]
+    fn a_borrowed_frame_replaces_a_host_frame_left_beside_it() {
+        let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
+        let mut overrides = overrides_for("malfeasance-graph");
+        let entry = behavior("malfeasance-graph").unwrap();
+        let intrinsic = entry.intrinsic_plug.unwrap();
+        // An older save that already pinned the frame ahead of the host's own.
+        overrides.socket_columns = vec![
+            Some(column(vec![intrinsic, 0x1234_5678], None)),
+            Some(column(vec![entry.trait_plug.unwrap()], None)),
+        ];
+        let expanded = expand_socket_columns(&overrides, &types, &|_| true).unwrap();
+        assert_eq!(
+            expanded.socket_columns[0]
+                .as_ref()
+                .map(|column| column.choices.as_slice()),
+            Some([intrinsic].as_slice())
+        );
+        // A frame the graft does not bring leaves the lane untouched.
+        let kept = expand_socket_columns(&overrides, &types, &|_| false).unwrap();
+        assert_eq!(
+            kept.socket_columns[0]
                 .as_ref()
                 .map(|column| column.choices.as_slice()),
             Some([intrinsic, 0x1234_5678].as_slice())
@@ -1954,7 +2576,7 @@ mod tests {
                 Some(TRAIT_SOCKET_TYPE),
             )),
         ];
-        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        let expanded = expand_socket_columns(&overrides, &types, &|_| true).unwrap();
         assert_eq!(expanded.socket_columns[1], overrides.socket_columns[1]);
         assert_eq!(expanded.socket_columns[2], overrides.socket_columns[2]);
     }
@@ -1970,7 +2592,7 @@ mod tests {
             None,
             Some(column(vec![0x1234_5678], Some(TRAIT_SOCKET_TYPE))),
         ];
-        let expanded = expand_socket_columns(&overrides, &types).unwrap();
+        let expanded = expand_socket_columns(&overrides, &types, &|_| true).unwrap();
         assert_eq!(
             expanded.socket_columns[1]
                 .as_ref()
@@ -1983,7 +2605,7 @@ mod tests {
     fn every_graph_behavior_names_the_plugs_its_perk_half_needs() {
         let missing = CATALOG
             .iter()
-            .filter(|entry| matches!(entry.source, BehaviorSource::Graph { .. }))
+            .filter(|entry| entry.has_graph())
             .filter(|entry| entry.intrinsic_plug.is_none())
             .map(|entry| entry.source_name)
             .collect::<Vec<_>>();
@@ -2028,10 +2650,10 @@ mod tests {
                 continue;
             };
             let owner = manager.read_tag(TagHash(owner_tag)).unwrap();
-            let record = extract_record(&owner, content_group)
+            let record = extract_record(&owner, content_group, true)
                 .unwrap_or_else(|error| panic!("{}: {error:?}", entry.source_name));
             assert_eq!(record.state_offset, 4, "{}", entry.source_name);
-            assert_eq!(record.behavior_offset, 0x24, "{}", entry.source_name);
+            assert_eq!(record.behavior_offset, Some(0x24), "{}", entry.source_name);
             assert!(
                 (96..=112).contains(&record.bytes.len()),
                 "{} record is {} bytes",
@@ -2044,12 +2666,210 @@ mod tests {
                 STATE_ARRAY_CLASS
             );
             assert_eq!(
-                u32_at(&record.bytes, record.behavior_offset + 8).unwrap(),
+                u32_at(&record.bytes, record.behavior_offset.unwrap() + 8).unwrap(),
                 BEHAVIOR_ARRAY_CLASS
             );
             checked += 1;
         }
         assert_eq!(checked, 10, "every record in the catalogue should extract");
+    }
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn every_state_only_record_extracts_from_its_owner() {
+        use sundial::package_authoring::open_shadowkeep_package_manager;
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let manager = open_shadowkeep_package_manager(&path).unwrap();
+        let mut checked = 0;
+        for entry in CATALOG {
+            let (owner_tag, content_group) = match entry.source {
+                BehaviorSource::State {
+                    owner_tag,
+                    content_group,
+                }
+                | BehaviorSource::GraphState {
+                    owner_tag,
+                    content_group,
+                    ..
+                } => (owner_tag, content_group),
+                BehaviorSource::Record { .. } | BehaviorSource::Graph { .. } => continue,
+            };
+            let owner = manager.read_tag(TagHash(owner_tag)).unwrap();
+            let record = extract_record(&owner, content_group, false)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", entry.source_name));
+            assert_eq!(record.state_offset, 4, "{}", entry.source_name);
+            assert_eq!(record.behavior_offset, None, "{}", entry.source_name);
+            assert!(
+                matches!(record.bytes.len(), 32 | 80 | 144),
+                "{} state is {} bytes",
+                entry.source_name,
+                record.bytes.len()
+            );
+            assert_eq!(
+                u32_at(&record.bytes, record.state_offset + 8).unwrap(),
+                STATE_ARRAY_CLASS
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "every state-only source should extract");
+    }
+
+    /// Choosing a weapon's firing graph turns element switching on for the two exotics that
+    /// switch damage, and that request resolves to the very record the graph pairs with. Writing
+    /// it once per request put two edits over the same bytes and the overlap guard failed the
+    /// build, so Hard Light could not compile at all.
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn a_graph_and_its_element_switch_apply_one_record_between_them() {
+        use sundial::package_authoring::{
+            open_shadowkeep_package_manager,
+            weapon_runtime::load_weapon_runtime_entity_with_manager,
+        };
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let manager = open_shadowkeep_package_manager(&path).unwrap();
+        let rifle = load_weapon_runtime_entity_with_manager(&manager, 0xD84E_04AA).unwrap();
+        let graft = |requested: &[String]| {
+            patches(
+                &manager,
+                &rifle.payload,
+                Some(rifle.weapon_content_group_hash),
+                requested,
+                DEFAULT_PROJECTILE_SPEED_BOOST,
+            )
+            .unwrap()
+        };
+
+        let both = graft(&["hard-light-graph".into(), ELEMENT_SWITCH.to_owned()]);
+        let mut offsets = both
+            .patches
+            .iter()
+            .map(|patch| patch.offset)
+            .collect::<Vec<_>>();
+        offsets.sort_unstable();
+        let unique = {
+            let mut seen = offsets.clone();
+            seen.dedup();
+            seen.len()
+        };
+        assert_eq!(
+            unique,
+            offsets.len(),
+            "a record was written twice: {offsets:?}"
+        );
+
+        // The record travels once whether or not element switching asks for it as well.
+        let alone = graft(&["hard-light-graph".into()]);
+        assert_eq!(alone.patches.len(), both.patches.len());
+        assert_eq!(alone.appends.len(), both.appends.len());
+    }
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    #[allow(clippy::cognitive_complexity)]
+    fn state_only_and_graph_state_sources_compile_for_another_family() {
+        use sundial::package_authoring::{
+            open_shadowkeep_package_manager,
+            weapon_runtime::load_weapon_runtime_entity_with_manager,
+        };
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let manager = open_shadowkeep_package_manager(&path).unwrap();
+        let sniper = load_weapon_runtime_entity_with_manager(&manager, 0xBB46_CCD3).unwrap();
+
+        let drang = patches(
+            &manager,
+            &sniper.payload,
+            Some(sniper.weapon_content_group_hash),
+            &["drang-state".into()],
+            DEFAULT_PROJECTILE_SPEED_BOOST,
+        )
+        .unwrap();
+        assert!(drang.patches.is_empty());
+        let (record, labels) = record_and_labels(&drang.appends);
+        assert_eq!(record.slots.len(), 1);
+        if let Some(labels) = labels {
+            assert_eq!(labels.slots[0].0 + SLOT_STRIDE as u32, record.slots[0].0);
+            assert!(labels.slots[0].2 >= 2);
+        }
+
+        let sturm = patches(
+            &manager,
+            &sniper.payload,
+            Some(sniper.weapon_content_group_hash),
+            &["sturm-graph".into()],
+            DEFAULT_PROJECTILE_SPEED_BOOST,
+        )
+        .unwrap();
+        let (record, labels) = record_and_labels(&sturm.appends);
+        assert_eq!(record.slots.len(), 1);
+        if let Some(labels) = labels {
+            assert_eq!(labels.slots[0].0 + SLOT_STRIDE as u32, record.slots[0].0);
+        }
+        assert_eq!(sturm.patches.len(), 1);
+        assert_eq!(sturm.patches[0].bytes, 0x80BB_C07C_u32.to_le_bytes());
+
+        // The case reported in game: Graviton Lance onto a legendary pulse rifle. Same owner, so
+        // the record is patched in place, and the one append is the label array carrying
+        // "bucket 2", which Cosmology's kill condition requires and Bygones' block lacks.
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(path.parent().unwrap(), false, |_| {})
+                .unwrap();
+        let pulse = catalog
+            .weapon_donors()
+            .into_iter()
+            .filter(|donor| {
+                donor.type_name == "Pulse Rifle"
+                    && donor.rarity == sundial::investment::WeaponRarity::Legendary
+                    && donor.weapon_pattern_index.is_some()
+            })
+            .find_map(|donor| load_weapon_runtime_entity_with_manager(&manager, donor.hash).ok())
+            .expect("a legendary pulse rifle with a runtime entity");
+        let graviton = patches(
+            &manager,
+            &pulse.payload,
+            Some(pulse.weapon_content_group_hash),
+            &["graviton-lance-graph".into()],
+            DEFAULT_PROJECTILE_SPEED_BOOST,
+        )
+        .unwrap();
+        assert_eq!(graviton.appends.len(), 1);
+        let labels = &graviton.appends[0];
+        assert_eq!(u32_at(&labels.bytes, 12).unwrap(), LABEL_ARRAY_CLASS);
+        let rows = usize::try_from(labels.slots[0].2).unwrap();
+        let carried = (0..rows)
+            .map(|index| u32_at(&labels.bytes, 20 + index * LABEL_ROW_SIZE).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            carried[0], 0x937F_E7FA,
+            "the host keeps its pulse rifle label first"
+        );
+        assert!(
+            carried.contains(&0x2E65_81A5),
+            "bucket 2 travels: {carried:08X?}"
+        );
+        assert_eq!(labels.bytes.len(), 20 + rows * LABEL_ROW_SIZE);
+    }
+
+    /// A cross-owner graft appends its record and, when the source has labels of its own, a
+    /// label array; nothing else.
+    fn record_and_labels(
+        appends: &[crate::weapon::WeaponRuntimeResourceAppend],
+    ) -> (
+        &crate::weapon::WeaponRuntimeResourceAppend,
+        Option<&crate::weapon::WeaponRuntimeResourceAppend>,
+    ) {
+        let is_labels = |append: &crate::weapon::WeaponRuntimeResourceAppend| {
+            u32_at(&append.bytes, 12).ok() == Some(LABEL_ARRAY_CLASS)
+        };
+        let labels = appends.iter().find(|append| is_labels(append));
+        let record = appends
+            .iter()
+            .find(|append| !is_labels(append))
+            .expect("a record append");
+        assert_eq!(appends.len(), 1 + usize::from(labels.is_some()));
+        (record, labels)
     }
 
     /// Only a graph source can hand a weapon projectiles, and the recorded list has to name
@@ -2058,8 +2878,7 @@ mod tests {
     fn only_graph_sources_launch_projectiles() {
         for entry in CATALOG {
             assert!(
-                !entry.launches_projectiles()
-                    || matches!(entry.source, BehaviorSource::Graph { .. }),
+                !entry.launches_projectiles() || entry.has_graph(),
                 "{} is not a graph source",
                 entry.id
             );
@@ -2083,9 +2902,10 @@ mod tests {
         let manager = open_shadowkeep_package_manager(&path).unwrap();
         let measured = CATALOG
             .iter()
-            .filter(|entry| match entry.source {
-                BehaviorSource::Graph { tag } => launches_its_own(&manager, tag),
-                BehaviorSource::Record { .. } => false,
+            .filter(|entry| {
+                entry
+                    .graph_tag()
+                    .is_some_and(|tag| launches_its_own(&manager, tag))
             })
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
@@ -2216,11 +3036,92 @@ mod tests {
         assert!(switches_element_for_type("Scout Rifle"));
         assert!(switches_element_for_type("Sniper Rifle"));
         assert!(switches_element_for_type("Sword"));
-        // A sword's family holds no record, but graphs are tag references and reach every weapon.
-        assert!(catalog_for_type("Sword").all(|entry| entry.owner_tag().is_none()));
+        // Graph and state-only sources are portable, so a sword reaches both kinds.
+        assert!(catalog_for_type("Sword").all(|entry| entry.reaches_type("Sword")));
         assert!(catalog_for_type("Sword").count() > 0);
         assert!(
             catalog_for_type("Scout Rifle").any(|entry| entry.owner_tag() == Some(0x8152_9461))
+        );
+    }
+
+    /// Every catalogued entry's plugs must be the ones its own weapon equips, in the sockets the
+    /// roles name. Three entries were checked before, which left a wrong hash free to pin another
+    /// weapon's perk. Two entries legitimately share a plug: Moving Target is part of both
+    /// Dornroeschen and this build's Arc Traps, so sharing is not evidence of a mistake and only
+    /// this test can tell the two apart.
+    /// The behavior browser lists weapons, so an entry whose weapon is not an offered donor would
+    /// disappear from the picker without a word. That is the silent-drop failure this area has
+    /// already produced twice, so it is checked rather than assumed.
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn every_entry_names_a_weapon_the_browser_can_list() {
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(path.parent().unwrap(), false, |_| {})
+                .unwrap();
+        let donors = catalog
+            .weapon_donors()
+            .into_iter()
+            .map(|donor| donor.hash)
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = CATALOG
+            .iter()
+            .filter(|entry| !donors.contains(&entry.source_item_hash))
+            .map(|entry| format!("{} ({})", entry.source_name, entry.id))
+            .collect::<Vec<_>>();
+        assert!(missing.is_empty(), "not listable as donors: {missing:?}");
+    }
+
+    #[test]
+    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    fn every_entry_pins_the_plugs_its_own_weapon_equips() {
+        let path =
+            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let catalog =
+            sundial::investment::InvestmentCatalog::load(path.parent().unwrap(), false, |_| {})
+                .unwrap();
+        let mut problems = Vec::new();
+        for entry in CATALOG {
+            let Some(donor) = catalog.weapon_donor(entry.source_item_hash) else {
+                problems.push(format!(
+                    "{} ({}): item 0x{:08X} is not an installed weapon",
+                    entry.source_name, entry.id, entry.source_item_hash
+                ));
+                continue;
+            };
+            for (plug, role) in [
+                (entry.intrinsic_plug, INTRINSIC_SOCKET_TYPE),
+                (entry.trait_plug, TRAIT_SOCKET_TYPE),
+            ] {
+                let Some(plug) = plug else { continue };
+                let equipped = donor.sockets.iter().any(|socket| {
+                    socket.socket_type == role && socket.native_default == Some(plug)
+                });
+                if !equipped {
+                    let held = donor
+                        .sockets
+                        .iter()
+                        .find(|socket| socket.native_default == Some(plug))
+                        .map_or_else(
+                            || "no socket of this weapon".to_owned(),
+                            |socket| format!("its socket type {}", socket.socket_type),
+                        );
+                    problems.push(format!(
+                        "{} ({}): 0x{plug:08X} is not the type {role} default, it is in {held}",
+                        entry.source_name, entry.id
+                    ));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "plug mismatches:
+{}",
+            problems.join(
+                "
+"
+            )
         );
     }
 

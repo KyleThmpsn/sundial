@@ -1,6 +1,36 @@
 //! Consume a completed payload plan and emit its verified package artifacts.
 use super::*;
+mod art;
+#[cfg(feature = "d2-model-importer")]
+mod imported;
+mod linking;
 mod packages;
+mod reskin;
+
+/// The position of an authored item's definition among the host package's new tags.
+fn definition_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<usize> {
+    let (count, _, rows, _) =
+        sundial::package_authoring::native_payload::native_array_at(&emission.item_table, 8)
+            .map_err(invalid)?;
+    let matches = (0..count)
+        .map(|i| rows + i * 24)
+        .filter(|&row| read_u32(&emission.item_table, row).ok() == Some(item))
+        .collect::<Vec<_>>();
+    let [row] = matches.as_slice() else {
+        return Err(invalid("Authored item is missing or ambiguous"));
+    };
+    let tag = TagHash(read_u32(&emission.item_table, row + 16)?);
+    if tag.pkg_id() != HOST_PACKAGE_ID {
+        return Err(invalid("Authored item must be a private definition"));
+    }
+    let ordinal = (tag.entry_index() as usize)
+        .checked_sub(HOST_EXPECTED_ENTRY_COUNT)
+        .ok_or_else(|| invalid("Authored item is a stock definition"))?;
+    if ordinal >= emission.host_new_tags.len() {
+        return Err(invalid("Authored definition is outside authored tags"));
+    }
+    Ok(ordinal)
+}
 
 pub(super) struct PackageEmission {
     pub(super) lore: Option<lore::Plan>,
@@ -69,11 +99,21 @@ pub(super) struct PackageEmission {
     pub(super) host_new_tags: Vec<NewTagSpec>,
 }
 
+#[allow(unused_mut)]
 pub(super) fn emit_packages(
     package_directory: &Path,
-    emission: PackageEmission,
+    mut emission: PackageEmission,
+    weapons: &[WeaponCloneSpec],
     progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
+    #[cfg(feature = "d2-model-importer")]
+    let mut replacements = imported::apply(package_directory, &mut emission, weapons)?;
+    #[cfg(not(feature = "d2-model-importer"))]
+    let mut replacements: Vec<ReplacementSpec> = Vec::new();
+    reskin::apply(package_directory, &mut emission, weapons, &mut replacements)?;
+    let (imported_runtime, imported_strings): (Vec<_>, Vec<_>) = replacements
+        .into_iter()
+        .partition(|r| r.tag.pkg_id() == emission.entity_assignment_tag.pkg_id());
     let PackageEmission {
         lore,
         hud_table,
@@ -180,6 +220,7 @@ pub(super) fn emit_packages(
     let mut packages = packages::Packages {
         directory: package_directory,
         progress,
+        chains: None,
     };
     let host = packages.overlay(
         HOST_PACKAGE_ID,
@@ -250,10 +291,14 @@ pub(super) fn emit_packages(
     }
     let runtime_entities = packages.overlay(
         entity_assignment_tag.pkg_id(),
-        &[ReplacementSpec {
-            tag: entity_assignment_tag,
-            payload: entity_assignments,
-        }],
+        &{
+            let mut replacements = vec![ReplacementSpec {
+                tag: entity_assignment_tag,
+                payload: entity_assignments,
+            }];
+            replacements.extend(imported_runtime);
+            replacements
+        },
         &[],
         &[],
     )?;
@@ -336,6 +381,7 @@ pub(super) fn emit_packages(
     } else {
         None
     };
+    string_replacements.extend(imported_strings);
     let strings = packages.overlay(
         item_string_table_tag.pkg_id(),
         &string_replacements,

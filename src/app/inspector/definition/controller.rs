@@ -480,7 +480,14 @@ fn draw_hash_inspector_contents(
                     super::item_details::draw_structure_matches(ui, catalog, matches);
                 }
                 if sections.contains(&HashInspectorSection::Progression) {
-                    draw_hash_progression_matches(ui, catalog, *document, *hash, matches);
+                    draw_hash_progression_matches(
+                        ui,
+                        catalog,
+                        *document,
+                        *collection_state,
+                        *hash,
+                        matches,
+                    );
                 }
                 if sections.contains(&HashInspectorSection::Collections) {
                     draw_hash_collection_matches(

@@ -105,8 +105,31 @@ fn normalize_absolute(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(windows)]
 fn folded_components(path: &Path) -> Vec<String> {
+    use std::path::Prefix;
+
     path.components()
-        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .map(|component| match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(disk) | Prefix::VerbatimDisk(disk) => {
+                    format!("disk:{}", char::from(disk).to_ascii_lowercase())
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+                    "unc:{}:{}",
+                    server.to_string_lossy().to_lowercase(),
+                    share.to_string_lossy().to_lowercase()
+                ),
+                Prefix::DeviceNS(device) => {
+                    format!("device:{}", device.to_string_lossy().to_lowercase())
+                }
+                Prefix::Verbatim(value) => {
+                    format!("verbatim:{}", value.to_string_lossy().to_lowercase())
+                }
+            },
+            Component::RootDir => "root".to_owned(),
+            Component::CurDir => "current".to_owned(),
+            Component::ParentDir => "parent".to_owned(),
+            Component::Normal(value) => value.to_string_lossy().to_lowercase(),
+        })
         .collect()
 }
 
@@ -132,4 +155,17 @@ pub fn paths_equal(left: &Path, right: &Path) -> bool {
 #[cfg(not(windows))]
 pub fn paths_equal(left: &Path, right: &Path) -> bool {
     left == right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_and_canonical_windows_paths_compare_equally() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = fs::canonicalize(directory.path()).unwrap();
+        assert!(paths_equal(directory.path(), &canonical));
+        assert!(path_is_within(&canonical.join("child"), directory.path()));
+    }
 }

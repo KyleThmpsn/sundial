@@ -16,19 +16,6 @@ impl PackageAuthoringApp {
         let inherited = gameplay_donor
             .map(|donor| donor.base_sandbox_perks.as_slice())
             .unwrap_or_default();
-        let effective = self
-            .recipe
-            .overrides
-            .base_sandbox_perks
-            .as_deref()
-            .unwrap_or(inherited);
-        if let Some(warning) =
-            sundial::package_authoring::sandbox_perk::sunrise_perk_projection_warning(
-                effective.len(),
-            )
-        {
-            ui.colored_label(ui.visuals().warn_fg_color, warning);
-        }
         ui.weak("The replicated weapon bank holds 16 entries total: base perks first, then equipped plugs in socket order. Socket alternatives are not all active at once.");
         if self.recipe.overrides.base_sandbox_perks.is_none() {
             ui.horizontal_wrapped(|ui| {

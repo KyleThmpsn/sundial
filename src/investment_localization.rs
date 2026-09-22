@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, hash_map::Entry};
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::{
     investment_schema::{

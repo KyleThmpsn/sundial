@@ -8,6 +8,25 @@ pub fn asset_details(
     catalog: &projectile::catalog::Catalog,
     usage: &str,
 ) {
+    details(ui, entry, catalog, usage, true);
+}
+
+/// The resource page presents components in its dedicated structure inspector.
+pub(super) fn resource_details(
+    ui: &mut egui::Ui,
+    entry: &projectile::catalog::Entry,
+    catalog: &projectile::catalog::Catalog,
+) {
+    details(ui, entry, catalog, "", false);
+}
+
+fn details(
+    ui: &mut egui::Ui,
+    entry: &projectile::catalog::Entry,
+    catalog: &projectile::catalog::Catalog,
+    usage: &str,
+    components: bool,
+) {
     ui.separator();
     let summary = entry.discovery_summary();
     if !summary.is_empty() {
@@ -17,7 +36,7 @@ pub fn asset_details(
     if !usage.is_empty() && entry.source_hint.as_deref() != Some(usage) {
         ui.label(usage);
     }
-    egui::CollapsingHeader::new("Technical Details").default_open(true).show(ui, |ui| {
+    egui::CollapsingHeader::new("Technical Details").show(ui, |ui| {
         ui.label(projectile::residency::classify(entry).label());
         ui.label(entry.kind_label());
         for path in entry.native_paths.iter().chain(entry.native_name.iter()).collect::<BTreeSet<_>>() {
@@ -25,7 +44,7 @@ pub fn asset_details(
         }
         ui.monospace(format!("0x{:08X}", entry.graph));
         ui.label(&entry.package);
-        if !entry.owners.is_empty() {
+        if components && !entry.owners.is_empty() {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.strong("Component Resources");

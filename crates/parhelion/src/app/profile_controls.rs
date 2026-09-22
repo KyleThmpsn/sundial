@@ -37,6 +37,17 @@ pub(super) fn draw_combat_profile_control(
     } else {
         "Damage Type"
     };
+    let experimental_pair = !select_slot
+        && donor.is_some_and(|donor| {
+            let Some(CombatProfileAction::Set(profile)) =
+                recipe_combat_profile_action(overrides, &donor.summary)
+            else {
+                return false;
+            };
+            use sundial::investment::WeaponDamageType;
+            let kinetic_damage = profile.damage_type == WeaponDamageType::Kinetic;
+            kinetic_damage != (profile.inventory_slot == WeaponInventorySlot::Kinetic)
+        });
     let label = ui.horizontal(|ui| {
         let label = ui.label(field_label);
         draw_authoring_info_icon(ui, if select_slot {
@@ -44,6 +55,12 @@ pub(super) fn draw_combat_profile_control(
         } else {
             "Changes the weapon's damage type. Slot and ammo type are separate choices. Kinetic conversion is unavailable for some elemental weapons. Variable damage steps the element while Reload is held, the way Hard Light and Borealis do, and wears one of them. Test unusual combinations in game."
         });
+        if experimental_pair {
+            draw_authoring_warning_icon(
+                ui,
+                "Experimental slot and damage combination. Check equipping, damage, and ammo in game.",
+            );
+        }
         label
     }).inner;
     let Some(donor) = donor else {
@@ -309,18 +326,6 @@ pub(super) fn draw_combat_profile_diagnostics(
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 "The resting damage type is not one of the variable elements. Pick the damage type again.",
-            );
-        }
-    }
-    if let Some(CombatProfileAction::Set(profile)) =
-        recipe_combat_profile_action(overrides, &donor.summary)
-    {
-        use sundial::investment::WeaponDamageType;
-        let kinetic_damage = profile.damage_type == WeaponDamageType::Kinetic;
-        if kinetic_damage != (profile.inventory_slot == WeaponInventorySlot::Kinetic) {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Experimental slot and damage combination. Check equipping, damage, and ammo in game.",
             );
         }
     }

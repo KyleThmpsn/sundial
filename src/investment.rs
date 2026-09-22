@@ -26,9 +26,10 @@ pub use controls::{
     WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, authoring_button_width,
     authoring_choice_row_height, authoring_socket_label_width, authoring_socket_reset_width,
     configure_authoring_fonts, default_plug_selection_mode, draw_asset_choice_row,
-    draw_authoring_info_icon, draw_authoring_socket_label, draw_authoring_socket_reset,
-    draw_authoring_toolbar, draw_catalog_loading_view, draw_plug_safety_selector,
-    draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
+    draw_asset_choice_row_plain, draw_authoring_info_icon, draw_authoring_socket_label,
+    draw_authoring_socket_reset, draw_authoring_toolbar, draw_authoring_warning_icon,
+    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning, progress_bar,
+    show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
     PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
@@ -72,6 +73,12 @@ pub struct InvestmentCatalog {
 }
 
 impl InvestmentCatalog {
+    /// Installed presentation-node identities in native table order.
+    #[must_use]
+    pub fn presentation_node_hashes(&self) -> &[u64] {
+        self.catalog.presentation_node_hashes()
+    }
+
     /// Loads (or scans) the installed Shadowkeep catalog using Sundial's shared cache.
     pub fn load(
         install_directory: &Path,
@@ -621,6 +628,21 @@ impl InvestmentCatalog {
             .flat_map(|metadata| &metadata.investment_stats)
             .map(|stat| self.weapon_investment_stat(None, stat.definition_index, stat.value))
             .collect()
+    }
+
+    /// Native appearance colors on a weapon, ornament or shader plug.
+    pub fn item_render_dye_rows(&self, hash: u32) -> [Vec<WeaponDyeReference>; 3] {
+        let metadata = self.catalog.item_package_metadata(u64::from(hash));
+        std::array::from_fn(|stage| {
+            metadata
+                .into_iter()
+                .flat_map(|metadata| &metadata.translation_dye_rows[stage])
+                .map(|row| WeaponDyeReference {
+                    channel_index: row.key,
+                    dye_reference_index: row.value,
+                })
+                .collect()
+        })
     }
 
     /// Native stat definitions for independent perk authoring, without a weapon context.

@@ -14,6 +14,22 @@ fn native_uninstall_review_identifies_the_complete_installed_set_without_mutatio
 }
 
 #[test]
+fn uninstall_fails_closed_when_runtime_identity_is_unrecognized() {
+    let fixture = installed_fixture();
+    let plan = preview_uninstall(&fixture.target).unwrap();
+
+    let error = uninstall_custom_packages(&plan, &fixture.backups, game_stopped).unwrap_err();
+
+    assert!(
+        error.message.contains("no recognized Sunrise or Dawn"),
+        "{error}"
+    );
+    for artifact in plan.artifacts() {
+        assert!(fixture.target.join(&artifact.file_name).is_file());
+    }
+}
+
+#[test]
 fn uninstall_backs_up_complete_set_preserves_stock_accounts_and_invalidates_caches() {
     let fixture = installed_fixture();
     let cache = fixture.write_sunrise_cache(b"stale build cache");
@@ -24,7 +40,7 @@ fn uninstall_backs_up_complete_set_preserves_stock_accounts_and_invalidates_cach
     fs::write(&settings, b"keep saved account data").unwrap();
     let plan = preview_uninstall(&fixture.target).unwrap();
     assert_eq!(plan.artifacts().len(), AUTHORED_PACKAGES.len());
-    let report = uninstall_custom_packages(&plan, &fixture.backups, game_stopped).unwrap();
+    let report = uninstall_fixture(&plan, &fixture.backups, game_stopped).unwrap();
     assert_eq!(report.removed_files.len(), AUTHORED_PACKAGES.len());
     assert!(!cache.exists());
     assert!(!header.exists());
@@ -52,15 +68,13 @@ fn uninstall_backs_up_complete_set_preserves_stock_accounts_and_invalidates_cach
 fn uninstall_rejects_running_game_stale_reviews_unsigned_targets_and_nested_backups() {
     let fixture = installed_fixture();
     let plan = preview_uninstall(&fixture.target).unwrap();
-    assert!(uninstall_custom_packages(&plan, &fixture.backups, game_running).is_err());
-    assert!(
-        uninstall_custom_packages(&plan, &fixture.target.join("backups"), game_stopped).is_err()
-    );
+    assert!(uninstall_fixture(&plan, &fixture.backups, game_running).is_err());
+    assert!(uninstall_fixture(&plan, &fixture.target.join("backups"), game_stopped).is_err());
     let name = AUTHORED_PACKAGES[0].file_name;
     let mut changed = fixture.staged_bytes[name].clone();
     changed.push(123);
     fs::write(fixture.target.join(name), changed).unwrap();
-    assert!(uninstall_custom_packages(&plan, &fixture.backups, game_stopped).is_err());
+    assert!(uninstall_fixture(&plan, &fixture.backups, game_stopped).is_err());
     for profile in AUTHORED_PACKAGES {
         assert!(fixture.target.join(profile.file_name).exists());
     }
@@ -125,7 +139,7 @@ fn account_cleanup_and_package_removal_commit_or_rollback_together() {
             // A concurrent account edit must be rejected before any package removal.
             let external = [original.as_slice(), b" "].concat();
             fs::write(&settings, &external).unwrap();
-            assert!(uninstall_custom_packages(&plan, &backups, game_stopped).is_err());
+            assert!(uninstall_fixture(&plan, &backups, game_stopped).is_err());
             assert_eq!(fs::read(&settings).unwrap(), external);
             assert_eq!(
                 preview_uninstall(&target).unwrap(),
@@ -156,6 +170,7 @@ fn uninstall_failures_restore_every_removed_package() {
             game_stopped,
             Some(count),
             DEFAULT_CACHE_INVALIDATION_OPS,
+            test_runtime_snapshot,
         )
         .unwrap_err();
         assert!(error.to_string().contains("restored"), "{error}");
@@ -178,6 +193,7 @@ fn uninstall_cache_failure_restores_packages_and_keeps_a_recovery_backup() {
         game_stopped,
         None,
         ops,
+        test_runtime_snapshot,
     )
     .unwrap_err();
     assert!(error.backup_directory.unwrap().exists());
@@ -198,7 +214,8 @@ fn interrupted_uninstall_is_recoverable_and_refuses_changed_survivors() {
             &fixture.backups,
             starts_during_rollback,
             Some(1),
-            DEFAULT_CACHE_INVALIDATION_OPS
+            DEFAULT_CACHE_INVALIDATION_OPS,
+            test_runtime_snapshot,
         )
         .is_err()
     );
@@ -209,6 +226,7 @@ fn interrupted_uninstall_is_recoverable_and_refuses_changed_survivors() {
         target_packages_directory: fixture.target.clone(),
         backup_root: fixture.backups.clone(),
         game_running_check: game_stopped,
+        runtime_snapshot_check: test_runtime_snapshot,
     };
     assert!(recover_interrupted_install(&request).is_err());
     assert_eq!(

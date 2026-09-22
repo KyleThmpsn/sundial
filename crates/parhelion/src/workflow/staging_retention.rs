@@ -63,7 +63,7 @@ impl StagedRun {
             Ok(lease) => lease,
             Err(error) => {
                 let cleanup = clean_initialization_failure(&root, &directory);
-                return super::package_views::finish_with_cleanup(Err(error), cleanup);
+                return super::package_views::finish_with_cleanup(Err(error), cleanup, drop);
             }
         };
         Ok(Self {
@@ -83,7 +83,7 @@ impl StagedRun {
         } else {
             self.discard()
         };
-        super::package_views::finish_with_cleanup(result, cleanup)
+        super::package_views::finish_with_cleanup(result, cleanup, drop)
     }
 
     fn complete(&mut self) -> Result<(), String> {

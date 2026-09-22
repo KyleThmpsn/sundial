@@ -9,7 +9,9 @@ use crate::package_payload::{bytes_at, i64_at, native_array_at, relative_offset,
 
 use super::nodes::{self, Support};
 
+mod descriptors;
 mod facts;
+pub use descriptors::{SelfReference, self_references};
 pub use facts::{Fact, FactValue, label_name};
 mod fields;
 pub use fields::{

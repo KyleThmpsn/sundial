@@ -1,5 +1,8 @@
 mod accessibility;
 mod canvas;
+pub(crate) mod capture;
+mod cards;
+mod design;
 mod entry;
 mod guidance;
 mod identity;

@@ -208,7 +208,6 @@ impl Category {
                     Self::EffectsAndSpawns
                         | Self::WeaponSettings
                         | Self::EventLabels
-                        | Self::TimersAndCounters
                         | Self::Scripts
                 ),
             })
@@ -250,7 +249,9 @@ impl Category {
             Self::GameEvents => "Game events and signals the engine raises.",
             Self::States => "Player, weapon and subclass states the game compares.",
             Self::EventLabels => "Labels and values on the event that started the effect.",
-            Self::TimersAndCounters => "Running timers and the effect's counter.",
+            Self::TimersAndCounters => {
+                "Running timers, the effect's counter and the trigger that fires when it is reached."
+            }
             Self::Scripts => "Scripts the game's own perks run, such as Charged with Light.",
             Self::Timing => "Always, and after a delay.",
             Self::Other => "Behaviors with no plain title yet.",
@@ -277,7 +278,9 @@ impl Category {
                 8 | 9 | 42 => Self::Abilities,
                 6 => Self::Ammo,
                 12 | 29 | 30 => Self::GameEvents,
-                20 | 26 | 31 | 35 => Self::States,
+                20 | 31 | 35 => Self::States,
+                // The effect's counter is a counter first, filed beside the action that sets it.
+                26 => Self::TimersAndCounters,
                 0 | 1 => Self::Timing,
                 _ => Self::Other,
             },
@@ -554,19 +557,20 @@ impl Picker {
         )
     }
 
-    pub fn draw_condition(
+    pub fn draw_condition_named(
         &mut self,
         ui: &mut egui::Ui,
         discovery: &discovery::Discovery,
         names: &BTreeMap<u16, String>,
         labels: &BTreeMap<u32, String>,
+        label: &str,
     ) -> Option<NativeNode> {
         match self.draw_picker(
             ui,
             discovery,
             names,
             labels,
-            "Change Condition…",
+            label,
             Purpose::Condition,
             comparison_rows(),
             "",
@@ -890,16 +894,29 @@ impl Picker {
                         }
                     }
                 }
-                if show_all {
+                {
                     let kinds = if purpose == Purpose::Action {
                         nodes::EFFECTS.as_slice()
                     } else {
                         nodes::CONDITIONS.as_slice()
                     };
+                    // A promoted condition kind is offered like a guided row; the rest
+                    // of the bare kinds stay behind Show All.
                     for kind in kinds.iter().filter(|kind| {
                         kind.support == nodes::Support::Authorable
                             && (purpose != Purpose::Action || kind.kind != 5)
+                            && (show_all
+                                || (purpose != Purpose::Action
+                                    && program::PROMOTED_NATIVE_CONDITIONS.contains(&kind.kind)))
                     }) {
+                        let title = bare_kind_title(purpose, kind);
+                        let detail = bare_kind_summary(purpose, kind);
+                        // The row is searched by what it shows as well as by the engine's
+                        // own words, so "counter" finds the counter and "accumulator" still does.
+                        let search = format!(
+                            "{:02} {} {} {title} {detail}",
+                            kind.kind, kind.name, kind.summary
+                        );
                         native_rows.push(Row {
                             family: if purpose == Purpose::Action {
                                 effect_family(kind.kind, &[])
@@ -908,9 +925,9 @@ impl Picker {
                             },
                             enabled: purpose != Purpose::Action || blocked.is_empty(),
                             reason: blocked,
-                            title: bare_kind_title(purpose, kind),
-                            detail: bare_kind_summary(purpose, kind),
-                            search: format!("{:02} {} {}", kind.kind, kind.name, kind.summary),
+                            title,
+                            detail,
+                            search,
                             choice: Choice::Kind(kind.kind),
                         });
                     }
@@ -931,7 +948,7 @@ impl Picker {
                     _ if rows.len() == 1 => "1 Result".to_owned(),
                     _ => format!("{} Results", rows.len()),
                 };
-                let response = ui.put(result_rect, egui::Label::new(status));
+                let response = sundial::ui::catalog::toolbar_status(ui, result_rect, status);
                 match &self.loaded {
                     Some(Err(error)) => {
                         response.on_hover_text(error);
@@ -954,6 +971,7 @@ impl Picker {
                     height: (ui.available_height() - 4.0).max(110.0),
                     reset,
                     row_height: sundial::investment::authoring_choice_row_height(ui),
+                    select: None,
                 }
                 .draw_body(
                     ui,

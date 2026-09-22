@@ -1,5 +1,6 @@
 //! Atomic saves with optimistic concurrency checks for independent perk documents.
 use super::PerkRecipe;
+use crate::bundled_defaults::{self, AppliedVersions, DefaultsRefresh};
 mod embedded;
 mod restore;
 pub use embedded::ImportReport;
@@ -11,9 +12,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const BUNDLED_VERSIONS_FILE_NAME: &str = "bundled-versions.json";
+
 #[derive(Clone, Debug)]
 pub struct Library {
     root: PathBuf,
+    refresh: Option<DefaultsRefresh>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,8 +39,8 @@ impl Library {
         let root = sundial::package_authoring::parhelion_data_directory()
             .ok_or("Could not locate the custom perk library")?
             .join("perks");
-        let library = Self::open(root)?;
-        library.materialize_bundled()?;
+        let mut library = Self::open(root)?;
+        library.refresh = library.materialize_bundled()?;
         Ok(library)
     }
 
@@ -44,12 +48,19 @@ impl Library {
         fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         Ok(Self {
             root: root.canonicalize().map_err(|error| error.to_string())?,
+            refresh: None,
         })
     }
 
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Bundled perks replaced while opening, because a release changed them.
+    #[must_use]
+    pub(crate) fn defaults_refresh(&self) -> Option<&DefaultsRefresh> {
+        self.refresh.as_ref()
     }
 
     pub fn scan(&self) -> Result<Scan, String> {
@@ -72,18 +83,24 @@ impl Library {
     }
 
     /// Adds the bundled examples the library does not hold yet, except ones the reader
-    /// deleted on purpose.
-    pub(crate) fn materialize_bundled(&self) -> Result<(), String> {
+    /// deleted on purpose. A copy left over from an earlier release is backed up and
+    /// replaced; a copy edited under the current release is kept.
+    pub(crate) fn materialize_bundled(&self) -> Result<Option<DefaultsRefresh>, String> {
         let removed = self.removed_bundled()?;
+        let mut versions = AppliedVersions::load(self.root.join(BUNDLED_VERSIONS_FILE_NAME))?;
+        let mut stale = Vec::new();
         for (encoded, recipe) in bundled_recipes()? {
-            let path = self.root.join(format!("{}.perk.json", recipe.id));
-            if removed.contains(&recipe.id.to_string())
-                || path.try_exists().map_err(|error| error.to_string())?
-            {
+            let key = recipe.id.to_string();
+            if removed.contains(&key) {
                 continue;
             }
+            let digest = bundled_defaults::digest(encoded.as_bytes());
+            let path = self.root.join(format!("{}.perk.json", recipe.id));
             match sundial::storage::create_file(&path, encoded.as_bytes()) {
-                Ok(_) => {}
+                Ok(_) => {
+                    versions.record(&key, digest);
+                    continue;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(format!(
@@ -92,8 +109,82 @@ impl Library {
                     ));
                 }
             }
+            if versions.is_current(&key, &digest) {
+                continue;
+            }
+            let Some(current) = self.read_restore_target(&path)? else {
+                continue;
+            };
+            if current == encoded.as_bytes() {
+                versions.record(&key, digest);
+                continue;
+            }
+            // Only edits worth keeping become a duplicate; a re-saved or unreadable copy
+            // is preserved by the backup alone.
+            let edited = serde_json::from_slice::<PerkRecipe>(&current)
+                .ok()
+                .filter(|edited| edited.validate().is_ok() && *edited != recipe);
+            stale.push((key, encoded, digest, current, path, recipe, edited));
         }
-        Ok(())
+        let refresh = if stale.is_empty() {
+            None
+        } else {
+            let _lock = self.lock()?;
+            let backup = self.create_restore_backup()?;
+            let mut names = Vec::new();
+            let mut copies = Vec::new();
+            for (key, encoded, digest, current, path, recipe, edited) in stale {
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("A bundled custom perk has no file name")?;
+                bundled_defaults::back_up(&backup, file_name, &current)?;
+                if let Some(edited) = edited {
+                    copies.push(self.save_copy(edited)?);
+                }
+                self.replace_restore_target(
+                    &path,
+                    &Some(current),
+                    &Some(encoded.as_bytes().to_vec()),
+                )?;
+                versions.record(&key, digest);
+                names.push(recipe.name);
+            }
+            Some(DefaultsRefresh {
+                names,
+                copies,
+                backup,
+            })
+        };
+        versions.save()?;
+        Ok(refresh)
+    }
+
+    /// Saves `recipe` under a fresh id and a "Copy" name, returning the copy's name.
+    fn save_copy(&self, mut recipe: PerkRecipe) -> Result<String, String> {
+        let name = if recipe.name.trim().is_empty() {
+            "Untitled Perk"
+        } else {
+            recipe.name.as_str()
+        };
+        recipe.name = format!("{name} Copy");
+        loop {
+            recipe.id = PerkRecipe::new().id;
+            let mut bytes =
+                serde_json::to_vec_pretty(&recipe).map_err(|error| error.to_string())?;
+            bytes.push(b'\n');
+            let path = self.root.join(format!("{}.perk.json", recipe.id));
+            match sundial::storage::create_file(&path, &bytes) {
+                Ok(()) => return Ok(recipe.name),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not keep your edited {}: {error}",
+                        recipe.name
+                    ));
+                }
+            }
+        }
     }
 
     pub fn read(path: &Path) -> Result<Entry, String> {

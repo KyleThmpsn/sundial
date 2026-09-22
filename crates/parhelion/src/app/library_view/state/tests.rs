@@ -29,6 +29,7 @@ fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
         namespace: format!("parhelion.{}", name.to_ascii_lowercase()),
         bundled: false,
         donor_hash,
+        identity_hash: 0,
         type_name: None,
         ammo_type: None,
         damage_type: None,

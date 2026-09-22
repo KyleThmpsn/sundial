@@ -13,6 +13,10 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
   - [Stats and Power](#stats-and-power)
   - [Perks and Sockets](#perks-and-sockets)
   - [Custom Perk Workbench](#custom-perk-workbench)
+  - [Common Effects](#common-effects)
+  - [Conditions and Operands](#conditions-and-operands)
+  - [Organizing Effects](#organizing-effects)
+  - [Engine Catalog](#engine-catalog)
   - [Unique Weapon Behavior](#unique-weapon-behavior)
   - [Ornaments, Icons and Shaders](#ornaments-icons-and-shaders)
   - [Collections Placement](#collections-placement)
@@ -41,7 +45,7 @@ Check the build selection before each build. Opening a recipe doesn't automatica
 
 ## Making Weapons
 
-Your weapon starts with the **base weapon**'s firing behavior, stats, and perks. The **appearance donor** determines the weapon's in-game model and iconography. Some models and animations won't work with a different weapon type.
+Your weapon starts with the **base weapon**'s firing behavior, stats, and perks. The **appearance donor** determines the weapon's in-game model and iconography. The picker opens on your base weapon's type, and you can clear that filter to use any weapon's appearance. Parhelion warns you when the two types differ, because the model may not render correctly, the build may fail, and the game may crash. A different inventory slot or an incompatible animation set is still refused.
 
 Most editing happens on **Weapon** and **Appearance**. **Advanced Gameplay** contains experimental controls that are more prone to bugs and crashes and aren't yet recommended for normal use. **Identity** shows the weapon's hex hash identifiers for reference.
 
@@ -51,7 +55,7 @@ Changing an Exotic base weapon to a non-exotic rarity removes its exotic equip r
 
 Installing unlocks your weapons in Collections and, by default, adds them to the **Project Sunrise** or **Dawn** badge for your active runtime. Get a copy from Collections to add it to your inventory.
 
-You can also write flavor text and a custom **Lore** tab on **Weapon**.
+You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave both lore boxes off to keep the donor's lore, turn on **Custom Lore Tab** to write your own, or turn on **No Lore Tab** for a weapon that should have no lore entry at all.
 
 ### Stats and Power
 
@@ -71,7 +75,7 @@ Use a socket's **… > Remove Socket** command to remove its choices and custom 
 
 A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the main Parhelion menu, or click **Use Custom Perk…** above the socket list. Use **New Perk** in the workbench or **Create Custom Perk…** in the socket picker to start from scratch. You can also reopen an existing perk for editing.
 
-Each effect is a small program that describes what starts it, what it does, and when it ends. You can reuse a complete stock effect, turn supported behavior into an editable program, or create a new perk from scratch by combining triggers, conditions, actions, projectiles, player effects, and more. Guided forms help configure supported behavior, while the node canvas shows how the parts connect. **Engine Catalog…** lets you browse behavior recovered from stock perks in the installed game.
+Each effect is a small program that describes what starts it, what it does, and when it ends. You can use a stock effect exactly as the game has it, take one apart and change how it works where Parhelion can read it well enough, or start from scratch by combining triggers, conditions, actions, projectiles, player effects, and more. Guided forms help configure supported behavior, while the node canvas shows how the parts connect. Behavior Parhelion has mapped appears as named controls, including health and shield capacity and regeneration, invisibility, incoming damage modifiers, and component properties. Behavior that is not mapped yet keeps the engine's own names under **Advanced**. **Engine Catalog…** browses the behavior in the perks your game already has, covered under [Engine Catalog](#engine-catalog).
 
 Match the perk's **Type** to its socket. Use **Trait** for normal perk columns and **Intrinsic** for the weapon's intrinsic frame.
 
@@ -101,15 +105,70 @@ A perk can only do what the weapon it sits on supports. If a perk depends on a r
 
 Custom perk authoring is still in early development. Destiny's perk system contains thousands of technical building blocks across actions, conditions, values, projectiles, assets, and weapon-specific behavior. Those pieces can be arranged in effectively countless combinations. Parhelion maps that technical data into controls you can use, but the work is ongoing. More behavior will be added as it is understood, and some names, assumptions, or mappings may turn out to be incomplete or wrong.
 
-A successful build proves that the generated packages are structurally valid, not that every combination behaves as expected in game. A perk that looks right in the editor can still do nothing, behave differently, or crash the game. Try one new combination at a time, use **Copy Test Plan** to check each behavior, and keep a working recipe before experimenting further.
+A build that succeeds only proves the packages are put together correctly, not that every combination behaves as expected in game. A perk that looks right in the editor can still do nothing, behave differently, or crash the game. Try one new combination at a time, use **Copy Test Plan** to check each behavior, and keep a working recipe before experimenting further.
+
+### Counters and Stacking Perks
+
+A perk that needs several events before it fires, three kills say, is built on the effect's counter. Choose **When the Effect's Counter Is Reached (Accumulator)** as the trigger (search for *counter*), set **Count Needed**, then add **Contributing Conditions**. Each one is an event such as **On a Kill**, and each time it passes the counter goes up by the amount in its **Counter Change**, which starts at 1. **After It Fires** decides whether the count is kept, so the trigger stays satisfied, or starts over, the way stock perks that fire every few kills behave. A counter with no contributing conditions can never fire, and the workbench says so. **Set the Effect's Counter** is an action for writing the count directly.
+
+### Common Effects
+
+An effect is a trigger plus what it does when that trigger fires. These are some the workbench names in plain words:
+
+- **Change Fired Projectile** swaps what the weapon shoots for something else entirely, such as another weapon's rounds, a missile, or an ability's projectile.
+- **Spawn an Object or Effect** and **Attach an Effect** put something in the world or keep it on a target for the duration.
+- **Generate Orbs of Light** drops a collectible orb at the kill or at the player, the way a Masterwork does.
+- **Adjust Ammunition** and **Adjust Ammunition by Capacity** add or remove rounds, either a fixed count or a share of the magazine.
+- **Reload from Reserves** refills the magazine without the reload.
+- **Change Damage Type** switches the element the weapon deals.
+- **Change a Weapon or Ability Stat** raises or lowers a stat while the effect runs.
+- **Set a Weapon Firing Mode** changes how the weapon fires.
+- **Change Ability Energy** scales grenade, melee, or class ability energy, with an optional limit.
+- **Change an Ability Stat** changes a named stat inside an ability itself.
+
+Pair one with a trigger such as **On a Kill**, **On Precision Weapon Kill**, **On Reloading**, **On Firing This Weapon**, **On Taking Damage**, or **On a Game Event** for something like an Orb of Light being picked up.
+
+Many more are included. Anything the workbench can describe plainly gets a name like these, and the rest stays under **Advanced** with the engine's own name.
+
+### Conditions and Operands
+
+Conditions stack, and the workbench prints the operator between them.
+
+**OR** runs down a list of alternatives, and any one of them is enough. Every effect can take them, including one you start from scratch. Use **Add Alternative Trigger…** for another way in, **Add End Condition…** for another way out, and **Add Reactivation Condition…** for another way to start again. Each one comes from the same condition picker.
+
+**AND** works differently. Requirement groups belong to the complete native form, so you see them when you open a stock effect that has them, or after you choose **Edit All Behavior…** on an effect of your own. There **Add Requirement** adds a group, and the effect runs only **When All Requirements Are Met**.
+
+For a NOT, turn on a condition's **Invert Result**. It passes when its check is false, which is how a perk says while you are not Charged with Light rather than while you are. Not every condition offers it.
+
+End conditions and reactivation conditions each take any one of their entries, so the first one that matches ends the effect or lets it start again.
+
+Plenty of stock effects already use these stacks. Opening one and reading down its conditions is the quickest way to see how the game combines them before you build your own.
+
+### Organizing Effects
+
+Effects run in the order shown. Drag an effect by the grip at the top of its card to move it, or use **Move Up** and **Move Down** in the effect menu. The list scrolls while you drag, so a card further down the perk stays reachable. Actions reorder the same way inside an effect.
+
+**Duplicate Effect** copies an effect so you can try a variation without losing the original. The copy gets its own identity, so editing it leaves the effect you copied alone.
+
+**Undo** and **Redo** cover the edits you make during this session, including removing, reordering, and copying effects. Parameter editors keep their own **Apply** and **Discard**, and a text box keeps its own undo while you type in it.
+
+Collapse the cards you are done with to keep a long perk readable. When validation fails, **Show Problem** opens the right card and scrolls to the action that needs fixing.
+
+### Engine Catalog
+
+**Tools > Engine Catalog…** is a technical browser for the behavior read out of the perks your game already has. Turn on **Enable Experimental Features** under **Preferences… > Editor & Library** if the entry is not there.
+
+Choose a kind to see what it does and which installed perks use it. An entry shows its graph, how its components fit together, what links to it and what it links to, and the details of the scan that found it. Use **Authorable Only** to narrow the list to kinds you can put in a perk, or **All Kinds** to see everything the scan found.
+
+Use it to find behavior worth copying into a perk of your own, or to check what a stock perk really does before you borrow from it. The catalog reads your installed packages as you browse, so use **Retry Scan** if a scan reports an error.
 
 ### Unique Weapon Behavior
 
 Some Exotics keep part of what makes them special in the weapon itself rather than in a perk. Hard Light's bouncing rounds, Malfeasance's embedded rounds, and Borealis's damage switching all work this way. **Unique Weapon Behavior** on **Weapon** copies that half onto the weapon you are building. It sits with the damage type and the other weapon-wide choices.
 
-Pick a source the same way you pick an appearance donor. The list shows the Exotics your weapon can borrow from, with a note where the result has not been confirmed in-game yet. Choose **None** to go back to your weapon's own behavior.
+Pick a source the same way you pick an appearance donor. Most sources are Exotics, with a few Legendaries such as Drang and Warden's Law. Hover **Unique Weapon Behavior** for the full description of your current choice, and watch for a caution under the row when a combination has known limits. Choose **None** to go back to your weapon's own behavior.
 
-**Include Its Perks** is on by default. It adds the source weapon's intrinsic and Exotic trait to your weapon's matching sockets, because several Exotics keep the other half of the behavior there. These perks appear in **Perks & Sockets** while you edit. Check the choices and defaults after selecting a behavior, especially if you have already customized those sockets. Turn it off to borrow just the weapon's runtime behavior.
+**Include Its Perks** is on by default. It adds the source weapon's Exotic trait to your weapon's matching socket, and when the source is the same type of weapon its intrinsic frame replaces your weapon's own, because several Exotics keep the other half of the behavior there. A frame is built for its own weapon type, so a weapon of a different type keeps its own frame; the picker and its tooltip show which perks will land. These perks appear in **Perks & Sockets** while you edit. Check the choices and defaults after selecting a behavior, especially if you have already customized those sockets. Turn it off to borrow just the weapon's runtime behavior.
 
 You can try a behavior on a different weapon type than the Exotic it came from, but some combinations only partly work or do nothing. The picker warns about known dependencies, such as a frame that expects its own ammo or a perk that reads a scope the host weapon does not have.
 
@@ -128,6 +187,8 @@ This is new and most combinations have not been tested, so treat it as experimen
 
 ### Ornaments, Icons and Shaders
 
+**Appearance** and the ornament, shader, and appearance donor pickers show a preview of the weapon model, with its textures, animations, and shader colors, so you can see a choice before you commit to it. Previews are not exact yet, so some models light or shade differently from how they look in game.
+
 **Use Ornament** lists the stock ornaments your chosen appearance can wear. Picking one takes that ornament's model, its own colors, and its inventory icon. Everything it sets stays editable afterwards, and **Default Appearance** puts it back. The button sits beside the appearance picker on **Weapon** as well as on **Appearance**, and it only appears when the appearance you chose has ornaments.
 
 On **Appearance**, use **Change Icon** to choose another weapon's icon. Use **Edit Icon…** to import an image, adjust or replace colors, rotate, or flip it. Use PNG for transparent artwork. Imported images are saved in the recipe, so you don't need to share them separately.
@@ -144,7 +205,7 @@ To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Imp
 
 ### Collections Placement
 
-**Collections** chooses where your weapon appears in the game's Collections. By default it uses the stock page for the base weapon's family, which adds no new pages. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
+**Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and its gameplay donor's weapon type, creating that node when the game has no stock one for the combination. Your weapon goes at the start of the node rather than beside its donor, so it is easier to find. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
 
 Enable **Custom Badge** to group weapons under your own badge, with a name, description, and artwork. Use the same badge settings for each member, or select an existing badge with **Choose from Library**. You can also choose whether the weapon appears in the default Sunrise or Dawn badge.
 
@@ -285,7 +346,9 @@ Turning them off hides the controls without removing your saved changes.
 
 ### Why Doesn't the Borrowed Behavior Do Anything?
 
-Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. The list marks which sources have been confirmed in-game.
+Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. Hover **Unique Weapon Behavior** to see whether that source has been confirmed in-game.
+
+A weapon fires through one behavior at a time, so two sources that replace the projectile cannot both apply. Thorn's poison and Lumina's Noble Rounds are an example. Pick the one you want.
 
 ### What Should I Include in a Bug Report?
 

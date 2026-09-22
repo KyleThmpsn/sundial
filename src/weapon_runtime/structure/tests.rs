@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn damage_modifier_settings_expose_typed_keys_without_consuming_adjacent_flags() {
+    let mut data = vec![0; 0xF0];
+    data[0xE0..0xE4].copy_from_slice(&0xDE1D_8C04_u32.to_le_bytes());
+    data[0xE4..0xE8].copy_from_slice(&[1, 0xCD, 0x23, 0xFE]);
+    data[0xE8] = 1;
+    let original = data.clone();
+    let mut registry = Registry::new().unwrap();
+    let decoded = walk(
+        &data,
+        0,
+        0x8080_3F8C,
+        runtime_registry().unwrap(),
+        codecs().unwrap(),
+        |handle| registry.record(handle, |_| Err("Unexpected generated schema".into())),
+    );
+    assert!(decoded.issues.is_empty(), "{:?}", decoded.issues);
+    for (offset, label, kind) in [
+        (
+            0xE0,
+            "Required Source Property",
+            WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
+        ),
+        (
+            0xE4,
+            "Invert Source Property",
+            WeaponRuntimeValueKind::Boolean,
+        ),
+        (
+            0xE8,
+            "Require Matching Source Owner",
+            WeaponRuntimeValueKind::Boolean,
+        ),
+    ] {
+        let field = decoded
+            .fields
+            .iter()
+            .find(|field| field.owner_offset == offset && field.storage.is_some())
+            .unwrap();
+        assert_eq!(field.label, label);
+        assert_eq!(field.storage, Some((kind, 0)));
+    }
+    assert_eq!(data, original);
+    assert!(labels::native_fields(0x8080_3F8C, 0xEF).is_err());
+    assert!(labels::native_fields(0x8080_3F8D, 0xF0).unwrap().is_empty());
+}
+
+#[test]
 fn native_serialization_exposes_nested_projectile_values_without_changing_bits() {
     let mut data = vec![0_u8; 480];
     let bits = 0x7FC1_2345_u32;

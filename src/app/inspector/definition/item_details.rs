@@ -186,7 +186,7 @@ pub(super) fn draw_stat_group(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
             draw_catalog_hash_link(ui, catalog, group.hash, format_hash_hex(group.hash));
         });
         if let Some(index) = metadata.stat_group_index {
-            draw_item_hash_list(ui, catalog, ("stat-group-users", hash), "Items Using This Stat Group", &catalog.items_with_stat_group(index));
+            draw_item_hash_list(ui, catalog, ("stat-group-users", hash), "Items Using This Stat Group", catalog.items_with_stat_group(index));
         }
         ui.weak("These curves produce presentation values from investment stats, not final gameplay values after plugs or runtime effects.");
         for (row, stat) in group.scaled_stats.iter().enumerate() {
@@ -372,7 +372,7 @@ pub(super) fn draw_structure_matches(
                 catalog,
                 ("stat-group-items", index),
                 "Items Using This Stat Group",
-                &matches.stat_group_items,
+                matches.stat_group_items,
             );
         });
     }
@@ -396,7 +396,7 @@ pub(super) fn draw_structure_matches(
                 catalog,
                 ("power-cap-items", index),
                 "Items Versioned Under This Cap",
-                &matches.power_cap_items,
+                matches.power_cap_items,
             );
         });
     }

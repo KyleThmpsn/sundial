@@ -1,7 +1,8 @@
 //! Checked reads of the native investment loading index, independent of UI caches.
 use std::collections::BTreeSet;
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::package_payload::{u32_at, u64_at};
 

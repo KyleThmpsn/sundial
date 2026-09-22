@@ -21,6 +21,7 @@ mod badge;
 mod badge_icon;
 mod block_codec;
 mod branding;
+mod bundled_defaults;
 mod capabilities;
 mod chain;
 pub mod collection;

@@ -263,6 +263,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
         namespace: first_copy.namespace.clone(),
         bundled: false,
         donor_hash: first_copy.donor.item_hash.parse_u32().unwrap(),
+        identity_hash: first_copy.identity.item_hash.parse_u32().unwrap(),
         type_name: first_copy.type_name.clone(),
         ammo_type: first_copy.overrides.ammo_type,
         damage_type: first_copy.overrides.modern_damage_type,

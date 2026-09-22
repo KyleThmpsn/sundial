@@ -5,8 +5,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::*;
 mod ancestry;
@@ -886,7 +887,7 @@ fn climb(
 static CACHE: index_cache::Cache<Catalog> = index_cache::Cache::new();
 
 /// The on-disk cache name. Bump it whenever an entry's contents change.
-const CACHE_VERSION: &str = "projectiles-v21";
+const CACHE_VERSION: &str = "projectiles-v25";
 
 /// The catalog already cached for this installation, without building one. The build uses
 /// it to refuse assets that only load with an activity.

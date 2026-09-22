@@ -50,7 +50,7 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
     recipe
 }
 
-fn item_table(manager: &tiger_pkg::PackageManager) -> Vec<u8> {
+fn item_table(manager: &sundial::package_authoring::PackageManager) -> Vec<u8> {
     let globals = manager
         .read_tag(resolve_live_named_tag(manager, "investment_globals", None).unwrap())
         .unwrap();
@@ -63,7 +63,7 @@ fn item_table(manager: &tiger_pkg::PackageManager) -> Vec<u8> {
 }
 
 fn item_definition(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     items: &[u8],
     hash: u32,
 ) -> (TagHash, Vec<u8>) {
@@ -88,7 +88,7 @@ fn default_hashes(items: &[u8], definition: &[u8]) -> Vec<Option<u32>> {
 }
 
 fn verify_private_effect(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     catalog: &InvestmentCatalog,
     private_hash: u32,
     source_perks: &[u16],
@@ -111,7 +111,7 @@ fn verify_private_effect(
 }
 
 fn verify_expanded_weapon(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     catalog: &InvestmentCatalog,
     items: &[u8],
     recipe: &crate::WeaponRecipe,

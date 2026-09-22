@@ -11,7 +11,7 @@ use super::{
     RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 118;
+pub(super) const CACHE_SCHEMA: u32 = 119;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -57,6 +57,7 @@ pub(super) struct CatalogContents {
     #[serde(default)]
     pub(super) inventory_metadata: HashMap<u64, InventoryMetadata>,
     pub(super) objectives: Vec<ObjectiveDef>,
+    pub(super) presentation_node_hashes: Vec<u64>,
     #[serde(default)]
     pub(super) records: Option<Vec<RecordDefinition>>,
     pub(super) unlock_flag_definitions: Vec<UnlockDefinition>,

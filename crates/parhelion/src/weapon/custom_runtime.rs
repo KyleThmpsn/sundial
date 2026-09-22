@@ -1,5 +1,9 @@
 //! Native custom runtime operations with independent validation.
 use super::*;
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::weapon) mod animation;
+#[cfg(test)]
+mod tests;
 
 /// Resolve both build and preview HUD behavior through the same decision path.
 pub(crate) fn runtime_hud_key(
@@ -259,6 +263,17 @@ pub(super) fn append_patched_runtime_resource_owners(
                 end,
                 bytes,
             });
+    }
+
+    // An appended record has to reach its owner even when nothing else patches that owner. The
+    // loop below is keyed on the patch map, so a graft that only appends, which is what a record
+    // copied across content owners produces, was dropped without a word. That is the shape every
+    // element switch takes on a family with no record of its own.
+    for append in appends {
+        let bindings = weapon_component_bindings(entity, append.binding_hash).map_err(invalid)?;
+        if let Some(binding) = bindings.get(usize::from(append.resource_index)) {
+            patches_by_owner.entry(binding.owner_tag).or_default();
+        }
     }
 
     for (owner_tag, mut owner_patches) in patches_by_owner {
@@ -948,6 +963,7 @@ fn append_private_program_runtime(
     }
     let action =
         allocator.assigned_tag(tags.len(), "Custom effect action", "custom effect action")?;
+    rebind_program_callbacks(&mut compiled.payload, action)?;
     let residency = build_private_perk_residency_chain(
         manager,
         allocator,
@@ -961,4 +977,17 @@ fn append_private_program_runtime(
     });
     tags.extend(residency);
     Ok(action)
+}
+
+/// The native callback must resolve settings in this authored action, after the
+/// program emitter has moved nodes and the allocator has chosen the owner tag.
+fn rebind_program_callbacks(payload: &mut [u8], owner: TagHash) -> AuthoringResult<()> {
+    let references = sundial::package_authoring::sandbox_perk::action::self_references(payload)
+        .map_err(invalid)?;
+    for reference in references {
+        write_u32(payload, reference.reference_offset, owner.0)?;
+        let at = reference.reference_offset + 8;
+        payload[at..at + 8].copy_from_slice(&(reference.target_offset as u64).to_le_bytes());
+    }
+    Ok(())
 }

@@ -144,6 +144,7 @@ pub fn uninstall_custom_packages(
         check,
         None,
         DEFAULT_CACHE_INVALIDATION_OPS,
+        sundial::package_authoring::installed_runtime,
     )
 }
 
@@ -153,6 +154,7 @@ pub(super) fn uninstall_inner(
     check: GameRunningCheck,
     fail_after: Option<usize>,
     cache_ops: CacheInvalidationOps,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
 ) -> Result<UninstallReport, InstallError> {
     let _lock = lock_installation(&plan.target)?;
     check_stopped(check)?;
@@ -160,6 +162,7 @@ pub(super) fn uninstall_inner(
         target_packages_directory: plan.target.clone(),
         backup_root: backup_root.to_path_buf(),
         game_running_check: check,
+        runtime_snapshot_check,
     })?;
     verify_plan(plan)?;
     if plan.artifacts.is_empty() {
@@ -172,7 +175,7 @@ pub(super) fn uninstall_inner(
             "The uninstall backup must be outside the packages directory",
         ));
     }
-    let sunrise = validate_sunrise_build_cache(&plan.target)?;
+    let sunrise = validate_sunrise_build_cache_with(&plan.target, runtime_snapshot_check)?;
     let headers = validate_package_header_caches(&plan.target)?;
     fs::create_dir_all(&root).map_err(|error| InstallError::validation(error.to_string()))?;
     let root = canonical_directory(&root, "uninstall backup root")?;
@@ -210,7 +213,7 @@ pub(super) fn uninstall_inner(
     verify_targets_unchanged(&originals).map_err(after_backup)?;
     verify_sunrise_cache_unchanged(&sunrise).map_err(after_backup)?;
     verify_package_header_caches_unchanged(&headers).map_err(after_backup)?;
-    let mut record = removal_record(plan, &backup);
+    let mut record = removal_record(plan, &backup, &sunrise.runtime);
     if let Some(cleanup) = &plan.cleanup {
         if prepare_account_cleanup(plan).map_err(InstallError::validation)? != *cleanup {
             return Err(after_backup(
@@ -256,6 +259,7 @@ pub(super) fn uninstall_inner(
                 target_packages_directory: plan.target.clone(),
                 backup_root: root,
                 game_running_check: check,
+                runtime_snapshot_check,
             });
             let message = match recovered {
                 Ok(RecoveryOutcome::Recovered { .. }) => format!(
@@ -273,7 +277,11 @@ pub(super) fn uninstall_inner(
     }
 }
 
-fn removal_record(plan: &UninstallPlan, backup: &Path) -> InstallTransactionRecord {
+fn removal_record(
+    plan: &UninstallPlan,
+    backup: &Path,
+    runtime: &RuntimeSnapshot,
+) -> InstallTransactionRecord {
     InstallTransactionRecord {
         schema: INSTALL_TRANSACTION_SCHEMA,
         state: InstallTransactionState::Pending,
@@ -295,6 +303,7 @@ fn removal_record(plan: &UninstallPlan, backup: &Path) -> InstallTransactionReco
                 ),
             })
             .collect(),
+        runtime: Some(runtime.clone()),
         account_cleanup: None,
         client_settings: None,
     }
@@ -317,6 +326,7 @@ fn commit_removal(
     cache_ops: CacheInvalidationOps,
 ) -> Result<RemovedCaches, InstallError> {
     check_stopped(check)?;
+    verify_sunrise_cache_unchanged(sunrise).map_err(InstallError::validation)?;
     if let (Some(cleanup), Some(account)) = (&plan.cleanup, &record.account_cleanup) {
         account::commit(cleanup, account, &plan.target, &record.backup_directory)?;
     }
@@ -373,8 +383,24 @@ fn check_stopped(check: GameRunningCheck) -> Result<(), InstallError> {
 
 pub(super) fn refresh_recovery_caches(
     record: &InstallTransactionRecord,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
 ) -> Result<(), InstallError> {
-    let sunrise = validate_sunrise_build_cache(&record.target_packages_directory)?;
+    let game_root = record
+        .target_packages_directory
+        .parent()
+        .ok_or_else(|| InstallError::validation("Recovery target has no game root"))?;
+    let sunrise = if let Some(runtime) = &record.runtime {
+        validate_sunrise_build_cache_for_runtime(
+            game_root.to_path_buf(),
+            runtime.clone(),
+            runtime_snapshot_check,
+        )?
+    } else {
+        validate_sunrise_build_cache_with(
+            &record.target_packages_directory,
+            runtime_snapshot_check,
+        )?
+    };
     let headers = validate_package_header_caches(&record.target_packages_directory)?;
     let backup = record
         .backup_directory

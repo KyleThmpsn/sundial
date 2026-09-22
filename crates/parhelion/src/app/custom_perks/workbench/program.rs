@@ -57,6 +57,16 @@ impl Keys {
     }
 }
 
+pub(super) fn uses_complete_editor(program: &Program) -> bool {
+    program.native.is_some()
+        || program.policy.is_some()
+        || !program.additional_groups.is_empty()
+        || program.native_nodes().any(|(condition, node)| {
+            (condition && matches!(node.kind, 26 | 31 | 35))
+                || (!condition && matches!(node.kind, 1 | 2 | 3 | 13 | 26 | 32))
+        })
+}
+
 pub(super) fn new_effect(metadata_index: u16) -> WeaponSandboxPerkRuntimeRecipe {
     let mut effect = PerkRecipe::effect(metadata_index);
     effect.program = Some(Program::default());
@@ -74,12 +84,30 @@ pub(super) struct ActionEvent {
     pub swap_with: Option<usize>,
 }
 
-const DURATION_HINT: &str = "How long the activation stays active. Attached effects end with it. Spawned effects control their own lifetime.";
+const DURATION_HINT: &str = "How long this effect stays active. Attached effects end with it. Spawned effects control their own lifetime.";
 const COOLDOWN_HINT: &str = "The delay before this effect can activate again.";
 const REPEAT_HINT: &str = "The interval at which an always-active effect runs its actions again.";
 const EXTEND_HINT: &str = "Seconds added to each running timer on another matching kill.";
 const CAP_HINT: &str = "The most time a running timer can hold after the extension.";
-pub(super) type ConditionPicker<'a> = dyn FnMut(&mut egui::Ui) -> Option<NativeNode> + 'a;
+pub(super) enum NativeRequest<'a> {
+    Condition(&'a str),
+    Action(&'a Program),
+    Asset(&'a mut Asset, AssetScope),
+}
+
+pub(super) type NativePicker<'a> =
+    dyn FnMut(&mut egui::Ui, NativeRequest<'_>) -> Option<super::behaviors::Selection> + 'a;
+
+pub(super) fn pick_condition(
+    pick: &mut NativePicker<'_>,
+    ui: &mut egui::Ui,
+    label: &str,
+) -> Option<NativeNode> {
+    match pick(ui, NativeRequest::Condition(label))? {
+        super::behaviors::Selection::Condition(node) => Some(node),
+        _ => None,
+    }
+}
 
 /// The same behavior catalog supplies built-in and recovered native triggers.
 pub(super) fn draw_trigger_block(
@@ -130,46 +158,92 @@ pub(super) fn draw_trigger_block(
     draw_alternatives(
         ui,
         "alternative-trigger",
-        "Also Starts When",
         &mut program.alternative_triggers,
+        true,
+        "Add Alternative Trigger…",
+        |ui, label| {
+            let selection = pick(ui, label, retained)?;
+            match selected_condition(selection) {
+                Ok(node) => Some(node),
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    None
+                }
+            }
+        },
     );
-    if let Some(policy) = &program.policy {
-        ui.small(format!(
-            "Execution Policy {}, carried from the stock perk. Its behavior has no controls yet.",
-            policy.selector
-        ));
-    }
-    if !program.additional_groups.is_empty() {
-        ui.small(format!(
-            "{} further program(s) carried from the stock perk without controls.",
-            program.additional_groups.len()
-        ));
-    }
-    if let Some(hint) = program.authoring_hint() {
+    if !program.actions.is_empty()
+        && let Some(hint) = program.authoring_hint()
+    {
         ui.weak(hint);
     }
 }
 
-/// Further conditions a stock action accepts beside the primary one. Each has the same
-/// controls as a native node. Removing one is reported by the conversion review.
-fn draw_alternatives(ui: &mut egui::Ui, id: &str, heading: &str, nodes: &mut Vec<NativeNode>) {
-    if nodes.is_empty() {
-        return;
+fn selected_condition(selection: super::behaviors::Selection) -> Result<NativeNode, String> {
+    match selection {
+        super::behaviors::Selection::Condition(node) => Ok(node),
+        super::behaviors::Selection::Trigger(trigger) => {
+            let draft = Program {
+                trigger,
+                ..Program::default()
+            };
+            sundial::package_authoring::sandbox_perk::program::native_draft(&draft)
+                .and_then(|native| native.graph.emit())
+                .and_then(|payload| {
+                    sundial::package_authoring::sandbox_perk::action::decode(&payload)
+                })
+                .and_then(|decoded| {
+                    decoded.groups[0]
+                        .activation
+                        .first()
+                        .map(|node| NativeNode {
+                            kind: node.kind,
+                            bytes: node.native.clone(),
+                        })
+                        .ok_or("Missing trigger.".into())
+                })
+        }
+        _ => Err("Choose a trigger.".into()),
     }
-    ui.strong(heading);
+}
+
+/// Alternative conditions share the same picker and editable fields in every role.
+fn draw_alternatives(
+    ui: &mut egui::Ui,
+    id: &str,
+    nodes: &mut Vec<NativeNode>,
+    has_primary: bool,
+    add_label: &str,
+    mut pick: impl FnMut(&mut egui::Ui, &str) -> Option<NativeNode>,
+) {
     let mut removed = None;
     for (index, node) in nodes.iter_mut().enumerate() {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(native_condition_text(node));
-            if ui.small_button("Remove").clicked() {
-                removed = Some(index);
-            }
+        ui.push_id((id, index), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if has_primary || index > 0 {
+                    ui.label("Or");
+                }
+                if let Some(replacement) = pick(ui, &native_condition_text(node)) {
+                    *node = replacement;
+                }
+                crate::app::style::more_menu(ui, |ui| {
+                    if ui.button("Remove Condition").clicked() {
+                        removed = Some(index);
+                        ui.close_menu();
+                    }
+                });
+            });
+            native::draw(ui, "condition", node, NativeFamily::Condition);
         });
-        native::draw(ui, &format!("{id}-{index}"), node, NativeFamily::Condition);
     }
     if let Some(index) = removed {
         nodes.remove(index);
     }
+    ui.push_id((id, "add"), |ui| {
+        if let Some(node) = pick(ui, add_label) {
+            nodes.push(node);
+        }
+    });
 }
 
 pub(super) fn trigger_label(trigger: Trigger, retained: bool) -> &'static str {
@@ -390,8 +464,7 @@ fn native_text(node: &NativeNode, family: NativeFamily) -> String {
 }
 
 impl Workbench {
-    /// The removal block: a duration for kill triggers, an optional ending event key for an
-    /// always-active program, otherwise the fixed pairing the trigger implies.
+    /// Show the default ending and editable OR alternatives for every custom effect.
     pub(super) fn draw_removal_block(&mut self, ui: &mut egui::Ui, program: &mut Program) {
         if program.trigger.is_timed() {
             canvas::row(ui, "Duration", DURATION_HINT, |ui| {
@@ -409,18 +482,9 @@ impl Workbench {
                     });
                 });
             });
-            if program.trigger == Trigger::Native || program.native_removal.is_some() {
-                self.draw_native_ending(ui, program);
-            }
-        } else if program.trigger == Trigger::Always {
-            if program.actions.iter().any(Action::retained) {
-                ui.label(if program.removal_key.is_some() {
-                    "Ends on a technical event key."
-                } else {
-                    "Retained effects stay until the perk leaves the weapon."
-                });
-            }
-            self.draw_native_ending(ui, program);
+        }
+        self.draw_native_ending(ui, program);
+        if program.trigger == Trigger::Always {
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("ending-event-key")
                 .default_open(program.removal_key.is_some())
@@ -441,7 +505,7 @@ impl Workbench {
                                 .truncate()
                                 .selected_text(reading)
                                 .show_ui(ui, |ui| {
-                                    crate::app::style::workbench_style(ui);
+                                    crate::app::style::perk_workbench_style(ui);
                                     ui.selectable_value(
                                         &mut ends_on_key,
                                         false,
@@ -487,32 +551,20 @@ impl Workbench {
                         self.draw_key_status(ui);
                     }
                 });
-        } else if program.actions.iter().any(Action::retained) || program.native_removal.is_some() {
-            self.draw_native_ending(ui, program);
         }
-        draw_alternatives(
-            ui,
-            "alternative-removal",
-            "Also Ends When",
-            &mut program.alternative_removals,
-        );
     }
 
     fn draw_native_ending(&mut self, ui: &mut egui::Ui, program: &mut Program) {
-        let label = removal_text(program, Some(&self.keys.catalog))
-            .unwrap_or_else(|| "Default for This Trigger".into());
-        canvas::row(
-            ui,
-            "End Condition",
-            "Ends this effect when the selected condition passes.",
-            |ui| {
+        let primary = primary_removal_text(program, Some(&self.keys.catalog));
+        canvas::row(ui, "End Condition", canvas::REMOVAL_HINT, |ui| {
+            if let Some(label) = &primary {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(label);
-                    if let Some(node) = self.behaviors.draw_condition(
+                    if let Some(node) = self.behaviors.draw_condition_named(
                         ui,
                         &self.discovery,
                         &self.perk_names,
                         &self.asset_labels,
+                        label,
                     ) {
                         program.removal_key = None;
                         program.native_removal = Some(node);
@@ -524,11 +576,27 @@ impl Workbench {
                         program.removal_key = None;
                     }
                 });
-                if let Some(node) = &mut program.native_removal {
-                    native::draw(ui, "native-removal", node, NativeFamily::Condition);
-                }
-            },
-        );
+            }
+            if let Some(node) = &mut program.native_removal {
+                native::draw(ui, "native-removal", node, NativeFamily::Condition);
+            }
+            draw_alternatives(
+                ui,
+                "alternative-removal",
+                &mut program.alternative_removals,
+                primary.is_some(),
+                "Add End Condition…",
+                |ui, label| {
+                    self.behaviors.draw_condition_named(
+                        ui,
+                        &self.discovery,
+                        &self.perk_names,
+                        &self.asset_labels,
+                        label,
+                    )
+                },
+            );
+        });
     }
 }
 
@@ -598,7 +666,11 @@ fn draw_key_picker<'a>(
 
 /// The rearm block: a cooldown for kill triggers or a repeat interval for an always-active
 /// program.
-pub(super) fn draw_rearm_block(ui: &mut egui::Ui, program: &mut Program) {
+pub(super) fn draw_rearm_block(
+    ui: &mut egui::Ui,
+    program: &mut Program,
+    pick: impl FnMut(&mut egui::Ui, &str) -> Option<NativeNode>,
+) {
     if program.trigger == Trigger::Always && program.native_rearm.is_none() {
         canvas::row(ui, "Repeat Interval", REPEAT_HINT, |ui| {
             seconds(
@@ -628,12 +700,17 @@ pub(super) fn draw_rearm_block(ui: &mut egui::Ui, program: &mut Program) {
     if reset {
         program.native_rearm = None;
     }
-    draw_alternatives(
-        ui,
-        "alternative-rearm",
-        "Also Ready Again When",
-        &mut program.alternative_rearms,
-    );
+    canvas::row(ui, "Reactivation", canvas::REARM_HINT, |ui| {
+        draw_alternatives(
+            ui,
+            "alternative-rearm",
+            &mut program.alternative_rearms,
+            program.native_rearm.is_some()
+                || (program.trigger.supports_cooldown() && program.cooldown_ms != 0),
+            "Add Reactivation Condition…",
+            pick,
+        );
+    });
 }
 
 pub(super) fn rearm_label(program: &Program) -> &'static str {
@@ -642,13 +719,6 @@ pub(super) fn rearm_label(program: &Program) -> &'static str {
     } else {
         "Cooldown"
     }
-}
-
-/// Whether the program has a rearm block to show at all.
-pub(super) fn has_rearm(program: &Program) -> bool {
-    program.trigger.supports_cooldown()
-        || program.native_rearm.is_some()
-        || !program.alternative_rearms.is_empty()
 }
 
 /// The locked reading of the trigger block.
@@ -678,7 +748,20 @@ pub(super) fn trigger_text(program: &Program) -> String {
 
 /// The locked reading of the removal block, or `None` when the program has no removal list.
 pub(super) fn removal_text(program: &Program, keys: Option<&KeyCatalog>) -> Option<String> {
-    let primary = if let Some(node) = &program.native_removal {
+    let parts = primary_removal_text(program, keys)
+        .into_iter()
+        .chain(
+            program
+                .alternative_removals
+                .iter()
+                .map(|node| format!("When {}", native_condition_text(node))),
+        )
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" or "))
+}
+
+fn primary_removal_text(program: &Program, keys: Option<&KeyCatalog>) -> Option<String> {
+    if let Some(node) = &program.native_removal {
         Some(format!("When {}", native_condition_text(node)))
     } else {
         match program.trigger {
@@ -696,17 +779,7 @@ pub(super) fn removal_text(program: &Program, keys: Option<&KeyCatalog>) -> Opti
             Trigger::Drawn => Some("The weapon is holstered".into()),
             _ => Some(format!("After {} s", program.duration_ms as f32 / 1000.0)),
         }
-    };
-    let parts = primary
-        .into_iter()
-        .chain(
-            program
-                .alternative_removals
-                .iter()
-                .map(|node| format!("When {}", native_condition_text(node))),
-        )
-        .collect::<Vec<_>>();
-    (!parts.is_empty()).then(|| parts.join(" or "))
+    }
 }
 
 /// The locked reading of the rearm block, or `None` when the program has no rearm timer.
@@ -861,19 +934,19 @@ fn action_description(action: &Action) -> &'static str {
         Action::Spawn { .. } => {
             "Creates the entity once per activation. The entity controls its own lifetime."
         }
-        Action::Attach { .. } => "Attaches the entity to the weapon until the effect ends.",
+        Action::Attach { .. } => nodes::effect(1).unwrap().summary,
         Action::Pattern { .. } => "Uses this projectile pattern while the effect is active.",
         Action::ExtendTimers { .. } => {
             "Another matching kill while the effect is active adds time to its running timers, up to the cap."
         }
         Action::Property { .. } => {
-            "Sets a native property to a constant while the effect is active. The keys are not mapped."
+            "Sets a native property to a constant while the effect is active. The receiving component determines how to interpret its value."
         }
         Action::AdjustComponent { .. } => {
             "Scales the selected ability's energy by the value. The ability follows the target selector, established from eleven stock perks."
         }
         Action::UpdateAccumulator { .. } => {
-            "Writes the accumulator that this program's Accumulator condition counts toward its threshold."
+            "Writes the effect's counter, the value that a When the Effect's Counter Is Reached trigger counts toward Count Needed."
         }
         Action::AbilityProperty { .. } => {
             "Applies or removes a named property on the base ability. The change is reversed when the effect ends."
@@ -993,7 +1066,9 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
             "Add labels to the event that started this effect when its damage source filter passes, so other perks can read them. The stock filters name weapon families and abilities, and the champion mods use it to add labels such as stagger and overload."
         }
         40 => "Change the values the triggering event carries, after its filters pass.",
-        42 => "Write the counter value that accumulator conditions read.",
+        42 => {
+            "Write the effect's counter directly, the same value that When the Effect's Counter Is Reached counts toward Count Needed."
+        }
         // Kind 47: all 112 stock perks that carry it belong to Transmat Effect items, one key
         // each, which is what the key identifies. The client code that reads the key has
         // not been traced, and the sentence says so.
@@ -1033,7 +1108,7 @@ pub(super) fn plain_condition_title(kind: u8) -> Option<&'static str> {
         19 => "On Reloading",
         22 => "On Crouching",
         23 => "On Aiming Down Sights",
-        26 => "After Enough Stacks",
+        26 => "When the Effect's Counter Is Reached (Accumulator)",
         27 => "On Firing This Weapon",
         29 => "On a Game Signal",
         30 => "Ends on a Game Signal",
@@ -1103,7 +1178,7 @@ pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
         16 => "Passes when this weapon is drawn.",
         17 => "Passes when this weapon is put away.",
         26 => {
-            "Counts toward a threshold and passes once it is reached. Its rows add to, replace or multiply the stored count."
+            "Passes when the effect's counter reaches Count Needed, its threshold. Add Contributing Conditions under it: each one adds to, replaces or multiplies the counter when it passes, and a new one adds 1. Set the Effect's Counter can also write the value directly. A stacking perk is one whose Count Needed is more than 1."
         }
         // Kind 27: every described stock perk reads as a shot fired, from Tap the Trigger
         // and Under Pressure starting on one to Box Breathing and The Perfect Fifth ending.
@@ -1225,6 +1300,11 @@ pub(super) fn action_title(action: &Action) -> String {
 /// assert that every one of them actually produces an editable node.
 pub(super) const PROMOTED_NATIVE_ACTIONS: [u8; 10] = [2, 4, 11, 13, 16, 18, 37, 40, 48, 53];
 
+/// Condition kinds offered in the picker without Show All, like the promoted actions. A
+/// stock accumulator configuration never carries a recognized name, and its bare kind was
+/// hidden behind the same switch, so the effect's counter could not be found at all.
+pub(super) const PROMOTED_NATIVE_CONDITIONS: [u8; 1] = [26];
+
 /// One guided condition per engine variable the stock perks compare: a general predicate
 /// composed from the stock template with that variable's own comparison. The variable
 /// names come from the client's compiled source strings, so each row is a comparison the
@@ -1318,7 +1398,7 @@ pub(super) fn common_actions(
         ),
         (
             native_action_title(42),
-            "Write the value the program's Accumulator condition counts toward its threshold.",
+            "Write the effect's counter, the value that When the Effect's Counter Is Reached counts toward Count Needed.",
             Action::update_accumulator(1.0),
         ),
         (
@@ -1373,52 +1453,20 @@ impl Workbench {
         index: usize,
         count: usize,
     ) -> ActionEvent {
-        let mut event = ActionEvent::default();
         let mut properties = super::properties::Panel::new(ui, "action");
         let scope = match action {
             Action::Pattern { .. } => AssetScope::Projectiles,
             Action::Spawn { .. } => AssetScope::Spawnable,
             _ => AssetScope::Any,
         };
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                crate::app::style::more_menu(ui, |ui| {
-                    crate::app::style::workbench_style(ui);
-                    if ui
-                        .add_enabled(index > 0, egui::Button::new("Move Up"))
-                        .clicked()
-                    {
-                        event.swap_with = Some(index - 1);
-                        ui.close_menu();
-                    }
-                    if ui
-                        .add_enabled(index + 1 < count, egui::Button::new("Move Down"))
-                        .clicked()
-                    {
-                        event.swap_with = Some(index + 1);
-                        ui.close_menu();
-                    }
-                    if ui.button("Remove Action").clicked() {
-                        event.remove = true;
-                        ui.close_menu();
-                    }
-                });
-                // The panel holds the technical bytes and the referenced object. An action
-                // with neither, such as Extend Timers, has nothing to put behind the button.
-                if action.asset().is_some() || has_technical_fields(action) {
-                    properties.button(ui);
-                }
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-                    |ui| {
-                        let title = action_title(action);
-                        ui.strong(format!("{}. {}", index + 1, title))
-                            .on_hover_text(action_description(action));
-                    },
-                );
-            });
-        });
+        let mut event = canvas::action_header(
+            ui,
+            &action_title(action),
+            action_description(action),
+            index,
+            count,
+            (action.asset().is_some() || has_technical_fields(action)).then_some(&mut properties),
+        );
         if let Some(asset) = action.asset_mut() {
             let label = match scope {
                 AssetScope::Projectiles => "Projectile",
@@ -1513,7 +1561,7 @@ impl Workbench {
                 properties::field(
                     ui,
                     "Value",
-                    "The value written to the program's accumulator.",
+                    "The value written to the effect's counter.",
                     |ui| {
                         let control = float_field(ui, value_bits);
                         pickers::name_response(ui, &control, "Value");
@@ -1535,7 +1583,7 @@ impl Workbench {
                             .truncate()
                             .selected_text(reading)
                             .show_ui(ui, |ui| {
-                                crate::app::style::workbench_style(ui);
+                                crate::app::style::perk_workbench_style(ui);
                                 for (value, name) in
                                     [(0, "Kinetic"), (1, "Solar"), (2, "Arc"), (3, "Void")]
                                 {
@@ -1769,8 +1817,12 @@ impl Workbench {
                 event.edit = super::properties::edit_object(ui, asset);
             }
         });
-        if let Some(asset) = action.asset() {
-            self.properties.draw(ui, asset);
+        if let Some(asset) = action.asset_mut() {
+            if scope == AssetScope::Projectiles {
+                self.properties.movement(ui, asset);
+            } else {
+                self.properties.draw(ui, asset);
+            }
         }
         event
     }
@@ -1897,7 +1949,7 @@ fn draw_ability_slot(ui: &mut egui::Ui, target: &mut u8) {
             .truncate()
             .selected_text(current)
             .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 for selector in [0_u8, 1, 2, 3, 4, 7] {
                     if let Some(role) = ability_slot(selector) {
                         ui.selectable_value(target, selector, role);
@@ -1928,7 +1980,7 @@ fn draw_component_target(ui: &mut egui::Ui, target: &mut u8) {
             .truncate()
             .selected_text(current)
             .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 for selector in [0_u8, 1, 2, 7] {
                     if let Some(role) = component_target(selector, 0, 0) {
                         ui.selectable_value(target, selector, role);
@@ -1975,7 +2027,7 @@ fn draw_spawn_position(ui: &mut egui::Ui, kill_trigger: bool, position: &mut Pos
                     .truncate()
                     .selected_text(reading)
                     .show_ui(ui, |ui| {
-                        crate::app::style::workbench_style(ui);
+                        crate::app::style::perk_workbench_style(ui);
                         ui.selectable_value(
                             position,
                             Position::Owner,
@@ -2012,7 +2064,7 @@ fn draw_ammunition_target(
     target: &mut AmmunitionTarget,
     store: &mut AmmunitionStore,
 ) {
-    let destination = "This weapon, a weapon slot or an ammo type. The client traces the slot and type positions without naming them.";
+    let destination = "Select this weapon, the weapon in a Kinetic, Energy or Power slot, or weapons using Primary, Special or Heavy ammo. Weapon slots and ammo types are independent.";
     let held = "Read from stock use: Triple Tap returns rounds to the magazine through this byte, and the ammo pickup perks add to reserves.";
     ui.label("To").on_hover_text(destination);
     let chosen = target.label();
@@ -2024,7 +2076,7 @@ fn draw_ammunition_target(
             .truncate()
             .selected_text(chosen)
             .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 for choice in AmmunitionTarget::ALL {
                     ui.selectable_value(target, choice, choice.label());
                 }
@@ -2040,7 +2092,7 @@ fn draw_ammunition_target(
             .truncate()
             .selected_text(stored)
             .show_ui(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 for choice in AmmunitionStore::ALL {
                     ui.selectable_value(store, choice, choice.label());
                 }
@@ -2082,7 +2134,7 @@ fn draw_ammunition_technical_fields(
                             .truncate()
                             .selected_text(reading)
                             .show_ui(ui, |ui| {
-                                crate::app::style::workbench_style(ui);
+                                crate::app::style::perk_workbench_style(ui);
                                 for choice in AmmunitionStore::ALL {
                                     ui.selectable_value(
                                         capacity,

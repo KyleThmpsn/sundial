@@ -128,7 +128,7 @@ fn plug_for_choice(
 }
 
 fn verify_private_speed(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     globals: &[u8],
     definition: &[u8],
     stock_action_tag: TagHash,
@@ -173,7 +173,7 @@ fn verify_private_speed(
 }
 
 fn verify_installed_frames(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     globals: &[u8],
     weapons: [&WeaponCloneSpec; 3],
     hashes: [u32; 2],

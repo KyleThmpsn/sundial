@@ -1,7 +1,8 @@
 //! Read-only native label registry and the bit sets shared by its consumers.
 use crate::package_payload::{native_array_at, u32_at};
+use crate::package_runtime::reader::PackageManager;
 use std::collections::BTreeMap;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 #[cfg(test)]
 pub(crate) mod fixture;

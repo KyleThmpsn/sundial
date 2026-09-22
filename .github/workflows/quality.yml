@@ -41,8 +41,34 @@ jobs:
       - name: Test Linux desktop installation
         run: sh packaging/linux/tests/install.sh
 
+      # Downloaded crate sources only. These are content addressed, so a restored entry can
+      # never be stale, and both jobs otherwise refetch the whole dependency graph every run.
+      - name: Cache downloaded crates
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-crates-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-crates-
+
+      # The auditor is pinned to one version, so it is compiled once and reused. Its own root
+      # keeps it clear of the rustup shims that live in ~/.cargo/bin.
+      - name: Cache dependency auditor
+        id: dependency-auditor
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo-audit
+          key: ${{ runner.os }}-cargo-audit-0.22.2
+
       - name: Install dependency auditor
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        if: steps.dependency-auditor.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version 0.22.2 --locked --root ~/.cargo-audit
+
+      - name: Put the dependency auditor on PATH
+        run: echo "$HOME/.cargo-audit/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -76,8 +102,23 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
           rustup default 1.88.0
 
+      - name: Cache downloaded crates
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-crates-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-crates-
+
       - name: Lint Sundial and Parhelion Windows targets
         run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
+
+      - name: Check Upstream D2 Model Importer
+        if: github.ref_name == 'upstream' || github.head_ref == 'upstream'
+        run: cargo check --release --locked -p sundial-suite --features d2-model-importer
 
       - name: Test Sundial and Parhelion on Windows
         run: cargo test --release --workspace --locked

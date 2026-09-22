@@ -10,8 +10,9 @@ pub mod content;
 mod reading;
 pub use reading::{DetailLine, DetailSection};
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::{
     FINISHED_SANDBOX_PERK_CATALOG_CLASS, SANDBOX_PERK_RUNTIME_MAP_TAG, finished_sandbox_perk_at,
@@ -173,7 +174,7 @@ pub fn cached(
         crate::sandbox_perk::CACHE_DIRECTORY,
         // Bumped when the decoded behavior digest changes shape or wording, since the
         // headline, support and editability of every perk are cached here.
-        "dependencies-v16",
+        "dependencies-v17",
         &CACHE,
         || inspect(manager, progress),
         |_| true,

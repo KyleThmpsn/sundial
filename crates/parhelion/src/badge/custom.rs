@@ -44,7 +44,7 @@ pub(crate) fn append_custom_badges(
             node_start,
             record_start,
             objective_start,
-            node_hashes: std::array::from_fn(|i| hash(&format!("badge-node-{i}"))),
+            node_hashes: std::array::from_fn(|i| crate::presentation::badge_node_hash(name, i)),
             record_hashes: std::array::from_fn(|i| hash(&format!("badge-record-{i}"))),
             objective_hash: hash("badge-objective"),
             name_hash: hash("badge-name"),

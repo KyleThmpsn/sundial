@@ -2,8 +2,8 @@
 use super::*;
 use sundial::package_authoring::account::{
     AuthoredAccountCleanup, AuthoredClientSettings, AuthoredMoveOutcome, AuthoredSlotReplacement,
-    AuthoredSocketChange, preview_authored_account_replacement_with_slots,
-    preview_authored_client_settings,
+    AuthoredSocketChange, preview_authored_account_replacement_for_runtime,
+    preview_authored_client_settings_for_runtime,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,6 +14,7 @@ pub struct ReplacementReview {
     removed_unlocks: Vec<AuthoredCollectionUnlock>,
     socket_changes: Vec<AuthoredSocketChange>,
     slots: Option<AuthoredSlotReplacement>,
+    runtime: RuntimeSnapshot,
     cleanup: Option<AuthoredAccountCleanup>,
     client_settings: Option<AuthoredClientSettings>,
 }
@@ -67,9 +68,22 @@ fn preview_with_progress(
     staged: &Path,
     progress: progress::Observer<'_>,
 ) -> Result<ReplacementReview, String> {
+    let target = canonical_packages_directory(target).map_err(|e| e.to_string())?;
+    let install = target.parent().ok_or("Missing game root")?;
+    let runtime = sundial::package_authoring::installed_runtime(install)?;
+    preview_for_runtime_with_progress(&target, staged, &runtime, progress)
+}
+
+fn preview_for_runtime_with_progress(
+    target: &Path,
+    staged: &Path,
+    runtime: &RuntimeSnapshot,
+    progress: progress::Observer<'_>,
+) -> Result<ReplacementReview, String> {
     report(progress, "Checking Review Paths", 0);
     let target = canonical_packages_directory(target).map_err(|e| e.to_string())?;
     let staged = canonical_directory(staged, "staged run").map_err(|e| e.to_string())?;
+    let install = target.parent().ok_or("Missing game root")?;
     let _staged_run_lease = crate::workflow::staging_retention::lease_for_read(&staged)?;
     report(progress, "Verifying Staged Packages and Recipes", 1);
     let incoming =
@@ -77,8 +91,7 @@ fn preview_with_progress(
     report(progress, "Checking Installed Packages", 2);
     let installed = preview_uninstall(&target).map_err(|e| e.to_string())?;
     report(progress, "Reading Client Settings", 3);
-    let client_settings =
-        preview_authored_client_settings(target.parent().ok_or("Missing game root")?)?;
+    let client_settings = preview_authored_client_settings_for_runtime(install, runtime)?;
     let mut review = ReplacementReview {
         installed: installed.artifacts().to_vec(),
         incoming: incoming.artifacts,
@@ -86,6 +99,7 @@ fn preview_with_progress(
         removed_unlocks: vec![],
         socket_changes: vec![],
         slots: None,
+        runtime: runtime.clone(),
         cleanup: None,
         client_settings,
     };
@@ -155,13 +169,14 @@ pub(super) fn review_request(
     request: &InstallRequest,
     target: &Path,
     staged: &Path,
+    runtime: &RuntimeSnapshot,
     progress: progress::Observer<'_>,
 ) -> Result<Option<ReplacementReview>, String> {
     #[cfg(test)]
     if request.skip_replacement_review {
         return Ok(request.confirmed_replacement.clone());
     }
-    let current = preview_with_progress(target, staged, progress)?;
+    let current = preview_for_runtime_with_progress(target, staged, runtime, progress)?;
     report(progress, "Confirming Reviewed Changes", 10);
     validate_consent(&current, request.confirmed_replacement.as_ref())?;
     report(progress, "Account Review Complete", REVIEW_OPERATIONS);
@@ -187,8 +202,9 @@ fn account_references(
     review: &ReplacementReview,
 ) -> Result<AuthoredAccountCleanup, String> {
     let target = fs::canonicalize(target).map_err(|error| error.to_string())?;
-    let mut cleanup = preview_authored_account_replacement_with_slots(
+    let mut cleanup = preview_authored_account_replacement_for_runtime(
         target.parent().ok_or("Missing game root")?,
+        &review.runtime,
         &review.removed_hashes,
         &review.removed_unlocks,
         &review.socket_changes,
@@ -197,9 +213,10 @@ fn account_references(
     .map_err(|error| {
         format!("Cannot review account changes before replacing custom packages: {error}")
     })?;
-    if let Some(settings) =
-        preview_authored_client_settings(target.parent().ok_or("Missing game root")?)?
-    {
+    if let Some(settings) = preview_authored_client_settings_for_runtime(
+        target.parent().ok_or("Missing game root")?,
+        &review.runtime,
+    )? {
         settings.merge_account_change(&mut cleanup)?;
     }
     Ok(cleanup)
@@ -212,8 +229,10 @@ pub(super) fn verify_account(
     let target = fs::canonicalize(target).map_err(|error| error.to_string())?;
     let target = target.as_path();
     if let Some(review) = review {
-        let current =
-            preview_authored_client_settings(target.parent().ok_or("Missing game root")?)?;
+        let current = preview_authored_client_settings_for_runtime(
+            target.parent().ok_or("Missing game root")?,
+            &review.runtime,
+        )?;
         let merged = review.cleanup.as_ref().is_some_and(|cleanup| {
             current.as_ref().is_some_and(|settings| {
                 paths_equal(&settings.settings_path, &cleanup.settings_path)
@@ -257,7 +276,14 @@ pub(crate) fn test_review_with_slots(
     slots: Option<AuthoredSlotReplacement>,
 ) -> ReplacementReview {
     let target = fs::canonicalize(target).unwrap();
-    let client_settings = preview_authored_client_settings(target.parent().unwrap()).unwrap();
+    let install = target.parent().unwrap();
+    let module = install.join("bin/x64/steam_api64.dll");
+    fs::create_dir_all(module.parent().unwrap()).unwrap();
+    if !module.exists() {
+        fs::write(&module, b"test runtime").unwrap();
+    }
+    let runtime = RuntimeSnapshot::from_verified_module(RuntimeBrand::Sunrise, &module).unwrap();
+    let client_settings = preview_authored_client_settings_for_runtime(install, &runtime).unwrap();
     let mut review = ReplacementReview {
         installed: vec![],
         incoming: vec![],
@@ -265,6 +291,7 @@ pub(crate) fn test_review_with_slots(
         removed_unlocks: vec![],
         socket_changes,
         slots,
+        runtime,
         cleanup: None,
         client_settings,
     };

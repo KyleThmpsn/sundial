@@ -95,7 +95,7 @@ impl WeaponTables {
                     ));
                 }
                 u16::try_from(
-                    validate_keyed_auxiliary_alignment(
+                    keyed_auxiliary_arrays(
                         &self.sandbox_patterns,
                         &self.sandbox_pattern_index,
                         context.sandbox_pattern_layout,
@@ -188,6 +188,7 @@ impl WeaponTables {
             definition_tag,
             string_tag,
             icon_definition_tag: authored_icon_container,
+            custom_plugs: Vec::new(),
             item_index,
             collectible_hash: identity.collectible_hash,
             collectible_index,
@@ -287,28 +288,28 @@ impl WeaponTables {
             ..
         } = *row;
         if let Some(pattern_source) = &donor.gear_art_pattern_source {
-            if !matches!(
+            let KeyedAuxiliaryDonorPresence::Present(template_index) =
                 classify_keyed_auxiliary_donor(
                     &self.sandbox_patterns,
                     &self.sandbox_pattern_index,
                     pattern_source.item_hash,
                     identity.item_hash,
                     context.sandbox_pattern_layout,
-                )?,
-                KeyedAuxiliaryDonorPresence::Present(_)
-            ) {
+                )?
+            else {
                 return Err(validation(
                     "Resolved gear-art/runtime row source disappeared while compiling the project",
                 ));
-            }
-            (self.sandbox_patterns, self.sandbox_pattern_index) = append_keyed_auxiliary_pair(
+            };
+            (self.sandbox_patterns, self.sandbox_pattern_index) = append_keyed_auxiliary_pair_at(
                 std::mem::take(&mut self.sandbox_patterns),
                 std::mem::take(&mut self.sandbox_pattern_index),
                 pattern_source.item_hash,
                 identity.item_hash,
+                template_index,
                 context.sandbox_pattern_layout,
             )?;
-            let sandbox_pattern_row_index = validate_keyed_auxiliary_alignment(
+            let sandbox_pattern_row_index = keyed_auxiliary_arrays(
                 &self.sandbox_patterns,
                 &self.sandbox_pattern_index,
                 context.sandbox_pattern_layout,
@@ -554,7 +555,11 @@ impl WeaponTables {
             WeaponRawPayloadTarget::UnlockSortedIndexRow,
             &donor.weapon.overrides.raw_payload_patches,
         )?;
-        unlock_sorted_index_position(&self.unlocks, unlock_definition_index)?;
+        if !donor.weapon.overrides.raw_payload_patches.is_empty() {
+            // Only a raw payload patch can move the sorted index out from under the row that was
+            // just appended, so the re-read that proves it did not happens only when one exists.
+            unlock_sorted_index_position(&self.unlocks, unlock_definition_index)?;
+        }
         self.unlock_banks = append_unlock_flag_bank_row(
             std::mem::take(&mut self.unlock_banks),
             ACCOUNT_UNLOCK_BANK,

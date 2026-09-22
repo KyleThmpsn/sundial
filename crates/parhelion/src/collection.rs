@@ -80,6 +80,13 @@ impl Family {
             Self::Swords => "Swords",
         }
     }
+    pub(crate) fn from_type_name(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|family| {
+            let label = family.label().to_ascii_lowercase();
+            normalized == label || normalized == label.trim_end_matches('s')
+        })
+    }
     pub const fn template(self) -> Destination {
         let ammo = match self {
             Self::FusionRifles | Self::GrenadeLaunchers | Self::Shotguns | Self::SniperRifles => {
@@ -145,12 +152,7 @@ impl NodeBudget {
     pub fn new<'a>(
         entries: impl IntoIterator<Item = (Option<&'a str>, Option<Destination>)>,
     ) -> Self {
-        let mut badges = BTreeSet::new();
-        let mut pages = BTreeSet::new();
-        for (badge, destination) in entries {
-            badges.extend(badge);
-            pages.extend(destination.filter(|page| page.stock_exemplar().is_none()));
-        }
+        let (badges, pages) = custom_members(entries);
         Self {
             badges: badges.len(),
             pages: pages.len(),
@@ -167,5 +169,87 @@ impl NodeBudget {
             )));
         }
         Ok(())
+    }
+}
+
+pub(crate) fn custom_node_hashes<'a>(
+    entries: impl IntoIterator<Item = (Option<&'a str>, Option<Destination>)>,
+) -> BTreeSet<u64> {
+    let (badges, pages) = custom_members(entries);
+    badges
+        .into_iter()
+        .flat_map(|badge| {
+            (0..4).map(move |index| u64::from(crate::presentation::badge_node_hash(badge, index)))
+        })
+        .chain(
+            pages
+                .into_iter()
+                .map(|destination| u64::from(destination.hash("node"))),
+        )
+        .collect()
+}
+
+fn custom_members<'a>(
+    entries: impl IntoIterator<Item = (Option<&'a str>, Option<Destination>)>,
+) -> (BTreeSet<&'a str>, BTreeSet<Destination>) {
+    let mut badges = BTreeSet::new();
+    let mut pages = BTreeSet::new();
+    for (badge, destination) in entries {
+        badges.extend(badge);
+        pages.extend(destination.filter(|page| page.stock_exemplar().is_none()));
+    }
+    (badges, pages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_node_identities_share_badges_and_pages() {
+        let page = Destination {
+            ammo: Ammo::Special,
+            family: Family::Sidearms,
+        };
+        let entries = [
+            (Some("Travelers"), Some(page)),
+            (Some("Travelers"), Some(page)),
+        ];
+        let hashes = custom_node_hashes(entries);
+        assert_eq!(hashes.len(), 5);
+        for index in 0..4 {
+            assert!(
+                hashes.contains(&u64::from(crate::presentation::badge_node_hash(
+                    "Travelers",
+                    index,
+                )))
+            );
+        }
+        assert!(hashes.contains(&u64::from(page.hash("node"))));
+        assert_eq!(
+            NodeBudget::new(entries).used() - BASE_NODE_COUNT,
+            hashes.len()
+        );
+    }
+
+    #[test]
+    fn stock_collection_pages_do_not_allocate_custom_nodes() {
+        let destination = Destination {
+            ammo: Ammo::Primary,
+            family: Family::AutoRifles,
+        };
+        assert!(custom_node_hashes([(None, Some(destination))]).is_empty());
+    }
+
+    #[test]
+    fn native_weapon_type_names_resolve_collection_families() {
+        for family in Family::ALL {
+            assert_eq!(Family::from_type_name(family.label()), Some(family));
+            assert_eq!(
+                Family::from_type_name(family.label().trim_end_matches('s')),
+                Some(family)
+            );
+        }
+        assert_eq!(Family::from_type_name("Trace Rifle"), None);
     }
 }

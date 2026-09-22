@@ -1,7 +1,8 @@
 //! Power caps read from the installed investment root, indexed by item version rows.
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use super::super::Catalog;
 use crate::{

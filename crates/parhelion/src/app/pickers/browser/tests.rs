@@ -108,6 +108,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
                         height: 500.0,
                         reset: false,
                         row_height: 30.0,
+                        select: None,
                     }
                     .draw(
                         ui,

@@ -10,8 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::{icon_schema::ICON_DEFINITION_CLASS, is_valid_package_tag};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::{
     AuthoringResult,

@@ -101,6 +101,13 @@ impl SundialApp {
                         item,
                         socket_index,
                         current_hash,
+                        current_plugs
+                            .iter()
+                            .map(|value| {
+                                parse_unsigned_value(value)
+                                    .and_then(|hash| u32::try_from(hash).ok())
+                            })
+                            .collect(),
                         SocketLocation::Equipped {
                             character_index,
                             slot,
@@ -177,6 +184,7 @@ impl SundialApp {
                         item,
                         socket_index,
                         current_hash,
+                        current_plugs.clone(),
                         SocketLocation::Stored(ui_identity),
                     )
                 })
@@ -196,6 +204,7 @@ impl SundialApp {
         item: &ItemDef,
         socket_index: usize,
         current_hash: Option<u64>,
+        plugs: Vec<Option<u32>>,
         location: SocketLocation,
     ) -> Option<(String, Option<u64>)> {
         let current_label = current_hash.map_or_else(
@@ -213,7 +222,8 @@ impl SundialApp {
             current_label,
             native_plug_default(&item.default_plugs, socket_index),
             self.plug_selection_mode,
-        );
+        )
+        .with_preview_plugs(plugs.into_iter());
         let query_key = location.search_key(socket_index);
         let mut query = self.plug_searches.remove(&query_key).unwrap_or_default();
         let button = widgets::draw_socket_button(

@@ -7,6 +7,7 @@ use sundial::package_authoring::sandbox_perk::action::{self, DecodedCondition};
 pub(super) mod labels;
 mod scripts;
 mod trigger;
+use super::structure::{self, Edit, List, Part};
 
 /// Room for the longest engine variable a comparison can name.
 const VARIABLE_WIDTH: f32 = 230.0;
@@ -23,69 +24,94 @@ pub(super) fn draw_node(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> R
 pub(super) fn draw(
     ui: &mut egui::Ui,
     graph: &mut Graph,
-    labels: &BTreeMap<u32, String>,
-    pick: &mut ConditionPicker<'_>,
+    assets: &mut Vec<Asset>,
+    pick: &mut NativePicker<'_>,
 ) -> Result<Option<u32>, String> {
-    let (payload, offsets) = graph.emit_with_offsets()?;
-    let decoded = action::decode(&payload)?;
-    if decoded
-        .groups
-        .iter()
-        .map(|group| group.effects.len())
-        .sum::<usize>()
-        > 1
-    {
-        let summary = action::ActionSummary::new(&decoded);
-        ui.add(egui::Label::new(egui::RichText::new(&summary.headline).weak()).truncate())
-            .on_hover_text(summary.render());
-    }
-    let blocks = offsets
-        .into_iter()
-        .map(|(index, offset)| (offset, index))
-        .collect();
+    let decoded = action::decode(&graph.emit()?)?;
+    let reveal = ui.ctx().data_mut(|data| {
+        data.remove_temp::<Option<sundial::package_authoring::sandbox_perk::program::NativeIssue>>(
+            egui::Id::new("native-problem-target"),
+        )
+    }).flatten();
     let mut edit_asset = None;
+    let mut pending = None;
+    let mut remove_group = None;
     for (index, group) in decoded.groups.iter().enumerate() {
         ui.push_id(("behavior-group", index), |ui| {
             if decoded.groups.len() > 1 {
+                ui.horizontal(|ui| {
                 ui.strong(if index == 0 {
-                    "Main Program".into()
+                    "Main Behavior".into()
                 } else {
-                    format!("Program {}", index + 1)
+                    format!("Behavior {}", index + 1)
+                });
+                if index > 0 {
+                    crate::app::style::more_menu(ui, |ui| {
+                        if ui.button("Remove Behavior Group").clicked() { remove_group = Some(index); ui.close_menu(); }
+                    });
+                }
                 });
             }
-            conditions(ui, graph, &blocks, "Trigger", &group.activation, pick)?;
+            group_conditions(ui, graph, "Trigger", &group.activation, pick, List::group(index, Part::Trigger), &mut pending)?;
             canvas::row(
                 ui,
                 "Actions",
                 "Actions started by this effect's trigger.",
                 |ui| {
-                    for (number, effect) in group.effects.iter().enumerate() {
-                        let index = block_at(&blocks, effect.offset)?;
-                        crate::app::style::block(ui.style())
-                            .fill(ui.visuals().window_fill())
-                            .show(ui, |ui| {
+                    // Decoding preserves native storage order. Dispatch runs from last to first.
+                    for (number, effect) in group.effects.iter().rev().enumerate() {
+                        let path = List::group(index, Part::Actions).node(group.effects.len() - 1 - number)?;
+                        let response = canvas::block(ui, ("native-action", number), |ui| structure::scoped(graph, &path, |graph, block_index| {
                                 ui.set_min_width(ui.available_width());
-                                ui.push_id(index, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        let title = super::super::native_action_label(effect.kind, &graph.blocks[index].bytes);
-                                        ui.strong(format!("{}. {title}", number + 1));
-                                        sundial::investment::draw_authoring_info_icon(
-                                            ui,
-                                            super::super::native_action_reading(
-                                                effect.kind,
-                                                &effect.description(),
-                                            ),
-                                        );
-                                        if let Some(tag) = effect.referenced_tag.filter(|tag| labels.contains_key(tag)) {
-                                            let label = labels.get(&tag).cloned().unwrap_or_else(|| format!("Asset 0x{tag:08X}"));
-                                            if ui.button(label).on_hover_text(format!("Edit this action's components.\nAsset 0x{tag:08X}")).clicked() {
-                                                edit_asset = Some(tag);
-                                            }
+                                ui.push_id(&path, |ui| {
+                                    let mut properties = super::super::super::properties::Panel::new(ui, "action");
+                                    let title = super::super::native_action_label(effect.kind, &graph.blocks[block_index].bytes);
+                                    let hint = super::super::native_action_reading(effect.kind, &effect.description());
+                                    let event = canvas::action_header(ui, &title, &hint, number, group.effects.len(), Some(&mut properties));
+                                    if let Some(target) = event.swap_with { pending = Some((List::group(index, Part::Actions), Edit::Move(number, target))); }
+                                    if event.remove { pending = Some((List::group(index, Part::Actions), Edit::Remove(number))); }
+                                    let class = graph.blocks[block_index].class;
+                                    if matches!(class, 0x80803E43 | 0x80803E44 | 0x80803E45 | 0x80803E47 | 0x80803E12) {
+                                        let tag = u32::from_le_bytes(graph.blocks[block_index].bytes.get(16..20).ok_or("Missing asset reference.")?.try_into().unwrap());
+                                        let mut asset = assets.iter().find(|asset| asset.graph == tag).cloned()
+                                            .unwrap_or(Asset { graph: tag, path: effect.referenced_path.clone().unwrap_or_default(), ..Asset::default() });
+                                        let scope = match class {
+                                            0x80803E12 => AssetScope::Projectiles,
+                                            0x80803E43 => AssetScope::Spawnable,
+                                            _ => AssetScope::Any,
+                                        };
+                                        pick(ui, NativeRequest::Asset(&mut asset, scope));
+                                        if matches!(asset.graph, 0 | u32::MAX) && class != 0x80803E47 {
+                                            ui.colored_label(ui.visuals().error_fg_color, if class == 0x80803E12 { "Projectile: choose a projectile." } else { "Object: choose an object or effect." });
+                                        }
+                                        if asset.graph != tag {
+                                            graph.blocks[block_index].bytes[16..20].copy_from_slice(&asset.graph.to_le_bytes());
+                                            graph.create_target(block_index, 8, 0, false)?;
+                                            let path = graph.blocks[block_index].links[&8];
+                                            graph.blocks[path].bytes = asset.path.as_bytes().to_vec();
+                                            graph.blocks[path].bytes.push(0);
+                                        }
+                                        if !matches!(asset.graph, 0 | u32::MAX) {
+                                            if let Some(existing) = assets.iter_mut().find(|existing| existing.graph == asset.graph) { *existing = asset; }
+                                            else { assets.push(asset); }
+                                        }
+                                    }
+                                    controls(ui, graph, block_index, FieldView::Primary, true)?;
+                                    let mut details = Ok(());
+                                    properties.show(ui, |ui| {
+                                        details = controls(ui, graph, block_index, FieldView::Details, true)
+                                            .and_then(|()| nested(ui, graph, block_index));
+                                        if let Some(tag) = effect.referenced_tag {
+                                            let tag = if matches!(class, 0x80803E43 | 0x80803E44 | 0x80803E45 | 0x80803E47 | 0x80803E12) {
+                                                u32::from_le_bytes(graph.blocks[block_index].bytes[16..20].try_into().unwrap())
+                                            } else { tag };
+                                            ui.separator();
+                                            ui.strong("Referenced Object");
+                                            if super::super::super::properties::edit_object(ui, &Asset { graph: tag, ..Asset::default() }) { edit_asset = Some(tag); }
                                         }
                                     });
-                                    controls(ui, graph, index, FieldView::Primary, true)?;
-                                    advanced(ui, graph, index)?;
-                                    if !effect.conditions.is_empty() {
+                                    details?;
+                                    if effect.kind == 32 {
                                         // A timer extension carries a copy of the trigger that
                                         // started the timers: the compiler re-emits it as the
                                         // nested list, which is the shape Outlaw and the other
@@ -100,168 +126,385 @@ pub(super) fn draw(
                                             egui::CollapsingHeader::new("Repeats the Effect's Trigger")
                                                 .id_salt("extension-trigger")
                                                 .show(ui, |ui| {
-                                                    condition_rows(ui, graph, &blocks, "Matching Conditions", &effect.conditions, pick)
+                                                    condition_list(ui, graph, "Matching Conditions", &effect.conditions, pick, List { owner: path.clone(), field: 0x18, class: action::CONDITION_ROW_CLASS }, &mut pending)
                                                 })
                                                 .body_returned
                                                 .transpose()?;
                                         } else {
                                             canvas::row(ui, "Trigger", "Checks for this action only. The effect's main trigger keeps its own settings.", |ui| {
-                                                condition_rows(ui, graph, &blocks, "Matching Conditions", &effect.conditions, pick)
+                                                condition_list(ui, graph, "Matching Conditions", &effect.conditions, pick, List { owner: path.clone(), field: 0x18, class: action::CONDITION_ROW_CLASS }, &mut pending)
                                             })?;
                                         }
                                     }
                                     Ok::<_, String>(())
                                 })
                                 .inner
-                            })
-                            .inner?;
+                            }));
+                        response.inner?;
+                        if reveal.as_ref().is_some_and(|target| target.group == index && target.action == number) {
+                            response.response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                    }
+                    let context = Program {
+                        trigger: if group.activation.iter().any(|node| node.kind == 2) { Trigger::WeaponKill } else { Trigger::Always },
+                        actions: group.effects.iter().map(|effect| Action::Native { node: NativeNode { kind: effect.kind, bytes: effect.native.clone() } }).collect(),
+                        ..Program::default()
+                    };
+                    if let Some(super::super::super::behaviors::Selection::Action(action)) = pick(ui, NativeRequest::Action(&context)) {
+                        pending = Some((List::group(index, Part::Actions), Edit::Add(structure::action_node(action, group)?)));
                     }
                     Ok::<_, String>(())
                 },
             )?;
-            if !group.removal.is_empty() {
-                conditions(ui, graph, &blocks, "End Condition", &group.removal, pick)?;
-            }
-            if !group.rearm.is_empty() {
+            group_conditions(ui, graph, "End Condition", &group.removal, pick, List::group(index, Part::Ending), &mut pending)?;
+            {
                 let title = if group.rearm.len() == 1 && group.rearm[0].kind == 1 {
                     "Cooldown"
                 } else {
                     "Reactivation"
                 };
-                conditions(ui, graph, &blocks, title, &group.rearm, pick)?;
+                group_conditions(ui, graph, title, &group.rearm, pick, List::group(index, Part::Rearm), &mut pending)?;
             }
             Ok::<_, String>(())
         })
         .inner?;
     }
+    if let Some((list, edit)) = pending {
+        list.edit(graph, edit)?;
+    }
+    if let Some(group) = remove_group {
+        structure::remove_group(graph, group)?;
+    }
+    if ui
+        .small_button("Add Behavior Group")
+        .on_hover_text("Add a separate set of triggers and actions within this effect.")
+        .clicked()
+    {
+        structure::add_group(graph)?;
+    }
     Ok(edit_asset)
 }
 
-fn block_at(blocks: &BTreeMap<usize, usize>, offset: usize) -> Result<usize, String> {
-    blocks
-        .get(&offset)
-        .copied()
-        .ok_or_else(|| "The decoded behavior no longer matches its native record.".into())
-}
-
-fn conditions(
+#[allow(clippy::too_many_arguments)]
+fn group_conditions(
     ui: &mut egui::Ui,
     graph: &mut Graph,
-    blocks: &BTreeMap<usize, usize>,
     title: &str,
     entries: &[DecodedCondition],
-    pick: &mut ConditionPicker<'_>,
+    pick: &mut NativePicker<'_>,
+    list: List,
+    pending: &mut Option<(List, Edit)>,
 ) -> Result<(), String> {
-    canvas::row(ui, title, "Conditions for this part of the effect.", |ui| {
-        canvas::plain(ui, title, |ui| {
-            condition_rows(ui, graph, blocks, title, entries, pick)
-        })
+    let hint = match title {
+        "Trigger" => canvas::ACTIVATION_HINT,
+        "End Condition" => canvas::REMOVAL_HINT,
+        _ => canvas::REARM_HINT,
+    };
+    canvas::row(ui, title, hint, |ui| {
+        condition_list(ui, graph, title, entries, pick, list, pending)
     })
 }
 
-fn condition_rows(
+#[allow(clippy::too_many_arguments)]
+fn condition_list(
     ui: &mut egui::Ui,
     graph: &mut Graph,
-    blocks: &BTreeMap<usize, usize>,
     title: &str,
     entries: &[DecodedCondition],
-    pick: &mut ConditionPicker<'_>,
+    pick: &mut NativePicker<'_>,
+    list: List,
+    pending: &mut Option<(List, Edit)>,
 ) -> Result<(), String> {
-    if entries.is_empty() {
-        ui.label("Always");
-    }
     for (number, condition) in entries.iter().enumerate() {
-        let index = block_at(blocks, condition.offset)?;
-        ui.push_id((title, index), |ui| {
-            let mut replacement = None;
-            // A kill condition draws a column of filters. Its picker would sit beside that
-            // column and leave the height of it as empty space, so it goes underneath.
-            let stacked = condition.kind == 2;
-            ui.horizontal_wrapped(|ui| {
-                if number > 0 {
-                    ui.label("Or");
-                }
-                if condition.kind == 2 {
-                    trigger::draw(ui, graph, index)?;
-                } else if condition.kind == 1 {
-                    ui.label("After").on_hover_text(
-                        "Time before this condition passes, measured from when its timer starts.",
+        let path = list.node(number)?;
+        ui.push_id((&list.owner, list.field, number), |ui| {
+            // A contribution is one thing: its condition and its Counter Change share a block.
+            let frame = if list.class == 0x80803E32 {
+                crate::app::style::block(ui.style())
+            } else {
+                egui::Frame::new()
+            };
+            frame.show(ui, |ui| {
+            structure::scoped(graph, &path, |graph, index| {
+                ui.horizontal_wrapped(|ui| {
+                    if list.class == 0x80803E32 {
+                        ui.strong(format!("Contribution {}", number + 1));
+                    } else if number > 0 {
+                        ui.label("Or");
+                    }
+                    let title = super::super::native_condition_reading(
+                        condition.kind,
+                        &condition.description(),
                     );
+                    if let Some(node) = pick_condition(pick, ui, &title) {
+                        *pending = Some((list.clone(), Edit::Replace(number, node)));
+                    }
+                    crate::app::style::more_menu(ui, |ui| {
+                        if ui.button("Remove Condition").clicked() {
+                            *pending = Some((list.clone(), Edit::Remove(number)));
+                            ui.close_menu();
+                        }
+                    });
+                });
+                if condition.kind == 1 {
                     let field = fields::describe(graph.blocks[index].class)?
                         .into_iter()
                         .find(|field| field.label == "Duration")
                         .ok_or("The timer duration field is missing.")?;
                     super::scalar(ui, &field, &mut graph.blocks[index], 0)?;
                 } else {
-                    ui.label(super::super::native_condition_reading(
-                        condition.kind,
-                        &condition.description(),
-                    ));
+                    if condition.kind == 2 {
+                        trigger::draw(ui, graph, index)?;
+                    }
+                    controls(ui, graph, index, FieldView::Primary, true)?;
                 }
-                if !stacked {
-                    replacement = pick(ui);
+                // Conditions and their alternatives remain normal controls at every depth.
+                if list.class == 0x80803E32 {
+                    // The header says what the row does, so the one number that matters is
+                    // never hidden behind it. The engine word rides along for people who know it.
+                    let title = format!(
+                        "Counter Change (Accumulator) · {}",
+                        contribution_reading(graph, &list, number)?
+                    );
+                    egui::CollapsingHeader::new(title)
+                        .id_salt(("contribution", &list.owner, number))
+                        .show(ui, |ui| row_controls(ui, graph, &list, number))
+                        .body_returned
+                        .transpose()?;
                 }
+                match condition.kind {
+                    26 | 35 => {
+                        let children = List {
+                            owner: path.clone(),
+                            field: if condition.kind == 35 { 0x100 } else { 0x10 },
+                            class: if condition.kind == 35 { 0 } else { 0x80803E32 },
+                        };
+                        ui.indent("conditions", |ui| {
+                            if condition.kind == 26 {
+                                // The heading owns its add button, so adding a contribution
+                                // is not the last thing under an indented list.
+                                ui.horizontal(|ui| {
+                                    ui.strong("Contributing Conditions");
+                                    if let Some(node) = ui
+                                        .push_id((&children.owner, children.field, "add"), |ui| {
+                                            pick_condition(pick, ui, "Add Condition…")
+                                        })
+                                        .inner
+                                    {
+                                        *pending = Some((children.clone(), Edit::Add(node)));
+                                    }
+                                });
+                                if condition.children.is_empty() {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        "Nothing counts yet. Add a condition, such as a kill; each time it passes, the counter goes up by 1.",
+                                    );
+                                }
+                            } else {
+                                ui.weak("Required Condition");
+                            }
+                            condition_list(
+                                ui,
+                                graph,
+                                if condition.kind == 26 {
+                                    "Contributing Condition"
+                                } else {
+                                    "Condition"
+                                },
+                                &condition.children,
+                                pick,
+                                children,
+                                pending,
+                            )
+                        })
+                        .inner?;
+                    }
+                    31 => {
+                        let subgroups = List {
+                            owner: path.clone(),
+                            field: 0x10,
+                            class: action::SUBGROUP_ROW_CLASS,
+                        };
+                        if ui.small_button("Add Requirement").clicked() {
+                            *pending = Some((subgroups.clone(), Edit::AddGroup));
+                        }
+                        for (row, subgroup) in condition.subgroups.iter().enumerate() {
+                            ui.indent(("requirement", row), |ui| {
+                                ui.horizontal(|ui| {
+                                    if row > 0 {
+                                        ui.label("And");
+                                    }
+                                    ui.weak(format!("Requirement {}", row + 1));
+                                    crate::app::style::more_menu(ui, |ui| {
+                                        if ui.button("Remove Requirement").clicked() {
+                                            *pending = Some((subgroups.clone(), Edit::Remove(row)));
+                                            ui.close_menu();
+                                        }
+                                    });
+                                });
+                                row_controls(ui, graph, &subgroups, row)?;
+                                let mut owner = path.clone();
+                                owner.push(0x10);
+                                condition_list(
+                                    ui,
+                                    graph,
+                                    "Requirement",
+                                    &subgroup.conditions,
+                                    pick,
+                                    List {
+                                        owner,
+                                        field: row * 0x20 + 0x10,
+                                        class: action::CONDITION_ROW_CLASS,
+                                    },
+                                    pending,
+                                )
+                            })
+                            .inner?;
+                        }
+                    }
+                    _ => {}
+                }
+                advanced(
+                    ui,
+                    graph,
+                    index,
+                    (list.class == 0x80803E32).then_some((&list, number)),
+                )?;
                 Ok::<_, String>(())
             })
-            .inner?;
-            if stacked {
-                replacement =
-                    crate::app::custom_perks::workbench::controls::cell(ui, "", "", |ui| pick(ui));
-            }
-            if let Some(node) = replacement {
-                let class = nodes::condition(node.kind)
-                    .ok_or("Unknown condition kind.")?
-                    .class;
-                let copied = Graph::read(&node.bytes, 0, class)?;
-                copied.validate_node(true, node.kind)?;
-                let root = graph.append(&copied)?;
-                graph.blocks[index] = graph.blocks[root].clone();
-                return Ok::<_, String>(());
-            }
-            if condition.kind != 1 {
-                controls(ui, graph, index, FieldView::Primary, true)?;
-            }
-            advanced(ui, graph, index)?;
-            if !condition.children.is_empty() {
-                ui.indent("children", |ui| {
-                    ui.weak("Contributing Conditions");
-                    condition_rows(
-                        ui,
-                        graph,
-                        blocks,
-                        "Contributing Conditions",
-                        &condition.children,
-                        pick,
-                    )
-                })
-                .inner?;
-            }
-            for (number, subgroup) in condition.subgroups.iter().enumerate() {
-                ui.indent(("subgroup", number), |ui| {
-                    ui.weak(format!("Requirement {}, met by any of", number + 1));
-                    condition_rows(
-                        ui,
-                        graph,
-                        blocks,
-                        &format!("Requirement {}", number + 1),
-                        &subgroup.conditions,
-                        pick,
-                    )
-                })
-                .inner?;
-            }
-            Ok::<_, String>(())
+            })
+            .inner
         })
         .inner?;
+    }
+    // A contributing list's add button sits beside its heading instead.
+    if title != "Contributing Condition" && (list.class != 0 || entries.is_empty()) {
+        let label = if title == "End Condition" {
+            "Add End Condition…"
+        } else if matches!(title, "Reactivation" | "Cooldown") {
+            "Add Reactivation Condition…"
+        } else if entries.is_empty() && title == "Trigger" {
+            "Always Active"
+        } else if entries.is_empty() || list.class == 0x80803E32 {
+            "Add Condition…"
+        } else {
+            "Add Alternative…"
+        };
+        let selected = ui
+            .push_id((&list.owner, list.field, "add-condition"), |ui| {
+                pick_condition(pick, ui, label)
+            })
+            .inner;
+        if let Some(node) = selected {
+            *pending = Some((list, Edit::Add(node)));
+        }
     }
     Ok(())
 }
 
-fn advanced(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
+fn row_controls(
+    ui: &mut egui::Ui,
+    graph: &mut Graph,
+    list: &List,
+    row: usize,
+) -> Result<(), String> {
+    let mut path = list.owner.clone();
+    path.push(list.field);
+    row_fields(ui, graph, list, row, true)
+}
+
+/// A contribution's fields: what happens when the condition passes is the row, and its
+/// hold and failure side wait in the condition's Advanced until one of them holds something.
+fn row_fields(
+    ui: &mut egui::Ui,
+    graph: &mut Graph,
+    list: &List,
+    row: usize,
+    leading: bool,
+) -> Result<(), String> {
+    let mut path = list.owner.clone();
+    path.push(list.field);
+    structure::scoped(graph, &path, |graph, index| {
+        let fields = fields::describe(list.class)?;
+        let leads = |field: &fields::Field| {
+            matches!(field.offset, 8 | 9 | 12)
+                || field
+                    .bytes(&graph.blocks[index], row)
+                    .is_some_and(|bytes| bytes.iter().any(|byte| *byte != 0))
+        };
+        let chosen = fields
+            .iter()
+            .filter(|field| visible(field, list.class) && leads(field) == leading)
+            .collect::<Vec<_>>();
+        for field in chosen {
+            ui.push_id(("contribution", row, field.offset), |ui| {
+                super::super::super::properties::field(
+                    ui,
+                    super::plain_field_label(list.class, &field.label),
+                    fields::contract(list.class, field).description,
+                    |ui| super::scalar(ui, field, &mut graph.blocks[index], row),
+                )
+            })
+            .inner?;
+        }
+        Ok(())
+    })
+}
+
+/// What a contributing condition does to the counter when it passes, as the row's header.
+fn contribution_reading(graph: &mut Graph, list: &List, row: usize) -> Result<String, String> {
+    let mut path = list.owner.clone();
+    path.push(list.field);
+    structure::scoped(graph, &path, |graph, index| {
+        let block = &graph.blocks[index];
+        let fields = fields::describe(list.class)?;
+        let at = |offset: usize| {
+            fields
+                .iter()
+                .find(|field| field.offset == offset)
+                .and_then(|field| field.bytes(block, row))
+        };
+        let byte = |offset: usize| {
+            at(offset)
+                .and_then(|bytes| bytes.first().copied())
+                .unwrap_or(0)
+        };
+        let amount = if byte(9) != 0 {
+            "the event's value".to_owned()
+        } else {
+            let value = at(12)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map_or(0.0, f32::from_le_bytes);
+            if value.fract() == 0.0 && value.abs() < 1.0e9 {
+                format!("{}", value as i64)
+            } else {
+                format!("{value}")
+            }
+        };
+        Ok(match byte(8) {
+            0 => format!("adds {amount}"),
+            1 => format!("sets it to {amount}"),
+            2 => format!("multiplies it by {amount}"),
+            other => format!("operation {other}"),
+        })
+    })
+}
+
+fn advanced(
+    ui: &mut egui::Ui,
+    graph: &mut Graph,
+    index: usize,
+    contribution: Option<(&List, usize)>,
+) -> Result<(), String> {
     egui::CollapsingHeader::new("Advanced")
         .id_salt(("node-advanced", index))
         .show(ui, |ui| {
             controls(ui, graph, index, FieldView::Details, true)?;
+            // A contribution's failure side and hold live with the condition they belong
+            // to, so one Advanced covers the whole row.
+            if let Some((list, row)) = contribution {
+                row_fields(ui, graph, list, row, false)?;
+            }
             nested(ui, graph, index)
         })
         .body_returned
@@ -272,111 +515,78 @@ fn advanced(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), St
 /// Follow owned value/filter allocations, stopping at independently edited nodes.
 /// All edits still use the same byte-exact scalar writer as Native Structure.
 fn nested(ui: &mut egui::Ui, graph: &mut Graph, parent: usize) -> Result<(), String> {
-    let mut visited = std::collections::BTreeSet::new();
-    let mut pending = vec![parent];
-    while let Some(parent) = pending.pop() {
-        if !visited.insert(parent) {
+    let path = structure::path_to(graph, parent)?;
+    nested_at(ui, graph, &path, 0)
+}
+
+fn nested_at(
+    ui: &mut egui::Ui,
+    graph: &mut Graph,
+    path: &[usize],
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= 64 {
+        return Err("The native structure nests too deeply.".into());
+    }
+    let parent = structure::resolve(graph, path)?;
+    let links = graph.blocks[parent].links.clone();
+    for (at, child) in links {
+        let class = graph.blocks[child].class;
+        if matches!(class, 0 | 0x80803E32 | 0x80803E06)
+            || nodes::CONDITIONS
+                .iter()
+                .chain(&nodes::EFFECTS)
+                .any(|n| n.class == class)
+        {
             continue;
         }
-        let links = graph.blocks[parent].links.clone();
-        for (at, child) in links {
-            let block = graph
-                .blocks
-                .get(child)
-                .ok_or("Missing nested native record.")?;
-            let class = block.class;
-            if class == 0
-                || nodes::CONDITIONS
-                    .iter()
-                    .chain(&nodes::EFFECTS)
-                    .any(|n| n.class == class)
-            {
-                continue;
-            }
-            let count = block.count.unwrap_or(1);
-            let fields = fields::describe(class)?;
-            let editable: Vec<_> = fields
-                .iter()
-                .filter(|field| visible(field, class))
-                .collect();
-            let has_labels = !native::labels::bindings(class)?.is_empty();
-            if !editable.is_empty() || has_labels {
-                let stride = schema::record(graph.blocks[parent].class)?.size;
-                let context = super::reference_name(graph, parent, at % stride, Some(child))?;
-                egui::CollapsingHeader::new(context)
-                    .id_salt(("nested-fields", parent, at))
-                    .show(ui, |ui| {
+        let mut child_path = path.to_vec();
+        child_path.push(at);
+        let fields: Vec<_> = fields::describe(class)?
+            .into_iter()
+            .filter(|field| visible(field, class))
+            .collect();
+        let has_labels = !native::labels::bindings(class)?.is_empty();
+        if !fields.is_empty() || has_labels {
+            let stride = schema::record(graph.blocks[parent].class)?.size;
+            let context = super::reference_name(graph, parent, at % stride, Some(child))?;
+            egui::CollapsingHeader::new(context)
+                .id_salt(("nested-fields", &child_path))
+                .show(ui, |ui| {
+                    structure::scoped(graph, &child_path, |graph, child| {
+                        let count = graph.blocks[child].count.unwrap_or(1);
                         for row in 0..count {
                             if count > 1 {
                                 ui.strong(format!("Entry {}", row + 1));
                             }
-                            for field in &editable {
-                                ui.push_id((child, row, field.offset), |ui| {
+                            for field in &fields {
+                                ui.push_id((row, field.offset), |ui| {
                                     super::super::super::properties::field(
                                         ui,
                                         &field.label,
                                         fields::contract(class, field).description,
                                         |ui| {
-                                            // This record can be one another node points at
-                                            // too, so an edit lands on a copy that only this
-                                            // owner reaches. The link is re-read because an
-                                            // earlier field in this same pass may have made
-                                            // that copy already.
-                                            let target = graph.blocks[parent]
-                                                .links
-                                                .get(&at)
-                                                .copied()
-                                                .unwrap_or(child);
-                                            let before = graph.blocks[target].bytes.clone();
-                                            let drawn = super::scalar(
-                                                ui,
-                                                field,
-                                                &mut graph.blocks[target],
-                                                row,
-                                            );
-                                            if drawn.is_ok() && graph.blocks[target].bytes != before
-                                            {
-                                                let after = std::mem::replace(
-                                                    &mut graph.blocks[target].bytes,
-                                                    before,
-                                                );
-                                                let private = graph.make_unique(parent, at)?;
-                                                graph.blocks[private].bytes = after;
-                                            }
-                                            drawn
+                                            super::scalar(ui, field, &mut graph.blocks[child], row)
                                         },
                                     )
                                 })
                                 .inner?;
                             }
-                            // Nested records carry label sites too: the weapon-family lists
-                            // inside the ammunition and finder nodes, for example.
-                            ui.push_id((child, row, "labels"), |ui| {
-                                let target = graph.blocks[parent].links[&at];
-                                let before = graph.blocks[target].clone();
-                                labels::draw_row_sites(ui, graph, target, row)?;
-                                let after = &graph.blocks[target];
-                                if after.bytes != before.bytes || after.links != before.links {
-                                    let after =
-                                        std::mem::replace(&mut graph.blocks[target], before);
-                                    let private = graph.make_unique(parent, at)?;
-                                    graph.blocks[private] = after;
-                                }
-                                Ok::<_, String>(())
+                            ui.push_id((row, "labels"), |ui| {
+                                labels::draw_row_sites(ui, graph, child, row)
                             })
                             .inner?;
                         }
-                        Ok::<_, String>(())
+                        Ok(())
                     })
-                    .body_returned
-                    .transpose()?;
-            }
-            pending.push(child);
+                })
+                .body_returned
+                .transpose()?;
         }
+        nested_at(ui, graph, &child_path, depth + 1)?;
     }
     Ok(())
 }
-
 /// All recovered scalar formats share the native field writer. Storage and policy
 /// fields remain in the complete record, instead of masquerading as gameplay settings.
 #[derive(Clone, Copy)]
@@ -401,8 +611,8 @@ fn primary(field: &fields::Field, ability: bool) -> bool {
             | "Spawn Position"
             | "Scale"
             | "Limit"
-            | "Modifier Value"
-            | "Modifier Limit"
+            | "Damage Multiplier"
+            | "Maximum Source Distance"
             | "Upper Cap"
             | "Value Threshold"
             | "Trigger Threshold"
@@ -417,6 +627,11 @@ fn primary_for(field: &fields::Field, block: &native::Block, ability: bool) -> b
     // does, so the row repeated down a card saying what the Chance control beside it already
     // said. It leads only once it names some other source.
     if field.label == "Probability Source" && block.bytes.get(field.offset) == Some(&255) {
+        return false;
+    }
+    // The counter editor draws the count it needs and what happens after it fires. Its
+    // clamps start at the stock norm and wait under Advanced, where their sentinels are read.
+    if block.class == 0x80803E30 {
         return false;
     }
     if matches!(block.class, 0x80803E3F | 0x80803E3E) {
@@ -456,11 +671,35 @@ fn primary_for(field: &fields::Field, block: &native::Block, ability: bool) -> b
     }
     // A selector whose values are named, or a key whose stock values are named, is what
     // its node's plain title is about, so it leads rather than sitting under Advanced.
+    // A selector whose values are named is what its node's plain title is about, so it leads
+    // even while a fresh node still holds an unnamed value: On Picking Up Ammo is about its
+    // ammo type before one is chosen. The general predicate is the exception. Its title is
+    // the comparison, and its player state, weapon state and named key are incidental, so
+    // there an unnamed value would only lead as "Native Value 0" and an unknown key as hex.
+    // Those wait under Advanced until they name something.
+    let incidental = matches!(block.class, 0x80803DCE | 0x80803DCC);
+    let current = field.bytes(block, 0);
+    let named_selector = || {
+        let choices = fields::contract(block.class, field).choices;
+        !choices.is_empty()
+            && (!incidental
+                || field.format == Format::Mask32
+                || current
+                    .and_then(|bytes| bytes.first().copied())
+                    .is_some_and(|value| choices.iter().any(|(choice, _)| *choice == value)))
+    };
+    let named_key = || {
+        let known = fields::keys::known(block.class, field.offset);
+        !known.is_empty()
+            && (!incidental
+                || current
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(u32::from_le_bytes)
+                    .is_some_and(|key| known.iter().any(|candidate| candidate.hash == key)))
+    };
     if field.editable
-        && (matches!(field.format, Format::Byte | Format::Mask32)
-            && !fields::contract(block.class, field).choices.is_empty()
-            || field.format == Format::Key
-                && !fields::keys::known(block.class, field.offset).is_empty()
+        && (matches!(field.format, Format::Byte | Format::Mask32) && named_selector()
+            || field.format == Format::Key && named_key()
             || matches!(
                 field.label.as_str(),
                 "On Reload" | "On Second Weapon Event" | "Radar Detection Range"
@@ -482,6 +721,10 @@ fn ability_adjustment(block: &native::Block) -> bool {
 /// predicate's named comparisons and the behavior script of kind 48.
 fn leading_controls(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     let class = graph.blocks[index].class;
+    if class == 0x80803E30 {
+        counter_editor(ui, graph, index)?;
+        return Ok(());
+    }
     if matches!(class, 0x80803DCE | 0x80803DCC) && comparison_editor(ui, graph, index)? {
         return Ok(());
     }
@@ -511,6 +754,107 @@ fn leading_controls(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Resul
 /// A general predicate with exactly one compiled comparison edits as the comparison the
 /// game makes: which engine variable, which operation and which threshold. Returns whether
 /// it drew, so a predicate with several comparisons keeps the per-comparison thresholds.
+/// Fields a guided editor draws itself, so the raw rows never repeat them in either view.
+fn owned_by_editor(class: u32, offset: usize) -> bool {
+    class == 0x80803E30 && matches!(offset, 0x20 | 0x24)
+}
+
+/// What a counter does once it fires, read from and written to its Resets At field. The
+/// stock perks use two settings: -1 keeps the count, and a reset equal to Count Needed
+/// starts over, which is how the ones that fire every few kills are built.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AfterFiring {
+    Keep,
+    StartOver,
+    Custom,
+}
+
+fn after_firing(needed: f32, resets_at: f32) -> AfterFiring {
+    if resets_at < 0.0 {
+        AfterFiring::Keep
+    } else if resets_at == needed {
+        AfterFiring::StartOver
+    } else {
+        AfterFiring::Custom
+    }
+}
+
+/// The counter's two decisions in plain words: how many, and what happens after it fires.
+fn counter_editor(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
+    let fields = fields::describe(0x80803E30)?;
+    let field_at = |offset: usize| {
+        fields
+            .iter()
+            .find(|field| field.offset == offset)
+            .ok_or("The counter's fields are missing.")
+    };
+    let needed_field = field_at(0x20)?;
+    let resets_field = field_at(0x24)?;
+    let read = |graph: &Graph, field: &fields::Field| {
+        field
+            .bytes(&graph.blocks[index], 0)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map_or(0.0, f32::from_le_bytes)
+    };
+    let needed_before = read(graph, needed_field);
+    let resets_at = read(graph, resets_field);
+    let mode_before = after_firing(needed_before, resets_at);
+    let mut needed = needed_before;
+    let mut mode = mode_before;
+    super::super::super::properties::field(
+        ui,
+        "Count Needed",
+        "How high the counter must reach for this trigger to fire. Each contributing condition below adds to the counter when it passes.",
+        |ui| {
+            let response = ui.add(
+                egui::DragValue::new(&mut needed)
+                    .range(1.0..=100_000.0)
+                    .speed(0.1)
+                    .max_decimals(0),
+            );
+            pickers::name_response(ui, &response, "Count Needed");
+        },
+    );
+    super::super::super::properties::field(
+        ui,
+        "After It Fires",
+        "Keep counting leaves the count where it is, so the trigger stays satisfied. Start over clears the count when it fires, the way the stock perks that trigger every few kills set Resets At to their Count Needed. A custom reset value is kept as it is.",
+        |ui| {
+            let label = match mode {
+                AfterFiring::Keep => "Keep counting".to_owned(),
+                AfterFiring::StartOver => "Start over".to_owned(),
+                AfterFiring::Custom => format!("Custom (resets at {resets_at})"),
+            };
+            egui::ComboBox::from_id_salt("counter-after-firing")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut mode, AfterFiring::Keep, "Keep counting");
+                    ui.selectable_value(&mut mode, AfterFiring::StartOver, "Start over");
+                    if mode_before == AfterFiring::Custom {
+                        ui.selectable_value(
+                            &mut mode,
+                            AfterFiring::Custom,
+                            format!("Custom (resets at {resets_at})"),
+                        );
+                    }
+                });
+            pickers::name_combo(ui, "counter-after-firing", "After It Fires");
+        },
+    );
+    if needed != needed_before {
+        needed_field.write(&mut graph.blocks[index], 0, &needed.to_le_bytes())?;
+    }
+    let resets_to = match mode {
+        AfterFiring::Keep => -1.0,
+        AfterFiring::StartOver => needed,
+        AfterFiring::Custom => resets_at,
+    };
+    if mode != mode_before || (mode == AfterFiring::StartOver && needed != needed_before) {
+        resets_field.write(&mut graph.blocks[index], 0, &resets_to.to_le_bytes())?;
+    }
+    Ok(())
+}
+
 fn comparison_editor(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<bool, String> {
     use sundial::package_authoring::sandbox_perk::action::native::predicate;
     let blocks = {
@@ -669,7 +1013,10 @@ fn controls(
     let wide = ui.available_width() >= cell_width(ui) * 2.0;
     let mut failed = None;
     let mut draw_fields = |ui: &mut egui::Ui| {
-        for field in fields.iter().filter(|field| visible(field, class)) {
+        for field in fields
+            .iter()
+            .filter(|field| visible(field, class) && !owned_by_editor(class, field.offset))
+        {
             if !match view {
                 FieldView::Primary => primary_for(field, &graph.blocks[index], ability),
                 FieldView::Details => !primary_for(field, &graph.blocks[index], ability),
@@ -725,7 +1072,13 @@ fn controls(
         }
     }
     // Every label list on this node. The kill node draws its sites beside its presets.
-    if matches!(view, FieldView::Primary) {
+    let mut populated_labels = false;
+    for (offset, _) in native::labels::bindings(class)? {
+        populated_labels |= native::labels::source(graph, index, offset)?
+            .iter()
+            .any(|labels| !labels.is_empty());
+    }
+    if !demotes || matches!(view, FieldView::Primary) == populated_labels {
         labels::draw_sites(ui, graph, index)?;
     }
     Ok(())

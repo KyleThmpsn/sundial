@@ -4,10 +4,11 @@ pub(super) fn draw_hash_progression_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     document: Option<&Value>,
+    collection_state: Option<&CollectionStateSnapshot>,
     inspected_hash: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
-    draw_progression_definitions(ui, catalog, document, matches);
+    draw_progression_definitions(ui, catalog, document, collection_state, matches);
     draw_reward_references(ui, inspected_hash, matches);
     draw_faction_references(ui, catalog, inspected_hash, matches);
     draw_objective_matches(ui, catalog, matches);
@@ -15,7 +16,7 @@ pub(super) fn draw_hash_progression_matches(
     draw_objective_traits(ui, catalog, matches);
     draw_progression_readers(ui, catalog, matches);
     draw_record_matches(ui, catalog, matches);
-    draw_seasonal_matches(ui, catalog, document, matches);
+    draw_seasonal_matches(ui, catalog, collection_state, matches);
     draw_mission_matches(ui, document, matches);
 }
 
@@ -25,13 +26,12 @@ pub(super) fn draw_hash_progression_matches(
 fn draw_seasonal_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    document: Option<&Value>,
+    snapshot: Option<&CollectionStateSnapshot>,
     matches: &CatalogHashMatches<'_>,
 ) {
     let Some(season) = catalog.seasonal() else {
         return;
     };
-    let snapshot = document.and_then(collection_state_snapshot);
     if !matches.artifact_mods.is_empty() {
         ui.add_space(8.0);
         hash_metadata_section(
@@ -64,7 +64,7 @@ fn draw_seasonal_matches(
                                         entry.character_slot.to_string(),
                                         true,
                                     );
-                                    if let Some(snapshot) = snapshot.as_ref() {
+                                    if let Some(snapshot) = snapshot {
                                         let owned =
                                             snapshot.artifact_mask(season, true) & entry.bit() != 0;
                                         hash_detail_field(
@@ -87,10 +87,7 @@ fn draw_seasonal_matches(
                             {
                                 draw_catalog_hash_link(ui, catalog, flag.hash, "Unlock Flag");
                             }
-                            if snapshot
-                                .as_ref()
-                                .is_some_and(CollectionStateSnapshot::is_dawn)
-                            {
+                            if snapshot.is_some_and(CollectionStateSnapshot::is_dawn) {
                                 ui.label(crate::app::progression::seasonal::DAWN_UNAVAILABLE);
                             }
                         },
@@ -327,6 +324,7 @@ fn draw_progression_definitions(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     document: Option<&Value>,
+    collection_state: Option<&CollectionStateSnapshot>,
     matches: &CatalogHashMatches<'_>,
 ) {
     let progression_definitions = &matches.progression_definitions;
@@ -343,14 +341,28 @@ fn draw_progression_definitions(
         hash_metadata_section(ui, &heading, true, |ui| {
             for (index, definition) in progression_definitions {
                 if progression_definitions.len() == 1 {
-                    draw_hash_progression_definition(ui, catalog, document, *index, definition);
+                    draw_hash_progression_definition(
+                        ui,
+                        catalog,
+                        document,
+                        collection_state,
+                        *index,
+                        definition,
+                    );
                 } else {
                     let heading = progression_display_name(definition).map_or_else(
                         || format!("Definition #{index}"),
                         |name| format!("{name} · Definition #{index}"),
                     );
                     metadata_subsection(ui, &heading, |ui| {
-                        draw_hash_progression_definition(ui, catalog, document, *index, definition);
+                        draw_hash_progression_definition(
+                            ui,
+                            catalog,
+                            document,
+                            collection_state,
+                            *index,
+                            definition,
+                        );
                     });
                 }
             }
@@ -867,6 +879,7 @@ fn draw_hash_progression_definition(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     document: Option<&Value>,
+    collection_state: Option<&CollectionStateSnapshot>,
     index: usize,
     definition: &ProgressionDefinition,
 ) {
@@ -893,7 +906,7 @@ fn draw_hash_progression_definition(
         && document.is_some_and(crate::persistence::progression::supports_seasonal_authoring)
     {
         ui.label(help);
-        if let Some(snapshot) = document.and_then(collection_state_snapshot)
+        if let Some(snapshot) = collection_state
             && let Some(season) = catalog.seasonal()
             && let Ok(experience) = snapshot.seasonal_experience(season)
         {

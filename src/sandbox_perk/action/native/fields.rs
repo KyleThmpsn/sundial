@@ -87,21 +87,7 @@ pub fn describe(class: u32) -> Result<Vec<Field>, String> {
     let mut fields = Vec::new();
     let mut covered = vec![false; record.size];
     for &(offset, code) in &record.fields {
-        let (width, format, label) = match code {
-            1..=3 => (8, Format::Pointer, "Reference"),
-            4 | 9 => (4, Format::Tag, "Resource"),
-            11 => (4, Format::Key, "Key"),
-            _ => continue,
-        };
-        insert(
-            &mut fields,
-            &mut covered,
-            offset,
-            width,
-            format,
-            label,
-            code != 3 && code != 1 && code != 2,
-        );
+        schema_field(&mut fields, &mut covered, offset, code);
     }
     for (offset, child, _) in schema::inline(class)? {
         if schema::record(child)?.array {
@@ -180,6 +166,38 @@ pub fn describe(class: u32) -> Result<Vec<Field>, String> {
     }
     fields.sort_by_key(|field| field.offset);
     Ok(fields)
+}
+
+fn schema_field(fields: &mut Vec<Field>, covered: &mut [bool], offset: usize, code: u32) {
+    if code == 9 {
+        // A typed resource reference is an owner, native type and 64-bit
+        // offset. Editing one lane independently can redirect a callback to
+        // a different object. Package relocation owns all three lanes.
+        for (at, width, format, label) in [
+            (offset, 4, Format::Tag, "Resource"),
+            (offset + 4, 4, Format::Unsigned, "Resource Type"),
+            (offset + 8, 8, Format::Bytes, "Resource Offset"),
+        ] {
+            insert(fields, covered, at, width, format, label, false);
+        }
+        return;
+    }
+    let (width, format, label) = match code {
+        1..=3 => (8, Format::Pointer, "Reference"),
+        4 => (4, Format::Tag, "Resource"),
+        5 => (8, Format::Bytes, "Native Type"),
+        11 => (4, Format::Key, "Key"),
+        _ => return,
+    };
+    insert(
+        fields,
+        covered,
+        offset,
+        width,
+        format,
+        label,
+        !matches!(code, 1..=3 | 5),
+    );
 }
 
 fn insert(
@@ -487,17 +505,20 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
             (0x28, 4, Float, "Minimum Value"),
             (0x2C, 4, Float, "Maximum Value"),
         ],
-        // Register Host Modifier names its modifier table by the tag at +A8 and selects the row
-        // by this offset. Every stock value is a multiple of eight, an eight byte stride.
+        // Kind 33 registers +A0. The typed reference at +A8 points back to this
+        // node, not to an independent modifier table. Keep it compiler-managed.
         0x80803E3C => vec![
-            (0xA8, 4, Tag, "Modifier Table"),
-            (0xB0, 4, Unsigned, "Modifier Row Offset"),
+            (0xA8, 4, Tag, "Descriptor Owner"),
+            (0xB0, 4, Unsigned, "Descriptor Offset"),
         ],
         // The entity or resource each spawning kind references, which is the reference
         // `effect_reference` already reads and `Action::asset` carries. The schema types the
         // lane and the kind's traced behavior says what it points at, so the label names that
         // rather than leaving a bare Resource.
-        0x80803E45 => vec![(0x10, 4, Tag, "Spawned Entity")],
+        0x80803E45 => vec![
+            (0x10, 4, Tag, "Attached Entity"),
+            (0x30, 4, Key, "Action Value Parameter"),
+        ],
         // +2 and +3 move independently, so each is its own byte rather than one opaque word.
         0x80803E43 => vec![
             (2, 1, Byte, "Spawn Mode"),
@@ -529,8 +550,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
             (8, 1, Byte, "Stat Selector"),
         ],
         0x80803E44 => vec![
-            (2, 1, Byte, "Attachment Mode"),
-            (0x10, 4, Tag, "Spawned Entity"),
+            (2, 1, Byte, "Attachment Target"),
+            (0x10, 4, Tag, "Attached Entity"),
             (0x50, 1, Byte, "Input Source"),
             (0x51, 1, Flag, "Normalize Input"),
         ],
@@ -698,13 +719,43 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         result.extend(match node.kind {
             3 => vec![(4, 1, Byte, "Position Selector")],
             1 => vec![
-                (2, 1, Byte, "Attachment Mode"),
-                (0x18, 4, Key, "First Key"),
-                (0x1C, 4, Key, "Second Key"),
-                (0x20, 4, Float, "First Float"),
-                (0x24, 4, Float, "Second Float"),
-                (0x28, 4, Float, "Third Float"),
-                (0x2C, 4, Float, "Fourth Float"),
+                (2, 1, Byte, super::super::fields::CREATE_ENTITY_MODE_LABEL),
+                (
+                    0x18,
+                    4,
+                    Key,
+                    super::super::fields::CREATE_ENTITY_KEY_LABELS[0],
+                ),
+                (
+                    0x1C,
+                    4,
+                    Key,
+                    super::super::fields::CREATE_ENTITY_KEY_LABELS[1],
+                ),
+                (
+                    0x20,
+                    4,
+                    Float,
+                    super::super::fields::CREATE_ENTITY_FLOAT_LABELS[0],
+                ),
+                (
+                    0x24,
+                    4,
+                    Float,
+                    super::super::fields::CREATE_ENTITY_FLOAT_LABELS[1],
+                ),
+                (
+                    0x28,
+                    4,
+                    Float,
+                    super::super::fields::CREATE_ENTITY_FLOAT_LABELS[2],
+                ),
+                (
+                    0x2C,
+                    4,
+                    Float,
+                    super::super::fields::CREATE_ENTITY_FLOAT_LABELS[3],
+                ),
             ],
             // Long March ("detect enemies on your radar from farther away") writes 80 to the
             // third float and Radar Booster ("slightly increases the range") 56, both leaving
@@ -796,9 +847,9 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
             ],
             32 => vec![(4, 4, Float, "Extend By"), (8, 4, Float, "Up To")],
             33 => vec![
-                (4, 4, Float, "Modifier Value"),
-                (8, 1, Byte, "Input Selector"),
-                (12, 4, Float, "Modifier Limit"),
+                (4, 4, Float, "Damage Multiplier"),
+                (8, 1, Byte, "Multiplier Stat"),
+                (12, 4, Float, "Maximum Source Distance"),
             ],
             40 => vec![(0x148, 1, Flag, "Uses Ability Scalar Cap")],
             48 => vec![

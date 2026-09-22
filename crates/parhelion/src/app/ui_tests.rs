@@ -7,6 +7,8 @@ mod authoring_safety;
 mod branding;
 mod build_flow;
 mod build_selection;
+#[cfg(feature = "d2-model-importer")]
+mod importer;
 mod library;
 mod operation_lock;
 mod ornaments;

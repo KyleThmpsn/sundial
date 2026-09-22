@@ -248,7 +248,11 @@ fn cleanup_refuses_unknown_content_and_retains_recoverable_marker() {
     assert!(error.contains("unrecognized"));
     assert_eq!(fs::read(&unknown).unwrap(), b"preserve this");
     assert_eq!(fs::read(path.join(LEASE_FILE)).unwrap(), LEASE_MAGIC);
-    assert!(prune_stale_views(root.path()).is_err());
+    // A view that cannot be cleaned is left for next time rather than stopping the pruner,
+    // and with it the build that needed a fresh view.
+    assert_eq!(prune_stale_views(root.path()).unwrap(), 0);
+    assert_eq!(fs::read(&unknown).unwrap(), b"preserve this");
+    assert!(path.exists());
     fs::remove_file(unknown).unwrap();
     assert_eq!(prune_stale_views(root.path()).unwrap(), 1);
     assert!(!path.exists());
@@ -278,7 +282,7 @@ fn filtered_view_closes_without_changing_hard_linked_source_files() {
         b"stock payload"
     );
     assert!(!view.path().join("w64_stock_058c_1.pkg").exists());
-    assert_eq!(view.finish(Ok(42)), Ok(42));
+    assert_eq!(view.finish(Ok(42), drop), Ok(42));
     assert!(!view_path.exists());
     assert_eq!(fs::read(stock).unwrap(), b"stock payload");
     assert_eq!(
@@ -288,23 +292,28 @@ fn filtered_view_closes_without_changing_hard_linked_source_files() {
 }
 
 #[test]
-fn compilation_and_cleanup_errors_are_both_reported() {
-    assert_eq!(finish_with_cleanup(Ok(42), Ok(())), Ok(42));
+fn a_kept_build_survives_a_failed_cleanup_and_a_failed_build_reports_both() {
+    let mut warnings = Vec::new();
+    let mut warn = |warning: String| warnings.push(warning);
+    assert_eq!(finish_with_cleanup(Ok(42), Ok(()), &mut warn), Ok(42));
     assert_eq!(
-        finish_with_cleanup::<()>(Err("compile failed".to_owned()), Ok(())),
+        finish_with_cleanup::<()>(Err("compile failed".to_owned()), Ok(()), &mut warn),
         Err("compile failed".to_owned())
     );
     assert_eq!(
-        finish_with_cleanup(Ok(42), Err("cleanup failed".to_owned())),
-        Err("cleanup failed".to_owned())
+        finish_with_cleanup(Ok(42), Err("cleanup failed".to_owned()), &mut warn),
+        Ok(42),
+        "the packages were read and the output is complete; the view is pruned later"
     );
     assert_eq!(
         finish_with_cleanup::<()>(
             Err("compile failed".to_owned()),
-            Err("cleanup failed".to_owned())
+            Err("cleanup failed".to_owned()),
+            &mut warn,
         ),
         Err("compile failed\ncleanup failed".to_owned())
     );
+    assert_eq!(warnings, vec!["cleanup failed".to_owned()]);
 }
 
 #[cfg(windows)]

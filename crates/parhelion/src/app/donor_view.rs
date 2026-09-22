@@ -3,6 +3,7 @@ use super::*;
 use sundial::package_authoring::{WeaponDyeColors, load_weapon_dye_colors};
 
 pub(super) mod ornaments;
+pub(in crate::app) mod preview;
 
 const DYE_ARRAY_NAMES: [&str; 3] = ["Custom Dyes", "Default Dyes", "Locked Dyes"];
 
@@ -409,6 +410,7 @@ impl PackageAuthoringApp {
                     action_label: "Swap Runtime",
                     selected_icon_override: None,
                     secondary_action_label: None,
+                    row_detail: None,
                     clear: Some(WeaponDonorPickerClearChoice {
                         label: "Follow Gameplay Donor",
                         tooltip: "Use the gameplay donor's complete native runtime entity.",
@@ -546,6 +548,7 @@ impl PackageAuthoringApp {
                     action_label: "Swap scaling",
                     selected_icon_override: None,
                     secondary_action_label: None,
+                    row_detail: None,
                     clear: Some(WeaponDonorPickerClearChoice {
                         label: "Follow Gameplay Donor Scaling",
                         tooltip:
@@ -680,6 +683,7 @@ impl PackageAuthoringApp {
                     action_label: "Change Colors",
                     selected_icon_override: None,
                     secondary_action_label: None,
+                    row_detail: None,
                     clear: Some(WeaponDonorPickerClearChoice {
                         label: "Use Weapon Appearance",
                         tooltip: "Use the geometry donor's render dyes, or the gameplay donor when geometry is inherited.",
@@ -768,6 +772,7 @@ impl PackageAuthoringApp {
                     action_label: "Change Icon",
                     selected_icon_override: authored_icon_override.as_ref(),
                     secondary_action_label: icon_editor_target.as_ref().map(|_| "Edit Icon…"),
+                    row_detail: None,
                     clear: Some(WeaponDonorPickerClearChoice {
                         label: "Use Weapon Appearance",
                         tooltip: "Use the geometry donor's icon, or the gameplay donor when geometry is inherited.",
@@ -868,6 +873,19 @@ impl PackageAuthoringApp {
                     )
                 },
             );
+        if let Some(entry) = current_hash.and_then(|hash| {
+            self.recipe_entries
+                .iter()
+                .find(|entry| entry.identity_hash == hash && entry.identity_hash != 0)
+        }) {
+            ui.weak(format!(
+                "Library weapon. Builds on {}'s recipe.",
+                entry.name
+            ))
+            .on_hover_text(
+                "A weapon Parhelion built is not in the game's own tables, so the build starts from its recipe instead: its stock donor and its changes, with this recipe's settings on top.",
+            );
+        }
         let selection = self.catalog.as_ref().and_then(|catalog| {
             catalog.draw_weapon_donor_header_picker(
                 ui,
@@ -881,6 +899,7 @@ impl PackageAuthoringApp {
                     action_label: "Change Base",
                     selected_icon_override: None,
                     secondary_action_label: None,
+                    row_detail: None,
                     clear: None,
                 },
             )
@@ -908,13 +927,6 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         gameplay_donor: Option<&WeaponDonor>,
     ) {
-        draw_donor_section_label(
-            ui,
-            "Appearance",
-            Some(
-                "The weapon model and its compatible animation/classification data. Customize the inventory icon and colors on the Appearance tab. This does not select firing behavior.",
-            ),
-        );
         let effective_base = gameplay_donor.map(|donor| {
             let mut summary = donor.summary.clone();
             summary.weapon_translation_group =
@@ -931,6 +943,24 @@ impl PackageAuthoringApp {
         let slot_changed = gameplay_summary.is_some_and(|donor| {
             target_slot.is_some_and(|target| donor.inventory_slot != Some(target))
         });
+        let slot_warning = gameplay_summary
+            .zip(target_slot)
+            .filter(|_| slot_changed && self.recipe.presentation_donor.is_none())
+            .map(|(gameplay, target)| {
+                format!(
+                    "Retains the base {} model and animations in {}. This slot conversion needs an in-game test.",
+                    gameplay.type_name,
+                    target.label(),
+                )
+            });
+        draw_donor_section_label_with_warning(
+            ui,
+            "Appearance",
+            Some(
+                "The weapon model and its compatible animation/classification data. Customize the inventory icon and colors on the Appearance tab. This does not select firing behavior.",
+            ),
+            slot_warning.as_deref(),
+        );
         let current_reference = self.recipe.presentation_donor.clone();
         let current_hash = current_reference
             .as_ref()
@@ -981,7 +1011,7 @@ impl PackageAuthoringApp {
         let can_choose = gameplay_summary.is_some() && target_slot.is_some();
         let selection = self.catalog.as_ref().and_then(|catalog| {
             ui.add_enabled_ui(can_choose, |ui| {
-                catalog.draw_weapon_donor_header_picker(
+                catalog.draw_weapon_appearance_picker(
                     ui,
                     "weapon-presentation-donor",
                     &mut self.presentation_donor_query,
@@ -1001,7 +1031,8 @@ impl PackageAuthoringApp {
                         action_label: "Change Appearance",
                         selected_icon_override: None,
                         secondary_action_label: None,
-                        clear: Some(
+                        row_detail: None,
+                    clear: Some(
                             WeaponDonorPickerClearChoice {
                                 label: "Inherit Gameplay Donor",
                                 tooltip: "Use the gameplay donor's model/art arrangement and client-classification tuple.",
@@ -1009,12 +1040,43 @@ impl PackageAuthoringApp {
                             },
                         ),
                     },
+                    gameplay_summary.map(|summary| summary.type_name.as_str()),
+                    |ui, hash| {
+                        let mut candidate = self.recipe.clone();
+                        candidate.set_presentation_donor(hash.map(|hash| WeaponDonorReference { item_hash: hash.into(), expected_name: None }));
+                        if let Some(loadout) = preview::loadout(catalog, &candidate) {
+                            let name = hash.and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash)).map_or("Gameplay Donor Appearance", |donor| donor.name.as_str());
+                            sundial::ui::model_preview::chooser::preview(ui, &self.packages, catalog.preview_appearance(&loadout), name);
+                        } else {
+                            ui.label("No model is available for this appearance.");
+                        }
+                    },
                 )
             })
             .inner
         });
         if self.catalog.is_none() {
             ui.add_enabled(false, egui::Button::new(&selected_text));
+        }
+        if let (Some(current), Some(gameplay)) = (current_summary, gameplay_summary) {
+            let warning = if crate::capabilities::appearance_type_differs(current, gameplay) {
+                Some(
+                    "Different weapon type than the gameplay donor. The build pins the model to the grip, so its moving parts stay still and it may sit wrong in the hands. The game may still crash. Highly recommended to keep the same weapon type family as the donor.",
+                )
+            } else if crate::capabilities::appearance_animations_differ(current, gameplay) {
+                Some(
+                    "Different weapon animations than the gameplay donor. The build pins the model to the grip, so its moving parts stay still. The game may still crash.",
+                )
+            } else {
+                None
+            };
+            if let Some(warning) = warning {
+                ui.label(
+                    egui::RichText::new(warning)
+                        .strong()
+                        .color(ui.visuals().warn_fg_color),
+                );
+            }
         }
         match selection {
             Some(WeaponDonorPickerAction::Clear) => {
@@ -1054,24 +1116,27 @@ impl PackageAuthoringApp {
         {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                self.recipe.presentation_donor.as_ref().and_then(|reference| reference.item_hash.parse_u32().ok())
+                self.recipe
+                    .presentation_donor
+                    .as_ref()
+                    .and_then(|reference| reference.item_hash.parse_u32().ok())
                     .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
-                    .map_or("Appearance is unavailable in this installation".to_owned(), |appearance| {
-                    match crate::capabilities::appearance_compatibility(appearance, gameplay_summary, target_slot) {
-                        crate::capabilities::AppearanceCompatibility::Blocked(reason) => reason.to_owned(),
-                        crate::capabilities::AppearanceCompatibility::Unchecked => "Appearance animations have not been verified. Refresh the catalog or choose a verified appearance.".to_owned(),
-                        crate::capabilities::AppearanceCompatibility::Compatible => "Choose a separate appearance or restore the base appearance.".to_owned(),
-                    }
-                }),
-            );
-        } else if slot_changed && self.recipe.presentation_donor.is_none() {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!(
-                    "Retains the base {} model and animations in {}. This slot conversion needs an in-game test.",
-                    gameplay_summary.type_name,
-                    target_slot.label(),
-                ),
+                    .map_or(
+                        "Appearance is unavailable in this installation".to_owned(),
+                        |appearance| match crate::capabilities::appearance_compatibility(
+                            appearance,
+                            gameplay_summary,
+                            target_slot,
+                        ) {
+                            crate::capabilities::AppearanceCompatibility::Blocked(reason) => {
+                                reason.to_owned()
+                            }
+                            crate::capabilities::AppearanceCompatibility::Compatible => {
+                                "Choose a separate appearance or restore the base appearance."
+                                    .to_owned()
+                            }
+                        },
+                    ),
             );
         }
         self.draw_appearance_ornament_button(ui);
@@ -1086,9 +1151,22 @@ pub(super) fn unique_behavior_sources(
     let Some(gameplay_donor) = gameplay_donor else {
         return Vec::new();
     };
+    // Two weapons can name one graph: Borealis and D.A.R.C.I. share theirs. Excluding only the
+    // donor's own catalogue entry left the other weapon's entry offering the tag already in the
+    // block, which reported a behavior applied and changed nothing.
+    let own_graphs = crate::weapon_behavior::CATALOG
+        .iter()
+        .filter(|entry| entry.source_item_hash == gameplay_donor.summary.hash)
+        .filter_map(crate::weapon_behavior::Behavior::graph_tag)
+        .collect::<Vec<_>>();
     crate::weapon_behavior::catalog_for_type(&gameplay_donor.summary.type_name)
         .filter(|entry| !entry.switches_element())
         .filter(|entry| entry.source_item_hash != gameplay_donor.summary.hash)
+        .filter(|entry| {
+            entry
+                .graph_tag()
+                .is_none_or(|tag| !own_graphs.contains(&tag))
+        })
         .collect()
 }
 
@@ -1115,10 +1193,12 @@ fn selected_unique_behavior(
 fn behavior_label(
     entry: &crate::weapon_behavior::Behavior,
     catalog: Option<&InvestmentCatalog>,
+    host_type: Option<&str>,
 ) -> String {
     let mut perks: Vec<&str> = Vec::new();
     if let Some(catalog) = catalog {
-        for plug in [entry.intrinsic_plug, entry.trait_plug]
+        let frame = frame_travels(entry, catalog, host_type);
+        for plug in [entry.intrinsic_plug.filter(|_| frame), entry.trait_plug]
             .into_iter()
             .flatten()
         {
@@ -1136,14 +1216,39 @@ fn behavior_label(
     format!("{} ({})", entry.source_name, perks.join(", "))
 }
 
+/// Whether the source weapon's frame plug will be pinned into a host of `host_type`. Mirrors
+/// the rule the socket sync and the build apply, so what the picker promises is what lands.
+fn frame_travels(
+    entry: &crate::weapon_behavior::Behavior,
+    catalog: &InvestmentCatalog,
+    host_type: Option<&str>,
+) -> bool {
+    crate::weapon_behavior::same_family(
+        host_type,
+        catalog.item_type_name(entry.source_item_hash).as_deref(),
+    )
+}
+
 fn behavior_tooltip(
     entry: &crate::weapon_behavior::Behavior,
     catalog: Option<&InvestmentCatalog>,
+    host_type: Option<&str>,
 ) -> String {
     let mut sections = vec![entry.source_name.to_owned(), entry.summary.to_owned()];
     if let Some(catalog) = catalog {
+        let frame = frame_travels(entry, catalog, host_type);
+        if !frame && let Some(plug) = entry.intrinsic_plug {
+            sections.push(format!(
+                "{} stays behind. It is a {} frame, and this weapon keeps its own.",
+                catalog.plug_label(plug, false),
+                catalog
+                    .item_type_name(entry.source_item_hash)
+                    .unwrap_or_else(|| "different".to_owned())
+                    .to_lowercase()
+            ));
+        }
         let mut seen = std::collections::BTreeSet::new();
-        for plug in [entry.intrinsic_plug, entry.trait_plug]
+        for plug in [entry.intrinsic_plug.filter(|_| frame), entry.trait_plug]
             .into_iter()
             .flatten()
         {
@@ -1157,6 +1262,15 @@ fn behavior_tooltip(
             sections.push(format!("{name}\n{description}"));
         }
     }
+    if let Some(record) = crate::weapon_behavior::paired_record_source(entry) {
+        sections.push(if record == entry.source_name {
+            "This also carries the weapon's own behavior record, which moves how it is handled rather than what its perk counts.".to_owned()
+        } else {
+            format!(
+                "This also carries {record}'s behavior record, which the two weapons share. A record moves how a weapon is handled rather than what its perk counts."
+            )
+        });
+    }
     if let Some(caution) = entry.caution {
         sections.push(caution.to_owned());
     }
@@ -1164,20 +1278,22 @@ fn behavior_tooltip(
     sections.join("\n\n")
 }
 
-/// Prefer the firing graph over the smaller state-only record for the same weapon.
-/// Keep an already selected state-only choice visible without changing the saved recipe.
+/// Prefer the firing graph over the separate record for the same weapon.
+///
+/// Safe because a graph choice now applies that weapon's behavior record as well, so one pick
+/// brings both halves. Keep an already selected record choice visible without changing the
+/// saved recipe.
 fn offered_behaviors(
     sources: &[&'static crate::weapon_behavior::Behavior],
     selected: Option<&'static crate::weapon_behavior::Behavior>,
 ) -> Vec<&'static crate::weapon_behavior::Behavior> {
-    use crate::weapon_behavior::BehaviorSource;
     let mut offered: Vec<&'static crate::weapon_behavior::Behavior> = Vec::new();
     for entry in sources {
         if let Some(kept) = offered
             .iter_mut()
             .find(|kept| kept.source_item_hash == entry.source_item_hash)
         {
-            if matches!(entry.source, BehaviorSource::Graph { .. }) {
+            if entry.has_graph() {
                 *kept = entry;
             }
         } else {
@@ -1189,23 +1305,27 @@ fn offered_behaviors(
     {
         offered.push(selected);
     }
-    offered.sort_by_key(|entry| (entry.source_name, entry.owner_tag().is_some()));
+    offered.sort_by_key(|entry| (entry.source_name, !entry.has_graph()));
     offered
 }
 
 fn behavior_choice_label(
     entry: &crate::weapon_behavior::Behavior,
     catalog: Option<&InvestmentCatalog>,
+    host_type: Option<&str>,
 ) -> String {
-    let label = behavior_label(entry, catalog);
-    if entry.owner_tag().is_some()
-        && crate::weapon_behavior::CATALOG.iter().any(|other| {
-            other.source_item_hash == entry.source_item_hash && other.owner_tag().is_none()
-        })
-    {
-        format!("{label} · State Only")
-    } else {
+    let label = behavior_label(entry, catalog, host_type);
+    let paired_graph = crate::weapon_behavior::CATALOG
+        .iter()
+        .any(|other| other.source_item_hash == entry.source_item_hash && other.has_graph());
+    if entry.has_graph() || !paired_graph {
         label
+    } else if entry.carries_behavior_record() {
+        // Calling this "State Only" was wrong: it carries the owner's behavior array. Only the
+        // firing and projectile side is missing, which is what the graph choice adds.
+        format!("{label} · No Firing Graph")
+    } else {
+        format!("{label} · State Only")
     }
 }
 
@@ -1218,73 +1338,117 @@ pub(super) fn draw_unique_behavior_control(
     overrides: &mut crate::recipe::WeaponRecipeOverrides,
     sources: &[&'static crate::weapon_behavior::Behavior],
     catalog: Option<&InvestmentCatalog>,
+    donors: &[WeaponDonorSummary],
+    host_type: Option<&str>,
+    query: &mut String,
 ) {
-    use crate::app::style::workbench_style;
     use crate::recipe::AdditionalBehaviorRecipe;
     use crate::weapon_behavior::ELEMENT_SWITCH;
+    let selected = selected_unique_behavior(overrides);
     ui.horizontal(|ui| {
-        ui.label("Unique Weapon Behavior");
+        // The browser row carries the weapon and the perks it pins. Everything else about the
+        // current choice, its own perk text and any caution, stays on the hover here.
+        ui.label("Unique Weapon Behavior")
+            .on_hover_text(crate::app::style::destiny_text(
+                ui,
+                selected.map_or_else(
+                    || "Keep only this weapon's own behavior.".to_owned(),
+                    |entry| behavior_tooltip(entry, catalog, host_type),
+                ),
+            ));
         draw_authoring_info_icon(
             ui,
-            "Copies another weapon's built-in behavior onto this one, including onto a different weapon type. Some Exotics keep half of what makes them special in the weapon rather than in a perk. Test the combination in game.",
+            "Copies another weapon's built-in behavior onto this one, including onto a different weapon type. Some weapons keep part of what makes them special in their firing graph or state rather than in a perk. Test the combination in game.",
         );
     });
-    let selected = selected_unique_behavior(overrides);
     let offered = offered_behaviors(sources, selected);
     let selected_text = selected.map_or_else(
         || NO_BEHAVIOR.to_owned(),
-        |entry| behavior_choice_label(entry, catalog),
+        |entry| behavior_choice_label(entry, catalog, host_type),
     );
-    ui.add_enabled_ui(!offered.is_empty(), |ui| {
-        egui::ComboBox::from_id_salt("recipe_unique_behavior")
-            .selected_text(selected_text)
-            .truncate()
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                workbench_style(ui);
-                if ui
-                    .selectable_label(selected.is_none(), NO_BEHAVIOR)
-                    .on_hover_text("Keep only this weapon's own behavior.")
-                    .clicked()
-                {
-                    if selected.is_some_and(crate::weapon_behavior::source_switches_element) {
-                        overrides.variable_damage = None;
-                    }
-                    overrides
-                        .additional_behaviors
-                        .retain(|entry| entry.behavior == ELEMENT_SWITCH);
-                }
-                for entry in offered {
-                    let chosen = selected.is_some_and(|current| current.id == entry.id);
-                    if ui
-                        .selectable_label(chosen, behavior_choice_label(entry, catalog))
-                        .on_hover_text(behavior_tooltip(entry, catalog))
-                        .clicked()
-                        && !chosen
-                    {
-                        overrides
-                            .additional_behaviors
-                            .retain(|kept| kept.behavior == ELEMENT_SWITCH);
-                        overrides
-                            .additional_behaviors
-                            .push(AdditionalBehaviorRecipe {
-                                behavior: entry.id.to_owned(),
-                            });
-                        // Hard Light and Borealis switch damage as well as fire differently, so
-                        // choosing them turns that on rather than leaving it to be found.
-                        if crate::weapon_behavior::source_switches_element(entry) {
-                            overrides.variable_damage =
-                                Some(crate::recipe::VariableDamageRecipe::all());
-                        }
-                    }
-                }
+    // The browser lists weapons, so a behavior is found by the weapon it came from. Each offered
+    // entry names a distinct weapon after `offered_behaviors` collapses a weapon's two halves.
+    let entry_for_hash = |hash: u32| {
+        offered
+            .iter()
+            .copied()
+            .find(|entry| entry.source_item_hash == hash)
+    };
+    let selection = catalog.and_then(|catalog| {
+        // The weapon name alone does not say what a choice brings, so each row carries the perks
+        // it would pin underneath it.
+        let detail = |hash: u32| {
+            let entry = entry_for_hash(hash)?;
+            let frame = frame_travels(entry, catalog, host_type);
+            let perks = [entry.intrinsic_plug.filter(|_| frame), entry.trait_plug]
+                .into_iter()
+                .flatten()
+                .map(|plug| catalog.plug_label(plug, false))
+                .collect::<Vec<_>>();
+            (!perks.is_empty()).then(|| perks.join(" · "))
+        };
+        let candidates = offered
+            .iter()
+            .filter_map(|entry| {
+                donors
+                    .iter()
+                    .find(|donor| donor.hash == entry.source_item_hash)
             })
-            .response
-            .on_hover_text(selected.map_or_else(
-                || "Keep only this weapon's own behavior.".to_owned(),
-                |entry| behavior_tooltip(entry, catalog),
-            ));
+            .collect::<Vec<_>>();
+        catalog.draw_weapon_donor_dropdown_picker(
+            ui,
+            "weapon-unique-behavior",
+            query,
+            candidates,
+            WeaponDonorPickerOptions {
+                selected_hash: selected.map(|entry| entry.source_item_hash),
+                selected_label: &selected_text,
+                header_label: None,
+                action_label: "Change Behavior",
+                selected_icon_override: None,
+                secondary_action_label: None,
+                row_detail: Some(&detail),
+                clear: Some(WeaponDonorPickerClearChoice {
+                    label: NO_BEHAVIOR,
+                    tooltip: "Keep only this weapon's own behavior.",
+                    selected: selected.is_none(),
+                }),
+            },
+        )
     });
+    if catalog.is_none() {
+        ui.add_enabled(false, egui::Button::new(selected_text));
+    }
+    // Element switch is requested by its own control, so it survives every change made here.
+    let keep_element_switch = |overrides: &mut crate::recipe::WeaponRecipeOverrides| {
+        overrides
+            .additional_behaviors
+            .retain(|kept| kept.behavior == ELEMENT_SWITCH);
+    };
+    match selection {
+        Some(WeaponDonorPickerAction::Clear) => {
+            if selected.is_some_and(crate::weapon_behavior::source_switches_element) {
+                overrides.variable_damage = None;
+            }
+            keep_element_switch(overrides);
+        }
+        Some(WeaponDonorPickerAction::Select(hash)) => {
+            if let Some(entry) = entry_for_hash(hash) {
+                keep_element_switch(overrides);
+                overrides
+                    .additional_behaviors
+                    .push(AdditionalBehaviorRecipe {
+                        behavior: entry.id.to_owned(),
+                    });
+                // Hard Light and Borealis switch damage as well as fire differently, so choosing
+                // them turns that on rather than leaving it to be found.
+                if crate::weapon_behavior::source_switches_element(entry) {
+                    overrides.variable_damage = Some(crate::recipe::VariableDamageRecipe::all());
+                }
+            }
+        }
+        Some(WeaponDonorPickerAction::Secondary) | None => {}
+    }
 }
 
 /// What the borrowed behavior brings with it, drawn under the row of weapon-wide choices where
@@ -1297,13 +1461,15 @@ pub(super) fn draw_unique_behavior_details(
         return;
     };
     if let Some(caution) = entry.caution {
-        ui.colored_label(ui.visuals().warn_fg_color, caution);
+        let caution =
+            crate::app::style::destiny_text(ui, caution).color(ui.visuals().warn_fg_color);
+        ui.label(caution);
     }
     let mut with_perks = !overrides.skip_behavior_perks;
     if ui
         .checkbox(&mut with_perks, "Include Its Perks")
         .on_hover_text(
-            "Pins the source weapon's own intrinsic and trait into this weapon's sockets. Several exotics keep half of their behavior there.",
+            "Pins the source weapon's trait into this weapon's sockets, and its intrinsic frame only when the source is the same kind of weapon. Some weapons keep part of their behavior there.",
         )
         .changed()
     {
@@ -1363,10 +1529,10 @@ mod tests {
         let original = behavior("cerberus-plus-one").unwrap();
         let offered = super::offered_behaviors(&sources, Some(original));
         assert!(offered.iter().any(|entry| entry.id == original.id));
-        assert!(super::behavior_choice_label(original, None).ends_with("State Only"));
-        assert!(!super::behavior_tooltip(original, None).contains("Shared with"));
+        assert!(super::behavior_choice_label(original, None, None).ends_with("No Firing Graph"));
+        assert!(!super::behavior_tooltip(original, None, None).contains("Shared with"));
         assert!(
-            !super::behavior_tooltip(behavior("tarrabah").unwrap(), None)
+            !super::behavior_tooltip(behavior("tarrabah").unwrap(), None, None)
                 .contains("element switch")
         );
     }
@@ -1380,13 +1546,13 @@ mod tests {
             sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
                 .unwrap();
         let entry = crate::weapon_behavior::behavior("tarrabah").unwrap();
-        let tooltip = super::behavior_tooltip(entry, Some(&catalog));
+        let tooltip = super::behavior_tooltip(entry, Some(&catalog), None);
         for plug in [entry.intrinsic_plug.unwrap(), entry.trait_plug.unwrap()] {
             assert!(tooltip.contains(catalog.item_display_name(plug).unwrap()));
             assert!(tooltip.contains(catalog.perk_description(plug).unwrap()));
         }
-        assert!(super::behavior_label(entry, Some(&catalog)).contains("Ravenous Beast"));
-        assert!(super::behavior_label(entry, Some(&catalog)).contains("Bottomless Appetite"));
+        assert!(super::behavior_label(entry, Some(&catalog), None).contains("Ravenous Beast"));
+        assert!(super::behavior_label(entry, Some(&catalog), None).contains("Bottomless Appetite"));
         assert!(!tooltip.contains("element switch"));
     }
     use crate::weapon_behavior::CATALOG;
@@ -1396,7 +1562,7 @@ mod tests {
     #[test]
     fn a_behavior_with_no_installation_to_name_its_perks_is_just_the_weapon() {
         for entry in CATALOG {
-            assert_eq!(behavior_label(entry, None), entry.source_name);
+            assert_eq!(behavior_label(entry, None, None), entry.source_name);
         }
     }
 }

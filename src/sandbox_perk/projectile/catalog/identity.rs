@@ -79,7 +79,7 @@ impl Entry {
                 .filter(|name| meaningful_name(name))
                 .collect::<BTreeSet<_>>();
             return common_name(&names.iter().map(String::as_str).collect())
-                .map(|name| format!("{name} {}", self.kind.label()));
+                .map(|name| format!("{name} {}", self.role_label()));
         };
         let names = named
             .iter()
@@ -111,7 +111,23 @@ impl Entry {
                 let owned = names.iter().map(|name| (*name).to_owned()).collect();
                 Some(format!("Shared by {}", listed(&owned)))
             })?;
-        Some(format!("{common} {}", self.kind.label()))
+        Some(format!("{common} {}", self.role_label()))
+    }
+
+    /// The word a perk-derived name ends with. An entity the stock perks attach is an
+    /// attachment: that is what a perk's own action list calls it, so the picker and the
+    /// list agree on one name. Every other entry keeps its engine kind.
+    fn role_label(&self) -> &'static str {
+        if self.kind == Kind::Entity
+            && self
+                .source_hint
+                .as_deref()
+                .is_some_and(|role| role.starts_with("Attached Entity"))
+        {
+            "Attachment"
+        } else {
+            self.kind.label()
+        }
     }
 
     /// Use a stable identifier only where ancestry cannot distinguish native variants.

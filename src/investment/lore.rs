@@ -1,7 +1,8 @@
 //! Reads the lore inherited from an installed item definition.
 use std::{collections::HashMap, path::Path};
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::{
     investment_localization::decode_strings,

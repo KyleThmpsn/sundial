@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use sundial::package_authoring::PackageManager;
 use sundial::{
     investment::WeaponDonorSummary,
     package_authoring::{
@@ -24,7 +25,6 @@ use sundial::{
         },
     },
 };
-use tiger_pkg::PackageManager;
 
 use super::RuntimeGraphKey;
 

@@ -26,7 +26,7 @@
   },
   "name": "Ravenous Horizon",
   "flavor": "Something is waiting beyond the horizon. It is hungry.",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "collection_destination": {
       "ammo": "special",

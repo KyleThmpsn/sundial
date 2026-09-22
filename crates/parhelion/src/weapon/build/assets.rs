@@ -198,13 +198,13 @@ pub(super) struct IconRows {
 }
 
 pub(super) fn author_icon_rows(
-    stock_icons: &[u8],
+    stock_icons: Vec<u8>,
     resolved: &[resolve::ResolvedWeapon],
     assets: &Plan,
     custom_plugs: &mut [ResolvedCustomPlug],
 ) -> AuthoringResult<IconRows> {
     let (mut authored_item_icons, badge_icon_index) =
-        append_badge_icon_row(stock_icons.to_vec(), assets.badge.container_tag)?;
+        append_badge_icon_row(stock_icons, assets.badge.container_tag)?;
     let mut authored_weapon_icon_indices = Vec::with_capacity(resolved.len());
     for (donor, authored_container) in resolved
         .iter()

@@ -51,7 +51,7 @@ pub(crate) fn validate_parhelion_namespace(namespace: &str) -> Result<(), String
 pub(crate) const ARC_LOGIC_DONOR_HASH: u32 = 0xA25B_8F8F;
 #[cfg(test)]
 pub(crate) const ARC_LOGIC_DONOR_NAME: &str = "Arc Logic";
-pub const DEFAULT_SOURCE_TEXT: &str = "Source: Guardians Make Their Own Fate";
+pub const DEFAULT_SOURCE_TEXT: &str = "Source: Guardians Made Their Own Fate";
 #[cfg(test)]
 const MOUNTAINTOP_DONOR_HASH: u32 = 0xEE06_B019;
 #[cfg(test)]
@@ -884,6 +884,13 @@ fn parse_raw_patch_bytes(value: &str, index: usize) -> Result<Vec<u8>, RecipeErr
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WeaponRecipeOverrides {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove_lore: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "d2-model-importer")]
+    pub imported_graph: Option<parhelion_import::GraphReference>,
+    /// Optional Collections override. `None` combines the authored ammo type with the gameplay
+    /// donor's weapon type and creates the shared page when that combination is not stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_destination: Option<crate::collection::Destination>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1087,7 +1094,15 @@ impl WeaponRecipeOverrides {
         if let Some(hash) = &self.stat_group_donor_hash {
             parse_recipe_hash("stat-group donor", hash)?;
         }
+        if self.remove_lore && self.lore.is_some() {
+            return Err(RecipeError::Validation(
+                "Choose either source lore text or no lore tab".into(),
+            ));
+        }
         Ok(WeaponCloneOverrides {
+            remove_lore: self.remove_lore,
+            #[cfg(feature = "d2-model-importer")]
+            imported_graph: self.imported_graph.clone(),
             icon_edit: self.icon_edit.clone(),
             hud_icon: self.hud_icon.clone(),
             badge: self.badge.clone(),
@@ -1242,6 +1257,67 @@ impl WeaponRecipe {
     #[cfg(test)]
     pub fn second_sun() -> Result<Self, RecipeError> {
         Self::from_json_str(include_str!("../recipes/second-sun.parhelion.json"))
+    }
+
+    /// This recipe rebuilt on the stock weapon behind `base`, a recipe from the library whose
+    /// weapon this one names as its donor.
+    ///
+    /// A weapon Parhelion built is not in the game's own tables, so the build cannot read it as
+    /// a donor. Its recipe is the whole of it, though: a stock donor plus overrides. Building on
+    /// it means taking that stock donor and those overrides underneath this recipe's own, so
+    /// what this recipe sets wins and everything it leaves alone comes from the base.
+    ///
+    /// The merge works on the saved form of both recipes. A field this recipe saves as unset,
+    /// which is absent, null, an empty list or false, keeps the base's value; a field it sets
+    /// replaces the base's. Identity, namespace and the name and text fields are always this
+    /// recipe's own, so the result is a new weapon rather than a second copy of the base.
+    pub fn rebased_onto(&self, base: &Self) -> Result<Self, RecipeError> {
+        use serde_json::Value;
+        let mut merged = serde_json::to_value(base).map_err(|error| {
+            RecipeError::Validation(format!("Could not read the base recipe: {error}"))
+        })?;
+        let own = serde_json::to_value(self).map_err(|error| {
+            RecipeError::Validation(format!("Could not read the recipe: {error}"))
+        })?;
+        let (Value::Object(merged_fields), Value::Object(own_fields)) = (&mut merged, own) else {
+            return Err(RecipeError::Validation(
+                "A recipe must save as an object".into(),
+            ));
+        };
+        let unset = |value: &Value| match value {
+            Value::Null => true,
+            Value::Bool(flag) => !flag,
+            Value::Array(items) => items.is_empty(),
+            _ => false,
+        };
+        for (key, value) in own_fields {
+            match key.as_str() {
+                "donor" => {}
+                "overrides" => {
+                    let Value::Object(own_overrides) = value else {
+                        continue;
+                    };
+                    let base_overrides = merged_fields
+                        .entry("overrides")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if let Value::Object(base_overrides) = base_overrides {
+                        for (key, value) in own_overrides {
+                            if !unset(&value) {
+                                base_overrides.insert(key, value);
+                            }
+                        }
+                    }
+                }
+                _ if unset(&value) => {}
+                _ => {
+                    merged_fields.insert(key, value);
+                }
+            }
+        }
+        let encoded = serde_json::to_string(&merged).map_err(|error| {
+            RecipeError::Validation(format!("Could not encode the rebased recipe: {error}"))
+        })?;
+        Self::from_json_str(&encoded)
     }
 
     #[cfg(test)]

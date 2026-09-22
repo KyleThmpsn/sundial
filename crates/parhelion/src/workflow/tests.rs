@@ -494,7 +494,8 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
 #[test]
 #[ignore = "requires SUNDIAL_TEST_PACKAGES and PARHELION_TEST_STAGED_RUN"]
 fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
-    use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
+    use sundial::package_authoring::PackageManager;
+    use tiger_pkg::{DestinyVersion, GameVersion, TagHash};
 
     let packages = configured_real_packages()
         .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");

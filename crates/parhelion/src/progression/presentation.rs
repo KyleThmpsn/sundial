@@ -328,7 +328,7 @@ pub(crate) fn append_collectible_child_to_node(
                 .ok_or_else(|| invalid("Presentation child row size overflowed"))?,
         )
         .ok_or_else(|| invalid("Presentation child row range overflowed"))?;
-    validate_presentation_child_array_terminator(nodes, child_end)?;
+    validate_presentation_child_array_terminator_at(nodes, header, child_end)?;
     let insertion = rows + (*donor_position + 1) * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
     let donor = rows + *donor_position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
     let mut authored = nodes[header..insertion].to_vec();
@@ -349,6 +349,92 @@ pub(crate) fn append_collectible_child_to_node(
     nodes.extend_from_slice(&authored);
     write_u64(nodes, descriptor, (count + 1) as u64)?;
     write_relative_pointer(nodes, descriptor + 8, new_header)
+}
+
+pub(crate) fn prepend_collectible_children_to_node(
+    nodes: &mut Vec<u8>,
+    parent_index: usize,
+    members: &[(usize, usize)],
+) -> AuthoringResult<()> {
+    if members.is_empty() {
+        return Ok(());
+    }
+    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
+    if parent_index >= node_count {
+        return Err(invalid(
+            "Weapon-page presentation node is outside the table",
+        ));
+    }
+    let descriptor = node_rows
+        + parent_index * PRESENTATION_NODE_ROW_SIZE
+        + PRESENTATION_NODE_COLLECTIBLES_OFFSET;
+    let (count, header, rows, class) = array_at(nodes, descriptor)?;
+    if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS || count == 0 {
+        return Err(invalid(
+            "Weapon-page presentation node has no collectible children",
+        ));
+    }
+    let child_end = rows
+        .checked_add(
+            count
+                .checked_mul(PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
+                .ok_or_else(|| invalid("Presentation child row size overflowed"))?,
+        )
+        .ok_or_else(|| invalid("Presentation child row range overflowed"))?;
+    validate_presentation_child_array_terminator_at(nodes, header, child_end)?;
+    let added = members
+        .iter()
+        .map(|&(donor, authored)| clone_collectible_child(nodes, rows, count, donor, authored))
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    let mut authored = nodes[header..rows].to_vec();
+    for row in added {
+        authored.extend_from_slice(&row);
+    }
+    authored.extend_from_slice(&nodes[rows..child_end]);
+    append_presentation_child_array_terminator(&mut authored)?;
+    write_u64(&mut authored, 0, (count + members.len()) as u64)?;
+    while nodes.len() % 16 != 0 {
+        nodes.push(0);
+    }
+    let new_header = nodes.len();
+    nodes.extend_from_slice(&authored);
+    write_u64(nodes, descriptor, (count + members.len()) as u64)?;
+    write_relative_pointer(nodes, descriptor + 8, new_header)
+}
+
+fn clone_collectible_child(
+    nodes: &[u8],
+    rows: usize,
+    count: usize,
+    donor_collectible_index: usize,
+    authored_collectible_index: usize,
+) -> AuthoringResult<Vec<u8>> {
+    let donor_index = u16::try_from(donor_collectible_index)
+        .map_err(|_| invalid("Donor collectible index does not fit 16 bits"))?;
+    let positions = (0..count)
+        .filter(|position| {
+            read_u16(
+                nodes,
+                rows + position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
+            )
+            .ok()
+                == Some(donor_index)
+        })
+        .collect::<Vec<_>>();
+    let [position] = positions.as_slice() else {
+        return Err(invalid(
+            "Weapon page does not contain exactly one donor collectible",
+        ));
+    };
+    let donor = rows + *position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
+    let mut row = nodes[donor..donor + PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE].to_vec();
+    write_u16(
+        &mut row,
+        0,
+        u16::try_from(authored_collectible_index)
+            .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
+    )?;
+    Ok(row)
 }
 
 pub(crate) fn replace_with_single_collectible_child(
@@ -405,11 +491,27 @@ pub(crate) fn presentation_child_array_end(child_end: usize) -> AuthoringResult<
         .ok_or_else(|| invalid("Presentation-node child trailer overflowed"))
 }
 
+#[cfg(test)]
 pub(crate) fn validate_presentation_child_array_terminator(
     data: &[u8],
     child_end: usize,
 ) -> AuthoringResult<usize> {
-    let segment_end = presentation_child_array_end(child_end)?;
+    validate_presentation_child_array_terminator_at(data, 0, child_end)
+}
+
+fn validate_presentation_child_array_terminator_at(
+    data: &[u8],
+    header: usize,
+    child_end: usize,
+) -> AuthoringResult<usize> {
+    // Native ornament arrays may begin eight bytes into an alignment block.
+    // Their trailer aligns relative to the array header, not the containing tag.
+    let relative_end = child_end
+        .checked_sub(header)
+        .ok_or_else(|| invalid("Presentation children precede their array header"))?;
+    let segment_end = presentation_child_array_end(relative_end)?
+        .checked_add(header)
+        .ok_or_else(|| invalid("Presentation-node child trailer overflowed"))?;
     let sentinel_start = segment_end - size_of::<u32>();
     if data
         .get(child_end..sentinel_start)
@@ -421,4 +523,87 @@ pub(crate) fn validate_presentation_child_array_terminator(
         ));
     }
     Ok(segment_end)
+}
+
+#[cfg(test)]
+mod trailer_tests {
+    use super::*;
+
+    fn synthetic_weapon_page(children: &[(u16, u16)]) -> Vec<u8> {
+        let main_header = 0x20;
+        let node_rows = main_header + 16;
+        let descriptor = node_rows + PRESENTATION_NODE_COLLECTIBLES_OFFSET;
+        let mut nodes = vec![0; node_rows + PRESENTATION_NODE_ROW_SIZE];
+        write_u64(&mut nodes, 8, 1).unwrap();
+        write_relative_pointer(&mut nodes, 16, main_header).unwrap();
+        write_u64(&mut nodes, main_header, 1).unwrap();
+        write_u32(
+            &mut nodes,
+            main_header + 8,
+            PRESENTATION_NODE_DEFINITION_ROW_CLASS,
+        )
+        .unwrap();
+        while nodes.len() % 16 != 0 {
+            nodes.push(0);
+        }
+        let child_header = nodes.len();
+        nodes.extend_from_slice(&(children.len() as u64).to_le_bytes());
+        nodes.extend_from_slice(&PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS.to_le_bytes());
+        nodes.extend_from_slice(&0_u32.to_le_bytes());
+        for &(index, template) in children {
+            nodes.extend_from_slice(&index.to_le_bytes());
+            nodes.extend_from_slice(&template.to_le_bytes());
+        }
+        append_presentation_child_array_terminator(&mut nodes).unwrap();
+        write_u64(&mut nodes, descriptor, children.len() as u64).unwrap();
+        write_relative_pointer(&mut nodes, descriptor + 8, child_header).unwrap();
+        nodes
+    }
+
+    #[test]
+    fn authored_collectibles_lead_stock_page_in_build_order() {
+        let mut nodes = synthetic_weapon_page(&[(10, 0xA001), (11, 0xB002), (12, 0xC003)]);
+        prepend_collectible_children_to_node(&mut nodes, 0, &[(11, 100), (10, 101)]).unwrap();
+        let (_, _, node_rows, _) = array_at(&nodes, 8).unwrap();
+        let (count, _, rows, class) =
+            array_at(&nodes, node_rows + PRESENTATION_NODE_COLLECTIBLES_OFFSET).unwrap();
+        assert_eq!(count, 5);
+        assert_eq!(class, PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS);
+        let children = (0..count)
+            .map(|position| {
+                let row = rows + position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
+                (
+                    read_u16(&nodes, row).unwrap(),
+                    read_u16(&nodes, row + 2).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            children,
+            [
+                (100, 0xB002),
+                (101, 0xA001),
+                (10, 0xA001),
+                (11, 0xB002),
+                (12, 0xC003),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_ornament_trailer_alignment_is_relative_to_its_header() {
+        for header in [0, 8, 16, 24] {
+            let mut segment = vec![0; 16 + 4 * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE];
+            append_presentation_child_array_terminator(&mut segment).unwrap();
+            let mut data = vec![0xA5; header];
+            data.extend_from_slice(&segment);
+            let end = header + 32;
+            assert_eq!(
+                validate_presentation_child_array_terminator_at(&data, header, end).unwrap(),
+                data.len()
+            );
+            data[end] = 1;
+            assert!(validate_presentation_child_array_terminator_at(&data, header, end).is_err());
+        }
+    }
 }

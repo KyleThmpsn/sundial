@@ -197,8 +197,15 @@ impl Editor {
     ) {
         self.lore.update(ui.ctx(), packages, item_hash);
         ui.strong("Lore Tab");
+        if ui.checkbox(&mut draft.remove_lore, "No Lore Tab").changed() && draft.remove_lore {
+            draft.lore = None;
+        }
+
         let mut lore = draft.lore.is_some();
         if ui.checkbox(&mut lore, "Custom Lore Tab").changed() {
+            if lore {
+                draft.remove_lore = false;
+            }
             draft.lore = lore.then(|| {
                 self.lore
                     .entry()
@@ -214,7 +221,7 @@ impl Editor {
                     .hint_text("Write this weapon’s story…"),
             );
             ui.weak(format!("{} / 16,384 bytes", text.len()));
-        } else {
+        } else if !draft.remove_lore {
             self.lore.draw(ui);
         }
     }

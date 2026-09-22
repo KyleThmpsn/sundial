@@ -2,8 +2,9 @@
 //!
 //! Shadowkeep C9D8C0 selects definition +80 or a 1C0-byte row from +240/+248.
 //! E8F660 reads that property's +34 enable flag and +35 zero-based ammo class.
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::weapon_entity::weapon_component_bindings;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::AuthoringResult;
 use crate::error::invalid;

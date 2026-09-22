@@ -56,7 +56,7 @@ pub(crate) fn load_effective_runtime_graph(
 }
 
 pub(crate) fn load_effective_runtime_entity(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     key: &RuntimeGraphKey,
 ) -> Result<WeaponRuntimeEntitySource, String> {
     let mut pattern = if let Some(pattern_index) = key.pattern_index {

@@ -38,7 +38,11 @@ fn spawn_and_retained_actions_describe_draw_activation_differently() {
             matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text == "End Condition")
         });
-        assert_eq!(has_end, retained);
+        assert!(has_end, "Every effect can have explicit end conditions");
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Add End Condition…")
+        }));
     }
 }
 

@@ -58,6 +58,7 @@ enum PrivatePerkGraphEvent {
 }
 
 pub(super) struct PerkEditor {
+    history: workbench::history::History<editor::history::Snapshot>,
     activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
     preview: Option<(
         editor::conversion::Input,

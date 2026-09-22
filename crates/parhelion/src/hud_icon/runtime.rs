@@ -1,8 +1,9 @@
 //! Shadowkeep C9E280 reads definition +160 or variant property +E0.
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
 use crate::{AuthoringResult, error::invalid, weapon::WeaponRuntimeResourcePatch};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::weapon_entity::weapon_component_bindings;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 const BINDING: u32 = 0x5F0DD954;
 struct Content {
     owner: Vec<u8>,

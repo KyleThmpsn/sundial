@@ -16,6 +16,7 @@ pub(super) struct Page {
 }
 pub(super) struct Plan {
     pub pages: BTreeMap<Destination, Page>,
+    weapon_destinations: Vec<Option<Destination>>,
 }
 
 impl Plan {
@@ -23,36 +24,54 @@ impl Plan {
         sources: &sources::ProjectSources,
         weapons: &[WeaponCloneSpec],
     ) -> AuthoringResult<Self> {
+        let mut family_hashes = None;
         let mut destinations = BTreeSet::new();
+        let mut weapon_destinations = Vec::with_capacity(weapons.len());
         for weapon in weapons {
-            if let Some(destination) = weapon.overrides.collection_destination {
-                let rarity = match weapon.overrides.rarity {
-                    Some(rarity) => rarity,
-                    None => {
-                        let item = item_index(sources, weapon.donor_item_hash)?;
-                        let tag = TagHash(read_u32(
-                            &sources.stock_item_table,
-                            sources.item_rows + item * ITEM_ROW_SIZE + 16,
-                        )?);
-                        weapon_rarity(&read_tag(&sources.manager, tag, "Collections rarity")?)?
-                    }
-                };
-                if rarity != AuthoredWeaponRarity::Exotic {
-                    destinations.insert(destination);
+            let item = item_index(sources, weapon.donor_item_hash)?;
+            let definition_tag = TagHash(read_u32(
+                &sources.stock_item_table,
+                sources.item_rows + item * ITEM_ROW_SIZE + 16,
+            )?);
+            let definition = read_tag(&sources.manager, definition_tag, "Collections rarity")?;
+            let rarity = weapon
+                .overrides
+                .rarity
+                .unwrap_or(weapon_rarity(&definition)?);
+            let destination = if rarity == AuthoredWeaponRarity::Exotic {
+                None
+            } else if let Some(destination) = weapon.overrides.collection_destination {
+                Some(destination)
+            } else {
+                if family_hashes.is_none() {
+                    family_hashes = Some(stock_family_hashes(sources)?);
                 }
+                let Some(family_hashes) = family_hashes.as_ref() else {
+                    return Err(invalid("Collections family templates were not initialized"));
+                };
+                Some(automatic_destination(sources, weapon, item, family_hashes)?)
+            };
+            if let Some(destination) = destination {
+                destinations.insert(destination);
             }
+            weapon_destinations.push(destination);
         }
         let badges = weapons
             .iter()
             .filter_map(|w| w.overrides.badge.as_ref().map(|b| b.name.as_str()))
             .collect::<BTreeSet<_>>();
-        let budget = NodeBudget {
-            badges: badges.len(),
-            pages: destinations
-                .iter()
-                .filter(|d| d.stock_exemplar().is_none())
-                .count(),
-        };
+        let budget = NodeBudget::new(weapons.iter().zip(&weapon_destinations).map(
+            |(weapon, destination)| {
+                (
+                    weapon
+                        .overrides
+                        .badge
+                        .as_ref()
+                        .map(|badge| badge.name.as_str()),
+                    *destination,
+                )
+            },
+        ));
         budget.validate()?;
         let mut next = crate::collection::BASE_NODE_COUNT + badges.len() * 4;
         let mut pages = BTreeMap::new();
@@ -93,8 +112,84 @@ impl Plan {
                 },
             );
         }
-        Ok(Self { pages })
+        Ok(Self {
+            pages,
+            weapon_destinations,
+        })
     }
+
+    pub fn page_for_weapon(&self, index: usize) -> Option<&Page> {
+        self.weapon_destinations
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|destination| self.pages.get(&destination))
+    }
+}
+
+fn automatic_destination(
+    sources: &sources::ProjectSources,
+    weapon: &WeaponCloneSpec,
+    item: usize,
+    family_hashes: &BTreeMap<u32, Family>,
+) -> AuthoringResult<Destination> {
+    let string_tag = TagHash(read_u32(
+        &sources.stock_item_strings,
+        sources.string_rows + item * ITEM_ROW_SIZE + 16,
+    )?);
+    let strings = read_tag(
+        &sources.manager,
+        string_tag,
+        "Collections weapon classification",
+    )?;
+    let ammo = weapon
+        .overrides
+        .ammo_type
+        .or(item_string_ammo_type(&strings)?)
+        .ok_or_else(|| invalid("Collections weapon has no ammunition classification"))?;
+    let family_hash = read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
+    let family = family_hashes.get(&family_hash).copied().ok_or_else(|| {
+        invalid(
+            "This weapon family has no non-Exotic Collections page template in this game version",
+        )
+    })?;
+    Ok(Destination {
+        ammo: match ammo {
+            WeaponAmmoType::Primary => Ammo::Primary,
+            WeaponAmmoType::Special => Ammo::Special,
+            WeaponAmmoType::Heavy => Ammo::Heavy,
+        },
+        family,
+    })
+}
+
+fn stock_family_hashes(
+    sources: &sources::ProjectSources,
+) -> AuthoringResult<BTreeMap<u32, Family>> {
+    let mut hashes = BTreeMap::new();
+    for family in Family::ALL {
+        let exemplar = family
+            .template()
+            .stock_exemplar()
+            .ok_or_else(|| invalid("Collections family template has no stock exemplar"))?;
+        let item = item_index(sources, exemplar)?;
+        let string_tag = TagHash(read_u32(
+            &sources.stock_item_strings,
+            sources.string_rows + item * ITEM_ROW_SIZE + 16,
+        )?);
+        let strings = read_tag(
+            &sources.manager,
+            string_tag,
+            "Collections family classification",
+        )?;
+        let hash = read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
+        if hashes.insert(hash, family).is_some() {
+            return Err(invalid(
+                "Collections family templates share a weapon-type identity",
+            ));
+        }
+    }
+    Ok(hashes)
 }
 
 fn item_index(sources: &sources::ProjectSources, hash: u32) -> AuthoringResult<usize> {

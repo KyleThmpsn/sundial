@@ -2,7 +2,8 @@
 use crate::artwork_browser::Purpose;
 use crate::tag_payload::{read_u16 as checked_u16, read_u32 as checked_u32};
 use crate::{AuthoringResult, NewTagSpec, NewTagStorageMode, error::invalid};
-use tiger_pkg::{PackageManager, TagHash};
+use sundial::package_authoring::PackageManager;
+use tiger_pkg::TagHash;
 fn read_u16(data: &[u8], offset: usize) -> Result<u16, String> {
     checked_u16(data, offset).map_err(|e| e.to_string())
 }

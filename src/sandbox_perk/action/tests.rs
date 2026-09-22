@@ -11,6 +11,40 @@ use crate::sandbox_perk::nodes::Support;
 mod catalog;
 
 #[test]
+fn incoming_damage_summaries_distinguish_literal_stats_and_source_distance() {
+    for (selector, distance, expected, bounded) in [
+        (255, -1., "by 0.5", false),
+        (255, 0., "by 0.5", true),
+        (12, 5., "by native stat 12", true),
+    ] {
+        let mut out = Builder::new();
+        let at = out.node(0x8080_3E3C, 0xB8);
+        out.bytes[at] = 33;
+        out.f32(at + 4, 0.5);
+        out.bytes[at + 8] = selector;
+        out.f32(at + 12, distance);
+        out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[at]);
+        let decoded = decode(&out.finish()).unwrap();
+        let effect = &decoded.groups[0].effects[0];
+        let text = summary::describe_effect(effect);
+        assert!(text.contains(expected), "{text}");
+        assert_eq!(text.contains("source distance"), bounded);
+        let fields = native::fields::describe(effect.class).unwrap();
+        let stat = fields.iter().find(|f| f.offset == 8).unwrap();
+        assert_eq!(
+            native::fields::contract(effect.class, stat).choices,
+            &[(255, "Literal Multiplier")]
+        );
+        assert!(
+            fields
+                .iter()
+                .filter(|f| matches!(f.offset, 0xA8 | 0xB0))
+                .all(|f| !f.editable)
+        );
+    }
+}
+
+#[test]
 fn condition_choices_preserve_owned_records_and_report_nested_probability_sources() {
     let payload = precision_kill_action();
     let mut graph = native::Graph::read(&payload, 0, ACTION_ROOT_CLASS).unwrap();
@@ -258,7 +292,7 @@ fn structural_kinds_now_read_their_traced_fields() {
     let effects = &action.groups[0].effects;
     assert_eq!(
         effects[1].description(),
-        "Add 2 rounds to this weapon and -1 round to ammo type 1 in the magazine"
+        "Add 2 rounds to this weapon and -1 round to primary ammo in the magazine"
     );
     assert_eq!(
         effects[0].facts,
@@ -530,12 +564,12 @@ fn general_predicates_read_as_the_state_and_weapon_type_they_check() {
     bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
     assert_eq!(
         state_description(class, &bytes).as_deref(),
-        Some("While Charged with Light")
+        Some("Meets the Charged with Light Stacks requirement")
     );
     bytes[0xF8] = 1;
     assert_eq!(
         state_description(class, &bytes).as_deref(),
-        Some("While not Charged with Light")
+        Some("Does not meet the Charged with Light Stacks requirement")
     );
     bytes[0xD4..0xD8].copy_from_slice(&0xE1E6_BB64u32.to_le_bytes());
     bytes[0xF8] = 0;
@@ -565,7 +599,14 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         assert_eq!(player.label, "Player State");
         assert_eq!(
             native::fields::contract(class, player).choices.to_vec(),
-            vec![(2u8, "Airborne"), (4, "Sliding"), (8, "Sprinting")]
+            vec![
+                (1u8, "Crouching"),
+                (2, "Airborne"),
+                (4, "Sliding"),
+                (8, "Sprinting"),
+                (16, "Missing Health Without Recovery"),
+                (32, "Missing Shields Without Recovery"),
+            ]
         );
         let weapon = fields.iter().find(|f| f.offset == 0x81).unwrap();
         assert_eq!(weapon.label, "Weapon State");
@@ -586,6 +627,18 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
     bytes[0x38] = 0;
     bytes[0x81] = 0;
     assert_eq!(state_description(class, &bytes), None);
+    bytes[0x38] = 1 | 16 | 32;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some(
+            "While Crouching and Missing Health Without Recovery and Missing Shields Without Recovery"
+        )
+    );
+    bytes[0x38] = 1 | 128;
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While Crouching and Player State 0x80")
+    );
     bytes[0x38] = 2;
     assert_eq!(
         state_description(class, &bytes).as_deref(),
@@ -607,6 +660,6 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
     bytes[0xF8] = 0;
     assert_eq!(
         state_description(class, &bytes).as_deref(),
-        Some("While Charged with Light")
+        Some("Meets the Charged with Light Stacks requirement")
     );
 }

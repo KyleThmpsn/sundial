@@ -1,6 +1,154 @@
 use super::*;
 use crate::package_runtime::references::schema::{Record, Registry};
 
+#[test]
+#[allow(clippy::cognitive_complexity)]
+fn player_settings_use_checked_locators_and_preserve_untouched_storage() {
+    for (schema, size, offsets) in [
+        (
+            0x8080_4B8A,
+            0x5C8,
+            &[0x54, 0x74, 0x94, 0xB4, 0xD4, 0xF4][..],
+        ),
+        (0x8080_4C5F, 0x50, &[0x14, 0x38, 0x3C, 0x40][..]),
+        (0x8080_43E2, 0x248, &[0x10, 0x170, 0x174, 0x178][..]),
+        (0x8080_43EC, 0x2F0, &[0x290, 0x294][..]),
+    ] {
+        for bits in [0x8000_0000_u32, 0x7FC1_2345, 1.25_f32.to_bits()] {
+            // Keep native references null, but fill each value's adjacent padding.
+            let mut data = vec![0; size];
+            for &at in offsets {
+                data[at..at + 4].copy_from_slice(&bits.to_le_bytes());
+            }
+            if schema == 0x8080_43E2 {
+                data[0x1D8..0x1E0].copy_from_slice(&[1, 0xA5, 0x5A, 0xFF, 1, 2, 3, 4]);
+            }
+            let mut registry = Registry::new().unwrap();
+            let decoded = structure::test_walk(&data, 0, schema, |handle| {
+                registry.record(handle, |_| Err("Unexpected schema".into()))
+            });
+            assert!(decoded.issues.is_empty(), "{:?}", decoded.issues);
+            let editable = fields(&data, &root(schema, 0, size as u32), 1, 0, &decoded).unwrap();
+            for &at in offsets {
+                let matches = editable
+                    .iter()
+                    .filter(|f| f.owner_offset as usize == at)
+                    .collect::<Vec<_>>();
+                assert_eq!(matches.len(), 1, "{schema:08X}+{at:X}");
+                let field = matches[0];
+                assert!(field.locator.is_buildable());
+                assert_eq!(field.locator.type_handle, schema);
+                assert_eq!(field.locator.value_offset as usize, at);
+                assert_eq!(field.value, WeaponRuntimeValue::Float32Bits(bits));
+                let same = encode_weapon_runtime_field_value(field, &field.value).unwrap();
+                assert_eq!(same, bits.to_le_bytes());
+                let changed = encode_weapon_runtime_field_value(
+                    field,
+                    &WeaponRuntimeValue::Float32Bits(2.5_f32.to_bits()),
+                )
+                .unwrap();
+                let mut output = data.clone();
+                output[at..at + changed.len()].copy_from_slice(&changed);
+                assert_eq!(&output[..at], &data[..at]);
+                assert_eq!(&output[at + 4..], &data[at + 4..]);
+                assert!(
+                    presentation::field_tooltip(field).contains(
+                        invisibility::field_help(schema, at as u32)
+                            .or_else(|| health::field_help(schema, at as u32))
+                            .unwrap()
+                    )
+                );
+            }
+            if schema == 0x8080_43E2 {
+                let movement = editable.iter().find(|f| f.owner_offset == 0x1D8).unwrap();
+                assert_eq!(movement.value, WeaponRuntimeValue::Boolean(true));
+                let encoded = encode_weapon_runtime_field_value(
+                    movement,
+                    &WeaponRuntimeValue::Boolean(false),
+                )
+                .unwrap();
+                assert_eq!(encoded, [0]);
+                let mut output = data.clone();
+                output[0x1D8..0x1D9].copy_from_slice(&encoded);
+                assert_eq!(&output[0x1D9..], &data[0x1D9..]);
+            }
+        }
+        let incompatible = structure::test_walk(&vec![0; size], 0, schema, |_| {
+            Ok(Record {
+                size: size - 1,
+                fields: Vec::new().into(),
+            })
+        });
+        assert!(!incompatible.issues.is_empty());
+        assert!(
+            fields(
+                &vec![0; size],
+                &root(schema, 0, size as u32),
+                1,
+                0,
+                &incompatible
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+}
+
+#[test]
+fn player_property_modifiers_expose_exact_fields_and_preserve_adjacent_storage() {
+    let schema = 0x8080_3B06;
+    for bits in [3_f32.to_bits(), 0x8000_0000, 0x7FC1_2345] {
+        let mut data = vec![0; 0x58];
+        data[0x28..0x2C].copy_from_slice(&bits.to_le_bytes());
+        data[0x2C..0x30].copy_from_slice(&[0xFE, 0xAB, 0xCD, 0xEF]);
+        data[0x48..0x50].copy_from_slice(&[0xFF, 0xFF, 0x23, 0x81, 14, 0xAB, 0xCD, 0xEF]);
+        let mut registry = Registry::new().unwrap();
+        let structure = structure::test_walk(&data, 0, schema, |handle| {
+            registry.record(handle, |_| Err("Unexpected generated schema".into()))
+        });
+        assert!(structure.issues.is_empty(), "{:?}", structure.issues);
+        let fields = fields(&data, &root(schema, 0, 0x58), 1, 0, &structure).unwrap();
+        assert_eq!(fields.len(), 5);
+        for field in &fields {
+            let at = field.owner_offset as usize;
+            let encoded = encode_weapon_runtime_field_value(field, &field.value).unwrap();
+            assert_eq!(encoded, data[at..at + encoded.len()]);
+            assert_eq!(
+                decode_weapon_runtime_field_value(field, &encoded).unwrap(),
+                field.value
+            );
+        }
+        let operation = fields.iter().find(|f| f.name == "Operation").unwrap();
+        assert_eq!(operation.value, WeaponRuntimeValue::Unsigned(254));
+        let encoded =
+            encode_weapon_runtime_field_value(operation, &WeaponRuntimeValue::Unsigned(1)).unwrap();
+        assert_eq!(encoded, [1]);
+        let mut changed = data.clone();
+        changed[0x2C..0x2D].copy_from_slice(&encoded);
+        data[0x2C] = 1;
+        assert_eq!(changed, data);
+        assert_eq!(
+            fields
+                .iter()
+                .find(|f| f.name == "Ability Slot")
+                .unwrap()
+                .value,
+            WeaponRuntimeValue::Signed(-1)
+        );
+    }
+    let bad = structure::test_walk(&[0; 0x58], 0, schema, |_| {
+        Ok(Record {
+            size: 0x57,
+            fields: Vec::new().into(),
+        })
+    });
+    assert!(
+        bad.issues
+            .iter()
+            .any(|issue| issue.contains("incompatible structure size"))
+    );
+}
+
 fn root(schema: u32, start: u32, size: u32) -> WeaponRuntimeRoot {
     WeaponRuntimeRoot {
         kind: WeaponRuntimeRootKind::ComponentDefinition,

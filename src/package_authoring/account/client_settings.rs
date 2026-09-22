@@ -34,10 +34,25 @@ pub fn preview_authored_client_settings(
     install: &Path,
 ) -> Result<Option<AuthoredClientSettings>, String> {
     let settings_path = crate::app::authoring_bridge::authored_client_settings_path(install)?;
-    let original_bytes = std::fs::read(&settings_path).map_err(|error| error.to_string())?;
+    preview_authored_client_settings_at(&settings_path)
+}
+
+pub fn preview_authored_client_settings_for_runtime(
+    install: &Path,
+    runtime: &crate::package_authoring::RuntimeSnapshot,
+) -> Result<Option<AuthoredClientSettings>, String> {
+    let settings_path =
+        crate::app::authoring_bridge::authored_client_settings_path_with_runtime(install, runtime)?;
+    preview_authored_client_settings_at(&settings_path)
+}
+
+fn preview_authored_client_settings_at(
+    settings_path: &Path,
+) -> Result<Option<AuthoredClientSettings>, String> {
+    let original_bytes = std::fs::read(settings_path).map_err(|error| error.to_string())?;
     Ok(
         disable_lore_reveal(&original_bytes)?.map(|updated_bytes| AuthoredClientSettings {
-            settings_path,
+            settings_path: settings_path.to_path_buf(),
             original_bytes,
             updated_bytes,
         }),

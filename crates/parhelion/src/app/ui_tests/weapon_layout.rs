@@ -90,8 +90,11 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
     ));
     assert_eq!(
         crate::capabilities::appearance_compatibility(horseman, slug, WeaponInventorySlot::Energy),
-        crate::capabilities::AppearanceCompatibility::Blocked("Incompatible weapon animations")
+        crate::capabilities::AppearanceCompatibility::Compatible
     );
+    assert!(crate::capabilities::appearance_animations_differ(
+        horseman, slug
+    ));
     for (name, hash, donor_name, damage) in [
         (
             "Arc in Kinetic",
@@ -130,7 +133,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 );
                 draw_combat_profile_diagnostics(ui, &app.recipe.overrides, Some(&donor));
             });
-            assert!(text(&output).contains("Experimental slot and damage combination"));
+            assert!(text(&output).contains(egui_phosphor::regular::WARNING));
             assert!(!text(&output).contains("Reset it before building"));
             assert!(overflow <= 1.0, "{name} at {width}: overflow {overflow}");
             assert_eq!(app.recipe, before);
@@ -465,6 +468,32 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
         );
 
         let (output, overflow) = render(width, |ui| app.draw_definition_panel(ui, Some(&donor)));
+        if width == 900.0 {
+            let ctx = egui::Context::default();
+            let mut captured = egui::FullOutput::default();
+            for _ in 0..2 {
+                captured = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 1200.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            workbench_style(ui);
+                            app.draw_definition_panel(ui, Some(&donor));
+                        });
+                    },
+                );
+            }
+            crate::app::custom_perks::workbench::tests::capture::write(
+                &ctx,
+                &captured,
+                "behavior-dropdown",
+            );
+        }
         let rendered = text(&output);
         assert!(rendered.contains("Unique Weapon Behavior"), "{rendered}");
         assert!(rendered.contains("Damage Type"), "{rendered}");

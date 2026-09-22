@@ -18,7 +18,60 @@ pub struct NativeProgram {
     pub assets: Vec<Asset>,
 }
 
+/// A source-independent readiness failure, located in execution order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeIssue {
+    pub group: usize,
+    pub action: usize,
+    pub field: &'static str,
+    pub message: String,
+}
+
+/// Shared with the compiler. Weighted spawning may omit its optional attachment.
+pub(super) fn entity_reference(class: u32, bytes: &[u8]) -> Result<Option<u32>, String> {
+    if !matches!(
+        class,
+        0x80803E45 | 0x80803E44 | 0x80803E43 | 0x80803E47 | 0x80803E12
+    ) {
+        return Ok(None);
+    }
+    let tag = crate::package_payload::u32_at(bytes, 16)?;
+    if matches!(tag, 0 | u32::MAX) {
+        if class == 0x80803E47 {
+            return Ok(None);
+        }
+        return Err(if class == 0x80803E12 {
+            "Choose a projectile."
+        } else {
+            "Choose an object or effect."
+        }
+        .into());
+    }
+    Ok(Some(tag))
+}
+
 impl NativeProgram {
+    pub fn authoring_issue(&self) -> Result<Option<NativeIssue>, String> {
+        let decoded = action::decode(&self.graph.emit()?)?;
+        for (group, behavior) in decoded.groups.iter().enumerate() {
+            for (action, effect) in behavior.effects.iter().rev().enumerate() {
+                if let Err(message) = entity_reference(effect.class, &effect.native) {
+                    return Ok(Some(NativeIssue {
+                        group,
+                        action,
+                        field: if effect.class == 0x80803E12 {
+                            "Projectile"
+                        } else {
+                            "Object"
+                        },
+                        message,
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn empty() -> Self {
         let mut bytes = vec![0; 0xD0];
         bytes[..8].copy_from_slice(&0xD0u64.to_le_bytes());
