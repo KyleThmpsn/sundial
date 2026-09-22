@@ -146,7 +146,7 @@ impl RecipeLibrary {
         Ok(Some(backup))
     }
 
-    fn create_restore_backup(&self) -> Result<PathBuf, String> {
+    pub(super) fn create_restore_backup(&self) -> Result<PathBuf, String> {
         let parent = self
             .canonical_root
             .parent()

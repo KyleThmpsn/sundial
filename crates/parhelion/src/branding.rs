@@ -14,11 +14,12 @@ mod tests;
 
 impl Branding {
     pub(crate) fn detect(install: &Path) -> Self {
-        if sundial::package_authoring::uses_dawn(install) {
-            Self::Dawn
-        } else {
-            Self::Sunrise
-        }
+        sundial::package_authoring::installed_runtime(install).map_or(Self::Sunrise, |runtime| {
+            match runtime.brand() {
+                sundial::package_authoring::RuntimeBrand::Dawn => Self::Dawn,
+                sundial::package_authoring::RuntimeBrand::Sunrise => Self::Sunrise,
+            }
+        })
     }
 
     pub(crate) fn for_packages(packages: &Path) -> Self {

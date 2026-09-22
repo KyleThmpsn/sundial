@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use tiger_pkg::TagHash;
@@ -39,10 +39,10 @@ pub(crate) use items::PowerCapDefinition;
 pub(crate) use items::SocketDef;
 pub(crate) use items::{
     AbilityChoice, AbilityOptions, InventoryDefinition, InventoryMetadata, InventoryScope,
-    InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemDef, ItemInvestmentStat,
-    ItemPackageMetadata, ItemRarity, ItemStackability, ItemStatDefinition, ItemStatGroup,
-    ItemWeaponAmmoType, ItemWeaponInventorySlot, format_in_game_investment_stat,
-    interpolate_investment_stat_display,
+    InvestmentStatDisplayPoint, ItemArtArrangement, ItemDamageProfile, ItemDamageType, ItemDef,
+    ItemInvestmentStat, ItemPackageMetadata, ItemRarity, ItemRenderOverride, ItemStackability,
+    ItemStatDefinition, ItemStatGroup, ItemWeaponAmmoType, ItemWeaponInventorySlot,
+    format_in_game_investment_stat, interpolate_investment_stat_display,
 };
 use items::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
@@ -144,6 +144,21 @@ impl CatalogProgress {
     }
 }
 
+/// Reverse lookups from a structure row to the items that reference it.
+///
+/// These answer the inspector's "items using this stat group, socket entry list or power cap"
+/// questions. They are derived from item metadata rather than stored, so nothing here is cached
+/// to disk or serialized alongside the catalog.
+#[derive(Debug, Default)]
+struct ItemStructureIndex {
+    by_stat_group: HashMap<u16, Vec<u64>>,
+    by_socket_entry_list: HashMap<u16, Vec<u64>>,
+    by_power_cap_group: HashMap<u16, Vec<u64>>,
+    /// Lowest item hash per definition index. Several items can share an index, and the previous
+    /// scan returned whichever the hash map happened to yield first, so this is also steadier.
+    by_definition_index: HashMap<u32, u64>,
+}
+
 pub(crate) struct Catalog {
     pub items: Vec<Arc<ItemDef>>,
     pub names: HashMap<u64, String>,
@@ -154,6 +169,7 @@ pub(crate) struct Catalog {
     perk_descriptions: HashMap<u16, String>,
     icon_containers: HashMap<u64, u32>,
     item_package_metadata: HashMap<u64, ItemPackageMetadata>,
+    item_structure_index: OnceLock<ItemStructureIndex>,
     item_stat_definitions: Vec<ItemStatDefinition>,
     character_stat_rows: Option<[u16; 6]>,
     power_cap_definitions: Vec<PowerCapDefinition>,
@@ -169,6 +185,7 @@ pub(crate) struct Catalog {
     icon_runtime: Mutex<IconRuntime>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     objectives: Vec<ObjectiveDef>,
+    presentation_node_hashes: Vec<u64>,
     records: Option<Vec<RecordDefinition>>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
@@ -576,6 +593,7 @@ impl Catalog {
             package_names,
             inventory_metadata,
             objectives,
+            presentation_node_hashes,
             records,
             unlock_flag_definitions,
             unlock_value_definitions,
@@ -667,6 +685,7 @@ impl Catalog {
             perk_descriptions,
             icon_containers,
             item_package_metadata,
+            item_structure_index: OnceLock::new(),
             item_stat_definitions,
             character_stat_rows,
             power_cap_definitions,
@@ -682,6 +701,7 @@ impl Catalog {
             icon_runtime: Mutex::new(IconRuntime::default()),
             inventory_metadata,
             objectives,
+            presentation_node_hashes,
             records,
             unlock_flag_definitions,
             unlock_value_definitions,
@@ -732,6 +752,10 @@ impl Catalog {
         self.collectibles
             .iter()
             .any(|collectible| collectible.item_hash == hash)
+    }
+
+    pub(crate) fn presentation_node_hashes(&self) -> &[u64] {
+        &self.presentation_node_hashes
     }
 
     pub(crate) fn items_for_bucket(&self, bucket_hash: u64) -> impl Iterator<Item = &ItemDef> {
@@ -857,13 +881,21 @@ impl Catalog {
     }
 
     /// Items whose metadata references this stat-group table index, in hash order.
-    pub(crate) fn items_with_stat_group(&self, group_index: u16) -> Vec<u64> {
-        self.items_where(|metadata| metadata.stat_group_index == Some(group_index))
+    pub(crate) fn items_with_stat_group(&self, group_index: u16) -> &[u64] {
+        self.item_structure_index()
+            .by_stat_group
+            .get(&group_index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// Items sharing one socket entry list, in hash order.
-    pub(crate) fn items_with_socket_entry_list(&self, index: u16) -> Vec<u64> {
-        self.items_where(|metadata| metadata.socket_entry_list_index == Some(index))
+    pub(crate) fn items_with_socket_entry_list(&self, index: u16) -> &[u64] {
+        self.item_structure_index()
+            .by_socket_entry_list
+            .get(&index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// The power-cap table row carrying this hash, with its table index.
@@ -878,27 +910,71 @@ impl Catalog {
     }
 
     /// Items whose version rows index this power-cap table row, in hash order.
-    pub(crate) fn items_with_power_cap_group(&self, index: u16) -> Vec<u64> {
-        self.items_where(|metadata| metadata.power_cap_groups.contains(&index))
+    pub(crate) fn items_with_power_cap_group(&self, index: u16) -> &[u64] {
+        self.item_structure_index()
+            .by_power_cap_group
+            .get(&index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
-    fn items_where(&self, keep: impl Fn(&ItemPackageMetadata) -> bool) -> Vec<u64> {
-        let mut hashes = self
-            .item_package_metadata
-            .iter()
-            .filter(|(_, metadata)| keep(metadata))
-            .map(|(hash, _)| *hash)
-            .collect::<Vec<_>>();
-        hashes.sort_unstable();
-        hashes
+    /// Builds the reverse indexes on first use and keeps them for the catalog's lifetime.
+    ///
+    /// The inspector answers "which items use this structure row" while a window is open, which
+    /// is a draw path, and the item metadata table holds every installed item. Scanning it per
+    /// frame is not affordable, and nothing in the metadata changes once a catalog has loaded.
+    fn item_structure_index(&self) -> &ItemStructureIndex {
+        self.item_structure_index.get_or_init(|| {
+            let mut index = ItemStructureIndex::default();
+            for (hash, metadata) in &self.item_package_metadata {
+                if let Some(group) = metadata.stat_group_index {
+                    index.by_stat_group.entry(group).or_default().push(*hash);
+                }
+                if let Some(list) = metadata.socket_entry_list_index {
+                    index
+                        .by_socket_entry_list
+                        .entry(list)
+                        .or_default()
+                        .push(*hash);
+                }
+                // An item's version rows may name one cap row more than once, and the answer is
+                // the set of items rather than a count, so each bucket is deduplicated below.
+                for group in &metadata.power_cap_groups {
+                    index
+                        .by_power_cap_group
+                        .entry(*group)
+                        .or_default()
+                        .push(*hash);
+                }
+                index
+                    .by_definition_index
+                    .entry(metadata.definition_index)
+                    .and_modify(|held| *held = (*held).min(*hash))
+                    .or_insert(*hash);
+            }
+            for bucket in index
+                .by_stat_group
+                .values_mut()
+                .chain(index.by_socket_entry_list.values_mut())
+                .chain(index.by_power_cap_group.values_mut())
+            {
+                bucket.sort_unstable();
+                bucket.dedup();
+            }
+            index
+        })
     }
 
+    /// The item carrying this definition-table index.
+    ///
+    /// Triumph reward rows resolve a reward's item this way while the table draws, so this reads
+    /// an index rather than scanning every item's metadata per row.
     pub(crate) fn item_hash_for_index(&self, index: usize) -> Option<u64> {
-        self.item_package_metadata
-            .iter()
-            .find_map(|(hash, metadata)| {
-                (metadata.definition_index as usize == index).then_some(*hash)
-            })
+        let index = u32::try_from(index).ok()?;
+        self.item_structure_index()
+            .by_definition_index
+            .get(&index)
+            .copied()
     }
 
     pub(crate) fn install_path(&self) -> &Path {

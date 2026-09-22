@@ -62,7 +62,7 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
         text: WeaponCloneText {
             name: "Second Sun".to_owned(),
             flavor: "A second dawn, made by our own hands.".to_owned(),
-            source: "Source: Guardians Make Their Own Fate".to_owned(),
+            source: "Source: Guardians Made Their Own Fate".to_owned(),
             ..WeaponCloneText::default()
         },
         overrides: WeaponCloneOverrides {
@@ -392,4 +392,212 @@ fn real_donor_roles_use_first_indexed_rows_and_reject_invalid_inputs() {
         error.contains("Donor item and item-string rows are not aligned"),
         "{error}"
     );
+}
+
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One staged build is walked from definition to vertex rows in sequence"
+)]
+fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
+    let packages = PathBuf::from(
+        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
+            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
+    );
+    let namespace = "parhelion.cross-family-appearance.integration";
+    // Age-Old Bond (auto rifle runtime, four-bone rig) wearing Better Devils (hand cannon
+    // gear, eight-bone rig). Every private position buffer must select bone 0.
+    let spec = WeaponCloneSpec {
+        namespace: namespace.to_owned(),
+        donor_item_hash: 0x23DB_942F,
+        expected_donor_name: Some("Age-Old Bond".to_owned()),
+        presentation_donor: Some(WeaponPresentationDonorReference {
+            item_hash: 0x092D_8A05,
+            expected_name: Some("Better Devils".to_owned()),
+        }),
+        icon_donor: None,
+        render_gear_donor: None,
+        runtime_component_donors: Vec::new(),
+        identity: WeaponCloneIdentity::from_namespace(namespace)
+            .expect("test namespace should allocate"),
+        text: WeaponCloneText {
+            name: "Old Devils".to_owned(),
+            flavor: "A hand cannon shell around an auto rifle heart.".to_owned(),
+            source: "Source: integration test".to_owned(),
+            ..WeaponCloneText::default()
+        },
+        overrides: WeaponCloneOverrides::default(),
+    };
+    let bundle = build_weapon_project(
+        &packages,
+        &WeaponProjectSpec {
+            weapons: vec![spec],
+        },
+    )
+    .expect("cross-family appearance should build");
+    let plan = &bundle.plan.weapons[0];
+    let source_root = packages.parent().unwrap();
+    let view = tempfile::Builder::new()
+        .prefix(".parhelion-cross-family-test-")
+        .tempdir_in(source_root)
+        .unwrap();
+    let view_packages = view.path().join("packages");
+    fs::create_dir(&view_packages).unwrap();
+    for entry in fs::read_dir(&packages).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().and_then(|value| value.to_str()) == Some("pkg") {
+            fs::hard_link(entry.path(), view_packages.join(entry.file_name())).unwrap();
+        }
+    }
+    let source_oodle = source_root
+        .join("bin")
+        .join("x64")
+        .join("oo2core_3_win64.dll");
+    if source_oodle.is_file() {
+        let target_bin = view.path().join("bin").join("x64");
+        fs::create_dir_all(&target_bin).unwrap();
+        fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll")).unwrap();
+    }
+    let staged = bundle.write_new(&view_packages).unwrap();
+    assert_eq!(staged.len(), bundle.artifacts.len());
+
+    let manager = open_manager(&view_packages).unwrap();
+    let stock = open_manager(&packages).unwrap();
+    let array = |data: &[u8], at: usize| {
+        sundial::package_authoring::native_payload::native_array_at(data, at).unwrap()
+    };
+    let definition = read_tag(&manager, plan.definition_tag, "authored definition").unwrap();
+    let donor = read_tag(&stock, plan.template_definition_tag, "donor definition").unwrap();
+    // The runtime stays in the auto rifle translation group (a private row cloned from the
+    // donor), not the hand cannon group of the appearance.
+    let patterns = manager
+        .read_tag(TagHash(
+            read_u32(
+                &manager
+                    .read_tag(
+                        sundial::package_authoring::resolve_live_named_tag(
+                            &manager,
+                            "investment_globals",
+                            None,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                16 + 70 * 16,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    let group = |definition: &[u8]| {
+        sandbox_pattern_identity_at(
+            &patterns,
+            usize::from(weapon_pattern_index(definition).unwrap().unwrap()),
+        )
+        .unwrap()
+        .unwrap()
+        .weapon_translation_group_hash
+    };
+    assert_eq!(group(&definition), group(&donor));
+    assert_eq!(group(&donor), 0xCCC7_37C4, "auto rifle group");
+    let rows = weapon_art_arrangements(&definition).unwrap();
+    assert_eq!(rows.len(), 1);
+    let globals = manager
+        .read_tag(
+            sundial::package_authoring::resolve_live_named_tag(
+                &manager,
+                "investment_globals",
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let metadata = manager
+        .read_tag(TagHash(read_u32(&globals, 0x430).unwrap()))
+        .unwrap();
+    let (count, _, meta_rows, _) = array(&metadata, 8);
+    let row_index = usize::from(rows[0].arrangement);
+    assert!(row_index < count, "art row {row_index} outside {count}");
+    let row = meta_rows + row_index * 32;
+    assert_eq!(read_u32(&metadata, row).unwrap(), plan.item_hash);
+    let mut keys = vec![
+        read_u32(&metadata, row + 8).unwrap(),
+        read_u32(&metadata, row + 12).unwrap(),
+    ];
+    if crate::tag_payload::read_u64(&metadata, row + 16).unwrap() != 0 {
+        let (slots, _, entries, _) = array(&metadata, row + 16);
+        for slot in 0..slots {
+            let resource =
+                crate::tag_payload::relative_target(&metadata, entries + slot * 8).unwrap();
+            let (n, _, assignments, _) = array(&metadata, resource + 8);
+            for j in 0..n {
+                keys.push(read_u32(&metadata, assignments + j * 4).unwrap());
+            }
+        }
+    }
+    keys.retain(|key| !matches!(*key, 0 | u32::MAX | 0x811C_9DC5));
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        10,
+        "Better Devils lists ten gear parts, five regions with alternatives: {keys:08X?}"
+    );
+    let map = manager.read_tag(TagHash(0x80EC_3F61)).unwrap();
+    let (count, _, map_rows, _) = array(&map, 8);
+    let mut parts = 0;
+    for key in keys {
+        let relation_tag = (0..count)
+            .map(|i| map_rows + i * 8)
+            .find(|&o| read_u32(&map, o).unwrap() == key)
+            .map(|o| read_u32(&map, o + 4).unwrap())
+            .unwrap_or_else(|| panic!("key {key:08X} unmapped"));
+        assert!(
+            stock.get_entry(TagHash(relation_tag)).is_none(),
+            "relation {relation_tag:08X} is a stock tag"
+        );
+        let relation = manager.read_tag(TagHash(relation_tag)).unwrap();
+        let entity_tag = read_u32(&relation, 0x10).unwrap();
+        assert!(stock.get_entry(TagHash(entity_tag)).is_none());
+        let entity = manager.read_tag(TagHash(entity_tag)).unwrap();
+        let (components, _, component_rows, _) = array(&entity, 0x10);
+        let mut models = 0;
+        for i in 0..components {
+            let tag = read_u32(&entity, component_rows + i * 12).unwrap();
+            let Ok(bytes) = manager.read_tag(TagHash(tag)) else {
+                continue;
+            };
+            let header = crate::tag_payload::relative_target(&bytes, 0x10).unwrap();
+            if read_u32(&bytes, header - 4).unwrap() != 0x8080_72B8 {
+                continue;
+            }
+            assert!(
+                stock.get_entry(TagHash(tag)).is_none(),
+                "owner {tag:08X} is stock"
+            );
+            let data = crate::tag_payload::relative_target(&bytes, 0x18).unwrap();
+            let model_tag = read_u32(&bytes, data + 0x1DC).unwrap();
+            assert!(stock.get_entry(TagHash(model_tag)).is_none());
+            let model = manager.read_tag(TagHash(model_tag)).unwrap();
+            assert_eq!(read_u32(&model, 0x40).unwrap(), 1, "bone palette");
+            let (meshes, _, mesh_rows, _) = array(&model, 0x10);
+            for m in 0..meshes {
+                let header_tag = read_u32(&model, mesh_rows + m * 0x88).unwrap();
+                let entry = manager.get_entry(TagHash(header_tag)).unwrap();
+                assert!(stock.get_entry(TagHash(header_tag)).is_none());
+                let positions = manager.read_tag(TagHash(entry.reference)).unwrap();
+                assert!(!positions.is_empty() && positions.len() % 8 == 0);
+                assert!(
+                    positions
+                        .chunks_exact(8)
+                        .all(|row| row[6] == 0 && row[7] == 0),
+                    "mesh {m} of {model_tag:08X} still selects other bones"
+                );
+            }
+            models += 1;
+        }
+        assert_eq!(models, 1, "entity {entity_tag:08X} owns one model");
+        parts += 1;
+    }
+    assert_eq!(parts, 10);
 }

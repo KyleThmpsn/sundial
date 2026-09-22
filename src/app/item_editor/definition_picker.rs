@@ -72,6 +72,53 @@ pub(crate) fn draw_definition_picker_with_open_request_and_item_filter(
     .0
 }
 
+/// Item filters and a footer together, for pickers that preview the current choice under the
+/// list. `default_filter` replaces the remembered filter each time the popup opens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_definition_picker_with_open_request_item_filter_and_footer<T>(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    height: PickerHeight,
+    trigger: (Option<&egui::Response>, bool),
+    default_filter: Option<ItemFilter>,
+    contents: (
+        impl FnOnce(&mut egui::Ui, &str, &mut ItemFilter) -> (DefinitionPickerChoices, bool),
+        impl FnOnce(&mut egui::Ui) -> Option<T>,
+    ),
+) -> (Option<ItemEditorAction>, Option<T>) {
+    let (choices_for_query, draw_footer) = contents;
+    let just_opened =
+        ui.is_enabled() && (trigger.1 || trigger.0.is_some_and(|response| response.clicked()));
+    draw_definition_picker_with_open_request_and_controls(
+        ui,
+        catalog,
+        scope,
+        query,
+        DefinitionPickerBehavior {
+            height,
+            supports_nested_popups: true,
+        },
+        trigger,
+        (
+            move |ui, query| {
+                let filter_id = ui.make_persistent_id("item-filter");
+                let mut filter = ui
+                    .data_mut(|data| data.get_temp::<ItemFilter>(filter_id))
+                    .unwrap_or_default();
+                if just_opened && let Some(default) = default_filter {
+                    filter = default;
+                }
+                let choices = choices_for_query(ui, query, &mut filter);
+                ui.data_mut(|data| data.insert_temp(filter_id, filter));
+                choices
+            },
+            draw_footer,
+        ),
+    )
+}
+
 pub(crate) fn draw_definition_picker_with_open_request_and_footer<T>(
     ui: &mut egui::Ui,
     catalog: &Catalog,

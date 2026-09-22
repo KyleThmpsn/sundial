@@ -6,7 +6,7 @@ use crate::{
     },
     sandbox_perk::{
         dependencies,
-        nodes::{CONDITIONS, EFFECTS, NodeKind, Support},
+        nodes::{NodeKind, Support},
     },
 };
 use eframe::egui;
@@ -38,11 +38,15 @@ pub struct Kinds {
     query: String,
     pub selected: Option<(Family, u8)>,
     authorable_only: bool,
+    installed_only: bool,
+    family: Option<Family>,
+    use_query: String,
     selected_use: Option<u16>,
     sort: (UseColumn, bool),
-}
-fn hint(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).wrap())
+    /// Whether the host has a Perk References tab to open examples on.
+    pub reference_links: bool,
+    /// Scroll the list to the selected kind on the next draw.
+    reveal: bool,
 }
 /// A column of the Stock Uses table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,115 +111,177 @@ pub(crate) fn sorted_uses(
 }
 
 impl Kinds {
+    /// Show one kind, clearing any filter that would hide it.
+    pub fn open(&mut self, family: Family, kind: u8) {
+        self.query.clear();
+        self.authorable_only = false;
+        self.installed_only = false;
+        self.family = None;
+        self.select(family, kind);
+        self.reveal = true;
+    }
+
+    /// Draws the tab. Returns an effect number the reader asked to open in Perk References.
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
         sources: &PerkSources,
         source: Source<'_>,
         actions: &mut Option<&mut UseActions<'_>>,
-    ) {
-        hint(
-            ui,
-            &format!(
-                "{} effect kinds and {} condition kinds registered by the supported client. Pick one to see installed effect entries whose decoded actions contain it.",
-                EFFECTS.len(),
-                CONDITIONS.len()
-            ),
-        );
-        ui.horizontal(|ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Search Kinds")
-                    .desired_width(220.0),
-            );
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search Kinds")
-            });
-            ui.checkbox(&mut self.authorable_only, "Authorable Only");
+    ) -> Option<u16> {
+        ui.horizontal_wrapped(|ui| {
+            super::search(ui, &mut self.query, false, 220.0, "Search Kinds");
+            ui.checkbox(&mut self.authorable_only, "Authorable Only")
+                .on_hover_text("Kinds supported by the private perk editor. A complete stock action may contain other unsupported kinds.");
+            ui.add_enabled(source.index().is_some(), egui::Checkbox::new(&mut self.installed_only, "With Installed Examples"));
         });
-        let query = self.query.trim().to_lowercase();
-        ui.add_space(4.0);
-        let height = (ui.available_height() - 8.0).max(200.0);
-        let list_width = (ui.available_width() * 0.5).clamp(300.0, 520.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), height),
-            egui::Layout::left_to_right(egui::Align::Min),
-            |ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(list_width, height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_max_width(list_width);
-                        egui::ScrollArea::vertical()
-                            .id_salt("engine-catalog-kinds")
-                            .max_height(height)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.draw_kinds(ui, &query, source.index()));
-                    },
-                );
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_min_width((ui.available_width() - 8.0).max(240.0));
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.family, None, "All Kinds");
+            for family in Family::ALL {
+                ui.selectable_value(&mut self.family, Some(family), family.label());
+            }
+        });
+        let rows = self.visible_kinds(source.index());
+        if !rows
+            .iter()
+            .any(|(family, node, _)| self.selected == Some((*family, node.kind)))
+        {
+            if let Some((family, node, _)) = rows.first() {
+                self.select(*family, node.kind);
+            } else {
+                self.selected = None;
+                self.selected_use = None;
+            }
+        }
+        ui.separator();
+        let height = (ui.available_height() - 8.0).max(120.0);
+        let narrow = ui.available_width() < 760.0;
+        let list_width = if narrow {
+            ui.available_width()
+        } else {
+            (ui.available_width() * 0.36).clamp(260.0, 380.0)
+        };
+        let list_height = if narrow { height * 0.36 } else { height };
+        let layout = if narrow {
+            egui::Layout::top_down(egui::Align::Min)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        let mut open = None;
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), layout, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(list_width, list_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_max_width(list_width);
                     egui::ScrollArea::vertical()
-                        .id_salt("engine-catalog-details")
-                        .max_height(height)
+                        .id_salt("engine-catalog-kinds")
+                        .max_height(list_height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.draw_kinds(ui, &rows));
+                },
+            );
+            ui.separator();
+            let detail_height = if narrow {
+                (height - list_height - 12.0).max(80.0)
+            } else {
+                height
+            };
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), detail_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_max_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .id_salt((
+                            "engine-catalog-details",
+                            self.selected.map(|(family, kind)| (family.label(), kind)),
+                        ))
+                        .max_height(detail_height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            self.draw_details(ui, sources, source, actions);
+                            open = self.draw_details(ui, sources, source, actions);
                         });
-                });
-            },
-        );
+                },
+            );
+        });
+        open
     }
 
-    /// One table per family. The name and the Stock Uses count both select the kind.
-    fn draw_kinds(&mut self, ui: &mut egui::Ui, query: &str, index: Option<&dependencies::Index>) {
+    fn visible_kinds(
+        &self,
+        index: Option<&dependencies::Index>,
+    ) -> Vec<(Family, &'static NodeKind, Option<usize>)> {
+        let query = self.query.trim().to_lowercase();
+        Family::ALL
+            .into_iter()
+            .filter(|family| self.family.is_none_or(|selected| selected == *family))
+            .flat_map(|family| family.nodes().iter().map(move |node| (family, node)))
+            .filter_map(|(family, node)| {
+                let count = index.map(|index| users(&index.perks, family, node.kind).len());
+                (matches_query(node, &query)
+                    && (!self.authorable_only || node.support == Support::Authorable)
+                    && (!self.installed_only || count.is_none_or(|count| count > 0)))
+                .then_some((family, node, count))
+            })
+            .collect()
+    }
+
+    fn draw_kinds(
+        &mut self,
+        ui: &mut egui::Ui,
+        rows: &[(Family, &'static NodeKind, Option<usize>)],
+    ) {
+        if rows.is_empty() {
+            ui.strong("No Matching Kinds");
+            ui.label("Clear the search or change a filter.");
+            return;
+        }
         for family in Family::ALL {
-            let nodes = family
-                .nodes()
+            let count = rows
                 .iter()
-                .filter(|node| {
-                    matches_query(node, query)
-                        && (!self.authorable_only || node.support == Support::Authorable)
-                })
-                .collect::<Vec<_>>();
-            ui.strong(format!("{} · {}", family.label(), nodes.len()));
-            if nodes.is_empty() {
-                ui.weak("No matching kinds.");
-                ui.add_space(6.0);
+                .filter(|(row_family, _, _)| *row_family == family)
+                .count();
+            if count == 0 {
                 continue;
             }
-            egui::Grid::new(("engine-catalog", family.label()))
-                .num_columns(4)
-                .striped(true)
-                .spacing([12.0, 2.0])
-                .show(ui, |ui| {
-                    for label in ["Kind", "Name", "Effect Entries", "Support"] {
-                        ui.small(label);
-                    }
-                    ui.end_row();
-                    for node in nodes {
-                        let selected = self.selected == Some((family, node.kind));
-                        ui.small(node.kind.to_string());
-                        if ui
-                            .selectable_label(selected, node.name)
-                            .on_hover_text(node.summary)
-                            .clicked()
-                        {
-                            self.select(family, node.kind);
-                        }
-                        let count = index.map(|index| users(&index.perks, family, node.kind).len());
-                        if ui
-                            .add_enabled(count.is_some(), egui::Button::new(count.map_or_else(|| "…".into(), |count| count.to_string())).small())
-                            .on_hover_text("Decoded installed effect entries containing this kind. Entries with unreadable actions are excluded.")
-                            .clicked()
-                        {
-                            self.select(family, node.kind);
-                        }
-                        super::support_badge(ui, node.support);
-                        ui.end_row();
-                    }
-                });
+            ui.strong(format!("{} · {count}", family.label()));
+            let widths = table_widths(ui, &[40.0, 52.0]);
+            table_header(ui, &widths, &["Kind", "Name", "Uses"], None);
+            for (_, node, count) in rows
+                .iter()
+                .filter(|(row_family, _, _)| *row_family == family)
+            {
+                let selected = self.selected == Some((family, node.kind));
+                let response = table_row(
+                    ui,
+                    &widths,
+                    selected,
+                    &[
+                        egui::RichText::new(node.kind.to_string()),
+                        crate::ui_help::emphasized_text(ui, node.name),
+                        egui::RichText::new(
+                            count.map_or_else(|| "…".into(), |count| count.to_string()),
+                        ),
+                    ],
+                )
+                .on_hover_text(format!(
+                    "{}\n{}\n{}",
+                    node.name,
+                    node.summary,
+                    node.support.detail()
+                ));
+                if selected && self.reveal {
+                    response.scroll_to_me_animation(
+                        Some(egui::Align::Center),
+                        egui::style::ScrollAnimation::none(),
+                    );
+                    self.reveal = false;
+                }
+                if response.clicked() {
+                    self.select(family, node.kind);
+                }
+            }
             ui.add_space(6.0);
         }
     }
@@ -223,6 +289,7 @@ impl Kinds {
     fn select(&mut self, family: Family, kind: u8) {
         if self.selected != Some((family, kind)) {
             self.selected_use = None;
+            self.use_query.clear();
         }
         self.selected = Some((family, kind));
     }
@@ -233,32 +300,40 @@ impl Kinds {
         sources: &PerkSources,
         source: Source<'_>,
         actions: &mut Option<&mut UseActions<'_>>,
-    ) {
+    ) -> Option<u16> {
         let Some((family, kind)) = self.selected else {
-            ui.weak("Pick a kind on the left, or click its Effect Entries count.");
-            return;
+            ui.weak("Choose a kind to inspect its behavior and installed examples.");
+            return None;
         };
-        let Some(node) = family.nodes().iter().find(|node| node.kind == kind) else {
-            return;
-        };
-        ui.horizontal(|ui| {
+        let node = family.nodes().iter().find(|node| node.kind == kind)?;
+        ui.horizontal_wrapped(|ui| {
             ui.heading(node.name);
-            super::support_badge(ui, node.support);
+            ui.scope(|ui| {
+                let body = egui::TextStyle::Body.resolve(ui.style());
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Small, body);
+                super::support_badge(ui, node.support);
+            });
         });
-        ui.small(format!(
-            "{} kind {} · {}",
-            family.label().trim_end_matches('s'),
-            node.kind,
-            if node.class == 0 {
-                "not observed in the bundled reference survey".to_owned()
-            } else {
-                format!("class 0x{:08X} · {} bytes", node.class, node.struct_size)
-            }
-        ));
-        ui.add_space(4.0);
         ui.label(node.summary);
-        ui.add_space(4.0);
-        ui.small(node.evidence);
+        egui::CollapsingHeader::new("Technical Details")
+            .id_salt((family.label(), kind))
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "{} kind {}",
+                    family.label().trim_end_matches('s'),
+                    node.kind
+                ));
+                if node.class != 0 {
+                    ui.monospace(format!(
+                        "Class 0x{:08X} · {} bytes",
+                        node.class, node.struct_size
+                    ));
+                }
+                ui.label(node.support.detail());
+                ui.label(node.evidence);
+            });
         ui.add_space(8.0);
         ui.strong("Installed Effect Entries");
         let Some(index) = source.index() else {
@@ -270,7 +345,7 @@ impl Kinds {
             } else {
                 ui.weak("The effect list is unavailable until native content has been read.");
             }
-            return;
+            return None;
         };
         let perks = users(&index.perks, family, kind);
         let unreadable = index
@@ -280,104 +355,259 @@ impl Kinds {
                 perk.error.is_some() || (perk.action.is_some() && perk.behavior.is_none())
             })
             .count();
-        ui.small(format!("{} decoded effect entries contain this kind. {} entries could not be inspected completely.", perks.len(), unreadable));
+        ui.label(format!("{} decoded effect entries contain this kind. {} entries could not be inspected completely.", perks.len(), unreadable));
         if perks.is_empty() {
             ui.weak("No decoded installed action contains this kind. Unreadable actions may still contain it.");
-            return;
+            return None;
         }
         let rows = usage_rows(&perks, sources);
-        self.draw_uses(ui, rows, sources, actions);
+        let open = self.draw_uses(ui, rows, sources, actions);
         if let Some(selected) = self.selected_use {
             super::draw_sources(ui, sources, usize::from(selected));
         }
+        open
     }
 
     /// The Stock Uses table. Clicking a header sorts by that column and again reverses it.
+    /// Returns an effect the reader asked to open in Perk References.
     fn draw_uses(
         &mut self,
         ui: &mut egui::Ui,
-        rows: Vec<StockUse>,
+        mut rows: Vec<StockUse>,
         sources: &PerkSources,
         actions: &mut Option<&mut UseActions<'_>>,
-    ) {
+    ) -> Option<u16> {
+        let mut open = None;
+        let total = rows.len();
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 65.0).max(120.0);
+            super::search(
+                ui,
+                &mut self.use_query,
+                false,
+                width,
+                "Search Installed Examples",
+            );
+        });
+        rows.retain(|row| matches_use(row, &self.use_query));
         self.selected_use = self
             .selected_use
             .filter(|selected| rows.iter().any(|row| row.index == *selected));
-        // Fixed name and effect columns, so the description takes what they leave on one
-        // line and the table never widens the window.
-        let name_width = 200.0;
-        let description_width = (ui.available_width() - name_width - 120.0).max(120.0);
-        egui::Grid::new("engine-catalog-users")
-            .num_columns(3)
-            .striped(true)
-            .spacing([12.0, 2.0])
-            .min_col_width(40.0)
-            .show(ui, |ui| {
-                for column in UseColumn::ALL {
-                    let (current, descending) = self.sort;
-                    let title = if current == column {
-                        format!("{} {}", column.label(), if descending { "⬇" } else { "⬆" })
-                    } else {
-                        column.label().to_owned()
-                    };
-                    if ui
-                        .selectable_label(current == column, egui::RichText::new(title).small())
-                        .on_hover_text("Sort by this column. Click again to reverse.")
-                        .clicked()
-                    {
-                        self.sort = (column, current == column && !descending);
-                    }
-                }
-                ui.end_row();
-                let sorted = sorted_uses(
-                    rows.into_iter()
-                        .map(|row| (row.index, row.name, row.description))
-                        .collect(),
-                    self.sort.0,
-                    self.sort.1,
-                );
-                for (index, name, description) in sorted {
-                    let selected = self.selected_use == Some(index);
-                    let mut response = ui.selectable_label(selected, index.to_string());
-                    response |= ui
-                        .scope(|ui| {
-                            ui.set_max_width(name_width);
-                            ui.add(
-                                egui::Label::new(&name)
-                                    .truncate()
-                                    .selectable(false)
-                                    .sense(egui::Sense::click()),
-                            )
-                        })
-                        .inner
-                        .on_hover_text(sources.details(usize::from(index)));
-                    response |= ui
-                        .scope(|ui| {
-                            ui.set_max_width(description_width);
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(&description).small())
-                                    .truncate()
-                                    .selectable(false)
-                                    .sense(egui::Sense::click()),
-                            )
-                        })
-                        .inner
-                        .on_hover_text(&description);
+        ui.horizontal_wrapped(|ui| {
+            ui.weak(format!("{} of {total} examples", rows.len()));
+            if self.reference_links
+                && ui
+                    .add_enabled(
+                        self.selected_use.is_some(),
+                        egui::Button::new("Open Reference"),
+                    )
+                    .clicked()
+            {
+                open = self.selected_use;
+            }
+            if let Some(actions) = actions.as_deref_mut() {
+                actions(ui, self.selected_use, UseLocation::Footer);
+            }
+        });
+        if rows.is_empty() {
+            ui.label("No matching examples. Clear the search or try an effect number, source name, or behavior.");
+            return open;
+        }
+        if let Some(row) = rows.iter().find(|row| Some(row.index) == self.selected_use) {
+            ui.strong(format!("Effect {} · {}", row.index, row.name));
+            ui.label(&row.description);
+        }
+        let name_width = (ui.available_width() * 0.32).clamp(120.0, 220.0);
+        let widths = table_widths(ui, &[72.0, name_width]);
+        let (current, descending) = self.sort;
+        let titles = UseColumn::ALL.map(|column| {
+            if current == column {
+                format!("{} {}", column.label(), if descending { "⬇" } else { "⬆" })
+            } else {
+                column.label().to_owned()
+            }
+        });
+        let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+        if let Some(column) = table_header(
+            ui,
+            &widths,
+            &titles,
+            Some("Sort by this column. Click again to reverse."),
+        ) {
+            let column = UseColumn::ALL[column];
+            self.sort = (column, current == column && !descending);
+        }
+        let sorted = sorted_uses(
+            rows.into_iter()
+                .map(|row| (row.index, row.name, row.description))
+                .collect(),
+            self.sort.0,
+            self.sort.1,
+        );
+        // The table takes the panel; only the source list below it needs a line.
+        let height = (ui.available_height() - 44.0).max(80.0);
+        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        egui::ScrollArea::vertical()
+            .id_salt("installed-examples")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show_rows(ui, row_height, sorted.len(), |ui, range| {
+                for (index, name, description) in &sorted[range] {
+                    let selected = self.selected_use == Some(*index);
+                    let response = table_row(
+                        ui,
+                        &widths,
+                        selected,
+                        &[
+                            egui::RichText::new(index.to_string()),
+                            crate::ui_help::emphasized_text(ui, name),
+                            egui::RichText::new(description).weak(),
+                        ],
+                    )
+                    .on_hover_text(format!(
+                        "{}\n{description}",
+                        sources.details(usize::from(*index))
+                    ));
                     if response.clicked() {
-                        self.selected_use = Some(index);
+                        self.selected_use = Some(*index);
                     }
-                    if let Some(actions) = actions.as_deref_mut() {
-                        response.context_menu(|ui| actions(ui, Some(index), UseLocation::Menu));
+                    if self.reference_links && response.double_clicked() {
+                        open = Some(*index);
                     }
-                    ui.end_row();
+                    response.context_menu(|ui| {
+                        if self.reference_links && ui.button("Open Reference").clicked() {
+                            open = Some(*index);
+                            ui.close_menu();
+                        }
+                        if let Some(actions) = actions.as_deref_mut() {
+                            actions(ui, Some(*index), UseLocation::Menu);
+                        }
+                    });
                 }
             });
-        ui.add_space(4.0);
-        if let Some(actions) = actions.as_deref_mut() {
-            ui.horizontal(|ui| actions(ui, self.selected_use, UseLocation::Footer));
-        }
+        open
     }
 }
+
+/// Column widths for fixed columns followed by one column that takes the rest.
+fn table_widths(ui: &egui::Ui, fixed: &[f32]) -> Vec<f32> {
+    let gaps = ui.spacing().item_spacing.x * fixed.len() as f32;
+    let rest = (ui.available_width() - fixed.iter().sum::<f32>() - gaps).max(80.0);
+    let mut widths = fixed.to_vec();
+    widths.insert(1, rest);
+    widths
+}
+
+/// A header row aligned to the same columns. Returns the clicked column when sortable.
+fn table_header(
+    ui: &mut egui::Ui,
+    widths: &[f32],
+    labels: &[&str],
+    sort_hint: Option<&str>,
+) -> Option<usize> {
+    let height = ui.spacing().interact_size.y;
+    let gap = ui.spacing().item_spacing.x;
+    let width = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
+    let sense = if sort_hint.is_some() {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
+    let mut clicked = None;
+    if ui.is_rect_visible(rect) {
+        let mut x = rect.left();
+        for (index, (label, width)) in labels.iter().zip(widths).enumerate() {
+            let cell =
+                egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(*width, height));
+            let hovered = response.hovered()
+                && ui
+                    .input(|input| input.pointer.hover_pos())
+                    .is_some_and(|pos| cell.contains(pos));
+            let text = egui::RichText::new(*label).strong();
+            let text = if hovered && sort_hint.is_some() {
+                text.underline()
+            } else {
+                text
+            };
+            ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(cell.shrink2(egui::vec2(4.0, 0.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            )
+            .add(egui::Label::new(text).truncate().selectable(false));
+            if hovered && response.clicked() {
+                clicked = Some(index);
+            }
+            x += width + gap;
+        }
+    }
+    if let Some(hint) = sort_hint {
+        response.on_hover_text(hint);
+    }
+    clicked
+}
+
+/// One selectable table row: a single highlight across every column, each cell truncated to
+/// its column so nothing drifts.
+fn table_row(
+    ui: &mut egui::Ui,
+    widths: &[f32],
+    selected: bool,
+    cells: &[egui::RichText],
+) -> egui::Response {
+    let height = ui.spacing().interact_size.y;
+    let gap = ui.spacing().item_spacing.x;
+    let width = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            cells
+                .iter()
+                .map(|cell| cell.text())
+                .collect::<Vec<_>>()
+                .join(" · "),
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() {
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let mut x = rect.left();
+        for (cell, width) in cells.iter().zip(widths) {
+            let cell_rect = egui::Rect::from_min_size(
+                egui::pos2(x + 4.0, rect.top()),
+                egui::vec2((width - 8.0).max(0.0), height),
+            );
+            ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(cell_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            )
+            .add(egui::Label::new(cell.clone()).truncate().selectable(false));
+            x += width + gap;
+        }
+    }
+    response
+}
+
+fn matches_use(row: &StockUse, query: &str) -> bool {
+    let text = format!("{} {} {}", row.index, row.name, row.description).to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| text.contains(&word.to_lowercase()))
+}
+
 /// Whether a kind matches every word of a search: its number, name or summary.
 fn matches_query(node: &NodeKind, query: &str) -> bool {
     let text = format!("{} {} {}", node.kind, node.name, node.summary).to_lowercase();
@@ -385,151 +615,4 @@ fn matches_query(node: &NodeKind, query: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn perk(index: usize, effects: &[u8], conditions: &[u8]) -> dependencies::Perk {
-        dependencies::Perk {
-            index,
-            hash: 0,
-            runtime_key: 0,
-            action: Some(0x8080_0000),
-            graphs: Vec::new(),
-            error: None,
-            behavior: Some(dependencies::Behavior {
-                headline: String::new(),
-                support: Support::Readable,
-                editable: true,
-                program: None,
-                condition_kinds: conditions.to_vec(),
-                effect_kinds: effects.to_vec(),
-                details: Vec::new(),
-                notes: Vec::new(),
-            }),
-        }
-    }
-
-    #[test]
-    fn users_come_from_the_decoded_behaviors_of_each_family() {
-        let mut undecoded = perk(2, &[1], &[]);
-        undecoded.behavior = None;
-        let perks = vec![perk(0, &[1, 3], &[0]), perk(1, &[3], &[1]), undecoded];
-        let indices = |family, kind| {
-            users(&perks, family, kind)
-                .into_iter()
-                .map(|perk| perk.index)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(indices(Family::Effects, 1), vec![0]);
-        assert_eq!(indices(Family::Effects, 3), vec![0, 1]);
-        assert_eq!(indices(Family::Conditions, 1), vec![1]);
-        assert!(indices(Family::Effects, 9).is_empty());
-    }
-
-    #[test]
-    fn installed_users_exclude_failed_and_unassigned_entries_even_with_stale_digests() {
-        let mut failed = perk(1, &[1], &[]);
-        failed.error = Some("Incomplete action".into());
-        let mut unassigned = perk(2, &[1], &[]);
-        unassigned.action = None;
-        let perks = [perk(0, &[1], &[]), failed, unassigned];
-        let found = users(&perks, Family::Effects, 1);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].index, 0);
-    }
-
-    #[test]
-    fn effect_rows_describe_decoded_actions_and_display_all_source_names() {
-        let mut effect = perk(453, &[43], &[26]);
-        effect.behavior.as_mut().unwrap().headline = "Decoded action summary.".into();
-        let sources = [(1, "Thorn Catalyst"), (2, "Masterwork Weapon")]
-            .into_iter()
-            .map(|(hash, name)| {
-                (
-                    453,
-                    crate::investment::PerkSource {
-                        hash,
-                        name: name.into(),
-                        type_name: String::new(),
-                    },
-                )
-            })
-            .collect();
-        let rows = usage_rows(&[&effect], &sources);
-        assert_eq!(rows[0].description, "Decoded action summary.");
-        assert!(rows[0].name.contains("Masterwork Weapon"));
-        assert!(rows[0].name.contains("Thorn Catalyst"));
-        let mut engine = Kinds::default();
-        let ctx = egui::Context::default();
-        let output = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                engine.draw_uses(ui, usage_rows(&[&effect], &sources), &sources, &mut None)
-            });
-        });
-        let labels = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert!(labels.contains(&"Referenced By"));
-        assert!(labels.contains(&"Decoded Behavior"));
-    }
-
-    #[test]
-    fn searches_match_numbers_names_and_summaries() {
-        let create = EFFECTS
-            .iter()
-            .find(|node| node.name == "Create Entity")
-            .expect("the create entity kind");
-        assert!(matches_query(create, "create"));
-        assert!(matches_query(create, &create.kind.to_string()));
-        assert!(matches_query(create, "entity create"));
-        assert!(!matches_query(create, "ammunition"));
-    }
-
-    #[test]
-    fn stock_uses_sort_by_each_column_in_both_directions() {
-        let rows = || {
-            vec![
-                (
-                    421,
-                    "Outlaw".to_owned(),
-                    "Precision kills reload.".to_owned(),
-                ),
-                (
-                    338,
-                    "Rampage".to_owned(),
-                    "Kills increase damage.".to_owned(),
-                ),
-                (
-                    405,
-                    "dragonfly".to_owned(),
-                    "Precision kills explode.".to_owned(),
-                ),
-            ]
-        };
-        let indices = |sorted: Vec<(u16, String, String)>| {
-            sorted.into_iter().map(|row| row.0).collect::<Vec<_>>()
-        };
-        assert_eq!(
-            indices(sorted_uses(rows(), UseColumn::Effect, false)),
-            [338, 405, 421]
-        );
-        assert_eq!(
-            indices(sorted_uses(rows(), UseColumn::Effect, true)),
-            [421, 405, 338]
-        );
-        // Names sort without regard to case.
-        assert_eq!(
-            indices(sorted_uses(rows(), UseColumn::Name, false)),
-            [405, 421, 338]
-        );
-        assert_eq!(
-            indices(sorted_uses(rows(), UseColumn::Description, true)),
-            [421, 405, 338]
-        );
-    }
-}
+mod tests;

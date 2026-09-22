@@ -233,6 +233,7 @@ fn interrupted_replacement_recovers_cleaned_account_and_partial_packages() {
         target_packages_directory: fixture.target.clone(),
         backup_root: fixture.backups.clone(),
         game_running_check: game_stopped,
+        runtime_snapshot_check: test_runtime_snapshot,
     })
     .unwrap();
     assert_eq!(fs::read(path).unwrap(), original);

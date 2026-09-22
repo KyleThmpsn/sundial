@@ -17,6 +17,7 @@ enum Evidence {
     Match,
     Missing,
     NoMatch,
+    NotApplicable,
     Inaccessible(String),
 }
 
@@ -31,15 +32,24 @@ pub(super) struct PersistenceCompatibility {
 
 impl PersistenceCompatibility {
     pub(super) fn inspect(install: &Path) -> Self {
+        let dawn = crate::package_runtime::installed_runtime(install)
+            .is_ok_and(|runtime| runtime.brand() == crate::package_runtime::RuntimeBrand::Dawn);
         let runtime_state_path = install
             .join("bin")
             .join("x64")
             .join("Sunrise")
             .join(RUNTIME_STATE_FILE_NAME);
-        let (runtime_state_evidence, runtime_state_version) =
-            inspect_runtime_state_file(&runtime_state_path);
+        let (runtime_state_evidence, runtime_state_version) = if dawn {
+            (Evidence::NotApplicable, None)
+        } else {
+            inspect_runtime_state_file(&runtime_state_path)
+        };
         let module_path = sunrise_module_path(install);
-        let module_evidence = inspect_sunrise_module(&module_path);
+        let module_evidence = if dawn {
+            Evidence::NotApplicable
+        } else {
+            inspect_sunrise_module(&module_path)
+        };
         Self {
             runtime_state_path,
             runtime_state_evidence,
@@ -78,6 +88,7 @@ impl PersistenceCompatibility {
             ),
             Evidence::Missing => "missing".to_owned(),
             Evidence::NoMatch => "present_but_unrecognized".to_owned(),
+            Evidence::NotApplicable => "not_applicable_for_dawn".to_owned(),
             Evidence::Inaccessible(error) => {
                 format!("inaccessible | error={}", single_line(error))
             }
@@ -93,6 +104,7 @@ impl PersistenceCompatibility {
             Evidence::Match => "runtime_state_filename_marker_present".to_owned(),
             Evidence::Missing => "missing".to_owned(),
             Evidence::NoMatch => "runtime_state_filename_marker_absent".to_owned(),
+            Evidence::NotApplicable => "not_applicable_for_dawn".to_owned(),
             Evidence::Inaccessible(error) => {
                 format!("inaccessible | error={}", single_line(error))
             }
@@ -211,5 +223,26 @@ mod tests {
             inspection.module_status(),
             "runtime_state_filename_marker_absent"
         );
+    }
+
+    #[test]
+    fn active_dawn_ignores_stale_sunrise_runtime_state() {
+        let directory = crate::package_runtime::tests::fixture::install();
+        fs::write(
+            directory.path().join("steam_api64.dll"),
+            crate::package_runtime::tests::fixture::module("Dawn", true, None),
+        )
+        .unwrap();
+        let runtime_state = directory.path().join("bin/x64/Sunrise/runtime-state.bin");
+        fs::create_dir_all(runtime_state.parent().unwrap()).unwrap();
+        let mut bytes = Vec::from(RUNTIME_STATE_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&7_u32.to_le_bytes());
+        fs::write(runtime_state, bytes).unwrap();
+
+        let inspection = PersistenceCompatibility::inspect(directory.path());
+
+        assert!(!inspection.detected());
+        assert_eq!(inspection.runtime_state_status(), "not_applicable_for_dawn");
+        assert_eq!(inspection.module_status(), "not_applicable_for_dawn");
     }
 }

@@ -85,7 +85,7 @@ fn check_boundary(
 /// Native icon definitions are an intentional eager UI resource. Other type-16
 /// asset owners retain their loading boundary, including model and dye owners.
 pub(crate) fn validate_asset_loading<'a>(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     packages: impl IntoIterator<Item = (u16, &'a [NewTagSpec])>,
     runtime: &[u8],
     runtime_identity: LoadingOwner,

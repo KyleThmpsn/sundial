@@ -129,7 +129,7 @@ fn installation_lock_covers_install_uninstall_and_recovery() {
             .contains("transaction lock")
     );
     assert!(
-        uninstall_custom_packages(&plan, &fixture.backups, game_stopped)
+        uninstall_fixture(&plan, &fixture.backups, game_stopped)
             .unwrap_err()
             .message
             .contains("transaction lock")

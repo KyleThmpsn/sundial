@@ -71,6 +71,51 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         },
     };
     match (class, field.offset) {
+        // Registered damage callback 1088E80, consumed by CD3570's multiplier lane.
+        (0x80803E3C, 4) => {
+            result.description = "Incoming damage factor when Multiplier Stat is Literal Multiplier. 1 leaves damage unchanged, 0.5 halves it and 1.5 increases it by half. The damage filter and source distance still apply. This is not a percentage or an outgoing weapon-damage bonus.";
+            result.suffix = "×";
+        }
+        (0x80803E3C, 8) => {
+            result.description = "Literal Multiplier uses Damage Multiplier. Other values select a native stat through the recipient's stat interface. Their identities are unresolved. This selector does not use the common action-input choices.";
+            result.choices = &[(255, "Literal Multiplier")];
+        }
+        (0x80803E3C, 12) => {
+            result.description = "Maximum three-dimensional distance between the damage source and recipient. Negative values disable this check. The boundary is inclusive. This limits source distance, not damage amount or the multiplier.";
+        }
+        // EC0AA0 is shared by 1089400, 10896D0 and EC58C0. ECD110 resolves
+        // event modes 2/3 from context +10/+14, whose meaning depends on the event.
+        (0x80803E44..=0x80803E46, 2) => {
+            result.description = "Object receiving the attachment. Owning Object is the object hosting this perk, such as its weapon. Owning Player resolves the player through that host. Native modes 2 and 3 use the event's first and second object handles, whose roles depend on the trigger. These modes do not select a spawn position.";
+            result.choices = &[(0, "Owning Object"), (1, "Owning Player")];
+        }
+        // 108B605..108B7E7 tests only empty versus nonempty, not the key's identity.
+        (0x80803E45, 0x18) => {
+            result.description = "An empty key allows the automatic cleanup path, subject to the entity's components. A nonempty key skips that path. Its name does not grant an effect such as invisibility. The attached entity must implement the behavior and its lifetime.";
+        }
+        // 108B95F..108BA49 resolves +1C through B315D0, then writes +20 as a
+        // four-lane parameter through B351B0. This is the removal callback.
+        (0x80803E45, 0x1C) => {
+            result.description = "Named parameter written on the attached entity when this action ends. An empty key or a parameter the entity does not expose skips the write.";
+        }
+        (0x80803E45, 0x20 | 0x24 | 0x28 | 0x2C) => {
+            result.description = "One lane of the four-component value written to Removal Parameter when this action ends. The receiving entity defines its meaning. This is not automatically a position, duration or damage value.";
+        }
+        // 10895E1..108966F splats action state +14 into the creation request.
+        (0x80803E45, 0x30) => {
+            result.description = "Named parameter initialized when the entity is created. All four lanes receive the current action numeric value. An empty key skips initialization. The entity must expose and use the parameter.";
+        }
+        (0x80803E23, 4 | 8 | 12) => {
+            result.description = if field.offset == 12 {
+                "Radar detection range. Long March sets 80 and Radar Booster sets 56. Negative values leave the current range unchanged. Zero overrides it with zero. The previous value is restored when the effect ends."
+            } else {
+                "Additional radar setting whose exact gameplay role remains unresolved. Negative values leave it unchanged. Nonnegative values override it until the effect ends, then restore its previous value."
+            };
+        }
+        (0x80803E24, 2) => {
+            result.description = "Adds or removes a contribution to enhanced radar detail. The effect reverses the operation when it ends. Multiple positive contributions keep enhancement active without repeatedly increasing detail. This does not control whether radar stays visible while aiming.";
+            result.choices = &[(0, "Remove Contribution"), (1, "Add Contribution")];
+        }
         (0x80803E44, 0x50) | (0x80803E4D, 0x48) | (0x80802F18, 0x38) | (0x808029EC, 0x6B) => {
             result.description = "Input to the value program. Nearby counts use the engine's enemy and ally distances. Fireteam counts exclude you and do not use a distance limit. The defeated count also includes members with no available player object. Default Input uses the calling action's default value. Ammunition inputs use native accessor values and optional normalization. Native stat slots remain unresolved.";
             result.choices = COMMON_INPUTS;
@@ -288,9 +333,20 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // as that state: Icarus Grip, Air Assault, Mask Upgrade, Peregrine Strike and Tome of
         // Dawn ("airborne", "in midair") set 2, Slideshot and Slideways ("sliding") set 4,
         // Rapid Cooldown, Tesseract and Sprint Grip ("sprinting") set 8.
+        // ECB580 maps the crouch/slide/sprint state events to bits 1/4/8.
+        // ECDC40 and EC1F30 set 16/32 iff the current health/shield fraction is
+        // below 1 and no greater than its previous sample. These are level checks,
+        // not damage events or generic regeneration booleans. EC3C60 requires all bits.
         (0x80803DCE, 0x38) | (0x80803DCC, 0x38) => {
-            result.description = "The player state this predicate requires. Airborne is set by Icarus Grip, Air Assault and Mask Upgrade, Sliding by Slideshot and Slideways, Sprinting by Rapid Cooldown and Tesseract. Values 1 and 32 are set by undescribed perks and keep their number.";
-            result.choices = &[(2, "Airborne"), (4, "Sliding"), (8, "Sprinting")];
+            result.description = "All selected states must be present. Crouching, airborne, sliding and sprinting use the player's state. Missing Health or Shields Without Recovery requires that fraction to be below full and no greater than its previous sample. It is a continuing state, not a damage event, and excludes a sample in which that fraction increased. No selected bits leaves this check unrestricted.";
+            result.choices = &[
+                (1, "Crouching"),
+                (2, "Airborne"),
+                (4, "Sliding"),
+                (8, "Sprinting"),
+                (16, "Missing Health Without Recovery"),
+                (32, "Missing Shields Without Recovery"),
+            ];
             result.bitmask = true;
         }
         // The weapon state at +81. Value 4 is set by Upgraded Sensor Pack, Box Breathing,

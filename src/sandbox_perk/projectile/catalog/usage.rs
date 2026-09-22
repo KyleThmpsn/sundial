@@ -5,14 +5,14 @@ use crate::sandbox_perk::action::{self, ActionSummary, GroupSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Use {
-    operation: String,
+    kind: u8,
     activation: Vec<String>,
     removal: Vec<String>,
 }
 
-fn observe(group: &GroupSummary, operation: &str) -> Use {
+fn observe(group: &GroupSummary, kind: u8) -> Use {
     Use {
-        operation: operation.into(),
+        kind,
         activation: group
             .activation
             .iter()
@@ -24,21 +24,23 @@ fn observe(group: &GroupSummary, operation: &str) -> Use {
 
 fn common(uses: &[Use]) -> Option<String> {
     let first = uses.first()?;
-    if !uses.iter().all(|usage| usage.operation == first.operation) {
+    if !uses.iter().all(|usage| usage.kind == first.kind) {
         return Some("Shared Across Different Operations".into());
     }
-    let operation = match first.operation.as_str() {
-        "Create Entity" => "Attached Entity",
-        "Create Entity With Dynamic Value" => "Attached Entity with a Driven Value",
-        "Spawn Entity At Selected Transform" => "Spawned Entity",
-        "Pattern Override" => "Projectile Pattern",
-        operation => operation,
+    let operation = match first.kind {
+        1 => "Attached Entity",
+        2 => "Attached Entity with a Driven Value",
+        3 => "Spawned Entity",
+        26 => "Projectile Pattern",
+        kind => crate::sandbox_perk::nodes::effect(kind)?.name,
     };
     let same_start = uses
         .iter()
         .all(|usage| usage.activation == first.activation);
     let same_end = uses.iter().all(|usage| usage.removal == first.removal);
-    if operation != "Spawned Entity"
+    // Kind 1's cleanup key and entity components can let the attachment outlive
+    // this action. Its activation time is known, its lifetime is not implied.
+    if matches!(first.kind, 2 | 26)
         && same_start
         && same_end
         && first.activation == ["The weapon is drawn"]
@@ -49,7 +51,7 @@ fn common(uses: &[Use]) -> Option<String> {
     if same_start && first.activation.len() == 1 {
         let trigger = match first.activation[0].as_str() {
             "The weapon is drawn" => "on Draw",
-            "The weapon is attached" if operation == "Spawned Entity" => "on Equip",
+            "The weapon is attached" if matches!(first.kind, 1 | 3) => "on Equip",
             "The weapon is attached" => "While Equipped",
             "A kill from this weapon" => "on Weapon Kill",
             "A precision kill from this weapon" => "on Precision Kill",
@@ -81,10 +83,12 @@ pub(super) fn annotate(
         };
         for group in ActionSummary::new(&decoded).groups {
             for effect in &group.effects {
-                if let Some(asset) = effect.asset {
+                if let Some(asset) = effect.asset
+                    && let Some((false, native)) = &effect.native
+                {
                     uses.entry(asset)
                         .or_default()
-                        .push(observe(&group, &effect.kind_name));
+                        .push(observe(&group, native.kind));
                 }
             }
         }
@@ -101,13 +105,13 @@ mod tests {
     #[test]
     fn shared_hint_keeps_only_roles_common_to_every_observed_use() {
         let drawn = Use {
-            operation: "Create Entity".into(),
+            kind: 1,
             activation: vec!["The weapon is drawn".into()],
             removal: vec!["The weapon is holstered".into()],
         };
         assert_eq!(
             common(&[drawn.clone(), drawn.clone()]).as_deref(),
-            Some("Attached Entity While Drawn")
+            Some("Attached Entity on Draw")
         );
         let equipped = Use {
             activation: vec!["The weapon is attached".into()],
@@ -118,7 +122,7 @@ mod tests {
             Some("Attached Entity")
         );
         let spawned = Use {
-            operation: "Spawn Entity At Selected Transform".into(),
+            kind: 3,
             ..drawn.clone()
         };
         assert_eq!(
@@ -126,5 +130,22 @@ mod tests {
             Some("Shared Across Different Operations")
         );
         assert_eq!(common(&[]), None);
+    }
+
+    #[test]
+    fn spawned_and_driven_roles_follow_native_kinds() {
+        let usage = Use {
+            kind: 3,
+            activation: vec!["The weapon is attached".into()],
+            removal: Vec::new(),
+        };
+        assert_eq!(
+            common(&[usage.clone()]).as_deref(),
+            Some("Spawned Entity on Equip")
+        );
+        assert_eq!(
+            common(&[Use { kind: 2, ..usage }]).as_deref(),
+            Some("Attached Entity with a Driven Value While Equipped")
+        );
     }
 }

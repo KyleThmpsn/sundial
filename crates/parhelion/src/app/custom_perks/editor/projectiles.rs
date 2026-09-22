@@ -251,6 +251,7 @@ impl PerkEditor {
                         height,
                         reset: reset || visibility.1 || filter != before,
                         row_height: sundial::investment::authoring_choice_row_height(ui),
+                        select: None,
                     }
                     .draw(
                         ui,

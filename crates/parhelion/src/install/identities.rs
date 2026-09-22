@@ -48,7 +48,7 @@ fn with_generation<T>(
             }
             read(view.path())
         })();
-        return view.finish(result);
+        return view.finish(result, drop);
     }
     read(target)
 }
@@ -277,12 +277,16 @@ mod tests {
             )
         });
         assert_eq!(
-            fs::read(&cleanup.settings_path).unwrap(),
+            sundial::package_authoring::account::read_authored_account_source(
+                &cleanup.settings_path
+            )
+            .unwrap(),
             cleanup.original_bytes
         );
         assert_eq!(before, preview_uninstall(&path).unwrap());
         eprintln!(
-            "Read-only review: {} item instances, {} plugs, {} collection flags",
+            "Read-only review of {}: {} item instances, {} plugs, {} collection flags",
+            cleanup.settings_path.display(),
             cleanup.removed_items.values().sum::<usize>(),
             cleanup.cleared_plugs,
             cleanup.cleared_unlocks

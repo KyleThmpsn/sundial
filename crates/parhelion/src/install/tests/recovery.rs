@@ -39,6 +39,7 @@ fn rollback_refuses_to_overwrite_a_concurrently_changed_target() {
         state: InstallTransactionState::Pending,
         target_packages_directory: fixture.target.clone(),
         backup_directory: fixture.backups.clone(),
+        runtime: None,
         account_cleanup: None,
         client_settings: None,
         artifacts: vec![InstallTransactionArtifact {

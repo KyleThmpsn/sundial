@@ -1,5 +1,6 @@
 //! Reusable read-only catalog views. Callers own selection and authoring policy.
 pub mod runtime;
+pub mod scan;
 
 mod list;
 pub use list::BrowserList;
@@ -8,6 +9,26 @@ pub mod content;
 pub mod labels;
 
 use eframe::egui;
+
+/// Fill a previously reserved toolbar slot without moving the body's layout cursor.
+pub fn toolbar_status(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    text: impl Into<String>,
+) -> egui::Response {
+    ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("catalog-status")
+            .max_rect(rect),
+    )
+    .add_sized(
+        rect.size(),
+        egui::Label::new(egui::RichText::new(text).weak())
+            .halign(egui::Align::Min)
+            .truncate(),
+    )
+}
+
 pub fn search(ui: &mut egui::Ui, query: &mut String, opened: bool, width: f32, hint: &str) -> bool {
     let response = ui.add_sized(
         [width.max(80.0), ui.spacing().interact_size.y],

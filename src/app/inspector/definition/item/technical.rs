@@ -114,7 +114,7 @@ pub(super) fn draw_hash_item_package_metadata(
                 catalog,
                 ("socket-entry-list-sharers", item_hash),
                 "Items Sharing This Socket Entry List",
-                &catalog.items_with_socket_entry_list(index),
+                catalog.items_with_socket_entry_list(index),
             );
         }
     });

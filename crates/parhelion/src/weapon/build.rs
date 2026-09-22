@@ -209,7 +209,7 @@ fn compile_canonical(
     })?;
     let icons = progress.step("Compiling Icons", || {
         assets::author_icon_rows(
-            &sources.stock_item_icons,
+            std::mem::take(&mut sources.stock_item_icons),
             &resolved,
             &assets,
             &mut custom_plugs,
@@ -294,7 +294,43 @@ fn compile_canonical(
     let emission = progress.step("Linking Package Data", || {
         assembly::prepare(sources, output)
     })?;
-    emission::emit_packages(package_directory, emission, progress)
+    let mut bundle = emission::emit_packages(package_directory, emission, weapons, progress)?;
+    for plug in &custom_plugs {
+        for usage in &plug.uses {
+            let weapon = bundle
+                .plan
+                .weapons
+                .get_mut(usage.weapon_ordinal)
+                .ok_or_else(|| invalid("Private perk use refers to a missing authored weapon"))?;
+            weapon.custom_plugs.push(NewCustomPlugPlan {
+                socket_index: usage.socket_index,
+                choice_index: usage.choice_index,
+                name: plug.authored_name.clone(),
+                item_hash: plug.authored_item_hash,
+                item_index: plug.authored_item_index,
+                definition_tag: plug.authored_definition_tag,
+                string_tag: plug.authored_string_tag,
+                icon_definition_tag: plug.authored_icon_container,
+                name_hash: plug.authored_name_hash,
+                description_hash: plug.authored_description_hash,
+                perks: plug
+                    .sandbox_perks
+                    .iter()
+                    .map(|perk| NewPrivatePerkPlan {
+                        source_perk_index: perk.source_index,
+                        perk_hash: perk.authored_perk_hash,
+                        runtime_key: perk.authored_runtime_key,
+                    })
+                    .collect(),
+            });
+        }
+    }
+    for weapon in &mut bundle.plan.weapons {
+        weapon
+            .custom_plugs
+            .sort_by_key(|plug| (plug.socket_index, plug.choice_index));
+    }
+    Ok(bundle)
 }
 
 struct PerkTemplates {

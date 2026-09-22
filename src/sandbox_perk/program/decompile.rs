@@ -90,7 +90,9 @@ pub fn decompile(
             .map(|group| native_group(group, &graph_of))
             .collect::<Result<_, _>>()?,
     };
-    program.validate().map_err(Unsupported)?;
+    // Shape only. Stock actions can ship with unfilled references (Sidearm Targeting leaves
+    // a Create Entity slot empty), and build readiness is the workbench's job.
+    program.validate_structure().map_err(Unsupported)?;
     Ok(program)
 }
 
@@ -2267,6 +2269,21 @@ mod tests {
         assert_eq!(fidelity(&stock, &compiled).unwrap().len(), 1);
     }
 
+    /// Measured round-trip fidelity over the installed stock actions.
+    ///
+    /// Recorded runs, so a later one has something to be read against. Only the untracked log
+    /// held these before, which meant a regression to nothing would have gone unnoticed:
+    ///
+    /// | date | recovered | exact | approximate | refused |
+    /// |---|---|---|---|---|
+    /// | 2026-09-11 | 488 | 463 | 25 | not recorded |
+    /// | 2026-09-12 | 685 | 236 | 449 | 0 |
+    /// | 2026-09-20 | 1,606 | 241 | 1,365 | 6 |
+    ///
+    /// Exact stayed flat while recovery more than doubled, so the actions recovered since
+    /// 2026-09-12 almost all land in approximate. Most approximate results are correct by
+    /// design: the action identity words are meant to change, because a recovered program
+    /// re-emits as a fresh action rather than a copy.
     #[test]
     #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
     fn installed_actions_report_how_many_are_editable_today() {
@@ -2364,9 +2381,19 @@ mod tests {
         for ((node, offset), count) in ranked.iter().take(25) {
             eprintln!("  {count:4} x {node} +0x{offset:X}");
         }
+        // Floors rather than exact counts, set below the measurements in the table above so
+        // ordinary movement does not trip them. The previous assertion passed when a single
+        // action recovered, which is why the 2026-09-12 figures could go stale unnoticed.
+        const EXACT_FLOOR: usize = 236;
+        const RECOVERED_FLOOR: usize = 1_500;
         assert!(
-            exact + approximate > 0,
-            "no installed action recovered a program"
+            exact >= EXACT_FLOOR,
+            "exact round trips fell to {exact} (floor {EXACT_FLOOR})"
+        );
+        assert!(
+            exact + approximate >= RECOVERED_FLOOR,
+            "recovered actions fell to {} (floor {RECOVERED_FLOOR})",
+            exact + approximate
         );
     }
 }

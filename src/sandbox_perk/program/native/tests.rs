@@ -150,3 +150,95 @@ fn native_complete_programs_compile_multiple_groups_policies_and_auxiliary_data(
         assert_eq!(before.rearm_event_mask, after.rearm_event_mask);
     }
 }
+
+#[test]
+fn native_readiness_finds_required_assets_in_execution_order_and_keeps_optional_ones() {
+    use program::{Action, NativeNode, Trigger};
+    let missing_asset = |kind| {
+        let mut node = NativeNode::effect(kind).unwrap();
+        // Templates may already name a real stock entity. Exercise an explicitly empty choice.
+        node.bytes[16..20].fill(0);
+        node
+    };
+    for kind in [1, 2, 3, 26] {
+        let draft = Program {
+            trigger: Trigger::Always,
+            actions: vec![Action::Native {
+                node: missing_asset(kind),
+            }],
+            ..Program::default()
+        };
+        draft.validate_structure().unwrap();
+        assert!(draft.validate().is_err());
+        let native = program::native_draft(&draft).unwrap();
+        let issue = native.authoring_issue().unwrap().unwrap();
+        assert_eq!((issue.group, issue.action), (0, 0));
+        let mut complete = Program {
+            native: Some(native),
+            ..Program::default()
+        };
+        complete.validate_structure().unwrap();
+        assert!(complete.validate().is_err());
+        let block = complete
+            .native
+            .as_mut()
+            .unwrap()
+            .graph
+            .blocks
+            .iter_mut()
+            .find(|block| block.class == crate::sandbox_perk::nodes::effect(kind).unwrap().class)
+            .unwrap();
+        block.bytes[16..20].copy_from_slice(&0x80abcdefu32.to_le_bytes());
+        complete.validate().unwrap();
+    }
+    let weighted = Program {
+        actions: vec![Action::Native {
+            node: missing_asset(13),
+        }],
+        ..Program::default()
+    };
+    weighted.validate().unwrap();
+    assert!(
+        program::native_draft(&weighted)
+            .unwrap()
+            .authoring_issue()
+            .unwrap()
+            .is_none()
+    );
+    let multiple = Program {
+        trigger: Trigger::Always,
+        actions: vec![
+            Action::add_rounds(1),
+            Action::Native {
+                node: missing_asset(26),
+            },
+        ],
+        ..Program::default()
+    };
+    assert_eq!(
+        program::native_draft(&multiple)
+            .unwrap()
+            .authoring_issue()
+            .unwrap()
+            .unwrap()
+            .action,
+        1
+    );
+    let additional = Program {
+        additional_groups: vec![program::NativeGroup {
+            activation: Vec::new(),
+            effects: vec![missing_asset(26)],
+            removal: Vec::new(),
+            rearm: Vec::new(),
+        }],
+        ..Program::default()
+    };
+    additional.validate_structure().unwrap();
+    assert!(additional.validate().is_err());
+    let issue = program::native_draft(&additional)
+        .unwrap()
+        .authoring_issue()
+        .unwrap()
+        .unwrap();
+    assert_eq!((issue.group, issue.action), (1, 0));
+}

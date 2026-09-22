@@ -4,6 +4,7 @@
 //! guarantee, and a perk can still depend on host state this summary cannot see.
 
 use crate::sandbox_perk::nodes::{self, Support};
+use crate::sandbox_perk::program::AmmunitionTarget;
 
 use super::{
     ConditionRole, DecodedAction, DecodedCondition, DecodedEffect, DecodedGroup, Fact, FactValue,
@@ -301,11 +302,31 @@ pub(super) fn describe_condition(condition: &DecodedCondition) -> String {
         15 => "The weapon is detached".to_owned(),
         16 => "The weapon is drawn".to_owned(),
         17 => "The weapon is holstered".to_owned(),
-        // The threshold is a named field, so the reading says the number the counter needs.
-        26 => match fact_value(&condition.facts, "Trigger Threshold") {
-            Some(value) => format!("A counter from the rows below reaches {}", value.render()),
-            None => "A counter built from the rows below reaches its threshold".to_owned(),
-        },
+        // The reading says the number the counter needs, in the words the workbench uses for
+        // it. The threshold is not among the decoded facts, so it is read from the node at
+        // +0x20, where the Count Needed field lives; a fact, if one is ever added, still wins.
+        26 => {
+            let needed = match fact_value(&condition.facts, "Trigger Threshold") {
+                Some(value) => Some(value.render()),
+                None => condition
+                    .native
+                    .get(0x20..0x24)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(f32::from_le_bytes)
+                    .filter(|value| value.is_finite())
+                    .map(|value| {
+                        if value.fract() == 0.0 && value.abs() < 1.0e9 {
+                            format!("{}", value as i64)
+                        } else {
+                            format!("{value}")
+                        }
+                    }),
+            };
+            match needed {
+                Some(needed) => format!("The effect's counter reaches {needed}"),
+                None => "The effect's counter reaches its Count Needed".to_owned(),
+            }
+        }
         31 => "Every requirement below is met".to_owned(),
         35 => "A predicate passes and its nested condition also passes".to_owned(),
         _ => condition
@@ -398,12 +419,25 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
         .map(|entry| entry.name.to_owned())
         .or_else(|| {
             // The inline player and weapon states, named the same way (see `values.rs`).
-            let player = match native.get(0x38) {
-                Some(2) => Some("Airborne"),
-                Some(4) => Some("Sliding"),
-                Some(8) => Some("Sprinting"),
-                _ => None,
-            };
+            let player_bits = native.get(0x38).copied().unwrap_or(0);
+            let player = super::native::fields::describe(class)
+                .ok()
+                .and_then(|fields| {
+                    let field = fields.iter().find(|field| field.offset == 0x38)?;
+                    let contract = super::native::fields::contract(class, field);
+                    let mut states = Vec::new();
+                    let mut remaining = player_bits;
+                    for &(bit, name) in contract.choices {
+                        if player_bits & bit != 0 {
+                            states.push(name.to_owned());
+                            remaining &= !bit;
+                        }
+                    }
+                    if remaining != 0 {
+                        states.push(format!("Player State 0x{remaining:02X}"));
+                    }
+                    (!states.is_empty()).then(|| states.join(" and "))
+                });
             // The weapon byte is a bit set. Bit 4 is aiming down sights. Bit 1 holds in every
             // weapon perk and weapon mod whose effect applies while that weapon is in hand
             // (Anti-Barrier Rounds, Celerity, Eye of the Storm, Black Talon Catalyst) and
@@ -415,7 +449,7 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
                 (false, true) => Some("Aiming Down Sights"),
                 (false, false) => None,
             };
-            match (player, weapon) {
+            match (player.as_deref(), weapon) {
                 (Some(player), Some(weapon)) => Some(format!("{player} and {weapon}")),
                 (Some(one), None) | (None, Some(one)) => Some(one.to_owned()),
                 (None, None) => None,
@@ -424,7 +458,18 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
     let weapons = equipped_weapon_labels(class, native);
     let mut text = String::new();
     if let Some(state) = state {
-        text = if inverted {
+        // A numeric key names a requirement, not the threshold it tests. The compiled
+        // comparison above supplies that threshold when its program is understood.
+        let numeric_key = matches!(
+            key,
+            0x59E3_47ED | 0x32CC_5402 | 0x748A_92CC | 0xA43A_8C2E | 0xD9C4_6BC4 | 0x58A9_CB99
+        );
+        text = if numeric_key {
+            format!(
+                "{} the {state} requirement",
+                if inverted { "Does not meet" } else { "Meets" }
+            )
+        } else if inverted {
             format!("While not {state}")
         } else {
             format!("While {state}")
@@ -523,8 +568,8 @@ pub(super) fn describe_effect(effect: &DecodedEffect) -> String {
         .map(asset_label)
         .or_else(|| effect.referenced_tag.map(|tag| format!("0x{tag:08X}")));
     match (effect.kind, asset) {
-        (1, Some(name)) => format!("Attach {name} for as long as the effect lasts"),
-        (1, None) => "Attach an entity for as long as the effect lasts".to_owned(),
+        (1, Some(name)) => format!("Attach {name}"),
+        (1, None) => "Attach an entity".to_owned(),
         (2, Some(name)) => format!("Attach {name} and drive one of its values"),
         (3, Some(name)) => format!("Spawn {name} once"),
         (3, None) => "Spawn an entity once".to_owned(),
@@ -539,12 +584,31 @@ pub(super) fn describe_effect(effect: &DecodedEffect) -> String {
         (26, Some(name)) => format!("Replace the weapon projectile pattern with {name}"),
         (26, None) => "Replace the weapon projectile pattern".to_owned(),
         (32, _) => describe_extend(effect),
+        (33, _) => describe_incoming_damage(effect),
         (14 | 15, _) => describe_ammunition(effect),
         (40, _) => describe_event_modifier(effect),
         _ => effect
             .catalog()
             .map_or_else(|| effect.name(), |node| node.summary.to_owned()),
     }
+}
+
+fn describe_incoming_damage(effect: &DecodedEffect) -> String {
+    let mut text = match fact_value(&effect.facts, "Multiplier Stat") {
+        Some(FactValue::Selector(255)) => format!(
+            "Multiply matching incoming damage by {}",
+            fact_value(&effect.facts, "Damage Multiplier")
+                .map_or_else(|| "the configured factor".into(), FactValue::render)
+        ),
+        Some(FactValue::Selector(value)) => {
+            format!("Multiply matching incoming damage by native stat {value}")
+        }
+        _ => "Multiply matching incoming damage".into(),
+    };
+    if let Some(distance) = fact_value(&effect.facts, "Maximum Source Distance") {
+        text.push_str(&format!(", within source distance {}", distance.render()));
+    }
+    text
 }
 
 fn component_role(effect: &DecodedEffect) -> Option<&'static str> {
@@ -591,14 +655,14 @@ fn describe_extend(effect: &DecodedEffect) -> String {
 }
 
 /// The amount labels of an ammunition node with the reading of each target.
-const AMMUNITION_TARGETS: [(&str, &str); 7] = [
-    ("Owning Slot Amount", "this weapon"),
-    ("Slot 1 Amount", "weapon slot 1"),
-    ("Slot 2 Amount", "weapon slot 2"),
-    ("Slot 3 Amount", "weapon slot 3"),
-    ("Category 1 Amount", "ammo type 1"),
-    ("Category 2 Amount", "ammo type 2"),
-    ("Category 3 Amount", "ammo type 3"),
+const AMMUNITION_TARGETS: [(&str, AmmunitionTarget); 7] = [
+    ("Owning Slot Amount", AmmunitionTarget::OwningWeapon),
+    ("Slot 1 Amount", AmmunitionTarget::Slot1),
+    ("Slot 2 Amount", AmmunitionTarget::Slot2),
+    ("Slot 3 Amount", AmmunitionTarget::Slot3),
+    ("Category 1 Amount", AmmunitionTarget::Category1),
+    ("Category 2 Amount", AmmunitionTarget::Category2),
+    ("Category 3 Amount", AmmunitionTarget::Category3),
 ];
 
 /// An ammunition adjustment as a sentence: the amounts it adds and where they go. The
@@ -614,26 +678,29 @@ fn describe_ammunition(effect: &DecodedEffect) -> String {
     let fraction = effect.kind == 15;
     let amounts = AMMUNITION_TARGETS
         .iter()
-        .filter_map(|(label, target)| match fact_value(&effect.facts, label) {
-            Some(FactValue::Integer(value)) if *value != 0 => Some(format!(
-                "{value} {} to {target}",
-                if value.unsigned_abs() == 1 {
-                    "round"
+        .filter_map(|(label, target)| {
+            let target = target.label().to_lowercase();
+            match fact_value(&effect.facts, label) {
+                Some(FactValue::Integer(value)) if *value != 0 => Some(format!(
+                    "{value} {} to {target}",
+                    if value.unsigned_abs() == 1 {
+                        "round"
+                    } else {
+                        "rounds"
+                    }
+                )),
+                Some(FactValue::Number(value)) if *value != 0.0 => Some(if fraction {
+                    format!(
+                        "{}% of the capacity to {target}",
+                        trim_number(value * 100.0)
+                    )
+                } else if value.abs() == 1.0 {
+                    format!("{} round to {target}", trim_number(*value))
                 } else {
-                    "rounds"
-                }
-            )),
-            Some(FactValue::Number(value)) if *value != 0.0 => Some(if fraction {
-                format!(
-                    "{}% of the capacity to {target}",
-                    trim_number(value * 100.0)
-                )
-            } else if value.abs() == 1.0 {
-                format!("{} round to {target}", trim_number(*value))
-            } else {
-                format!("{} rounds to {target}", trim_number(*value))
-            }),
-            _ => None,
+                    format!("{} rounds to {target}", trim_number(*value))
+                }),
+                _ => None,
+            }
         })
         .collect::<Vec<_>>();
     if amounts.is_empty() {

@@ -1,10 +1,11 @@
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     catalog::scan_item_icon_containers,
     investment_schema::*,
     package_payload::{array_at, u16_at, u32_at},
 };
 use std::collections::BTreeMap;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 const RECORD_INDEX_OFFSET: usize = 0x52;
 const STRING_ICON_OFFSET: usize = 0x04;

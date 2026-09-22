@@ -6,12 +6,13 @@ use crate::investment_schema::{
     ROOT_REUSABLE_PLUG_SET_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT,
     investment_globals_table_tag, investment_root_table_tag,
 };
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     package_payload::{array_at, u32_at},
     package_runtime,
 };
 use std::path::Path;
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 pub(super) struct Sources {
     pub manager: PackageManager,

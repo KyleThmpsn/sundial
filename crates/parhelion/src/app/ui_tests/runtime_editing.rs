@@ -1,20 +1,16 @@
 use super::*;
 
 #[test]
-fn base_perk_projection_warning_preserves_authored_rows_and_fits() {
+fn base_perk_editor_preserves_authored_rows_and_fits() {
     for width in [480.0, 1000.0] {
         for count in [4_u16, 5] {
             let mut app = PackageAuthoringApp::default();
             app.recipe.overrides.base_sandbox_perks = Some((0..count).collect());
             let before = app.recipe.clone();
             let (output, overflow) = render(width, |ui| app.draw_base_sandbox_perks(ui, None));
-            assert_eq!(
-                text(&output).contains("Sunrise copies the first 4 effects"),
-                count > 4
-            );
             assert!(text(&output).contains("16 entries total"));
             assert!(overflow <= 1.0, "{width}px overflow: {overflow}");
-            assert_eq!(app.recipe, before, "warnings must not trim or reset perks");
+            assert_eq!(app.recipe, before, "rendering must not trim or reset perks");
         }
     }
 }

@@ -136,7 +136,7 @@ impl PackageAuthoringApp {
             return;
         };
         let ornaments = self.appearance_ornaments.list(catalog, item_hash);
-        draw(ui, catalog, ornaments, &mut self.recipe);
+        draw(ui, catalog, ornaments, &mut self.recipe, &self.packages);
     }
 
     /// The same chooser, offered beside the appearance picker so an ornament can be taken
@@ -152,7 +152,7 @@ impl PackageAuthoringApp {
         if ornaments.is_empty() {
             return;
         }
-        draw_chooser(ui, catalog, ornaments, &mut self.recipe);
+        draw_chooser(ui, catalog, ornaments, &mut self.recipe, &self.packages);
     }
 }
 
@@ -161,6 +161,7 @@ fn draw(
     catalog: &InvestmentCatalog,
     ornaments: &[WeaponOrnament],
     recipe: &mut WeaponRecipe,
+    packages: &Path,
 ) {
     if ornaments.is_empty() {
         return;
@@ -172,7 +173,7 @@ fn draw(
             "Stock ornaments this appearance can wear. Choosing one takes the ornament's model, its own colors and its inventory icon. Everything it sets stays editable on the Appearance tab.",
         ),
     );
-    draw_chooser(ui, catalog, ornaments, recipe);
+    draw_chooser(ui, catalog, ornaments, recipe, packages);
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(8.0);
@@ -184,6 +185,7 @@ fn draw_chooser(
     catalog: &InvestmentCatalog,
     ornaments: &[WeaponOrnament],
     recipe: &mut WeaponRecipe,
+    packages: &Path,
 ) {
     let current = applied(recipe, ornaments);
     let label = current.map_or_else(
@@ -192,37 +194,106 @@ fn draw_chooser(
     );
     let mut action = None;
     ui.horizontal_wrapped(|ui| {
-        catalog
-            .draw_item_menu_button(
-                ui,
-                current.map(|ornament| ornament.hash),
-                current.and_then(WeaponOrnament::icon_plate_color),
-                &label,
-                |ui| {
-                ui.set_min_width(340.0);
-                for ornament in ornaments {
-                    let row = catalog.draw_authoring_choice_row(
-                        ui,
-                        Some(ornament.hash),
-                        &ornament.name,
-                        catalog.perk_description(ornament.hash),
-                        current.is_some_and(|current| current.hash == ornament.hash),
-                    );
-                    if row.clicked() {
-                        action = Some(Some(ornament));
-                        ui.close_menu();
-                    }
+        let opened = ui.button(&label).clicked();
+        let id = ui.make_persistent_id("ornament-preview-browser");
+        if let Some(hash) = sundial::ui::model_preview::chooser::show(
+            ui,
+            id,
+            "Choose Ornament",
+            opened,
+            |ui, opened| {
+                let query_id = id.with("query");
+                let mut query = ui
+                    .data(|data| data.get_temp::<String>(query_id))
+                    .unwrap_or_default();
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("Search Ornaments")
+                        .desired_width(ui.available_width()),
+                );
+                if opened {
+                    search.request_focus();
                 }
-                },
-            )
-            .response
-            .on_hover_text("Ornaments belong to the selected appearance. Changing the appearance restores its own model, colors and icon.");
+                let visible: Vec<_> = ornaments
+                    .iter()
+                    .filter(|ornament| crate::app::pickers::matches(&query, &ornament.name))
+                    .collect();
+                let keys: Vec<_> = std::iter::once(0)
+                    .chain(visible.iter().map(|ornament| u64::from(ornament.hash)))
+                    .collect();
+                ui.data_mut(|data| data.insert_temp(query_id, query));
+                if opened {
+                    ui.data_mut(|data| {
+                        data.insert_temp(
+                            ui.make_persistent_id("inspected-choice"),
+                            current.map_or(0, |ornament| u64::from(ornament.hash)),
+                        )
+                    });
+                }
+                sundial::ui::catalog::BrowserList {
+                    keys: &keys,
+                    height: (ui.available_height() - 30.0).max(180.0),
+                    reset: search.changed(),
+                    row_height: 48.0,
+                    select: None,
+                }
+                .draw_with_actions(
+                    ui,
+                    |ui, index, selected| {
+                        let ornament = index.checked_sub(1).map(|index| visible[index]);
+                        catalog.draw_authoring_choice_row(
+                            ui,
+                            ornament.map(|ornament| ornament.hash),
+                            ornament
+                                .map_or("Default Appearance", |ornament| ornament.name.as_str()),
+                            None,
+                            selected,
+                        )
+                    },
+                    |ui, index| {
+                        let ornament = index.checked_sub(1).map(|index| visible[index]);
+                        let mut candidate = recipe.clone();
+                        if let Some(current) = current {
+                            restore(&mut candidate, current);
+                        }
+                        if let Some(ornament) = ornament {
+                            apply(&mut candidate, ornament);
+                        }
+                        let chosen = ui.button("Use Ornament").clicked().then_some(keys[index]);
+                        if let Some(loadout) = super::preview::loadout(catalog, &candidate) {
+                            sundial::ui::model_preview::chooser::preview(
+                                ui,
+                                packages,
+                                catalog.preview_appearance(&loadout),
+                                ornament.map_or("Default Appearance", |ornament| {
+                                    ornament.name.as_str()
+                                }),
+                            );
+                        } else {
+                            ui.label("No model is available for this appearance.");
+                        }
+                        chosen
+                    },
+                )
+            },
+        ) {
+            action = Some(
+                ornaments
+                    .iter()
+                    .find(|ornament| u64::from(ornament.hash) == hash),
+            );
+        }
         if current.is_some() && ui.button("Default Appearance").clicked() {
             action = Some(None);
         }
     });
     match (action, current) {
-        (Some(Some(ornament)), _) => apply(recipe, ornament),
+        (Some(Some(ornament)), current) => {
+            if let Some(current) = current {
+                restore(recipe, current);
+            }
+            apply(recipe, ornament);
+        }
         (Some(None), Some(current)) => restore(recipe, current),
         (Some(None), None) | (None, _) => {}
     }

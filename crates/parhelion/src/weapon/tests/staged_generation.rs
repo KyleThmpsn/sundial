@@ -656,6 +656,7 @@ fn real_collection_routing_uses_rarity_and_target_slot() {
             collectible_rows,
             collectible_count,
             &sandbox_patterns,
+            &mut CollectionExemplarCache::new(collectible_count),
             Some(donor),
             &definition,
             &item_strings,

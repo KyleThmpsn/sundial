@@ -1,5 +1,38 @@
 use super::*;
 #[test]
+fn filling_a_reserved_toolbar_status_does_not_rewind_the_body_cursor() {
+    for width in [320.0, 1050.0] {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut status = egui::Rect::NOTHING;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Search Behaviors");
+                        status = ui.allocate_space(egui::vec2(100.0, 20.0)).1;
+                        ui.label("A filter that can wrap onto the next line");
+                    });
+                    let divider = ui.separator().rect;
+                    let cursor = ui.cursor();
+                    let response = super::super::toolbar_status(ui, status, "67 Results");
+                    assert_eq!(ui.cursor(), cursor, "status must not move the body");
+                    assert!(status.contains_rect(response.rect));
+                    let row = ui.label("First Result").rect;
+                    assert!(row.top() >= divider.bottom());
+                });
+            },
+        );
+    }
+}
+
+#[test]
 fn empty_search_preserves_the_list_height_and_never_opens_a_detail() {
     for width in [620.0, 1050.0] {
         let ctx = egui::Context::default();
@@ -22,6 +55,7 @@ fn empty_search_preserves_the_list_height_and_never_opens_a_detail() {
                                 height: 650.0,
                                 reset: true,
                                 row_height: 30.0,
+                                select: None,
                             }
                             .draw_body(
                                 ui,
@@ -43,6 +77,75 @@ fn empty_search_preserves_the_list_height_and_never_opens_a_detail() {
                 "width {width}, keys {keys:?}: {extent}"
             );
         }
+    }
+}
+
+#[test]
+fn alternating_rows_follow_result_indices_after_keyboard_scrolling() {
+    let ctx = egui::Context::default();
+    let keys = (0..200).collect::<Vec<u64>>();
+    let mut visible = Vec::new();
+    let mut stripe_color = egui::Color32::TRANSPARENT;
+    let mut inspected = 0;
+    let mut output = egui::FullOutput::default();
+    for step in 0..31 {
+        visible.clear();
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1050.0, 500.0),
+                )),
+                events: if step == 0 {
+                    vec![]
+                } else {
+                    vec![egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: true,
+                        modifiers: egui::Modifiers::NONE,
+                    }]
+                },
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    stripe_color = ui.visuals().faint_bg_color;
+                    BrowserList {
+                        keys: &keys,
+                        height: 300.0,
+                        reset: false,
+                        row_height: 48.0,
+                        select: None,
+                    }
+                    .draw_body(
+                        ui,
+                        |ui, index, _| {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 48.0),
+                                egui::Sense::click(),
+                            );
+                            visible.push((index, rect));
+                            response
+                        },
+                        |_, index| {
+                            inspected = index;
+                            None::<()>
+                        },
+                    );
+                });
+            },
+        );
+    }
+    assert_eq!(inspected, 30);
+    assert!(visible[0].0 > 0, "the list must have scrolled");
+    assert!(visible.len() < 20, "rows must remain virtualized");
+    for (index, rect) in visible {
+        let striped = output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(background) if background.rect == rect && background.fill == stripe_color
+        ));
+        assert_eq!(striped, index % 2 == 1, "result {index}");
     }
 }
 
@@ -70,6 +173,7 @@ fn inspecting_filtering_and_confirming_are_separate_and_keep_stable_identity() {
                             height: 650.0,
                             reset,
                             row_height: 30.0,
+                            select: None,
                         }
                         .draw(
                             ui,
@@ -137,7 +241,8 @@ fn arrow_keys_browse_without_applying_the_preview() {
                             keys: &keys,
                             height: 300.0,
                             reset: false,
-                            row_height: 30.0
+                            row_height: 30.0,
+                            select: None,
                         }
                         .draw(
                             ui,

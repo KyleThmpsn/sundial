@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn catalog_button<'a>(
     ui: &egui::Ui,
     catalog: &Catalog,
@@ -117,7 +120,7 @@ pub(crate) fn draw_picker_row_with_icon(
     let text_left = icon_rect.right() + ui.spacing().icon_spacing;
     let text_width = (rect.right() - PADDING - text_left).max(0.0);
     let primary_font =
-        crate::app::ui::destiny_font_id(ui, egui::TextStyle::Button.resolve(ui.style()));
+        crate::ui_help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
     let secondary_font =
         crate::app::ui::destiny_font_id(ui, egui::TextStyle::Body.resolve(ui.style()));
     let primary_galley = limited_line_galley(
@@ -128,9 +131,14 @@ pub(crate) fn draw_picker_row_with_icon(
         text_width,
         row.primary_max_rows,
     );
-    let secondary_galley = row
-        .secondary
-        .map(|secondary| single_line_galley(ui, secondary, secondary_font, text_color, text_width));
+    let secondary_color = if ui.is_enabled() {
+        text_color.gamma_multiply(0.75)
+    } else {
+        text_color
+    };
+    let secondary_galley = row.secondary.map(|secondary| {
+        single_line_galley(ui, secondary, secondary_font, secondary_color, text_width)
+    });
     let content_height = primary_galley.size().y
         + secondary_galley
             .as_ref()
@@ -143,7 +151,7 @@ pub(crate) fn draw_picker_row_with_icon(
         ui.painter().galley(
             egui::pos2(text_left, text_top),
             secondary_galley,
-            text_color,
+            secondary_color,
         );
     }
     response

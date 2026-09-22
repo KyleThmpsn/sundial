@@ -58,6 +58,8 @@ pub(crate) fn plug_picker_snapshot(
     let socket = item.sockets.get(socket_index);
     let (choices, show_types) = plug_choices_for_socket(catalog, item, socket_index, mode);
     PlugPickerSnapshot {
+        preview: super::appearance::loadout(catalog, item.hash),
+        preview_guarded: true,
         socket_index,
         socket_label: socket.map_or_else(
             || format!("Socket {}", socket_index + 1),
@@ -194,7 +196,21 @@ pub(crate) fn draw_plug_picker(
             } else {
                 button
             };
-            if button.clicked() {
+            let visual = super::appearance::supported(catalog, snapshot);
+            if visual {
+                if let Some(ItemEditorAction::SetPlug { hash, .. }) = super::appearance::browser(
+                    ui,
+                    catalog,
+                    popup_id.with("preview"),
+                    button.clicked(),
+                    query,
+                    snapshot,
+                    |_| false,
+                ) {
+                    selection = Some(hash);
+                }
+            }
+            if !visual && button.clicked() {
                 ui.memory_mut(|memory| memory.toggle_popup(popup_id));
             }
             let popup_direction = popup_direction(screen, button.rect);
@@ -289,6 +305,17 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
     // scope participates in the surrounding layout even when the popup is
     // closed, which adds a second item gap beside compact icon buttons.
     let popup_id = ui.make_persistent_id(scope).with("plug-browser");
+    if super::appearance::supported(catalog, snapshot) {
+        return super::appearance::browser(
+            ui,
+            catalog,
+            popup_id.with("preview"),
+            ui.is_enabled() && anchor.clicked(),
+            query,
+            snapshot,
+            footer,
+        );
+    }
     if ui.is_enabled() && anchor.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));
     }

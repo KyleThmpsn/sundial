@@ -50,6 +50,7 @@ impl PackageAuthoringApp {
                         target_packages_directory: packages.clone(),
                         backup_root,
                         game_running_check: sundial::package_authoring::destiny_is_running,
+                        runtime_snapshot_check: sundial::package_authoring::installed_runtime,
                     })
                     .map_err(|error| error.to_string())?;
                 }

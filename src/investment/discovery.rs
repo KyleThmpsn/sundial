@@ -1,4 +1,5 @@
 //! Shared installed-resource discovery. Inspection remains on demand.
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     package_runtime::tft,
     sandbox_perk::{dependencies, ingredients, program::properties, projectile},
@@ -8,7 +9,6 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tiger_pkg::PackageManager;
 mod assets;
 pub use assets::{AssetChoice, technical_name};
 pub mod behaviors;

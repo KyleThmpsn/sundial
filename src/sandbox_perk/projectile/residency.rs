@@ -1,7 +1,7 @@
 //! Content provenance for browsing and structural loading checks for compilation.
 //! Names and paths are hints. The native loading index is the build-time authority.
 
-use tiger_pkg::PackageManager;
+use crate::package_runtime::reader::PackageManager;
 
 use super::catalog::Entry;
 

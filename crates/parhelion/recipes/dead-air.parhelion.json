@@ -22,7 +22,7 @@
   },
   "name": "Dead Air",
   "flavor": "\"Same time next week?\"",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "icon_edit": {
       "flip_horizontal": true,

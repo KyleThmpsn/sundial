@@ -189,7 +189,6 @@ pub(super) fn equivalent(
 
 impl PerkEditor {
     pub(super) fn draw_verified_projectile_speed(
-        &mut self,
         ui: &mut egui::Ui,
         loaded: &PrivatePerkRuntimeGraph,
         tag: u32,

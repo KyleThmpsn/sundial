@@ -24,7 +24,9 @@ impl RuntimeInspection {
         }
         let inactive_copy = inactive_settings(runtime, settings_path);
         // Dawn reads settings beside its DLL. Sunrise also supports settings.json at the game root.
-        if inactive_copy || (runtime.dawn && settings_path != runtime.settings_path) {
+        if inactive_copy
+            || (runtime.dawn && !crate::paths::paths_equal(settings_path, &runtime.settings_path))
+        {
             return Some(format!(
                 "{} at {} takes precedence. Open its matching settings at {} before saving. Current settings: {}",
                 runtime.name(),

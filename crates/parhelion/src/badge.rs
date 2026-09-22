@@ -4,7 +4,7 @@ mod membership;
 pub(crate) use custom::append_custom_badges;
 pub(crate) use membership::set_sunrise_members;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::mem::size_of;
 
@@ -247,24 +247,8 @@ fn author_graph(
     )?;
     let (records, record_strings) =
         append_records(stock_records, stock_record_strings, objective_index, layout)?;
-    let mut nodes = append_nodes(
-        stock_nodes,
-        first.weapon_page,
-        first.donor_collectible_index,
-        first.authored_collectible_index,
-        layout,
-    )?;
+    let mut nodes = append_nodes(stock_nodes, first.authored_collectible_index, layout)?;
     for placement in placements.iter().skip(1) {
-        if layout.node_start == STOCK_PRESENTATION_NODE_COUNT
-            && usize::from(placement.weapon_page) < STOCK_PRESENTATION_NODE_COUNT
-        {
-            append_collectible_child_to_node(
-                &mut nodes,
-                usize::from(placement.weapon_page),
-                placement.donor_collectible_index,
-                placement.authored_collectible_index,
-            )?;
-        }
         for leaf in [
             (layout.node_start + 1),
             (layout.node_start + 2),
@@ -276,6 +260,21 @@ fn author_graph(
                 first.authored_collectible_index,
                 placement.authored_collectible_index,
             )?;
+        }
+    }
+    if layout.node_start == STOCK_PRESENTATION_NODE_COUNT {
+        let mut pages = BTreeMap::<u16, Vec<(usize, usize)>>::new();
+        for placement in placements
+            .iter()
+            .filter(|placement| usize::from(placement.weapon_page) < STOCK_PRESENTATION_NODE_COUNT)
+        {
+            pages.entry(placement.weapon_page).or_default().push((
+                placement.donor_collectible_index,
+                placement.authored_collectible_index,
+            ));
+        }
+        for (page, members) in pages {
+            prepend_collectible_children_to_node(&mut nodes, usize::from(page), &members)?;
         }
     }
     let node_strings = append_strings(
@@ -475,8 +474,6 @@ struct PresentationDescriptorClone {
 #[allow(clippy::cognitive_complexity)]
 fn append_nodes(
     mut nodes: Vec<u8>,
-    weapon_page: u16,
-    donor_collectible_index: usize,
     authored_collectible_index: usize,
     layout: &Layout,
 ) -> AuthoringResult<Vec<u8>> {
@@ -684,16 +681,6 @@ fn append_nodes(
         ACE_BADGE_GROUP_NODE_INDEX,
         layout.node_start,
     )?;
-    if layout.node_start == STOCK_PRESENTATION_NODE_COUNT
-        && usize::from(weapon_page) < STOCK_PRESENTATION_NODE_COUNT
-    {
-        append_collectible_child_to_node(
-            &mut nodes,
-            usize::from(weapon_page),
-            donor_collectible_index,
-            authored_collectible_index,
-        )?;
-    }
     Ok(nodes)
 }
 

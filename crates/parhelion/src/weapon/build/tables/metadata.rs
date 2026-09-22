@@ -10,7 +10,7 @@ pub(super) fn append(
 ) -> AuthoringResult<()> {
     let presence =
         classify_keyed_auxiliary_donor(data, index, donor_hash, authored_hash, METADATA_LAYOUT)?;
-    if matches!(presence, KeyedAuxiliaryDonorPresence::Absent) {
+    let KeyedAuxiliaryDonorPresence::Present(template_index) = presence else {
         if patches.iter().any(|patch| {
             matches!(
                 patch.target,
@@ -22,15 +22,19 @@ pub(super) fn append(
                 "The gameplay donor has no item metadata row to patch",
             ));
         }
-    } else {
-        (*data, *index) = append_keyed_auxiliary_pair(
+        validate_keyed_auxiliary_structure(data, index, METADATA_LAYOUT)?;
+        return Ok(());
+    };
+    {
+        (*data, *index) = append_keyed_auxiliary_pair_at(
             std::mem::take(data),
             std::mem::take(index),
             donor_hash,
             authored_hash,
+            template_index,
             METADATA_LAYOUT,
         )?;
-        let row = validate_keyed_auxiliary_alignment(data, index, METADATA_LAYOUT)?.count - 1;
+        let row = keyed_auxiliary_arrays(data, index, METADATA_LAYOUT)?.count - 1;
         apply_array_row_raw_payload_patches(
             data,
             8,

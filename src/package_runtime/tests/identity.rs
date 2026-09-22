@@ -106,3 +106,28 @@ fn each_runtime_advertises_its_own_manifest_cache_magic() {
         );
     }
 }
+
+#[test]
+fn runtime_snapshot_fails_closed_and_detects_identity_changes() {
+    let directory = fixture::install();
+    let bin = directory.path().join("bin/x64/steam_api64.dll");
+    assert!(installed_runtime(directory.path()).is_err());
+    fs::write(&bin, b"unrecognized runtime").unwrap();
+    assert!(installed_runtime(directory.path()).is_err());
+
+    fs::write(&bin, fixture::module("Dawn", true, None)).unwrap();
+    let snapshot = installed_runtime(directory.path()).unwrap();
+    assert_eq!(snapshot.brand(), RuntimeBrand::Dawn);
+    assert_eq!(snapshot.module_path(), fs::canonicalize(&bin).unwrap());
+    verify_installed_runtime(directory.path(), &snapshot).unwrap();
+
+    let root = directory.path().join("steam_api64.dll");
+    fs::write(&root, fixture::module("Sunrise", true, None)).unwrap();
+    let error = verify_installed_runtime(directory.path(), &snapshot).unwrap_err();
+    assert!(error.contains("active runtime DLL changed"), "{error}");
+
+    fs::remove_file(root).unwrap();
+    fs::write(&bin, fixture::module("Sunrise", true, None)).unwrap();
+    let error = verify_installed_runtime(directory.path(), &snapshot).unwrap_err();
+    assert!(error.contains("runtime DLL changed"), "{error}");
+}

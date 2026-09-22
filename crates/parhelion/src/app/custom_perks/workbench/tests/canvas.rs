@@ -51,8 +51,10 @@ fn action_asset_and_location_share_a_column_without_overflow_or_mutation() {
         let asset_label = placements(&output, "Object or Effect *")[0].1;
         let location_label = placements(&output, "Spawn Location")[0].1;
         assert!((asset_label.right() - location_label.right()).abs() < 1.0);
-        assert!(asset.left() > asset_label.right());
-        assert!(location.left() > location_label.right());
+        assert!(asset.left() > asset_label.right() || asset.top() >= asset_label.bottom());
+        assert!(
+            location.left() > location_label.right() || location.top() >= location_label.bottom()
+        );
         assert!(asset.bottom() < location.top());
         assert_visible(&output, "Object or Effect *", screen);
         assert_eq!(action, before);
@@ -145,7 +147,7 @@ fn action_picker_reaches_a_technical_native_kind_near_viewport_edges() {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        crate::app::style::workbench_style(ui);
+                        crate::app::style::perk_workbench_style(ui);
                         ui.scope_builder(
                             egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
                                 egui::pos2(size.x - 210.0, size.y - 80.0),
@@ -314,7 +316,7 @@ fn stock_summary() -> ActionSummary {
 
 /// A moving-projectile resource shaped the way `projectile::parameters::discover` expects,
 /// carrying only the speed lanes.
-fn movement_resource() -> WeaponRuntimeResource {
+pub(super) fn movement_resource() -> WeaponRuntimeResource {
     let root = |kind: WeaponRuntimeRootKind, schema: u32, size: u32, offset: u32| {
         let field = WeaponRuntimeField {
             locator: WeaponRuntimeFieldLocator {
@@ -437,7 +439,7 @@ fn panel(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, 
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::workbench_style(ui);
+                    crate::app::style::perk_workbench_style(ui);
                     egui::ScrollArea::vertical().show(ui, |ui| draw(ui));
                 });
             },
@@ -572,8 +574,18 @@ fn program_canvas_fits_without_mutating_locked_or_editable_recipes() {
 
 #[test]
 fn the_behavior_picker_toolbar_keeps_every_control_reachable_in_a_narrow_window() {
-    for size in SIZES {
+    for (size, trigger) in SIZES
+        .into_iter()
+        .flat_map(|size| [false, true].map(|trigger| (size, trigger)))
+    {
         let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        ctx.set_fonts(fonts);
+        if let Some(install) = std::env::var_os("PARHELION_UI_FONT_INSTALL") {
+            sundial::investment::configure_authoring_fonts(&ctx, std::path::Path::new(&install))
+                .expect("capture fonts must be available");
+        }
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         let program = Program::default();
         let mut workbench = Workbench::default();
@@ -587,15 +599,26 @@ fn the_behavior_picker_toolbar_keeps_every_control_reachable_in_a_narrow_window(
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        crate::app::style::workbench_style(ui);
-                        workbench.behaviors.draw_action(
-                            ui,
-                            &workbench.discovery,
-                            &workbench.perk_names,
-                            &workbench.asset_labels,
-                            &program,
-                            &keys,
-                        );
+                        crate::app::style::perk_workbench_style(ui);
+                        if trigger {
+                            workbench.behaviors.draw_trigger(
+                                ui,
+                                &workbench.discovery,
+                                &workbench.perk_names,
+                                &workbench.asset_labels,
+                                "Choose a Trigger",
+                                false,
+                            );
+                        } else {
+                            workbench.behaviors.draw_action(
+                                ui,
+                                &workbench.discovery,
+                                &workbench.perk_names,
+                                &workbench.asset_labels,
+                                &program,
+                                &keys,
+                            );
+                        }
                     });
                 },
             )
@@ -612,7 +635,12 @@ fn the_behavior_picker_toolbar_keeps_every_control_reachable_in_a_narrow_window(
             ]
         };
         let mut output = draw(vec![]);
-        let button = placements(&output, "Add Action…")[0].1.center();
+        let opener = if trigger {
+            format!("Choose a Trigger {}", egui_phosphor::regular::CARET_DOWN)
+        } else {
+            "Add Action…".to_owned()
+        };
+        let button = placements(&output, &opener)[0].1.center();
         draw(click(button, true));
         draw(click(button, false));
         for _ in 0..8 {
@@ -632,6 +660,37 @@ fn the_behavior_picker_toolbar_keeps_every_control_reachable_in_a_narrow_window(
             assert_visible(&output, control, screen);
         }
         let rects = controls.map(|control| (control, placements(&output, control)[0].1));
+        // A reserved count label must not pull the list back across the toolbar divider.
+        for shape in &output.shapes {
+            let egui::Shape::LineSegment { points, .. } = &shape.shape else {
+                continue;
+            };
+            if (points[0].y - points[1].y).abs() > 0.1
+                || (points[0].x - points[1].x).abs() < size.x * 0.5
+            {
+                continue;
+            }
+            for clipped in &output.shapes {
+                let egui::Shape::Text(text) = &clipped.shape else {
+                    continue;
+                };
+                let rect = text
+                    .galley
+                    .rect
+                    .translate(text.pos.to_vec2())
+                    .intersect(clipped.clip_rect);
+                assert!(
+                    rect.width() <= 0.0
+                        || rect.height() <= 0.0
+                        || points[0].y <= rect.top()
+                        || points[0].y >= rect.bottom(),
+                    "divider crosses {} at {rect:?}",
+                    text.galley.job.text
+                );
+            }
+        }
+        let kind = if trigger { "trigger" } else { "action" };
+        super::capture::write(&ctx, &output, &format!("{kind}-browser-{}", size.x));
         for (index, (name, first)) in rects.iter().enumerate() {
             for (other, second) in &rects[index + 1..] {
                 let overlap = first.intersect(*second);
@@ -661,7 +720,7 @@ fn the_behavior_stock_filter_keeps_its_choice_after_the_frame_that_set_it() {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::workbench_style(ui);
+                    crate::app::style::perk_workbench_style(ui);
                     workbench.behaviors.draw_action(
                         ui,
                         &workbench.discovery,

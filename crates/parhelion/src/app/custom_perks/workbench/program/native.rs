@@ -9,6 +9,14 @@ use sundial::package_authoring::sandbox_perk::action::native::{
 
 mod behavior;
 mod masks;
+mod structure;
+
+pub(in crate::app::custom_perks::workbench) fn reveal(
+    ctx: &egui::Context,
+    issue: sundial::package_authoring::sandbox_perk::program::NativeIssue,
+) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("native-problem-target"), Some(issue)));
+}
 
 pub(in crate::app::custom_perks::workbench) fn label_choices(
     ctx: &egui::Context,
@@ -37,7 +45,7 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
     program: &mut sundial::package_authoring::sandbox_perk::program::NativeProgram,
     editing: bool,
     labels: &BTreeMap<u32, String>,
-    pick: &mut ConditionPicker<'_>,
+    pick: &mut NativePicker<'_>,
 ) -> Option<usize> {
     let mut changed = program.clone();
     let mut edit_asset = None;
@@ -48,7 +56,7 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
             // importantly, keeps the edits its other controls made this frame: a truncated
             // field in one node used to discard a label set made in another.
             let mut failed = None;
-            match behavior::draw(ui, &mut changed.graph, labels, pick) {
+            match behavior::draw(ui, &mut changed.graph, &mut changed.assets, pick) {
                 Ok(asset) => edit_asset = asset,
                 Err(error) => failed = Some(error),
             }
@@ -284,6 +292,13 @@ pub(super) fn plain_field_label(class: u32, label: &str) -> &'static str {
         (0x80803E30, "Reset Threshold") => "Resets At",
         (0x80803E30, "Minimum Value") => "Lowest Count",
         (0x80803E30, "Maximum Value") => "Highest Count",
+        // A contributing condition's Counter Change, read as what happens when it passes or fails.
+        (0x80803E32, "Success Operation") => "When It Passes",
+        (0x80803E32, "Success Value") => "Pass Amount",
+        (0x80803E32, "Success Uses Event Value") => "Pass Uses the Event's Value",
+        (0x80803E32, "Failure Operation") => "When It Fails",
+        (0x80803E32, "Failure Value") => "Fail Amount",
+        (0x80803E32, "Failure Uses Event Value") => "Fail Uses the Event's Value",
         (_, "Value Threshold") => "Required Value",
         (_, "Extend By") => "Added Time",
         (_, "Probability Source") => "Chance Source",
@@ -293,19 +308,18 @@ pub(super) fn plain_field_label(class: u32, label: &str) -> &'static str {
         (0x80803E1C, "Replacement Key") => "Firing Mode",
         (0x808029ED | 0x80803E1D, "Property Key") => "Property",
         (0x80803E1D, "Target Selector") => "Ability",
-        (0x80803E45, "First Key") => "Effect",
         (0x80803E39, "Property Key") => "Counter",
         (0x80803E43, "Position Selector") => "Position",
         (_, "Hold Duration") => "Condition Hold",
         (_, "Up To") => "Extension Limit",
         (_, "Storage Path") => "Destination",
-        (_, "Owning Slot Amount") => "This Weapon",
-        (_, "Slot 1 Amount") => "Weapon Slot 1",
-        (_, "Slot 2 Amount") => "Weapon Slot 2",
-        (_, "Slot 3 Amount") => "Weapon Slot 3",
-        (_, "Category 1 Amount") => "Ammo Type 1",
-        (_, "Category 2 Amount") => "Ammo Type 2",
-        (_, "Category 3 Amount") => "Ammo Type 3",
+        (_, "Owning Slot Amount") => AmmunitionTarget::OwningWeapon.label(),
+        (_, "Slot 1 Amount") => AmmunitionTarget::Slot1.label(),
+        (_, "Slot 2 Amount") => AmmunitionTarget::Slot2.label(),
+        (_, "Slot 3 Amount") => AmmunitionTarget::Slot3.label(),
+        (_, "Category 1 Amount") => AmmunitionTarget::Category1.label(),
+        (_, "Category 2 Amount") => AmmunitionTarget::Category2.label(),
+        (_, "Category 3 Amount") => AmmunitionTarget::Category3.label(),
         _ => leak_label(label),
     }
 }
@@ -441,10 +455,10 @@ fn reference_name(
         None
     };
     if let Some(label) = match group_field {
-        Some(0x08) => Some("Starts When"),
-        Some(0x20) => Some("Effects"),
-        Some(0x30) => Some("Ends When"),
-        Some(0x40) => Some("Ready Again When"),
+        Some(0x08) => Some("Trigger"),
+        Some(0x20) => Some("Actions"),
+        Some(0x30) => Some("End Condition"),
+        Some(0x40) => Some("Reactivation"),
         _ => None,
     } {
         name = label.into();
@@ -658,6 +672,7 @@ fn selector(
     selected
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn scalar(
     ui: &mut egui::Ui,
     field: &fields::Field,
@@ -853,6 +868,16 @@ fn scalar(
             pickers::name_response(ui, &response, name);
             if block.class == 0x80803E4D && field.offset == 12 && f32::from_bits(bits) < 0.0 {
                 ui.weak("No Limit");
+            }
+            // The counter's sentinels, read as the stock perks mean them: a reset at -1 never
+            // fires, and the stock lower clamp of -9998 is no bound at all.
+            if block.class == 0x80803E30 {
+                let value = f32::from_bits(bits);
+                if field.offset == 0x24 && value < 0.0 {
+                    ui.weak("Never");
+                } else if field.offset == 0x28 && value <= -9998.0 {
+                    ui.weak("No Minimum");
+                }
             }
             if !contract.suffix.is_empty() {
                 ui.label(contract.suffix.trim());

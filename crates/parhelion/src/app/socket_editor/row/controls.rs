@@ -149,6 +149,8 @@ pub(super) fn draw_active(
                 ui,
                 context.queries.entry(choice_index).or_default(),
                 PlugChoicePickerOptions {
+                    preview: crate::app::donor_view::preview::loadout(catalog, context.recipe)
+                        .as_ref(),
                     donor_hash: donor.summary.hash,
                     socket_index: socket.index,
                     socket_type_override,
@@ -364,6 +366,7 @@ fn draw_choice(
                 ui,
                 context.queries.entry(choice_index).or_default(),
                 PlugChoicePickerOptions {
+                    preview: crate::app::donor_view::preview::loadout(catalog, context.recipe).as_ref(),
                     donor_hash: donor.summary.hash,
                     socket_index: socket.index,
                     socket_type_override,

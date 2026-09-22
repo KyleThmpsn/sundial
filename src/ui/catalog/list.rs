@@ -6,6 +6,8 @@ pub struct BrowserList<'a> {
     pub height: f32,
     pub reset: bool,
     pub row_height: f32,
+    /// A key to select and reveal this frame, when a link elsewhere chose it.
+    pub select: Option<u64>,
 }
 
 impl BrowserList<'_> {
@@ -22,8 +24,29 @@ impl BrowserList<'_> {
     pub fn draw_body<T>(
         &self,
         ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+    ) -> Option<T> {
+        self.draw_layout(ui, row, detail, false)
+    }
+
+    /// Full-width choices with a compact action area, for previews hosted in another window.
+    pub fn draw_with_actions<T>(
+        &self,
+        ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        actions: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+    ) -> Option<T> {
+        ui.label(format!("{} Results", self.keys.len()));
+        self.draw_layout(ui, row, actions, true)
+    }
+
+    fn draw_layout<T>(
+        &self,
+        ui: &mut egui::Ui,
         mut row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
         mut detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+        actions: bool,
     ) -> Option<T> {
         if self.keys.is_empty() {
             ui.allocate_ui(egui::vec2(ui.available_width(), self.height), |ui| {
@@ -52,6 +75,12 @@ impl BrowserList<'_> {
             })
         };
         let mut reveal = None;
+        if let Some(key) = self.select
+            && let Some(index) = self.keys.iter().position(|other| *other == key)
+        {
+            selected = key;
+            reveal = Some(index);
+        }
         if keyboard_step != 0 {
             let index = self
                 .keys
@@ -64,8 +93,10 @@ impl BrowserList<'_> {
             selected = self.keys[next];
             reveal = Some(next);
         }
-        let narrow = ui.available_width() < 700.0;
-        let list_height = if narrow {
+        let narrow = actions || ui.available_width() < 700.0;
+        let list_height = if actions {
+            (self.height - 76.0).max(80.0)
+        } else if narrow {
             self.height * 0.52
         } else {
             self.height
@@ -105,6 +136,19 @@ impl BrowserList<'_> {
                         }
                         scroll.show_rows(ui, self.row_height, self.keys.len(), |ui, indices| {
                             for index in indices {
+                                // Keep stripes tied to result indices, not the first visible row.
+                                // Selection and hover paint over this quiet background.
+                                if index % 2 == 1 {
+                                    let rect = egui::Rect::from_min_size(
+                                        ui.cursor().min,
+                                        egui::vec2(ui.available_width(), self.row_height),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        2.0,
+                                        ui.visuals().faint_bg_color,
+                                    );
+                                }
                                 if row(ui, index, self.keys[index] == selected).clicked() {
                                     selected = self.keys[index];
                                 }
@@ -113,7 +157,9 @@ impl BrowserList<'_> {
                     },
                 );
                 ui.separator();
-                let detail_height = if narrow {
+                let detail_height = if actions {
+                    64.0
+                } else if narrow {
                     (self.height - list_height - 12.0).max(100.0)
                 } else {
                     self.height

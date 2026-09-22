@@ -86,6 +86,8 @@ impl PackageAuthoringApp {
 
     fn draw_editor_library_preferences(&mut self, ui: &mut egui::Ui) {
         preference_heading(ui, "Experimental");
+        #[cfg(feature = "d2-model-importer")]
+        self.draw_importer_preference(ui);
         let mut show = self.show_experimental_options;
         if ui
             .checkbox(&mut show, "Enable Experimental Features")
@@ -93,6 +95,15 @@ impl PackageAuthoringApp {
             .changed()
         {
             self.set_show_experimental_options(show);
+        }
+        let mut technical = self.show_technical_build;
+        if ui
+            .checkbox(&mut technical, "Show Technical Build")
+            .on_hover_text("What the next build assigns, and what a staged build produced.")
+            .changed()
+        {
+            self.show_technical_build = technical;
+            self.preferences_changed = true;
         }
         ui.add_space(12.0);
         let editable = self.package_preferences_editable();

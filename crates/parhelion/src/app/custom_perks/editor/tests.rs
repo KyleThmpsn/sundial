@@ -90,6 +90,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
 
 pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
     PerkEditor {
+        history: Default::default(),
         activation: None,
         preview: None,
         entity_source: None,
@@ -246,6 +247,50 @@ fn action_only_edits_validate_expected_bits_and_duplicate_targets() {
     assert!(!editor.validation_errors().is_empty());
     editor.reset_all();
     assert!(editor.validation_errors().is_empty());
+}
+
+/// The notice asked users to "open asset discovery", which is not a control, and stayed
+/// after discovery had built the index. The index is applied in place instead.
+#[test]
+fn the_index_notice_is_replaced_by_the_references_once_the_index_exists() {
+    use sundial::package_authoring::tft::{Index, Reference};
+    let mut loaded = fixture();
+    loaded.warnings = index_warnings(None);
+    assert_eq!(loaded.warnings, [UNINDEXED]);
+    let graph = loaded.graphs[0].0;
+    let reference = |source: u32, target: u32| Reference {
+        source,
+        source_class: 0,
+        offset: 0,
+        target,
+        target_class: 0,
+        path: "content/example.tft".into(),
+    };
+    let names = Index {
+        references: vec![
+            reference(loaded.action_tag, 0x1234),
+            reference(0x5678, graph),
+            reference(0x9999, 0x8888),
+        ],
+        ..Index::default()
+    };
+    PerkEditor::apply_asset_index(&mut loaded, &names, None);
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(loaded.native_assets.len(), 2);
+    // An index that could not read everything says so in the same place.
+    let mut partial = names.clone();
+    partial.errors.push("one resource".into());
+    PerkEditor::apply_asset_index(&mut loaded, &partial, None);
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].starts_with("1 resources could not be read"));
+    // An entity opened on its own keeps references in either direction.
+    let mut entity = fixture();
+    entity.action_tag = 0;
+    PerkEditor::apply_asset_index(&mut entity, &names, Some(0x8888));
+    assert_eq!(entity.native_assets.len(), 1);
+    // Nothing to do while the notice is absent: a loaded effect is left alone.
+    let mut editor = editor(fixture());
+    assert!(!editor.refresh_asset_index());
 }
 
 #[test]

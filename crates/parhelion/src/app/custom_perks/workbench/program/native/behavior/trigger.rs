@@ -138,7 +138,7 @@ mod tests {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::workbench_style(ui);
+                    crate::app::style::perk_workbench_style(ui);
                     draw(ui, &mut graph, 0).unwrap();
                 });
             },

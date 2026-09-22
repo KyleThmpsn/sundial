@@ -71,7 +71,7 @@ pub(super) fn recover_interrupted_install_locked(
         .iter()
         .any(|artifact| artifact.remove_target)
     {
-        uninstall::refresh_recovery_caches(&transaction)?;
+        uninstall::refresh_recovery_caches(&transaction, request.runtime_snapshot_check)?;
     }
     transaction.state = InstallTransactionState::Recovered;
     write_install_transaction(&journal_path, &transaction)?;
@@ -158,6 +158,7 @@ pub(super) fn build_install_transaction(
         target_packages_directory: validated.target_packages_directory.clone(),
         backup_directory: backup_directory.to_path_buf(),
         artifacts,
+        runtime: Some(validated.sunrise_build_cache.runtime.clone()),
         account_cleanup: None,
         client_settings: None,
     };
@@ -222,6 +223,22 @@ pub(super) fn validate_install_transaction(
         return Err(InstallError::validation(
             "Package-install recovery record belongs to a different target directory",
         ));
+    }
+    if let Some(runtime) = &transaction.runtime {
+        let game_root = target_packages_directory.parent().ok_or_else(|| {
+            InstallError::validation("Package-install recovery target has no game root")
+        })?;
+        if !path_is_within(runtime.module_path(), game_root)
+            || runtime.dll_sha256().len() != 64
+            || !runtime
+                .dll_sha256()
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(InstallError::validation(
+                "Package-install recovery record has invalid runtime identity metadata",
+            ));
+        }
     }
     let actual_names = transaction
         .artifacts

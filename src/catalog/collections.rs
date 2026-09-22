@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::investment_schema::{
     COLLECTIBLE_CONDITION_OFFSETS, COLLECTIBLE_DEFINITION_ROW_CLASS,

@@ -5,8 +5,9 @@
 //! it does not install packages or mutate an existing tag.
 
 use image::{ImageFormat, Rgba, RgbaImage, imageops::FilterType};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::icon_schema::{ICON_DEFINITION_SIZE, ICON_PRIMARY_LAYER_OFFSET};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::{
     AuthoringResult, NewTagReference, NewTagReferenceOverride, NewTagSpec, NewTagStorageMode,

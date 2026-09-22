@@ -44,7 +44,7 @@ fn explicit_profiles(capabilities: &WeaponAuthoringCapabilities) -> Vec<CombatPr
 }
 
 #[test]
-fn appearance_checks_follow_the_selected_runtime_and_fail_closed_when_unknown() {
+fn appearance_checks_follow_the_selected_runtime_and_allow_other_animation_groups() {
     let mut base = summary(
         Some(WeaponInventorySlot::Energy),
         WeaponDamageProfile::ModernFixed(WeaponDamageType::Arc),
@@ -65,19 +65,23 @@ fn appearance_checks_follow_the_selected_runtime_and_fail_closed_when_unknown() 
     );
     assert_eq!(
         appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
-        AppearanceCompatibility::Blocked("Incompatible weapon animations")
+        AppearanceCompatibility::Compatible
     );
+    assert!(appearance_animations_differ(&appearance, &base));
     base.weapon_translation_group = effective_weapon_translation_group(&base, Some(20), &donors);
     assert_eq!(
         appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
         AppearanceCompatibility::Compatible
     );
+    assert!(!appearance_animations_differ(&appearance, &base));
     base.weapon_translation_group = effective_weapon_translation_group(&base, Some(999), &donors);
     assert_eq!(
         appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
-        AppearanceCompatibility::Unchecked
+        AppearanceCompatibility::Compatible
     );
-    assert!(!presentation_donor_candidate_is_compatible(
+    // An unknown group is no evidence of a mismatch.
+    assert!(!appearance_animations_differ(&appearance, &base));
+    assert!(presentation_donor_candidate_is_compatible(
         &appearance,
         &base,
         WeaponInventorySlot::Energy
@@ -290,14 +294,17 @@ fn cross_slot_profiles_require_a_compatible_target_slot_presentation_donor() {
         &gameplay,
         WeaponInventorySlot::Energy
     ));
-    let mut wrong_type = energy.clone();
-    wrong_type.hash = 0x2222_2222;
-    wrong_type.type_name = "Grenade Launcher".to_owned();
-    assert!(!presentation_donor_candidate_is_compatible(
-        &wrong_type,
+    // Another family is offered with a warning rather than hidden.
+    let mut other_type = energy.clone();
+    other_type.hash = 0x2222_2222;
+    other_type.type_name = "Grenade Launcher".to_owned();
+    assert!(presentation_donor_candidate_is_compatible(
+        &other_type,
         &gameplay,
         WeaponInventorySlot::Energy
     ));
+    assert!(appearance_type_differs(&other_type, &gameplay));
+    assert!(!appearance_type_differs(&energy, &gameplay));
     let mut collectionless = energy.clone();
     collectionless.hash = 0x3333_3333;
     collectionless.collection_backed = false;
@@ -324,17 +331,18 @@ fn moved_machine_gun_keeps_native_slot_appearance_choices() {
             target
         ));
         appearance.weapon_translation_group = Some(2);
-        assert!(!presentation_donor_candidate_is_compatible(
+        assert!(presentation_donor_candidate_is_compatible(
             &appearance,
             &base,
             target
         ));
+        assert!(appearance_animations_differ(&appearance, &base));
         appearance.weapon_translation_group = base.weapon_translation_group;
     }
 }
 
 #[test]
-fn kinetic_energy_appearance_requires_matching_known_animations() {
+fn kinetic_energy_appearance_keeps_only_the_slot_gate() {
     for (source, target) in [
         (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic),
         (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy),
@@ -348,12 +356,12 @@ fn kinetic_energy_appearance_requires_matching_known_animations() {
         appearance.weapon_translation_group = Some(2);
         assert_eq!(
             appearance_compatibility(&appearance, &base, target),
-            AppearanceCompatibility::Blocked("Incompatible weapon animations")
+            AppearanceCompatibility::Compatible
         );
         appearance.weapon_translation_group = None;
         assert_eq!(
             appearance_compatibility(&appearance, &base, target),
-            AppearanceCompatibility::Unchecked
+            AppearanceCompatibility::Compatible
         );
         appearance.weapon_translation_group = base.weapon_translation_group;
         appearance.inventory_slot = Some(WeaponInventorySlot::Power);
@@ -401,9 +409,10 @@ fn profile_reconciliation_clears_incompatible_or_malformed_presentation_donors()
     reconcile_presentation_donor(&mut recipe, &gameplay, std::slice::from_ref(&energy));
     assert!(recipe.presentation_donor.is_some());
 
+    // Another animation group is a warning, not a reason to drop the appearance.
     energy.weapon_translation_group = Some(2);
     reconcile_presentation_donor(&mut recipe, &gameplay, std::slice::from_ref(&energy));
-    assert!(recipe.presentation_donor.is_none());
+    assert!(recipe.presentation_donor.is_some());
 
     recipe.presentation_donor = Some(WeaponDonorReference {
         item_hash: 0_u32.into(),
@@ -444,7 +453,7 @@ fn collectionless_donor_is_authorable_when_profile_is_coherent() {
 }
 
 #[test]
-fn missing_family_text_requires_verified_appearance_animations() {
+fn missing_family_text_allows_any_appearance_animations() {
     let base = summary(
         Some(WeaponInventorySlot::Energy),
         WeaponDamageProfile::KineticEmpty,
@@ -464,12 +473,14 @@ fn missing_family_text_requires_verified_appearance_animations() {
     appearance.weapon_translation_group = Some(base.weapon_translation_group.unwrap() + 1);
     assert_eq!(
         appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
-        AppearanceCompatibility::Blocked("Incompatible weapon animations")
+        AppearanceCompatibility::Compatible
     );
+    assert!(!appearance_type_differs(&appearance, &base));
+    assert!(appearance_animations_differ(&appearance, &base));
     appearance.weapon_translation_group = None;
     assert_eq!(
         appearance_compatibility(&appearance, &base, WeaponInventorySlot::Energy),
-        AppearanceCompatibility::Unchecked
+        AppearanceCompatibility::Compatible
     );
 }
 

@@ -1,7 +1,8 @@
 //! Record completion fields name flag definitions. Sunrise resolves them through the account bank.
 use std::collections::BTreeMap;
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::{
     investment_schema::{

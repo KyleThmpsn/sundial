@@ -6,7 +6,8 @@ pub(crate) fn tooltip_title_style() -> egui::TextStyle {
     egui::TextStyle::Name("Tooltip Title".into())
 }
 
-pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+/// Use the installed medium-weight face with its symbol fallbacks, at the caller's size.
+pub(crate) fn emphasized_font(ui: &egui::Ui, size: f32) -> egui::FontId {
     let body = egui::TextStyle::Body.resolve(ui.style());
     let mut font = ui
         .style()
@@ -17,8 +18,17 @@ pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::R
         .filter(|font| ui.fonts(|fonts| fonts.families().contains(&font.family)))
         .cloned()
         .unwrap_or_else(|| body.clone());
-    font.size = body.size;
-    egui::RichText::new(text).font(font).strong()
+    font.size = size;
+    font
+}
+
+pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text)
+        .font(emphasized_font(
+            ui,
+            egui::TextStyle::Body.resolve(ui.style()).size,
+        ))
+        .strong()
 }
 
 /// Shared tooltip title typography for Sundial and Parhelion.
@@ -29,18 +39,38 @@ pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Respo
 
 /// Hover for a tooltip, or click/keyboard-activate to keep the help open.
 pub(crate) fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
-    let text = text.into();
-    let response = egui::menu::menu_custom_button(
+    compact_help(
         ui,
-        egui::Button::new(egui_phosphor::regular::INFO).frame(false),
-        |ui| {
+        egui::RichText::new(egui_phosphor::regular::INFO),
+        "More information",
+        text.into(),
+    )
+}
+
+/// Compact warning whose explanation stays available by hover, click or keyboard activation.
+pub(crate) fn warning(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    compact_help(
+        ui,
+        egui::RichText::new(egui_phosphor::regular::WARNING).color(ui.visuals().warn_fg_color),
+        "Warning details",
+        text.into(),
+    )
+}
+
+fn compact_help(
+    ui: &mut egui::Ui,
+    glyph: egui::RichText,
+    accessible_label: &'static str,
+    text: egui::WidgetText,
+) -> egui::Response {
+    let response =
+        egui::menu::menu_custom_button(ui, egui::Button::new(glyph).frame(false), |ui| {
             ui.set_max_width(360.0);
             ui.label(text.clone());
-        },
-    )
-    .response;
+        })
+        .response;
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More information")
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
     });
     response
         .on_hover_cursor(egui::CursorIcon::Help)

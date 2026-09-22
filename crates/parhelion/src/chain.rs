@@ -75,46 +75,89 @@ impl PatchChain {
 }
 
 pub fn discover_patch_chain(directory: &Path, package_id: u16) -> AuthoringResult<PatchChain> {
-    let entries = fs::read_dir(directory)
-        .map_err(|error| AuthoringError::io("list package directory", directory, error))?;
-    let mut files = BTreeMap::new();
-    let mut identity = None;
+    PatchChains::scan(directory)?.chain(package_id)
+}
 
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            AuthoringError::io("read package directory entry", directory, error)
-        })?;
-        let path = entry.path();
-        if !entry
-            .file_type()
-            .map_err(|error| AuthoringError::io("inspect package directory entry", &path, error))?
-            .is_file()
-        {
-            continue;
+/// Every package file in a directory, read once.
+///
+/// Discovering a chain lists the directory and opens the header of every package in it, and a
+/// build used to do that once per emitted package and once per template package on top. The
+/// files are read here once, and a chain for any package id is assembled from them without
+/// touching the disk again. The directory is not written to while a build emits, so the scan
+/// stays current for the whole of it.
+pub struct PatchChains {
+    directory: PathBuf,
+    candidates: Vec<RawCandidate>,
+}
+
+impl PatchChains {
+    pub fn scan(directory: &Path) -> AuthoringResult<Self> {
+        let entries = fs::read_dir(directory)
+            .map_err(|error| AuthoringError::io("list package directory", directory, error))?;
+        let mut candidates = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                AuthoringError::io("read package directory entry", directory, error)
+            })?;
+            let path = entry.path();
+            if !entry
+                .file_type()
+                .map_err(|error| {
+                    AuthoringError::io("inspect package directory entry", &path, error)
+                })?
+                .is_file()
+            {
+                continue;
+            }
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"))
+            {
+                continue;
+            }
+            candidates.push(read_candidate(&path)?);
         }
-        if !path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"))
-        {
-            continue;
-        }
-        let Some(candidate) = parse_candidate(&path, package_id)? else {
-            continue;
-        };
-        if identity.as_ref().is_some_and(|known| known != &candidate.0) {
-            return Err(AuthoringError::InvalidPackage(format!(
-                "Package id {package_id:04x} is used by more than one filename identity"
-            )));
-        }
-        identity = Some(candidate.0);
-        if files.insert(candidate.1.patch, candidate.1).is_some() {
-            return Err(AuthoringError::InvalidPackage(format!(
-                "Package id {package_id:04x} has a duplicate patch index"
-            )));
-        }
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            candidates,
+        })
     }
 
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    /// The chain for one package id, checked exactly as a fresh discovery would check it.
+    pub fn chain(&self, package_id: u16) -> AuthoringResult<PatchChain> {
+        let mut files = BTreeMap::new();
+        let mut identity = None;
+        for raw in &self.candidates {
+            let Some(candidate) = candidate_for(raw, package_id)? else {
+                continue;
+            };
+            if identity.as_ref().is_some_and(|known| known != &candidate.0) {
+                return Err(AuthoringError::InvalidPackage(format!(
+                    "Package id {package_id:04x} is used by more than one filename identity"
+                )));
+            }
+            identity = Some(candidate.0);
+            if files.insert(candidate.1.patch, candidate.1).is_some() {
+                return Err(AuthoringError::InvalidPackage(format!(
+                    "Package id {package_id:04x} has a duplicate patch index"
+                )));
+            }
+        }
+        assemble_chain(&self.directory, package_id, identity, files)
+    }
+}
+
+fn assemble_chain(
+    directory: &Path,
+    package_id: u16,
+    identity: Option<PackageIdentity>,
+    files: BTreeMap<u8, PatchFile>,
+) -> AuthoringResult<PatchChain> {
     let identity = identity.ok_or_else(|| {
         AuthoringError::InvalidInput(format!(
             "No patchable package with id {package_id:04x} exists in {}",
@@ -128,10 +171,17 @@ pub fn discover_patch_chain(directory: &Path, package_id: u16) -> AuthoringResul
     })
 }
 
-fn parse_candidate(
-    path: &Path,
-    requested_package_id: u16,
-) -> AuthoringResult<Option<(PackageIdentity, PatchFile)>> {
+/// A package file as it is on disk: what can be known about it before any package id is asked
+/// about. Reading it is the part of discovery that costs, so it happens once per file.
+struct RawCandidate {
+    path: PathBuf,
+    parsed: Option<PackagePath>,
+    header: PackageHeaderPrefix,
+    platform: u16,
+    entry_count: usize,
+}
+
+fn read_candidate(path: &Path) -> AuthoringResult<RawCandidate> {
     let path_text = path.to_str().ok_or_else(|| {
         AuthoringError::InvalidPackage(format!(
             "Package filename is not valid Unicode: {}",
@@ -153,6 +203,28 @@ fn parse_candidate(
             header.package_id
         )));
     }
+    Ok(RawCandidate {
+        path: path.to_path_buf(),
+        parsed,
+        header,
+        platform,
+        entry_count,
+    })
+}
+
+/// The checks that only apply once a package id is being looked for.
+fn candidate_for(
+    raw: &RawCandidate,
+    requested_package_id: u16,
+) -> AuthoringResult<Option<(PackageIdentity, PatchFile)>> {
+    let RawCandidate {
+        path,
+        parsed,
+        header,
+        platform,
+        entry_count,
+    } = raw;
+    let (platform, entry_count) = (*platform, *entry_count);
     if header.package_id != requested_package_id {
         return Ok(None);
     }
@@ -163,7 +235,7 @@ fn parse_candidate(
             header.version
         )));
     }
-    let parsed = parsed.ok_or_else(|| {
+    let parsed = parsed.as_ref().ok_or_else(|| {
         AuthoringError::InvalidPackage(format!(
             "Package {} has no supported filename identity for output naming",
             path.display()
@@ -198,15 +270,15 @@ fn parse_candidate(
     })?;
     Ok(Some((
         PackageIdentity {
-            platform: parsed.platform,
-            name: parsed.name,
-            language: parsed.language,
+            platform: parsed.platform.clone(),
+            name: parsed.name.clone(),
+            language: parsed.language.clone(),
             package_id: header.package_id,
             stem: stem.to_owned(),
         },
         PatchFile {
             patch,
-            path: path.to_path_buf(),
+            path: path.clone(),
             entry_count,
         },
     )))

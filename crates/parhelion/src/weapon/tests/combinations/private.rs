@@ -13,7 +13,7 @@ pub(super) struct PrivateIdentities {
 }
 
 fn verify_values(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     action: &sundial::package_authoring::sandbox_perk::SandboxPerkRuntimeAction,
     edit: &WeaponSandboxPerkRuntimeOverride,
 ) -> usize {
@@ -47,9 +47,9 @@ fn verify_values(
 }
 
 pub(super) fn verify_private(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     tables: &Tables,
-    source_manager: &tiger_pkg::PackageManager,
+    source_manager: &sundial::package_authoring::PackageManager,
     source_globals: &[u8],
     recipe: &WeaponRecipe,
     identities: &mut PrivateIdentities,

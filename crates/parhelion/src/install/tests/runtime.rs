@@ -61,6 +61,43 @@ fn runtime_support_lost_during_preparation_stops_before_any_replacement() {
 }
 
 #[test]
+fn runtime_identity_change_during_preparation_stops_before_any_replacement() {
+    let fixture = Fixture::new();
+    let module = fixture
+        .target
+        .parent()
+        .unwrap()
+        .join("bin/x64/steam_api64.dll");
+    let originals = CANONICAL_ARTIFACT_FILE_NAMES
+        .iter()
+        .map(|name| {
+            let path = fixture.target.join(name);
+            (path.clone(), fs::read(path).ok())
+        })
+        .collect::<Vec<_>>();
+    let mut changed = false;
+
+    let error = install_staged_packages_with_progress(&fixture.request(), |event| {
+        if !changed && event.phase == InstallPhase::Rechecking {
+            fs::write(&module, b"switched runtime").unwrap();
+            changed = true;
+        }
+    })
+    .unwrap_err();
+
+    assert!(
+        error.message.contains("runtime changed after preflight"),
+        "{error}"
+    );
+    for (path, original) in originals {
+        assert_eq!(fs::read(path).ok(), original);
+    }
+    for name in CANONICAL_ARTIFACT_FILE_NAMES {
+        assert!(!fixture.target.join(name).exists());
+    }
+}
+
+#[test]
 fn linked_packages_cannot_redirect_install_recovery_or_uninstall_to_another_game() {
     let fixture = Fixture::new();
     let selected = tempfile::tempdir().unwrap();
@@ -92,6 +129,7 @@ fn linked_packages_cannot_redirect_install_recovery_or_uninstall_to_another_game
         target_packages_directory: packages.clone(),
         backup_root: fixture.backups.clone(),
         game_running_check: game_stopped,
+        runtime_snapshot_check: test_runtime_snapshot,
     })
     .unwrap_err();
     assert!(error.message.contains("outside its game folder"), "{error}");

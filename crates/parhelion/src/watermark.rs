@@ -15,6 +15,7 @@ pub(crate) use dawn::render as render_dawn_texture;
 
 use image::ImageFormat;
 use sha1::{Digest, Sha1};
+use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::icon_schema::ICON_BACKGROUND_LAYER_OFFSET as ICON_RARITY_BACKGROUND_LAYER_OFFSET;
 use sundial::package_authoring::{
     icon_schema::{
@@ -29,7 +30,7 @@ use sundial::package_authoring::{
     investment_schema::{ITEM_ICON_CONTAINER_OFFSET, ITEM_ICON_ROW_SIZE},
     is_valid_package_tag,
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::{
     AuthoredWeaponRarity, AuthoringResult, NewTagReference, NewTagReferenceOverride, NewTagSpec,
@@ -206,7 +207,7 @@ impl WatermarkPlan {
 /// `current_entry_count` is the destination package's entry count before the append operation.
 /// `appended_ordinal_base` is the number of tags placed before this plan in the same `new_tags`
 /// slice. Containers are deduplicated only when donor, image edit, and authored rarity are identical.
-#[cfg(test)]
+#[cfg(any(test, feature = "d2-model-importer"))]
 pub fn build_watermark_plan(
     manager: &PackageManager,
     destination_package_id: u16,
@@ -1017,61 +1018,109 @@ pub(crate) fn decode_authored_texture(
     placement::adjust_corner_glyph(texture_index, width, height, pixels)
 }
 
+/// One audited PNG, decoded and checked against its hash.
+struct DecodedTexture {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+/// The PNGs are compiled in, so the hash check and the decode give the same answer every
+/// time. Each artwork group used to repeat both for all six textures, twice over: once to
+/// validate the authored texture and once to render the output. They now run once.
+fn decoded_textures() -> &'static [Result<DecodedTexture, String>] {
+    static DECODED: std::sync::OnceLock<Vec<Result<DecodedTexture, String>>> =
+        std::sync::OnceLock::new();
+    DECODED.get_or_init(|| {
+        (0..AUTHORED_TEXTURE_PNGS.len())
+            .map(decode_audited_png)
+            .collect()
+    })
+}
+
+fn decode_audited_png(texture_index: usize) -> Result<DecodedTexture, String> {
+    let png = AUTHORED_TEXTURE_PNGS
+        .get(texture_index)
+        .ok_or_else(|| format!("Unknown Sunrise watermark texture {texture_index}"))?;
+    let expected_hash = AUTHORED_TEXTURE_PNG_SHA1
+        .get(texture_index)
+        .ok_or_else(|| format!("Missing hash for watermark texture {texture_index}"))?;
+    if Sha1::digest(png).as_slice() != expected_hash {
+        return Err(format!(
+            "Pre-rendered Sunrise watermark texture {texture_index} no longer matches its audited asset"
+        ));
+    }
+    let image = image::load_from_memory_with_format(png, ImageFormat::Png)
+        .map_err(|error| {
+            format!(
+                "Could not decode pre-rendered Sunrise watermark texture {texture_index}: {error}"
+            )
+        })?
+        .into_rgba8();
+    Ok(DecodedTexture {
+        width: image.width(),
+        height: image.height(),
+        pixels: image.into_raw(),
+    })
+}
+
 fn decode_source_texture(
     texture_index: usize,
     width: u32,
     height: u32,
 ) -> AuthoringResult<Vec<u8>> {
-    let png = AUTHORED_TEXTURE_PNGS
+    let decoded = decoded_textures()
         .get(texture_index)
-        .ok_or_else(|| invalid(format!("Unknown Sunrise watermark texture {texture_index}")))?;
-    let expected_hash = AUTHORED_TEXTURE_PNG_SHA1
-        .get(texture_index)
-        .ok_or_else(|| {
-            invalid(format!(
-                "Missing hash for watermark texture {texture_index}"
-            ))
-        })?;
-    if Sha1::digest(png).as_slice() != expected_hash {
-        return Err(invalid(format!(
-            "Pre-rendered Sunrise watermark texture {texture_index} no longer matches its audited asset"
-        )));
-    }
-    let image = image::load_from_memory_with_format(png, ImageFormat::Png)
-        .map_err(|error| {
-            invalid(format!(
-                "Could not decode pre-rendered Sunrise watermark texture {texture_index}: {error}"
-            ))
-        })?
-        .into_rgba8();
-    if image.dimensions() != (width, height) {
+        .ok_or_else(|| invalid(format!("Unknown Sunrise watermark texture {texture_index}")))?
+        .as_ref()
+        .map_err(|message| invalid(message.clone()))?;
+    if (decoded.width, decoded.height) != (width, height) {
         return Err(invalid(format!(
             "Pre-rendered Sunrise watermark texture {texture_index} is {}x{}; expected {width}x{height}",
-            image.width(),
-            image.height()
+            decoded.width, decoded.height
         )));
     }
-    Ok(image.into_raw())
+    Ok(decoded.pixels.clone())
 }
 
 /// Shared high-resolution output for package textures and editor previews. This resamples
 /// the approved small-scale design, not the original full-size Sunrise logo.
 pub(crate) fn render_output_texture(texture_index: usize) -> AuthoringResult<image::RgbaImage> {
-    let &(width, height) = TEXTURE_DIMENSIONS
+    static RENDERED: std::sync::OnceLock<Vec<Result<image::RgbaImage, String>>> =
+        std::sync::OnceLock::new();
+    // Every artwork group renders the same six outputs from the same audited pixels, and the
+    // editor preview asks for them again, so the resample happens once.
+    let rendered = RENDERED
+        .get_or_init(|| {
+            (0..TEXTURE_DIMENSIONS.len())
+                .map(render_audited_output)
+                .collect()
+        })
         .get(texture_index)
         .ok_or_else(|| invalid("Unknown Sunrise watermark texture"))?;
+    rendered
+        .as_ref()
+        .cloned()
+        .map_err(|message| validation(message.clone()))
+}
+
+fn render_audited_output(texture_index: usize) -> Result<image::RgbaImage, String> {
+    let &(width, height) = TEXTURE_DIMENSIONS
+        .get(texture_index)
+        .ok_or_else(|| "Unknown Sunrise watermark texture".to_owned())?;
     let pixels = placement::render_output(
         texture_index,
         width,
         height,
-        decode_source_texture(texture_index, width, height)?,
-    )?;
+        decode_source_texture(texture_index, width, height).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     image::RgbaImage::from_raw(
         width * OUTPUT_TEXTURE_SCALE,
         height * OUTPUT_TEXTURE_SCALE,
         pixels,
     )
-    .ok_or_else(|| validation("Rendered watermark has invalid dimensions"))
+    .ok_or_else(|| "Rendered watermark has invalid dimensions".to_owned())
 }
 
 fn upscale_texture(width: u32, height: u32, pixels: Vec<u8>) -> AuthoringResult<image::RgbaImage> {

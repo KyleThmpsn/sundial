@@ -111,7 +111,7 @@ fn editor_names(condition: bool, node: NativeNode) -> Vec<String> {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::workbench_style(ui);
+                    crate::app::style::perk_workbench_style(ui);
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if condition {
                             program::draw_trigger_block(ui, &mut program, |ui, label, _| {
@@ -219,7 +219,7 @@ fn the_behavior_picker_controls_announce_themselves_by_name() {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::workbench_style(ui);
+                    crate::app::style::perk_workbench_style(ui);
                     workbench.behaviors.draw_action(
                         ui,
                         &workbench.discovery,

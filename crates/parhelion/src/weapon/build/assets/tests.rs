@@ -49,8 +49,13 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
         crate::branding::Branding::for_packages(view.path()),
     )
     .unwrap();
-    let icons =
-        author_icon_rows(&sources.stock_item_icons, &resolved, &assets, &mut plugs).unwrap();
+    let icons = author_icon_rows(
+        sources.stock_item_icons.clone(),
+        &resolved,
+        &assets,
+        &mut plugs,
+    )
+    .unwrap();
     let plug = &plugs[0];
     let authored_container = plug.authored_icon_container.unwrap();
     assert_ne!(authored_container, stock_container);

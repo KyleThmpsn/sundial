@@ -28,7 +28,7 @@ pub(super) fn sized<R>(
     // and every labelled row inside that block then measures its label column against the
     // wider block and marches off the pane edge. Holding the control to its line keeps the
     // eliding inside the control, where `truncate` can do it.
-    let width = width.min(ui.max_rect().width());
+    let width = width.min(ui.available_width()).max(0.0);
     ui.allocate_ui_with_layout(
         egui::vec2(width, ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -62,6 +62,9 @@ pub(super) fn cell<R>(
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let width = cell_width(ui);
+    if ui.available_width() < width {
+        return super::properties::field(ui, label, hint, content);
+    }
     sized(ui, width, |ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(CELL_LABEL_WIDTH, ui.spacing().interact_size.y),

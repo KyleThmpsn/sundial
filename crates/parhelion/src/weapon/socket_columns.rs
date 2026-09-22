@@ -232,15 +232,14 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
             continue;
         }
 
+        // A randomized lane need not name a default plug. Donors such as Good
+        // Bone Structure leave it unset and carry the lane's plugs in the
+        // embedded list instead, which is just as native a source for the
+        // curated column.
         let default = read_u16(
             donor_definition,
             row + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET,
         )?;
-        if default == u16::MAX {
-            return Err(invalid(format!(
-                "Randomized socket lane {lane} has no native default plug"
-            )));
-        }
         let embedded_descriptor = row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET;
         let embedded_count = usize::try_from(read_u64(donor_definition, embedded_descriptor)?)
             .map_err(|_| invalid("Socket plug-member count is too large"))?;
@@ -252,7 +251,10 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
             )));
         }
 
-        let mut choices = vec![default];
+        let mut choices = Vec::new();
+        if default != u16::MAX {
+            choices.push(default);
+        }
         if embedded_count != 0 {
             let (member_count, _, member_rows, member_class) =
                 array_at(donor_definition, embedded_descriptor)?;
@@ -276,6 +278,11 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
                     choices.push(plug);
                 }
             }
+        }
+        if choices.is_empty() {
+            return Err(invalid(format!(
+                "Randomized socket lane {lane} has no native default or embedded plug"
+            )));
         }
         *column = Some(choices);
     }

@@ -26,7 +26,7 @@
   },
   "name": "Vaultbreaker",
   "flavor": "\"We used to come here every week. A lock doesn’t change that.\"",
-  "source": "Source: Guardians Make Their Own Fate",
+  "source": "Source: Guardians Made Their Own Fate",
   "overrides": {
     "icon_edit": {
       "hue_shift_degrees": -40,

@@ -11,11 +11,14 @@ pub(super) mod assets;
 mod attachment;
 mod behaviors;
 pub(super) mod canvas;
+mod cards;
 mod controls;
 mod discovery;
+mod duplicate;
 mod engine;
 mod forms;
 mod guidance;
+pub(in crate::app::custom_perks) mod history;
 use crate::artwork_browser as icons;
 mod library;
 pub(super) use crate::app::pickers;
@@ -27,7 +30,8 @@ mod stats;
 mod templates;
 mod test_plan;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+mod validation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum Request {
@@ -45,6 +49,8 @@ impl Request {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Document {
+    #[serde(skip)]
+    history: history::History,
     recipe: PerkRecipe,
     baseline: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +66,7 @@ struct Document {
 impl Document {
     fn new(recipe: PerkRecipe, baseline: Option<Vec<u8>>) -> Self {
         Self {
+            history: history::History::default(),
             modified: baseline.is_none().then(SystemTime::now),
             origin: Some(recipe.clone()),
             recipe,
@@ -139,6 +146,8 @@ pub(in crate::app) struct Workbench {
     editor: Option<PerkEditor>,
     retired_editors: Vec<PerkEditor>,
     templates: Option<Vec<WeaponSandboxPerkChoice>>,
+    /// The stock Copy Existing rows, built once per catalog from `templates`.
+    template_rows: Option<Vec<templates::Row>>,
     authored_templates: Option<Vec<templates::AuthoredTemplate>>,
     editing_effect: Option<u16>,
     editing_program_action: Option<usize>,
@@ -154,9 +163,13 @@ pub(in crate::app) struct Workbench {
     pending_restore_defaults: Option<crate::perk::library::RestoreDefaults>,
     reveal_document: bool,
     header_action: Option<HeaderAction>,
+    duplicating: Option<duplicate::Pending>,
+    reveal_problem: Option<validation::Location>,
+    reveal_action: Option<usize>,
 }
 
 enum HeaderAction {
+    History(bool),
     Save(bool),
     Discard,
     Delete,
@@ -168,13 +181,22 @@ impl Workbench {
     }
 
     fn perk_issue(&self, recipe: &PerkRecipe) -> Option<String> {
-        recipe.validate().err().or_else(|| {
-            recipe.effects.iter().find_map(|effect| {
-                self.discovery
-                    .perk_issue(effect.source_perk_index)
-                    .map(str::to_owned)
+        recipe
+            .validate()
+            .err()
+            .or_else(|| {
+                recipe.effects.iter().find_map(|effect| {
+                    self.discovery
+                        .perk_issue(effect.source_perk_index)
+                        .map(str::to_owned)
+                })
             })
-        })
+            .or_else(|| {
+                recipe
+                    .effects
+                    .iter()
+                    .find_map(|effect| validation::counter_issue(effect.program.as_ref()))
+            })
     }
 
     pub(in crate::app) fn open_engine_catalog(&mut self) {
@@ -183,6 +205,7 @@ impl Workbench {
 
     pub(in crate::app) fn busy(&self) -> bool {
         self.discovery.busy()
+            || self.duplicating.is_some()
             || self.icons.busy()
             || self
                 .editor
@@ -216,7 +239,11 @@ impl Workbench {
         self.editing_effect = None;
         self.editing_program_action = None;
         if let Some(document) = self.documents.get_mut(self.selected) {
-            document.recipe = document.restored();
+            let restored = document.restored();
+            if restored != document.recipe {
+                document.history.record_step(document.recipe.clone());
+            }
+            document.recipe = restored;
             document.pending_effect = None;
             document.modified = None;
         }
@@ -234,6 +261,7 @@ impl Workbench {
         self.ingredients = None;
         self.retire_editor();
         self.templates = None;
+        self.template_rows = None;
         self.authored_templates = None;
         self.editing_effect = None;
         self.editing_program_action = None;
@@ -281,16 +309,21 @@ impl Workbench {
         }
     }
 
-    fn show(
+    fn retry_discovery(&mut self, packages: &Path, ctx: &egui::Context) {
+        if std::mem::take(&mut self.engine.retry_requested) {
+            self.discovery.invalidate();
+            self.discovery.start(packages, ctx);
+        }
+    }
+
+    /// Advances every background job the workbench owns before a frame is drawn.
+    fn poll_background_work(
         &mut self,
         ctx: &egui::Context,
         packages: &Path,
-        catalog: Option<&InvestmentCatalog>,
         choices: &[WeaponSandboxPerkChoice],
-        experimental: bool,
-        attachment: (&WeaponRecipe, Option<&WeaponDonor>),
-    ) -> Option<attachment::Change> {
-        let (weapon, donor) = attachment;
+    ) {
+        self.poll_duplicate(ctx, choices);
         if let Some(editor) = &mut self.editor {
             editor.poll();
         }
@@ -302,7 +335,27 @@ impl Workbench {
             self.discovery.start(packages, ctx);
         }
         self.discovery.poll();
+        // An effect opened before discovery finished shows the index notice until the
+        // index exists; once discovery has data, the index does.
+        if self.discovery.data.is_some()
+            && let Some(editor) = &mut self.editor
+        {
+            editor.refresh_asset_index();
+        }
         self.icons.poll();
+    }
+
+    fn show(
+        &mut self,
+        ctx: &egui::Context,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        choices: &[WeaponSandboxPerkChoice],
+        experimental: bool,
+        attachment: (&WeaponRecipe, Option<&WeaponDonor>),
+    ) -> Option<attachment::Change> {
+        let (weapon, donor) = attachment;
+        self.poll_background_work(ctx, packages, choices);
         program::native::label_choices(
             ctx,
             self.discovery.labels.clone(),
@@ -374,6 +427,7 @@ impl Workbench {
             },
             experimental,
         );
+        self.retry_discovery(packages, ctx);
         if let Some(index) = self.engine.copy_requested.take()
             && let Some(choice) = choices.iter().find(|choice| choice.perk_index == index)
         {
@@ -416,14 +470,18 @@ impl Workbench {
             .max_width((ctx.screen_rect().width() - 40.0).max(320.0))
             .max_height((ctx.screen_rect().height() - 64.0).max(360.0))
             .show(ctx, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 // Respect the requested window size and reserve the destination footer.
                 // The body follows the window, so dragging the window taller shows more of
                 // the editor instead of stopping at a fixed height on a tall screen.
                 let tallest = (ctx.screen_rect().height() - 140.0).max(240.0);
-                let body_height = (ui.available_height() - 40.0).clamp(240.0, tallest);
+                let footer_id = ui.id().with("attachment-height");
+                let footer_height = ctx
+                    .data(|data| data.get_temp::<f32>(footer_id))
+                    .unwrap_or(40.0);
+                let body_height = (ui.available_height() - footer_height).clamp(240.0, tallest);
                 let width = ui.available_width();
-                let library_width = (width * 0.26).clamp(260.0, 290.0).min(width * 0.46);
+                let library_width = (width * 0.26).clamp(220.0, 290.0).min(width * 0.40);
                 let editor_width =
                     (width - library_width - ui.spacing().item_spacing.x * 3.0 - 2.0).max(120.0);
                 ui.allocate_ui_with_layout(
@@ -487,6 +545,7 @@ impl Workbench {
                                         .iter_mut()
                                         .find(|document| document.recipe.id == document_id)
                                     {
+                                        document.history.record(before, ctx);
                                         document.recipe = recipe;
                                         document.modified = Some(SystemTime::now());
                                     }
@@ -497,13 +556,19 @@ impl Workbench {
                         );
                     },
                 );
+                let footer_top = ui.cursor().top();
                 ui.separator();
                 attachment = self.draw_attachment(ui, weapon, donor, catalog);
+                ctx.data_mut(|data| {
+                    data.insert_temp(footer_id, (ui.cursor().top() - footer_top + 8.0).max(40.0))
+                });
             });
         if open {
             self.handle_save_shortcut(ctx);
+            self.history_shortcuts(ctx);
         }
         match self.header_action.take() {
+            Some(HeaderAction::History(redo)) => self.restore_history(redo),
             Some(HeaderAction::Save(copy)) => self.save(copy),
             Some(HeaderAction::Discard) => self.discard_changes(),
             Some(HeaderAction::Delete) => {
@@ -541,6 +606,17 @@ impl Workbench {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 crate::app::style::more_menu(ui, |ui| {
+                    for (label, redo) in [("Undo", false), ("Redo", true)] {
+                        let available = self.editor.as_ref().map_or_else(
+                            || self.documents.get(self.selected).is_some_and(|d| d.pending_effect.is_none() && d.history.available(redo)),
+                            |editor| editor.history_available(redo),
+                        );
+                        if ui.add_enabled(available, egui::Button::new(label)).clicked() {
+                            self.header_action = Some(HeaderAction::History(redo));
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
                     if ui
                         .add_enabled(
                             !editing && !recipe.effects.is_empty(),

@@ -44,7 +44,7 @@ fn frame(
         },
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 let donor = app.current_donor().unwrap();
                 app.draw_socket_columns_panel(ui, Some(&donor));
             });

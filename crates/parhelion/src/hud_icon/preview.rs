@@ -1,5 +1,5 @@
 //! Resolves the same appearance variant used when inheriting the compiled HUD icon.
-use tiger_pkg::PackageManager;
+use sundial::package_authoring::PackageManager;
 
 pub(super) fn load(
     manager: &PackageManager,

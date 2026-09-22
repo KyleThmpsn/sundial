@@ -490,7 +490,7 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
                 FactValue::Mask(u64_at(payload, node + EXTEND_TIMERS_MASK)?),
             ),
         ]),
-        33 => register_host_modifier_facts(payload, node),
+        33 => incoming_damage_facts(payload, node),
         35 => Ok(vec![
             Fact::new(
                 "Target Selector",
@@ -547,17 +547,21 @@ pub(crate) const CREATE_ENTITY_KEYS: [usize; 2] = [0x18, 0x1C];
 pub(crate) const CREATE_ENTITY_FLOATS: [usize; 4] = [0x20, 0x24, 0x28, 0x2C];
 
 /// Label of the attachment mode byte stored at `+0x02` of a Create Entity node.
-pub const CREATE_ENTITY_MODE_LABEL: &str = "Attachment Mode";
+pub const CREATE_ENTITY_MODE_LABEL: &str = "Attachment Target";
 /// Labels of the two keys stored at `+0x18` and `+0x1C` of a Create Entity node.
-pub const CREATE_ENTITY_KEY_LABELS: [&str; 2] = ["First Key", "Second Key"];
+pub const CREATE_ENTITY_KEY_LABELS: [&str; 2] = ["Cleanup Policy Key", "Removal Parameter"];
 /// Labels of the four floats stored at `+0x20` through `+0x2C` of a Create Entity node.
-pub const CREATE_ENTITY_FLOAT_LABELS: [&str; 4] =
-    ["First Float", "Second Float", "Third Float", "Fourth Float"];
+pub const CREATE_ENTITY_FLOAT_LABELS: [&str; 4] = [
+    "Removal Value X",
+    "Removal Value Y",
+    "Removal Value Z",
+    "Removal Value W",
+];
 
 /// The stored fields of a Create Entity node whose bytes the compiler reproduces verbatim.
 ///
-/// The offsets are measured from the stock data. Their gameplay roles are not traced, so
-/// the labels name the position of each field rather than a meaning.
+/// EC0AA0 resolves the target. 108B550 tests the cleanup key and writes the four-lane
+/// parameter on removal. Parameter names belong to the referenced entity's interface.
 fn create_entity_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
     let mut facts = vec![Fact::new(
         CREATE_ENTITY_MODE_LABEL,
@@ -774,21 +778,24 @@ fn reserve_transfer_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, Stri
     Ok(facts)
 }
 
-/// Kind 33: the modifier value, its input selector and limit, and the target predicate.
-fn register_host_modifier_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
+/// Kind 33: a literal/stat multiplier, optional source distance and stored object filter.
+fn incoming_damage_facts(payload: &[u8], node: usize) -> Result<Vec<Fact>, String> {
     let mut facts = vec![
         Fact::new(
-            "Modifier Value",
+            "Damage Multiplier",
             FactValue::Number(float(payload, node, 4)?),
         ),
         Fact::new(
-            "Input Selector",
+            "Multiplier Stat",
             FactValue::Selector(byte(payload, node, 8)?),
         ),
     ];
     let limit = float(payload, node, 0x0C)?;
     if limit >= 0.0 {
-        facts.push(Fact::new("Modifier Limit", FactValue::Number(limit)));
+        facts.push(Fact::new(
+            "Maximum Source Distance",
+            FactValue::Number(limit),
+        ));
     }
     target_filter_facts(payload, node + 0x10, &mut facts)?;
     Ok(facts)

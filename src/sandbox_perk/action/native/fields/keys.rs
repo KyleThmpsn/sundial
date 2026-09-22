@@ -153,7 +153,7 @@ const WARMIND_CELL_CHANCE: EventKey = EventKey {
 // event keys are, from the perks that check them.
 const CHARGED_WITH_LIGHT_STATE: EventKey = EventKey {
     hash: 0x59E3_47ED,
-    name: "Charged with Light",
+    name: "Charged with Light Stacks",
     evidence: "The engine name charged_with_light_stacks. Checked by 27 stock perks reading \"While Charged with Light\", from Striking Light and Heavy Handed to High-Energy Fire, and inverted by Charge Harvester (\"While you are not Charged with Light\").",
 };
 const SUBCLASS_ARC: EventKey = EventKey {
@@ -173,8 +173,8 @@ const SUPER_ACTIVE: EventKey = EventKey {
 };
 const IRON_SIGHTS: EventKey = EventKey {
     hash: 0xD9C4_6BC4,
-    name: "Iron Sights (Hip Fire)",
-    evidence: "The engine name iron_sights. Checked by Fan Fire (\"more effective in hip-fire\") and Archer's Gambit (\"hipfire precision hits\").",
+    name: "Iron Sights State",
+    evidence: "The engine name iron_sights. Fan Fire and Archer's Gambit compare this state as part of their hip-fire requirements. The comparison determines which state qualifies, so the key itself must not be labeled Hip Fire.",
 };
 const WEAPON_FIRING: EventKey = EventKey {
     hash: 0x59E4_FF8D,
@@ -183,7 +183,7 @@ const WEAPON_FIRING: EventKey = EventKey {
 };
 const NEARBY_ENEMIES_STATE: EventKey = EventKey {
     hash: 0x58A9_CB99,
-    name: "Nearby Enemies (Surrounded)",
+    name: "Nearby Enemy Count",
     evidence: "The engine name nearby_enemy_count, the same variable the compiled comparisons use. Checked by Distribution and Dynamo (\"near enemies\").",
 };
 const MELEE_ENERGY_STATE: EventKey = EventKey {
@@ -211,20 +211,20 @@ const FULLY_DRAWN: EventKey = EventKey {
     name: "Fully Drawn or Charged",
     evidence: "Checked by Overload Arrowheads and the Unstoppable bow perk (\"fully drawn arrows\") and Pyrogenesis (\"fully charging the laser\"), with Close the Gap and Archer's Gambit. No engine name resolved.",
 };
-const ALTERNATE_FIRE: EventKey = EventKey {
+const PERK_COUNTER: EventKey = EventKey {
     hash: 0x748A_92CC,
-    name: "Alternate Fire Mode",
-    evidence: "Checked by Release the Wolves and the Cerberus+1 Catalyst, both reading \"swap to\" another mode, with Ravenous Beast and Noble Rounds, whose alternate modes are undescribed. No engine name resolved.",
+    name: "Perk Counter",
+    evidence: "The engine name perk_counter. Release the Wolves, the Cerberus+1 Catalyst, Ravenous Beast and Noble Rounds compare this value. Its interpretation depends on the weapon's program, so it is not a universal alternate-fire switch.",
 };
-const MAGAZINE_EMPTY: EventKey = EventKey {
+const ROUNDS_LOADED: EventKey = EventKey {
     hash: 0x32CC_5402,
-    name: "Magazine Empty",
-    evidence: "Checked by Quick Access Sling (\"after emptying the magazine\") and Rapid-Fire Frame (\"fast reload when empty\"), with Swap Mag, Storm and Stress and Play with Your Prey. No engine name resolved.",
+    name: "Rounds Loaded",
+    evidence: "The engine name rounds_loaded. Quick Access Sling and Rapid-Fire Frame compare it to detect an empty magazine. The comparison and threshold determine which ammunition counts qualify. Selecting this value alone does not require an empty magazine.",
 };
-const WEAPON_ALTERNATE_STATE: EventKey = EventKey {
+const PERK_ACTIVE: EventKey = EventKey {
     hash: 0xA43A_8C2E,
-    name: "Weapon Alternate State",
-    evidence: "The key The Fundamentals reads to pick its element, checked here by The Fundamentals, Arc Conductor and Revolution.",
+    name: "Perk Active",
+    evidence: "The engine name perk_active. The Fundamentals, Arc Conductor and Revolution use this shared property for different weapon states. Its values belong to the receiving program, not a universal element or alternate-fire enumeration.",
 };
 
 const WEAPON_EQUIPPED_STATE: EventKey = EventKey {
@@ -232,8 +232,8 @@ const WEAPON_EQUIPPED_STATE: EventKey = EventKey {
     name: "Weapon Equipped",
     evidence: "The engine name equipped. Checked by Killing Tally (\"until it is stowed or reloaded\") and En Garde (\"immediately after swapping to this sword\").",
 };
-// Create Entity's first key names the entity's effect. The engine names resolve, and the
-// perks that write them agree.
+// These stock keys identify effect families, but Create Entity only tests whether its
+// cleanup key is empty. Choosing a named key does not grant that gameplay behavior.
 const OVERSHIELD: EventKey = EventKey {
     hash: 0x0D3C_3FB0,
     name: "Overshield",
@@ -278,9 +278,9 @@ const STATE_KEYS: &[EventKey] = &[
     WEAPON_FIRING,
     WEAPON_HOLSTERED,
     FULLY_DRAWN,
-    MAGAZINE_EMPTY,
-    ALTERNATE_FIRE,
-    WEAPON_ALTERNATE_STATE,
+    ROUNDS_LOADED,
+    PERK_COUNTER,
+    PERK_ACTIVE,
     SUPER_ACTIVE,
     SUBCLASS_ARC,
     SUBCLASS_VOID,
@@ -322,7 +322,7 @@ pub const SITES: &[(u32, usize, &[EventKey])] = &[
             PERSONAL_ASSISTANT,
             STICKY_GRENADES,
             WARMIND_CELL_CHANCE,
-            WEAPON_ALTERNATE_STATE,
+            PERK_ACTIVE,
         ],
     ),
     (0x8080_3E1D, 0x4, abilities::ALL),

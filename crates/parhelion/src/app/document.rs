@@ -26,6 +26,9 @@ impl PackageAuthoringApp {
         };
         let recipe_library = match RecipeLibrary::open_default() {
             Ok(library) => {
+                if let Some(refresh) = library.defaults_refresh() {
+                    log.push(LogEntry::info(refresh.summary("recipes")));
+                }
                 match library.scan() {
                     Ok(scan) => {
                         for error in scan.errors {
@@ -58,6 +61,7 @@ impl PackageAuthoringApp {
         self.library_state.refresh_metadata(&self.recipe_entries);
         self.enabled_recipe_paths = enabled_recipe_paths;
         self.limit_package_backups = backup_preferences.limit_package_backups;
+        self.show_technical_build = backup_preferences.show_technical_build;
         self.package_backup_retention = backup_preferences.package_backup_retention;
         self.backup_recipe_snapshots = backup_preferences.backup_recipe_snapshots;
         self.log = log;
@@ -97,7 +101,7 @@ impl PackageAuthoringApp {
                     &mut recipe,
                 )?;
             }
-            recipes.push(recipe);
+            recipes.push(self.rebase_library_donor(recipe)?);
         }
         Ok(BatchBuildRequest {
             package_directory: self.packages.clone(),
@@ -105,6 +109,53 @@ impl PackageAuthoringApp {
             ignore_installed_authored_overlays: self.ignore_installed,
             recipes,
         })
+    }
+
+    /// Rebuilds a recipe whose donor is a weapon from the library on that weapon's own recipe.
+    ///
+    /// The build reads the game's own tables, where a weapon Parhelion built does not exist,
+    /// so it cannot serve as a donor as it is. Its recipe can: the result keeps this recipe's
+    /// identity and settings on top of the base recipe's stock donor and changes. A base that
+    /// itself builds on a library weapon is followed the same way.
+    pub(super) fn rebase_library_donor(
+        &self,
+        recipe: WeaponRecipe,
+    ) -> Result<WeaponRecipe, String> {
+        let mut current = recipe;
+        let mut seen = Vec::new();
+        loop {
+            let Ok(donor) = current.donor.item_hash.parse_u32() else {
+                return Ok(current);
+            };
+            let Some(entry) = self
+                .recipe_entries
+                .iter()
+                .find(|entry| entry.identity_hash == donor && entry.identity_hash != 0)
+            else {
+                return Ok(current);
+            };
+            if seen.contains(&donor)
+                || entry.identity_hash == current.identity.item_hash.parse_u32().unwrap_or_default()
+            {
+                return Err(format!(
+                    "{} builds on itself through {}. Choose a stock weapon as its donor.",
+                    current.name, entry.name
+                ));
+            }
+            seen.push(donor);
+            let base = WeaponRecipe::load_json(&entry.path).map_err(|error| {
+                format!(
+                    "{} builds on {}, whose recipe could not be loaded: {error}",
+                    current.name, entry.name
+                )
+            })?;
+            current = current.rebased_onto(&base).map_err(|error| {
+                format!(
+                    "{} could not be built on {}: {error}",
+                    current.name, entry.name
+                )
+            })?;
+        }
     }
 
     pub(super) fn snapshot(&self) -> Result<BatchBuildSnapshot, String> {

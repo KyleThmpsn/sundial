@@ -14,7 +14,7 @@ use crate::{
     AuthoringError, AuthoringResult, PackageIdentity, PatchChain, PatchFile,
     appended_tags::{AppendedTagAllocator, MAX_PACKAGE_ENTRY_COUNT},
     block_codec::{EncodedPackageBlock, PackageBlockEncoder},
-    chain::discover_patch_chain,
+    chain::{PatchChains, discover_patch_chain},
     error::{invalid, validation},
     format::{
         BLOCK_HEADER_SIZE, BLOCK_SIZE, ENTRY_HEADER_SIZE, MAX_BLOCK_COUNT, PackageLayout,
@@ -169,6 +169,18 @@ pub(crate) fn build_extended_overlay_with_references(
     )
 }
 
+/// A package chain from the scan when the caller has one, discovered afresh when it does not.
+fn patch_chain(
+    package_directory: &Path,
+    chains: Option<&PatchChains>,
+    package_id: u16,
+) -> AuthoringResult<crate::chain::PatchChain> {
+    match chains {
+        Some(chains) => chains.chain(package_id),
+        None => discover_patch_chain(package_directory, package_id),
+    }
+}
+
 /// Returns the first datum index that an overlay may safely assign in a package chain.
 ///
 /// The latest generation's table can be shorter than an earlier generation's table. Returning
@@ -204,8 +216,49 @@ pub(crate) fn build_standalone_package_with_references(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_standalone_package_with_progress(
     package_directory: &Path,
+    package_id: u16,
+    output_file_name: &str,
+    new_tags: &[NewTagSpec],
+    reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_standalone_package_from(
+        package_directory,
+        None,
+        package_id,
+        output_file_name,
+        new_tags,
+        reference_overrides,
+        progress,
+    )
+}
+
+/// The same standalone package, with the package directory already scanned.
+pub(crate) fn build_standalone_package_with_chains(
+    chains: &PatchChains,
+    package_id: u16,
+    output_file_name: &str,
+    new_tags: &[NewTagSpec],
+    reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_standalone_package_from(
+        chains.directory(),
+        Some(chains),
+        package_id,
+        output_file_name,
+        new_tags,
+        reference_overrides,
+        progress,
+    )
+}
+
+fn build_standalone_package_from(
+    package_directory: &Path,
+    chains: Option<&PatchChains>,
     package_id: u16,
     output_file_name: &str,
     new_tags: &[NewTagSpec],
@@ -252,8 +305,14 @@ pub(crate) fn build_standalone_package_with_progress(
 
     let reference_modes = resolve_reference_modes(new_tags.len(), reference_overrides)?;
     progress("Preparing Entries");
-    let metadata =
-        resolve_appended_metadata(package_directory, package_id, 0, new_tags, &reference_modes)?;
+    let metadata = resolve_appended_metadata(
+        package_directory,
+        chains,
+        package_id,
+        0,
+        new_tags,
+        &reference_modes,
+    )?;
     let shared_tag_enrollments =
         resolve_shared_tag_enrollments(package_id, 0, new_tags, &metadata)?;
     let packing = packed::plan(new_tags.iter().map(|tag| tag.payload.len()))?;
@@ -442,8 +501,49 @@ fn ensure_package_id_unused(package_directory: &Path, package_id: u16) -> Author
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn build_extended_overlay_with_progress(
     package_directory: &Path,
+    package_id: u16,
+    replacements: &[ReplacementSpec],
+    new_tags: &[NewTagSpec],
+    reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_extended_overlay_from(
+        package_directory,
+        None,
+        package_id,
+        replacements,
+        new_tags,
+        reference_overrides,
+        progress,
+    )
+}
+
+/// The same overlay, with the package directory already scanned.
+pub(crate) fn build_extended_overlay_with_chains(
+    chains: &PatchChains,
+    package_id: u16,
+    replacements: &[ReplacementSpec],
+    new_tags: &[NewTagSpec],
+    reference_overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_extended_overlay_from(
+        chains.directory(),
+        Some(chains),
+        package_id,
+        replacements,
+        new_tags,
+        reference_overrides,
+        progress,
+    )
+}
+
+fn build_extended_overlay_from(
+    package_directory: &Path,
+    chains: Option<&PatchChains>,
     package_id: u16,
     replacements: &[ReplacementSpec],
     new_tags: &[NewTagSpec],
@@ -458,7 +558,7 @@ pub(crate) fn build_extended_overlay_with_progress(
     }
     validate_payloads(replacements, new_tags)?;
     let reference_modes = resolve_reference_modes(new_tags.len(), reference_overrides)?;
-    let chain = discover_patch_chain(package_directory, package_id)?;
+    let chain = patch_chain(package_directory, chains, package_id)?;
     let source_patch = chain.latest().patch;
     let target_patch = chain.next_patch()?;
     let output_file_name = chain.output_file_name()?;
@@ -514,6 +614,7 @@ pub(crate) fn build_extended_overlay_with_progress(
     progress("Preparing Entries");
     let appended_metadata = resolve_appended_metadata(
         package_directory,
+        chains,
         package_id,
         append_start_entry_count,
         new_tags,
@@ -805,6 +906,7 @@ struct AppendedEntryMetadata {
 
 fn resolve_appended_metadata(
     package_directory: &Path,
+    chains: Option<&PatchChains>,
     package_id: u16,
     original_entry_count: usize,
     new_tags: &[NewTagSpec],
@@ -819,7 +921,7 @@ fn resolve_appended_metadata(
         .map(|(spec, reference)| {
             let package = spec.template_tag.pkg_id();
             if let std::collections::btree_map::Entry::Vacant(entry) = packages.entry(package) {
-                entry.insert(template_entry_prefixes(package_directory, package)?);
+                entry.insert(template_entry_prefixes(package_directory, chains, package)?);
             }
             let mut prefix = *packages[&package]
                 .get(spec.template_tag.entry_index() as usize)
@@ -1067,7 +1169,7 @@ fn template_entry_prefix(
     package_directory: &Path,
     template_tag: TagHash,
 ) -> AuthoringResult<[u8; 8]> {
-    template_entry_prefixes(package_directory, template_tag.pkg_id())?
+    template_entry_prefixes(package_directory, None, template_tag.pkg_id())?
         .get(template_tag.entry_index() as usize)
         .copied()
         .ok_or_else(|| {
@@ -1079,9 +1181,10 @@ fn template_entry_prefix(
 
 fn template_entry_prefixes(
     package_directory: &Path,
+    chains: Option<&PatchChains>,
     package_id: u16,
 ) -> AuthoringResult<Vec<[u8; 8]>> {
-    let chain = discover_patch_chain(package_directory, package_id)?;
+    let chain = patch_chain(package_directory, chains, package_id)?;
     let path = &chain.latest().path;
     let source = PackageD2PreBL::open(
         path.to_str()

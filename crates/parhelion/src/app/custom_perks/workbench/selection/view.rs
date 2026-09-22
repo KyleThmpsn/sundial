@@ -18,7 +18,7 @@ pub(super) fn show(
         .resizable(false)
         .default_width(560.0_f32.min((screen.width() - 40.0).max(280.0)))
         .show(ctx, |ui| {
-            workbench_style(ui);
+            crate::app::style::perk_workbench_style(ui);
             ui.label(picker.target.label(donor, catalog));
             ui.label("Choose a perk to use in this choice. Custom perks do not need to be installed first.");
             ui.horizontal_wrapped(|ui| {

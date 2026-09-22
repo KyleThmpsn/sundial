@@ -3,6 +3,18 @@ use super::{
     WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
 pub fn value_text(field: &WeaponRuntimeField) -> String {
+    if let Some(meaning) =
+        super::modifiers::field_meaning(field.locator.type_handle, field.locator.value_offset)
+    {
+        let number = match field.value {
+            WeaponRuntimeValue::Signed(value) => Some(value),
+            WeaponRuntimeValue::Unsigned(value) => i64::try_from(value).ok(),
+            _ => None,
+        };
+        if let Some((value, name)) = meaning.choices.iter().find(|(v, _)| Some(*v) == number) {
+            return format!("{name} ({value})");
+        }
+    }
     match &field.value {
         WeaponRuntimeValue::Boolean(value) => value.to_string(),
         WeaponRuntimeValue::Signed(value) => value.to_string(),
@@ -83,6 +95,19 @@ pub fn kind_label(kind: &WeaponRuntimeValueKind) -> String {
 }
 
 pub fn field_tooltip(field: &WeaponRuntimeField) -> String {
+    let meaning =
+        super::modifiers::field_meaning(field.locator.type_handle, field.locator.value_offset)
+            .map(|meaning| meaning.help)
+            .or_else(|| {
+                super::health::field_help(field.locator.type_handle, field.locator.value_offset)
+            })
+            .or_else(|| {
+                super::invisibility::field_help(
+                    field.locator.type_handle,
+                    field.locator.value_offset,
+                )
+            })
+            .map_or(String::new(), |help| format!("\n{help}"));
     let source = match field.source {
         WeaponRuntimeFieldSource::GeneratedSchema => "generated package schema",
         WeaponRuntimeFieldSource::NativeMember => "named native member",
@@ -110,7 +135,7 @@ pub fn field_tooltip(field: &WeaponRuntimeField) -> String {
         ""
     };
     format!(
-        "{}{name_note}\nSource: {source}\nValue Type: {}\nOriginal: {}\nBinding: 0x{:08X}, resource index {} (zero-based)\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
+        "{}{name_note}{meaning}\nSource: {source}\nValue Type: {}\nOriginal: {}\nBinding: 0x{:08X}, resource index {} (zero-based)\nRoot: {} · schema 0x{:08X}\nType: 0x{:08X} · generated kind {generated_kind}\nRoot offset: 0x{:X} · resolved owner offset: 0x{:X} · {} bytes\nReflected path: {path}",
         field.name,
         kind_label(&field.kind),
         value_text(field),

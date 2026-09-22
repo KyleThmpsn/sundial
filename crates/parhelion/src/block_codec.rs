@@ -21,7 +21,34 @@ pub(crate) struct EncodedPackageBlock {
 #[derive(Default)]
 pub(crate) struct PackageBlockEncoder {
     #[cfg(all(windows, target_pointer_width = "64"))]
-    compressor: Option<oodle::Compressor>,
+    compressor: Option<std::sync::Arc<oodle::Compressor>>,
+}
+
+/// One loaded encoder per DLL path for the whole process.
+///
+/// Every package a build emits opens the same DLL, and opening it is a `LoadLibrary` plus an
+/// ABI check. The path is canonical by the time it reaches here, so it keys the cache.
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn shared_compressor(runtime: &Path) -> AuthoringResult<std::sync::Arc<oodle::Compressor>> {
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        sync::{Arc, Mutex, OnceLock},
+    };
+    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Arc<oodle::Compressor>>>> = OnceLock::new();
+    let mut encoders = ENCODERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| {
+            AuthoringError::InvalidInput("The package encoder cache is poisoned".into())
+        })?;
+    if let Some(compressor) = encoders.get(runtime) {
+        return Ok(Arc::clone(compressor));
+    }
+    let compressor =
+        Arc::new(oodle::Compressor::open(runtime).map_err(AuthoringError::InvalidInput)?);
+    encoders.insert(runtime.to_path_buf(), Arc::clone(&compressor));
+    Ok(compressor)
 }
 
 impl PackageBlockEncoder {
@@ -47,7 +74,7 @@ impl PackageBlockEncoder {
                 })?
                 .join("bin/x64/oo2core_3_win64.dll");
             let compressor = if runtime.is_file() {
-                Some(oodle::Compressor::open(&runtime).map_err(AuthoringError::InvalidInput)?)
+                Some(shared_compressor(&runtime)?)
             } else {
                 // Synthetic package views and platforms without a compatible encoder
                 // retain the existing valid raw-block representation.

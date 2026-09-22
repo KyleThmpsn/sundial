@@ -151,6 +151,8 @@ pub struct WeaponBuildReport {
     pub name: String,
     pub namespace: String,
     pub item_hash: u32,
+    pub item_definition_hash: u32,
+    pub item_string_hash: u32,
     pub icon_definition_hash: u32,
     pub item_index: u16,
     pub collectible_hash: u32,
@@ -159,6 +161,29 @@ pub struct WeaponBuildReport {
     pub unlock_definition_index: u16,
     pub unlock_bank: u8,
     pub unlock_slot: u16,
+    pub custom_plugs: Vec<CustomPlugBuildReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomPlugBuildReport {
+    pub socket_index: usize,
+    pub choice_index: usize,
+    pub name: Option<String>,
+    pub item_hash: u32,
+    pub item_index: u16,
+    pub definition_hash: u32,
+    pub string_hash: u32,
+    pub icon_definition_hash: Option<u32>,
+    pub name_hash: Option<u32>,
+    pub description_hash: Option<u32>,
+    pub perks: Vec<PrivatePerkBuildReport>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrivatePerkBuildReport {
+    pub source_perk_index: usize,
+    pub perk_hash: u32,
+    pub runtime_key: u32,
 }
 
 fn default_data_root() -> PathBuf {
@@ -291,9 +316,17 @@ fn plan_snapshot(
             bundle,
         })
     })();
-    // Compilation has released its managers and returned owned package bytes. Report cleanup
-    // failures through the normal build/UI error path before any staged output is committed.
-    source.finish(result)
+    // Compilation has released its managers and returned owned package bytes. A view that
+    // cannot be removed yet is reported as a build message, not a failure: the output is
+    // complete and the next build prunes the view.
+    source.finish(result, |warning| {
+        progress(BuildProgress::artifact(
+            BuildPhase::RecheckingSource,
+            format!("Build kept. {warning}"),
+            1,
+            1,
+        ));
+    })
 }
 
 fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, String> {
@@ -465,6 +498,8 @@ pub fn build_and_stage_snapshot_with_progress(
                     name: recipe.name.clone(),
                     namespace: recipe.namespace.clone(),
                     item_hash: plan.item_hash,
+                    item_definition_hash: u32::from(plan.definition_tag),
+                    item_string_hash: u32::from(plan.string_tag),
                     icon_definition_hash: u32::from(plan.icon_definition_tag),
                     item_index: plan.item_index,
                     collectible_hash: plan.collectible_hash,
@@ -473,6 +508,31 @@ pub fn build_and_stage_snapshot_with_progress(
                     unlock_definition_index: plan.unlock_definition_index,
                     unlock_bank: plan.unlock_bank,
                     unlock_slot: plan.unlock_slot,
+                    custom_plugs: plan
+                        .custom_plugs
+                        .iter()
+                        .map(|plug| CustomPlugBuildReport {
+                            socket_index: plug.socket_index,
+                            choice_index: plug.choice_index,
+                            name: plug.name.clone(),
+                            item_hash: plug.item_hash,
+                            item_index: plug.item_index,
+                            definition_hash: u32::from(plug.definition_tag),
+                            string_hash: u32::from(plug.string_tag),
+                            icon_definition_hash: plug.icon_definition_tag.map(u32::from),
+                            name_hash: plug.name_hash,
+                            description_hash: plug.description_hash,
+                            perks: plug
+                                .perks
+                                .iter()
+                                .map(|perk| PrivatePerkBuildReport {
+                                    source_perk_index: perk.source_perk_index,
+                                    perk_hash: perk.perk_hash,
+                                    runtime_key: perk.runtime_key,
+                                })
+                                .collect(),
+                        })
+                        .collect(),
                 })
                 .collect(),
             run_directory,
@@ -711,12 +771,12 @@ impl PackageSource {
         }
     }
 
-    fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
+    fn finish<T>(self, result: Result<T, String>, warn: impl FnOnce(String)) -> Result<T, String> {
         let cleanup = match self {
             Self::Direct(_) => Ok(()),
             Self::Filtered(view) => view.close(),
         };
-        package_views::finish_with_cleanup(result, cleanup)
+        package_views::finish_with_cleanup(result, cleanup, warn)
     }
 }
 
@@ -842,8 +902,12 @@ impl FilteredPackageView {
         self.cleanup()
     }
 
-    pub(crate) fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
-        package_views::finish_with_cleanup(result, self.close())
+    pub(crate) fn finish<T>(
+        self,
+        result: Result<T, String>,
+        warn: impl FnOnce(String),
+    ) -> Result<T, String> {
+        package_views::finish_with_cleanup(result, self.close(), warn)
     }
 
     fn cleanup(&mut self) -> Result<(), String> {
@@ -1054,19 +1118,43 @@ fn source_artifact_reports_with_progress(
             ));
         }
     }
+    // The stock packages are large and hashing them is pure file reading, so a batch runs on
+    // its own threads. Batching keeps the reports and the progress callback in source order.
     let mut reports = Vec::with_capacity(sources.len());
-    for (file_name, path) in &sources {
-        progress(file_name, reports.len(), sources.len());
-        let digest = digest_file(path)
-            .map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
-        reports.push(ArtifactMetadata {
-            file_name: file_name.clone(),
-            byte_length: digest.byte_length,
-            sha256: digest.sha256,
-        });
-        progress(file_name, reports.len(), sources.len());
+    for batch in sources.chunks(hash_worker_count()) {
+        for ((file_name, path), digest) in batch.iter().zip(digest_files(batch)) {
+            progress(file_name, reports.len(), sources.len());
+            let digest =
+                digest.map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
+            reports.push(ArtifactMetadata {
+                file_name: file_name.clone(),
+                byte_length: digest.byte_length,
+                sha256: digest.sha256,
+            });
+            progress(file_name, reports.len(), sources.len());
+        }
     }
     Ok(reports)
+}
+
+/// Enough threads to keep the disk busy, capped so a build does not starve the editor.
+fn hash_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .clamp(1, 8)
+}
+
+/// Hashes a batch on scoped threads and returns the results in the order given.
+fn digest_files(batch: &[(String, PathBuf)]) -> Vec<std::io::Result<crate::artifact::FileDigest>> {
+    std::thread::scope(|scope| {
+        batch
+            .iter()
+            .map(|(_, path)| scope.spawn(move || digest_file(path)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().expect("a file hash worker panicked"))
+            .collect()
+    })
 }
 
 fn validate_source_artifacts_unchanged(

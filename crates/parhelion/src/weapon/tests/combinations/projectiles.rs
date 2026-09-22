@@ -178,7 +178,7 @@ const EFFECTS: &[Effect] = &[
 ];
 
 fn speed_values(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     globals: &[u8],
     effect: &Effect,
     multiplier: f32,
@@ -330,8 +330,8 @@ fn recipe(
 }
 
 fn verify_stock_graphs(
-    manager: &tiger_pkg::PackageManager,
-    stock: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
+    stock: &sundial::package_authoring::PackageManager,
     globals: &[u8],
     recipe: &WeaponRecipe,
 ) {

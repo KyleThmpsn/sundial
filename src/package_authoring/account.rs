@@ -11,7 +11,10 @@ use std::{
     path::{Path, PathBuf},
 };
 mod client_settings;
-pub use client_settings::{AuthoredClientSettings, preview_authored_client_settings};
+pub use client_settings::{
+    AuthoredClientSettings, preview_authored_client_settings,
+    preview_authored_client_settings_for_runtime,
+};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredProfileSyncReport {
     pub settings_path: PathBuf,
@@ -56,6 +59,26 @@ pub fn preview_authored_account_replacement_with_slots(
 ) -> Result<AuthoredAccountCleanup, String> {
     authoring_bridge::preview_account_replacement(
         install,
+        item_hashes,
+        unlocks,
+        socket_changes,
+        slots,
+    )
+}
+
+/// Uses an already verified runtime snapshot so account review and package mutation share one
+/// runtime identity and reject any later DLL change.
+pub fn preview_authored_account_replacement_for_runtime(
+    install: &Path,
+    runtime: &crate::package_authoring::RuntimeSnapshot,
+    item_hashes: &BTreeSet<u32>,
+    unlocks: &[AuthoredCollectionUnlock],
+    socket_changes: &[AuthoredSocketChange],
+    slots: Option<&AuthoredSlotReplacement>,
+) -> Result<AuthoredAccountCleanup, String> {
+    authoring_bridge::preview_account_replacement_with_runtime(
+        install,
+        runtime,
         item_hashes,
         unlocks,
         socket_changes,

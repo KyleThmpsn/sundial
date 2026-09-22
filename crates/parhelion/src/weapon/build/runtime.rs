@@ -54,7 +54,19 @@ pub(super) fn author_entities(
                 stock_entity_assignments,
                 donor,
             )?;
-            let has_runtime_edits = !component_donors.is_empty()
+            #[cfg(feature = "d2-model-importer")]
+            let imported_animation = donor
+                .weapon
+                .overrides
+                .imported_graph
+                .as_ref()
+                .map(crate::weapon::custom_runtime::animation::load)
+                .transpose()?
+                .flatten();
+            #[cfg(not(feature = "d2-model-importer"))]
+            let imported_animation: Option<()> = None;
+            let has_runtime_edits = imported_animation.is_some()
+                || !component_donors.is_empty()
                 || hud_key.is_some()
                 || donor.weapon.overrides.ammo_type.is_some()
                 || !donor.weapon.overrides.runtime_values.is_empty()
@@ -122,6 +134,17 @@ pub(super) fn author_entities(
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
             )?;
+            #[cfg(feature = "d2-model-importer")]
+            if let Some(animation) = &imported_animation {
+                crate::weapon::custom_runtime::animation::author(
+                    manager,
+                    animation,
+                    pattern_entity_tag,
+                    &mut pattern_entity,
+                    weapon_runtime_tag_allocator,
+                    weapon_runtime_new_tags,
+                )?;
+            }
             let authored_entity_tag = weapon_runtime_tag_allocator.assigned_tag(
                 weapon_runtime_new_tags.len(),
                 "Authored runtime weapon entity",

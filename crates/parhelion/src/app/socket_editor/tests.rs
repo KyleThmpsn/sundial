@@ -502,14 +502,14 @@ fn a_chosen_behavior_leads_its_sockets_without_dropping_the_authors_choice() {
         behavior: entry.id.to_owned(),
     }];
 
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
 
     assert_eq!(chosen(&recipe, 1), vec![trait_plug, 0x1234_5678]);
 
     // Deselecting takes back only the lane's leading plug, so the choice that was there before
     // comes back exactly as it was.
     recipe.overrides.additional_behaviors.clear();
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     assert_eq!(chosen(&recipe, 1), vec![0x1234_5678]);
 }
 
@@ -542,7 +542,7 @@ fn a_perk_the_author_moved_to_their_own_socket_leaves_the_donors_lane_alone() {
         behavior: entry.id.to_owned(),
     }];
 
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
 
     assert_eq!(chosen(&recipe, 1), vec![0x1234_5678, 0x8765_4321]);
     assert_eq!(chosen(&recipe, 2), vec![trait_plug]);
@@ -559,12 +559,12 @@ fn turning_off_included_perks_releases_the_sockets_again() {
     recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
         behavior: entry.id.to_owned(),
     }];
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     let held = chosen(&recipe, 1);
     assert_eq!(held.first().copied(), entry.trait_plug);
 
     recipe.overrides.skip_behavior_perks = true;
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     assert_ne!(chosen(&recipe, 1).first().copied(), entry.trait_plug);
 }
 
@@ -589,7 +589,7 @@ fn a_donors_own_catalogued_perk_is_never_taken_back() {
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
 
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
 
     assert!(
         recipe.overrides.socket_columns.is_empty(),
@@ -622,7 +622,7 @@ fn a_perk_the_author_made_default_stays_when_no_behavior_claims_it() {
     make_choice_default(&mut recipe, donor.sockets.len(), 1, &inherited, 1).unwrap();
     assert_eq!(chosen(&recipe, 1), vec![trait_plug, 0x1234_5678]);
 
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
 
     assert_eq!(chosen(&recipe, 1), vec![trait_plug, 0x1234_5678]);
 }
@@ -651,7 +651,7 @@ fn deselecting_one_of_two_intrinsic_behaviors_releases_only_its_own_perk() {
             behavior: entry.id.to_owned(),
         })
         .collect();
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     let held = chosen(&recipe, 0);
     assert!(
         held.contains(&first_plug) && held.contains(&second_plug),
@@ -660,7 +660,7 @@ fn deselecting_one_of_two_intrinsic_behaviors_releases_only_its_own_perk() {
 
     // Deselect the first, whose perk is not at the head of the lane.
     recipe.overrides.additional_behaviors.remove(0);
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     let held = chosen(&recipe, 0);
     assert!(!held.contains(&first_plug), "{held:x?}");
     assert!(held.contains(&second_plug), "{held:x?}");
@@ -695,15 +695,47 @@ fn a_custom_perk_follows_its_plug_when_a_behavior_leads_the_lane() {
         behavior: entry.id.to_owned(),
     }];
 
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
 
     assert_eq!(chosen(&recipe, 1), vec![trait_plug, 0x1234_5678]);
     assert_eq!(recipe.overrides.socket_plug_variants.len(), 1);
     assert_eq!(recipe.overrides.socket_plug_variants[0].choice_index, 1);
 
     recipe.overrides.additional_behaviors.clear();
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
     assert_eq!(chosen(&recipe, 1), vec![0x1234_5678]);
     assert_eq!(recipe.overrides.socket_plug_variants.len(), 1);
     assert_eq!(recipe.overrides.socket_plug_variants[0].choice_index, 0);
+}
+
+/// A weapon has one frame. Choosing a behavior puts its frame in the intrinsic lane alone, in
+/// place of the donor's, and dropping the behavior gives the donor's frame back.
+#[test]
+fn a_borrowed_frame_replaces_the_donors_frame_and_gives_it_back_when_released() {
+    let donor = behavior_donor();
+    let entry = crate::weapon_behavior::CATALOG
+        .iter()
+        .find(|entry| entry.intrinsic_plug.is_some())
+        .expect("an intrinsic-pinning behavior");
+    let frame = entry.intrinsic_plug.unwrap();
+    let mut recipe = behavior_recipe();
+    let mut pins = BehaviorPins::default();
+    recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
+        behavior: entry.id.to_owned(),
+    }];
+
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
+    assert_eq!(
+        chosen(&recipe, 0),
+        vec![frame],
+        "the donor's frame 10 is replaced"
+    );
+
+    recipe.overrides.additional_behaviors.clear();
+    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor, &|_| true);
+    assert!(
+        chosen(&recipe, 0).is_empty(),
+        "the lane inherits the donor's frame again: {:x?}",
+        chosen(&recipe, 0)
+    );
 }

@@ -9,6 +9,7 @@ mod sharing;
 
 /// Validated stock rows and decoded tables behind one private socket plug donor.
 struct PrivatePlugSource {
+    cosmetic: bool,
     item_index: usize,
     definition_tag: TagHash,
     string_tag: TagHash,
@@ -139,8 +140,25 @@ fn read_private_plug_source(
             variant.source_plug_hash
         )));
     }
-    validate_weapon_sandbox_perk_parallelism(&definition, &strings, sandbox_perk_string_template)?;
-    let perk_indices = weapon_sandbox_perks(&definition)?;
+    // A native cosmetic plug has no investment resource or finished-perk strings.
+    // Keep that absence when cloning presentation-only choices.
+    let cosmetic = variant.replace_effects
+        && variant.sandbox_perks.is_empty()
+        && variant.additional_sandbox_perks.is_empty()
+        && variant.investment_stats.is_empty()
+        && variant.classification_donor_hash.is_none()
+        && read_u64(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET)? == 0
+        && read_u64(&strings, ITEM_STRING_SANDBOX_PERK_RESOURCE_POINTER_OFFSET)? == 0;
+    let perk_indices = if cosmetic {
+        Vec::new()
+    } else {
+        validate_weapon_sandbox_perk_parallelism(
+            &definition,
+            &strings,
+            sandbox_perk_string_template,
+        )?;
+        weapon_sandbox_perks(&definition)?
+    };
     for &index in &variant.additional_sandbox_perks {
         if !variant.replace_effects && perk_indices.contains(&index) {
             return Err(invalid(format!(
@@ -163,6 +181,7 @@ fn read_private_plug_source(
         .map(|hash| read_plug_classification(sources, hash, &mut classification_perk_index))
         .transpose()?;
     Ok(PrivatePlugSource {
+        cosmetic,
         item_index,
         definition_tag,
         string_tag,
@@ -476,6 +495,7 @@ pub(super) fn plan(
                         });
                     }
                     custom_plugs.push(ResolvedCustomPlug {
+                        cosmetic: source.cosmetic,
                         replace_effects: variant.replace_effects,
                         investment_stats: variant.investment_stats,
                         uses: vec![usage],
@@ -546,7 +566,9 @@ pub(super) fn author_payloads(
     for custom_plug in custom_plugs {
         (|| -> AuthoringResult<()> {
             let mut definition = custom_plug.source_definition.clone();
-            if custom_plug.replace_effects {
+            if custom_plug.cosmetic {
+                // Cosmetics retain their absent investment block.
+            } else if custom_plug.replace_effects {
                 replace_custom_plug_stats(&mut definition, &custom_plug.investment_stats)?;
             } else {
                 apply_custom_plug_stats(&mut definition, &custom_plug.investment_stats)?;
@@ -576,7 +598,7 @@ pub(super) fn author_payloads(
                     description_hash,
                 )?;
             }
-            if custom_plug.replace_effects || !custom_plug.additional_sandbox_perks.is_empty() {
+            if !custom_plug.cosmetic && (custom_plug.replace_effects || !custom_plug.additional_sandbox_perks.is_empty()) {
                 let mut perks = if custom_plug.replace_effects {
                     custom_plug.effect_indices.clone()
                 } else {
@@ -682,11 +704,13 @@ pub(super) fn author_payloads(
                     authored_perk_index,
                 )?;
             }
+            if !custom_plug.cosmetic {
             validate_weapon_sandbox_perk_parallelism(
                 &definition,
                 &strings,
                 sandbox_perk_string_template,
             )?;
+            }
             custom_plug_definitions.push(NewTagSpec {
                 template_tag: custom_plug.source_definition_tag,
                 payload: definition,

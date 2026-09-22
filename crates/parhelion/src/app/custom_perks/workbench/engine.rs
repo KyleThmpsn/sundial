@@ -17,10 +17,12 @@ enum View {
 #[derive(Default)]
 pub(super) struct EngineCatalog {
     pub open: bool,
+    pub(super) retry_requested: bool,
     view: View,
     asset_query: String,
     content: content::Browser,
     export_error: Option<String>,
+    pub(super) scan_details: bool,
     pub(super) kinds: kinds::Kinds,
     pub(super) copy_requested: Option<u16>,
 }
@@ -48,7 +50,7 @@ impl EngineCatalog {
             .max_width((ctx.screen_rect().width() - 40.0).max(560.0))
             .max_height((ctx.screen_rect().height() - 64.0).max(360.0))
             .show(ctx, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 if !experimental {
                     self.view = View::Kinds;
                 }
@@ -65,6 +67,10 @@ impl EngineCatalog {
                             ui.selectable_value(&mut self.view, view, label);
                         }
                         crate::app::style::more_menu(ui, |ui| {
+                            if ui.button("Scan Details").clicked() {
+                                self.scan_details = true;
+                                ui.close_menu();
+                            }
                             if ui
                                 .add_enabled(
                                     browser.discovery.data.is_some(),
@@ -78,12 +84,31 @@ impl EngineCatalog {
                         });
                     }
                 });
+                if browser.discovery.error.is_some()
+                    && !browser.discovery.busy()
+                    && ui.button("Retry Scan").clicked()
+                {
+                    self.retry_requested = true;
+                }
                 if let Some(error) = &self.export_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                if self.view != View::Assets
+                    && let Some(error) = &browser.discovery.error
+                {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 ui.separator();
                 ui.push_id(self.view, |ui| match self.view {
-                    View::Kinds => self.draw(ui, choices, sources, browser.discovery, experimental),
+                    View::Kinds => {
+                        if let Some(effect) =
+                            self.draw(ui, choices, sources, browser.discovery, experimental)
+                            && experimental
+                        {
+                            self.content.open_effect(usize::from(effect));
+                            self.view = View::Perks;
+                        }
+                    }
                     View::Assets => {
                         browser.draw(
                             ui,
@@ -93,10 +118,44 @@ impl EngineCatalog {
                             None,
                         );
                     }
-                    _ => self.draw_content(ui, choices, browser.discovery),
+                    _ => {
+                        if let Some(content::Jump::Kind(family, kind)) = self.draw_content(
+                            ui,
+                            choices,
+                            browser.discovery,
+                            sources,
+                            browser.catalog,
+                        ) {
+                            self.kinds.open(family, kind);
+                            self.view = View::Kinds;
+                        }
+                    }
                 });
             });
         self.open = open;
+        if self.scan_details {
+            egui::Window::new("Scan Details")
+                .open(&mut self.scan_details)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    crate::app::style::perk_workbench_style(ui);
+                    if browser.discovery.busy() {
+                        ui.spinner();
+                        ui.label("Scanning Resources…");
+                    }
+                    if let Some((current, total)) = browser.discovery.progress {
+                        ui.label(format!("Scan Progress: {current} of {total}"));
+                    }
+                    if let Some(error) = &browser.discovery.error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                    if let Some(data) = &browser.discovery.data {
+                        sundial::ui::catalog::scan::show(ui, data);
+                    } else {
+                        ui.label("No catalog snapshot is available.");
+                    }
+                });
+        }
     }
 
     fn export_map(&mut self, discovery: &discovery::Discovery) {
@@ -131,7 +190,7 @@ impl EngineCatalog {
         sources: &PerkSources,
         discovery: &discovery::Discovery,
         experimental: bool,
-    ) {
+    ) -> Option<u16> {
         let source = if let Some(data) = &discovery.data {
             kinds::Source::Ready(&data.perks)
         } else if discovery.busy() {
@@ -139,11 +198,12 @@ impl EngineCatalog {
         } else {
             kinds::Source::Unavailable
         };
+        self.kinds.reference_links = experimental;
         let mut copy = None;
         let mut inspect = None;
         let mut actions =
             |ui: &mut egui::Ui, selected: Option<u16>, location: kinds::UseLocation| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 let available = selected
                     .is_some_and(|index| choices.iter().any(|choice| choice.perk_index == index));
                 if ui
@@ -172,7 +232,8 @@ impl EngineCatalog {
                     }
                 }
             };
-        self.kinds
+        let open = self
+            .kinds
             .draw(ui, sources, source, &mut Some(&mut actions));
         if let Some(index) = copy {
             self.copy_requested = Some(index);
@@ -180,6 +241,7 @@ impl EngineCatalog {
         if let Some(index) = inspect {
             crate::app::runtime_dependencies::request(ui.ctx(), Some(index));
         }
+        open
     }
 
     fn draw_content(
@@ -187,24 +249,34 @@ impl EngineCatalog {
         ui: &mut egui::Ui,
         choices: &[WeaponSandboxPerkChoice],
         discovery: &discovery::Discovery,
-    ) {
+        sources: &PerkSources,
+        catalog: Option<&InvestmentCatalog>,
+    ) -> Option<content::Jump> {
         if let Some(data) = &discovery.data {
             let view = match self.view {
                 View::Perks => content::View::Perks,
                 View::Paths => content::View::Paths,
                 View::References => content::View::References,
-                _ => return,
+                _ => return None,
             };
-            self.content.draw(ui, view, choices, data);
+            return self.content.draw(
+                ui,
+                view,
+                choices,
+                data,
+                discovery.packages(),
+                sources,
+                catalog,
+            );
         } else if discovery.busy() {
             ui.spinner();
             ui.label("Reading Native Content…");
             if let Some((current, total)) = discovery.progress {
                 ui.small(format!("{current} of {total} resources"));
             }
+        } else {
+            ui.label("Native content is unavailable. Choose a game installation to browse its references.");
         }
-        if let Some(error) = &discovery.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
+        None
     }
 }

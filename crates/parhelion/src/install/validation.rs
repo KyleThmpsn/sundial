@@ -89,11 +89,14 @@ pub(super) fn validate_request_with_progress(
         find_obsolete_artifacts(&target_packages_directory, &manifest.artifacts)?;
     progress(InstallProgress::item(
         InstallPhase::Checking,
-        "Checking Sunrise Cache",
+        "Checking Runtime Cache",
         5,
         7,
     ));
-    let sunrise_build_cache = validate_sunrise_build_cache(&target_packages_directory)?;
+    let sunrise_build_cache = validate_sunrise_build_cache_with(
+        &target_packages_directory,
+        request.runtime_snapshot_check,
+    )?;
     progress(InstallProgress::item(
         InstallPhase::Checking,
         "Checking Package Caches",
@@ -111,6 +114,7 @@ pub(super) fn validate_request_with_progress(
         request,
         &target_packages_directory,
         &staged_run_directory,
+        &sunrise_build_cache.runtime,
         progress,
     )
     .map_err(InstallError::validation)?;

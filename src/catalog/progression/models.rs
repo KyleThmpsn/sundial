@@ -248,7 +248,7 @@ pub(crate) struct ProgressionContextDef {
 
 #[derive(Clone, Debug)]
 pub(in crate::catalog) struct PresentationNodeDef {
-    pub(super) hash: u64,
+    pub(in crate::catalog) hash: u64,
     pub(super) name: String,
     pub(super) parents: Vec<usize>,
     pub(super) objective_index: Option<usize>,

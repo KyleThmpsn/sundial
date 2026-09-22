@@ -6,11 +6,17 @@ use std::{
     process::Command,
 };
 
+pub use crate::package_runtime::reader::PackageManager;
+pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
 use eframe::egui;
 use serde::de::DeserializeOwned;
-use tiger_pkg::PackageManager;
 
 pub use crate::investment_localization::resolve_item_name;
+
+/// Shared display-only classification used by the native item pickers.
+pub fn is_dummy_item(hash: u32) -> bool {
+    crate::dummy_items::contains(u64::from(hash))
+}
 
 /// Validated native weapon bucket capacities, shared with the installed inventory catalog.
 pub fn weapon_bucket_capacities(
@@ -145,9 +151,8 @@ pub mod sandbox_perk {
         sandbox_perk_action_boxed_value_offset, sandbox_perk_index_count,
         sandbox_perk_index_hash_at, sandbox_perk_runtime_assignment,
         sandbox_perk_runtime_assignment_at, sandbox_perk_runtime_assignment_count,
-        sandbox_perk_runtime_graph_sources, sunrise_perk_projection_warning,
-        validate_finished_sandbox_perk_catalog, validate_sandbox_perk_index_catalog,
-        validate_sandbox_perk_runtime_map,
+        sandbox_perk_runtime_graph_sources, validate_finished_sandbox_perk_catalog,
+        validate_sandbox_perk_index_catalog, validate_sandbox_perk_runtime_map,
     };
     pub use crate::sandbox_perk::{
         action, activation, dependencies, ingredients, nodes, program, projectile,
@@ -180,7 +185,6 @@ pub mod weapon_entity {
 
 /// Typed, data-driven weapon runtime discovery shared with package authoring tools.
 pub mod weapon_runtime {
-    pub use crate::weapon_runtime::presentation;
     pub use crate::weapon_runtime::{
         NativeStructure, NativeStructureField, ResolvedWeaponRuntimeField, WeaponRuntimeBinding,
         WeaponRuntimeEntitySource, WeaponRuntimeField, WeaponRuntimeFieldLocator,
@@ -195,6 +199,7 @@ pub mod weapon_runtime {
         load_weapon_runtime_resource_shape, native_member_names, native_type_name,
         resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
+    pub use crate::weapon_runtime::{modifiers, presentation};
 }
 
 /// Computes the client's case-insensitive 32-bit FNV-1 name hash.
@@ -346,9 +351,14 @@ pub fn validate_shadowkeep_packages_directory(packages: &Path) -> Result<PathBuf
     Ok(packages)
 }
 
-/// Identify the active module, not stale settings or account folders left by another runtime.
-pub fn uses_dawn(install: &Path) -> bool {
-    crate::package_runtime::installed_runtime_is_dawn(install)
+/// Identifies and snapshots the active runtime from its installed DLL.
+pub fn installed_runtime(install: &Path) -> Result<RuntimeSnapshot, String> {
+    crate::package_runtime::installed_runtime(install)
+}
+
+/// Confirms that runtime precedence, location, and DLL bytes still match a prior snapshot.
+pub fn verify_installed_runtime(install: &Path, expected: &RuntimeSnapshot) -> Result<(), String> {
+    crate::package_runtime::verify_installed_runtime(install, expected)
 }
 
 /// Checks that the selected installation advertises the runtime hooks required by authoring.

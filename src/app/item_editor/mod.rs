@@ -1,5 +1,6 @@
 //! Shared item editing controls used by equipment and inventory views.
 
+pub(crate) mod appearance;
 mod catalog_picker;
 mod context_menu;
 mod definition_picker;
@@ -26,6 +27,7 @@ pub(crate) use catalog_picker::{
 pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request, draw_definition_picker_with_open_request_and_footer,
     draw_definition_picker_with_open_request_and_item_filter,
+    draw_definition_picker_with_open_request_item_filter_and_footer,
 };
 pub(crate) use filters::{ItemFilter, ItemFilterScope, draw_item_filter_bar};
 pub(crate) use header::{

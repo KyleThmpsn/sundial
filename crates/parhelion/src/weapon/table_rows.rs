@@ -358,13 +358,48 @@ pub(super) fn append_terminal_keyed_row(
 }
 
 pub(super) fn append_keyed_auxiliary_pair(
-    mut data: Vec<u8>,
+    data: Vec<u8>,
     index: Vec<u8>,
     donor_item_hash: u32,
     authored_item_hash: u32,
     layout: KeyedAuxiliaryLayout,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
-    let arrays = validate_keyed_auxiliary_alignment(&data, &index, layout)?;
+    let template_index = match classify_keyed_auxiliary_donor(
+        &data,
+        &index,
+        donor_item_hash,
+        authored_item_hash,
+        layout,
+    )? {
+        KeyedAuxiliaryDonorPresence::Present(index) => index,
+        KeyedAuxiliaryDonorPresence::Absent => {
+            return Err(invalid(format!(
+                "Donor item 0x{donor_item_hash:08X} is missing from the {} table",
+                layout.description,
+            )));
+        }
+    };
+    append_keyed_auxiliary_pair_at(
+        data,
+        index,
+        donor_item_hash,
+        authored_item_hash,
+        template_index,
+        layout,
+    )
+}
+
+/// Appends with the donor row already classified. A caller that has just proved the donor is
+/// present, and the pair aligned and free of duplicates, does not pay for that walk again.
+pub(super) fn append_keyed_auxiliary_pair_at(
+    mut data: Vec<u8>,
+    index: Vec<u8>,
+    donor_item_hash: u32,
+    authored_item_hash: u32,
+    template_index: usize,
+    layout: KeyedAuxiliaryLayout,
+) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
+    let arrays = keyed_auxiliary_arrays(&data, &index, layout)?;
     let count = arrays.count;
     let header = arrays.header;
     let rows = arrays.rows;
@@ -381,21 +416,6 @@ pub(super) fn append_keyed_auxiliary_pair(
             layout.description
         )));
     }
-    let template_index = match classify_keyed_auxiliary_donor(
-        &data,
-        &index,
-        donor_item_hash,
-        authored_item_hash,
-        layout,
-    )? {
-        KeyedAuxiliaryDonorPresence::Present(index) => index,
-        KeyedAuxiliaryDonorPresence::Absent => {
-            return Err(invalid(format!(
-                "Donor item 0x{donor_item_hash:08X} is missing from the {} table",
-                layout.description,
-            )));
-        }
-    };
 
     let mut nested_targets = Vec::with_capacity(count);
     for row_index in 0..count {
@@ -469,11 +489,11 @@ pub(super) fn append_keyed_auxiliary_pair(
     Ok((data, index))
 }
 
-pub(super) fn validate_keyed_auxiliary_alignment(
+fn keyed_auxiliary_extents(
     data: &[u8],
     index: &[u8],
     layout: KeyedAuxiliaryLayout,
-) -> AuthoringResult<KeyedAuxiliaryArrays> {
+) -> AuthoringResult<(KeyedAuxiliaryArrays, usize)> {
     let (count, header, rows, class) = array_at(data, 8)?;
     let (index_count, _, index_rows, index_class) = array_at(index, 8)?;
     let rows_end = rows
@@ -512,9 +532,36 @@ pub(super) fn validate_keyed_auxiliary_alignment(
         )));
     }
 
+    Ok((
+        KeyedAuxiliaryArrays {
+            count,
+            header,
+            rows,
+        },
+        index_rows,
+    ))
+}
+
+/// The pair's shape, checked, without walking its keys. Enough for a row count or a row offset
+/// between a classification and the structure check that follows every append, both of which
+/// walk every key.
+pub(super) fn keyed_auxiliary_arrays(
+    data: &[u8],
+    index: &[u8],
+    layout: KeyedAuxiliaryLayout,
+) -> AuthoringResult<KeyedAuxiliaryArrays> {
+    keyed_auxiliary_extents(data, index, layout).map(|(arrays, _)| arrays)
+}
+
+pub(super) fn validate_keyed_auxiliary_alignment(
+    data: &[u8],
+    index: &[u8],
+    layout: KeyedAuxiliaryLayout,
+) -> AuthoringResult<KeyedAuxiliaryArrays> {
+    let (arrays, index_rows) = keyed_auxiliary_extents(data, index, layout)?;
     let mut keys = BTreeSet::new();
-    for row_index in 0..count {
-        let primary_key = read_u32(data, rows + row_index * layout.row_size)?;
+    for row_index in 0..arrays.count {
+        let primary_key = read_u32(data, arrays.rows + row_index * layout.row_size)?;
         let index_key = read_u32(index, index_rows + row_index * layout.index_row_size)?;
         if primary_key != index_key || !keys.insert(primary_key) {
             return Err(invalid(format!(
@@ -523,11 +570,7 @@ pub(super) fn validate_keyed_auxiliary_alignment(
             )));
         }
     }
-    Ok(KeyedAuxiliaryArrays {
-        count,
-        header,
-        rows,
-    })
+    Ok(arrays)
 }
 
 pub(super) fn validate_keyed_auxiliary_structure(

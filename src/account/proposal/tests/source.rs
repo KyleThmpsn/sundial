@@ -30,6 +30,9 @@ fn verify_selected_source(version: u64) {
     let dir = crate::test_support::TestDirectory::new(&format!("proposal-source-{version}"));
     let settings = dir.0.join("settings.json");
     let database = dir.0.join("data/investment.sqlite3");
+    let inactive_dawn = crate::persistence::dawn_path(&settings);
+    crate::persistence::dawn_account::tests::create_fixture(&inactive_dawn);
+    let dawn_before = read(&inactive_dawn).unwrap();
     crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
     let db = rusqlite::Connection::open(&database).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE extension(value TEXT); INSERT INTO extension VALUES('keep');").unwrap();
@@ -70,6 +73,7 @@ fn verify_selected_source(version: u64) {
         );
     }
     verify_recovery(&settings, active, &db, &plan, &document, version);
+    assert_eq!(read(&inactive_dawn).unwrap(), dawn_before);
 }
 
 fn verify_recovery(
@@ -103,6 +107,9 @@ fn sqlite_settings_never_fall_back_to_valid_inactive_json() {
     let settings = dir.0.join("settings.json");
     let bytes = br#"{"version":18,"state":{"characters":[]}}"#;
     std::fs::write(&settings, bytes).unwrap();
+    crate::persistence::dawn_account::tests::create_fixture(&crate::persistence::dawn_path(
+        &settings,
+    ));
     assert!(preview_replacement(&settings, &BTreeSet::new(), &[], &[], None).is_err());
     assert_eq!(std::fs::read(settings).unwrap(), bytes);
 }

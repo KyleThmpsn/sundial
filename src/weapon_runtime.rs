@@ -10,8 +10,11 @@ mod tests;
 
 mod registry;
 use registry::*;
+mod health;
 mod identity;
+mod invisibility;
 pub use identity::{native_member_names, native_type_name};
+pub mod modifiers;
 
 mod values;
 pub use values::encode_weapon_runtime_value;
@@ -40,8 +43,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::{
     hash::fnv1_name_hash,

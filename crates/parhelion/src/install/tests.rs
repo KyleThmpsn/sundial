@@ -91,6 +91,7 @@ impl Fixture {
         let runtime = temporary.path().join("bin").join("x64");
         fs::create_dir_all(&runtime).unwrap();
         fs::write(runtime.join("oo2core_3_win64.dll"), b"test marker").unwrap();
+        fs::write(runtime.join("steam_api64.dll"), b"test runtime").unwrap();
         let staged_bytes = AUTHORED_PACKAGES
             .iter()
             .map(|profile| {
@@ -135,6 +136,7 @@ impl Fixture {
         );
         request.game_running_check = game_stopped;
         request.runtime_feature_check = runtime_supported;
+        request.runtime_snapshot_check = test_runtime_snapshot;
         // These byte-level transaction fixtures have no native item tables.
         // Native lifecycle and replacement tests exercise the production review.
         request.skip_replacement_review = true;
@@ -283,6 +285,7 @@ impl Fixture {
         let transaction = InstallTransactionRecord {
             account_cleanup: None,
             client_settings: None,
+            runtime: Some(test_runtime_snapshot(self.target.parent().unwrap()).unwrap()),
             schema: INSTALL_TRANSACTION_SCHEMA,
             state,
             target_packages_directory: fs::canonicalize(&self.target).unwrap(),
@@ -302,12 +305,42 @@ impl Fixture {
             target_packages_directory: self.target.clone(),
             backup_root: self.backups.clone(),
             game_running_check: game_stopped,
+            runtime_snapshot_check: test_runtime_snapshot,
         }
     }
 }
 
 fn game_stopped() -> Result<bool, String> {
     Ok(false)
+}
+
+fn test_runtime_snapshot(install: &Path) -> Result<RuntimeSnapshot, String> {
+    RuntimeSnapshot::from_verified_module(
+        RuntimeBrand::Sunrise,
+        &install.join("bin/x64/steam_api64.dll"),
+    )
+}
+
+fn test_dawn_runtime_snapshot(install: &Path) -> Result<RuntimeSnapshot, String> {
+    RuntimeSnapshot::from_verified_module(
+        RuntimeBrand::Dawn,
+        &install.join("bin/x64/steam_api64.dll"),
+    )
+}
+
+fn uninstall_fixture(
+    plan: &UninstallPlan,
+    backup_root: &Path,
+    check: GameRunningCheck,
+) -> Result<UninstallReport, InstallError> {
+    crate::install::uninstall::uninstall_inner(
+        plan,
+        backup_root,
+        check,
+        None,
+        DEFAULT_CACHE_INVALIDATION_OPS,
+        test_runtime_snapshot,
+    )
 }
 
 fn installed_fixture() -> Fixture {
@@ -331,6 +364,7 @@ fn assert_account_uninstall_outcome(
         game_stopped,
         fail_after,
         DEFAULT_CACHE_INVALIDATION_OPS,
+        test_runtime_snapshot,
     );
     let backup = if fail_after.is_some() {
         let error = result.unwrap_err();

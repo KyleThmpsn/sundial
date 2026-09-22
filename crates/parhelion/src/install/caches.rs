@@ -1,7 +1,18 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn validate_sunrise_build_cache(
     target_packages_directory: &Path,
+) -> Result<ValidatedSunriseCache, InstallError> {
+    validate_sunrise_build_cache_with(
+        target_packages_directory,
+        sundial::package_authoring::installed_runtime,
+    )
+}
+
+pub(super) fn validate_sunrise_build_cache_with(
+    target_packages_directory: &Path,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
 ) -> Result<ValidatedSunriseCache, InstallError> {
     let game_root = target_packages_directory.parent().ok_or_else(|| {
         InstallError::validation(format!(
@@ -11,20 +22,64 @@ pub(super) fn validate_sunrise_build_cache(
     })?;
     let game_root = fs::canonicalize(game_root).map_err(|error| {
         InstallError::validation(format!(
-            "Could not resolve game root {} while locating the Sunrise cache: {error}",
+            "Could not resolve game root {} while locating the runtime cache: {error}",
             game_root.display()
         ))
     })?;
-    let paths = std::array::from_fn(|index| {
-        let mut path = game_root.clone();
-        for component in SUNRISE_BUILD_CACHE_LAYOUTS[index] {
-            path.push(component);
-        }
-        path
-    });
-    let candidates = SunriseCacheCandidates { game_root, paths };
+    let runtime = runtime_snapshot_check(&game_root).map_err(InstallError::validation)?;
+    validate_sunrise_build_cache_for_runtime(game_root, runtime, runtime_snapshot_check)
+}
+
+pub(super) fn validate_sunrise_build_cache_for_runtime(
+    game_root: PathBuf,
+    runtime: RuntimeSnapshot,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
+) -> Result<ValidatedSunriseCache, InstallError> {
+    verify_runtime_snapshot_with(&game_root, &runtime, runtime_snapshot_check)
+        .map_err(InstallError::validation)?;
+    let candidates = runtime_build_cache_candidates(game_root, runtime.brand());
     let file = discover_sunrise_build_cache(&candidates).map_err(InstallError::validation)?;
-    Ok(ValidatedSunriseCache { candidates, file })
+    Ok(ValidatedSunriseCache {
+        runtime,
+        runtime_snapshot_check,
+        candidates,
+        file,
+    })
+}
+
+fn verify_runtime_snapshot_with(
+    game_root: &Path,
+    expected: &RuntimeSnapshot,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
+) -> Result<(), String> {
+    let current = runtime_snapshot_check(game_root)?;
+    if current == *expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "The installed {} runtime changed after preflight",
+            expected.brand().name()
+        ))
+    }
+}
+
+// Select the active runtime from its installed DLL, not leftover account/cache folders.
+// Keep the existing snapshot, backup and quarantine transaction for either runtime.
+pub(super) fn runtime_build_cache_candidates(
+    game_root: PathBuf,
+    runtime: RuntimeBrand,
+) -> SunriseCacheCandidates {
+    let runtime = runtime.folder();
+    let paths = [
+        game_root.join(runtime).join("cache").join("build_data.bin"),
+        game_root
+            .join("bin")
+            .join("x64")
+            .join(runtime)
+            .join("cache")
+            .join("build_data.bin"),
+    ];
+    SunriseCacheCandidates { game_root, paths }
 }
 
 pub(super) fn validate_package_header_caches(
@@ -121,7 +176,7 @@ pub(super) fn discover_sunrise_build_cache(
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
                 return Err(format!(
-                    "Could not inspect Sunrise build-data cache {}: {error}",
+                    "Could not inspect runtime build-data cache {}: {error}",
                     path.display()
                 ));
             }
@@ -129,25 +184,25 @@ pub(super) fn discover_sunrise_build_cache(
         };
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(format!(
-                "The Sunrise build-data cache must be a regular file: {}",
+                "The runtime build-data cache must be a regular file: {}",
                 path.display()
             ));
         }
         let parent_path = path.parent().ok_or_else(|| {
             format!(
-                "Sunrise build-data cache has no parent directory: {}",
+                "Runtime build-data cache has no parent directory: {}",
                 path.display()
             )
         })?;
         let parent = fs::canonicalize(parent_path).map_err(|error| {
             format!(
-                "Could not resolve Sunrise cache directory {}: {error}",
+                "Could not resolve runtime cache directory {}: {error}",
                 parent_path.display()
             )
         })?;
         let canonical_path = fs::canonicalize(path).map_err(|error| {
             format!(
-                "Could not resolve Sunrise build-data cache {}: {error}",
+                "Could not resolve runtime build-data cache {}: {error}",
                 path.display()
             )
         })?;
@@ -155,7 +210,7 @@ pub(super) fn discover_sunrise_build_cache(
             || !path_is_within(&canonical_path, &candidates.game_root)
         {
             return Err(format!(
-                "Sunrise build-data cache resolves outside the validated game root {}: {}",
+                "Runtime build-data cache resolves outside the validated game root {}: {}",
                 candidates.game_root.display(),
                 canonical_path.display()
             ));
@@ -165,13 +220,13 @@ pub(super) fn discover_sunrise_build_cache(
             .is_none_or(|canonical_parent| !paths_equal(canonical_parent, &parent))
         {
             return Err(format!(
-                "Sunrise build-data cache parent changed while it was being resolved: {}",
+                "Runtime build-data cache parent changed while it was being resolved: {}",
                 path.display()
             ));
         }
         let digest = digest_file(&canonical_path).map_err(|error| {
             format!(
-                "Could not verify Sunrise build-data cache {}: {error}",
+                "Could not verify runtime build-data cache {}: {error}",
                 canonical_path.display()
             )
         })?;
@@ -186,7 +241,7 @@ pub(super) fn discover_sunrise_build_cache(
         0 => Ok(None),
         1 => Ok(existing.pop()),
         _ => Err(format!(
-            "Both supported Sunrise build-data cache locations exist; remove the inactive cache or select an unambiguous Sunrise installation: {} and {}",
+            "Both supported runtime build-data cache locations exist. Remove the inactive cache or select an unambiguous runtime installation: {} and {}",
             candidates.paths[0].display(),
             candidates.paths[1].display()
         )),
@@ -197,38 +252,47 @@ pub(super) fn backup_sunrise_cache(
     validated: &ValidatedSunriseCache,
     backup_directory: &Path,
 ) -> Result<OriginalSunriseCache, String> {
+    verify_runtime_snapshot_with(
+        &validated.candidates.game_root,
+        &validated.runtime,
+        validated.runtime_snapshot_check,
+    )?;
     verify_sunrise_cache_snapshot(&validated.candidates, validated.file.as_ref())?;
     let Some(expected) = &validated.file else {
         return Ok(OriginalSunriseCache {
+            runtime: validated.runtime.clone(),
+            runtime_snapshot_check: validated.runtime_snapshot_check,
             candidates: validated.candidates.clone(),
             file: None,
             backup_path: None,
         });
     };
 
-    reject_regular_cache_file(&expected.path, "Sunrise build-data cache")?;
+    reject_regular_cache_file(&expected.path, "runtime build-data cache")?;
     let cache_backup_directory = backup_directory.join(SUNRISE_CACHE_BACKUP_DIRECTORY);
     fs::create_dir(&cache_backup_directory).map_err(|error| {
         format!(
-            "Could not create Sunrise cache backup directory {}: {error}",
+            "Could not create runtime cache backup directory {}: {error}",
             cache_backup_directory.display()
         )
     })?;
     let backup_path = cache_backup_directory.join("build_data.bin");
     let copied = copy_file_create_new(&expected.path, &backup_path).map_err(|error| {
         format!(
-            "Could not back up Sunrise build-data cache {}: {error}",
+            "Could not back up runtime build-data cache {}: {error}",
             expected.path.display()
         )
     })?;
     if copied != expected.digest {
         return Err(format!(
-            "Sunrise build-data cache {} changed while it was being backed up",
+            "Runtime build-data cache {} changed while it was being backed up",
             expected.path.display()
         ));
     }
     verify_sunrise_cache_snapshot(&validated.candidates, Some(expected))?;
     Ok(OriginalSunriseCache {
+        runtime: validated.runtime.clone(),
+        runtime_snapshot_check: validated.runtime_snapshot_check,
         candidates: validated.candidates.clone(),
         file: Some(expected.clone()),
         backup_path: Some(backup_path),
@@ -304,6 +368,11 @@ pub(super) fn reject_regular_cache_file(path: &Path, description: &str) -> Resul
 pub(super) fn verify_sunrise_cache_unchanged(
     original: &OriginalSunriseCache,
 ) -> Result<(), String> {
+    verify_runtime_snapshot_with(
+        &original.candidates.game_root,
+        &original.runtime,
+        original.runtime_snapshot_check,
+    )?;
     verify_sunrise_cache_snapshot(&original.candidates, original.file.as_ref())
 }
 
@@ -315,11 +384,11 @@ pub(super) fn verify_sunrise_cache_snapshot(
     match (expected, current.as_ref()) {
         (None, None) => Ok(()),
         (None, Some(current)) => Err(format!(
-            "Sunrise build-data cache {} appeared after preflight",
+            "Runtime build-data cache {} appeared after preflight",
             current.path.display()
         )),
         (Some(expected), None) => Err(format!(
-            "Sunrise build-data cache {} disappeared after backup",
+            "Runtime build-data cache {} disappeared after backup",
             expected.path.display()
         )),
         (Some(expected), Some(current))
@@ -330,7 +399,7 @@ pub(super) fn verify_sunrise_cache_snapshot(
             Ok(())
         }
         (Some(expected), Some(_)) => Err(format!(
-            "Sunrise build-data cache {} changed after backup",
+            "Runtime build-data cache {} changed after backup",
             expected.path.display()
         )),
     }
@@ -369,26 +438,26 @@ pub(super) fn invalidate_sunrise_cache(
         (Some(file), Some(backup_path)) => (file, backup_path),
         _ => {
             return Err(
-                "Internal error: Sunrise cache snapshot and backup state disagree".to_owned(),
+                "Internal error: runtime cache snapshot and backup state disagree".to_owned(),
             );
         }
     };
     let backup_digest = digest_file(backup_path).map_err(|error| {
         format!(
-            "Could not verify Sunrise cache backup {} before invalidation: {error}",
+            "Could not verify runtime cache backup {} before invalidation: {error}",
             backup_path.display()
         )
     })?;
     if backup_digest != file.digest {
         return Err(format!(
-            "Sunrise cache backup {} no longer matches the original cache",
+            "Runtime cache backup {} no longer matches the original cache",
             backup_path.display()
         ));
     }
-    reject_regular_cache_file(&file.path, "Sunrise build-data cache")?;
+    reject_regular_cache_file(&file.path, "runtime build-data cache")?;
     let current_parent = fs::canonicalize(&file.parent).map_err(|error| {
         format!(
-            "Could not recheck Sunrise cache directory {}: {error}",
+            "Could not recheck runtime cache directory {}: {error}",
             file.parent.display()
         )
     })?;
@@ -396,7 +465,7 @@ pub(super) fn invalidate_sunrise_cache(
         || !path_is_within(&current_parent, &original.candidates.game_root)
     {
         return Err(format!(
-            "Sunrise cache directory changed or escaped the validated game root: {}",
+            "Runtime cache directory changed or escaped the validated game root: {}",
             file.parent.display()
         ));
     }
@@ -411,7 +480,7 @@ pub(super) fn invalidate_sunrise_cache(
     if let Err(error) = (cache_ops.rename)(&file.path, &quarantined_cache_path) {
         let _ = fs::remove_dir(&quarantine_directory);
         return Err(format!(
-            "Could not atomically quarantine Sunrise build-data cache {}: {error}",
+            "Could not atomically quarantine runtime build-data cache {}: {error}",
             file.path.display()
         ));
     }
@@ -519,7 +588,7 @@ pub(super) fn create_cache_quarantine_directory(
             Ok(()) => {
                 let canonical = fs::canonicalize(&candidate).map_err(|error| {
                     format!(
-                        "Could not resolve Sunrise cache quarantine {}: {error}",
+                        "Could not resolve runtime cache quarantine {}: {error}",
                         candidate.display()
                     )
                 })?;
@@ -530,7 +599,7 @@ pub(super) fn create_cache_quarantine_directory(
                 {
                     let _ = fs::remove_dir(&canonical);
                     return Err(format!(
-                        "Sunrise cache quarantine escaped its validated parent: {}",
+                        "Runtime cache quarantine escaped its validated parent: {}",
                         canonical.display()
                     ));
                 }
@@ -539,13 +608,13 @@ pub(super) fn create_cache_quarantine_directory(
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(format!(
-                    "Could not create adjacent Sunrise cache quarantine {}: {error}",
+                    "Could not create adjacent runtime cache quarantine {}: {error}",
                     candidate.display()
                 ));
             }
         }
     }
-    Err("Could not allocate a unique adjacent Sunrise cache quarantine".to_owned())
+    Err("Could not allocate a unique adjacent runtime cache quarantine".to_owned())
 }
 
 pub(super) fn rename_cache_into_quarantine(source: &Path, destination: &Path) -> io::Result<()> {

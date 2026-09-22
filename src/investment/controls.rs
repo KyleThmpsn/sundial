@@ -8,10 +8,10 @@ pub use crate::ui_help::tooltip_title;
 pub use authoring_bridge::{
     AUTHORING_SOCKET_RESET_WIDTH, authoring_button_width, authoring_socket_label_width,
     authoring_socket_reset_width, configure_fonts as configure_authoring_fonts,
-    default_plug_selection_mode, draw_asset_choice_row, draw_authoring_info_icon,
-    draw_authoring_plug_safety_warning as draw_plug_safety_warning, draw_authoring_socket_label,
-    draw_authoring_socket_reset, draw_authoring_toolbar, draw_plug_safety_selector,
-    show_plug_safety_warnings,
+    default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
+    draw_authoring_info_icon, draw_authoring_plug_safety_warning as draw_plug_safety_warning,
+    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
+    draw_authoring_warning_icon, draw_plug_safety_selector, show_plug_safety_warnings,
 };
 
 /// Consistent loading and build progress appearance across both applications.
@@ -101,6 +101,9 @@ pub struct WeaponDonorPickerOptions<'a> {
     /// Optional compact action rendered on the selected donor card without opening the picker.
     pub secondary_action_label: Option<&'a str>,
     pub clear: Option<WeaponDonorPickerClearChoice<'a>>,
+    /// Optional second line for a candidate row, keyed on its item hash. Used where the weapon
+    /// name alone does not say what picking it brings, such as the perks a behavior carries.
+    pub row_detail: Option<&'a dyn Fn(u32) -> Option<String>>,
 }
 
 /// A selection made through Sundial's native icon-backed weapon browser.
@@ -155,6 +158,7 @@ pub struct PlugChoicePickerButton<'a> {
 /// Named selection context and trigger presentation for an authored socket choice.
 #[derive(Clone, Copy, Debug)]
 pub struct PlugChoicePickerOptions<'a> {
+    pub preview: Option<&'a crate::ui::model_preview::Loadout>,
     pub donor_hash: u32,
     pub socket_index: usize,
     pub socket_type_override: Option<u16>,
@@ -173,6 +177,16 @@ pub fn authoring_choice_row_height(ui: &egui::Ui) -> f32 {
 }
 
 impl InvestmentCatalog {
+    pub fn preview_loadout(&self, hash: u32) -> Option<crate::ui::model_preview::Loadout> {
+        authoring_bridge::preview_loadout(&self.catalog, hash)
+    }
+    /// Resolves a read-only cosmetic candidate against installed plug metadata.
+    pub fn preview_appearance(
+        &self,
+        loadout: &crate::ui::model_preview::Loadout,
+    ) -> crate::ui::model_preview::Appearance {
+        authoring_bridge::resolve_preview(&self.catalog, loadout)
+    }
     pub fn texture_icon(&self, ctx: &egui::Context, tag: u32) -> Option<egui::TextureHandle> {
         self.catalog.texture_icon(ctx, tag)
     }
@@ -338,8 +352,77 @@ impl InvestmentCatalog {
             query,
             &candidates,
             options,
+            None,
+            None,
         );
         action.and_then(|action| match action {
+            authoring_bridge::InvestmentWeaponPickerAction::Select(hash) => u32::try_from(hash)
+                .ok()
+                .map(WeaponDonorPickerAction::Select),
+            authoring_bridge::InvestmentWeaponPickerAction::Clear => {
+                Some(WeaponDonorPickerAction::Clear)
+            }
+            authoring_bridge::InvestmentWeaponPickerAction::Secondary => {
+                Some(WeaponDonorPickerAction::Secondary)
+            }
+        })
+    }
+
+    /// The donor browser behind a plain dropdown instead of a card header.
+    pub fn draw_weapon_donor_dropdown_picker<'a>(
+        &self,
+        ui: &mut egui::Ui,
+        scope: impl Hash,
+        query: &mut String,
+        candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
+        options: WeaponDonorPickerOptions<'_>,
+    ) -> Option<WeaponDonorPickerAction> {
+        let candidates = candidates.into_iter().collect::<Vec<_>>();
+        let action = authoring_bridge::draw_weapon_donor_dropdown_picker(
+            ui,
+            &self.catalog,
+            scope,
+            query,
+            &candidates,
+            options,
+        );
+        action.and_then(|action| match action {
+            authoring_bridge::InvestmentWeaponPickerAction::Select(hash) => u32::try_from(hash)
+                .ok()
+                .map(WeaponDonorPickerAction::Select),
+            authoring_bridge::InvestmentWeaponPickerAction::Clear => {
+                Some(WeaponDonorPickerAction::Clear)
+            }
+            authoring_bridge::InvestmentWeaponPickerAction::Secondary => {
+                Some(WeaponDonorPickerAction::Secondary)
+            }
+        })
+    }
+
+    /// The appearance donor browser keeps inspection separate from applying a candidate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_weapon_appearance_picker<'a>(
+        &self,
+        ui: &mut egui::Ui,
+        scope: impl Hash,
+        query: &mut String,
+        candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
+        options: WeaponDonorPickerOptions<'_>,
+        default_weapon_type: Option<&str>,
+        mut preview: impl FnMut(&mut egui::Ui, Option<u32>),
+    ) -> Option<WeaponDonorPickerAction> {
+        let candidates = candidates.into_iter().collect::<Vec<_>>();
+        authoring_bridge::draw_weapon_donor_header_picker(
+            ui,
+            &self.catalog,
+            scope,
+            query,
+            &candidates,
+            options,
+            Some(&mut preview),
+            default_weapon_type,
+        )
+        .and_then(|action| match action {
             authoring_bridge::InvestmentWeaponPickerAction::Select(hash) => u32::try_from(hash)
                 .ok()
                 .map(WeaponDonorPickerAction::Select),

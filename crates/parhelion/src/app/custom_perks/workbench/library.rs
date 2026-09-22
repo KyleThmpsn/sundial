@@ -40,7 +40,7 @@ fn draw_row_menu(
 ) -> Option<(PerkSource, RowAction)> {
     let mut action = None;
     response.context_menu(|ui| {
-        crate::app::style::workbench_style(ui);
+        crate::app::style::perk_workbench_style(ui);
         if ui
             .button("Duplicate")
             .on_hover_text("Open a copy as a new draft. Save to Library keeps it in Custom Perks.")
@@ -84,8 +84,14 @@ impl Workbench {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.drafts_writable = true,
                     Err(error) => self.error = Some(format!("Could not read workbench drafts: {error}. Draft autosave is paused.")),
                 }
+                let refresh = library.defaults_refresh().cloned();
                 self.library = Some(library);
                 self.refresh_library();
+                if let Some(refresh) = refresh {
+                    self.reload_bundled_documents();
+                    self.message_path = Some(refresh.backup.clone());
+                    self.message = Some(refresh.summary("perks"));
+                }
             }
             Err(error) => self.error = Some(error),
         }
@@ -309,7 +315,7 @@ impl Workbench {
                 self.draw_templates(ui, catalog);
             }
             crate::app::style::more_menu(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
                 if ui.button("Import…").clicked() {
                     self.import();
                     ui.close_menu();
@@ -376,7 +382,7 @@ impl Workbench {
         let mut restore = false;
         let mut cancel = false;
         let response = egui::Modal::new("restore_default_custom_perks".into()).show(ctx, |ui| {
-            crate::app::style::workbench_style(ui);
+            crate::app::style::perk_workbench_style(ui);
             ui.set_width(400.0);
             ui.heading("Restore Default Custom Perks?");
             ui.label("This replaces saved edits to bundled custom perks and restores missing defaults. Changed files are backed up first. Your other custom perks and weapon recipes stay unchanged.");
@@ -500,7 +506,7 @@ impl Workbench {
         let mut confirm = false;
         let mut cancel = false;
         let response = egui::Modal::new("perk-workbench-delete".into()).show(ctx, |ui| {
-            crate::app::style::workbench_style(ui);
+            crate::app::style::perk_workbench_style(ui);
             ui.set_width(380.0);
             ui.heading(if saved {
                 "Delete This Perk?"
@@ -630,14 +636,24 @@ impl Workbench {
         }
     }
 
-    pub(super) fn save_issue(&self) -> Option<&'static str> {
-        if self.editor.is_some()
+    pub(super) fn edit_issue(&self) -> Option<&'static str> {
+        if self.copying_selected_effect() {
+            Some("Wait for the effect copy to finish.")
+        } else if self.editor.is_some()
             || self
                 .documents
                 .get(self.selected)
                 .is_some_and(|document| document.pending_effect.is_some())
         {
             Some("Apply or discard the open parameter edits first.")
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn save_issue(&self) -> Option<&'static str> {
+        if let Some(issue) = self.edit_issue() {
+            Some(issue)
         } else if self.library.is_none() {
             Some("Custom Perks is unavailable, so this perk cannot be saved to the library.")
         } else {

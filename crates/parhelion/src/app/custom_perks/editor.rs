@@ -5,7 +5,8 @@ mod behavior;
 pub(super) mod conversion;
 mod fields;
 mod guided;
-mod movement;
+pub(super) mod history;
+pub(super) mod movement;
 mod native;
 mod projectiles;
 mod references;
@@ -16,6 +17,46 @@ mod validation;
 
 pub(in crate::app) use guided::has_guided_profile;
 pub(super) use native::property_changes;
+
+/// Shown while the asset-name index for these packages is still being built. Discovery
+/// starts on its own when the workbench opens, so the notice asks for nothing; it is
+/// replaced in place by [`PerkEditor::refresh_asset_index`] once the index exists.
+const UNINDEXED: &str = "Asset names for these packages are still being indexed. References appear when discovery finishes.";
+
+/// What the name index has to say about itself, as the warnings shown above an effect.
+fn index_warnings(names: Option<&sundial::package_authoring::tft::Index>) -> Vec<String> {
+    match names {
+        None => vec![UNINDEXED.into()],
+        Some(names) if !names.errors.is_empty() => vec![format!(
+            "{} resources could not be read. Asset references may be incomplete.",
+            names.errors.len()
+        )],
+        Some(_) => Vec::new(),
+    }
+}
+
+/// The references an effect shows: the ones that name its action or its graphs. An
+/// entity opened on its own shows the references in either direction.
+fn asset_references(
+    names: &sundial::package_authoring::tft::Index,
+    action_tag: u32,
+    graphs: &[u32],
+    entity: Option<u32>,
+) -> Vec<sundial::package_authoring::tft::Reference> {
+    names
+        .references
+        .iter()
+        .filter(|reference| match entity {
+            Some(entity) => reference.target == entity || reference.source == entity,
+            None => {
+                reference.source == action_tag
+                    || reference.target == action_tag
+                    || graphs.contains(&reference.target)
+            }
+        })
+        .cloned()
+        .collect()
+}
 
 pub(super) fn load_entity_parameters(
     packages: &Path,
@@ -35,27 +76,21 @@ pub(super) fn load_entity_parameters(
         program: None,
         graphs: vec![(entity, graph)],
         graph_errors: Vec::new(),
-        warnings: match names.as_ref() {
-            None => vec!["Asset references have not been indexed for these packages yet. Open asset discovery to build the index. Effect properties are available now.".into()],
-            Some(names) if !names.errors.is_empty() => vec![format!("{} resources could not be read. Asset references may be incomplete.", names.errors.len())],
-            Some(_) => Vec::new(),
-        },
+        warnings: index_warnings(names.as_deref()),
         loading_issues: loading_issues(&manager, [("Asset", entity, false)]),
         projectile_slots: Vec::new(),
         projectile_catalog: Arc::default(),
         native_assets: names
-            .iter()
-            .flat_map(|names| &names.references)
-            .filter(|reference| reference.target == entity || reference.source == entity)
-            .cloned()
-            .collect(),
+            .as_deref()
+            .map(|names| asset_references(names, 0, &[], Some(entity)))
+            .unwrap_or_default(),
     })
 }
 
 /// Validate the source closure without requiring it to be in the stock loading index.
 /// The package builder enrolls missing prerequisites for both direct and cloned graphs.
 fn loading_issues(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     assets: impl IntoIterator<Item = (&'static str, u32, bool)>,
 ) -> Vec<String> {
     assets
@@ -96,16 +131,11 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         projectile::catalog::cached(packages, &manager)?
     };
     let names = sundial::package_authoring::tft::cached_only(packages)?;
+    let graph_tags = graphs.iter().map(|graph| graph.tag.0).collect::<Vec<_>>();
     let native_assets = names
-        .iter()
-        .flat_map(|names| &names.references)
-        .filter(|reference| {
-            reference.source == action.action_tag.0
-                || reference.target == action.action_tag.0
-                || graphs.iter().any(|graph| reference.target == graph.tag.0)
-        })
-        .cloned()
-        .collect();
+        .as_deref()
+        .map(|names| asset_references(names, action.action_tag.0, &graph_tags, None))
+        .unwrap_or_default();
     // Decoding is read only. A perk whose action cannot be decoded still edits normally.
     let decoded =
         sundial::package_authoring::sandbox_perk::action::decode(&action.action_payload).ok();
@@ -125,11 +155,7 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         program,
         graphs: Vec::new(),
         graph_errors: Vec::new(),
-        warnings: match names.as_ref() {
-            None => vec!["Asset references have not been indexed for these packages yet. Open asset discovery to build the index. Effect properties are available now.".into()],
-            Some(names) if !names.errors.is_empty() => vec![format!("{} resources could not be read. Asset references may be incomplete.", names.errors.len())],
-            Some(_) => Vec::new(),
-        },
+        warnings: index_warnings(names.as_deref()),
         loading_issues: loading_issues(
             &manager,
             projectiles
@@ -173,6 +199,43 @@ impl PerkEditor {
         self.receiver.is_some()
     }
 
+    /// The loaded effect read the name index once, at load. When discovery has built it
+    /// since, the references and the notice are re-derived in place, so the editor catches
+    /// up without a reload that would drop the draft. Returns whether anything changed.
+    pub(in crate::app) fn refresh_asset_index(&mut self) -> bool {
+        let unindexed = self
+            .graph
+            .as_ref()
+            .is_some_and(|loaded| loaded.warnings.iter().any(|warning| warning == UNINDEXED));
+        if !unindexed {
+            return false;
+        }
+        let Ok(Some(names)) = sundial::package_authoring::tft::cached_only(&self.packages) else {
+            return false;
+        };
+        let entity = self.entity_source;
+        let Some(loaded) = self.graph.as_mut() else {
+            return false;
+        };
+        Self::apply_asset_index(Arc::make_mut(loaded), &names, entity);
+        true
+    }
+
+    fn apply_asset_index(
+        loaded: &mut PrivatePerkRuntimeGraph,
+        names: &sundial::package_authoring::tft::Index,
+        entity: Option<u32>,
+    ) {
+        loaded.warnings.retain(|warning| warning != UNINDEXED);
+        loaded.warnings.extend(index_warnings(Some(names)));
+        let graphs = loaded
+            .graphs
+            .iter()
+            .map(|(tag, _)| *tag)
+            .collect::<Vec<_>>();
+        loaded.native_assets = asset_references(names, loaded.action_tag, &graphs, entity);
+    }
+
     pub(in crate::app) fn has_background_work(&self) -> bool {
         self.receiver.is_some() || self.worker.is_some()
     }
@@ -187,6 +250,7 @@ impl PerkEditor {
         ctx: &egui::Context,
     ) -> Self {
         let mut editor = Self {
+            history: Default::default(),
             activation: None,
             preview: None,
             entity_source: None,
@@ -227,6 +291,7 @@ impl PerkEditor {
     ) -> Self {
         // Build the same isolated editor without starting a stock-perk load.
         let mut editor = Self {
+            history: Default::default(),
             activation: None,
             preview: None,
             entity_source: Some(entity),

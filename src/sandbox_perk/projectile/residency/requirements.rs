@@ -1,8 +1,9 @@
 //! Structural loading prerequisites. Passing this check is not a firing compatibility claim.
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 use crate::{
     package_payload::{native_array_at, u32_at, u64_at},

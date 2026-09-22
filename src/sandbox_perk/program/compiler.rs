@@ -1,12 +1,13 @@
 //! Emits the mapped single-group, policy-zero action format from authored nodes.
 use super::*;
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     investment_schema::NESTED_ARRAY_TRAILER,
     package_payload::u32_at,
     sandbox_perk::projectile,
     weapon_entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity},
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 const LABEL_GLOBALS: u32 = 0x80C7_0CA1;
 const LABEL_PATH: &str = "content/common/native/sandbox/label_globals.label_globals.tft";
@@ -57,6 +58,45 @@ pub fn compile(manager: &PackageManager, program: &Program) -> Result<Compiled, 
 
 pub(super) fn assemble(program: &Program, label_mask: LabelMask) -> Result<Compiled, String> {
     program.validate()?;
+    assemble_records(program, label_mask)
+}
+
+/// Serialize an editable draft without reading packages or validating asset residency.
+/// Symbolic label lists remain authoritative. The normal compiler rebuilds their masks
+/// against the selected installation before any package is written.
+pub fn draft(program: &Program) -> Result<NativeProgram, String> {
+    program.validate_structure()?;
+    if let Some(native) = &program.native {
+        return Ok(native.clone());
+    }
+    let mask = program
+        .trigger
+        .is_event()
+        .then(|| (trigger_labels(program.trigger), [0; 40]));
+    let compiled = assemble_records(program, mask)?;
+    let mut native = NativeProgram::read(&compiled.payload)?;
+    for asset in program
+        .assets()
+        .filter(|asset| !matches!(asset.graph, 0 | u32::MAX))
+    {
+        if program
+            .assets()
+            .any(|other| other.graph == asset.graph && other != asset)
+        {
+            return Err("This effect has different edits to the same asset. Keep editing those actions separately.".into());
+        }
+        if let Some(target) = native
+            .assets
+            .iter_mut()
+            .find(|target| target.graph == asset.graph)
+        {
+            *target = asset.clone();
+        }
+    }
+    Ok(native)
+}
+
+fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled, String> {
     let mut out = Payload::new();
     let activation = match program.trigger {
         Trigger::Always => out.unconditional(0),
@@ -340,17 +380,10 @@ fn validate_native_entity(
     manager: &PackageManager,
     block: &crate::sandbox_perk::action::native::Block,
 ) -> Result<(), String> {
-    if !matches!(
-        block.class,
-        0x80803E45 | 0x80803E44 | 0x80803E43 | 0x80803E47 | 0x80803E12
-    ) {
+    let Some(tag) = super::native::entity_reference(block.class, &block.bytes)? else {
         return Ok(());
-    }
-    let tag = TagHash(u32_at(&block.bytes, 16)?);
-    // Weighted spawning creates its category result without this optional attachment.
-    if block.class == 0x80803E47 && matches!(tag.0, 0 | u32::MAX) {
-        return Ok(());
-    }
+    };
+    let tag = TagHash(tag);
     let entry = manager.get_entry(tag).ok_or_else(|| {
         format!(
             "Choose an entity graph for native effect {}.",
@@ -381,16 +414,20 @@ fn kill_label_mask(manager: &PackageManager, trigger: Trigger) -> Result<LabelMa
     if !trigger.is_event() {
         return Ok(None);
     }
-    let labels: &'static [u32] = match trigger {
-        Trigger::PrecisionKill => &[0x962E_A19B],
-        Trigger::MeleeKill => &[0xBF39_E12B, 0xE175_76C9, 0x5D3A_7C84],
-        Trigger::GrenadeKill => &[0xC20D_D425],
-        _ => &[],
-    };
+    let labels = trigger_labels(trigger);
     let registry = manager
         .read_tag(TagHash(LABEL_GLOBALS))
         .map_err(|error| format!("Could not read label globals: {error}"))?;
     Ok(Some((labels, compile_labels(&registry, labels)?)))
+}
+
+fn trigger_labels(trigger: Trigger) -> &'static [u32] {
+    match trigger {
+        Trigger::PrecisionKill => &[0x962E_A19B],
+        Trigger::MeleeKill => &[0xBF39_E12B, 0xE175_76C9, 0x5D3A_7C84],
+        Trigger::GrenadeKill => &[0xC20D_D425],
+        _ => &[],
+    }
 }
 
 pub(crate) fn compile_labels(registry: &[u8], labels: &[u32]) -> Result<[u8; 40], String> {
@@ -1013,6 +1050,87 @@ mod tests {
     const KILL: u8 = 2;
     const PRECISION: u32 = 0x962E_A19B;
     const DEAD_RESOURCE: u32 = 0x8ABC_0001;
+
+    #[test]
+    fn editable_draft_preserves_symbolic_filters_extra_groups_and_native_bits() {
+        let mut node = NativeNode::effect(47).unwrap();
+        node.bytes[4..8].copy_from_slice(&0xFEEDABCDu32.to_le_bytes());
+        let program = Program {
+            trigger: Trigger::PrecisionKill,
+            actions: vec![
+                Action::UpdateAccumulator {
+                    mode: 0,
+                    value_bits: 0x80000000,
+                },
+                Action::Native { node: node.clone() },
+            ],
+            additional_groups: vec![NativeGroup {
+                effects: vec![node],
+                ..NativeGroup::default()
+            }],
+            ..Program::default()
+        };
+        let mut native = draft(&program).unwrap();
+        let registry = crate::package_runtime::labels::fixture::registry();
+        labels::compile(&mut native.graph, &registry).unwrap();
+        let expected = assemble(
+            &program,
+            Some((
+                trigger_labels(program.trigger),
+                compile_labels(&registry, &[PRECISION]).unwrap(),
+            )),
+        )
+        .unwrap();
+        assert!(
+            super::super::decompile::native_fidelity(
+                &expected.payload,
+                &native.graph.emit().unwrap()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(native.assets.len(), 0);
+    }
+
+    #[test]
+    fn draft_keeps_component_overrides_and_refuses_to_merge_distinct_edits() {
+        use crate::weapon_runtime::{
+            WeaponRuntimeFieldLocator, WeaponRuntimeRootKind, WeaponRuntimeValue,
+            WeaponRuntimeValueOverride,
+        };
+        let first = Asset {
+            graph: 0x815282E1,
+            path: "content/projectile.pattern.tft".into(),
+            values: vec![WeaponRuntimeValueOverride {
+                locator: WeaponRuntimeFieldLocator {
+                    graph_tag: Some(0x815282E1),
+                    binding_hash: 1,
+                    resource_index: 0,
+                    root: WeaponRuntimeRootKind::ComponentInstance,
+                    root_schema: 0x80803B73,
+                    path: vec![],
+                    type_handle: 2,
+                    value_offset: 0x144,
+                    byte_size: 8,
+                },
+                value: WeaponRuntimeValue::Bytes(
+                    [0x7FC12345_u32.to_le_bytes(), 0x80000000_u32.to_le_bytes()].concat(),
+                ),
+            }],
+        };
+        let program = Program {
+            actions: vec![Action::Pattern {
+                asset: first.clone(),
+            }],
+            ..Program::default()
+        };
+        assert_eq!(draft(&program).unwrap().assets, [first.clone()]);
+        let mut conflicting = program;
+        let mut second = first;
+        second.values.clear();
+        conflicting.actions.push(Action::attach(second));
+        assert!(draft(&conflicting).is_err());
+    }
 
     fn kill_class() -> u32 {
         nodes::condition(KILL).unwrap().class

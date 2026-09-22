@@ -8,7 +8,8 @@ use crate::{
     tag_payload::{read_u32, read_u64, relative_target, write_u32, write_u64},
 };
 use std::collections::BTreeMap;
-use tiger_pkg::{PackageManager, TagHash};
+use sundial::package_authoring::PackageManager;
+use tiger_pkg::TagHash;
 pub(crate) const TABLE: TagHash = TagHash(0x80EFC07B);
 const LAYER: TagHash = TagHash(0x80B47176);
 const TEXTURE: TagHash = TagHash(0x80B464EB);

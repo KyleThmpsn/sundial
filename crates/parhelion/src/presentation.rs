@@ -64,3 +64,7 @@ pub(crate) fn text_hash(namespace: &str, field: &str) -> u32 {
     }
     unreachable!()
 }
+
+pub(crate) fn badge_node_hash(name: &str, index: usize) -> u32 {
+    text_hash(name, &format!("badge-node-{index}"))
+}

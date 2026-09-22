@@ -21,8 +21,12 @@ impl SundialApp {
     }
 
     pub(super) fn draw_update_window(&mut self, ctx: &egui::Context) {
-        let blocker = self.update_restart_blocker();
-        let can_save = self.has_unsaved_changes() && self.confirmation.is_none();
+        // This runs every frame, and the blocker's last test compares the whole account document
+        // against the persisted copy. A closed update window never reads either argument, so both
+        // are prepared only while it is on screen.
+        let showing = self.update_check.is_open();
+        let blocker = showing.then(|| self.update_restart_blocker()).flatten();
+        let can_save = showing && self.has_unsaved_changes() && self.confirmation.is_none();
         match self.update_check.draw(ctx, blocker, can_save) {
             Action::None => {}
             Action::Save => self.request_save(ctx, SaveAction::Save),

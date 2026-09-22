@@ -273,6 +273,18 @@ fn walk(
                 let (kind, name) = match storage {
                     labels::Storage::Float32 => (WeaponRuntimeValueKind::Float32, "Float32"),
                     labels::Storage::Boolean => (WeaponRuntimeValueKind::Boolean, "Boolean"),
+                    labels::Storage::Byte => (
+                        WeaponRuntimeValueKind::UnsignedInteger { bits: 8 },
+                        "Unsigned Byte",
+                    ),
+                    labels::Storage::Signed16 => (
+                        WeaponRuntimeValueKind::SignedInteger { bits: 16 },
+                        "Signed 16-Bit Integer",
+                    ),
+                    labels::Storage::Key => (
+                        WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
+                        "Name Key",
+                    ),
                 };
                 put(
                     at,

@@ -220,6 +220,7 @@ pub(super) fn scan_packages(
         package_names,
         inventory_metadata: item_scan.inventory_metadata,
         objectives: progression.objectives,
+        presentation_node_hashes: progression.presentation_node_hashes,
         records: progression.records,
         unlock_flag_definitions: progression.unlock_flag_definitions,
         unlock_value_definitions: progression.unlock_value_definitions,

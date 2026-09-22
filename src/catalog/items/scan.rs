@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use tiger_pkg::{PackageManager, TagHash};
+use crate::package_runtime::reader::PackageManager;
+use tiger_pkg::TagHash;
 
 use crate::{
     class_items,

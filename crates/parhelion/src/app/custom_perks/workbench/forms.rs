@@ -54,7 +54,7 @@ impl Workbench {
                         .truncate()
                         .selected_text(&type_name)
                         .show_ui(ui, |ui| {
-                            crate::app::style::workbench_style(ui);
+                            crate::app::style::perk_workbench_style(ui);
                             for (name, source) in types {
                                 if ui.selectable_label(name == type_name, name).clicked()
                                     && name != type_name
@@ -216,7 +216,7 @@ impl Workbench {
             ui.heading("Effects");
             sundial::investment::draw_authoring_info_icon(
                 ui,
-                "Each effect is one program: what starts it, what it does and when it ends. Stock effects come from installed perks. Custom effects are compiled from scratch.",
+                "Each effect has its own trigger, actions and end condition.",
             );
             if experimental && ui.button("Add Effect").clicked() {
                 if let Some(index) = self.free_metadata_index(recipe, choices) {
@@ -225,33 +225,48 @@ impl Workbench {
             }
             self.draw_existing_behavior_picker(ui, catalog, choices, recipe);
             crate::app::style::more_menu(ui, |ui| {
-                if experimental && ui.button("Add Complete Program").clicked() {
-                    if let Some(index) = self.free_metadata_index(recipe, choices) {
-                        let mut effect = program::new_effect(index);
-                        if let Some(program) = effect.program.as_mut() {
-                            program.native = Some(
-                                sundial::package_authoring::sandbox_perk::program::NativeProgram::empty(),
-                            );
+                for (label, expanded) in [("Collapse All", false), ("Expand All", true)] {
+                    if ui
+                        .add_enabled(!recipe.effects.is_empty(), egui::Button::new(label))
+                        .clicked()
+                    {
+                        for effect in &recipe.effects {
+                            cards::Card::new(
+                                &recipe.id,
+                                effect.source_perk_index,
+                                0,
+                                recipe.effects.len(),
+                            )
+                            .set_expanded(ui.ctx(), expanded);
                         }
-                        recipe.effects.push(effect);
+                        ui.close_menu();
                     }
-                    ui.close_menu();
                 }
+                ui.separator();
                 if ui.button("Engine Catalog…").clicked() {
                     self.engine.open = true;
                     ui.close_menu();
                 }
             });
         });
-        if let Some(warning) =
-            sundial::package_authoring::sandbox_perk::sunrise_perk_projection_warning(
-                recipe.effects.len(),
-            )
-        {
-            ui.colored_label(ui.visuals().warn_fg_color, warning);
+        if self.duplicating.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Copying Effect…");
+            });
         }
         ui.add_space(4.0);
+        if recipe.effects.is_empty() {
+            ui.strong("No Effects Yet");
+            ui.label(if experimental {
+                "Add an effect, or copy one from an existing perk."
+            } else {
+                "Copy an effect from an existing perk to get started."
+            });
+            ui.add_space(8.0);
+        }
         let mut events = EffectEvents::default();
+        let count = recipe.effects.len();
         for (position, effect) in recipe.effects.iter_mut().enumerate() {
             // Cards carry their own outline. A gap between them keeps two effects from
             // reading as one.
@@ -259,32 +274,71 @@ impl Workbench {
                 ui.add_space(4.0);
             }
             let index = effect.source_perk_index;
-            if effect.program.is_some() {
-                self.draw_program_effect(ui, catalog, effect, experimental, &mut events);
-            } else {
-                let title = self.stock_effect_name(choices, index);
-                let name = format!("{}. {title}", position + 1);
-                let description = catalog
-                    .and_then(|catalog| catalog.perk_component_description(index))
-                    .filter(|description| !description.is_empty())
-                    .filter(|_| {
-                        effect.runtime_values.is_empty()
-                            && effect.action_float_values.is_empty()
-                            && effect.projectiles.is_empty()
-                            && effect.activation.is_none()
-                    });
-                self.draw_stock_effect(
-                    ui,
-                    &name,
-                    &title,
-                    description,
-                    effect,
-                    experimental,
-                    &mut events,
-                );
+            let card = cards::Card::new(&recipe.id, index, position, count);
+            let reveal = self
+                .reveal_problem
+                .as_ref()
+                .filter(|target| target.document == recipe.id && target.effect == index)
+                .cloned();
+            if let Some(target) = &reveal {
+                card.set_expanded(&ctx, true);
+                self.reveal_action = target.action;
+            }
+            let response = ui
+                .push_id((&recipe.id, index), |ui| {
+                    if let Some(target) = reveal.as_ref().and_then(|target| target.native.as_ref())
+                    {
+                        program::native::reveal(ui.ctx(), target.clone());
+                    }
+                    if effect.program.is_some() {
+                        self.draw_program_effect(
+                            ui,
+                            catalog,
+                            effect,
+                            experimental,
+                            card,
+                            &mut events,
+                        );
+                    } else {
+                        let title = self.stock_effect_name(choices, index);
+                        let name = format!("{}. {title}", position + 1);
+                        let description = catalog
+                            .and_then(|catalog| catalog.perk_component_description(index))
+                            .filter(|description| !description.is_empty())
+                            .filter(|_| {
+                                effect.runtime_values.is_empty()
+                                    && effect.action_float_values.is_empty()
+                                    && effect.projectiles.is_empty()
+                                    && effect.activation.is_none()
+                            });
+                        self.draw_stock_effect(
+                            ui,
+                            &name,
+                            &title,
+                            description,
+                            effect,
+                            experimental,
+                            card,
+                            &mut events,
+                        );
+                    }
+                })
+                .response;
+            self.finish_reveal(reveal, &response);
+            if let Some(movement) = card.drop_target(ui, response.rect) {
+                events.movement = Some(movement);
             }
         }
+        cards::scroll_during_drag(ui, &recipe.id);
+        if let Some(movement) = events.movement {
+            cards::apply_move(recipe, movement);
+        }
+        if let Some(index) = events.duplicate {
+            self.duplicate_effect(packages, &ctx, recipe, choices, index);
+        }
         if let Some(index) = events.remove {
+            // Reusing a removed identity for a new effect should open its controls.
+            cards::Card::new(&recipe.id, index, 0, count).set_expanded(&ctx, true);
             recipe
                 .effects
                 .retain(|effect| effect.source_perk_index != index);
@@ -306,12 +360,14 @@ impl Workbench {
 
     /// An authored program on the shared canvas. The canvas draws it locked when program
     /// editing is off.
+    #[allow(clippy::too_many_arguments)]
     fn draw_program_effect(
         &mut self,
         ui: &mut egui::Ui,
         catalog: Option<&InvestmentCatalog>,
         effect: &mut WeaponSandboxPerkRuntimeRecipe,
         experimental: bool,
+        card: cards::Card,
         events: &mut EffectEvents,
     ) {
         let index = effect.source_perk_index;
@@ -319,20 +375,36 @@ impl Workbench {
             return;
         };
         let mut remove = false;
+        let mut edit_all = false;
+        let is_native = program.native.is_some();
+        let copying = self.duplicating.is_some();
         let mut header = |ui: &mut egui::Ui| {
-            if experimental {
-                crate::app::style::more_menu(ui, |ui| {
-                    crate::app::style::workbench_style(ui);
-                    if ui.button("Remove Effect").clicked() {
-                        remove = true;
+            crate::app::style::more_menu(ui, |ui| {
+                crate::app::style::perk_workbench_style(ui);
+                card.menu(ui, &mut events.movement);
+                if experimental {
+                    ui.separator();
+                    if ui
+                        .add_enabled(!copying, egui::Button::new("Duplicate Effect"))
+                        .clicked()
+                    {
+                        events.duplicate = Some(index);
                         ui.close_menu();
                     }
-                });
-            }
+                    if !is_native && ui.button("Edit All Behavior…").clicked() {
+                        edit_all = true;
+                        ui.close_menu();
+                    }
+                }
+                if experimental && ui.button("Remove Effect").clicked() {
+                    remove = true;
+                    ui.close_menu();
+                }
+            });
         };
         let output = ui
             .push_id(index, |ui| {
-                canvas::draw(
+                canvas::draw_effect(
                     ui,
                     canvas::Canvas {
                         name: "",
@@ -351,11 +423,26 @@ impl Workbench {
                         footer: None,
                         trigger_command: None,
                     },
+                    card,
                 )
             })
             .inner;
         if remove {
             events.remove = Some(index);
+        }
+        if edit_all {
+            match program.validate().and_then(|()| {
+                sundial::package_authoring::sandbox_perk::program::native_draft(program)
+            }) {
+                Ok(native) => {
+                    *program = sundial::package_authoring::sandbox_perk::program::Program {
+                        name: program.name.clone(),
+                        native: Some(native),
+                        ..Default::default()
+                    }
+                }
+                Err(error) => self.error = Some(error),
+            }
         }
         if let Some(action) = output.edit_action
             && let Some(asset) = program.asset(action)
@@ -377,6 +464,7 @@ impl Workbench {
         description: Option<&str>,
         effect: &mut WeaponSandboxPerkRuntimeRecipe,
         experimental: bool,
+        card: cards::Card,
         events: &mut EffectEvents,
     ) {
         let index = effect.source_perk_index;
@@ -397,9 +485,23 @@ impl Workbench {
         let mut edit_trigger = false;
         let mut adopted = None;
         let digest = self.discovery.behavior(index);
+        let copying = self.duplicating.is_some();
         let mut header = |ui: &mut egui::Ui| {
             crate::app::style::more_menu(ui, |ui| {
-                crate::app::style::workbench_style(ui);
+                crate::app::style::perk_workbench_style(ui);
+                card.menu(ui, &mut events.movement);
+                ui.separator();
+                if experimental
+                    && ui
+                        .add_enabled(
+                            !copying && issue.is_none(),
+                            egui::Button::new("Duplicate Effect"),
+                        )
+                        .clicked()
+                {
+                    events.duplicate = Some(index);
+                    ui.close_menu();
+                }
                 if ui.button("Remove Effect").clicked() {
                     remove = true;
                     ui.close_menu();
@@ -446,7 +548,7 @@ impl Workbench {
                 carried.push("a changed trigger".to_owned());
             }
             format!(
-                "These rows are locked because this effect carries {}. Edit Behavior turns it into an editable program without losing them.",
+                "Use Edit Behavior to change this effect. It preserves {}.",
                 carried.join(" and ")
             )
         });
@@ -492,7 +594,7 @@ impl Workbench {
         if let Some(program) = recovered.as_mut() {
             let before = program.clone();
             ui.push_id(index, |ui| {
-                canvas::draw(
+                canvas::draw_effect(
                     ui,
                     canvas::Canvas {
                         name,
@@ -511,6 +613,7 @@ impl Workbench {
                         footer: Some(&mut footer),
                         trigger_command: None,
                     },
+                    card,
                 );
             });
             // Only a live card may adopt. Without this the read-only gate above decided
@@ -520,7 +623,7 @@ impl Workbench {
             }
         } else if let Some(behavior) = self.discovery.behavior(index) {
             ui.push_id(index, |ui| {
-                canvas::draw(
+                canvas::draw_effect(
                     ui,
                     canvas::Canvas {
                         name,
@@ -535,25 +638,19 @@ impl Workbench {
                         footer: Some(&mut footer),
                         trigger_command: None,
                     },
+                    card,
                 );
             });
         } else {
             let _ = had_digest;
             ui.push_id(index, |ui| {
                 crate::app::style::card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            header(ui);
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(name).strong()).wrap(),
-                                    );
-                                },
-                            );
-                        });
+                    let expanded = canvas::draw_header(ui, Some(&mut header), Some(card), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(name).strong()).wrap());
                     });
+                    if !expanded {
+                        return;
+                    }
                     if reading {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -649,7 +746,7 @@ impl Workbench {
         self.editor = Some(editor);
     }
 
-    fn free_metadata_index(
+    pub(super) fn free_metadata_index(
         &self,
         recipe: &PerkRecipe,
         choices: &[WeaponSandboxPerkChoice],
@@ -687,7 +784,7 @@ impl Workbench {
         let picked = pickers::browser_with_toolbar(
             ui,
             "existing-behavior",
-            "Use Existing Perk…",
+            "Add from Perk…",
             "Browse Perk Effects",
             &mut self.effect_query,
             |ui, query, reset, _height| {
@@ -852,7 +949,7 @@ impl Workbench {
                     .map(|choice| u64::from(choice.perk_index))
                     .collect::<Vec<_>>();
                 pickers::BrowserList { keys: &keys, height, reset: reset || filter_changed,
-                    row_height: sundial::investment::authoring_choice_row_height(ui) }.draw_body(ui,
+                    row_height: sundial::investment::authoring_choice_row_height(ui), select: None }.draw_body(ui,
                     |ui, index, selected| {
                         let choice = available[index];
                         let name = names[&choice.perk_index].clone();
@@ -923,6 +1020,11 @@ impl Workbench {
         let Some(editor) = &mut self.editor else {
             return;
         };
+        if editor.graph.is_none() && !editor.is_loading() && editor.error.is_none() {
+            editor.start_load(ctx);
+        }
+        let before = editor.snapshot();
+        let mut restored_history = false;
         let editor_top = ui.cursor().top();
         ui.horizontal(|ui| {
             ui.weak("Effect");
@@ -937,6 +1039,15 @@ impl Workbench {
             let apply_button = crate::app::style::primary(ui, "Apply and Back");
             if ui.add_enabled(valid, apply_button).clicked() {
                 apply = true;
+            }
+            for (label, redo) in [("Undo", false), ("Redo", true)] {
+                if ui
+                    .add_enabled(editor.history_available(redo), egui::Button::new(label))
+                    .clicked()
+                {
+                    editor.restore_history(redo);
+                    restored_history = true;
+                }
             }
             if ui
                 .add_enabled(!editor.is_loading(), egui::Button::new("Reset Effect"))
@@ -986,6 +1097,9 @@ impl Workbench {
         // frame lets the automatic conversion replace the effect. Letting both run left a
         // program beside stock overrides, which the build rejects, or rewrote an effect the
         // user had just discarded.
+        if !restored_history {
+            editor.record_history(before, ctx);
+        }
         let conversion = editor.take_conversion();
         if apply || back {
             drop(conversion);
@@ -1043,6 +1157,8 @@ impl Workbench {
 /// frame, so the last click wins in the rare case of two.
 #[derive(Default)]
 struct EffectEvents {
+    duplicate: Option<u16>,
+    movement: Option<cards::Move>,
     /// Remove the effect with this finished perk index.
     remove: Option<u16>,
     /// Open the behavior editor on this stock effect.

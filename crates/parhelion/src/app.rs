@@ -1,3 +1,5 @@
+#[cfg(feature = "d2-model-importer")]
+mod importer;
 pub(crate) mod pickers;
 mod ui_state;
 #[cfg(test)]
@@ -26,8 +28,8 @@ use sundial::investment::{
     WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, WeaponDonorSummary,
     WeaponInventorySlot, WeaponInvestmentStat, WeaponRarity, WeaponSandboxPerkChoice,
     WeaponTraitChoice, authored_socket_choice_limit, authoring_socket_label_width,
-    draw_authoring_info_icon, draw_authoring_toolbar, draw_catalog_loading_view,
-    draw_plug_safety_selector, draw_plug_safety_warning,
+    draw_authoring_info_icon, draw_authoring_toolbar, draw_authoring_warning_icon,
+    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning,
 };
 use sundial::package_authoring::{
     PackageAuthoringPreferences, PackageAuthoringUpdate, PackageAuthoringUtility, open_directory,
@@ -316,6 +318,12 @@ impl PackageAuthoringUtility for Parhelion {
                     viewport_context.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 self.app.update_ui(viewport_context);
+                sundial::ui::model_preview::pause_source(
+                    viewport_context,
+                    self.app.install_receiver.is_some()
+                        || self.app.uninstall.busy()
+                        || self.app.catalog_is_loading(),
+                );
                 let close_requested =
                     viewport_context.input(|input| input.viewport().close_requested());
                 let busy = self.app.has_background_work();
@@ -365,6 +373,8 @@ struct PackageAuthoringApp {
     recipe_dirty: bool,
     recipe_requires_initial_save: bool,
     library_open: bool,
+    #[cfg(feature = "d2-model-importer")]
+    importer: importer::Importer,
     library_query: String,
     library_state: library_view::LibraryState,
     restore_defaults_preview: Option<crate::recipe_library::RestoreDefaults>,
@@ -390,6 +400,9 @@ struct PackageAuthoringApp {
     build_status_open: bool,
     backup_root: String,
     limit_package_backups: bool,
+    /// Shows the Technical Build window for the staged build.
+    show_technical_build: bool,
+    technical_build_open: bool,
     package_backup_retention: usize,
     backup_recipe_snapshots: bool,
     preferences_open: bool,
@@ -410,6 +423,8 @@ struct PackageAuthoringApp {
     catalog_reload_pending: bool,
     catalog_force_rebuild: bool,
     donor_summaries: Vec<WeaponDonorSummary>,
+    /// Search text for the Unique Weapon Behavior browser.
+    behavior_query: String,
     sandbox_perk_choices: Vec<WeaponSandboxPerkChoice>,
     trait_choices: Vec<WeaponTraitChoice>,
     donor_query: String,
@@ -477,6 +492,8 @@ impl Default for PackageAuthoringApp {
             recipe_dirty: false,
             recipe_requires_initial_save: false,
             library_open: false,
+            #[cfg(feature = "d2-model-importer")]
+            importer: importer::Importer::default(),
             library_query: String::new(),
             library_state: library_view::LibraryState::default(),
             restore_defaults_preview: None,
@@ -502,6 +519,8 @@ impl Default for PackageAuthoringApp {
             build_status_open: false,
             backup_root: default_backup_root().display().to_string(),
             limit_package_backups: backup_preferences.limit_package_backups,
+            show_technical_build: backup_preferences.show_technical_build,
+            technical_build_open: false,
             package_backup_retention: backup_preferences.package_backup_retention,
             backup_recipe_snapshots: backup_preferences.backup_recipe_snapshots,
             preferences_open: false,
@@ -522,6 +541,7 @@ impl Default for PackageAuthoringApp {
             catalog_reload_pending: false,
             catalog_force_rebuild: false,
             donor_summaries: Vec::new(),
+            behavior_query: String::new(),
             sandbox_perk_choices: Vec::new(),
             trait_choices: Vec::new(),
             donor_query: String::new(),
@@ -644,6 +664,8 @@ impl PackageAuthoringApp {
             });
             self.synchronize_recipe_dirty();
         });
+        #[cfg(feature = "d2-model-importer")]
+        self.draw_importer(ctx);
         self.draw_build_status_window(ctx);
         self.draw_runtime_bindings_window(ctx);
         self.draw_perk_workbench(ctx);
@@ -653,11 +675,13 @@ impl PackageAuthoringApp {
         self.draw_artwork_editor(ctx);
         self.draw_preferences_window(ctx);
         self.draw_activity_log_window(ctx);
+        self.draw_technical_build_window(ctx);
         self.draw_discard_confirmation(ctx);
         self.draw_library_windows(ctx);
         #[cfg(feature = "community-recipes")]
         self.draw_community_window(ctx);
         self.synchronize_recipe_dirty();
+        self.follow_appearance_preview(ctx);
         if self.build_receiver.is_some()
             || self.install_receiver.is_some()
             || self.catalog_receiver.is_some()
@@ -701,6 +725,10 @@ impl PackageAuthoringApp {
     }
 
     fn has_background_work(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if self.importer.busy() {
+            return true;
+        }
         self.uninstall.busy()
             || self.library_state.busy()
             || self.build_receiver.is_some()
@@ -903,6 +931,7 @@ impl PackageAuthoringApp {
     fn save_backup_preferences(&mut self) {
         let preferences = ParhelionPreferences {
             limit_package_backups: self.limit_package_backups,
+            show_technical_build: self.show_technical_build,
             package_backup_retention: self.package_backup_retention,
             backup_recipe_snapshots: self.backup_recipe_snapshots,
             ..ParhelionPreferences::default()
@@ -1010,12 +1039,32 @@ impl PackageAuthoringApp {
     }
 
     fn draw_tools_menu(&mut self, ui: &mut egui::Ui) {
-        if !self.show_experimental_options {
+        #[cfg(feature = "d2-model-importer")]
+        let importer_enabled = self.importer.enabled;
+        #[cfg(not(feature = "d2-model-importer"))]
+        let importer_enabled = false;
+        if !self.show_experimental_options && !importer_enabled && !self.show_technical_build {
             return;
         }
         ui.menu_button("Tools", |ui| {
-            if ui.button("Engine Catalog…").clicked() {
+            #[cfg(feature = "d2-model-importer")]
+            if importer_enabled && ui.button("D2 Importer…").clicked() {
+                self.importer.open = true;
+                ui.close_menu();
+            }
+            if self.show_experimental_options && ui.button("Engine Catalog…").clicked() {
                 self.perk_workbench.open_engine_catalog();
+                ui.close_menu();
+            }
+            if self.show_technical_build
+                && ui
+                    .button("Technical Build…")
+                    .on_hover_text(
+                        "What the next build assigns, or what the staged build produced.",
+                    )
+                    .clicked()
+            {
+                self.technical_build_open = true;
                 ui.close_menu();
             }
         });
@@ -1590,30 +1639,60 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) -> b
     changed
 }
 
+struct IdentityField {
+    label: String,
+    value: String,
+    copyable: bool,
+    help: Option<&'static str>,
+}
+
+impl IdentityField {
+    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            copyable: true,
+            help: None,
+        }
+    }
+
+    fn assigned_during_build(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: "Assigned During Build".into(),
+            copyable: false,
+            help: Some("Assigned by the validated build plan."),
+        }
+    }
+}
+
 fn draw_identity_group<'a>(
     ui: &mut egui::Ui,
     title: &str,
-    fields: impl Iterator<Item = &'a (&'a str, String, bool)>,
+    fields: impl Iterator<Item = &'a IdentityField>,
 ) {
     ui.strong(title);
     egui::Grid::new(title)
         .striped(true)
         .spacing([12.0, 5.0])
         .show(ui, |ui| {
-            for (label, value, copyable) in fields {
+            for field in fields {
                 ui.horizontal(|ui| {
-                    ui.label(*label);
-                    if *label == "Icon Definition" {
-                        draw_authoring_info_icon(ui, "Package address assigned during build.");
+                    ui.label(&field.label);
+                    if let Some(help) = field.help {
+                        draw_authoring_info_icon(ui, help);
                     }
                 });
-                ui.add(egui::Label::new(egui::RichText::new(value).monospace()).selectable(true));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&field.value).monospace())
+                        .selectable(true),
+                );
                 if ui
-                    .add_enabled(*copyable, egui::Button::new("Copy"))
-                    .on_disabled_hover_text("Package address assigned during build.")
+                    .add_enabled(field.copyable, egui::Button::new("Copy"))
+                    .on_disabled_hover_text("Assigned by the validated build plan.")
                     .clicked()
                 {
-                    ui.ctx().copy_text(value.to_owned());
+                    ui.ctx().copy_text(field.value.clone());
                 }
                 ui.end_row();
             }
@@ -1628,10 +1707,22 @@ fn runtime_component_control(binding_hash: u32) -> Option<RuntimeComponentContro
 }
 
 fn draw_donor_section_label(ui: &mut egui::Ui, label: &str, tooltip: Option<&str>) {
+    draw_donor_section_label_with_warning(ui, label, tooltip, None);
+}
+
+fn draw_donor_section_label_with_warning(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: Option<&str>,
+    warning: Option<&str>,
+) {
     ui.horizontal(|ui| {
         ui.strong(label);
         if let Some(tooltip) = tooltip {
             draw_authoring_info_icon(ui, tooltip);
+        }
+        if let Some(warning) = warning {
+            draw_authoring_warning_icon(ui, warning);
         }
     });
 }
@@ -1742,6 +1833,7 @@ mod runtime_dependencies;
 mod runtime_donors;
 mod runtime_view;
 mod socket_editor;
+mod technical_build;
 use custom_perks::*;
 mod uninstall_view;
 use socket_editor::*;

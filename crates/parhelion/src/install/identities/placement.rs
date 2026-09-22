@@ -58,7 +58,9 @@ pub(in crate::install) fn slot_replacement(
     })
 }
 
-fn tables(manager: &tiger_pkg::PackageManager) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn tables(
+    manager: &sundial::package_authoring::PackageManager,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     let read = |tag| manager.read_tag(TagHash(tag)).map_err(|e| e.to_string());
     let globals = resolve_live_named_tag(manager, "investment_globals", None)?;
     let globals = read(globals.0)?;

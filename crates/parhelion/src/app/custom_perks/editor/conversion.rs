@@ -109,7 +109,7 @@ impl PerkEditor {
 }
 
 fn prepare(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     loaded: &PrivatePerkRuntimeGraph,
     input: &Input,
 ) -> Result<Preview, String> {
@@ -167,6 +167,42 @@ fn prepare(
             program,
         })
     })
+}
+
+/// Copy effective stock behavior through the same checked conversion as Edit Behavior.
+/// The source index must remain intact until every override has been carried across.
+pub(in crate::app::custom_perks) fn copy_effect(
+    packages: &Path,
+    effect: &WeaponSandboxPerkRuntimeRecipe,
+    name: String,
+) -> Result<Program, String> {
+    let key = PerkEditorKey {
+        socket_index: 0,
+        choice_index: 0,
+        source_plug_hash: 0,
+        source_perk_index: effect.source_perk_index,
+    };
+    let loaded = load_private_perk_runtime_graph(packages, key, &effect.projectiles)?;
+    let manager = open_shadowkeep_package_manager(packages)?;
+    let input = Input {
+        index: effect.source_perk_index,
+        activation: effect.activation,
+        values: effect.runtime_values.clone(),
+        action_values: effect.action_float_values.clone(),
+        projectiles: effect.projectiles.clone(),
+    };
+    let preview = prepare(&manager, &loaded, &input)?;
+    match preview.fidelity {
+        Ok(differences) if differences.is_empty() => {
+            let mut program = preview.program;
+            program.name = name;
+            Ok(program)
+        }
+        Ok(_) => Err("This effect could not be copied without changing its behavior.".into()),
+        Err(error) => Err(format!(
+            "This effect could not be checked for an exact copy. {error}"
+        )),
+    }
 }
 
 /// One route through the round trip: the recovered program carrying the edits, and how the

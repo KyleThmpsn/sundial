@@ -55,7 +55,9 @@ use sha2::{Digest, Sha256};
 use sundial::package_authoring::account::{
     AuthoredCollectionUnlock, AuthoredProfileSyncReport, synchronize_authored_collection_unlocks,
 };
-use sundial::package_authoring::{path_is_within, paths_equal, resolve_path_for_comparison};
+use sundial::package_authoring::{
+    RuntimeBrand, RuntimeSnapshot, path_is_within, paths_equal, resolve_path_for_comparison,
+};
 use tiger_pkg::{Package, PackageD2PreBL};
 
 use crate::SUNDIAL_BUILD_SIGNATURE;
@@ -79,10 +81,6 @@ use crate::package_profile::{
 pub(crate) use crate::package_profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
 use crate::recipe::WeaponRecipe;
 
-const SUNRISE_BUILD_CACHE_LAYOUTS: [&[&str]; 2] = [
-    &["Sunrise", "cache", "build_data.bin"],
-    &["bin", "x64", "Sunrise", "cache", "build_data.bin"],
-];
 const SUNRISE_CACHE_BACKUP_DIRECTORY: &str = "sunrise-cache";
 const PACKAGE_HEADER_CACHE_PREFIX: &str = "cache_phr_";
 const PACKAGE_HEADER_CACHE_SUFFIX: &str = ".dat";
@@ -99,12 +97,14 @@ static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub type GameRunningCheck = fn() -> Result<bool, String>;
 pub type RuntimeFeatureCheck = fn(&Path) -> Result<(), String>;
+pub type RuntimeSnapshotCheck = fn(&Path) -> Result<RuntimeSnapshot, String>;
 
 #[derive(Clone, Debug)]
 pub struct RecoveryRequest {
     pub target_packages_directory: PathBuf,
     pub backup_root: PathBuf,
     pub game_running_check: GameRunningCheck,
+    pub runtime_snapshot_check: RuntimeSnapshotCheck,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +127,8 @@ pub struct InstallRequest {
     /// Confirms that the selected runtime advertises the loader hooks required by authoring.
     /// Package rows, headers and cache state are validated independently by the installer.
     pub runtime_feature_check: RuntimeFeatureCheck,
+    /// Snapshots the selected runtime identity so later mutations can reject runtime changes.
+    pub runtime_snapshot_check: RuntimeSnapshotCheck,
     /// Number of automatic package-backup generations retained after a successful install.
     pub package_backup_retention: usize,
     /// Whether successful installs prune older automatic package-backup generations.
@@ -152,6 +154,7 @@ impl InstallRequest {
             backup_root,
             game_running_check: sundial::package_authoring::destiny_is_running,
             runtime_feature_check: sundial::package_authoring::validate_package_authoring_runtime,
+            runtime_snapshot_check: sundial::package_authoring::installed_runtime,
             package_backup_retention: DEFAULT_PACKAGE_BACKUP_RETENTION,
             limit_package_backups: true,
             backup_recipe_snapshots: true,
@@ -172,7 +175,7 @@ pub struct InstalledArtifact {
     pub backup_path: Option<PathBuf>,
 }
 
-/// A stale Sunrise build-data cache removed after the package transaction.
+/// A stale runtime build-data cache removed after the package transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvalidatedSunriseCache {
     pub cache_path: PathBuf,
@@ -320,12 +323,16 @@ struct SunriseCacheFile {
 
 #[derive(Debug)]
 struct ValidatedSunriseCache {
+    runtime: RuntimeSnapshot,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
     candidates: SunriseCacheCandidates,
     file: Option<SunriseCacheFile>,
 }
 
 #[derive(Debug)]
 struct OriginalSunriseCache {
+    runtime: RuntimeSnapshot,
+    runtime_snapshot_check: RuntimeSnapshotCheck,
     candidates: SunriseCacheCandidates,
     file: Option<SunriseCacheFile>,
     backup_path: Option<PathBuf>,
@@ -423,6 +430,8 @@ struct InstallTransactionRecord {
     backup_directory: PathBuf,
     artifacts: Vec<InstallTransactionArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<RuntimeSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     account_cleanup: Option<account::AccountCleanupRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_settings: Option<account::AccountCleanupRecord>,
@@ -458,6 +467,7 @@ pub fn install_staged_packages_with_progress(
         target_packages_directory: request.target_packages_directory.clone(),
         backup_root: request.backup_root.clone(),
         game_running_check: request.game_running_check,
+        runtime_snapshot_check: request.runtime_snapshot_check,
     })?;
     install_with_progress(
         request,
@@ -528,7 +538,7 @@ fn install_with_progress(
         };
     progress(InstallProgress::item(
         InstallPhase::BackingUp,
-        "Sunrise build-data cache",
+        "Runtime Build-Data Cache",
         package_backups,
         backup_operations,
     ));
@@ -663,6 +673,9 @@ fn install_with_progress(
     if let Err(message) = check_game_immediately_before_commit(request).and_then(|()| {
         (request.runtime_feature_check)(&validated.target_packages_directory)
             .map_err(|error| format!("Runtime check failed before installation: {error}"))?;
+        verify_sunrise_cache_unchanged(&original_sunrise_cache).map_err(|error| {
+            format!("Runtime or cache check failed before installation: {error}")
+        })?;
         replacement::verify_account(
             &validated.target_packages_directory,
             validated.replacement_guard.as_ref(),

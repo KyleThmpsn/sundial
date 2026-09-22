@@ -72,6 +72,66 @@ fn anonymous_perk_references_do_not_hide_a_native_ancestor() {
 }
 
 #[test]
+fn an_attached_entity_is_named_an_attachment_after_the_perks_that_carry_it() {
+    // Firefly's explosion entity, 0x80C19A55: no path, no name, attached by two perks.
+    let names = |index: u16| match index {
+        1091 => Some("Firefly".to_owned()),
+        1382 => Some("Ace of Spades Catalyst".to_owned()),
+        _ => None,
+    };
+    let mut asset = entry(0x80C1_9A55, Kind::Entity, 23);
+    asset.perk_indices = vec![1091, 1382];
+    asset.contexts = [1091, 1382]
+        .map(|perk| Context {
+            perk: Some(perk),
+            ..context(asset.graph, "", None, 1)
+        })
+        .to_vec();
+    asset.source_hint = Some("Attached Entity".into());
+    assert_eq!(
+        asset.discovery_name_with(names, |_| None).as_deref(),
+        Some("Shared by Ace of Spades Catalyst, Firefly Attachment")
+    );
+    asset.perk_indices = vec![1091];
+    asset.contexts.clear();
+    assert_eq!(
+        asset.discovery_name_with(names, |_| None).as_deref(),
+        Some("Firefly Attachment")
+    );
+    // The always-active and on-draw forms are still attachments.
+    asset.source_hint = Some("Attached Entity Always Active".into());
+    assert_eq!(
+        asset.discovery_name_with(names, |_| None).as_deref(),
+        Some("Firefly Attachment")
+    );
+    // A spawned entity, a projectile and an ancestor-named entity keep their kind.
+    asset.source_hint = Some("Spawned Entity".into());
+    assert_eq!(
+        asset.discovery_name_with(names, |_| None).as_deref(),
+        Some("Firefly Entity")
+    );
+    let mut projectile = entry(2, Kind::Projectile, 18);
+    projectile.perk_indices = vec![1091];
+    projectile.source_hint = Some("Attached Entity".into());
+    assert_eq!(
+        projectile.discovery_name_with(names, |_| None).as_deref(),
+        Some("Firefly Projectile")
+    );
+    let mut owned = entry(3, Kind::Entity, 23);
+    owned.source_hint = Some("Attached Entity".into());
+    owned.contexts = vec![context(
+        30,
+        "content/characters/cabal/ultra_emperor_decoy.pattern.tft",
+        None,
+        1,
+    )];
+    assert_eq!(
+        owned.discovery_name().as_deref(),
+        Some("Cabal Ultra Emperor Decoy Attachment")
+    );
+}
+
+#[test]
 fn a_legacy_name_on_an_ancestor_does_not_stop_the_climb() {
     // Asset 1 is bound by 2, which only a Destiny 1 template name covers, and 2 is bound by
     // 3, which an installed path names. The installed name must still be found, and the

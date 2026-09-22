@@ -2,6 +2,7 @@
 
 use std::mem::size_of;
 
+use crate::package_runtime::reader::PackageManager;
 use crate::{
     investment_schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, NESTED_ARRAY_TRAILER,
@@ -14,7 +15,7 @@ use crate::{
         WEAPON_ENTITY_CLASS, validate_weapon_entity,
     },
 };
-use tiger_pkg::{PackageManager, TagHash};
+use tiger_pkg::TagHash;
 
 pub mod action;
 pub mod activation;
@@ -45,20 +46,6 @@ pub const SANDBOX_PERK_INDEX_ROW_CLASS: u32 = 0x8080_7AAE;
 pub const SANDBOX_PERK_INDEX_ROW_SIZE: usize = 0x08;
 
 const FINISHED_SANDBOX_PERK_NAME_REFERENCE_OFFSET: usize = 0;
-
-/// Advisory for Sunrise's replicated appearance-data reader, not a native package limit.
-///
-/// At Sunrise commit 26bfe280 (2026-09-05), `items::kSandboxPerkCapacity` and
-/// build-data `details::Definition` retain four non-sentinel entries per item or plug.
-/// Private clones replace existing entries, so their source plug's count still applies.
-/// Do not truncate authored arrays or infer that all native consumers have this limit.
-/// See `docs/sunrise-contracts.md` for provenance and the separate 16-entry weapon bank.
-#[must_use]
-pub fn sunrise_perk_projection_warning(perk_count: usize) -> Option<&'static str> {
-    (perk_count > 4).then_some(
-        "Sunrise copies the first 4 effects per item or perk into replicated appearance data. Later effects remain in the package but are omitted from that data.",
-    )
-}
 
 /// Package class for the shared sandbox-pattern/perk runtime-key map.
 pub const SANDBOX_PERK_RUNTIME_MAP_CLASS: u32 = SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS;

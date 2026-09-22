@@ -242,9 +242,7 @@ impl PackageAuthoringApp {
             None => return,
         };
         if !review.changes_account() {
-            ui.label(
-                "No saved account data needs cleanup. The installed custom package set will still be replaced by this build.",
-            );
+            ui.label("No saved account changes are required for this package replacement.");
             return;
         }
         let Some(cleanup) = review.account_cleanup() else {

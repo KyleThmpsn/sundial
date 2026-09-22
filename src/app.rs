@@ -1111,6 +1111,7 @@ impl eframe::App for SundialApp {
         self.draw_active_view(ctx);
         self.draw_supporting_windows(ctx);
         self.update_package_authoring(ctx);
+        crate::ui::model_preview::show(ctx);
 
         self.draw_pending_install_choice(ctx);
         self.draw_future_schema_confirmation(ctx);
@@ -1253,6 +1254,7 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
         Box::new(move |cc| {
             #[cfg(windows)]
             set_windows_taskbar_icon(cc);
+            crate::model_preview::gpu::set_available(cc.gl.is_some());
             cc.egui_ctx.set_theme(preferences.color_theme.egui_theme());
             ui::configure_contrast(&cc.egui_ctx);
             let app = StartupApp::new(

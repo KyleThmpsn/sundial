@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::weapon_runtime::WeaponRuntimeValueOverride;
 
 pub(crate) mod compiler;
+pub use compiler::draft as native_draft;
 pub use compiler::{Compiled, compile};
 pub mod decompile;
 pub mod properties;
@@ -101,12 +102,8 @@ impl Trigger {
             Self::Always => {
                 "Actions start as soon as the perk is applied and stay until it is removed."
             }
-            Self::Equipped => {
-                "Actions start when equipped. Retained entities and pattern overrides are removed when unequipped."
-            }
-            Self::Drawn => {
-                "Actions start when drawn. Retained entities and pattern overrides are removed when holstered."
-            }
+            Self::Equipped => "Actions start when equipped and run their cleanup when unequipped.",
+            Self::Drawn => "Actions start when drawn and run their cleanup when holstered.",
             Self::WeaponKill => "Actions start on a kill with this weapon.",
             Self::PrecisionKill => "Actions start on a precision kill with this weapon.",
             Self::MeleeKill => "Actions start on a melee kill.",
@@ -327,8 +324,9 @@ impl AmmunitionStore {
 }
 
 /// Which of the seven amounts of an ammunition node carries the value: the owning weapon,
-/// one of three weapon slots or one of three ammunition types. The client traces the slot
-/// and type positions but does not name them.
+/// one of three weapon slots or one of three ammunition types. The slot amounts follow
+/// the same Kinetic/Energy/Power bank as the magazine predicates. E8F780 selects the ammo
+/// category amounts, independently corroborated by Scavenger and Armaments records.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AmmunitionTarget {
@@ -357,12 +355,12 @@ impl AmmunitionTarget {
     pub const fn label(self) -> &'static str {
         match self {
             Self::OwningWeapon => "This Weapon",
-            Self::Slot1 => "Weapon Slot 1",
-            Self::Slot2 => "Weapon Slot 2",
-            Self::Slot3 => "Weapon Slot 3",
-            Self::Category1 => "Ammo Type 1",
-            Self::Category2 => "Ammo Type 2",
-            Self::Category3 => "Ammo Type 3",
+            Self::Slot1 => "Kinetic Slot",
+            Self::Slot2 => "Energy Slot",
+            Self::Slot3 => "Power Slot",
+            Self::Category1 => "Primary Ammo",
+            Self::Category2 => "Special Ammo",
+            Self::Category3 => "Heavy Ammo",
         }
     }
 
@@ -391,25 +389,23 @@ pub enum Action {
     },
     Attach {
         asset: Asset,
-        /// The attachment mode byte at `+0x02` of the Create Entity node. Stock actions store
-        /// 0 through 3. Its role is not mapped, so the compiler writes it verbatim. The default
-        /// is 1, which is what the compiler wrote before the field existed.
+        /// Native target at +0x02. Zero selects the perk's hosting object, one its owning
+        /// player. Two and three resolve event objects. Other values remain byte-exact.
         #[serde(
             default = "default_attach_mode",
             skip_serializing_if = "is_default_attach_mode"
         )]
         mode: u8,
-        /// The two keys at `+0x18` and `+0x1C`. Most stock nodes leave both at the empty hash,
-        /// which is also what the compiler wrote before the field existed.
+        /// Cleanup policy key at +0x18 and removal parameter at +0x1C. A nonempty first
+        /// key suppresses automatic retirement. The second names the value written on removal.
         #[serde(
             default = "empty_keys",
             skip_serializing_if = "is_empty_keys",
             with = "hex_keys"
         )]
         keys: [u32; 2],
-        /// The four floats at `+0x20` through `+0x2C`, kept as bit patterns so recipe equality
-        /// stays exact. Stock nodes store zero or `1.0`. The default is zero, which is what the
-        /// compiler wrote before the field existed.
+        /// Four lanes written to the named removal parameter. Bits remain exact. Their
+        /// units and meaning belong to the attached entity, not to this action kind.
         #[serde(default, skip_serializing_if = "is_zero_bits", with = "float_bits")]
         float_bits: [u32; 4],
     },
@@ -1081,7 +1077,7 @@ impl NativeGroup {
 }
 
 mod native;
-pub use native::NativeProgram;
+pub use native::{NativeIssue, NativeProgram};
 
 /// One closed native record outside the program, carried by class and the bytes of its
 /// allocation graph.
@@ -1466,10 +1462,24 @@ impl Program {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_structure()?;
         if let Some(native) = &self.native {
-            crate::sandbox_perk::action::decode(&native.graph.emit()?)?;
+            if let Some(issue) = native.authoring_issue()? {
+                return Err(format!(
+                    "Behavior {}, Action {}, {}: {}",
+                    issue.group + 1,
+                    issue.action + 1,
+                    issue.field,
+                    issue.message
+                ));
+            }
             return Ok(());
         }
         for action in &self.actions {
+            if let Action::Native { node } = action {
+                let class = crate::sandbox_perk::nodes::effect(node.kind)
+                    .ok_or("Unknown action kind.")?
+                    .class;
+                native::entity_reference(class, &node.bytes)?;
+            }
             if let Some(asset) = action.asset()
                 && (asset.graph == 0 || asset.graph == u32::MAX)
             {
@@ -1477,6 +1487,14 @@ impl Program {
             }
             if matches!(action, Action::ExtendTimers { .. }) && !self.has_kill_trigger() {
                 return Err("Extend Timers requires a kill trigger.".into());
+            }
+        }
+        for group in &self.additional_groups {
+            for node in &group.effects {
+                let class = crate::sandbox_perk::nodes::effect(node.kind)
+                    .ok_or("Unknown action kind.")?
+                    .class;
+                native::entity_reference(class, &node.bytes)?;
             }
         }
         Ok(())

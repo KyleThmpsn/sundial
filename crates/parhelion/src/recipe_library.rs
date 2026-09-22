@@ -8,7 +8,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::WeaponRecipe;
+use crate::{
+    WeaponRecipe,
+    bundled_defaults::{self, AppliedVersions, DefaultsRefresh},
+};
 
 mod restore;
 mod transfer;
@@ -90,6 +93,7 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 18] = [
 ];
 const LIBRARY_STATE_SCHEMA: u32 = 1;
 const LIBRARY_STATE_FILE_NAME: &str = "library-state.json";
+const BUNDLED_VERSIONS_FILE_NAME: &str = "bundled-recipe-versions.json";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -109,6 +113,8 @@ pub struct RecipeLibraryEntry {
     pub namespace: String,
     pub bundled: bool,
     pub donor_hash: u32,
+    /// The weapon this recipe builds, so another recipe can be recognized as building on it.
+    pub identity_hash: u32,
     pub type_name: Option<String>,
     pub ammo_type: Option<crate::RecipeAmmoType>,
     pub damage_type: Option<crate::recipe::RecipeDamageType>,
@@ -127,6 +133,7 @@ pub struct RecipeLibraryScan {
 pub struct RecipeLibrary {
     root: PathBuf,
     canonical_root: PathBuf,
+    refresh: Option<DefaultsRefresh>,
 }
 
 impl RecipeLibrary {
@@ -149,17 +156,24 @@ impl RecipeLibrary {
                 root.display()
             )
         })?;
-        let library = Self {
+        let mut library = Self {
             root,
             canonical_root,
+            refresh: None,
         };
-        library.materialize_bundled_recipes()?;
+        library.refresh = library.materialize_bundled_recipes()?;
         Ok(library)
     }
 
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Bundled recipes replaced while opening, because a release changed them.
+    #[must_use]
+    pub(crate) fn defaults_refresh(&self) -> Option<&DefaultsRefresh> {
+        self.refresh.as_ref()
     }
 
     pub fn scan(&self) -> Result<RecipeLibraryScan, String> {
@@ -187,6 +201,7 @@ impl RecipeLibrary {
                         }),
                     path,
                     donor_hash: recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+                    identity_hash: recipe.identity.item_hash.parse_u32().unwrap_or_default(),
                     type_name: recipe.type_name,
                     ammo_type: recipe.overrides.ammo_type,
                     damage_type: recipe.overrides.modern_damage_type,
@@ -342,17 +357,81 @@ impl RecipeLibrary {
         Ok((destination, recipe))
     }
 
-    fn materialize_bundled_recipes(&self) -> Result<(), String> {
+    /// Adds missing bundled recipes. A copy left over from an earlier release is backed up
+    /// and replaced; a copy edited under the current release is kept.
+    fn materialize_bundled_recipes(&self) -> Result<Option<DefaultsRefresh>, String> {
+        let mut versions = AppliedVersions::load(self.versions_path()?)?;
+        let mut stale = Vec::new();
         for (file_name, encoded) in BUNDLED_RECIPES {
-            WeaponRecipe::from_json_str(encoded)
+            let recipe = WeaponRecipe::from_json_str(encoded)
                 .map_err(|error| format!("Bundled recipe {file_name} is invalid: {error}"))?;
+            let digest = bundled_defaults::digest(encoded.as_bytes());
             let path = self.root.join(file_name);
             match atomic_write_create_new(&path, encoded.as_bytes()) {
-                Ok(()) | Err(WriteNewError::AlreadyExists) => {}
+                Ok(()) => {
+                    versions.record(file_name, digest);
+                    continue;
+                }
+                Err(WriteNewError::AlreadyExists) => {}
                 Err(WriteNewError::Other(error)) => return Err(error),
             }
+            if versions.is_current(file_name, &digest) {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                format!(
+                    "Could not inspect bundled recipe {}: {error}",
+                    path.display()
+                )
+            })?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let current = fs::read(&path).map_err(|error| {
+                format!("Could not read bundled recipe {}: {error}", path.display())
+            })?;
+            if current == encoded.as_bytes() {
+                versions.record(file_name, digest);
+                continue;
+            }
+            // Only edits worth keeping become a duplicate; a re-saved or unreadable copy
+            // is preserved by the backup alone.
+            let edited =
+                WeaponRecipe::from_json_str(std::str::from_utf8(&current).unwrap_or_default())
+                    .ok()
+                    .filter(|edited| *edited != recipe);
+            stale.push((file_name, encoded, digest, current, recipe, edited));
         }
-        Ok(())
+        let refresh = if stale.is_empty() {
+            None
+        } else {
+            let backup = self.create_restore_backup()?;
+            let mut names = Vec::new();
+            let mut copies = Vec::new();
+            for (file_name, encoded, digest, current, recipe, edited) in stale {
+                bundled_defaults::back_up(&backup, file_name, &current)?;
+                if let Some(edited) = edited {
+                    let copy = self.duplicate(&edited)?;
+                    copies
+                        .push(WeaponRecipe::load_json(&copy).map_or(edited.name, |copy| copy.name));
+                }
+                atomic_write_replace(&self.root.join(file_name), encoded.as_bytes())?;
+                versions.record(file_name, digest);
+                names.push(recipe.name);
+            }
+            Some(DefaultsRefresh {
+                names,
+                copies,
+                backup,
+            })
+        };
+        versions.save()?;
+        Ok(refresh)
+    }
+
+    fn versions_path(&self) -> Result<PathBuf, String> {
+        self.state_path()
+            .map(|state| state.with_file_name(BUNDLED_VERSIONS_FILE_NAME))
     }
 
     fn confined_existing_path(&self, path: &Path) -> Result<PathBuf, String> {
@@ -775,16 +854,109 @@ mod tests {
     }
 
     #[test]
-    fn opening_library_never_overwrites_seeded_user_edits() {
+    fn reopening_keeps_user_edits_while_the_bundled_recipe_is_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("recipes");
+        let library = RecipeLibrary::open(root.clone()).unwrap();
+        assert!(library.defaults_refresh().is_none());
+        let path = library.root().join(EVERY_END_FILE_NAME);
+        fs::write(&path, "user-owned edit").unwrap();
+
+        let library = RecipeLibrary::open(root).unwrap();
+
+        assert!(library.defaults_refresh().is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), "user-owned edit");
+    }
+
+    /// Simulates a copy left by an earlier release by dropping its applied version.
+    fn forget_applied_version(library: &RecipeLibrary, file_name: &str) {
+        let path = library.versions_path().unwrap();
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["applied"].as_object_mut().unwrap().remove(file_name);
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_changed_bundled_recipe_replaces_the_stale_copy_and_keeps_edits_as_a_duplicate() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("recipes");
         let library = RecipeLibrary::open(root.clone()).unwrap();
         let path = library.root().join(EVERY_END_FILE_NAME);
-        fs::write(&path, "user-owned edit").unwrap();
+        let mut edited = WeaponRecipe::load_json(&path).unwrap();
+        edited.flavor = "My own story.".into();
+        library.save_existing(&path, &edited).unwrap();
+        let edited_bytes = fs::read(&path).unwrap();
+        let custom = WeaponRecipe::new_weapon("parhelion.untouched").unwrap();
+        let custom_path = library.save_new(&custom).unwrap();
+        forget_applied_version(&library, EVERY_END_FILE_NAME);
 
-        RecipeLibrary::open(root).unwrap();
+        let library = RecipeLibrary::open(root.clone()).unwrap();
 
-        assert_eq!(fs::read_to_string(path).unwrap(), "user-owned edit");
+        let refresh = library.defaults_refresh().unwrap();
+        assert_eq!(refresh.names, vec![edited.name.clone()]);
+        assert_eq!(refresh.copies, vec![format!("{} Copy", edited.name)]);
+        assert_eq!(fs::read(&path).unwrap(), EVERY_END_TEMPLATE.as_bytes());
+        assert_eq!(
+            fs::read(refresh.backup.join(EVERY_END_FILE_NAME)).unwrap(),
+            edited_bytes
+        );
+        assert_eq!(WeaponRecipe::load_json(custom_path).unwrap(), custom);
+        let scan = library.scan().unwrap();
+        let copy = scan
+            .entries
+            .iter()
+            .find(|entry| entry.name == format!("{} Copy", edited.name))
+            .expect("the edited copy is kept in the library");
+        assert!(!copy.bundled);
+        let copy = WeaponRecipe::load_json(&copy.path).unwrap();
+        assert_eq!(copy.flavor, edited.flavor);
+        assert_ne!(copy.namespace, edited.namespace);
+
+        assert!(
+            RecipeLibrary::open(root)
+                .unwrap()
+                .defaults_refresh()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_stale_copy_that_is_not_a_recipe_is_only_backed_up() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("recipes");
+        let library = RecipeLibrary::open(root.clone()).unwrap();
+        let path = library.root().join(EVERY_END_FILE_NAME);
+        fs::write(&path, "not a recipe").unwrap();
+        forget_applied_version(&library, EVERY_END_FILE_NAME);
+
+        let library = RecipeLibrary::open(root).unwrap();
+
+        let refresh = library.defaults_refresh().unwrap();
+        assert!(refresh.copies.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), EVERY_END_TEMPLATE.as_bytes());
+        assert_eq!(
+            fs::read_to_string(refresh.backup.join(EVERY_END_FILE_NAME)).unwrap(),
+            "not a recipe"
+        );
+        assert_eq!(library.scan().unwrap().entries.len(), BUNDLED_RECIPES.len());
+    }
+
+    #[test]
+    fn a_library_without_applied_versions_refreshes_only_differing_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("recipes");
+        let library = RecipeLibrary::open(root.clone()).unwrap();
+        let path = library.root().join(SECOND_SUN_FILE_NAME);
+        fs::write(&path, "left by an older release").unwrap();
+        fs::remove_file(library.versions_path().unwrap()).unwrap();
+
+        let library = RecipeLibrary::open(root).unwrap();
+
+        let refresh = library.defaults_refresh().unwrap();
+        assert_eq!(refresh.names.len(), 1);
+        assert_eq!(fs::read(&path).unwrap(), SECOND_SUN_TEMPLATE.as_bytes());
+        assert!(library.versions_path().unwrap().is_file());
     }
 
     #[test]

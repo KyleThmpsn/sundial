@@ -217,7 +217,7 @@ struct Tables {
 }
 
 impl Tables {
-    fn read(manager: &tiger_pkg::PackageManager) -> Self {
+    fn read(manager: &sundial::package_authoring::PackageManager) -> Self {
         let globals = manager
             .read_tag(resolve_live_named_tag(manager, "investment_globals", None).unwrap())
             .unwrap();
@@ -250,7 +250,11 @@ impl Tables {
         }
     }
 
-    fn load(&self, manager: &tiger_pkg::PackageManager, hash: u32) -> (Vec<u8>, Vec<u8>) {
+    fn load(
+        &self,
+        manager: &sundial::package_authoring::PackageManager,
+        hash: u32,
+    ) -> (Vec<u8>, Vec<u8>) {
         let index = self.indices[&hash];
         let read = |table: &[u8], rows| {
             manager
@@ -274,7 +278,11 @@ impl Tables {
     }
 }
 
-fn verify_ammo(manager: &tiger_pkg::PackageManager, hash: u32, ammo: WeaponAmmoType) -> usize {
+fn verify_ammo(
+    manager: &sundial::package_authoring::PackageManager,
+    hash: u32,
+    ammo: WeaponAmmoType,
+) -> usize {
     let entity = load_weapon_runtime_entity_with_manager(manager, hash).unwrap();
     let bindings = weapon_component_bindings(&entity.payload, 0x5F0D_D954).unwrap();
     assert_eq!(bindings.len(), 1);
@@ -301,7 +309,7 @@ fn verify_ammo(manager: &tiger_pkg::PackageManager, hash: u32, ammo: WeaponAmmoT
 }
 
 fn verify_private_default(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     tables: &Tables,
     hash: u32,
     variant: &WeaponSocketPlugVariantOverride,
@@ -357,7 +365,7 @@ fn verify_private_default(
 }
 
 fn verify_additional_perks(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     globals: &[u8],
     private: &[u16],
     stock: &[u16],
@@ -375,7 +383,7 @@ fn verify_additional_perks(
 }
 
 fn verify_sockets(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     tables: &Tables,
     definition: &[u8],
     spec: &WeaponCloneSpec,
@@ -443,7 +451,7 @@ fn verify_embedded_choices(
 }
 
 fn verify_weapon(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     tables: &Tables,
     recipe: &WeaponRecipe,
 ) -> usize {
@@ -455,7 +463,7 @@ fn verify_weapon(
 }
 
 fn verify_fields(
-    manager: &tiger_pkg::PackageManager,
+    manager: &sundial::package_authoring::PackageManager,
     tables: &Tables,
     recipe: &WeaponRecipe,
 ) -> usize {
@@ -535,7 +543,7 @@ fn run_batch(
     output: &Path,
     label: &str,
     recipes: &[WeaponRecipe],
-    mut verify: impl FnMut(&tiger_pkg::PackageManager, &Tables, &WeaponRecipe) -> usize,
+    mut verify: impl FnMut(&sundial::package_authoring::PackageManager, &Tables, &WeaponRecipe) -> usize,
 ) -> (crate::BuildReport, usize) {
     fs::write(
         output.join(format!("{label}.json")),

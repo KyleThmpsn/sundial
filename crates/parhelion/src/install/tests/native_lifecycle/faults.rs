@@ -59,6 +59,7 @@ fn verify_boundaries(version: u64) {
             game_stopped,
             Some(boundary),
             DEFAULT_CACHE_INVALIDATION_OPS,
+            test_runtime_snapshot,
         )
         .unwrap_err();
         assert!(
@@ -80,7 +81,7 @@ fn verify_boundaries(version: u64) {
         );
     }
     let plan = preview_uninstall(&fixture.request.target_packages_directory).unwrap();
-    uninstall_custom_packages(&plan, &fixture.request.backup_root, game_stopped).unwrap();
+    uninstall_fixture(&plan, &fixture.request.backup_root, game_stopped).unwrap();
     fixture.assert_stock_and_account_unchanged();
     assert!(
         preview_uninstall(&fixture.request.target_packages_directory)

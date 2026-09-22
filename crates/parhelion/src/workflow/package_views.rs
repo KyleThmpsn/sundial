@@ -44,13 +44,25 @@ impl ViewLease {
     }
 }
 
+/// Joins a build's outcome with the cleanup of the view it ran in.
+///
+/// A view that cannot be removed is not a failed build: the packages were already read, the
+/// output is complete, and the view is marked so the next build prunes it. It happens when the
+/// game or a preview still holds a package open, which is exactly when someone is testing. So a
+/// successful build keeps its result and the cleanup error goes to `warn`; a failed build reports
+/// both.
 pub(super) fn finish_with_cleanup<T>(
     result: Result<T, String>,
     cleanup: Result<(), String>,
+    warn: impl FnOnce(String),
 ) -> Result<T, String> {
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Err(cleanup)) => {
+            warn(cleanup);
+            Ok(value)
+        }
+        (Err(error), Ok(())) => Err(error),
         (Err(error), Err(cleanup)) => Err(format!("{error}\n{cleanup}")),
     }
 }
@@ -97,12 +109,12 @@ pub(super) fn initialize_source_decoder(source: &Path) -> Result<(), String> {
     // supplied directory. Pointing it at install/bin anchors those DLLs in the stable install
     // without scanning package data, including authored overlays intentionally excluded below.
     // Both dependencies enable ignore_caches. The expected empty census performs no writes.
-    match tiger_pkg::PackageManager::new(
+    match sundial::package_authoring::PackageManager::new(
         &bin,
         tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
         None,
     ) {
-        Err(error) if error.to_string() == "No packages found" => Ok(()),
+        Err(error) if error == "No packages found" => Ok(()),
         Err(error) => Err(format!(
             "Could not initialize the source package decoder: {error}"
         )),
@@ -144,8 +156,13 @@ pub(super) fn prune_stale_views(root: &Path) -> Result<usize, String> {
             continue;
         }
         if let Some(lease) = inactive_lease(&path)? {
-            remove_owned_view_locked(&root, &path, lease)?;
-            removed += 1;
+            // A stale view that cannot be removed yet, because something still holds one of
+            // its packages open, stays marked and is tried again next time. It must not stop
+            // a new build from getting a view of its own.
+            match remove_owned_view_locked(&root, &path, lease) {
+                Ok(()) => removed += 1,
+                Err(error) => eprintln!("{error}"),
+            }
         }
     }
     Ok(removed)
@@ -374,17 +391,32 @@ fn view_disappeared(directory: &Path) -> bool {
     matches!(fs::symlink_metadata(directory), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
+/// Removal is retried briefly on a permission error. On Windows a hard link to a package the
+/// build just finished reading can be refused for a moment after its reader closes, and one
+/// short wait is far cheaper than leaving the view for the next build.
 fn remove_if_present(
-    action: impl FnOnce() -> std::io::Result<()>,
+    mut action: impl FnMut() -> std::io::Result<()>,
     directory: &Path,
 ) -> Result<(), String> {
-    match action() {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "Could not clean temporary package view {}: {error}. The remaining view was preserved for a later cleanup attempt.",
-            directory.display()
-        )),
+    const ATTEMPTS: usize = 6;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match action() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied && attempt < ATTEMPTS =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not clean temporary package view {}: {error}. The remaining view was preserved for a later cleanup attempt.",
+                    directory.display()
+                ));
+            }
+        }
     }
 }
 

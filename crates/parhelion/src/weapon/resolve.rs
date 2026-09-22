@@ -79,18 +79,17 @@ pub(super) fn resolve_project_weapons_with_progress(
     let stock_unlock_count = sources.stock_unlock_count;
     let unlock_rows = sources.unlock_rows;
     let mut resolved = Vec::with_capacity(weapons.len());
-    for weapon in weapons {
+    let mut exemplar_cache = CollectionExemplarCache::new(stock_collectible_count);
+    for (weapon_ordinal, weapon) in weapons.iter().enumerate() {
         let operation = format!("Resolving {}", weapon.text.name);
         progress.start(&operation);
         let resolved_weapon = (|| -> AuthoringResult<ResolvedWeapon> {
             let identity = weapon.identity;
-        if contains_u32_row_key(
-            stock_item_table,
-            item_rows,
-            stock_item_count,
-            ITEM_ROW_SIZE,
-            identity.item_hash,
-        )? {
+        // The same answer the whole-table scan gave, from the index the sources already carry.
+        if sources
+            .stock_item_rows_by_hash
+            .contains_key(&identity.item_hash)
+        {
             return Err(AuthoringError::InvalidInput(format!(
                 "Item hash 0x{:08X} already exists in stock",
                 identity.item_hash
@@ -171,10 +170,35 @@ pub(super) fn resolve_project_weapons_with_progress(
         let with_behavior_perks = if weapon.overrides.additional_behaviors.is_empty() {
             None
         } else {
+            // A source weapon's frame plug is written for its own family, so it comes along
+            // only when the source is the same kind of weapon as this host. Family is read
+            // from the item-type string reference both carry, which is what names the type
+            // in game; a source that cannot be read keeps the frame, as it always did.
+            let host_type = item_type_reference(&strings);
+            let mut frame_fits = std::collections::BTreeMap::new();
+            for request in &weapon.overrides.additional_behaviors {
+                let Some(entry) = crate::weapon_behavior::behavior(request) else {
+                    continue;
+                };
+                let source_type = resolve_donor_item(
+                    sources,
+                    entry.source_item_hash,
+                    "Behavior source",
+                )
+                .and_then(|item| read_tag(manager, item.string_tag, "behavior source item-string"))
+                .ok()
+                .and_then(|strings| item_type_reference(&strings));
+                let fits = match (host_type, source_type) {
+                    (Some(host), Some(source)) => host == source,
+                    _ => true,
+                };
+                frame_fits.insert(entry.id, fits);
+            }
             let mut expanded = weapon.clone();
             expanded.overrides = crate::weapon_behavior::expand_socket_columns(
                 &weapon.overrides,
                 &weapon_socket_types(&definition)?,
+                &|entry| frame_fits.get(entry.id).copied().unwrap_or(true),
             )?;
             Some(expanded)
         };
@@ -211,16 +235,14 @@ pub(super) fn resolve_project_weapons_with_progress(
         // Use a real child of the target page as the placement/count exemplar, never move
         // a gameplay donor's count terms into an unrelated hierarchy.
         let authored_rarity = weapon.overrides.rarity.unwrap_or(weapon_rarity(&definition)?);
-        let (collection_donor_index, weapon_page, source_acquired_flag, count_selection) = if let Some(page) = weapon.overrides.collection_destination
-            .filter(|_| authored_rarity != AuthoredWeaponRarity::Exotic)
-            .and_then(|destination| placements.pages.get(&destination)) {
+        let (collection_donor_index, weapon_page, source_acquired_flag, count_selection) = if let Some(page) = placements.page_for_weapon(weapon_ordinal) {
             let flag = collection_unlock_index(stock_collectibles, collectible_rows + page.donor * COLLECTIBLE_ROW_SIZE)?;
             (page.donor, page.index, u16::try_from(flag).map_err(|_| invalid("Collections acquired flag exceeds capacity"))?, SunriseAcquiredPoolSelection::default())
         } else {
         let collection_candidates = resolve_weapon_collection_donor(
             manager, stock_item_table, item_rows, stock_item_count,
             stock_item_strings, string_rows, stock_collectibles, collectible_rows,
-            stock_collectible_count, stock_sandbox_patterns, donor_collectible_index, &definition, &strings,
+            stock_collectible_count, stock_sandbox_patterns, &mut exemplar_cache, donor_collectible_index, &definition, &strings,
             authored_rarity, authored_inventory_slot,
         )?;
         let mut placement_error = None;
@@ -300,17 +322,19 @@ pub(super) fn resolve_project_weapons_with_progress(
                 "Appearance baseline has a gear-art/runtime row, but the gameplay runtime baseline is disabled",
             ));
         }
-        if let (Some(gear_art), Some(runtime)) =
-            (gear_art_pattern_source, runtime_pattern_source)
-            && sundial::package_authoring::native_weapon::animation_compatibility(
-                Some(gear_art.weapon_translation_group_hash), Some(runtime.weapon_translation_group_hash)
-            ) != sundial::package_authoring::native_weapon::AnimationCompatibility::Compatible
-        {
-            return Err(invalid(format!(
-                "Geometry and runtime donors use different weapon translation groups (0x{:08X} vs 0x{:08X}); this combination cannot produce a coherent equipped model",
-                gear_art.weapon_translation_group_hash, runtime.weapon_translation_group_hash
-            )));
-        }
+        // Geometry from another translation group is pinned to the runtime rig at emission
+        // (`emission::reskin`). The authored pattern row then follows the runtime donor
+        // entirely, so the content group, HUD and first-person attachments stay coherent
+        // with the rig the parts are pinned to.
+        let gear_art_pattern_source = match (gear_art_pattern_source, runtime_pattern_source) {
+            (Some(gear_art), Some(runtime))
+                if gear_art.weapon_translation_group_hash
+                    != runtime.weapon_translation_group_hash =>
+            {
+                Some(runtime)
+            }
+            (gear_art, _) => gear_art,
+        };
         let icon_donor = weapon
             .icon_donor
             .as_ref()
@@ -426,4 +450,17 @@ pub(super) fn resolve_project_weapons_with_progress(
     }
 
     Ok(resolved)
+}
+
+/// The item-type string reference an item string carries, which is what names the weapon's
+/// kind in game. Two weapons of one family share it. None when the reference is inactive.
+fn item_type_reference(strings: &[u8]) -> Option<[u8; 8]> {
+    use sundial::package_authoring::investment_schema::ITEM_STRING_TYPE_REFERENCE_OFFSET;
+    let reference: [u8; 8] = strings
+        .get(ITEM_STRING_TYPE_REFERENCE_OFFSET..ITEM_STRING_TYPE_REFERENCE_OFFSET + 8)?
+        .try_into()
+        .ok()?;
+    let bank = u32::from_le_bytes(reference[..4].try_into().ok()?);
+    let index = u32::from_le_bytes(reference[4..].try_into().ok()?);
+    (bank != u32::MAX && !matches!(index, 0 | u32::MAX)).then_some(reference)
 }

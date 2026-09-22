@@ -558,6 +558,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bcdec_rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09c37bc0e9f0924b7dae9988265ef3c76c88538f41a3b06caf4bed07cee5226"
+
+[[package]]
 name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2805,14 +2811,16 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "parhelion"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
+ "bcdec_rs",
  "egui",
  "egui-phosphor",
  "fs2",
  "image",
  "libloading 0.8.9",
+ "parhelion-import",
  "resvg",
  "rfd",
  "rusqlite",
@@ -2821,6 +2829,25 @@ dependencies = [
  "sha1",
  "sha2",
  "sundial",
+ "tempfile",
+ "tiger-pkg",
+ "ureq",
+ "zip",
+]
+
+[[package]]
+name = "parhelion-import"
+version = "0.5.1"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "fs2",
+ "half",
+ "hex",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "tiger-pkg",
  "ureq",
@@ -3745,8 +3772,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sundial"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
+ "bcdec_rs",
  "directories",
  "eframe",
  "egui-phosphor",
@@ -3774,11 +3802,11 @@ dependencies = [
 
 [[package]]
 name = "sundial-account"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "sundial-suite"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "parhelion",
  "sundial",
