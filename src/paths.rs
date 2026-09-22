@@ -168,7 +168,11 @@ mod tests {
         // The temp directory can sit behind an 8.3 short name, which canonicalize expands and
         // a lexical fold cannot, so the plain form is the canonical path minus its prefix.
         let plain =
-            std::path::PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\?\"));
+            std::path::PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\\?\"));
+        assert!(
+            cfg!(not(windows)) || plain != canonical,
+            "the prefix was not stripped"
+        );
         assert!(paths_equal(&plain, &canonical));
         assert!(path_is_within(&canonical.join("child"), &plain));
     }
