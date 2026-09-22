@@ -316,16 +316,13 @@ impl Workbench {
         }
     }
 
-    fn show(
+    /// Advances every background job the workbench owns before a frame is drawn.
+    fn poll_background_work(
         &mut self,
         ctx: &egui::Context,
         packages: &Path,
-        catalog: Option<&InvestmentCatalog>,
         choices: &[WeaponSandboxPerkChoice],
-        experimental: bool,
-        attachment: (&WeaponRecipe, Option<&WeaponDonor>),
-    ) -> Option<attachment::Change> {
-        let (weapon, donor) = attachment;
+    ) {
         self.poll_duplicate(ctx, choices);
         if let Some(editor) = &mut self.editor {
             editor.poll();
@@ -346,6 +343,19 @@ impl Workbench {
             editor.refresh_asset_index();
         }
         self.icons.poll();
+    }
+
+    fn show(
+        &mut self,
+        ctx: &egui::Context,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        choices: &[WeaponSandboxPerkChoice],
+        experimental: bool,
+        attachment: (&WeaponRecipe, Option<&WeaponDonor>),
+    ) -> Option<attachment::Change> {
+        let (weapon, donor) = attachment;
+        self.poll_background_work(ctx, packages, choices);
         program::native::label_choices(
             ctx,
             self.discovery.labels.clone(),
