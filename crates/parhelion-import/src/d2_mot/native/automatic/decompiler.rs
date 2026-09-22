@@ -1,5 +1,5 @@
 //! Fetch the pinned standalone 3Dmigoto tool from its upstream release once.
-//! Upstream source and license: https://github.com/bo3b/3Dmigoto/tree/1.3.16
+//! Upstream source and license: <https://github.com/bo3b/3Dmigoto/tree/1.3.16>
 use super::*;
 use std::io::Read;
 
