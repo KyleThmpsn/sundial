@@ -17,20 +17,30 @@ impl Panel {
         }
     }
 
-    pub fn button(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .add(egui::Button::new("Properties…").selected(self.open))
-            .clicked()
-        {
+    /// The switch in an item's menu. The panel opens under the item, so the header carries
+    /// no button of its own.
+    pub fn menu_item(&mut self, ui: &mut egui::Ui) {
+        let label = if self.open {
+            "Hide Properties"
+        } else {
+            "Show Properties"
+        };
+        if ui.button(label).clicked() {
             self.open = !self.open;
             ui.data_mut(|data| data.insert_temp(self.id, self.open));
+            ui.close_menu();
         }
     }
 
     pub fn show(self, ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         if self.open {
             ui.separator();
+            let top = ui.cursor().top();
             ui.push_id(self.id, contents);
+            // An item with nothing more to show says so, rather than opening an empty pane.
+            if ui.cursor().top() - top < 1.0 {
+                ui.weak("No More Properties");
+            }
         }
     }
 }
@@ -87,10 +97,25 @@ pub(super) fn row_with<R>(
     } else {
         controls::CELL_LABEL_WIDTH.min((ui.available_width() - 100.0).max(100.0))
     };
+    // A label in its own column reads inward toward the value beside it, so it is right
+    // aligned. A stacked label has no column and sits above its control instead, so it leads
+    // from the left: right aligning it across the whole row put the name against the far edge
+    // with its control on the next line, a card's width away from what it names.
+    let (layout, halign) = if stacked {
+        (
+            egui::Layout::left_to_right(egui::Align::Center),
+            egui::Align::Min,
+        )
+    } else {
+        (
+            egui::Layout::right_to_left(egui::Align::Center),
+            egui::Align::Max,
+        )
+    };
     let draw = |ui: &mut egui::Ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(width, ui.spacing().interact_size.y),
-            egui::Layout::right_to_left(egui::Align::Center),
+            layout,
             |ui| {
                 ui.set_min_width(width);
                 if custom_label(ui) {
@@ -100,7 +125,7 @@ pub(super) fn row_with<R>(
                     Emphasis::Plain => egui::RichText::new(label),
                     Emphasis::Weak => egui::RichText::new(label).weak(),
                 };
-                let response = ui.add(egui::Label::new(text).halign(egui::Align::Max).truncate());
+                let response = ui.add(egui::Label::new(text).halign(halign).truncate());
                 let hover = match (label, hint) {
                     ("", hint) => hint.to_owned(),
                     (label, "") => label.to_owned(),
@@ -132,16 +157,6 @@ impl Workbench {
     ) -> R {
         field(ui, label, hint, value)
     }
-
-    pub(in crate::app::custom_perks) fn property_row_with<R>(
-        ui: &mut egui::Ui,
-        label: &str,
-        hint: &str,
-        custom_label: impl FnOnce(&mut egui::Ui) -> bool,
-        value: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> R {
-        row_with(ui, label, hint, Emphasis::Plain, custom_label, value)
-    }
 }
 
 /// Component editing keeps the existing checked asset editor and draft flow.
@@ -160,7 +175,23 @@ pub(super) struct Properties {
     source: Option<Arc<projectile::catalog::Catalog>>,
     graphs: BTreeMap<u32, Result<Arc<PrivatePerkRuntimeGraph>, String>>,
     pending: Option<(u32, Receiver<Result<PrivatePerkRuntimeGraph, String>>)>,
+    /// Summaries of recent assets' property changes.
+    changes: Vec<Changes>,
+    /// Text typed into an asset's value rows and not yet parsed, by asset.
+    text: BTreeMap<u32, BTreeMap<(WeaponRuntimeFieldLocator, u8), String>>,
 }
+
+/// One asset's property change lines, read from a loaded graph and the asset's values.
+struct Changes {
+    graph: Arc<PrivatePerkRuntimeGraph>,
+    values: Vec<WeaponRuntimeValueOverride>,
+    /// Whether every named value was in view, so only the rest are lines.
+    named: bool,
+    lines: Result<Vec<String>, String>,
+}
+
+/// How many assets' summaries are kept.
+const CHANGES_KEPT: usize = 32;
 
 impl Properties {
     fn load_error(&mut self, ui: &mut egui::Ui, tag: u32, error: String) {
@@ -183,7 +214,7 @@ impl Properties {
             let packages = self.packages.clone();
             let ctx = ui.ctx().clone();
             std::thread::spawn(move || {
-                let _ = sender.send(super::super::editor::load_entity_parameters(&packages, tag));
+                let _ = sender.send(super::parameters::load_entity_parameters(&packages, tag));
                 ctx.request_repaint();
             });
             self.pending = Some((tag, receiver));
@@ -197,54 +228,58 @@ impl Properties {
         }
         match self.graphs.get(&asset.graph) {
             Some(Ok(loaded)) => {
-                let parameters = editor::movement::mapped(loaded);
-                let owners = parameters
-                    .iter()
-                    .map(|(tag, p)| (*tag, p.owner_tag))
-                    .collect::<BTreeSet<_>>();
+                let loaded = loaded.clone();
+                let parameters = parameters::movement::mapped(&loaded);
+                let mut groups = BTreeMap::<_, Vec<_>>::new();
                 for (tag, parameter) in parameters {
-                    ui.push_id(
-                        (
-                            "projectile-property",
-                            tag,
-                            parameter.owner_tag,
-                            parameter.kind.label(),
-                        ),
-                        |ui| {
-                            if owners.len() > 1
-                                && parameter.kind == projectile::parameters::Kind::Speed
-                            {
-                                ui.weak(format!(
-                                    "Projectile Component 0x{:08X}",
-                                    parameter.owner_tag
-                                ));
-                            }
-                            let id = ui.id().with("error");
-                            if let Some(result) = editor::movement::draw_parameter(
+                    groups
+                        .entry((tag, parameter.owner_tag))
+                        .or_default()
+                        .push(parameter);
+                }
+                let several = groups.len() > 1;
+                for (part, ((tag, owner), parameters)) in groups.into_iter().enumerate() {
+                    // A projectile with several movement components reads them as numbered
+                    // parts. The component's identifier is for inspection, so it stays on hover.
+                    if several {
+                        let color = crate::app::style::secondary(ui.visuals());
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("Projectile Part {}", part + 1))
+                                .color(color),
+                        )
+                        .on_hover_text(format!("Component 0x{owner:08X}"));
+                    }
+                    let id = ui.id().with(("projectile-error", tag, owner));
+                    crate::app::style::tiles(ui, |ui, width| {
+                        for parameter in &parameters {
+                            if let Some(result) = parameters::movement::draw_parameter(
                                 ui,
-                                loaded,
+                                width,
+                                &loaded,
                                 tag,
-                                &parameter,
+                                parameter,
                                 &mut asset.values,
                             ) {
                                 ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
                             }
-                            if let Some(error) = ui
-                                .ctx()
-                                .data(|data| data.get_temp::<Option<String>>(id))
-                                .flatten()
-                            {
-                                ui.colored_label(ui.visuals().error_fg_color, error);
-                            }
-                        },
-                    );
+                        }
+                    });
+                    if let Some(error) = ui
+                        .ctx()
+                        .data(|data| data.get_temp::<Option<String>>(id))
+                        .flatten()
+                    {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
                 }
+                self.card_values(ui, asset, &loaded);
             }
             Some(Err(error)) => {
                 self.load_error(ui, asset.graph, error.clone());
             }
             None => {
-                ui.small("Reading Projectile Properties…");
+                ui.small("Reading projectile properties…");
                 self.request(ui, asset.graph);
             }
         }
@@ -260,6 +295,8 @@ impl Properties {
             self.source = source.cloned();
             self.graphs.clear();
             self.pending = None;
+            self.changes.clear();
+            self.text.clear();
         }
         if let Some((tag, receiver)) = &self.pending {
             let result = match receiver.try_recv() {
@@ -276,41 +313,111 @@ impl Properties {
         }
     }
 
+    /// Whether a property read is still going.
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub fn remember(&mut self, tag: u32, graph: Arc<PrivatePerkRuntimeGraph>) {
         self.graphs.insert(tag, Ok(graph));
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, asset: &Asset) {
+    /// The property change lines for these values on a loaded graph, read once per pair.
+    fn change_lines(
+        &mut self,
+        graph: Arc<PrivatePerkRuntimeGraph>,
+        values: &[WeaponRuntimeValueOverride],
+        named: bool,
+    ) -> &Result<Vec<String>, String> {
+        let position = self.changes.iter().position(|cached| {
+            Arc::ptr_eq(&cached.graph, &graph) && cached.values == values && cached.named == named
+        });
+        let position = position.unwrap_or_else(|| {
+            if self.changes.len() >= CHANGES_KEPT {
+                self.changes.remove(0);
+            }
+            let lines = super::parameters::unlisted_changes(&graph, values, named);
+            self.changes.push(Changes {
+                graph,
+                values: values.to_vec(),
+                named,
+                lines,
+            });
+            self.changes.len() - 1
+        });
+        &self.changes[position].lines
+    }
+
+    /// Proven values and the More Properties fold. Returns whether the fold is open.
+    fn card_values(
+        &mut self,
+        ui: &mut egui::Ui,
+        asset: &mut Asset,
+        graph: &PrivatePerkRuntimeGraph,
+    ) -> bool {
+        ui.push_id(("asset-values", asset.graph), |ui| {
+            let id = ui.id().with("error");
+            let text = self.text.entry(asset.graph).or_default();
+            let (edited, open) = parameters::draw_card_values(ui, graph, &mut asset.values, text);
+            if let Some(result) = edited {
+                ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
+            }
+            if let Some(error) = ui
+                .ctx()
+                .data(|data| data.get_temp::<Option<String>>(id))
+                .flatten()
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            open
+        })
+        .inner
+    }
+
+    /// The asset's named values as rows, then a summary of the changes those rows do not show.
+    /// An untouched asset reads quietly, since its rows are extra.
+    pub fn values(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        let untouched = asset.values.is_empty();
+        let graph = match self.graphs.get(&asset.graph) {
+            Some(Ok(graph)) => graph.clone(),
+            Some(Err(_)) if untouched => return,
+            Some(Err(error)) => {
+                self.load_error(ui, asset.graph, error.clone());
+                return;
+            }
+            None => {
+                if !untouched {
+                    ui.small("Reading properties…");
+                }
+                self.request(ui, asset.graph);
+                return;
+            }
+        };
+        let named = self.card_values(ui, asset, &graph);
         if asset.values.is_empty() {
             return;
         }
-        match self.graphs.get(&asset.graph) {
-            Some(Ok(graph)) => match super::super::editor::property_changes(graph, &asset.values) {
-                Ok(lines) => {
-                    let (technical, named): (Vec<_>, Vec<_>) =
-                        lines.into_iter().partition(|line| {
-                            line.starts_with("Type 0x") || line.starts_with("Native Bytes:")
-                        });
-                    if !named.is_empty() {
-                        ui.add(egui::Label::new(named.join(" · ")).wrap());
-                    }
-                    if !technical.is_empty() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.small("Advanced Properties Modified");
-                            sundial::investment::draw_authoring_info_icon(ui, technical.join("\n"));
-                        });
-                    }
+        match self.change_lines(graph, &asset.values, named) {
+            Ok(lines) => {
+                let (technical, named): (Vec<&str>, Vec<&str>) =
+                    lines.iter().map(String::as_str).partition(|line| {
+                        line.starts_with("Type 0x") || line.starts_with("Native Bytes:")
+                    });
+                if !named.is_empty() {
+                    ui.add(egui::Label::new(named.join(" · ")).wrap());
                 }
-                Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                if !technical.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.small("Advanced Properties Modified");
+                        sundial::investment::draw_authoring_info_icon(ui, technical.join("\n"));
+                    });
                 }
-            },
-            Some(Err(error)) => {
-                self.load_error(ui, asset.graph, error.clone());
             }
-            None => {
-                ui.small("Reading Properties…");
-                self.request(ui, asset.graph);
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
         }
     }
@@ -372,7 +479,7 @@ mod tests {
         assert!(properties.graphs.contains_key(&20));
         let (sender, receiver) = std::sync::mpsc::channel();
         sender
-            .send(Ok(super::super::super::editor::tests::fixture()))
+            .send(Ok(super::super::parameters::tests::fixture()))
             .unwrap();
         properties.pending = Some((10, receiver));
         properties.sync(Path::new(""), None);

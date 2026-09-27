@@ -17,17 +17,55 @@ impl BrowserList<'_> {
         row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
         detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
     ) -> Option<T> {
-        ui.label(format!("{} Results", self.keys.len()));
+        ui.label(result_count(self.keys.len()));
         self.draw_body(ui, row, detail)
+    }
+
+    /// [`Self::draw`], with the detail told whether its row was double-clicked this frame.
+    /// A picker takes a double-click as its Use button.
+    pub fn draw_activating<T>(
+        &self,
+        ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        detail: impl FnMut(&mut egui::Ui, usize, bool) -> Option<T>,
+    ) -> Option<T> {
+        ui.label(result_count(self.keys.len()));
+        self.draw_layout(ui, row, detail, false, 0)
     }
 
     pub fn draw_body<T>(
         &self,
         ui: &mut egui::Ui,
         row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
-        detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+        mut detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
     ) -> Option<T> {
-        self.draw_layout(ui, row, detail, false)
+        self.draw_layout(ui, row, |ui, index, _| detail(ui, index), false, 0)
+    }
+
+    /// The same, saying how many rows a wider search would add.
+    ///
+    /// A list can come back empty because the default listing hides what the game never
+    /// names, which is not something the reader can see from an empty box.
+    pub fn draw_body_reporting_hidden<T>(
+        &self,
+        ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        mut detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+        hidden: usize,
+    ) -> Option<T> {
+        self.draw_layout(ui, row, |ui, index, _| detail(ui, index), false, hidden)
+    }
+
+    /// [`Self::draw_body_reporting_hidden`], with the detail told whether its row was
+    /// double-clicked this frame. A picker takes a double-click as its Use button.
+    pub fn draw_body_activating<T>(
+        &self,
+        ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        detail: impl FnMut(&mut egui::Ui, usize, bool) -> Option<T>,
+        hidden: usize,
+    ) -> Option<T> {
+        self.draw_layout(ui, row, detail, false, hidden)
     }
 
     /// Full-width choices with a compact action area, for previews hosted in another window.
@@ -35,35 +73,63 @@ impl BrowserList<'_> {
         &self,
         ui: &mut egui::Ui,
         row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
-        actions: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+        mut actions: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
     ) -> Option<T> {
-        ui.label(format!("{} Results", self.keys.len()));
-        self.draw_layout(ui, row, actions, true)
+        ui.label(result_count(self.keys.len()));
+        self.draw_layout(ui, row, |ui, index, _| actions(ui, index), true, 0)
+    }
+
+    /// [`Self::draw_with_actions`], with the actions told whether their row was
+    /// double-clicked this frame. A picker takes a double-click as its Use button.
+    pub fn draw_with_actions_activating<T>(
+        &self,
+        ui: &mut egui::Ui,
+        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
+        actions: impl FnMut(&mut egui::Ui, usize, bool) -> Option<T>,
+    ) -> Option<T> {
+        ui.label(result_count(self.keys.len()));
+        self.draw_layout(ui, row, actions, true, 0)
     }
 
     fn draw_layout<T>(
         &self,
         ui: &mut egui::Ui,
         mut row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
-        mut detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
+        mut detail: impl FnMut(&mut egui::Ui, usize, bool) -> Option<T>,
         actions: bool,
+        hidden: usize,
     ) -> Option<T> {
         if self.keys.is_empty() {
             ui.allocate_ui(egui::vec2(ui.available_width(), self.height), |ui| {
                 ui.set_min_height(self.height);
                 ui.strong("No Matching Results");
-                ui.label("Clear the search or change a filter.");
+                if hidden > 0 {
+                    ui.label(format!("{hidden} Unidentified Hidden"));
+                }
             });
             return None;
         }
         let id = ui.make_persistent_id("inspected-choice");
+        // A row stays selected through a filter change while it is still listed. A listing
+        // it is not in starts on its first row, so a search followed by Enter takes its first
+        // result.
         let mut selected = ui
             .data(|data| data.get_temp::<u64>(id))
             .filter(|key| self.keys.contains(key))
             .unwrap_or(self.keys[0]);
-        let keyboard_step = if ui.memory(eframe::egui::Memory::any_popup_open) {
-            0
-        } else {
+        // The list in the top window takes the keys, so a catalog list open behind a picker
+        // does not step with it. A tooltip over a row is not a window above the list.
+        let top = ui.ctx().memory(|memory| {
+            memory
+                .layer_ids()
+                .filter(|layer| {
+                    layer.order != egui::Order::Tooltip && memory.areas().is_visible(layer)
+                })
+                .last()
+        });
+        let keyboard_owner =
+            !ui.memory(eframe::egui::Memory::any_popup_open) && top == Some(ui.layer_id());
+        let keyboard_step = if keyboard_owner {
             ui.input_mut(|input| {
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
                     1
@@ -73,13 +139,24 @@ impl BrowserList<'_> {
                     0
                 }
             })
+        } else {
+            0
         };
+        // Enter uses the selected row as a double-click does. The search box above the list
+        // gives up its focus on the same key, so typing a search and pressing Enter picks its
+        // first result.
+        let entered = keyboard_owner
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let mut reveal = None;
         if let Some(key) = self.select
             && let Some(index) = self.keys.iter().position(|other| *other == key)
         {
             selected = key;
             reveal = Some(index);
+        } else if self.reset {
+            // A new listing scrolls to the row it keeps selected, which is the top when the
+            // selection is new, so the detail never shows a row the list scrolled away from.
+            reveal = self.keys.iter().position(|key| *key == selected);
         }
         if keyboard_step != 0 {
             let index = self
@@ -107,6 +184,9 @@ impl BrowserList<'_> {
             ui.available_width() * 0.52
         };
         let mut picked = None;
+        // Whether the selected row was double-clicked or entered this frame, which asks its
+        // detail to act.
+        let mut activated = entered;
         let layout = if narrow {
             egui::Layout::top_down(egui::Align::Min)
         } else {
@@ -149,7 +229,13 @@ impl BrowserList<'_> {
                                         ui.visuals().faint_bg_color,
                                     );
                                 }
-                                if row(ui, index, self.keys[index] == selected).clicked() {
+                                let was_selected = self.keys[index] == selected;
+                                let response = row(ui, index, was_selected);
+                                if response.clicked() {
+                                    // egui counts a double-click by time alone, wherever the
+                                    // clicks land. The first click of a real one selects this
+                                    // row, so only a row already selected is double-clicked.
+                                    activated |= response.double_clicked() && was_selected;
                                     selected = self.keys[index];
                                 }
                             }
@@ -178,7 +264,12 @@ impl BrowserList<'_> {
                                     .iter()
                                     .position(|key| *key == selected)
                                     .expect("selected visible choice");
-                                picked = detail(ui, index);
+                                picked = if actions {
+                                    ui.horizontal_wrapped(|ui| detail(ui, index, activated))
+                                        .inner
+                                } else {
+                                    detail(ui, index, activated)
+                                };
                             });
                     },
                 );
@@ -187,6 +278,11 @@ impl BrowserList<'_> {
         ui.data_mut(|data| data.insert_temp(id, selected));
         picked
     }
+}
+
+/// "1 Result" or "N Results".
+fn result_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "Result" } else { "Results" })
 }
 
 #[cfg(test)]

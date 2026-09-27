@@ -5,10 +5,14 @@ use sundial::package_authoring::{
     investment_schema::*, open_shadowkeep_package_manager, resolve_live_named_tag,
 };
 use tiger_pkg::TagHash;
+mod grants;
 mod placement;
 mod sockets;
+pub(super) use grants::{GrantedItem, grant_items, installed_grants};
 pub(super) use placement::slot_replacement;
+#[cfg(test)]
 pub(super) use sockets::generation_socket_defaults;
+pub(super) use sockets::socket_defaults;
 
 pub(super) fn installed_identities(
     target: &Path,
@@ -25,13 +29,29 @@ pub(super) fn generation_identities(
     with_generation(target, authored_directory, read_identities)
 }
 
-fn with_generation<T>(
-    target: &Path,
-    authored_directory: &Path,
-    read: impl FnOnce(&Path) -> Result<T, String>,
-) -> Result<T, String> {
-    super::validation::decoder::ensure_initialized(target)?;
-    if !paths_equal(target, authored_directory) {
+/// One package generation opened for reading: the installation itself, or an authored set
+/// laid over it. A review reads each generation several times, and opening one is most of
+/// the cost, so a review opens each once.
+pub(in crate::install) struct Generation {
+    // Declared before the view so its package handles close before the view is removed.
+    manager: sundial::package_authoring::PackageManager,
+    directory: PathBuf,
+    view: Option<crate::workflow::FilteredPackageView>,
+}
+
+impl Generation {
+    pub(in crate::install) fn open(
+        target: &Path,
+        authored_directory: &Path,
+    ) -> Result<Self, String> {
+        super::validation::decoder::ensure_initialized(target)?;
+        if paths_equal(target, authored_directory) {
+            return Ok(Self {
+                manager: open_shadowkeep_package_manager(target)?,
+                directory: target.to_path_buf(),
+                view: None,
+            });
+        }
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its
         // output directory alone contains those stock blocks.
@@ -39,25 +59,52 @@ fn with_generation<T>(
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
-        let result = (|| {
+        let manager = (|| {
             for profile in all_authored_packages() {
                 let path = authored_directory.join(profile.file_name);
                 if path.is_file() {
                     view.add_overlay(&path)?;
                 }
             }
-            read(view.path())
+            open_shadowkeep_package_manager(view.path())
         })();
-        return view.finish(result, drop);
+        match manager {
+            Ok(manager) => Ok(Self {
+                manager,
+                directory: view.path().to_path_buf(),
+                view: Some(view),
+            }),
+            Err(error) => view.finish(Err(error), drop),
+        }
     }
-    read(target)
+
+    /// Releases the generation, removing its view, and returns what was read from it.
+    pub(in crate::install) fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
+        let Self { manager, view, .. } = self;
+        drop(manager);
+        match view {
+            Some(view) => view.finish(result, drop),
+            None => result,
+        }
+    }
 }
 
-fn read_identities(
+fn with_generation<T>(
     target: &Path,
+    authored_directory: &Path,
+    read: impl FnOnce(&Generation) -> Result<T, String>,
+) -> Result<T, String> {
+    let generation = Generation::open(target, authored_directory)?;
+    let result = read(&generation);
+    generation.finish(result)
+}
+
+pub(in crate::install) fn read_identities(
+    generation: &Generation,
 ) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
-    let manager = open_shadowkeep_package_manager(target)?;
-    let globals = resolve_live_named_tag(&manager, "investment_globals", None)?;
+    let target = generation.directory.as_path();
+    let manager = &generation.manager;
+    let globals = resolve_live_named_tag(manager, "investment_globals", None)?;
     // Follow each generation's own root. Do not assume authored root/table tags are unchanged.
     let tables = |authored| -> Result<(Vec<u8>, Vec<u8>), String> {
         let directory = target;

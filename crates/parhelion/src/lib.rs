@@ -25,6 +25,7 @@ mod bundled_defaults;
 mod capabilities;
 mod chain;
 pub mod collection;
+pub mod dye;
 mod error;
 mod extend;
 mod format;
@@ -32,6 +33,7 @@ pub mod hud_icon;
 mod icon_edit;
 mod image_import;
 mod install;
+mod item_kind;
 mod manifest;
 mod package_profile;
 mod payload_guards;
@@ -43,10 +45,12 @@ mod progression;
 mod recipe;
 mod recipe_library;
 mod runtime;
+mod shader_icon;
 mod shared_tag_dependency_index;
 pub use shared_tag_dependency_index::partition::{LoadingResource, partition_loading_resources};
 pub use shared_tag_dependency_index::scoped::{LoadingOwner, clone_scoped_dependencies};
 mod shared_tag_memory;
+pub mod subclass;
 mod tag_payload;
 mod watermark;
 mod weapon;
@@ -80,12 +84,14 @@ pub(crate) use extend::{NewTagReference, NewTagReferenceOverride, NewTagSpec, Ne
 pub(crate) use format::SUNDIAL_BUILD_SIGNATURE;
 pub(crate) use icon_edit::WeaponIconEdit;
 pub use install::{
-    BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError, InstallPhase,
-    InstallProgress, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
+    AccountResyncReport, BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError,
+    InstallPhase, InstallProgress, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     ReplacementReview, UninstallPlan, UninstallReport, install_staged_packages,
     install_staged_packages_with_progress, preview_replacement, preview_uninstall,
-    preview_uninstall_with_account_cleanup, prune_package_backups, uninstall_custom_packages,
+    preview_uninstall_with_account_cleanup, prune_package_backups, resync_account,
+    uninstall_custom_packages,
 };
+pub use item_kind::ItemKind;
 #[cfg(test)]
 pub(crate) use recipe::ARC_LOGIC_DONOR_HASH;
 pub(crate) use recipe::{
@@ -101,17 +107,17 @@ pub use recipe::{
 pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
 pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub(crate) use weapon::{
-    AuthoredWeaponRarity, ModernDamageType, NewWeaponPlan, NewWeaponProjectBundle, WeaponAmmoType,
-    WeaponArtArrangementOverride, WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec,
-    WeaponCloneText, WeaponDyeReferenceOverride, WeaponIconDonorReference, WeaponInventorySlot,
-    WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponPresentationDonorReference,
-    WeaponProjectSpec, WeaponRawPayloadPatch, WeaponRawPayloadTarget,
-    WeaponRenderGearDonorReference, WeaponRuntimeComponentDonorReference,
-    WeaponRuntimeResourcePatch, WeaponSandboxPerkActionFloatOverride,
-    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
-    WeaponVariableDamage,
+    AuthoredWeaponRarity, ModernDamageType, NewCollectionPlan, NewWeaponPlan,
+    NewWeaponProjectBundle, WeaponAmmoType, WeaponArtArrangementOverride, WeaponCloneIdentity,
+    WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText, WeaponDyeReferenceOverride,
+    WeaponIconDonorReference, WeaponInventorySlot, WeaponLocaleTextOverride,
+    WeaponNumericInstruction, WeaponPresentationDonorReference, WeaponProjectSpec,
+    WeaponRawPayloadPatch, WeaponRawPayloadTarget, WeaponRenderGearDonorReference,
+    WeaponRuntimeComponentDonorReference, WeaponRuntimeResourcePatch,
+    WeaponSandboxPerkActionFloatOverride, WeaponSandboxPerkRuntimeOverride,
+    WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
 };
 pub use workflow::{
-    BatchBuildRequest, BatchBuildSnapshot, BuildProgress, BuildReport,
-    build_and_stage_snapshot_with_progress,
+    BatchBuildRequest, BatchBuildSnapshot, BuildFailure, BuildProgress, BuildReport,
+    build_and_stage_snapshot_reporting, build_and_stage_snapshot_with_progress,
 };

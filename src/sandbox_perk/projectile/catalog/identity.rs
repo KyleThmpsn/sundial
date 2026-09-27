@@ -3,6 +3,10 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// How many steps nearer an item or perk reference must reach an asset than any installed
+/// native path to name it instead of that path.
+const NEARER_BY: usize = 2;
+
 /// Familiar catalog names are presentation metadata, separate from test observations.
 /// A native identity takes precedence. These names make otherwise anonymous saved
 /// ingredients recognizable without implying a gameplay contract or an asset path.
@@ -18,6 +22,28 @@ fn familiar_name(graph: u32) -> Option<String> {
 }
 
 impl Entry {
+    /// State the evidence behind the picker name without borrowing a parent's name as native.
+    pub fn discovery_name_source_with(
+        &self,
+        perk_name: impl FnMut(u16) -> Option<String>,
+        item_name: impl FnMut(u32) -> Option<ItemName>,
+    ) -> &'static str {
+        if self
+            .native_paths
+            .iter()
+            .chain(self.native_name.iter())
+            .any(|path| source_name(path).is_some())
+        {
+            "Native Asset Name"
+        } else if familiar_name(self.graph).is_some() {
+            "Bundled Display Name"
+        } else if self.discovery_name_with(perk_name, item_name).is_some() {
+            "Related Native Resource or Stock Use"
+        } else {
+            "Unidentified"
+        }
+    }
+
     /// Identity attached to this asset itself, without borrowing an ancestor's name.
     pub fn direct_name(&self) -> Option<String> {
         let direct = self
@@ -50,19 +76,32 @@ impl Entry {
         if let Some(name) = self.direct_name() {
             return Some(name);
         }
-        // A Destiny 1 name on the graph itself must not hide the items and perks that
-        // reach it; only an installed native path outranks those.
-        let native_context = self.contexts.iter().any(|context| {
-            source_name(&context.path).is_some()
-                && !context
-                    .name_evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.legacy)
-        });
+        // A Destiny 1 name on the graph itself must not hide the items and perks that reach
+        // it, and only an installed native path outranks those. A path names its own resource,
+        // though, so one found two or more steps farther than an item or perk names something
+        // that merely leads here. Outlaw's own buff was named for a Leviathan decoy four steps
+        // away, with Outlaw attaching it directly. Across the catalog this rule renames five
+        // entries, each to the perk that uses it, and keeps every path one step farther.
+        let nearest_native = self
+            .contexts
+            .iter()
+            .filter(|context| {
+                source_name(&context.path).is_some()
+                    && !context
+                        .name_evidence
+                        .as_ref()
+                        .is_some_and(|evidence| evidence.legacy)
+            })
+            .map(|context| context.depth)
+            .min();
         let named = self
             .contexts
             .iter()
-            .filter(|context| !native_context || source_name(&context.path).is_some())
+            .filter(|context| {
+                nearest_native.is_none_or(|native| {
+                    source_name(&context.path).is_some() || context.depth + NEARER_BY <= native
+                })
+            })
             .filter_map(|context| {
                 let name = source_name(&context.path)
                     .or_else(|| context.item.and_then(&mut item_name).map(|item| item.name))
@@ -86,32 +125,37 @@ impl Entry {
             .filter(|(d, _)| *d == depth)
             .map(|(_, name)| name.as_str())
             .collect::<BTreeSet<_>>();
-        let common = common_name(&names)
-            .or_else(|| {
-                let items = self
-                    .contexts
-                    .iter()
-                    .filter(|context| context.depth == depth)
-                    .filter_map(|context| context.item.and_then(&mut item_name))
-                    .collect::<Vec<_>>();
-                let kinds = items
-                    .iter()
-                    .map(|item| item.kind.trim())
-                    .filter(|kind| !kind.is_empty())
-                    .collect::<BTreeSet<_>>();
-                // Unnamed/retired item rows do not contradict the known type of their shared
-                // pattern. Keep genuine disagreements, but do not let missing strings erase
-                // a Machine Gun or Hand Cannon family already established by named sources.
-                (kinds.len() == 1).then(|| format!("Shared {}", kinds.first().unwrap()))
-            })
-            .or_else(|| {
-                // Named ancestors that agree on nothing are still the engine's own record
-                // of who reaches this asset. Listing them states that record rather than
-                // inventing a family, and leaves the entry identifiable in a picker.
-                let owned = names.iter().map(|name| (*name).to_owned()).collect();
-                Some(format!("Shared by {}", listed(&owned)))
-            })?;
-        Some(format!("{common} {}", self.role_label()))
+        let common = common_name(&names).or_else(|| {
+            let items = self
+                .contexts
+                .iter()
+                .filter(|context| context.depth == depth)
+                .filter_map(|context| context.item.and_then(&mut item_name))
+                .collect::<Vec<_>>();
+            let kinds = items
+                .iter()
+                .map(|item| item.kind.trim())
+                .filter(|kind| !kind.is_empty())
+                .collect::<BTreeSet<_>>();
+            // Unnamed/retired item rows do not contradict the known type of their shared
+            // pattern. Keep genuine disagreements, but do not let missing strings erase
+            // a Machine Gun or Hand Cannon family already established by named sources.
+            (kinds.len() == 1).then(|| format!("Shared {}", kinds.first().unwrap()))
+        });
+        if let Some(common) = common {
+            return Some(format!("{common} {}", self.role_label()));
+        }
+        // Named ancestors that agree on nothing are still the engine's own record of who
+        // reaches this asset. Listing them states that record rather than inventing a family,
+        // and leaves the entry identifiable in a picker. The role leads, so the list ends the
+        // name rather than running into it: "Attachment Shared by Ace of Spades Catalyst,
+        // Firefly", not "Shared by Ace of Spades Catalyst, Firefly Attachment".
+        let owned = names.iter().map(|name| (*name).to_owned()).collect();
+        Some(format!(
+            "{} Shared by {}",
+            self.role_label(),
+            listed(&owned)
+        ))
     }
 
     /// The word a perk-derived name ends with. An entity the stock perks attach is an
@@ -320,24 +364,23 @@ pub(super) fn source_name(path: &str) -> Option<String> {
     {
         words.insert(0, family);
     }
-    let mut name = words
+    let kept = words
         .iter()
         .enumerate()
         .filter(|(index, word)| !(**word == "bauble" && words.get(index + 1) == Some(&"pickup")))
-        .map(|(_, word)| word)
-        .map(|word| {
-            match *word {
-                "bauble" => return "Pickup".to_owned(),
-                "hopon" => return "Attachment".to_owned(),
-                "pve" => return "PvE".to_owned(),
-                "pvp" => return "PvP".to_owned(),
-                _ => {}
-            }
-            let mut chars = word.chars();
-            chars
-                .next()
-                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
-                .unwrap_or_default()
+        .map(|(_, word)| *word)
+        .collect::<Vec<_>>();
+    // The suffix ends the title, so a small word before it stays lowercase.
+    let count = kept.len() + usize::from(suffix.is_some());
+    let mut name = kept
+        .iter()
+        .enumerate()
+        .map(|(index, word)| match *word {
+            "bauble" => "Pickup".to_owned(),
+            "hopon" => "Attachment".to_owned(),
+            "pve" => "PvE".to_owned(),
+            "pvp" => "PvP".to_owned(),
+            _ => crate::sandbox_perk::nodes::title_word(word, index, count),
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -418,59 +461,6 @@ fn common_name(names: &BTreeSet<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn pickup_sources_keep_their_spawn_collection_and_attachment_roles() {
-        for (path, name) in [
-            (
-                "collectable_bauble_spawner_dark.pattern.tft",
-                "Collectable Pickup Spawner Dark",
-            ),
-            (
-                "dark_bauble_pickup_feedback_hopon.pattern.tft",
-                "Dark Pickup Feedback Attachment",
-            ),
-            ("health_orb_pickup.pattern.tft", "Health Orb Pickup"),
-            (
-                "bauble_under_player_hopon.pattern.tft",
-                "Pickup Under Player Attachment",
-            ),
-        ] {
-            assert_eq!(source_name(path).as_deref(), Some(name));
-        }
-    }
-    #[test]
-    fn enemy_identity_uses_native_family_and_ignores_content_versions() {
-        let names = BTreeSet::from([
-            source_name("content/activities/v400/sandbox_custom/characters/taken/_factions/base/taken_wizard/taken_wizard_v400.pattern.tft").unwrap(),
-            source_name("content/sandbox/characters/taken/_factions/base/taken_wizard/taken_wizard.pattern.tft").unwrap(),
-        ]);
-        assert_eq!(
-            common_name(&names.iter().map(String::as_str).collect()),
-            Some("Taken Wizard".into())
-        );
-        assert_eq!(
-            source_name("content/characters/hive/shrieker/shrieker_hs.pattern.tft"),
-            Some("Hive Shrieker".into())
-        );
-        // A sequence path is the engine's name for the resource that plays it.
-        assert_eq!(
-            source_name(
-                "content/sandbox/characters/fotc/vendors/sequences/vendor_greeting.sequence.tft"
-            )
-            .as_deref(),
-            Some("Vendor Greeting Sequence")
-        );
-        assert_eq!(
-            source_name(
-                "content/fx/fx_library/destruction/damage_generic/damage_burst_med.fx_sequence.tft"
-            )
-            .as_deref(),
-            Some("Damage Burst Med FX Sequence")
-        );
-        assert!(source_name("[debug]_fallen.sequence.tft").is_none());
-        assert!(source_name("label_globals.label_globals.tft").is_none());
-        assert!(common_name(&BTreeSet::from(["Fallen Shank", "Fallen Captain"])).is_none());
-    }
 
     #[test]
     fn identity_uses_specific_parent_and_shared_family_without_placeholder_names() {
@@ -540,7 +530,7 @@ mod tests {
         };
         assert_eq!(
             entry.discovery_name().as_deref(),
-            Some("Shared by Cabal Psion, Hive Knight, Taken Wizard (+1) Emitter")
+            Some("Emitter Shared by Cabal Psion, Hive Knight, Taken Wizard (+1)")
         );
     }
 

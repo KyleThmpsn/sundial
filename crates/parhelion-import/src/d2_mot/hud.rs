@@ -1,9 +1,11 @@
-//! Read-only discovery of Quicktag's 137x76 weapon-icon texture family.
+//! Source ammunition HUD artwork and read-only texture discovery.
+mod export;
 use crate::d2_mot::{
     payload::Payload,
     reader::{Reader, write_json},
 };
 use anyhow::{Context, Result};
+pub use export::export;
 use serde_json::{Value, json};
 use std::fs;
 use tiger_pkg::TagHash;

@@ -1,13 +1,8 @@
 use super::*;
 
 #[test]
-fn kinetic_including_modern_elements_requires_a_convertible_damage_carrier() {
-    for perks in [
-        vec![],
-        vec![0x8C011E66u32],
-        vec![0x66653D11],
-        vec![0x781E5D20],
-    ] {
+fn kinetic_requires_a_convertible_damage_carrier() {
+    for perks in [vec![], vec![0x8C011E66u32]] {
         let source = json!({"perks":perks});
         assert!(!damage_carrier_compatible(&source, &[1, 68, 8]));
         assert!(damage_carrier_compatible(&source, &[1, 8]));
@@ -16,6 +11,9 @@ fn kinetic_including_modern_elements_requires_a_convertible_damage_carrier() {
         &json!({"perks":[0xCCC507A5u32]}),
         &[68]
     ));
+    for perk in [0x66653D11u32, 0x781E5D20] {
+        assert!(damage_carrier_compatible(&json!({"perks":[perk]}), &[68]));
+    }
     assert!(damage_carrier_compatible(&json!({}), &[68]));
 }
 
@@ -119,19 +117,29 @@ fn unsupported_and_appearance_plugs_do_not_replace_donor_columns() {
 }
 
 #[test]
-fn darkness_elements_become_kinetic_without_changing_slot_or_ammo() {
+fn unsupported_darkness_elements_keep_donor_damage_without_changing_slot_or_ammo() {
     for perk in [0x66653D11u32, 0x781E5D20] {
         let properties =
             properties(&json!({"perks":[perk],"bucket":0x59570ADAu32,"ammo":2,"rarity":5}));
         assert_eq!(
             properties,
-            json!({"modern_damage_type":"kinetic","inventory_slot":"kinetic","ammo_type":"special","rarity":"exotic"})
+            json!({"inventory_slot":"kinetic","ammo_type":"special","rarity":"exotic"})
         );
     }
+    assert_eq!(
+        properties(&json!({"perks":[0x781E5D20u32],"bucket":0x38DCDD35u32,"ammo":3,"rarity":4})),
+        json!({"inventory_slot":"power","ammo_type":"heavy","rarity":"legendary"})
+    );
+    assert_eq!(damage(&[0x66653D11]), None);
+    assert_eq!(damage(&[0x781E5D20]), None);
     assert_eq!(damage(&[0xCFCF0160]), Some("solar"));
     assert_eq!(damage(&[]), Some("kinetic"));
     assert_eq!(damage(&[123]), None);
     assert_eq!(damage(&[0xCFCF0160, 0xCCC507A5]), None);
+    let mut planned =
+        json!({"overrides":{"modern_damage_type":"kinetic","inventory_slot":"power"}});
+    reset_planned_damage(&mut planned).unwrap();
+    assert_eq!(planned["overrides"], json!({"inventory_slot":"power"}));
     assert_eq!(
         properties(&json!({"ammo":99,"bucket":99,"rarity":99})),
         json!({})

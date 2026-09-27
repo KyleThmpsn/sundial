@@ -129,6 +129,21 @@ pub struct PlugTooltip<'a> {
     pub classification_hash: Option<u32>,
 }
 
+/// A tooltip for something that is not an item, such as a subclass ability: its icon, its name, a
+/// quiet line under the name and its description, in the item tooltips' own layout.
+#[derive(Clone, Copy)]
+pub struct DisplayTooltip<'a> {
+    pub icon: Option<&'a egui::TextureHandle>,
+    pub name: &'a str,
+    pub subtitle: Option<&'a str>,
+    pub description: Option<&'a str>,
+}
+
+/// Draws a [`DisplayTooltip`], as a hover's contents.
+pub fn draw_display_tooltip(ui: &mut egui::Ui, tooltip: DisplayTooltip<'_>) {
+    authoring_bridge::draw_display_tooltip(ui, tooltip);
+}
+
 /// A private recipe's icon must never fall back to a different donor while it loads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconOverride {
@@ -187,8 +202,26 @@ impl InvestmentCatalog {
     ) -> crate::ui::model_preview::Appearance {
         authoring_bridge::resolve_preview(&self.catalog, loadout)
     }
+    /// An item wearing a shader's dye rows, for previewing the shader on any gear type.
+    pub fn shader_preview_appearance(
+        &self,
+        item: u32,
+        shader: &[Vec<(i8, u16)>; 3],
+    ) -> Option<crate::ui::model_preview::Appearance> {
+        authoring_bridge::shader_preview(&self.catalog, item, shader)
+    }
     pub fn texture_icon(&self, ctx: &egui::Context, tag: u32) -> Option<egui::TextureHandle> {
         self.catalog.texture_icon(ctx, tag)
+    }
+
+    /// A subclass ability's icon, from the container its node display record names
+    /// ([`SubclassSummary::entry_icons`](crate::investment::SubclassSummary::entry_icons)).
+    pub fn subclass_icon(
+        &self,
+        ctx: &egui::Context,
+        container: u32,
+    ) -> Option<egui::TextureHandle> {
+        self.catalog.subclass_icon_texture(ctx, container)
     }
 
     pub fn draw_perk_row_with_icon(
@@ -264,14 +297,14 @@ impl InvestmentCatalog {
     ///
     /// `choice_index` is part of the persistent egui identity, so multiple ordered choices for
     /// one socket can keep independent popups and search state. The caller controls only compact
-    /// trigger content and an optional footer. Return true from the footer when its action
-    /// should close the popup. Compatibility filtering and picker rows remain shared with Sundial.
+    /// trigger content and an optional action drawn first in the popup. Return true from it
+    /// when the action should close the popup. Compatibility filtering and picker rows remain shared with Sundial.
     pub fn draw_supported_plug_choice_picker(
         &self,
         ui: &mut egui::Ui,
         query: &mut String,
         options: PlugChoicePickerOptions<'_>,
-        footer: impl FnOnce(&mut egui::Ui) -> bool,
+        leading_action: impl FnOnce(&mut egui::Ui) -> bool,
     ) -> Result<Option<PlugSelection>, String> {
         let PlugChoicePickerOptions {
             donor_hash,
@@ -297,7 +330,7 @@ impl InvestmentCatalog {
             item,
             query,
             options,
-            footer,
+            leading_action,
         );
         match action {
             Some((socket_index, hash)) => Ok(Some(PlugSelection {

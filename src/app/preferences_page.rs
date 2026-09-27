@@ -193,9 +193,7 @@ impl SundialApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 reset_requested = ui
                     .small_button("Reset Preferences…")
-                    .on_hover_text(
-                        "Reset interface, editing, saving, and experimental preferences. Paths, catalog data, and backups are not changed.",
-                    )
+                    .on_hover_text("Paths, catalog and backups are kept.")
                     .clicked();
             });
         });
@@ -392,14 +390,17 @@ impl SundialApp {
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Experimental");
         let mut enable_parhelion = self.preferences.experimental_package_authoring;
-        let package_authoring_response = ui.horizontal(|ui| {
-            let response = ui.checkbox(
-                &mut enable_parhelion,
-                "Enable Parhelion Weapon Workbench",
-            );
-            crate::ui_help::info(ui, "Build custom Destiny weapons by combining stats, plugs, private perks, runtime behavior, and appearance sources from the selected Sunrise install.");
-            response
-        }).inner;
+        let package_authoring_response = ui
+            .horizontal(|ui| {
+                let response =
+                    ui.checkbox(&mut enable_parhelion, "Enable Parhelion Weapon Workbench");
+                crate::ui_help::info(
+                    ui,
+                    "Build custom weapons from stock weapons, perks and appearances.",
+                );
+                response
+            })
+            .inner;
         if package_authoring_response.changed() {
             preferences_changed |= self.request_parhelion_enabled(enable_parhelion);
         }
@@ -415,32 +416,39 @@ impl SundialApp {
                     "Allow Field of View up to 155",
                 )
                 .changed();
-            ui.label("Extends the Display slider on Sunrise schema 16 or newer. Existing saved values are preserved when disabled.");
+            ui.label("Needs Sunrise settings v16 or newer. Saved values are kept when off.");
         }
         ui.add_space(6.0);
-        let power_above_cap_response = ui.horizontal(|ui| {
-            let response = ui.checkbox(
-                &mut self.preferences.experimental_power_above_cap,
-                "Allow Power Above Item Caps",
-            );
-            crate::ui_help::info(ui, "Allows manual Power values above an item's package-defined cap. Newly added items still start at their normal cap.");
-            response
-        }).inner;
+        let power_above_cap_response = ui
+            .horizontal(|ui| {
+                let response = ui.checkbox(
+                    &mut self.preferences.experimental_power_above_cap,
+                    "Allow Power Above Item Caps",
+                );
+                crate::ui_help::info(ui, "New items still start at their cap.");
+                response
+            })
+            .inner;
         preferences_changed |= power_above_cap_response.changed();
         ui.label(
-            "Destiny may display capped Power while the saved value still affects character Power.",
+            "Destiny can show the capped value while the saved value still counts toward character Power.",
         );
         ui.add_space(6.0);
-        let cross_class_subclasses_response = ui.horizontal(|ui| {
-            let response = ui.checkbox(
-                &mut self.preferences.experimental_cross_class_subclasses,
-                "Allow Cross-Class Subclasses",
-            );
-            crate::ui_help::info(ui, "Shows every class's subclasses in the character editor and subclass inventory, and permits equipping them in Sundial.");
-            response
-        }).inner;
+        let cross_class_subclasses_response = ui
+            .horizontal(|ui| {
+                let response = ui.checkbox(
+                    &mut self.preferences.experimental_cross_class_subclasses,
+                    "Allow Cross-Class Subclasses",
+                );
+                crate::ui_help::info(
+                    ui,
+                    "Shows every class's subclasses and lets Sundial equip them.",
+                );
+                response
+            })
+            .inner;
         preferences_changed |= cross_class_subclasses_response.changed();
-        ui.label("Unsupported subclasses cannot be selected in game. Some combinations may behave incorrectly.");
+        ui.label("Unsupported subclasses cannot be selected in game and can misbehave.");
         ui.add_space(6.0);
         let progression_response = ui
             .horizontal(|ui| {
@@ -450,7 +458,7 @@ impl SundialApp {
                 );
                 crate::ui_help::info(
                     ui,
-                    "Allows changes to Unlocks, Investment overrides, and Collections acquisition state. Browsing and inspection are always available.",
+                    "Edit Unlocks, Investment overrides and Collections acquisition. Browsing is always available.",
                 );
                 response
             })
@@ -468,7 +476,7 @@ impl SundialApp {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Installation and Compatibility");
-            crate::ui_help::info(ui, "Select your game install, the directory containing destiny2.exe. Sundial finds the installed runtime's settings.json inside it automatically.");
+            crate::ui_help::info(ui, "Sundial finds settings.json inside the game install.");
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
@@ -500,12 +508,11 @@ impl SundialApp {
                 ui.label("Settings");
                 ui.monospace(self.settings_path.display().to_string());
                 ui.end_row();
-                ui.label("Settings Schema");
+                ui.label("Settings Version");
                 ui.monospace(game_settings::schema_version(&self.document).map_or_else(
                     || "Missing or invalid".to_owned(),
                     |version| version.to_string(),
-                ))
-                .on_hover_text("Sundial uses this value to determine compatibility.");
+                ));
                 ui.end_row();
                 ui.label("Account Source");
                 ui.colored_label(
@@ -540,7 +547,7 @@ impl SundialApp {
         if account_source.kind != AccountSourceKind::Json {
             ui.label(
                 egui::RichText::new(format!(
-                    "Sundial saves account edits only to the active source. It never mirrors account data between {} and settings.json.",
+                    "Account edits save only to {}, never to settings.json.",
                     account_source.label
                 ))
                 .color(super::ui::secondary_text_color(ui)),
@@ -552,15 +559,7 @@ impl SundialApp {
         self.draw_recovery_preferences(ui);
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Catalog");
-        ui.label(format!(
-            "Local catalog cache: {}",
-            self.manifest.cache_path.display()
-        ));
-        ui.label(if self.manifest.loaded_from_cache {
-            "Loaded from local cache"
-        } else {
-            "Scanned from game packages"
-        });
+        ui.label(format!("Cache: {}", self.manifest.cache_path.display()));
         let catalog_stats = self.manifest.stats();
         ui.label(format!(
             "{} items · {} plugs · {} icons · {} descriptions",
@@ -572,8 +571,6 @@ impl SundialApp {
         if ui.button("Rebuild Catalog from Game Files").clicked() {
             self.rebuild_catalog(ctx);
         }
-        ui.add_space(6.0);
-        ui.label("The first scan reads the installed packages. Later starts use the local cache unless the package files change.");
 
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Troubleshooting");
@@ -594,7 +591,7 @@ impl SundialApp {
         }
         ui.label(
             egui::RichText::new(
-                "Saves startup details and Sundial activity. Copy Report includes current diagnostics and recent activity, including Parhelion when available.",
+                "Saves startup details and activity. Copy Report adds diagnostics and recent activity.",
             )
             .color(super::ui::secondary_text_color(ui)),
         );
@@ -660,20 +657,25 @@ impl SundialApp {
         let mut preferences_changed = false;
 
         super::ui::section_heading(ui, "Saving");
-        let review_response = ui.horizontal(|ui| {
-            let response = ui.checkbox(
-                &mut self.preferences.review_changes_before_saving,
-                "Review Changes Before Saving",
-            );
-            crate::ui_help::info(ui, "Adds a confirmation step listing changed fields. Validation, conflict checks, and backups always run.");
-            response
-        }).inner;
+        let review_response = ui
+            .horizontal(|ui| {
+                let response = ui.checkbox(
+                    &mut self.preferences.review_changes_before_saving,
+                    "Review Changes Before Saving",
+                );
+                crate::ui_help::info(
+                    ui,
+                    "Lists changed fields before saving. Checks and backups always run.",
+                );
+                response
+            })
+            .inner;
         preferences_changed |= review_response.changed();
 
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Automatic Backups");
-            crate::ui_help::info(ui, "Sundial creates a source-specific backup before every save. Each installation has its own backup history. Legacy unscoped backups, recovery snapshots, and manual settings.json.bak safety copies are never removed.");
+            crate::ui_help::info(ui, "Backs up before every save, per installation. Recovery snapshots and settings.json.bak copies are never removed.");
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -688,7 +690,7 @@ impl SundialApp {
             preferences_changed |= limit_response.changed();
             ui.label("automatic backups per source");
         });
-        ui.label("When enabled, older automatic backups are removed after saving.");
+        ui.label("Older automatic backups are removed after saving.");
 
         ui.add_space(12.0);
         self.draw_recovery_preferences(ui);
@@ -718,7 +720,7 @@ impl SundialApp {
             if account_source.kind != AccountSourceKind::Json && !dawn {
                 reset_account = ui
                     .button("Reset Account Database…")
-                    .on_hover_text("Reset characters, inventory, progression, and account preferences to the defaults bundled with this installed Sunrise version. A full recovery backup is created first")
+                    .on_hover_text("Reset characters, inventory, progression and account preferences to Sunrise defaults. A full recovery backup is made first")
                     .clicked();
                 if matches!(
                     account_source.kind,

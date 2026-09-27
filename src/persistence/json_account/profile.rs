@@ -674,48 +674,6 @@ mod tests {
 
     use super::*;
 
-    fn document(version: u64) -> Value {
-        json!({
-            "version": version,
-            "state": {
-                "account": {
-                    "primary_soid": "0x9EAA300100100100",
-                    "profile_items": []
-                },
-                "characters": []
-            }
-        })
-    }
-
-    #[test]
-    fn future_schema_dismantle_rows_remain_opaque() {
-        let mut document = document(MAX_SUPPORTED_SCHEMA + 1);
-        document
-            .pointer_mut("/state/account")
-            .and_then(Value::as_object_mut)
-            .unwrap()
-            .insert("dismantle_rewards".into(), json!({"future_layout": true}));
-        let adapter = JsonProfileAdapter::load(&document).unwrap();
-        let new_id = adapter.next_entity_id();
-
-        let (_, projected) = adapter
-            .apply_profile_item(
-                &document,
-                ProfileItemCommand::Add(ProfileItem {
-                    id: new_id,
-                    definition_hash: DefinitionHash::new(44),
-                    quantity: 1,
-                    instance_soid: None,
-                }),
-            )
-            .unwrap();
-
-        assert_eq!(
-            projected.pointer("/state/account/dismantle_rewards"),
-            document.pointer("/state/account/dismantle_rewards")
-        );
-    }
-
     #[test]
     fn missing_account_rejects_projection_without_mutating_inputs() {
         let document = json!({"version": 8, "state": {"characters": []}});

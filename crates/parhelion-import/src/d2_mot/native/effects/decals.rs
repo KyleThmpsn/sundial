@@ -30,10 +30,6 @@ fn numeric_tfx(code: &[u8]) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 pub(super) fn build(c: &mut Effect) -> Result<()> {
     ensure!(
         c.draws.records[1].is_empty(),
@@ -43,24 +39,6 @@ pub(super) fn build(c: &mut Effect) -> Result<()> {
     let nb = &nb["80BA7713"];
     let native_samplers = nb["samplers"].as_array().context("native decal samplers")?;
     let native_mask = &nb["textures"][0];
-    let usage = load(&c.refs.join("native-decal-usage/usage.json"))?;
-    let mut carriers = BTreeMap::new();
-    for tag in ["80BA7713", "80BF87BD"] {
-        let row = usage["matches"]
-            .as_array()
-            .context("carrier usage")?
-            .iter()
-            .find(|v| v["material"] == tag)
-            .context("missing carrier usage")?;
-        ensure!(
-            row["stage"] == 1 && row["layout"] == 139,
-            "native carrier does not demonstrate plated decal draws"
-        );
-        carriers.insert(
-            tag,
-            hex::decode(row["record"].as_str().context("carrier record")?)?,
-        );
-    }
     let carrier = Payload(fs::read(
         c.refs.join("native-decal-bindings-26/raw/80BA7713.bin"),
     )?);
@@ -235,14 +213,7 @@ pub(super) fn build(c: &mut Effect) -> Result<()> {
                 evidence.push(json!({"source_model":draw.model_tag,"source_material":draw.material,"channel":channel,"native_blend":blend,"source_runtime_outputs":lowered.evidence,"native_framebuffer_slot":5,"mask_slot":6,"source_sampler_bytes_matched":true,"native_mask_byte_identical":true}));
                 created.insert(key.clone(), name);
             }
-            c.draws.add(
-                1,
-                &carriers[if blend == 29 { "80BF87BD" } else { "80BA7713" }],
-                &draw,
-                *channel,
-                faces,
-                &created[&key],
-            )?;
+            c.draws.add(1, &draw, *channel, faces, &created[&key])?;
         }
     }
     c.draws.layout(1)?;

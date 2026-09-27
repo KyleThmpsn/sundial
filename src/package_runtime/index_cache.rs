@@ -108,6 +108,11 @@ pub(crate) fn cached<T: Serialize + DeserializeOwned>(
     }
     let index = Arc::new(index);
     *memory = Some((snapshot, Arc::clone(&index)));
+    if fresh {
+        // Building an index reads and decodes the packages behind it, and the index that
+        // survives is a fraction of what that cost. A cache hit borrowed nothing to return.
+        crate::memory::release_free_memory();
+    }
     Ok(index)
 }
 

@@ -21,9 +21,7 @@ pub(super) use persistence::{
     require_game_closed, save_json, verify_workspace_source_unchanged,
 };
 #[cfg(test)]
-pub(super) use persistence::{
-    load_json, save_json_with_backup_root, save_test_json_checked, verify_source_unchanged,
-};
+pub(super) use persistence::{load_json, save_json_with_backup_root, save_test_json_checked};
 pub(super) use validation::{
     character_ability_issue, character_ability_issue_for_values, repair_known_ability_pairs,
     validate_document, validate_workspace_document,

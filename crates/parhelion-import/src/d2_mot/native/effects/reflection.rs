@@ -122,7 +122,7 @@ pub(super) fn carrier(c: &Effect) -> Result<Payload> {
     Ok(Payload(mat))
 }
 
-pub(super) fn build(c: &mut Effect, native: &Path) -> Result<()> {
+pub(super) fn build(c: &mut Effect) -> Result<()> {
     ensure!(
         c.draws.records[7].is_empty(),
         "input graph already contains transparent draws"
@@ -133,17 +133,6 @@ pub(super) fn build(c: &mut Effect, native: &Path) -> Result<()> {
         "reflection family binding differs from inspected reference"
     );
     let shell = carrier(c)?;
-    let native_model = Payload(fs::read(native.join("raw/80EC2722.bin"))?);
-    let rows = native_model.array(328 + 24, 32, None)?;
-    let range =
-        native_model.u16(328 + 40 + 14)? as usize..native_model.u16(328 + 40 + 16)? as usize;
-    let row = rows
-        .get(range)
-        .context("native reflection draw range")?
-        .iter()
-        .find(|r| native_model.u32(**r).is_ok_and(|tag| tag == 0x80EC271F))
-        .context("native reflection carrier draw")?;
-    let donor = &native_model.0[*row..*row + 32];
     let reference = c.refs.join("surface-carriers-01/81529206.hlsl");
     let template = fs::read_to_string(&reference)?.replace("\r\n", "\n");
     let mut created = BTreeMap::new();
@@ -209,8 +198,7 @@ pub(super) fn build(c: &mut Effect, native: &Path) -> Result<()> {
                 evidence.push(json!({"model":draw.model_tag,"channel":channel,"runtime_outputs":lowered.evidence}));
                 entry.insert(name);
             }
-            c.draws
-                .add(7, donor, &draw, *channel, faces, &created[&key])?;
+            c.draws.add(7, &draw, *channel, faces, &created[&key])?;
         }
     }
     c.draws.layout(7)?;

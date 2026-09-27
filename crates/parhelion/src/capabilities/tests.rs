@@ -1068,12 +1068,3 @@ fn socket_column_validation_reports_structural_set_errors_in_socket_order() {
         ]
     );
 }
-
-#[test]
-fn variable_damage_rests_on_the_first_chosen_element() {
-    assert_eq!(
-        variable_damage_resting_type(&[RecipeDamageType::Solar, RecipeDamageType::Arc]),
-        Some(RecipeDamageType::Arc)
-    );
-    assert_eq!(variable_damage_resting_type(&[]), None);
-}

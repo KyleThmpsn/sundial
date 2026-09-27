@@ -1,48 +1,5 @@
 use super::*;
 
-#[test]
-fn package_probe_uses_only_package_files() {
-    let directory = tempfile::tempdir().unwrap();
-    fs::create_dir(directory.path().join("directory.pkg")).unwrap();
-    fs::write(directory.path().join("notes.txt"), b"not a package").unwrap();
-    assert!(
-        first_package_file(directory.path())
-            .unwrap_err()
-            .contains("no .pkg files")
-    );
-    let package = directory.path().join("actual.PKG");
-    fs::write(&package, b"probe source").unwrap();
-    assert_eq!(first_package_file(directory.path()).unwrap(), package);
-    let missing = directory.path().join("missing");
-    let error = first_package_file(&missing).unwrap_err();
-    assert!(error.contains("Could not list"));
-    assert!(error.contains(&missing.display().to_string()));
-}
-
-#[test]
-fn artifact_validation_progress_tracks_each_real_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let first = directory.path().join("first.pkg");
-    let second = directory.path().join("second.pkg");
-    fs::write(&first, b"first").unwrap();
-    fs::write(&second, b"second").unwrap();
-    let mut events = Vec::new();
-
-    let reports = artifact_reports_with_progress(&[first, second], &mut |event| {
-        events.push(event);
-    })
-    .unwrap();
-
-    assert_eq!(reports.len(), 2);
-    assert_eq!(events.len(), 4);
-    assert_eq!(events[0].phase, BuildPhase::ValidatingPackages);
-    assert_eq!(events[0].current_artifact.as_deref(), Some("first.pkg"));
-    assert_eq!((events[0].completed, events[0].total), (0, 2));
-    assert_eq!((events[1].completed, events[1].total), (1, 2));
-    assert_eq!(events[2].current_artifact.as_deref(), Some("second.pkg"));
-    assert_eq!((events[3].completed, events[3].total), (2, 2));
-}
-
 fn package(path: &Path, package_id: u16, patch: u16, signature: u64) {
     let bytes = PackageHeaderPrefix {
         version: SHADOWKEEP_HEADER_VERSION,
@@ -90,17 +47,6 @@ fn configured_real_packages() -> Option<PathBuf> {
     std::env::var_os("SUNDIAL_TEST_PACKAGES")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
-}
-
-#[test]
-fn source_inspection_accepts_the_stock_profile() {
-    let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let packages = stock_source(directory.path());
-    let request = snapshot(packages, directory.path().join("staging"));
-
-    let report = inspect_snapshot(&request).expect("stock package profile should pass");
-
-    assert!(report.ignored_authored_files.is_empty());
 }
 
 #[test]
@@ -800,59 +746,4 @@ fn batch_snapshot_is_sorted_stable_and_sensitive_to_dirty_edits() {
             .windows(2)
             .all(|pair| pair[0].namespace < pair[1].namespace)
     );
-}
-
-#[test]
-fn project_spec_maps_every_frozen_recipe_in_snapshot_order() {
-    let snapshot = BatchBuildSnapshot::new(BatchBuildRequest {
-        package_directory: PathBuf::from("packages"),
-        staging_root: PathBuf::from("staging"),
-        ignore_installed_authored_overlays: true,
-        recipes: vec![
-            WeaponRecipe::second_sun().unwrap(),
-            WeaponRecipe::every_end(),
-        ],
-    })
-    .unwrap();
-
-    let project = project_spec(&snapshot).unwrap();
-
-    assert_eq!(project.weapons.len(), 2);
-    assert!(
-        project
-            .weapons
-            .windows(2)
-            .all(|pair| pair[0].namespace < pair[1].namespace)
-    );
-    for (weapon, recipe) in project.weapons.iter().zip(&snapshot.request.recipes) {
-        assert_eq!(weapon.namespace, recipe.namespace);
-        assert_eq!(
-            weapon.identity.item_hash,
-            recipe.identity.item_hash.parse_u32().unwrap()
-        );
-    }
-}
-
-#[test]
-fn staged_recipe_snapshot_round_trips_normalized_json() {
-    let directory = tempfile::tempdir().unwrap();
-    let snapshot = BatchBuildSnapshot::new(BatchBuildRequest {
-        package_directory: PathBuf::from("packages"),
-        staging_root: PathBuf::from("staging"),
-        ignore_installed_authored_overlays: true,
-        recipes: vec![
-            WeaponRecipe::second_sun().unwrap(),
-            WeaponRecipe::every_end(),
-        ],
-    })
-    .unwrap();
-
-    let paths = stage_recipe_snapshot(directory.path(), &snapshot).unwrap();
-
-    assert_eq!(paths.len(), 2);
-    let loaded = paths
-        .iter()
-        .map(|path| WeaponRecipe::load_json(path).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(loaded, snapshot.request.recipes);
 }

@@ -136,6 +136,11 @@ pub(super) fn normalized_automatic_backup_limit(limit: u16) -> u16 {
     limit.clamp(MIN_AUTOMATIC_BACKUP_LIMIT, MAX_AUTOMATIC_BACKUP_LIMIT)
 }
 
+/// The family holding Phosphor's light weight. Parhelion names it too, to draw quiet icons.
+const ICON_LIGHT_FONT_FAMILY: &str = "Sundial Icons Light";
+/// Phosphor alone, for an icon whose codepoint a game symbol also uses.
+const ICON_FONT_FAMILY: &str = "Sundial Icons";
+
 pub(super) fn configure_destiny_symbol_fonts(
     ctx: &egui::Context,
     install: &Path,
@@ -147,6 +152,15 @@ pub(super) fn configure_destiny_symbol_fonts(
         .cloned()
         .unwrap_or_default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The same icons in a lighter weight, for quiet controls such as overflow menus.
+    fonts.font_data.insert(
+        "phosphor-light".into(),
+        egui_phosphor::Variant::Light.font_data().into(),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(ICON_LIGHT_FONT_FAMILY.into()),
+        vec!["phosphor-light".into()],
+    );
     let mut loaded = Vec::new();
     let mut errors = Vec::new();
     for &(name, file_name) in DESTINY_SYMBOL_FONTS {
@@ -161,13 +175,22 @@ pub(super) fn configure_destiny_symbol_fonts(
             Err(error) => errors.push(format!("Could not read {}: {error}", path.display())),
         }
     }
+    // The game's symbols sit in the private-use range Phosphor also fills, so they go right
+    // after the text font, ahead of Phosphor. Appended after it, a symbol in a game string drew
+    // as whatever icon shared its codepoint: Solar, U+E140, drew Phosphor's caret-up-down.
+    // Phosphor keeps the rest of the range. An icon whose codepoint a symbol also uses
+    // (CARET_DOWN and CHECK among the icons in use) is drawn through the icon family instead.
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .extend(loaded.clone());
+        let family_fonts = fonts.families.entry(family).or_default();
+        let at = family_fonts.len().min(1);
+        for (offset, name) in loaded.iter().enumerate() {
+            family_fonts.insert(at + offset, name.clone());
+        }
     }
+    fonts.families.insert(
+        egui::FontFamily::Name(ICON_FONT_FAMILY.into()),
+        vec!["phosphor".into()],
+    );
     let mut destiny_text_fonts = loaded;
     destiny_text_fonts.extend(proportional_fallbacks);
     fonts

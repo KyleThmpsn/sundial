@@ -17,6 +17,11 @@ mod tests;
 const MAX_OBJECTS: usize = 8_192;
 const MAX_FIELDS: usize = 65_536;
 
+/// A name a native consumer proves for this field of `schema`.
+pub(super) fn proven_label(schema: u32, offset: u32) -> Option<&'static str> {
+    labels::behavior(schema, offset as usize)
+}
+
 #[cfg(test)]
 pub(super) fn test_walk(
     data: &[u8],

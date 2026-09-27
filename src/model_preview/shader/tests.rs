@@ -1,5 +1,10 @@
 use super::*;
 
+/// Untinted lighting, which every case here uses.
+fn light(sample: Sample, n: [f32; 3], scene: super::super::render::Scene) -> [f32; 3] {
+    super::light(sample, n, scene, [1.0; 3])
+}
+
 fn dye() -> Surface {
     Surface {
         albedo: [0.8, 0.1, 0.05],
@@ -24,7 +29,10 @@ fn mask_preserves_undyed_color_and_metal_when_shader_changes() {
     assert_eq!(a.albedo, b.albedo);
     assert_eq!(a.metal, 0.5);
     assert_eq!(a.metal, b.metal);
-    assert_eq!(light(a, [0.0, 0.0, -1.0]), light(b, [0.0, 0.0, -1.0]));
+    assert_eq!(
+        light(a, [0.0, 0.0, -1.0], super::super::render::Scene::default()),
+        light(b, [0.0, 0.0, -1.0], super::super::render::Scene::default())
+    );
 }
 
 #[test]
@@ -66,7 +74,18 @@ fn emission_survives_occlusion_and_finish_changes_the_highlight() {
     let lit = evaluate([0.25; 3], [0.0, 128.0, 255.0, 255.0], None, &dye());
     let mut unlit = evaluate([0.25; 3], [0.0, 128.0, 255.0, 255.0], None, &dye());
     unlit.emission = [0.0; 3];
-    let (lit, unlit) = (light(lit, [0.0, 0.0, -1.0]), light(unlit, [0.0, 0.0, -1.0]));
+    let (lit, unlit) = (
+        light(
+            lit,
+            [0.0, 0.0, -1.0],
+            super::super::render::Scene::default(),
+        ),
+        light(
+            unlit,
+            [0.0, 0.0, -1.0],
+            super::super::render::Scene::default(),
+        ),
+    );
     for i in 0..3 {
         assert!((lit[i] - unlit[i] - dye().emissive[i]).abs() < 1e-5);
     }
@@ -78,8 +97,14 @@ fn emission_survives_occlusion_and_finish_changes_the_highlight() {
         emission: [0.0; 3],
     };
     let n = [-0.187, -0.293, -0.937];
-    assert!(light(sample(0.1, 1.0), n)[0] > light(sample(0.9, 1.0), n)[0]);
-    assert_ne!(light(sample(0.5, 0.0), n), light(sample(0.5, 1.0), n));
+    assert!(
+        light(sample(0.1, 1.0), n, super::super::render::Scene::default())[0]
+            > light(sample(0.9, 1.0), n, super::super::render::Scene::default())[0]
+    );
+    assert_ne!(
+        light(sample(0.5, 0.0), n, super::super::render::Scene::default()),
+        light(sample(0.5, 1.0), n, super::super::render::Scene::default())
+    );
 }
 
 #[test]

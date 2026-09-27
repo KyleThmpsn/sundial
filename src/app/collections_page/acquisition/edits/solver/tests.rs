@@ -44,6 +44,7 @@ fn apply(tokens: Vec<Token>, native: bool) -> (Value, Catalog) {
         name: "Solver Test".into(),
         type_name: String::new(),
         paths: vec![],
+        parent_nodes: vec![],
         conditions: vec![CollectionConditionDef {
             field: ACQUISITION_CONDITION_FIELD,
             tokens,

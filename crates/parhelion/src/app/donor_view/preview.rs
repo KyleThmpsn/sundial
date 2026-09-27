@@ -95,21 +95,13 @@ impl PackageAuthoringApp {
             return;
         };
         let Some(loadout) = loadout(catalog, &self.recipe) else {
-            ui.label("This appearance has no model row.");
+            ui.label("No model for this appearance.");
             return;
         };
         #[cfg(feature = "d2-model-importer")]
         let imported = self.recipe.overrides.imported_graph.is_some();
         #[cfg(not(feature = "d2-model-importer"))]
         let imported = false;
-        ui.heading(if imported {
-            "Native Donor Preview"
-        } else {
-            "Weapon Preview"
-        });
-        if imported {
-            ui.weak("This shows the conversion donor. The imported model is applied when packages are built.");
-        }
         let plug_names: Vec<_> = loadout
             .plugs
             .iter()
@@ -122,9 +114,6 @@ impl PackageAuthoringApp {
             })
             .map(|hash| catalog.plug_label(*hash, false))
             .collect();
-        if !plug_names.is_empty() {
-            ui.label(format!("Socket Colors: {}", plug_names.join(", ")));
-        }
         let geometry = self.current_geometry_donor();
         model_preview::weapon(
             ui,
@@ -134,6 +123,13 @@ impl PackageAuthoringApp {
                 geometry.summary.name.as_str()
             }),
         );
+        if imported {
+            ui.label("Donor Preview")
+                .on_hover_text("The imported model applies at build time.");
+        }
+        if !plug_names.is_empty() {
+            ui.label(format!("Socket Colors: {}", plug_names.join(", ")));
+        }
     }
 }
 

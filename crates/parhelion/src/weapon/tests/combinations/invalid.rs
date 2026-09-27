@@ -53,16 +53,8 @@ fn mutation(recipe: &mut WeaponRecipe, case: usize, sockets: usize) {
         }
         15 => recipe.overrides.trait_indices = Some(vec![u16::MAX - 1]),
         16 => recipe.overrides.base_sandbox_perks = Some(vec![u16::MAX - 1]),
-        17 => {
-            recipe.presentation_donor = Some(WeaponDonorReference {
-                item_hash: if recipe.donor.item_hash.parse_u32().unwrap() == 0xA25B_8F8F {
-                    0x5038_4F33.into()
-                } else {
-                    0xA25B_8F8F.into()
-                },
-                expected_name: None,
-            })
-        }
+        // An appearance from another weapon type used to be case 17. Cross-type appearances
+        // build now, with the appearance weapon's rig or parts pinned to the base rig.
         _ => unreachable!(),
     }
 }
@@ -110,7 +102,7 @@ fn native_invalid_combinations_leave_no_staging_output() {
     let mut rejected = 0;
     for (index, &(hash, name, _, _)) in DONORS.iter().enumerate() {
         let donor = catalog.weapon_donor(hash).unwrap();
-        for case in 0..18 {
+        for case in 0..17 {
             let label = format!("rejected-{index}-{case}");
             let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
                 format!("Rejected {index} {case}"),
@@ -147,6 +139,6 @@ fn native_invalid_combinations_leave_no_staging_output() {
         );
         rejected += 1;
     }
-    assert_eq!(rejected, 292);
+    assert_eq!(rejected, 276);
     eprintln!("INVALID_COMBINATIONS_PASS rejected={rejected}");
 }

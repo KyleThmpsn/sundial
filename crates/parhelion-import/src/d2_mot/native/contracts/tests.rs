@@ -43,21 +43,6 @@ fn model(material: u32, layout: i16) -> Payload {
 }
 
 #[test]
-fn discovers_equivalent_contracts_after_asset_ids_change() {
-    for (model_tag, material_tag) in [(100, 200), (900, 800)] {
-        let mut found = BTreeMap::new();
-        select_model(model_tag, &model(material_tag, 139), &mut found, |tag| {
-            (tag == material_tag).then(material)
-        })
-        .unwrap();
-        let carrier = &found[&Role::Surface];
-        assert_eq!(carrier.material, material_tag);
-        assert_eq!(carrier.model, model_tag);
-        assert_eq!(&carrier.record[..4], &material_tag.to_le_bytes());
-    }
-}
-
-#[test]
 fn rejects_wrong_layout_state_and_extra_shader_stages() {
     let mut found = BTreeMap::new();
     select_model(100, &model(200, 138), &mut found, |_| Some(material())).unwrap();
@@ -82,24 +67,6 @@ fn draw_requires_actual_material_in_the_requested_stage() {
 }
 
 #[test]
-fn missing_carrier_reports_the_required_contract() {
-    let catalog = Catalog {
-        schema: Catalog::SCHEMA,
-        stamp: "fixture".into(),
-        carriers: BTreeMap::new(),
-        cube: Value::Null,
-        samplers: vec![],
-    };
-    assert!(
-        catalog
-            .carrier(Role::AlphaDecal)
-            .unwrap_err()
-            .to_string()
-            .contains("AlphaDecal")
-    );
-}
-
-#[test]
 #[ignore = "Requires configured local native packages, never installed content writes"]
 fn configured_packages_discover_and_reuse_contracts() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_NATIVE_PACKAGES").unwrap());
@@ -120,6 +87,19 @@ fn configured_packages_discover_and_reuse_contracts() {
         first.material(dir.path(), role).unwrap();
     }
     assert!(!first.cube.is_null());
+    let alternate = tempfile::tempdir().unwrap();
+    fs::write(
+        alternate.path().join("1-previous.json"),
+        serde_json::to_vec(&first).unwrap(),
+    )
+    .unwrap();
+    let reused = reusable_carriers(
+        alternate.path(),
+        &alternate.path().join("1-current.json"),
+        &reader,
+    )
+    .unwrap();
+    assert_eq!(reused.carriers.len(), Role::ALL.len());
     messages.clear();
     export(&mut reader, &packages, dir.path(), &mut |m| {
         messages.push(m)

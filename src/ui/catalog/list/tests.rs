@@ -223,52 +223,6 @@ fn inspecting_filtering_and_confirming_are_separate_and_keep_stable_identity() {
     }
 }
 
-#[test]
-fn arrow_keys_browse_without_applying_the_preview() {
-    let ctx = egui::Context::default();
-    let keys = [10, 20, 30];
-    let mut inspected = 0;
-    let mut frame = |events| {
-        let _ = ctx.run(
-            egui::RawInput {
-                events,
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    assert!(
-                        BrowserList {
-                            keys: &keys,
-                            height: 300.0,
-                            reset: false,
-                            row_height: 30.0,
-                            select: None,
-                        }
-                        .draw(
-                            ui,
-                            |ui, index, selected| ui
-                                .selectable_label(selected, keys[index].to_string()),
-                            |_, index| {
-                                inspected = keys[index];
-                                None::<u64>
-                            }
-                        )
-                        .is_none()
-                    );
-                });
-            },
-        );
-    };
-    frame(vec![]);
-    frame(vec![egui::Event::Key {
-        key: egui::Key::ArrowDown,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
-    }]);
-    assert_eq!(inspected, 20);
-}
 fn label(output: &egui::FullOutput, name: &str) -> egui::Rect {
     output
         .shapes

@@ -4,6 +4,15 @@ use super::*;
 mod progress;
 pub(super) use progress::message as progress_message;
 pub(super) use progress::{Activity, InstallStatus};
+#[cfg(test)]
+mod tests;
+
+/// A library recipe a build stopped on, and whether it is the one open in the editor.
+struct BuildBlocker {
+    path: PathBuf,
+    name: String,
+    open: bool,
+}
 
 impl PackageAuthoringApp {
     pub(super) fn draw_build_status_window(&mut self, ctx: &egui::Context) {
@@ -23,10 +32,13 @@ impl PackageAuthoringApp {
             .as_ref()
             .and_then(|result| result.as_ref().ok())
             .map(|report| report.run_directory.clone());
+        let blocker = self.build_blocker_entry();
         let mut open = true;
         let mut close_requested = false;
         let mut open_staging_requested = false;
         let mut install_requested = false;
+        let mut remove_blocker_requested = false;
+        let mut open_blocker_requested = false;
 
         egui::Window::new("Build & Install")
             .id(egui::Id::new("parhelion_build_status"))
@@ -60,9 +72,6 @@ impl PackageAuthoringApp {
                     }
                     ui.add_space(12.0);
                     self.build_activity.draw(ui, "build-progress-activity");
-                    ui.weak(
-                        "You can close this window. The build will continue in the background.",
-                    );
                 } else {
                     if let Some(progress) = &self.build_progress {
                         ui.weak(format!("Elapsed {}", format_elapsed(progress.elapsed)));
@@ -79,12 +88,23 @@ impl PackageAuthoringApp {
                                         .color(ui.visuals().error_fg_color),
                                 );
                                 ui.colored_label(ui.visuals().error_fg_color, error);
-                                if ui.button("Copy Error").clicked() {
-                                    ui.ctx().copy_text(error.clone());
-                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui.button("Copy Error").clicked() {
+                                        ui.ctx().copy_text(error.clone());
+                                    }
+                                    let Some(blocker) = &blocker else {
+                                        return;
+                                    };
+                                    if ui.button("Remove from Build").clicked() {
+                                        remove_blocker_requested = true;
+                                    }
+                                    if !blocker.open && ui.button("Open Recipe").clicked() {
+                                        open_blocker_requested = true;
+                                    }
+                                });
                             }
                             None => {
-                                ui.label("No build result is available.");
+                                ui.label("No build result.");
                             }
                         });
                 }
@@ -117,11 +137,7 @@ impl PackageAuthoringApp {
                     {
                         open_staging_requested = true;
                     }
-                    if ui
-                        .button("Close")
-                        .on_hover_text("Closing this window does not stop the build.")
-                        .clicked()
-                    {
+                    if ui.button("Close").clicked() {
                         close_requested = true;
                     }
                 });
@@ -141,6 +157,48 @@ impl PackageAuthoringApp {
             open = false;
         }
         self.build_status_open &= open;
+        if let Some(blocker) = blocker {
+            if remove_blocker_requested {
+                self.remove_from_build(&blocker);
+            } else if open_blocker_requested {
+                self.build_status_open = false;
+                self.request_recipe_action(PendingRecipeAction::Open(blocker.path));
+            }
+        }
+    }
+
+    /// The recipe the latest build stopped on, while it is still in the build.
+    fn build_blocker_entry(&self) -> Option<BuildBlocker> {
+        let namespace = self.build_blocker.as_deref()?;
+        let (path, name) = self
+            .recipe_entries
+            .iter()
+            .find(|entry| entry.namespace == namespace)
+            .map(|entry| (entry.path.clone(), entry.name.clone()))
+            .or_else(|| {
+                let path = self.recipe_path.clone()?;
+                (self.recipe.namespace == namespace).then(|| (path, self.recipe.name.clone()))
+            })?;
+        self.enabled_recipe_paths
+            .contains(&path)
+            .then(|| BuildBlocker {
+                open: self.recipe_path.as_ref() == Some(&path),
+                path,
+                name,
+            })
+    }
+
+    /// Leaves a recipe out of the build selection.
+    fn remove_from_build(&mut self, blocker: &BuildBlocker) {
+        let mut selected = self.enabled_recipe_paths.clone();
+        selected.remove(&blocker.path);
+        match self.apply_build_selection(selected) {
+            Ok(()) => self.log.push(LogEntry::info(format!(
+                "Removed {} from the build",
+                blocker.name
+            ))),
+            Err(error) => self.log.push(LogEntry::error(error)),
+        }
     }
 
     pub(super) fn draw_install_confirmation(&mut self, ui: &mut egui::Ui) {
@@ -155,19 +213,29 @@ impl PackageAuthoringApp {
             .max_height((ui.available_height() - 56.0).max(120.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                reports::draw_summary(ui, build.weapons.len(), build.artifacts.len(),
+                reports::draw_summary(
+                    ui,
+                    build,
                     match &self.replacement_review {
                         Some(Ok(_)) if self.replacement_receiver.is_none() => "Ready to Install",
                         Some(Err(_)) => "Needs Attention",
                         _ => "Checking Account Changes",
-                    });
-                ui.label("This replaces your installed custom weapon set. Include every weapon you want to keep.");
-                ui.colored_label(ui.visuals().warn_fg_color, "Close Destiny 2 before installing.");
+                    },
+                );
+                ui.label(
+                    "Replaces your installed custom items. Include every item you want to keep.",
+                );
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Close Destiny 2 before installing.",
+                );
                 ui.add_space(8.0);
-                egui::Frame::group(ui.style()).inner_margin(12).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    self.draw_account_changes(ui);
-                });
+                egui::Frame::group(ui.style())
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.draw_account_changes(ui);
+                    });
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
                     reports::path_row(ui, "Staged Run", &build.run_directory);
@@ -175,7 +243,9 @@ impl PackageAuthoringApp {
                     reports::path_row(ui, "Backup Folder", Path::new(self.backup_root.trim()));
                     ui.add_space(5.0);
                     ui.strong(format!("Files to Install ({})", build.artifacts.len()));
-                    for artifact in &build.artifacts { ui.monospace(&artifact.file_name); }
+                    for artifact in &build.artifacts {
+                        ui.monospace(&artifact.file_name);
+                    }
                 });
             });
         ui.add_space(6.0);
@@ -206,7 +276,9 @@ impl PackageAuthoringApp {
                         && self.replacement_receiver.is_none()
                         && self.catalog_receiver.is_none()
                         && self.catalog_worker.is_none()
-                        && !self.catalog_reload_pending,
+                        && !self.catalog_reload_pending
+                        && !self.technical_markers_busy()
+                        && !self.importer_busy(),
                     egui::Button::new(label).fill(ui.visuals().selection.bg_fill),
                 )
                 .clicked();
@@ -242,7 +314,7 @@ impl PackageAuthoringApp {
             None => return,
         };
         if !review.changes_account() {
-            ui.label("No saved account changes are required for this package replacement.");
+            ui.label("No account changes needed.");
             return;
         }
         let Some(cleanup) = review.account_cleanup() else {
@@ -268,12 +340,18 @@ impl PackageAuthoringApp {
                     ));
                 }
                 sundial::package_authoring::account::AuthoredMoveOutcome::DeletedInventoryFull => {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("Delete {name} from {location}. There is no room in inventory for its new {} slot.", movement.destination_label()));
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!(
+                            "Delete {name} from {location}. No inventory room for its new {} slot.",
+                            movement.destination_label()
+                        ),
+                    );
                 }
             }
         }
         if !cleanup.slot_moves.is_empty() {
-            ui.label("Moved weapons keep their instance IDs, rolls, and saved item details. Their previous equipment slots will be empty. Deleted copies are included in the account backup.");
+            ui.label("Moved weapons keep their rolls. Their old slots will be empty. Deleted copies are in the account backup.");
         }
         let count = cleanup.removed_items.values().sum::<usize>();
         if count > 0 {
@@ -291,14 +369,23 @@ impl PackageAuthoringApp {
                     name.unwrap_or_else(|| format!("Item 0x{hash:08X}"))
                 ));
             }
-            ui.label("Applies to every character, including equipped items. Removed equipment leaves empty slots.");
+            ui.label("Includes equipped items on every character. Their slots will be empty.");
         }
-        for (count, label) in [
-            (cleanup.cleared_plugs, "custom plug references"),
-            (cleanup.cleared_unlocks, "Collections unlocks"),
-            (cleanup.removed_reward_rules, "reward rules"),
+        for (count, singular, plural) in [
+            (
+                cleanup.cleared_plugs,
+                "custom plug reference",
+                "custom plug references",
+            ),
+            (
+                cleanup.cleared_unlocks,
+                "Collections unlock",
+                "Collections unlocks",
+            ),
+            (cleanup.removed_reward_rules, "reward rule", "reward rules"),
         ] {
             if count > 0 {
+                let label = if count == 1 { singular } else { plural };
                 ui.label(format!("Clear {count} {label}."));
             }
         }
@@ -312,15 +399,17 @@ impl PackageAuthoringApp {
                 .map(|catalog| catalog.plug_label(change.definition_hash, false))
                 .unwrap_or_else(|| format!("Item 0x{:08X}", change.definition_hash));
             ui.label(format!(
-                "Update {count} saved {name} socket lists from {} to {} sockets.",
+                "Update {count} saved {name} from {} to {} sockets.",
                 change.previous_socket_count,
                 change.default_plugs.len(),
             ));
-            ui.label(if change.default_plugs.len() > change.previous_socket_count {
-                "Existing socket selections are kept. Added sockets use the new definition's defaults."
-            } else {
-                "Selections in the remaining sockets are kept. Selections in removed sockets are deleted."
-            });
+            ui.label(
+                if change.default_plugs.len() > change.previous_socket_count {
+                    "Existing choices are kept. New sockets use their defaults."
+                } else {
+                    "Choices in removed sockets are deleted."
+                },
+            );
         }
         reports::path_row(ui, "Account", &cleanup.settings_path);
     }
@@ -328,9 +417,7 @@ impl PackageAuthoringApp {
     pub(super) fn draw_install_status(&mut self, ui: &mut egui::Ui) {
         if self.install_receiver.is_some() {
             self.install_status.draw(ui, true);
-            ui.weak(
-                "Keep Destiny 2 closed. You can close this window while installation continues.",
-            );
+            ui.weak("Keep Destiny 2 closed.");
             return;
         }
         ui.weak(format!(
@@ -350,7 +437,7 @@ impl PackageAuthoringApp {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 None => {
-                    ui.label("No installation result is available.");
+                    ui.label("No installation result.");
                 }
             });
         egui::CollapsingHeader::new("Installation Activity")

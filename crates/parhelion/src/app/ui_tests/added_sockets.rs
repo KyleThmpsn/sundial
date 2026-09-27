@@ -321,7 +321,7 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         assert_eq!(app.recipe, saved);
     }
     let output = frame(&ctx, &mut app, &donor, vec![]);
-    let options = *text_origins(&output, "…")
+    let options = *text_origins(&output, crate::app::style::MORE)
         .last()
         .expect("Added socket options");
     click(&ctx, &mut app, &donor, options + egui::vec2(5.0, 6.0));
@@ -357,7 +357,7 @@ fn base_socket_menu_removes_and_restores_choices() {
     let ctx = egui::Context::default();
     frame(&ctx, &mut app, &donor, vec![]);
     let output = frame(&ctx, &mut app, &donor, vec![]);
-    let options = text_origins(&output, "…")[0];
+    let options = text_origins(&output, crate::app::style::MORE)[0];
     click(&ctx, &mut app, &donor, options + egui::vec2(5.0, 6.0));
     frame(&ctx, &mut app, &donor, vec![]);
     let output = frame(&ctx, &mut app, &donor, vec![]);

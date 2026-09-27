@@ -64,7 +64,7 @@ fn installed_dye_programs_evaluate_finitely_and_report_unsupported_inputs() {
             row["scope"].as_str().unwrap()
         ))
         .unwrap();
-        match Program::read(&scope) {
+        match Program::read(&scope, &[]) {
             Ok(Some(program)) => {
                 for t in [0.0, 0.1, 1.5, 10.0, 60.0, 3600.0] {
                     assert!(

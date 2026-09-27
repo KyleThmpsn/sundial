@@ -10,6 +10,7 @@ mod invalid;
 mod private;
 mod projectiles;
 mod reclamation_order;
+mod slot_fields;
 mod stat_groups;
 mod stress;
 

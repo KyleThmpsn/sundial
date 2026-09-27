@@ -102,11 +102,33 @@ pub(in crate::app::progression::seasonal) fn draw(
     ui.horizontal_wrapped(|ui| {
         draw_filters(ui, &mut state);
         let enabled = editable && state.job.is_none() && state.ready.is_none();
-        if ui.add_enabled(enabled && rewards.iter().any(|reward| reward.status == Status::Reached), egui::Button::new("Claim Available")).clicked() {
-            request = Some((rewards.iter().filter(|reward| reward.status == Status::Reached).map(|reward| reward.index).collect(), None));
+        if ui
+            .add_enabled(
+                enabled
+                    && rewards
+                        .iter()
+                        .any(|reward| reward.status == Status::Reached),
+                egui::Button::new("Claim Available"),
+            )
+            .clicked()
+        {
+            request = Some((
+                rewards
+                    .iter()
+                    .filter(|reward| reward.status == Status::Reached)
+                    .map(|reward| reward.index)
+                    .collect(),
+                None,
+            ));
         }
-        if ui.add_enabled(enabled && (rank != Some(100) || claimed < rewards.len()), egui::Button::new("Complete Season Pass"))
-            .on_hover_text("Reach Rank 100 and queue unclaimed rewards for this character. Review any rewards that cannot be delivered before applying.").clicked() {
+        if ui
+            .add_enabled(
+                enabled && (rank != Some(100) || claimed < rewards.len()),
+                egui::Button::new("Complete Season Pass"),
+            )
+            .on_hover_text("Reach Rank 100 and queue unclaimed rewards for this character.")
+            .clicked()
+        {
             request = Some(((0..rewards.len()).collect(), Some(100)));
         }
     });
@@ -273,7 +295,7 @@ fn draw_progress(ui: &mut egui::Ui, experience: Option<Experience>, claimed: usi
             || "Season Pass".into(), |experience| format!("Rank {}", experience.rank),
         )).size(22.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::ui_help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their required rank. Claims add supported items to the Reward Queue for the selected character.");
+            crate::ui_help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their rank. Claims go to the Reward Queue.");
             ui.weak(format!("{claimed} / {total} Claimed"));
         });
     });

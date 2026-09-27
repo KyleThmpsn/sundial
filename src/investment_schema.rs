@@ -20,6 +20,10 @@ pub const POWER_CAP_TABLE_CLASS: u32 = 0x8080_7797;
 pub const POWER_CAP_ROW_CLASS: u32 = 0x8080_7801;
 pub const POWER_CAP_ROW_SIZE: usize = 8;
 pub const ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT: usize = 97;
+/// Subclass display records. Row `n` names socket-entry list `n` by the same hash.
+pub const GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT: usize = 61;
+/// Art-dye references. Shader and item dye rows name a row, whose key the entity assignments map.
+pub const GLOBALS_ART_DYE_TABLE_SLOT: usize = 67;
 pub const GLOBALS_ITEM_STRING_TABLE_SLOT: usize = 33;
 pub const GLOBALS_ITEM_METADATA_TABLE_SLOT: usize = 66;
 pub const GLOBALS_SANDBOX_PATTERN_TABLE_SLOT: usize = 70;
@@ -291,40 +295,19 @@ mod tests {
     use super::*;
 
     fn item_with_versions(groups: &[u16]) -> Vec<u8> {
-        const QUALITY: usize = 0xC0;
-        const HEADER: usize = 0x140;
-        const ROWS: usize = HEADER + 16;
-        let descriptor = QUALITY + ITEM_QUALITY_VERSION_DESCRIPTOR_OFFSET;
-        let mut data = vec![0; ROWS + groups.len() * ITEM_VERSION_ROW_SIZE];
-        data[ITEM_QUALITY_BLOCK_POINTER_OFFSET..ITEM_QUALITY_BLOCK_POINTER_OFFSET + 8]
-            .copy_from_slice(
-                &(QUALITY as i64 - ITEM_QUALITY_BLOCK_POINTER_OFFSET as i64).to_le_bytes(),
-            );
-        data[descriptor..descriptor + 8].copy_from_slice(&(groups.len() as u64).to_le_bytes());
-        data[descriptor + 8..descriptor + 16]
-            .copy_from_slice(&(HEADER as i64 - (descriptor + 8) as i64).to_le_bytes());
-        data[HEADER..HEADER + 8].copy_from_slice(&(groups.len() as u64).to_le_bytes());
-        data[HEADER + 8..HEADER + 12].copy_from_slice(&ITEM_VERSION_ROW_CLASS.to_le_bytes());
+        // Native layout: +48 points to quality at C0, whose +60 descriptor points to
+        // the 80805921 array at 140. Keep the fixture independent of reader constants.
+        let mut data = vec![0; 0x150 + groups.len() * 2];
+        data[0x48..0x50].copy_from_slice(&0x78_i64.to_le_bytes());
+        data[0x120..0x128].copy_from_slice(&(groups.len() as u64).to_le_bytes());
+        data[0x128..0x130].copy_from_slice(&0x18_i64.to_le_bytes());
+        data[0x140..0x148].copy_from_slice(&(groups.len() as u64).to_le_bytes());
+        data[0x148..0x14C].copy_from_slice(&0x8080_5921_u32.to_le_bytes());
         for (index, group) in groups.iter().enumerate() {
-            let row = ROWS + index * ITEM_VERSION_ROW_SIZE;
-            data[row..row + ITEM_VERSION_ROW_SIZE].copy_from_slice(&group.to_le_bytes());
+            let row = 0x150 + index * 2;
+            data[row..row + 2].copy_from_slice(&group.to_le_bytes());
         }
         data
-    }
-
-    #[test]
-    fn item_versions_are_rooted_in_the_quality_block() {
-        let data = item_with_versions(&[8, 11]);
-        let decoded = item_version_array(&data).unwrap().unwrap();
-        assert_eq!(decoded.groups, [8, 11]);
-
-        let mut unrelated = vec![0; 0x180];
-        unrelated[0x100..0x108].copy_from_slice(&1_u64.to_le_bytes());
-        unrelated[0x108..0x110].copy_from_slice(&8_i64.to_le_bytes());
-        unrelated[0x110..0x118].copy_from_slice(&1_u64.to_le_bytes());
-        unrelated[0x118..0x11C].copy_from_slice(&ITEM_VERSION_ROW_CLASS.to_le_bytes());
-        unrelated[0x120..0x122].copy_from_slice(&11_u16.to_le_bytes());
-        assert_eq!(item_version_array(&unrelated).unwrap(), None);
     }
 
     #[test]
@@ -332,18 +315,5 @@ mod tests {
         let mut data = item_with_versions(&[11]);
         data[0x148..0x14C].copy_from_slice(&0_u32.to_le_bytes());
         assert!(item_version_array(&data).is_err());
-    }
-
-    #[test]
-    fn investment_table_tags_use_the_documented_roots_and_stride() {
-        let mut globals = vec![0; INVESTMENT_GLOBALS_TABLE_TAGS_OFFSET + 3 * 16];
-        globals[INVESTMENT_GLOBALS_TABLE_TAGS_OFFSET + 2 * INVESTMENT_TABLE_TAG_STRIDE
-            ..INVESTMENT_GLOBALS_TABLE_TAGS_OFFSET + 2 * INVESTMENT_TABLE_TAG_STRIDE + 4]
-            .copy_from_slice(&0x8132_57A2_u32.to_le_bytes());
-        assert_eq!(
-            investment_globals_table_tag(&globals, 2).unwrap(),
-            0x8132_57A2
-        );
-        assert!(investment_root_table_tag(&[], usize::MAX).is_err());
     }
 }

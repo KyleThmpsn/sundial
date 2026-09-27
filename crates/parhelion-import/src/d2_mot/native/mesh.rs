@@ -272,6 +272,7 @@ pub fn merge(parts: Vec<Part>, max_bone: u16) -> Result<Merged> {
     put(&mut h, 0, &len.to_le_bytes())?;
     put(&mut h, 0xC8, &(count as u64).to_le_bytes())?;
     put(&mut h, 0x140, &(count as u64).to_le_bytes())?;
+    crate::d2_mot::audit::draws::declare_draw_indices(&mut h, count)?;
     for (i, value) in counts.iter().enumerate() {
         put(&mut h, 0xD8 + i * 2, &u16::try_from(*value)?.to_le_bytes())?;
     }

@@ -35,6 +35,16 @@ impl Status {
     }
 }
 
+/// A record's objective values and status label, read the way the Triumphs page reads them.
+pub(in crate::app) fn record_progress(
+    record: &RecordDefinition,
+    catalog: &Catalog,
+    snapshot: &CollectionStateSnapshot,
+) -> (Vec<Option<i32>>, &'static str) {
+    let progress = model::progress(record, catalog, snapshot);
+    (progress.values, progress.status.label())
+}
+
 #[derive(Debug)]
 struct Row {
     record: RecordDefinition,

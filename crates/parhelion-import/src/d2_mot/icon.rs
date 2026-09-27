@@ -110,7 +110,7 @@ fn container(
 }
 
 /// First texture of the first lane of a layer, or `None` when the slot is empty.
-fn layer_texture(r: &mut Reader, layer_tag: u32) -> Result<Option<u32>> {
+pub(crate) fn layer_texture(r: &mut Reader, layer_tag: u32) -> Result<Option<u32>> {
     if layer_tag == 0 || layer_tag == u32::MAX {
         return Ok(None);
     }
@@ -133,7 +133,7 @@ fn layer_texture(r: &mut Reader, layer_tag: u32) -> Result<Option<u32>> {
     Ok((texture != 0 && texture != u32::MAX).then_some(texture))
 }
 
-fn read_texture(r: &mut Reader, texture: u32) -> Result<Layer> {
+pub(crate) fn read_texture(r: &mut Reader, texture: u32) -> Result<Layer> {
     let header = r.tag(texture, None)?;
     let format = header.u32(4)?;
     let w = header.u16(34)?;
@@ -142,7 +142,13 @@ fn read_texture(r: &mut Reader, texture: u32) -> Result<Layer> {
         w > 0 && h > 0 && w <= 4096 && h <= 4096 && header.u16(38)? == 1 && header.u16(40)? == 1,
         "unsupported icon dimensions"
     );
-    let pixels = r.tag(r.reference(texture)?, None)?;
+    let large = header.u32(60)?;
+    let buffer = if matches!(large, 0 | u32::MAX | 0x811C9DC5) {
+        r.reference(texture)?
+    } else {
+        large
+    };
+    let pixels = r.tag(buffer, None)?;
     let (width, height) = (w as usize, h as usize);
     let length = match format {
         28 | 29 => width * height * 4,

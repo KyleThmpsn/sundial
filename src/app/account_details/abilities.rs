@@ -47,9 +47,7 @@ impl SundialApp {
             .open(&mut open)
             .show(ui.ctx(), |ui| {
                 ui.set_max_width(360.0);
-                ui.add_enabled_ui(enabled, |ui| {
-                    draw_unlocks(ui, subclass, &mut mask, index);
-                });
+                draw_unlocks(ui, subclass, &mut mask, index, enabled);
             });
         if !open {
             self.account_details.ability_unlocks_character = None;
@@ -72,6 +70,7 @@ fn draw_unlocks(
     subclass: Option<&crate::catalog::ItemDef>,
     mask: &mut u64,
     index: usize,
+    enabled: bool,
 ) {
     let mut entries = BTreeMap::new();
     if let Some(subclass) = subclass {
@@ -94,10 +93,18 @@ fn draw_unlocks(
                 entries.entry(choice.entry).or_insert(&choice.name);
             }
         }
-        ui.strong(&subclass.name);
+        let heading = ui.strong(&subclass.name);
+        crate::app::inspector::definition_context_menu(
+            &heading,
+            "Inspect Definition",
+            subclass.hash,
+        );
+    }
+    if !enabled {
+        ui.disable();
     }
     if entries.is_empty() {
-        ui.label("Equip a subclass with ability definitions to edit its acquired abilities.");
+        ui.label("Equip a subclass to edit its abilities.");
         return;
     }
     let known_mask = entries

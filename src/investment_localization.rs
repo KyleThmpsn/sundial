@@ -8,7 +8,8 @@ use tiger_pkg::TagHash;
 use crate::{
     investment_schema::{
         GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT, ITEM_STRING_NAME_REFERENCE_OFFSET,
-        LOCALIZED_STRING_INDEX_ROW_SIZE, investment_globals_table_tag,
+        ITEM_STRING_TYPE_REFERENCE_OFFSET, LOCALIZED_STRING_INDEX_ROW_SIZE,
+        investment_globals_table_tag,
     },
     package_payload::{array_at, i64_at, relative_offset, u16_at, u32_at},
     package_runtime::resolve_live_named_tag,
@@ -65,6 +66,35 @@ pub(crate) fn resolve_localized_hash(
 
 /// Resolves the display name referenced by an existing item-string tag.
 pub fn resolve_item_name(manager: &PackageManager, string_tag: TagHash) -> Result<String, String> {
+    resolve_item_text(
+        manager,
+        string_tag,
+        ITEM_STRING_NAME_REFERENCE_OFFSET,
+        "name",
+    )
+}
+
+/// Resolves the item type an existing item-string tag names, such as "Pulse Rifle".
+pub fn resolve_item_type_name(
+    manager: &PackageManager,
+    string_tag: TagHash,
+) -> Result<String, String> {
+    resolve_item_text(
+        manager,
+        string_tag,
+        ITEM_STRING_TYPE_REFERENCE_OFFSET,
+        "type name",
+    )
+}
+
+/// Resolves one localized reference of an item-string tag. Every reference is a table index
+/// followed by the string's hash inside that table.
+fn resolve_item_text(
+    manager: &PackageManager,
+    string_tag: TagHash,
+    reference_offset: usize,
+    what: &str,
+) -> Result<String, String> {
     let globals_tag = resolve_live_named_tag(manager, "investment_globals", None)?;
     let globals = read_tag(manager, globals_tag, "investment globals")?;
     let localized_index_tag = TagHash(investment_globals_table_tag(
@@ -75,8 +105,8 @@ pub fn resolve_item_name(manager: &PackageManager, string_tag: TagHash) -> Resul
     let (tag_count, tag_rows, _) = array_at(&localized_index, 8)?;
 
     let item_string = read_tag(manager, string_tag, "item-string")?;
-    let table_index = u32_at(&item_string, ITEM_STRING_NAME_REFERENCE_OFFSET)? as usize;
-    let name_hash = u32_at(&item_string, ITEM_STRING_NAME_REFERENCE_OFFSET + 4)?;
+    let table_index = u32_at(&item_string, reference_offset)? as usize;
+    let text_hash = u32_at(&item_string, reference_offset + 4)?;
     if table_index >= tag_count {
         return Err(format!(
             "Item-string tag {string_tag} references missing localized-string table {table_index}"
@@ -99,9 +129,9 @@ pub fn resolve_item_name(manager: &PackageManager, string_tag: TagHash) -> Resul
 
     decode_strings(manager, localized_header_tag)?
         .into_iter()
-        .find_map(|(hash, value)| (hash == name_hash).then_some(value))
+        .find_map(|(hash, value)| (hash == text_hash).then_some(value))
         .ok_or_else(|| {
-            format!("Item-string tag {string_tag} has unresolved name hash 0x{name_hash:08X}")
+            format!("Item-string tag {string_tag} has unresolved {what} hash 0x{text_hash:08X}")
         })
 }
 

@@ -91,7 +91,7 @@ impl PackageAuthoringApp {
         let mut show = self.show_experimental_options;
         if ui
             .checkbox(&mut show, "Enable Experimental Features")
-            .on_hover_text("Enables advanced effect building, behavior, inventory, socket, material and package controls. Existing weapon and custom perk editing stays available. Saved overrides remain active when this is off.")
+            .on_hover_text("Shows advanced behavior, inventory, socket, material and package controls. Saved overrides stay active when off.")
             .changed()
         {
             self.set_show_experimental_options(show);
@@ -103,7 +103,7 @@ impl PackageAuthoringApp {
             .changed()
         {
             self.show_technical_build = technical;
-            self.preferences_changed = true;
+            self.save_backup_preferences();
         }
         ui.add_space(12.0);
         let editable = self.package_preferences_editable();
@@ -127,7 +127,7 @@ impl PackageAuthoringApp {
                 }
             });
         } else {
-            ui.label("Recipe library unavailable. Check the activity log for details.");
+            ui.label("Recipe library unavailable. See the Activity Log.");
         }
         ui.add_space(12.0);
         preference_heading(ui, "Weapon Catalog");
@@ -148,7 +148,6 @@ impl PackageAuthoringApp {
         } else {
             ui.label("Catalog unavailable");
         }
-        ui.label("Reload weapon data after changing the installed packages.");
         if ui
             .add_enabled(
                 editable && !self.has_background_work(),
@@ -163,28 +162,58 @@ impl PackageAuthoringApp {
     fn draw_build_backup_preferences(&mut self, ui: &mut egui::Ui) {
         let editable = self.package_preferences_editable();
         if !editable {
-            ui.label("Build and backup options are locked during a package operation or installation review.");
+            ui.label("Locked during a build, installation or review.");
         }
         ui.add_enabled_ui(editable, |ui| {
             preference_heading(ui, "Build Files");
             ui.label("Game Packages · Selected in Sundial");
             draw_preference_path(ui, &self.packages);
-            let mut changed = path_row(ui, "Staging Folder", &mut self.staging, "Each build creates a separate folder here. Staging does not install packages.");
-            changed |= ui.checkbox(&mut self.ignore_installed, "Build from a Temporary Stock Package View").changed();
-            ui.label("Ignores recognized Parhelion overlays while building. Installed packages are not moved or changed.");
+            let mut changed = path_row(
+                ui,
+                "Staging Folder",
+                &mut self.staging,
+                "Each build gets its own folder here.",
+            );
+            changed |= ui
+                .checkbox(
+                    &mut self.ignore_installed,
+                    "Build from a Temporary Stock Package View",
+                )
+                .changed();
             ui.add_space(12.0);
             preference_heading(ui, "Package Backups");
-            changed |= path_row(ui, "Backup Folder", &mut self.backup_root, "Installation backs up affected authored packages here before replacing them.");
+            changed |= path_row(
+                ui,
+                "Backup Folder",
+                &mut self.backup_root,
+                "Replaced packages are backed up here.",
+            );
             let mut backups_changed = false;
             ui.horizontal_wrapped(|ui| {
-                backups_changed |= ui.checkbox(&mut self.limit_package_backups, "Keep Last").changed();
-                backups_changed |= named_control(ui.add_enabled(self.limit_package_backups,
-                    egui::DragValue::new(&mut self.package_backup_retention).range(1..=MAX_PACKAGE_BACKUP_RETENTION)), "Package backups to keep").changed();
+                backups_changed |= ui
+                    .checkbox(&mut self.limit_package_backups, "Keep Last")
+                    .changed();
+                let retention = named_control(
+                    ui.add_enabled(
+                        self.limit_package_backups,
+                        egui::DragValue::new(&mut self.package_backup_retention)
+                            .range(1..=MAX_PACKAGE_BACKUP_RETENTION),
+                    ),
+                    "Package backups to keep",
+                );
+                // Saves when a drag or text edit ends.
+                backups_changed |= retention.drag_stopped()
+                    || retention.lost_focus()
+                    || (retention.changed() && !retention.dragged() && !retention.has_focus());
                 ui.label("automatic package backups");
             });
-            backups_changed |= ui.checkbox(&mut self.backup_recipe_snapshots, "Include Recipe Snapshots in Package Backups")
-                .on_hover_text("Copies the normalized recipes recorded by the staged manifest into the matching backup generation.").changed();
-            ui.label("The installer only prunes its own automatic package backups. Manually named snapshots are preserved. Settings backups are managed separately in Sundial.");
+            backups_changed |= ui
+                .checkbox(
+                    &mut self.backup_recipe_snapshots,
+                    "Include Recipe Snapshots in Package Backups",
+                )
+                .on_hover_text("Saves the built recipes with each backup.")
+                .changed();
             if backups_changed {
                 self.save_backup_preferences();
             }
@@ -194,7 +223,7 @@ impl PackageAuthoringApp {
         });
         ui.add_space(12.0);
         preference_heading(ui, "Installed Custom Packages");
-        ui.label("Remove Parhelion's installed package set. The review lets you also remove its items and progression from the selected account. Stock packages, recipes and unrelated account data are kept, with a recovery backup.");
+        ui.label("Removes installed custom packages, and optionally their items and progression. Backed up first.");
         if ui
             .add_enabled(
                 editable
@@ -233,7 +262,7 @@ impl PackageAuthoringApp {
                     ui.label(format!("{} recent events · newest first", self.log.len()));
                     sundial::investment::draw_authoring_info_icon(
                         ui,
-                        format!("Latest {ACTIVITY_LOG_CAPACITY} events · timestamps in UTC.\nLog files keep recent sessions: 5 MB each, with two older files."),
+                        format!("Latest {ACTIVITY_LOG_CAPACITY} events. Times in UTC."),
                     );
                     if ui.button("Copy Log").clicked() {
                         ui.ctx().copy_text(self.activity_log_text());

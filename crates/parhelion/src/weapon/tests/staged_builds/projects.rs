@@ -503,10 +503,10 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
         .iter()
         .find(|plan| plan.item_hash == every_end_item_hash)
         .unwrap();
-    let every_display =
-        display_rows + usize::from(every.collectible_index) * COLLECTIBLE_DISPLAY_ROW_SIZE;
-    let every_collectible =
-        collectible_rows + usize::from(every.collectible_index) * COLLECTIBLE_ROW_SIZE;
+    let every_display = display_rows
+        + usize::from(every.collection.unwrap().collectible_index) * COLLECTIBLE_DISPLAY_ROW_SIZE;
+    let every_collectible = collectible_rows
+        + usize::from(every.collection.unwrap().collectible_index) * COLLECTIBLE_ROW_SIZE;
     assert_eq!(
         collectibles[every_collectible + COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET],
         COLLECTIBLE_CURATED_ACQUISITION_FLAG
@@ -547,7 +547,8 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
         read_u32(
             &displays,
             display_rows
-                + usize::from(second.collectible_index) * COLLECTIBLE_DISPLAY_ROW_SIZE
+                + usize::from(second.collection.unwrap().collectible_index)
+                    * COLLECTIBLE_DISPLAY_ROW_SIZE
                 + COLLECTIBLE_DISPLAY_ICON_INDEX_OFFSET,
         )
         .unwrap(),

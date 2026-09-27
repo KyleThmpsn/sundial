@@ -101,6 +101,10 @@ fn open_from_plug(
     click(ctx, app, 900.0, label(&output, trigger, false).center());
     let output = settle(ctx, app, 900.0);
     let action = label(&output, "Use Custom Perk…", true);
+    assert!(
+        action.bottom() < label(&output, "None", true).top(),
+        "Custom perks lead the picker, above the plug list"
+    );
     if expect_native_reset {
         let donor = app.current_donor().unwrap();
         let native_default = donor.sockets[0].native_default.unwrap();
@@ -109,20 +113,8 @@ fn open_from_plug(
             .as_ref()
             .unwrap()
             .plug_label(native_default, true);
-        let reset = label(
-            &output,
-            &format!("Reset to Native Default: {native_label}"),
-            false,
-        );
-        assert!(
-            action.bottom() < reset.top(),
-            "Custom perks belong immediately above the native reset action"
-        );
-    } else {
-        assert!(
-            action.top() > label(&output, "None", true).bottom(),
-            "Custom perks belong at the picker footer when native reset is unavailable"
-        );
+        let reset = label(&output, &format!("Reset to Default: {native_label}"), false);
+        assert!(action.bottom() < reset.top());
     }
     click(ctx, app, 900.0, action.center());
     let output = settle(ctx, app, 900.0);
@@ -160,7 +152,7 @@ fn open_context_workbench(
         ctx,
         app,
         900.0,
-        label(&output, "Open in Custom Perk Workbench", false).center(),
+        label(&output, "Edit as Custom Perk…", false).center(),
     );
     let output = settle(ctx, app, 900.0);
     label(&output, "Custom Perk Workbench", false);

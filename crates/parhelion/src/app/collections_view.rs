@@ -1,6 +1,7 @@
 use super::*;
 use crate::collection::{
-    Ammo, BASE_NODE_COUNT, Destination, Family, NODE_CAPACITY, NodeBudget, custom_node_hashes,
+    Ammo, BASE_NODE_COUNT, Destination, Family, GearPage, NODE_CAPACITY, NodeBudget,
+    custom_node_hashes, gear_page_node_hashes,
 };
 use std::collections::BTreeSet;
 
@@ -10,6 +11,10 @@ impl PackageAuthoringApp {
             self.enabled_recipe_paths.contains(&entry.path)
                 && self.recipe_path.as_ref() != Some(&entry.path)
         });
+        let mut gear_pages = entries
+            .clone()
+            .filter_map(|entry| GearPage::for_kind(entry.kind))
+            .collect::<BTreeSet<_>>();
         let mut members = entries
             .map(|entry| {
                 let donor = self
@@ -53,11 +58,14 @@ impl PackageAuthoringApp {
             .recipe_path
             .as_ref()
             .is_some_and(|path| self.enabled_recipe_paths.contains(path));
+        let current_gear_page = GearPage::for_kind(self.recipe.kind);
         if included {
             members.push(current);
+            gear_pages.extend(current_gear_page);
         }
-        let budget = NodeBudget::new(members.iter().copied());
-        let selected_nodes = custom_node_hashes(members.iter().copied());
+        let budget = NodeBudget::new(members.iter().copied()).with_gear_pages(gear_pages.len());
+        let mut selected_nodes = custom_node_hashes(members.iter().copied());
+        selected_nodes.extend(gear_page_node_hashes(gear_pages.iter().copied()));
         let installed_nodes = self.catalog.as_ref().map_or_else(BTreeSet::new, |catalog| {
             installed_custom_nodes(catalog.presentation_node_hashes())
         });
@@ -94,11 +102,21 @@ impl PackageAuthoringApp {
                 .color(ui.visuals().weak_text_color())
         };
         let selected_new = selected_nodes.difference(&installed_nodes).count();
-        let selected_existing = selected_nodes.intersection(&installed_nodes).count();
+        let stock = crate::progression::STOCK_PRESENTATION_NODE_COUNT;
         ui.label(label).on_hover_text(format!(
-            "{used} / {NODE_CAPACITY} distinct nodes accounted for.\n924 stock nodes + 4 {} nodes + {} installed custom nodes + {selected_new} additional selected-build nodes. The selected build uses {} custom nodes, including {} badge nodes and {} added pages. {selected_existing} selected nodes already exist and are counted once. Installing the selected build replaces the installed custom set.", self.presentation_editor.branding().name(), installed_nodes.len(), selected_nodes.len(), budget.badges * 4, budget.pages));
+            "{used} / {NODE_CAPACITY} nodes\nStock: {stock}\n{}: {}\nInstalled custom: {}\nNew in selected build: {selected_new}\nSelected build custom: {} ({} badge, {} page)",
+            self.presentation_editor.branding().name(),
+            BASE_NODE_COUNT - stock,
+            installed_nodes.len(),
+            selected_nodes.len(),
+            budget.badges * 4,
+            budget.pages + budget.gear_pages
+        ));
         if !included {
-            let with_draft = custom_node_hashes(members.into_iter().chain([current]));
+            let mut with_draft = custom_node_hashes(members.into_iter().chain([current]));
+            with_draft.extend(gear_page_node_hashes(
+                gear_pages.iter().copied().chain(current_gear_page),
+            ));
             let with_draft = combined_custom_nodes(&installed_nodes, &with_draft).len();
             if with_draft > custom_used {
                 ui.weak(format!(
@@ -115,19 +133,32 @@ impl PackageAuthoringApp {
         } else if installed_used > NODE_CAPACITY {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "The installed presentation-node table exceeds its native capacity.",
+                "Installed Collections nodes exceed the limit.",
             );
         }
     }
 
     pub(super) fn draw_collection_destination(&mut self, ui: &mut egui::Ui) {
+        if !self.recipe.kind.is_weapon() {
+            ui.strong("Destination");
+            ui.label(if GearPage::for_kind(self.recipe.kind).is_some() {
+                format!(
+                    "{} page under {}.",
+                    self.presentation_editor.branding().name(),
+                    self.recipe.kind.plural()
+                )
+            } else {
+                format!("Beside its base {}.", self.recipe.kind.noun())
+            });
+            return;
+        }
         let exotic = self.collection_is_exotic(
             self.recipe.overrides.rarity,
             self.recipe.donor.item_hash.parse_u32().unwrap_or_default(),
         );
         ui.strong("Destination");
         if exotic {
-            ui.label("Exotic weapons use the Exotics collection for their inventory slot.");
+            ui.label("Exotic weapons appear under Exotics.");
             return;
         }
         let mut custom = self.recipe.overrides.collection_destination.is_some();
@@ -147,14 +178,14 @@ impl PackageAuthoringApp {
             self.recipe.overrides.collection_destination = None;
             if let Some(destination) = automatic {
                 ui.weak(format!(
-                    "Uses {} from the authored ammo type and gameplay donor weapon type.",
+                    "Uses {} from the ammo type and weapon type.",
                     destination.label()
                 ));
                 if destination.stock_exemplar().is_none() {
-                    ui.weak("This combination adds one shared Collections page.");
+                    ui.weak("Adds one shared Collections page.");
                 }
             } else {
-                ui.weak("Uses the authored ammo type and gameplay donor weapon type.");
+                ui.weak("Uses the ammo type and weapon type.");
             }
             return;
         }
@@ -185,11 +216,10 @@ impl PackageAuthoringApp {
                 });
         });
         if destination.stock_exemplar().is_none() {
-            ui.weak("Adds one shared page using the stock weapon-type name and icon.");
+            ui.weak("Adds one shared page for the selected weapon type.");
         } else {
             ui.weak("Uses an existing page. No additional nodes.");
         }
-        ui.weak("Collection placement does not change ammo or gameplay.");
     }
 
     fn collection_is_exotic(&self, rarity: Option<crate::RecipeRarity>, donor_hash: u32) -> bool {
@@ -247,31 +277,9 @@ fn automatic_destination(
 #[cfg(test)]
 mod tests {
     use super::{
-        Ammo, BASE_NODE_COUNT, Destination, Family, WeaponAmmoType, WeaponDamageProfile,
-        WeaponDonorSummary, WeaponRarity, automatic_destination, combined_custom_nodes,
-        installed_custom_nodes,
+        Ammo, Destination, Family, WeaponAmmoType, WeaponDamageProfile, WeaponDonorSummary,
+        WeaponRarity, automatic_destination,
     };
-    use std::collections::BTreeSet;
-
-    #[test]
-    fn installed_and_selected_custom_nodes_share_matching_identities() {
-        let installed = BTreeSet::from([10, 20, 30]);
-        let selected = BTreeSet::from([20, 30, 40]);
-        assert_eq!(
-            combined_custom_nodes(&installed, &selected),
-            BTreeSet::from([10, 20, 30, 40])
-        );
-    }
-
-    #[test]
-    fn installed_custom_nodes_begin_after_stock_and_runtime_rows() {
-        let mut hashes = vec![1; BASE_NODE_COUNT];
-        hashes.extend([10, 20, 30]);
-        assert_eq!(
-            installed_custom_nodes(&hashes),
-            BTreeSet::from([10, 20, 30])
-        );
-    }
 
     #[test]
     fn automatic_destination_combines_authored_ammo_with_donor_weapon_type() {

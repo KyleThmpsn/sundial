@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 mod abilities;
+pub use abilities::stock_subclass_list_classes;
 mod ammo;
 mod damage;
 mod descriptions;
 mod inventory;
-pub(crate) use inventory::weapon_bucket_capacities;
+pub(crate) use inventory::{inventory_bucket_capacity, weapon_bucket_capacities};
 mod investment;
 mod perks;
 mod quality;
@@ -36,8 +37,6 @@ pub(crate) use perks::ItemSandboxPerk;
 pub(in crate::catalog) use perks::scan_sandbox_perk_catalog;
 pub(crate) use quality::PowerCapDefinition;
 pub(in crate::catalog) use quality::{item_power_cap, scan_power_cap_definitions};
-#[cfg(test)]
-pub(in crate::catalog) use scan::attach_item_objective_owners;
 pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
@@ -45,9 +44,7 @@ pub(in crate::catalog) use sockets::{
     intern_socket_pools, sort_plug_options,
 };
 #[cfg(test)]
-pub(in crate::catalog) use sockets::{
-    infer_socket_label, infer_socket_plug_types, socket_label_for_plug,
-};
+pub(in crate::catalog) use sockets::{SocketOptionSource, SocketOptionSourceKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ItemDef {
@@ -63,6 +60,8 @@ pub(crate) struct ItemDef {
 }
 
 const WEAPON_ORNAMENT_TYPE_NAME: &str = "Weapon Ornament";
+/// The inventory bucket of subclasses, stock and authored.
+pub(crate) const SUBCLASS_BUCKET_HASH: u64 = 3_284_755_031;
 
 /// Weapon ornaments occupy weapon buckets but do not contain an authorable weapon definition.
 pub(crate) fn is_authorable_weapon_item(item: &ItemDef) -> bool {
@@ -116,17 +115,6 @@ impl ItemRarity {
             Self::Rare => "Rare",
             Self::Legendary => "Legendary",
             Self::Exotic => "Exotic",
-        }
-    }
-
-    pub(crate) const fn package_value(self) -> Option<u8> {
-        match self {
-            Self::Unknown => None,
-            Self::Common => Some(1),
-            Self::Uncommon => Some(2),
-            Self::Rare => Some(3),
-            Self::Legendary => Some(4),
-            Self::Exotic => Some(5),
         }
     }
 }

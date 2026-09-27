@@ -254,7 +254,11 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
     sandbox_perk_definition_template: &[u8; ITEM_SANDBOX_PERK_ROW_SIZE],
     sandbox_perk_string_template: &[u8],
 ) -> AuthoringResult<()> {
-    if overrides.inventory_slot.is_none()
+    let donor_slot = weapon_inventory_slot(data)?;
+    let authored_slot = overrides.inventory_slot.unwrap_or(donor_slot);
+    // A donor's equipment slot can disagree with its bucket (stock Trust). Author both.
+    let writes_slot = weapon_equipment_slot(data)? != authored_slot || authored_slot != donor_slot;
+    if !writes_slot
         && overrides.modern_damage_type.is_none()
         && overrides.base_sandbox_perks.is_none()
     {
@@ -262,12 +266,6 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
     }
     validate_weapon_sandbox_perk_parallelism(data, strings, sandbox_perk_string_template)?;
 
-    let donor_slot = weapon_inventory_slot(data)?;
-    if weapon_equipment_slot(data)? != donor_slot {
-        return Err(invalid(
-            "Weapon inventory bucket and equipment slot disagree",
-        ));
-    }
     let donor_carrier = weapon_damage_carrier(data)?;
 
     if let Some(perks) = &overrides.base_sandbox_perks {
@@ -281,7 +279,6 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
     }
 
     let original_perks = weapon_sandbox_perks(data)?;
-    let authored_slot = overrides.inventory_slot.unwrap_or(donor_slot);
     let base_damage = weapon_damage_descriptor(data)?;
     let requested_damage = overrides
         .modern_damage_type
@@ -293,8 +290,8 @@ pub(in crate::weapon) fn apply_weapon_slot_and_damage_overrides(
             }
         });
 
-    if let Some(inventory_slot) = overrides.inventory_slot {
-        set_weapon_inventory_slot(data, inventory_slot)?;
+    if writes_slot {
+        set_weapon_inventory_slot(data, authored_slot)?;
     }
     if let Some(damage_type) = overrides.modern_damage_type {
         // Damage topology follows the gameplay definition, not its inventory placement.

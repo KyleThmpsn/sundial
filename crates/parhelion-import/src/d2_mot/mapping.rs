@@ -37,6 +37,31 @@ const STAGES: [&str; 24] = [
     "WorldForces",
     "ComputeSkinning",
 ];
+/// The draw record flag bits native models use. Across all 21,287 native and 42,338 modern
+/// dynamic models, every native flag word stays within these bits and each shared bit
+/// selects the same draw stages in both eras. Modern adds 0x4000 to most parts and rarely
+/// 0x8000, 0x10000 or 0x20000, which native records cannot express.
+const NATIVE_FLAGS: u32 = 0x23FF;
+
+/// A source part's flag word in native terms. The flags decide which views draw a part, so
+/// they follow the source part rather than the native part that lends its material.
+fn native_flags(source: u32) -> Result<u16> {
+    Ok(u16::try_from(source & NATIVE_FLAGS)?)
+}
+
+/// Emit the native draw layout from the source part. Material templates do not
+/// supply geometry visibility, dye selection or detail policy.
+pub(crate) fn draw_record(source: &[u8]) -> Result<Vec<u8>> {
+    ensure!(source.len() == 36, "source draw record size differs");
+    let mut record = vec![0; 32];
+    record[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    record[4..24].copy_from_slice(&source[4..24]);
+    let flags = native_flags(u32::from_le_bytes(source[24..28].try_into()?))?;
+    record[24..26].copy_from_slice(&flags.to_le_bytes());
+    record[26..30].copy_from_slice(&source[28..32]);
+    Ok(record)
+}
+
 fn raw(root: &Path, tag: u32) -> Result<Payload> {
     Ok(Payload(fs::read(
         root.join("raw").join(format!("{tag:08X}.bin")),
@@ -331,6 +356,8 @@ pub(crate) fn body_host(template: &Value) -> Option<Value> {
             None => placement["single"] == 0,
         }
     };
+    // Selector 0 holds the part the others mount on, including on modular donors whose
+    // markers sit in a barrel. Those marker-bearing parts are kept beside the import.
     let body = parents
         .iter()
         .find(|p| placed(p, Some(0)))
@@ -621,16 +648,12 @@ fn map_stages(
                 let donor_slots = texture_slots(&mat, false)?;
                 materials.insert(symbol.clone(),json!({"source_material":format!("{source_tag:08X}"),"native_donor":format!("{donor:08X}"),"payload":format!("{symbol}.bin"),"class":"808071E8","stage":STAGES[stage],"bind_mode":bind,"source_texture_slots":source_slots,"native_texture_slots":donor_slots,"shader_translation":false,"appearance":"native donor approximation","texture_binding_status":"source plates and fixed textures must be bound before installation","native_dependency_policy":"retain donor references in private clone; never mutate stock material"}));
             }
-            let mut record = native_model.0[np..np + 32].to_vec();
-            // Material and buffers stay null until the private allocator resolves symbols.
-            put(&mut record, 0, &u32::MAX.to_le_bytes())?;
-            put(&mut record, 4, &modern.bytes::<20>(part + 4)?)?;
-            // Use the native donor's flag semantics; dye/LOD fields moved by two bytes.
-            put(&mut record, 26, &modern.bytes::<4>(part + 28)?)?;
+            let record = draw_record(&modern.bytes::<36>(part)?)?;
+            let flags = native_flags(modern.u32(part + 24)?)?;
             let index = records.len();
             records.push(record);
             relocations.push(json!({"offset":0,"part_index":index,"symbol":symbol}));
-            assignments.push(json!({"source_part":(part-modern_parts[0])/36,"native_part":index,"stage":STAGES[stage],"source_material":format!("{source_tag:08X}"),"native_donor":format!("{donor:08X}"),"symbol":symbol,"source_flags":modern.u32(part+24)?,"native_flags":native_model.u16(np+24)?,"lod":modern.u8(part+29)?}));
+            assignments.push(json!({"source_part":(part-modern_parts[0])/36,"native_part":index,"stage":STAGES[stage],"source_material":format!("{source_tag:08X}"),"native_donor":format!("{donor:08X}"),"symbol":symbol,"source_flags":modern.u32(part+24)?,"native_flags":flags,"carrier_flags":native_model.u16(np+24)?,"lod":modern.u8(part+29)?}));
         }
         native_ranges.push(u16::try_from(records.len())?);
         if mr[stage] < mr[stage + 1] {
@@ -664,6 +687,8 @@ fn map_stages(
     if let Some(host) = host_header(native, template, native_tag)? {
         put(&mut payload, 0x30, &host.bytes::<32>(0x30)?)?;
     }
+    // Either header came from a model with its own record count.
+    crate::d2_mot::audit::draws::declare_draw_indices(&mut payload, records.len())?;
     put(
         &mut payload,
         0,

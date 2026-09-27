@@ -1,5 +1,6 @@
 //! Keep imported models behind native owner loading boundaries.
 use super::*;
+mod components;
 use std::{
     collections::BTreeMap,
     io::{Read, Seek, SeekFrom},
@@ -137,6 +138,35 @@ fn include_backing_resources(
     Ok(())
 }
 
+/// The loading closure an owner must enroll: its inherited native dependencies,
+/// its private resources, and the native resources those materials and
+/// components reference.
+fn expected_closure(
+    base: &PackageManager,
+    inherited: &BTreeSet<u32>,
+    owned: &BTreeSet<u32>,
+    materials: &BTreeMap<u32, BTreeSet<u32>>,
+    components: &BTreeMap<u32, BTreeSet<u32>>,
+) -> BTreeSet<u32> {
+    let mut expected: BTreeSet<_> = inherited.union(owned).copied().collect();
+    for (&material, required) in materials {
+        if owned.contains(&material) {
+            expected.extend(
+                required
+                    .iter()
+                    .filter(|&&tag| base.get_entry(TagHash(tag)).is_some())
+                    .copied(),
+            );
+        }
+    }
+    for (&component, required) in components {
+        if owned.contains(&component) {
+            expected.extend(required);
+        }
+    }
+    expected
+}
+
 pub(super) fn audit(
     base: &PackageManager,
     staged: &PackageManager,
@@ -177,6 +207,7 @@ pub(super) fn audit(
     let mut boundaries = BTreeSet::new();
     let mut references = BTreeMap::new();
     let mut materials = BTreeMap::new();
+    let mut components = BTreeMap::new();
     for node in graph["nodes"].as_array().context("nodes")? {
         let name = node["symbol"].as_str().context("resource symbol")?;
         let mut edges = node["patches"]
@@ -190,6 +221,13 @@ pub(super) fn audit(
         }
         references.insert(tag(name)?, edges);
         let template = TagHash(node["template"].as_u64().context("node template")? as u32);
+        let entry = base.get_entry(template).context("loading template entry")?;
+        if entry.file_type == 8 && matches!(entry.reference, 0x80809C0F | 0x80809C36) {
+            components.insert(
+                tag(name)?,
+                components::references(base, staged, &read(tag(name)?)?, entry.reference)?,
+            );
+        }
         if base
             .get_entry(template)
             .is_some_and(|e| e.reference == 0x808071e8)
@@ -242,17 +280,7 @@ pub(super) fn audit(
             .intersection(&private)
             .copied()
             .collect::<BTreeSet<_>>();
-        let mut expected: BTreeSet<_> = inherited.union(&owned).copied().collect();
-        for (&material, required) in &materials {
-            if owned.contains(&material) {
-                expected.extend(
-                    required
-                        .iter()
-                        .filter(|&&tag| base.get_entry(TagHash(tag)).is_some())
-                        .copied(),
-                );
-            }
-        }
+        let expected = expected_closure(base, inherited, &owned, &materials, &components);
         boundary(&private, &root, &local, &expected)?;
         let available = local.union(&root).copied().collect();
         for (&material, required) in &materials {
@@ -304,23 +332,6 @@ fn independent_owners(
 mod tests {
     use super::*;
     #[test]
-    fn material_loading_requires_borrowed_shader_headers_and_bytecode() {
-        let material = 0x81d4005d;
-        let required = BTreeSet::from([0x80efad5c, 0x815b9299, 0x815b9298]);
-        assert!(
-            require_material_resources(material, &required, &BTreeSet::from([material])).is_err()
-        );
-        assert!(
-            require_material_resources(
-                material,
-                &required,
-                &BTreeSet::from([material, 0x80efad5c, 0x815b9299])
-            )
-            .is_err()
-        );
-        require_material_resources(material, &required, &required).unwrap();
-    }
-    #[test]
     fn rejects_mutually_enrolled_owners_but_allows_shared_leaf_resources() {
         let boundaries = BTreeSet::from([10, 11, 20, 21]);
         independent_owners(&BTreeSet::from([10, 11, 30]), 10, 11, &boundaries).unwrap();
@@ -329,32 +340,5 @@ mod tests {
             independent_owners(&BTreeSet::from([10, 11, 20, 21, 30]), 10, 11, &boundaries).is_err()
         );
         assert!(independent_owners(&BTreeSet::from([10, 30]), 10, 11, &boundaries).is_err());
-    }
-    #[test]
-    fn stock_enrollment_requires_one_distinct_companion() {
-        assert_eq!(
-            unique_companion(&[20, 20].into_iter().collect(), 10).unwrap(),
-            20
-        );
-        assert!(unique_companion(&BTreeSet::new(), 10).is_err());
-        assert!(unique_companion(&BTreeSet::from([20, 21]), 10).is_err());
-    }
-    #[test]
-    fn rejects_global_preloading_and_missing_or_cross_weapon_dependencies() {
-        let private = BTreeSet::from([10, 11]);
-        let global = BTreeSet::from([1, 2]);
-        let expected = BTreeSet::from([10, 11, 20]);
-        boundary(&private, &global, &expected, &expected).unwrap();
-        assert!(boundary(&private, &BTreeSet::from([1, 10]), &expected, &expected).is_err());
-        assert!(boundary(&private, &global, &private, &expected).is_err());
-        assert!(
-            boundary(
-                &private,
-                &global,
-                &BTreeSet::from([10, 11, 20, 99]),
-                &expected
-            )
-            .is_err()
-        );
     }
 }

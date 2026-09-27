@@ -51,7 +51,7 @@ impl SundialApp {
             picker_anchor = Some(response);
         });
         ui.label(if self.document.dawn_account().is_some() {
-            "Materials credited when Dawn dismantles weapons or armor. Dawn supports up to eight material policies without rarity or gear filters."
+            "Materials credited when Dawn dismantles weapons or armor. Up to eight policies, without rarity or gear filters."
         } else {
             "Materials credited when Sunrise dismantles weapons or armor. Matching policies are added together."
         });

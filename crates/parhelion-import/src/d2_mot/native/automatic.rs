@@ -5,6 +5,39 @@ use sha2::{Digest, Sha256};
 mod decompiler;
 mod references;
 
+/// Add source optic rendering to a copied import without rebuilding its audio or animations.
+pub fn refresh_optics(prepared: &Path, graph: &Path, out: &Path) -> Result<Value> {
+    let mut progress = |message: String| eprintln!("{message}");
+    let tool = decompiler::prepare(&mut progress)?;
+    let refs = out.join("render-inputs");
+    let old_shaders = prepared.join("render-inputs/library-surfaces-01/source-shaders");
+    if old_shaders.exists() {
+        references::link_inputs(
+            &old_shaders,
+            &refs.join("library-surfaces-01/source-shaders"),
+        )?;
+    }
+    references::export(prepared, &refs, &mut progress)?;
+    // The adapter's vertex template comes from the established prepared export.
+    references::link_inputs(
+        &prepared.join("render-inputs/shaders"),
+        &refs.join("shaders"),
+    )?;
+    let source = load(&prepared.join("source/source-manifest.json"))?;
+    let native = load(&prepared.join("native/source-manifest.json"))?;
+    let bindings = out.join("source-bindings");
+    crate::d2_mot::support::export_with_progress(
+        prepared,
+        Path::new(source["packages"].as_str().context("source packages")?),
+        Path::new(native["packages"].as_str().context("native packages")?),
+        &refs,
+        &tool,
+        &bindings,
+        &mut progress,
+    )?;
+    effects::refresh_optics(prepared, graph, &refs, &bindings, out)
+}
+
 const TEMPLATES: &[(u32, &str)] = &[
     (
         0x81532FC4,

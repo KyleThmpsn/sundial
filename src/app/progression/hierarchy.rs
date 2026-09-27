@@ -198,41 +198,6 @@ pub(super) fn normalize_context_path(raw_path: &[String]) -> Vec<String> {
     }
 }
 
-#[cfg(test)]
-pub(super) fn objective_hierarchy_paths(objective: &ObjectiveDef) -> Vec<Vec<String>> {
-    let mut paths = Vec::new();
-    for owner in &objective.owners {
-        for raw_path in &owner.paths {
-            let path = raw_path
-                .iter()
-                .rev()
-                .filter_map(|component| {
-                    let component = component.trim();
-                    (!component.is_empty()).then(|| component.to_owned())
-                })
-                .collect::<Vec<_>>();
-            if !path.is_empty() && !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-    }
-    paths
-}
-
-#[cfg(test)]
-pub(super) fn definition_hierarchy_paths(definition: &UnlockDefinition) -> Vec<Vec<String>> {
-    let mut paths = Vec::new();
-    for context in meaningful_definition_contexts(definition) {
-        for raw_path in &context.paths {
-            let path = normalize_context_path(raw_path);
-            if !path.is_empty() && !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-    }
-    paths
-}
-
 pub(super) fn sort_by_optional_cached_key<T, K: Ord>(
     rows: &mut [T],
     descending: bool,

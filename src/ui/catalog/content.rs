@@ -25,8 +25,8 @@ impl View {
     fn search_hint(self) -> &'static str {
         match self {
             Self::Perks => "Search Perks, Effect Numbers, or Paths",
-            Self::Paths => "Search Paths or Source Tags",
-            Self::References => "Search Paths, Source Tags, or Target Tags",
+            Self::Paths => "Search Native Paths or Resource Tags",
+            Self::References => "Search Resource Paths or Tags",
         }
     }
 }
@@ -67,13 +67,24 @@ pub struct Browser {
     navigation: navigation::Navigation,
     /// An effect number another tab asked to show.
     pending_effect: Option<usize>,
+    pending_resource: Option<u32>,
     select: Option<u64>,
+    /// Similar Effects for one effect position.
+    similar: Option<(usize, Vec<Similar>)>,
 }
 
+/// Another effect's position, its score, its shared effect kinds and whether its kinds match.
+type Similar = (usize, usize, usize, bool);
+
 impl Browser {
-    /// Show one effect on the Perk References tab the next time it draws.
+    /// Show one effect on the Perk Effects tab the next time it draws.
     pub fn open_effect(&mut self, effect: usize) {
         self.pending_effect = Some(effect);
+    }
+
+    /// Open a resource reached from another catalog view.
+    pub fn open_resource(&mut self, tag: u32) {
+        self.pending_resource = Some(tag);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -122,6 +133,7 @@ impl Browser {
             self.view = view;
             self.source = Some((data.names.clone(), data.perks.clone(), labels));
             self.filter_query = None;
+            self.similar = None;
         }
         if view == View::Perks
             && let Some(effect) = self.pending_effect.take()
@@ -134,6 +146,9 @@ impl Browser {
             self.navigation.clear();
             self.queries[view as usize].clear();
             self.select = Some(position as u64);
+        }
+        if let Some(tag) = self.pending_resource.take() {
+            self.navigation.open(navigation::Destination::Resource(tag));
         }
         if self
             .navigation
@@ -223,6 +238,7 @@ impl Browser {
                     &self.names,
                     sources,
                     catalog,
+                    &mut self.similar,
                 )
             },
         );
@@ -330,6 +346,7 @@ fn details(
     effect_names: &[String],
     sources: &PerkSources,
     catalog: Option<&InvestmentCatalog>,
+    similar: &mut Option<(usize, Vec<Similar>)>,
 ) -> Option<Outcome> {
     let mut destination = None;
     let mut outcome = None;
@@ -343,6 +360,7 @@ fn details(
                 effect_names,
                 sources,
                 catalog,
+                similar,
                 &mut destination,
             )?;
         }
@@ -355,7 +373,6 @@ fn details(
             if let Some(path) = data.names.paths.get(index) {
                 assets::draw_path(ui, &path.path);
                 destination = reference::source(ui, names, path.source);
-                ui.label("This resource stores the path text. TFT References shows links that resolve to an asset.");
                 egui::CollapsingHeader::new("Technical Details").show(ui, |ui| {
                     ui.label(format!("Source Tag: 0x{:08X}", path.source));
                     ui.label(format!(
@@ -423,6 +440,7 @@ fn perk_details(
     effect_names: &[String],
     sources: &PerkSources,
     catalog: Option<&InvestmentCatalog>,
+    similar: &mut Option<(usize, Vec<Similar>)>,
     destination: &mut Option<navigation::Destination>,
 ) -> Option<Option<Outcome>> {
     let mut outcome = None;
@@ -471,10 +489,12 @@ fn perk_details(
             }
         }
         None => {
-            ui.weak(perk.error.as_deref().unwrap_or("Not decoded."));
+            if perk.error.is_none() {
+                ui.weak("Not Decoded");
+            }
         }
     }
-    if let Some(key) = similar_effects(ui, data, index, effect_names, sources) {
+    if let Some(key) = similar_effects(ui, data, index, effect_names, sources, similar) {
         outcome = Some(Outcome::Select(key));
     }
     ui.add_space(6.0);
@@ -525,7 +545,7 @@ fn perk_details(
 /// Which items and plugs carry the effect, on one line.
 fn origin_line(ui: &mut egui::Ui, origins: &[crate::investment::PerkSource]) {
     if origins.is_empty() {
-        ui.weak("No named item or plug references this effect.");
+        ui.weak("No Source Items or Plugs");
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -586,7 +606,7 @@ fn program_lines(ui: &mut egui::Ui, program: &Program) {
     }
 }
 
-/// One small button per kind, opening the Kinds page for it.
+/// One small button per kind, opening it in Behavior Kinds.
 fn kind_chips(ui: &mut egui::Ui, family: Family, kinds: &[u8]) -> Option<Jump> {
     if kinds.is_empty() {
         return None;
@@ -602,7 +622,10 @@ fn kind_chips(ui: &mut egui::Ui, family: Family, kinds: &[u8]) -> Option<Jump> {
                 .map_or_else(|| format!("Kind {kind}"), |node| node.name.to_owned());
             if ui
                 .add(egui::Button::new(egui::RichText::new(name).small()).small())
-                .on_hover_text(format!("{} kind {kind} · Open in Kinds", family.label()))
+                .on_hover_text(format!(
+                    "{} Kind {kind} · Open in Behavior Kinds",
+                    family.label().trim_end_matches('s')
+                ))
                 .clicked()
             {
                 jump = Some(Jump::Kind(family, kind));
@@ -619,52 +642,22 @@ fn similar_effects(
     position: usize,
     names: &[String],
     sources: &PerkSources,
+    cache: &mut Option<(usize, Vec<Similar>)>,
 ) -> Option<u64> {
     let perk = data.perks.perks.get(position)?;
     let behavior = perk.behavior.as_ref()?;
     if behavior.effect_kinds.is_empty() {
         return None;
     }
-    let mut similar = data
-        .perks
-        .perks
-        .iter()
-        .enumerate()
-        .filter(|(other, _)| *other != position)
-        .filter_map(|(other, candidate)| {
-            let theirs = candidate.behavior.as_ref()?;
-            let effects = theirs
-                .effect_kinds
-                .iter()
-                .filter(|kind| behavior.effect_kinds.contains(kind))
-                .count();
-            if effects == 0 {
-                return None;
-            }
-            let conditions = theirs
-                .condition_kinds
-                .iter()
-                .filter(|kind| behavior.condition_kinds.contains(kind))
-                .count();
-            let exact = theirs.effect_kinds == behavior.effect_kinds
-                && theirs.condition_kinds == behavior.condition_kinds;
-            let extra = theirs.effect_kinds.len() - effects;
-            let score =
-                (usize::from(exact) * 1000 + effects * 10 + conditions * 2).saturating_sub(extra);
-            Some((other, score, effects, exact))
-        })
-        .collect::<Vec<_>>();
+    if cache.as_ref().is_none_or(|(cached, _)| *cached != position) {
+        *cache = Some((position, similar_to(data, position, behavior, names)));
+    }
+    let similar = cache
+        .as_ref()
+        .map_or(&[][..], |(_, similar)| similar.as_slice());
     if similar.is_empty() {
         return None;
     }
-    similar.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| {
-            names
-                .get(a.0)
-                .map(|n| n.to_lowercase())
-                .cmp(&names.get(b.0).map(|n| n.to_lowercase()))
-        })
-    });
     let exact = similar.iter().filter(|row| row.3).count();
     ui.add_space(6.0);
     ui.strong(if exact > 0 {
@@ -709,4 +702,49 @@ fn similar_effects(
             }
         });
     picked
+}
+
+/// Every other effect sharing an effect kind with `behavior`, closest first.
+fn similar_to(
+    data: &Catalog,
+    position: usize,
+    behavior: &dependencies::Behavior,
+    names: &[String],
+) -> Vec<Similar> {
+    let mut similar = data
+        .perks
+        .perks
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != position)
+        .filter_map(|(other, candidate)| {
+            let theirs = candidate.behavior.as_ref()?;
+            let effects = theirs
+                .effect_kinds
+                .iter()
+                .filter(|kind| behavior.effect_kinds.contains(kind))
+                .count();
+            if effects == 0 {
+                return None;
+            }
+            let conditions = theirs
+                .condition_kinds
+                .iter()
+                .filter(|kind| behavior.condition_kinds.contains(kind))
+                .count();
+            let exact = theirs.effect_kinds == behavior.effect_kinds
+                && theirs.condition_kinds == behavior.condition_kinds;
+            let extra = theirs.effect_kinds.len() - effects;
+            let score =
+                (usize::from(exact) * 1000 + effects * 10 + conditions * 2).saturating_sub(extra);
+            Some((other, score, effects, exact))
+        })
+        .collect::<Vec<_>>();
+    similar.sort_by_cached_key(|row| {
+        (
+            std::cmp::Reverse(row.1),
+            names.get(row.0).map(|name| name.to_lowercase()),
+        )
+    });
+    similar
 }

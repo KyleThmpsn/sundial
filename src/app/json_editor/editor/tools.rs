@@ -150,9 +150,7 @@ impl JsonEditorState {
             return;
         };
         if document.get("version").is_none() || document.get("version") != defaults.get("version") {
-            ui.label(
-                "Setting suggestions require the same version as your installed Sunrise defaults.",
-            );
+            ui.label("Suggestions need the same version as your Sunrise defaults.");
             return;
         }
         let Some(current) = document
@@ -179,7 +177,7 @@ impl JsonEditorState {
             ui.text_edit_singleline(&mut self.completion_filter)
                 .labelled_by(label.id);
         });
-        ui.small("Suggestions use your installed Sunrise defaults. Existing values are preserved.");
+        ui.small("From your Sunrise defaults. Existing values are kept.");
         let mut chosen = None;
         ui.horizontal_wrapped(|ui| {
             for (key, value) in suggestions
@@ -223,15 +221,27 @@ impl JsonEditorState {
         }
         ui.horizontal_wrapped(|ui| {
             let label = ui.label("Replace With");
-            let field = ui.add(egui::TextEdit::singleline(&mut self.replacement).desired_width(220.0)).labelled_by(label.id);
-            if std::mem::take(&mut self.focus_replacement) { field.request_focus(); }
-            let selected = self.current_match.and_then(|index| matches.get(index)).copied();
-            let one = ui.add_enabled(selected.is_some(), egui::Button::new("Replace Selected")).clicked();
-            let all = ui.add_enabled(!matches.is_empty(), egui::Button::new("Replace All"))
-                .on_hover_text("Literal replacement throughout the full JSON, including collapsed content. Search ignores ASCII case.").clicked();
+            let field = ui
+                .add(egui::TextEdit::singleline(&mut self.replacement).desired_width(220.0))
+                .labelled_by(label.id);
+            if std::mem::take(&mut self.focus_replacement) {
+                field.request_focus();
+            }
+            let selected = self
+                .current_match
+                .and_then(|index| matches.get(index))
+                .copied();
+            let one = ui
+                .add_enabled(selected.is_some(), egui::Button::new("Replace Selected"))
+                .clicked();
+            let all = ui
+                .add_enabled(!matches.is_empty(), egui::Button::new("Replace All"))
+                .on_hover_text("Replaces every match, including collapsed content. Ignores case.")
+                .clicked();
             if one || all {
                 let ranges = if all { matches } else { selected.as_slice() };
-                let updated = super::super::operations::replace_ranges(text, ranges, &self.replacement);
+                let updated =
+                    super::super::operations::replace_ranges(text, ranges, &self.replacement);
                 self.commit_edit(text, updated);
                 self.current_match = None;
             }

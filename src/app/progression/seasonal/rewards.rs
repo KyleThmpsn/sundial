@@ -41,13 +41,15 @@ pub(in crate::app) fn draw(
         .id()
         .with(("reward_filter", progression.definition_index));
     let mut filter = ui.data_mut(|data| data.get_temp::<Filter>(id).unwrap_or_default());
-    ui.label(if document.is_some_and(|value| value["_native_progression"]["runtime"] == "dawn") {
-        "Dawn claim flags are shown from player-state.db. Changing a flag does not deliver an item. Claim Season Pass rewards in game."
-    } else if season {
-        "Claim flags record reward delivery. Changing a flag does not grant an item. Rank eligibility checks XP only. Claim in Sunrise to apply its delivery, class, and inventory-space checks."
-    } else {
-        "Claim references and native bank values are shown here. A flag edit does not grant the linked item."
-    });
+    ui.label(
+        if document.is_some_and(|value| value["_native_progression"]["runtime"] == "dawn") {
+            "Changing a flag does not deliver an item. Claim Season Pass rewards in game."
+        } else if season {
+            "Changing a claim flag does not grant an item. Claim in Sunrise to deliver it."
+        } else {
+            "A flag edit does not grant the linked item."
+        },
+    );
     ui.horizontal_wrapped(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut filter.query)
@@ -194,7 +196,7 @@ fn draw_claim_flag(
         ui.weak(flag.compact_slot.map_or_else(|| "No Native Slot".into(), |slot| format!("Bank {} · Slot {slot}", flag.bank())));
         if let Some(value) = snapshot.and_then(|snapshot| snapshot.flag_overrides.get(&usize::from(index))) {
             ui.colored_label(ui.visuals().warn_fg_color, format!("Override {value}"))
-                .on_hover_text("Sunrise checks the native account flag for a season-pass claim. This override is a separate client condition input.");
+                .on_hover_text("Sunrise checks the account flag for claims. This override only affects client conditions.");
         }
     });
 }
@@ -205,10 +207,23 @@ fn draw_grant(ui: &mut egui::Ui, catalog: &Catalog, grant: Option<&RewardGrant>)
         return;
     };
     let help = match grant {
-        RewardGrant::ClassPackage(items) => format!("Sunrise selects the active character's class items from this package:\n{}", items.iter().map(|&hash| catalog.package_item_name(hash).map_or_else(|| format!("{hash:08X}"), str::to_owned)).collect::<Vec<_>>().join("\n")),
-        RewardGrant::DestinationResources => "Sunrise grants its nine destination-resource stacks at 50 units each.".into(),
-        RewardGrant::LegendaryEngram | RewardGrant::ExoticEngram => "Sunrise decrypts this reward into an item from its installed reward pool.".into(),
-        RewardGrant::Item => "Sunrise grants the stated item and quantity, including its normal capacity checks and seasonal armor handling.".into(),
+        RewardGrant::ClassPackage(items) => format!(
+            "Sunrise selects the active character's class items from this package:\n{}",
+            items
+                .iter()
+                .map(|&hash| catalog
+                    .package_item_name(hash)
+                    .map_or_else(|| format!("{hash:08X}"), str::to_owned))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+        RewardGrant::DestinationResources => {
+            "Sunrise grants its nine destination-resource stacks at 50 units each.".into()
+        }
+        RewardGrant::LegendaryEngram | RewardGrant::ExoticEngram => {
+            "Sunrise decrypts this reward into an item from its installed reward pool.".into()
+        }
+        RewardGrant::Item => "Sunrise grants this item and quantity with its normal checks.".into(),
     };
     ui.label(grant.label()).on_hover_text(help);
 }

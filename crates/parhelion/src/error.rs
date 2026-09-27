@@ -8,6 +8,12 @@ pub enum AuthoringError {
         context: String,
         source: Box<AuthoringError>,
     },
+    /// Context naming the recipe the error arose in, so the app can point at that recipe.
+    Recipe {
+        namespace: String,
+        context: String,
+        source: Box<AuthoringError>,
+    },
     Io {
         operation: &'static str,
         path: PathBuf,
@@ -26,6 +32,30 @@ impl AuthoringError {
         }
     }
 
+    pub(crate) fn in_recipe(
+        self,
+        namespace: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Self {
+        Self::Recipe {
+            namespace: namespace.into(),
+            context: context.into(),
+            source: Box::new(self),
+        }
+    }
+
+    /// The namespace of the recipe this error arose in, when one recipe caused it.
+    pub(crate) fn recipe_namespace(&self) -> Option<&str> {
+        match self {
+            Self::Recipe { namespace, .. } => Some(namespace),
+            Self::Context { source, .. } => source.recipe_namespace(),
+            Self::Io { .. }
+            | Self::InvalidInput(_)
+            | Self::InvalidPackage(_)
+            | Self::Validation(_) => None,
+        }
+    }
+
     pub(crate) fn io(operation: &'static str, path: impl Into<PathBuf>, source: io::Error) -> Self {
         Self::Io {
             operation,
@@ -38,10 +68,18 @@ impl AuthoringError {
 impl fmt::Display for AuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Context { context, source } if formatter.alternate() => {
+            Self::Context { context, source }
+            | Self::Recipe {
+                context, source, ..
+            } if formatter.alternate() => {
                 write!(formatter, "{context}\n{source:#}")
             }
-            Self::Context { context, source } => write!(formatter, "{context}: {source}"),
+            Self::Context { context, source }
+            | Self::Recipe {
+                context, source, ..
+            } => {
+                write!(formatter, "{context}: {source}")
+            }
             Self::Io {
                 operation,
                 path,
@@ -61,7 +99,7 @@ impl fmt::Display for AuthoringError {
 impl std::error::Error for AuthoringError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Context { source, .. } => Some(source.as_ref()),
+            Self::Context { source, .. } | Self::Recipe { source, .. } => Some(source.as_ref()),
             Self::Io { source, .. } => Some(source),
             Self::InvalidInput(_) | Self::InvalidPackage(_) | Self::Validation(_) => None,
         }

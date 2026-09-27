@@ -18,10 +18,6 @@ pub struct Record {
 
 #[cfg(test)]
 mod decompile_coverage;
-#[cfg(test)]
-mod field_map;
-#[cfg(test)]
-mod key_harvest;
 
 type Encoded = (
     u32,

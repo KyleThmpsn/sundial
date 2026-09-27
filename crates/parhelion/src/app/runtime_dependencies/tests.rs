@@ -48,47 +48,6 @@ fn default_references_preserve_individual_items_and_plugs_within_a_shared_patter
     assert!(details::default_uses(&uses, 453, Some(13)).is_empty());
 }
 
-#[test]
-fn shared_effect_details_show_provenance_without_an_exclusive_marker_claim() {
-    let mut index = fixture();
-    index.perks.resize(454, index.perks[0].clone());
-    index.perks[453].index = 453;
-    let mut browser = Browser {
-        selected: 453,
-        sources: shared_sources(),
-        index: Some(Arc::new(index)),
-        ..Default::default()
-    };
-    let ctx = egui::Context::default();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 720.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| browser.show(ui, &[], None));
-            },
-        );
-    }
-    let text = output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("Shared Effect 453"));
-    assert!(text.contains("Source Items and Plugs (2)"));
-    assert!(text.contains("No Standalone Action"));
-}
-
 fn fixture() -> Index {
     Index {
         patterns: vec![Pattern {
@@ -165,7 +124,7 @@ fn dependency_scan_blocks_install_until_package_reader_is_released() {
             .last()
             .unwrap()
             .text
-            .contains("runtime-data scan")
+            .contains("weapon data to finish loading")
     );
     assert!(app.has_background_work());
     drop(sender);

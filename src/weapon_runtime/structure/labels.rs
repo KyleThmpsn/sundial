@@ -130,10 +130,10 @@ fn declared_fields(schema: u32) -> (usize, &'static [NativeField]) {
         0x8080_3B06 => (
             0x58,
             &[
-                (0x28, Float32, "Adjustment Value"),
+                (0x28, Float32, "Amount"),
                 (0x2C, Byte, "Operation"),
-                (0x48, Signed16, "Ability Slot"),
-                (0x4A, Signed16, "Property Input"),
+                (0x48, Signed16, "Ability"),
+                (0x4A, Signed16, "Property"),
                 (0x4C, Byte, "Component"),
             ],
         ),

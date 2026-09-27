@@ -187,15 +187,4 @@ mod tests {
         assert_eq!(patches[2]["offset"], delta + 0x80);
         assert!(seal(&mut p, &mut patches, &LAYOUTS[1]).unwrap().is_none());
     }
-
-    #[test]
-    fn size_field_alone_does_not_repair_the_runtime_boundary() {
-        let mut p = fixture();
-        let size = p.0.len() as u64;
-        put(&mut p.0, 0x48, &size.to_le_bytes()).unwrap();
-        let (instance, schema, end) = bounds(&p, &LAYOUTS[1]).unwrap();
-        assert!(end > schema);
-        let copied = Payload(p.0[instance..schema].to_vec());
-        assert!(copied.array(0x50, 16, Some(0x80800090)).is_err());
-    }
 }

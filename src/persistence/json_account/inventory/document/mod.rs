@@ -25,8 +25,7 @@ pub(crate) use schema::{
 };
 #[cfg(test)]
 pub(crate) use schema::{
-    FILTERED_DISMANTLE_REWARD_CAPACITY, INVENTORY_FLAG_TRACKED, LEGACY_PROFILE_ITEM_CAPACITY,
-    PROFILE_ITEM_CAPACITY,
+    FILTERED_DISMANTLE_REWARD_CAPACITY, LEGACY_PROFILE_ITEM_CAPACITY, PROFILE_ITEM_CAPACITY,
 };
 pub(crate) use validation::validate_document_items;
 

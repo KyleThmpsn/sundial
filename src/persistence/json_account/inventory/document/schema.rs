@@ -259,4 +259,4 @@ pub(in crate::persistence::json_account::inventory) fn read_only_schema_error(
 }
 
 #[cfg(test)]
-pub(crate) use crate::account_contract::{INVENTORY_FLAG_TRACKED, LEGACY_PROFILE_ITEM_CAPACITY};
+pub(crate) use crate::account_contract::LEGACY_PROFILE_ITEM_CAPACITY;

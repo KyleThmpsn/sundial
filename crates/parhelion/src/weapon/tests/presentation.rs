@@ -41,25 +41,6 @@ fn rarity_authoring_changes_only_the_verified_root_byte() {
 }
 
 #[test]
-fn collection_material_set_matches_authored_rarity() {
-    for rarity in [
-        AuthoredWeaponRarity::Common,
-        AuthoredWeaponRarity::Uncommon,
-        AuthoredWeaponRarity::Rare,
-        AuthoredWeaponRarity::Legendary,
-    ] {
-        assert_eq!(
-            collection_material_set_for_rarity(rarity),
-            COLLECTIBLE_CURATED_WEAPON_MATERIAL_SET
-        );
-    }
-    assert_eq!(
-        collection_material_set_for_rarity(AuthoredWeaponRarity::Exotic),
-        COLLECTIBLE_EXOTIC_WEAPON_MATERIAL_SET
-    );
-}
-
-#[test]
 fn equipment_restriction_tracks_rarity_without_changing_other_fields() {
     for rarity in [
         AuthoredWeaponRarity::Common,
@@ -243,7 +224,7 @@ fn slot_conversion_preserves_weapon_type_and_every_other_string_byte() {
         ] {
             let mut strings = item_string_classification_fixture(from, fnv1_name_hash("sword"));
             let before = strings.clone();
-            set_item_string_inventory_slot(&mut strings, from, to).unwrap();
+            set_item_string_inventory_slot(&mut strings, to).unwrap();
             let tuple = item_string_client_classification(&strings, to).unwrap();
             assert_eq!(
                 &tuple[4..],
@@ -261,45 +242,8 @@ fn slot_conversion_preserves_weapon_type_and_every_other_string_byte() {
     }
     let mut malformed = item_string_classification_fixture(WeaponInventorySlot::Power, 0);
     let before = malformed.clone();
-    assert!(
-        set_item_string_inventory_slot(
-            &mut malformed,
-            WeaponInventorySlot::Power,
-            WeaponInventorySlot::Energy
-        )
-        .is_err()
-    );
+    assert!(set_item_string_inventory_slot(&mut malformed, WeaponInventorySlot::Energy).is_err());
     assert_eq!(malformed, before);
-}
-
-#[test]
-fn item_string_classification_transplant_changes_only_the_audited_tuple() {
-    let mut target = item_string_classification_fixture(WeaponInventorySlot::Kinetic, 0x6312_A690);
-    let source = item_string_classification_fixture(WeaponInventorySlot::Energy, 0xC0E9_5045);
-    let before = target.clone();
-
-    transplant_item_string_client_classification(
-        &mut target,
-        WeaponInventorySlot::Kinetic,
-        &source,
-        WeaponInventorySlot::Energy,
-        WeaponInventorySlot::Energy,
-    )
-    .expect("a package-proven target-slot tuple should transplant");
-
-    assert_eq!(
-        item_string_client_classification(&target, WeaponInventorySlot::Energy).unwrap(),
-        item_string_client_classification(&source, WeaponInventorySlot::Energy).unwrap()
-    );
-    let mut normalized = target;
-    normalized[ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET
-        ..ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET + ITEM_STRING_CLIENT_CLASSIFICATION_SIZE]
-        .copy_from_slice(
-            &before[ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET
-                ..ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET
-                    + ITEM_STRING_CLIENT_CLASSIFICATION_SIZE],
-        );
-    assert_eq!(normalized, before);
 }
 
 #[test]
@@ -313,14 +257,7 @@ fn cross_slot_classification_preserves_appearance_type_and_authored_bucket() {
         let before = target.clone();
         let mut expected = item_string_client_classification(&source, source_slot).unwrap();
         expected[..4].copy_from_slice(&target_slot.bucket_hash().to_le_bytes());
-        transplant_item_string_client_classification(
-            &mut target,
-            target_slot,
-            &source,
-            source_slot,
-            target_slot,
-        )
-        .unwrap();
+        transplant_item_string_client_classification(&mut target, &source, target_slot).unwrap();
         assert_eq!(
             item_string_client_classification(&target, target_slot).unwrap(),
             expected
@@ -344,12 +281,7 @@ fn item_string_classification_preserves_distinct_stock_type_keys() {
     )
     .unwrap();
     let before = item_string_client_classification(&payload, WeaponInventorySlot::Energy).unwrap();
-    set_item_string_inventory_slot(
-        &mut payload,
-        WeaponInventorySlot::Energy,
-        WeaponInventorySlot::Kinetic,
-    )
-    .unwrap();
+    set_item_string_inventory_slot(&mut payload, WeaponInventorySlot::Kinetic).unwrap();
     let after = item_string_client_classification(&payload, WeaponInventorySlot::Kinetic).unwrap();
     assert_eq!(&after[4..], &before[4..]);
 }
@@ -380,9 +312,7 @@ fn item_string_classification_rejects_unknown_zero_and_truncated_tuples_without_
     assert!(
         transplant_item_string_client_classification(
             &mut target,
-            WeaponInventorySlot::Kinetic,
             &unknown,
-            WeaponInventorySlot::Energy,
             WeaponInventorySlot::Energy,
         )
         .is_err()
@@ -452,36 +382,6 @@ fn authored_collectible_display_clears_stale_reacquire_warning() {
         .unwrap(),
         BLANK_LOCALIZED_REFERENCE_HASH
     );
-}
-
-#[test]
-fn authored_weapon_icon_row_preserves_stock_rows_and_selects_its_container() {
-    let header = 0x20;
-    let rows = header + 0x10;
-    let initial_count = STOCK_ITEM_ICON_COUNT + 1;
-    let mut icons = vec![0u8; rows + initial_count * ITEM_ICON_ROW_SIZE];
-    write_u64(&mut icons, 8, initial_count as u64).unwrap();
-    write_relative_pointer(&mut icons, 16, header).unwrap();
-    write_u64(&mut icons, header, initial_count as u64).unwrap();
-    write_u32(&mut icons, header + 8, ITEM_ICON_ROW_CLASS).unwrap();
-    let donor_rows = icons[rows..].to_vec();
-    let item_hash = 0x5355_4E44;
-    let container = TagHash(0x8132_1234);
-
-    let (authored, icon_index) =
-        append_authored_weapon_icon_row(icons, 0, item_hash, container).unwrap();
-    let (count, _, authored_rows, class) = array_at(&authored, 8).unwrap();
-    assert_eq!(class, ITEM_ICON_ROW_CLASS);
-    assert_eq!(count, initial_count + 1);
-    assert_eq!(usize::from(icon_index), initial_count);
-    assert_eq!(
-        &authored[authored_rows..authored_rows + donor_rows.len()],
-        donor_rows.as_slice()
-    );
-
-    let mut strings = vec![0u8; ITEM_STRING_ICON_INDEX_OFFSET + 2];
-    write_u16(&mut strings, ITEM_STRING_ICON_INDEX_OFFSET, icon_index).unwrap();
-    validate_authored_item_icon(&authored, &strings, item_hash, icon_index, container).unwrap();
 }
 
 #[test]

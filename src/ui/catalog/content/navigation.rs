@@ -10,32 +10,59 @@ pub(super) enum Destination {
     Class(u32),
 }
 
+/// A linked resource's tag, its first reference and how many references link it.
+type Link = (u32, usize, usize);
+
 #[derive(Default)]
 pub(super) struct Navigation {
     history: Vec<Destination>,
     graph_views: BTreeMap<u32, graph::View>,
     structure: structure::Inspector,
-    incoming: BTreeMap<u32, Vec<usize>>,
-    outgoing: BTreeMap<u32, Vec<usize>>,
+    incoming: BTreeMap<u32, Vec<Link>>,
+    outgoing: BTreeMap<u32, Vec<Link>>,
     classes: BTreeMap<u32, BTreeSet<u32>>,
     types: BTreeMap<u32, BTreeSet<u32>>,
     paths: BTreeMap<u32, Vec<usize>>,
 }
 
+/// One row per linked resource, in the order it is first linked.
+fn group_links(
+    references: &[tft::Reference],
+    lists: BTreeMap<u32, Vec<usize>>,
+    incoming: bool,
+) -> BTreeMap<u32, Vec<Link>> {
+    let mut slots = std::collections::HashMap::<u32, usize>::new();
+    lists
+        .into_iter()
+        .map(|(tag, indices)| {
+            slots.clear();
+            let mut links: Vec<Link> = Vec::new();
+            for index in indices {
+                let reference = &references[index];
+                let linked = if incoming {
+                    reference.source
+                } else {
+                    reference.target
+                };
+                let slot = *slots.entry(linked).or_insert(links.len());
+                if slot == links.len() {
+                    links.push((linked, index, 0));
+                }
+                links[slot].2 += 1;
+            }
+            (tag, links)
+        })
+        .collect()
+}
+
 impl Navigation {
     pub(super) fn new(index: &tft::Index) -> Self {
         let mut navigation = Self::default();
+        let mut incoming = BTreeMap::<u32, Vec<usize>>::new();
+        let mut outgoing = BTreeMap::<u32, Vec<usize>>::new();
         for (index, reference) in index.references.iter().enumerate() {
-            navigation
-                .incoming
-                .entry(reference.target)
-                .or_default()
-                .push(index);
-            navigation
-                .outgoing
-                .entry(reference.source)
-                .or_default()
-                .push(index);
+            incoming.entry(reference.target).or_default().push(index);
+            outgoing.entry(reference.source).or_default().push(index);
             for (tag, class) in [
                 (reference.source, reference.source_class),
                 (reference.target, reference.target_class),
@@ -46,6 +73,8 @@ impl Navigation {
                 }
             }
         }
+        navigation.incoming = group_links(&index.references, incoming, true);
+        navigation.outgoing = group_links(&index.references, outgoing, false);
         for (row, path) in index.paths.iter().enumerate() {
             navigation.paths.entry(path.source).or_default().push(row);
         }
@@ -211,7 +240,9 @@ impl Navigation {
         tag: u32,
         incoming: bool,
     ) -> Option<Destination> {
-        let indices = if incoming {
+        // One row per linked resource. The same target is often linked from several offsets
+        // of one resource; the count says so instead of repeating the row.
+        let linked = if incoming {
             self.incoming.get(&tag)
         } else {
             self.outgoing.get(&tag)
@@ -222,29 +253,15 @@ impl Navigation {
         } else {
             "Referenced Assets"
         };
-        ui.strong(format!("{label} ({})", indices.len()));
-        if indices.is_empty() {
+        let total = linked.iter().map(|(_, _, count)| count).sum::<usize>();
+        ui.strong(format!("{label} ({total})"));
+        if linked.is_empty() {
             ui.label(if incoming {
-                "No incoming links were recovered."
+                "No Incoming Links"
             } else {
-                "No outgoing links were recovered."
+                "No Outgoing Links"
             });
             return None;
-        }
-        // One row per linked resource. The same target is often linked from several offsets
-        // of one resource; the count says so instead of repeating the row.
-        let mut linked: Vec<(u32, &tft::Reference, usize)> = Vec::new();
-        for &index in indices {
-            let reference = &data.names.references[index];
-            let tag = if incoming {
-                reference.source
-            } else {
-                reference.target
-            };
-            match linked.iter_mut().find(|(other, _, _)| *other == tag) {
-                Some((_, _, count)) => *count += 1,
-                None => linked.push((tag, reference, 1)),
-            }
         }
         let mut destination = None;
         let height = crate::investment::authoring_choice_row_height(ui);
@@ -254,15 +271,16 @@ impl Navigation {
             .max_height(rows * (height + ui.spacing().item_spacing.y) + 4.0)
             .auto_shrink([false, true])
             .show_rows(ui, height, linked.len(), |ui, range| {
-                for (tag, reference, count) in &linked[range] {
+                for &(tag, reference, count) in &linked[range] {
+                    let reference = &data.names.references[reference];
                     let name = if incoming {
-                        reference::resource_name(names, *tag)
+                        reference::resource_name(names, tag)
                             .unwrap_or("Unnamed Resource")
                             .to_owned()
                     } else {
                         reference.path.clone()
                     };
-                    let role = self.types.get(tag).and_then(|types| {
+                    let role = self.types.get(&tag).and_then(|types| {
                         types
                             .iter()
                             .find_map(|class| crate::weapon_runtime::native_type_name(*class))
@@ -271,11 +289,11 @@ impl Navigation {
                         || format!("0x{tag:08X}"),
                         |role| format!("{role} · 0x{tag:08X}"),
                     );
-                    if *count > 1 {
+                    if count > 1 {
                         detail.push_str(&format!(" · {count} links"));
                     }
                     if reference::resource_row(ui, &name, &detail) {
-                        destination = Some(Destination::Resource(*tag));
+                        destination = Some(Destination::Resource(tag));
                     }
                 }
             });

@@ -43,11 +43,25 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
 
 fn live(lines: &[String]) -> Components {
     let mut result = Components::new();
+    let mut conditional_depth = 0usize;
+    let mut skipped_main_close = false;
     for line in lines.iter().rev() {
+        // The suffix extends through main's closing brace, which is not a
+        // conditional block and must not keep every earlier write live.
+        if !skipped_main_close && line.trim() == "}" {
+            skipped_main_close = true;
+            continue;
+        }
+        // An assignment in either arm may not run, so it cannot kill a value
+        // needed on the other path.
+        conditional_depth += line.matches('}').count();
+        conditional_depth = conditional_depth.saturating_sub(line.matches('{').count());
         if let Some((left, right)) = assignment(line) {
             let writes = references(left);
             if left.starts_with('o') || !writes.is_disjoint(&result) {
-                result.retain(|v| !writes.contains(v));
+                if conditional_depth == 0 {
+                    result.retain(|v| !writes.contains(v));
+                }
                 result.extend(references(right));
             }
         } else {
@@ -78,9 +92,13 @@ fn replace_region(
         .filter_map(|l| assignment(l))
         .flat_map(|(left, _)| references(left))
         .collect::<Components>();
+    let lost = written
+        .intersection(&needed)
+        .filter(|v| !provided.contains(*v))
+        .collect::<Vec<_>>();
     ensure!(
-        written.intersection(&needed).all(|v| provided.contains(v)),
-        "forward-lighting region has additional live outputs"
+        lost.is_empty(),
+        "forward-lighting region has additional live outputs: {lost:?}"
     );
     lines.splice(start..end, replacement);
     Ok(())
@@ -212,20 +230,26 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
     }
     irradiance(&mut lines)?;
     let mut result = lines.join("\n");
-    // Only straight-line equations and early discard are accepted by the
-    // component-liveness proof above. The clipmap branch has been replaced.
+    // The replacement must be straight-line. Material branches after the
+    // replacement are valid, with conditional writes handled by live().
     let body = result
         .split_once("void main(")
         .context("lighting shader entry")?
         .1;
+    let lighting_end = body
+        .lines()
+        .position(|line| line.contains("t31.SampleLevel("))
+        .context("native lighting replacement")?;
     ensure!(
-        !body.contains("else")
+        !body
+            .lines()
+            .take(lighting_end + 1)
+            .any(|l| l.contains("if (") && !l.contains("discard;"))
             && !body
                 .lines()
-                .any(|l| l.contains("if (") && !l.contains("discard;"))
-            && !body.contains("for (")
-            && !body.contains("while ("),
-        "forward-lighting shader has additional control flow"
+                .take(lighting_end + 1)
+                .any(|l| { l.contains("else") || l.contains("for (") || l.contains("while (") }),
+        "forward-lighting replacement has additional control flow"
     );
     ensure!(
         inputs::reads(&result, 3).is_some_and(|r| r.is_empty())
@@ -318,13 +342,21 @@ pub(super) fn bindings(refs: &Path) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-fn refraction_contract(modern: &[u8], native: &[u8]) -> Result<()> {
-    // Both shaders sample the resolved scene color in screen coordinates,
-    // apply exposure, then clamp luminance before the same distortion blend.
+/// The modern transparent scope resource behind each source scene color slot. Both are read
+/// as color at the pixel's screen position plus a distortion offset: resource 11 at t22 by
+/// refraction, resource 12 at t23 by most transparent materials that read the scene. Native has
+/// one such input, resource 7 at t18, which its transparent materials read the same way.
+const SCENE_COLOR: [(u8, u8); 2] = [(22, 11), (23, 12)];
+
+fn refraction_contract(modern: &[u8], native: &[u8], slot: u8) -> Result<()> {
+    let (_, resource) = SCENE_COLOR
+        .into_iter()
+        .find(|(scene, _)| *scene == slot)
+        .context("not a source scene color slot")?;
     ensure!(
         modern
             .windows(5)
-            .filter(|w| *w == [0x4D, 0x28, 11, 0x56, 0x36])
+            .filter(|w| *w == [0x4D, 0x28, resource, 0x56, 0x20 | slot])
             .count()
             == 1
             && native
@@ -337,7 +369,9 @@ fn refraction_contract(modern: &[u8], native: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_refraction(refs: &Path) -> Result<()> {
+/// Check that the source's scene color input at `slot` and native's resolved scene color are
+/// bound as the transparent scopes of both renderers expect.
+pub(super) fn check_refraction(refs: &Path, slot: u8) -> Result<()> {
     let mut code = Vec::new();
     for (era, offset) in [("modern", 0x60), ("native", 0x58)] {
         let context = load(&refs.join(format!("tfx-{era}/context.json")))?;
@@ -353,7 +387,7 @@ pub(super) fn check_refraction(refs: &Path) -> Result<()> {
         )))?);
         code.push(array_bytes(&data, offset, 1)?);
     }
-    refraction_contract(&code[0], &code[1])
+    refraction_contract(&code[0], &code[1], slot)
 }
 
 #[cfg(test)]
@@ -361,11 +395,14 @@ mod tests {
     use super::*;
     #[test]
     fn refraction_requires_both_exact_renderer_bindings() {
-        let modern = [0x4D, 0x28, 11, 0x56, 0x36];
+        let modern = [0x4D, 0x28, 11, 0x56, 0x36, 0x4D, 0x28, 12, 0x56, 0x37];
         let native = [0x3F, 0x27, 7, 0x47, 0x32];
-        refraction_contract(&modern, &native).unwrap();
-        assert!(refraction_contract(&[0x4D, 0x28, 10, 0x56, 0x36], &native).is_err());
-        assert!(refraction_contract(&modern, &[0x3F, 0x27, 7, 0x47, 0x33]).is_err());
+        refraction_contract(&modern, &native, 22).unwrap();
+        refraction_contract(&modern, &native, 23).unwrap();
+        assert!(refraction_contract(&[0x4D, 0x28, 10, 0x56, 0x36], &native, 22).is_err());
+        assert!(refraction_contract(&modern[..5], &native, 23).is_err());
+        assert!(refraction_contract(&modern, &[0x3F, 0x27, 7, 0x47, 0x33], 22).is_err());
+        assert!(refraction_contract(&modern, &native, 21).is_err());
     }
     #[test]
     fn region_replacement_rejects_lost_outputs_and_preserves_components() {
@@ -430,6 +467,13 @@ mod tests {
         assert!(
             adapt(&fixture.replace("dot(r11.xyzw, r0.xyzw)", "dot(r12.xyzw, r0.xyzw)")).is_err()
         );
+        let branched = fixture.replace(
+            "return;",
+            "if (r1.w != 0) { o0.x = r2.x; } else { o0.x = r1.w; }\nreturn;",
+        );
+        assert!(adapt(&branched).unwrap().1);
+        #[cfg(windows)]
+        crate::d2_mot::native::shader::compile(&adapt(&branched).unwrap().0, false).unwrap();
         let mut no_probes = fixture.lines().map(str::to_owned).collect::<Vec<_>>();
         probes(&mut no_probes).unwrap();
         let no_probes = no_probes.join("\n")

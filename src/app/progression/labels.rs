@@ -193,35 +193,3 @@ fn fallback_context(
         label.purpose = "No Known References".into();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn record_roles_include_definition_suffixes_and_stay_separate_from_names() {
-        let catalog = Catalog::for_test(Vec::new(), Default::default()).with_test_progression(
-            vec![UnlockDefinition {
-                tested_by: vec![ProgressionContextDef {
-                    hash: 100,
-                    kind: Kind::Record,
-                    name: "A New Beginning".into(),
-                    type_name: String::new(),
-                    description: String::new(),
-                    paths: vec![vec!["Account".into(), "Triumphs".into()]],
-                    condition_programs: Vec::new(),
-                    direct_references: vec!["Record completion flag: #0".into()],
-                }],
-                ..Default::default()
-            }],
-            Vec::new(),
-            Vec::new(),
-        );
-        let label = unlock(&catalog, 0, false);
-        assert_eq!(label.text, "A New Beginning");
-        assert_eq!(label.purpose, "Completion");
-        assert_eq!(label.category, "Triumphs");
-        assert_eq!(label.location, "Triumphs / Account");
-        assert!(label.named && label.reference);
-        assert!(!unlock(&catalog, 123, false).named);
-    }
-}

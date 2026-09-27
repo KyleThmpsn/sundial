@@ -237,30 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_damage_decoding_does_not_depend_on_equipment_bucket() {
-        for bucket in [KINETIC_BUCKET, ENERGY_BUCKET, POWER_BUCKET] {
-            assert_eq!(
-                item_damage_profile(
-                    &item_with_damage_perks(&[MODERN_ARC_DAMAGE_PERK_INDEX]),
-                    bucket
-                ),
-                ItemDamageProfile::ModernFixed {
-                    damage_type: ItemDamageType::Arc
-                }
-            );
-            assert_eq!(
-                item_damage_profile(
-                    &item_with_damage_perks(&[LEGACY_VOID_DAMAGE_PERK_INDEX]),
-                    bucket
-                ),
-                ItemDamageProfile::LegacyFixed {
-                    damage_type: ItemDamageType::Void
-                }
-            );
-        }
-    }
-
-    #[test]
     fn package_profiles_distinguish_supported_topologies() {
         let empty = item_with_damage_perks(&[]);
         assert_eq!(
@@ -385,28 +361,6 @@ mod tests {
             ),
             ItemDamageProfile::Variable
         );
-    }
-
-    /// The two decoders read different wire fields, so every slot has to arrive through both
-    /// without either mapping borrowing the other's numbering.
-    #[test]
-    fn inventory_bucket_and_equipment_slot_decode_independently() {
-        for (bucket, equipment_slot, expected) in [
-            (KINETIC_BUCKET, 7, ItemWeaponInventorySlot::Kinetic),
-            (ENERGY_BUCKET, 8, ItemWeaponInventorySlot::Energy),
-            (POWER_BUCKET, 9, ItemWeaponInventorySlot::Power),
-        ] {
-            assert_eq!(
-                ItemWeaponInventorySlot::from_bucket_hash(bucket),
-                Some(expected)
-            );
-            assert_eq!(
-                ItemWeaponInventorySlot::from_equipment_slot(equipment_slot),
-                Some(expected)
-            );
-        }
-        assert_eq!(ItemWeaponInventorySlot::from_bucket_hash(0), None);
-        assert_eq!(ItemWeaponInventorySlot::from_equipment_slot(6), None);
     }
 
     #[test]

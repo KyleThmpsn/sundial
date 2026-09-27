@@ -165,8 +165,8 @@ impl StartupApp {
     }
 
     fn choose_install(&mut self) {
-        let mut dialog =
-            rfd::FileDialog::new().set_title("Select Sunrise Install (Contains destiny2.exe)");
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Select Project Sunrise or Dawn Install (Contains destiny2.exe)");
         if let Some(path) = self.install_path.as_ref().filter(|path| path.is_dir()) {
             dialog = dialog.set_directory(path);
         }
@@ -295,7 +295,7 @@ impl StartupApp {
                             if let Some(install_path) = self.pending_settings_choice.clone() {
                                 ui.heading("Choose Sunrise Settings");
                                 ui.add_space(6.0);
-                                ui.label("Multiple settings.json files were found. Choose the one Project Sunrise uses for this installation.");
+                                ui.label("Choose the settings.json Project Sunrise uses.");
                                 ui.add_space(14.0);
                                 for layout in SettingsLayout::ALL {
                                     let path = settings_path_for_install(&install_path, layout);
@@ -386,22 +386,22 @@ impl StartupApp {
                                 return;
                             }
 
-                            ui.heading("Choose Your Sunrise Install");
+                            ui.heading("Choose Your Project Sunrise or Dawn Install");
                             ui.add_space(6.0);
-                            ui.label("Select your Sunrise install, the directory containing destiny2.exe, to begin.");
+                            ui.label("Select the folder containing destiny2.exe.");
                             ui.add_space(10.0);
                             ui.weak(
                                     if cfg!(target_os = "linux") {
-                "Sundial will read the installed packages to build its local item catalog. On first use, it downloads a small, verified Linux package-decompression helper, not Destiny data."
+                "Sundial reads the installed packages to build its item catalog. On first use it downloads a small, verified decompression helper, not Destiny data."
                                     } else {
-                                        "Sundial will read the installed packages once to build its local item catalog. No Destiny data is downloaded."
+                                        "Sundial reads the installed packages to build its item catalog. No Destiny data is downloaded."
                                     },
                                 );
                             ui.add_space(18.0);
                             if ui
                                 .add_sized(
-                                    [240.0, 36.0],
-                                    egui::Button::new("Choose Sunrise Install…"),
+                                    [300.0, 36.0],
+                                    egui::Button::new("Choose Project Sunrise or Dawn Install…"),
                                 )
                                 .clicked()
                             {

@@ -14,9 +14,80 @@
 use std::fmt::Write as _;
 
 use sundial::investment::WeaponDonor;
+use sundial::package_authoring::gear_markers::{self, MarkerSet, marker_name};
+use sundial::package_authoring::weapon_runtime::{
+    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeRoot,
+    WeaponRuntimeValue, WeaponRuntimeValueKind,
+};
 
 use crate::recipe::WeaponRecipe;
 use crate::workflow::BuildReport;
+
+/// The effective runtime entity behind the report, once the background scan has produced it.
+/// `None` while no scan has finished for the current recipe.
+pub(super) type Registry<'a> = Option<Result<&'a WeaponRuntimeGraph, &'a str>>;
+
+/// The gear-art markers behind the appearance, once the background read has produced them.
+/// `None` while no read has finished for the arrangement on screen.
+pub(super) type Markers<'a> = Option<Result<&'a [MarkerSet], &'a str>>;
+
+/// A finished marker read and the arrangements it covers.
+pub(super) type MarkerRead = (Vec<u16>, Result<Vec<MarkerSet>, String>);
+
+/// What a rendered runtime-registry section was rendered from. A graph is held weakly, so its
+/// address cannot be reused by another graph while the section is cached.
+#[derive(Clone)]
+enum RegistrySource {
+    Pending,
+    Failed(String),
+    Graph(std::sync::Weak<WeaponRuntimeGraph>),
+}
+
+impl PartialEq for RegistrySource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pending, Self::Pending) => true,
+            (Self::Failed(left), Self::Failed(right)) => left == right,
+            (Self::Graph(left), Self::Graph(right)) => left.ptr_eq(right),
+            _ => false,
+        }
+    }
+}
+
+/// The rendered runtime-registry section, with the source and field choice it was rendered for.
+pub(super) struct RegistryCache {
+    source: RegistrySource,
+    fields: bool,
+    text: String,
+}
+
+/// The inputs the report's donor and marker arrangements are derived from.
+#[derive(Clone, Copy, PartialEq)]
+struct DonorInputs {
+    recipe: u64,
+    donor: Option<u32>,
+    stat_group: Option<u16>,
+    catalog: u64,
+    catalog_loaded: bool,
+}
+
+/// Everything the report text is rendered from.
+#[derive(PartialEq)]
+struct ReportKey {
+    donor: DonorInputs,
+    build: Option<std::path::PathBuf>,
+    markers: u64,
+    registry: RegistrySource,
+    fields: bool,
+}
+
+/// The rendered report, rebuilt only when one of its inputs changes.
+pub(super) struct ReportCache {
+    key: ReportKey,
+    arrangements: Option<Vec<u16>>,
+    text: String,
+    lines: usize,
+}
 
 /// Renders the report. Pure, so its content is tested without drawing a frame. Without a staged
 /// build it reports the identities the next build will assign. With a donor from the loaded
@@ -25,7 +96,8 @@ pub(super) fn technical_build_report(
     build: Option<&BuildReport>,
     recipe: &WeaponRecipe,
     donor: Option<&WeaponDonor>,
-    frame_fits: &dyn Fn(&crate::weapon_behavior::Behavior) -> bool,
+    markers: &str,
+    registry: &str,
 ) -> String {
     let mut out = String::new();
     match build {
@@ -34,7 +106,8 @@ pub(super) fn technical_build_report(
             for (index, weapon) in build.weapons.iter().enumerate() {
                 let _ = writeln!(
                     out,
-                    "\nWEAPON {}/{}  {}",
+                    "\n{} {}/{}  {}",
+                    weapon.kind.label().to_uppercase(),
                     index + 1,
                     build.weapons.len(),
                     weapon.name
@@ -50,9 +123,11 @@ pub(super) fn technical_build_report(
     append_perks(&mut out, recipe, donor);
     append_text(&mut out, recipe);
     append_appearance(&mut out, recipe, donor);
-    append_recipe(&mut out, recipe, frame_fits);
+    out.push_str(markers);
+    append_recipe(&mut out, recipe);
     append_sockets(&mut out, recipe, donor);
     append_runtime(&mut out, recipe);
+    out.push_str(registry);
     append_document(&mut out, recipe);
     out
 }
@@ -69,6 +144,54 @@ fn field(out: &mut String, name: &str, value: impl std::fmt::Display) {
 /// serializes, so this never leaves a field out.
 fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_else(|error| format!("<unserializable: {error}>"))
+}
+
+/// Strings longer than this are summarized by length and digest.
+const LONG_STRING_BYTES: usize = 96;
+
+/// Compact JSON with every long string summarized as the recipe document summarizes it, so an
+/// embedded image stays one short line.
+fn json_summary(value: &impl serde::Serialize) -> String {
+    match serde_json::to_value(value) {
+        Ok(mut value) => {
+            summarize_long_strings(&mut value);
+            value.to_string()
+        }
+        Err(error) => format!("<unserializable: {error}>"),
+    }
+}
+
+fn summarize_long_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.len() > LONG_STRING_BYTES => {
+            let summary = long_string_summary(text);
+            *text = summary;
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                summarize_long_strings(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                summarize_long_strings(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn long_string_summary(text: &str) -> String {
+    let prefix = text
+        .char_indices()
+        .nth(32)
+        .map_or(text.len(), |(index, _)| index);
+    format!(
+        "<{} bytes, sha256 {}> {}…",
+        text.len(),
+        sha256_prefix(text.as_bytes()),
+        &text[..prefix]
+    )
 }
 
 fn list<T: std::fmt::Display>(values: impl IntoIterator<Item = T>) -> String {
@@ -141,15 +264,17 @@ fn append_weapon(out: &mut String, weapon: &crate::workflow::WeaponBuildReport) 
     field(out, "item string", hex(weapon.item_string_hash));
     field(out, "icon definition", hex(weapon.icon_definition_hash));
     field(out, "item index", weapon.item_index);
-    field(out, "collectible hash", hex(weapon.collectible_hash));
-    field(out, "collectible index", weapon.collectible_index);
-    field(out, "unlock hash", hex(weapon.unlock_hash));
-    field(out, "unlock definition", weapon.unlock_definition_index);
-    field(
-        out,
-        "unlock bank / slot",
-        format!("{} / {}", weapon.unlock_bank, weapon.unlock_slot),
-    );
+    if let Some(collection) = &weapon.collection {
+        field(out, "collectible hash", hex(collection.collectible_hash));
+        field(out, "collectible index", collection.collectible_index);
+        field(out, "unlock hash", hex(collection.unlock_hash));
+        field(out, "unlock definition", collection.unlock_definition_index);
+        field(
+            out,
+            "unlock bank / slot",
+            format!("{} / {}", collection.unlock_bank, collection.unlock_slot),
+        );
+    }
     if weapon.custom_plugs.is_empty() {
         return;
     }
@@ -196,7 +321,7 @@ fn append_planned(out: &mut String, recipe: &WeaponRecipe) {
     let _ = writeln!(out, "NEXT BUILD  {}", recipe.name);
     let _ = writeln!(
         out,
-        "  No build is staged. Item, collectible and unlock indices are assigned when it runs."
+        "  No staged build. Indices are assigned at build time."
     );
     field(out, "namespace", &recipe.namespace);
     field(out, "schema", recipe.schema);
@@ -275,11 +400,7 @@ fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponD
             );
             field(out, "  equipment slot", opt_debug(donor.equipment_slot));
         }
-        None => field(
-            out,
-            "  catalog",
-            "not loaded; inherited values are not resolved",
-        ),
+        None => field(out, "  catalog", "not loaded"),
     }
     for (name, reference) in [
         ("presentation donor", recipe.presentation_donor.as_ref()),
@@ -444,6 +565,13 @@ fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDon
     field(out, "skip behavior perks", overrides.skip_behavior_perks);
     field(
         out,
+        "behavior firing",
+        overrides
+            .behavior_firing
+            .map_or_else(|| "behavior (default)".to_owned(), |firing| json(&firing)),
+    );
+    field(
+        out,
         "collection placement",
         json(&recipe.collection_placement),
     );
@@ -456,7 +584,7 @@ fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDon
     );
     field(
         out,
-        "exclude from sunrise badge",
+        "exclude from Sunrise badge",
         overrides.exclude_from_sunrise_badge,
     );
 }
@@ -649,7 +777,7 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
         overrides
             .hud_icon
             .as_ref()
-            .map_or_else(|| "none".to_owned(), json),
+            .map_or_else(|| "none".to_owned(), json_summary),
     );
     field(
         out,
@@ -657,7 +785,7 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
         if overrides.icon_edit.is_identity() {
             "identity".to_owned()
         } else {
-            json(&overrides.icon_edit)
+            json_summary(&overrides.icon_edit)
         },
     );
     field(
@@ -681,7 +809,7 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
         overrides
             .corner_icon
             .as_ref()
-            .map_or_else(|| "none".to_owned(), json),
+            .map_or_else(|| "none".to_owned(), json_summary),
     );
     resolved(
         out,
@@ -723,15 +851,78 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
     }
 }
 
-fn append_recipe(
-    out: &mut String,
-    recipe: &WeaponRecipe,
-    frame_fits: &dyn Fn(&crate::weapon_behavior::Behavior) -> bool,
-) {
+/// The named points the appearance's gear art carries: where the weapon is held, where it
+/// fires, where a case leaves it. The runtime resolves these by name, so an imported model that
+/// kept a donor's marker set aims at the donor's sight rather than its own. Seeing the names and
+/// positions side by side is what makes that visible before a build reaches the game.
+///
+/// Read from the packages rather than the recipe, so it is rendered separately and only while
+/// the window is open.
+pub(super) fn marker_section(markers: Markers<'_>) -> String {
+    let mut text = String::new();
+    let out = &mut text;
+    let sets = match markers {
+        None => {
+            let _ = writeln!(out, "\nMARKERS  not read");
+            return text;
+        }
+        Some(Err(error)) => {
+            let _ = writeln!(out, "\nMARKERS  unavailable: {error}");
+            return text;
+        }
+        Some(Ok(sets)) => sets,
+    };
+    let all = || sets.iter().flat_map(|set| &set.markers);
+    let total = all().count();
+    let named = all()
+        .filter(|marker| marker_name(marker.name).is_some())
+        .count();
+    let _ = writeln!(
+        out,
+        "\nMARKERS  {total} on {} objects, {named} named",
+        sets.len()
+    );
+    if sets.is_empty() {
+        field(out, "markers", "this appearance carries none");
+        return text;
+    }
+    for set in sets {
+        let _ = writeln!(
+            out,
+            "  object {}  set {}  ({})",
+            hex(set.entity),
+            hex(set.component),
+            set.markers.len()
+        );
+        for marker in &set.markers {
+            let [x, y, z] = marker.position;
+            let label = column(&marker.label(), 24);
+            // A weapon really does carry two markers of one name at one point, differing only
+            // in which way they face, so the rotation has to be shown or they read as a bug.
+            let facing = if marker.is_aligned() {
+                String::new()
+            } else {
+                let [i, j, k, w] = marker.orientation;
+                format!("  facing {i:>7.4} {j:>7.4} {k:>7.4} {w:>7.4}")
+            };
+            // A marker whose name is unrecovered is still somewhere meaningful. Naming what it
+            // sits next to says more than the hash alone, without guessing at the name.
+            let near = gear_markers::nearest_named(sets, marker)
+                .map_or_else(String::new, |near| format!("  {near}"));
+            let _ = writeln!(
+                out,
+                "    {label:<24}  {x:>10.5} {y:>10.5} {z:>10.5}{facing}{near}"
+            );
+        }
+    }
+    text
+}
+
+fn append_recipe(out: &mut String, recipe: &WeaponRecipe) {
     let overrides = &recipe.overrides;
     let _ = writeln!(
         out,
-        "\nBORROWED BEHAVIOR ({})",
+        "\nUNIQUE WEAPON BEHAVIOR ({})",
         overrides.additional_behaviors.len()
     );
     if overrides.additional_behaviors.is_empty() {
@@ -739,7 +930,7 @@ fn append_recipe(
     }
     for request in &overrides.additional_behaviors {
         let Some(entry) = crate::weapon_behavior::behavior(&request.behavior) else {
-            let _ = writeln!(out, "  {}  <not in the catalogue>", request.behavior);
+            let _ = writeln!(out, "  {}  <not in the catalog>", request.behavior);
             continue;
         };
         let _ = writeln!(out, "  {}  from {}", entry.id, entry.source_name);
@@ -753,21 +944,13 @@ fn append_recipe(
         if let Some(record) = crate::weapon_behavior::paired_record_source(entry) {
             field(out, "  carries record of", record);
         }
-        let frame = frame_fits(entry);
         for (name, plug) in [
-            ("  pinned intrinsic", entry.intrinsic_plug.filter(|_| frame)),
+            ("  pinned intrinsic", entry.intrinsic_plug),
             ("  pinned trait", entry.trait_plug),
         ] {
             if let Some(plug) = plug {
                 field(out, name, hex(plug));
             }
-        }
-        if !frame && let Some(plug) = entry.intrinsic_plug {
-            field(
-                out,
-                "  intrinsic left behind",
-                format!("{}  other weapon type; host keeps its frame", hex(plug)),
-            );
         }
     }
 }
@@ -896,6 +1079,258 @@ fn json_lines<T: serde::Serialize>(values: &[T]) -> Vec<String> {
     values.iter().map(json).collect()
 }
 
+/// The effective runtime entity this weapon compiles against: the component bindings, the
+/// resources they select, and every readable field of every component owner. This is the
+/// registry a runtime value or binary patch addresses, so a locator in the recipe above can be
+/// matched to the field it points at. The graph already includes the recipe's runtime baseline
+/// and its component donors, so it is what the build sees rather than the bare donor.
+/// Rendered separately from the rest of the report because it is the one section whose size
+/// depends on the packages rather than the recipe: a weapon carries a few thousand readable
+/// fields, so this is cached against the graph it came from instead of rebuilt every frame.
+pub(super) fn runtime_registry_section(registry: Registry<'_>, include_fields: bool) -> String {
+    let mut text = String::new();
+    let out = &mut text;
+    let graph = match registry {
+        None => {
+            let _ = writeln!(out, "\nRUNTIME REGISTRY  not read");
+            return text;
+        }
+        Some(Err(error)) => {
+            let _ = writeln!(out, "\nRUNTIME REGISTRY  unavailable: {error}");
+            return text;
+        }
+        Some(Ok(graph)) => graph,
+    };
+    let resource_roots = || {
+        graph.resources.iter().flat_map(|resource| {
+            std::iter::once(&resource.instance).chain(resource.definition.iter())
+        })
+    };
+    let owner_roots = || graph.owners.iter().flat_map(|owner| &owner.roots);
+    let count_fields = |roots: &mut dyn Iterator<Item = &WeaponRuntimeRoot>| {
+        roots.map(|root| root.fields.len()).sum::<usize>()
+    };
+    let _ = writeln!(
+        out,
+        "\nRUNTIME REGISTRY  entity {}  item {}  pattern {}",
+        hex(graph.entity_tag),
+        hex(graph.item_hash),
+        hex(graph.pattern_global_id_hash)
+    );
+    field(out, "bindings", graph.bindings.len());
+    field(out, "resources", graph.resources.len());
+    field(out, "resource fields", count_fields(&mut resource_roots()));
+    field(out, "owners", graph.owners.len());
+    field(out, "owner-only fields", count_fields(&mut owner_roots()));
+
+    let _ = writeln!(out, "\nRUNTIME BINDINGS  ({})", graph.bindings.len());
+    for binding in &graph.bindings {
+        let _ = writeln!(
+            out,
+            "  {}  {:<34}[{}/{}]  owner {}  class {}  +{:#x}",
+            hex(binding.binding_hash),
+            binding.binding_label,
+            binding.resource_index,
+            binding.resource_count,
+            hex(binding.owner_tag),
+            hex(binding.concrete_class),
+            binding.resource_offset
+        );
+    }
+
+    let _ = writeln!(out, "\nRUNTIME RESOURCES  ({})", graph.resources.len());
+    for resource in &graph.resources {
+        let aliases = if resource.alias_bindings.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  also {}",
+                resource
+                    .alias_bindings
+                    .iter()
+                    .map(|(hash, index)| format!("{}#{index}", hex(*hash)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
+        let _ = writeln!(
+            out,
+            "  {}  {:<34}[{}/{}]  owner {}  class {}{aliases}",
+            hex(resource.binding_hash),
+            resource.binding_label,
+            resource.resource_index,
+            resource.resource_count,
+            hex(resource.owner_tag),
+            hex(resource.concrete_class)
+        );
+        for root in std::iter::once(&resource.instance).chain(resource.definition.iter()) {
+            let _ = writeln!(out, "      {}", root_summary(root));
+            if include_fields {
+                for entry in &root.fields {
+                    let _ = writeln!(out, "        {}", registry_field(entry));
+                }
+            }
+        }
+    }
+
+    // An owner root keeps only what no bound resource above already covers, so this section is
+    // the remainder of each component payload rather than a second copy of it.
+    let _ = writeln!(
+        out,
+        "\nRUNTIME OWNERS  ({})  fields outside every bound resource",
+        graph.owners.len()
+    );
+    for owner in &graph.owners {
+        let _ = writeln!(
+            out,
+            "\n  OWNER {}  anchor {}#{}  roots {}",
+            hex(owner.owner_tag),
+            hex(owner.anchor_binding_hash),
+            owner.anchor_resource_index,
+            owner.roots.len()
+        );
+        for root in &owner.roots {
+            let _ = writeln!(out, "    {}", root_summary(root));
+            if include_fields {
+                for entry in &root.fields {
+                    let _ = writeln!(out, "      {}", registry_field(entry));
+                }
+            }
+        }
+    }
+    if !include_fields {
+        let _ = writeln!(out, "\n  Field values omitted.");
+    }
+    text
+}
+
+/// How many readable field values the registry would add, for the control that turns them on.
+pub(super) fn runtime_registry_field_count(graph: &WeaponRuntimeGraph) -> usize {
+    graph
+        .resources
+        .iter()
+        .flat_map(|resource| std::iter::once(&resource.instance).chain(resource.definition.iter()))
+        .chain(graph.owners.iter().flat_map(|owner| &owner.roots))
+        .map(|root| root.fields.len())
+        .sum()
+}
+
+fn root_summary(root: &WeaponRuntimeRoot) -> String {
+    // A root's own schema is often not the class its binding selects, so naming it here adds
+    // what the binding line cannot: an instance and its definition are different components.
+    let schema = match sundial::package_authoring::weapon_runtime::native_type_name(root.schema) {
+        Some(name) => format!("{} {name}", hex(root.schema)),
+        None => hex(root.schema),
+    };
+    format!(
+        "{:<22}schema {:<34}+{:#x}  {} bytes  {} fields{}",
+        root.kind.label(),
+        schema,
+        root.owner_offset,
+        root.byte_size,
+        root.fields.len(),
+        if root.generated_schema {
+            "  generated schema"
+        } else {
+            ""
+        }
+    )
+}
+
+/// One field line: what it is called, what it holds now, and where it lives. The path is the
+/// locator's own label, so it matches a runtime value override recorded in the recipe, and is
+/// left off when it only repeats the name. Long opaque values are cut so the columns hold;
+/// the binary patch editor is the place to read a whole block byte for byte.
+fn registry_field(entry: &WeaponRuntimeField) -> String {
+    let name = if entry.name_inferred {
+        format!("{} (inferred)", entry.name)
+    } else {
+        entry.name.clone()
+    };
+    let redundant = !entry.path_label.contains(" / ")
+        && (entry.path_label.ends_with(&entry.name) || entry.path_label.ends_with(&name));
+    let path = if redundant {
+        ""
+    } else {
+        entry.path_label.as_str()
+    };
+    let line = format!(
+        "{:<40}{:<32}{:<9}{:<15}+{:<10}{path}",
+        column(&name, 39),
+        column(&registry_value(&entry.kind, &entry.value), 31),
+        value_kind_label(&entry.kind),
+        field_source_label(entry.source),
+        format!("{:#x}", entry.owner_offset)
+    );
+    line.trim_end().to_owned()
+}
+
+/// Pad-or-cut, so one long value cannot push every later column out of line.
+fn column(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept = text
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    format!("{kept}…")
+}
+
+fn registry_value(kind: &WeaponRuntimeValueKind, value: &WeaponRuntimeValue) -> String {
+    match value {
+        WeaponRuntimeValue::Boolean(value) => value.to_string(),
+        WeaponRuntimeValue::Signed(value) => value.to_string(),
+        WeaponRuntimeValue::Unsigned(value) => match kind {
+            WeaponRuntimeValueKind::HexIdentifier { bits }
+            | WeaponRuntimeValueKind::BitFlags { bits } => {
+                format!("0x{value:0>width$X}", width = (*bits as usize).div_ceil(4))
+            }
+            _ => value.to_string(),
+        },
+        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
+        WeaponRuntimeValue::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
+        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!(
+            "[{}]",
+            bits.iter()
+                .map(|bits| f32::from_bits(*bits).to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        // A long opaque block is identified, not reproduced; the bytes are in the packages.
+        WeaponRuntimeValue::Bytes(bytes) if bytes.len() > 6 => format!(
+            "{} +{} bytes",
+            super::runtime_fields::format_runtime_bytes(&bytes[..6]),
+            bytes.len() - 6
+        ),
+        WeaponRuntimeValue::Bytes(bytes) => super::runtime_fields::format_runtime_bytes(bytes),
+    }
+}
+
+fn value_kind_label(kind: &WeaponRuntimeValueKind) -> String {
+    match kind {
+        WeaponRuntimeValueKind::Boolean => "bool".to_owned(),
+        WeaponRuntimeValueKind::SignedInteger { bits } => format!("i{bits}"),
+        WeaponRuntimeValueKind::UnsignedInteger { bits } => format!("u{bits}"),
+        WeaponRuntimeValueKind::Enum { bits } => format!("enum{bits}"),
+        WeaponRuntimeValueKind::BitFlags { bits } => format!("flags{bits}"),
+        WeaponRuntimeValueKind::HexIdentifier { bits } => format!("hex{bits}"),
+        WeaponRuntimeValueKind::Float32 => "f32".to_owned(),
+        WeaponRuntimeValueKind::Float64 => "f64".to_owned(),
+        WeaponRuntimeValueKind::Vector4Float32 => "vec4".to_owned(),
+        WeaponRuntimeValueKind::FixedBytes { size } => format!("bytes{size}"),
+    }
+}
+
+fn field_source_label(source: WeaponRuntimeFieldSource) -> &'static str {
+    match source {
+        WeaponRuntimeFieldSource::GeneratedSchema => "generated",
+        WeaponRuntimeFieldSource::NativeMember => "native member",
+        WeaponRuntimeFieldSource::OpaqueNativeType => "opaque type",
+        WeaponRuntimeFieldSource::NativeDeclaration => "native decl",
+    }
+}
+
 /// The recipe document itself, every key, so a field no curated section names is still shown.
 /// Embedded images and other long strings are summarized by length and digest.
 fn append_document(out: &mut String, recipe: &WeaponRecipe) {
@@ -931,17 +1366,8 @@ fn append_value(out: &mut String, key: &str, value: &serde_json::Value, depth: u
         serde_json::Value::Array(items) => {
             let _ = writeln!(out, "{indent}{label}{}", json(items));
         }
-        serde_json::Value::String(text) if text.len() > 96 => {
-            let _ = writeln!(
-                out,
-                "{indent}{label}<{} bytes, sha256 {}> {}…",
-                text.len(),
-                sha256_prefix(text.as_bytes()),
-                &text[..text
-                    .char_indices()
-                    .nth(32)
-                    .map_or(text.len(), |(index, _)| index)]
-            );
+        serde_json::Value::String(text) if text.len() > LONG_STRING_BYTES => {
+            let _ = writeln!(out, "{indent}{label}{}", long_string_summary(text));
         }
         other => {
             let _ = writeln!(out, "{indent}{label}{other}");
@@ -958,7 +1384,115 @@ fn sha256_prefix(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The packages read that backs the MARKERS section. Held so its package handles can be
+/// released before an installation, the same rule the runtime-graph job follows.
+pub(super) struct MarkerJob {
+    arrangements: Vec<u16>,
+    receiver: std::sync::mpsc::Receiver<Result<Vec<MarkerSet>, String>>,
+    worker: std::thread::JoinHandle<()>,
+}
+
 impl super::PackageAuthoringApp {
+    pub(super) fn technical_markers_busy(&self) -> bool {
+        self.technical_marker_job.is_some()
+    }
+
+    /// The arrangements the report describes: the recipe's override when it has one, else the
+    /// donor's. `None` while neither is known. Markers belong to the art, so this is the only
+    /// thing the read depends on.
+    fn technical_marker_arrangements(&self, donor: Option<&WeaponDonor>) -> Option<Vec<u16>> {
+        let mut rows: Vec<u16> = match self.recipe.overrides.art_arrangements.as_ref() {
+            Some(rows) => rows.iter().map(|row| row.arrangement).collect(),
+            None => donor?
+                .art_arrangements
+                .iter()
+                .map(|row| row.arrangement)
+                .collect(),
+        };
+        rows.sort_unstable();
+        rows.dedup();
+        Some(rows)
+    }
+
+    /// Starts the read when the arrangement on screen has no result yet. Only called while the
+    /// window is open, so a closed window costs nothing. One read runs at a time: a replaced
+    /// job would leave its thread holding package handles. The poll keeps a stale result and
+    /// the next frame starts the read for the new arrangement.
+    fn ensure_technical_markers(&mut self, ctx: &egui::Context, arrangements: &[u16]) {
+        if self.technical_marker_job.is_some()
+            || self
+                .technical_markers
+                .as_ref()
+                .is_some_and(|(read, _)| read == arrangements)
+        {
+            return;
+        }
+        if arrangements.is_empty() {
+            self.technical_markers = Some((Vec::new(), Ok(Vec::new())));
+            self.technical_marker_revision = self.technical_marker_revision.wrapping_add(1);
+            return;
+        }
+        let packages = self.packages.clone();
+        let wanted = arrangements.to_vec();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let worker = {
+            let wanted = wanted.clone();
+            std::thread::spawn(move || {
+                let mut sets = Vec::new();
+                let mut result = Ok(());
+                for arrangement in wanted {
+                    match sundial::package_authoring::gear_markers::read_appearance(
+                        &packages,
+                        arrangement,
+                    ) {
+                        Ok(read) => sets.extend(read),
+                        Err(error) => {
+                            result = Err(format!("arrangement {arrangement}: {error}"));
+                            break;
+                        }
+                    }
+                }
+                let _ = sender.send(result.map(|()| sets));
+                ctx.request_repaint();
+            })
+        };
+        self.technical_marker_job = Some(MarkerJob {
+            arrangements: wanted,
+            receiver,
+            worker,
+        });
+    }
+
+    pub(super) fn poll_technical_markers(&mut self) {
+        let Some(job) = &self.technical_marker_job else {
+            return;
+        };
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The marker reader stopped without a result".to_owned())
+            }
+        };
+        let MarkerJob {
+            arrangements,
+            worker,
+            ..
+        } = self.technical_marker_job.take().expect("job was checked");
+        // Join even a stale read: its package handles must be released before installation.
+        let completion = worker.join();
+        self.technical_markers = Some((
+            arrangements,
+            if completion.is_err() {
+                Err("The marker reader panicked while reading packages".to_owned())
+            } else {
+                result
+            },
+        ));
+        self.technical_marker_revision = self.technical_marker_revision.wrapping_add(1);
+    }
+
     /// Draws the window when the preference is on, with or without a staged build.
     pub(super) fn draw_technical_build_window(&mut self, ctx: &egui::Context) {
         if !self.show_technical_build {
@@ -968,22 +1502,116 @@ impl super::PackageAuthoringApp {
         if !self.technical_build_open {
             return;
         }
+        // A window drawn earlier this frame may have edited the recipe. Observing it here keeps
+        // the cached report from lagging the recipe on screen.
+        self.synchronize_recipe_dirty();
+        let inputs = DonorInputs {
+            recipe: self.recipe_revision,
+            donor: self.recipe.donor.item_hash.parse_u32().ok(),
+            stat_group: self.recipe.overrides.stat_group_index,
+            catalog: self.catalog_revision,
+            catalog_loaded: self.catalog.is_some(),
+        };
+        // The donor is resolved only when the report has to be rendered again.
+        let mut donor = None;
+        let arrangements = match self
+            .technical_report
+            .as_ref()
+            .filter(|report| report.key.donor == inputs)
+        {
+            Some(report) => report.arrangements.clone(),
+            None => {
+                let current = self.current_donor();
+                let arrangements = self.technical_marker_arrangements(current.as_ref());
+                donor = Some(current);
+                arrangements
+            }
+        };
+        // Started before anything borrows the app, so the read is already in flight by the
+        // time the rest of the report is assembled. No read starts while an installation
+        // replaces packages.
+        if self.install_receiver.is_none()
+            && let Some(arrangements) = &arrangements
+        {
+            self.ensure_technical_markers(ctx, arrangements);
+        }
         let build = self
             .latest_build
             .as_ref()
             .and_then(|build| build.as_ref().ok());
-        let donor = self.current_donor();
-        let catalog = self.catalog.as_ref();
-        let host_type = donor.as_ref().map(|donor| donor.summary.type_name.as_str());
-        let report = technical_build_report(build, &self.recipe, donor.as_ref(), &|entry| {
-            crate::weapon_behavior::same_family(
-                host_type,
-                catalog
-                    .and_then(|catalog| catalog.item_type_name(entry.source_item_hash))
-                    .as_deref(),
-            )
-        });
+        // Only the graph scanned for the recipe on screen. A stale one would describe a
+        // different runtime baseline than every other section of this report.
+        let target = self.runtime_graph_target.as_ref();
+        let graph = self
+            .runtime_graph
+            .as_ref()
+            .and_then(|(key, graph)| (Some(key) == target).then_some(graph));
+        let registry = match graph {
+            Some(graph) => Some(Ok(graph.as_ref())),
+            None => self
+                .runtime_graph_error
+                .as_ref()
+                .and_then(|(key, error)| (Some(key) == target).then_some(Err(error.as_str()))),
+        };
+        let fields = graph.map_or(0, |graph| runtime_registry_field_count(graph));
+        // A weapon carries a few thousand readable fields. Rendering them on every frame would
+        // cost more than the rest of the report put together, so the section is kept until the
+        // graph, the scan result or the choice changes.
+        let source = match (graph, registry) {
+            (Some(graph), _) => RegistrySource::Graph(std::sync::Arc::downgrade(graph)),
+            (None, Some(Err(error))) => RegistrySource::Failed(error.to_owned()),
+            (None, _) => RegistrySource::Pending,
+        };
+        if self.technical_registry.as_ref().is_none_or(|cache| {
+            cache.source != source || cache.fields != self.technical_registry_fields
+        }) {
+            self.technical_registry = Some(RegistryCache {
+                text: runtime_registry_section(registry, self.technical_registry_fields),
+                source: source.clone(),
+                fields: self.technical_registry_fields,
+            });
+        }
+        // The whole report is about a megabyte of text with the field values on, so it is
+        // rendered again only when something it reads has changed.
+        let key = ReportKey {
+            donor: inputs,
+            build: build.map(|build| build.run_directory.clone()),
+            markers: self.technical_marker_revision,
+            registry: source,
+            fields: self.technical_registry_fields,
+        };
+        if self
+            .technical_report
+            .as_ref()
+            .is_none_or(|report| report.key != key)
+        {
+            let donor = donor.unwrap_or_else(|| self.current_donor());
+            let section = self
+                .technical_registry
+                .as_ref()
+                .map_or("", |cache| cache.text.as_str());
+            let markers = marker_section(arrangements.as_ref().and_then(|arrangements| {
+                let (read, result) = self.technical_markers.as_ref()?;
+                (read == arrangements).then_some(match result {
+                    Ok(sets) => Ok(sets.as_slice()),
+                    Err(error) => Err(error.as_str()),
+                })
+            }));
+            let text =
+                technical_build_report(build, &self.recipe, donor.as_ref(), &markers, section);
+            let lines = text.lines().count();
+            self.technical_report = Some(ReportCache {
+                key,
+                arrangements,
+                text,
+                lines,
+            });
+        }
+        let Some(report) = self.technical_report.as_ref() else {
+            return;
+        };
         let mut open = self.technical_build_open;
+        let mut fields_shown = self.technical_registry_fields;
         egui::Window::new("Technical Build")
             .open(&mut open)
             .default_width(760.0)
@@ -992,9 +1620,17 @@ impl super::PackageAuthoringApp {
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Copy Everything").clicked() {
-                        ui.ctx().copy_text(report.clone());
+                        ui.ctx().copy_text(report.text.clone());
                     }
-                    ui.weak(format!("{} lines", report.lines().count()));
+                    ui.add_enabled(
+                        fields > 0,
+                        egui::Checkbox::new(&mut fields_shown, "Field Values"),
+                    )
+                    .on_hover_text(format!(
+                        "Add every readable runtime field value ({fields}) to the registry."
+                    ))
+                    .on_disabled_hover_text("No runtime registry has been read for this weapon.");
+                    ui.weak(format!("{} lines", report.lines));
                 });
                 ui.separator();
                 egui::ScrollArea::both()
@@ -1002,14 +1638,18 @@ impl super::PackageAuthoringApp {
                     .show(ui, |ui| {
                         // Selectable so a single figure can be lifted out without copying it all.
                         ui.add(
-                            egui::TextEdit::multiline(&mut report.as_str())
+                            egui::TextEdit::multiline(&mut report.text.as_str())
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(f32::INFINITY)
                                 .code_editor(),
                         );
                     });
             });
+        if fields_shown != self.technical_registry_fields {
+            ctx.request_repaint();
+        }
         self.technical_build_open = open;
+        self.technical_registry_fields = fields_shown;
     }
 }
 

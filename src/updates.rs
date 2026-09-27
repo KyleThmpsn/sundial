@@ -1,5 +1,6 @@
 //! Background release checks and the staged update state machine.
 mod archive;
+mod cleanup;
 mod download;
 mod files;
 mod handoff;
@@ -8,6 +9,7 @@ mod release;
 mod transaction;
 mod view;
 
+pub(crate) use cleanup::sweep_workspaces;
 use download::{Prepared, Progress};
 use eframe::egui;
 use handoff::Handoff;

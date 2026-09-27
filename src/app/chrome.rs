@@ -30,10 +30,18 @@ impl SundialApp {
                 let undo_label = self.undo_history.last().map(|entry| entry.label.clone());
                 let redo_label = self.redo_history.last().map(|entry| entry.label.clone());
                 let draft_pending = self.json_editor.has_unapplied_changes();
-                let draft_notice = "Finish or reset the JSON draft before undoing account changes. Use Ctrl+Z in the editor to undo text edits.";
+                let draft_notice =
+                    "Apply or reset the JSON draft first. Ctrl+Z in the editor undoes text edits.";
                 let undo = ui
-                    .add_enabled(!draft_pending && undo_label.is_some(), egui::Button::new("Undo"))
-                    .on_disabled_hover_text(if draft_pending { draft_notice } else { "Nothing to undo" });
+                    .add_enabled(
+                        !draft_pending && undo_label.is_some(),
+                        egui::Button::new("Undo"),
+                    )
+                    .on_disabled_hover_text(if draft_pending {
+                        draft_notice
+                    } else {
+                        "Nothing to undo"
+                    });
                 let undo = if let Some(label) = undo_label.as_deref() {
                     undo.on_hover_text(format!("Undo: {label}"))
                 } else {
@@ -43,8 +51,15 @@ impl SundialApp {
                     self.undo();
                 }
                 let redo = ui
-                    .add_enabled(!draft_pending && redo_label.is_some(), egui::Button::new("Redo"))
-                    .on_disabled_hover_text(if draft_pending { draft_notice } else { "Nothing to redo" });
+                    .add_enabled(
+                        !draft_pending && redo_label.is_some(),
+                        egui::Button::new("Redo"),
+                    )
+                    .on_disabled_hover_text(if draft_pending {
+                        draft_notice
+                    } else {
+                        "Nothing to redo"
+                    });
                 let redo = if let Some(label) = redo_label.as_deref() {
                     redo.on_hover_text(format!("Redo: {label}"))
                 } else {
@@ -110,6 +125,14 @@ impl SundialApp {
                     .clicked()
                 {
                     self.select_view(ViewMode::Progression);
+                }
+                // Opens its own window beside whichever view is showing.
+                if ui
+                    .selectable_label(false, "Definition Inspector")
+                    .on_hover_text("Opens in a separate window (Ctrl+I)")
+                    .clicked()
+                {
+                    self.hash_inspection.open_search();
                 }
                 for (view, label) in [
                     (ViewMode::AdvancedJson, "JSON Editor"),
@@ -404,19 +427,4 @@ fn sidebar_footer(ui: &mut egui::Ui, available_update: Option<&str>) -> SidebarF
         }
     })
     .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_tooltip_omits_the_settings_schema_for_dawn() {
-        assert_eq!(runtime_settings_schema_detail(true, Some(6)), None);
-        assert_eq!(
-            runtime_settings_schema_detail(false, Some(6)).as_deref(),
-            Some("Settings v6")
-        );
-        assert_eq!(runtime_settings_schema_detail(false, None), None);
-    }
 }

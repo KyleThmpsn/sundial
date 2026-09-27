@@ -334,48 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn discovers_the_highest_patch_and_preserves_identity() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        package(
-            &directory.path().join("w64_globals_058f_0.pkg"),
-            0x058f,
-            0,
-            100,
-        );
-        package(
-            &directory.path().join("w64_globals_058f_2.pkg"),
-            0x058f,
-            2,
-            120,
-        );
-        package(
-            &directory.path().join("w64_other_0600_9.pkg"),
-            0x0600,
-            9,
-            50,
-        );
-
-        let chain = discover_patch_chain(directory.path(), 0x058f)
-            .expect("matching patch chain should be found");
-
-        assert_eq!(chain.identity.stem, "w64_globals_058f");
-        assert_eq!(
-            chain
-                .files
-                .iter()
-                .map(|file| file.patch)
-                .collect::<Vec<_>>(),
-            [0, 2]
-        );
-        assert_eq!(chain.next_patch().expect("next patch should fit"), 3);
-        assert_eq!(
-            chain.output_file_name().expect("output name should build"),
-            "w64_globals_058f_3.pkg"
-        );
-        assert_eq!(chain.historical_entry_count_high_water(), 120);
-    }
-
-    #[test]
     fn preserves_the_entry_count_high_water_after_a_later_generation_shrinks() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         package(

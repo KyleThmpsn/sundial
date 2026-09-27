@@ -127,6 +127,12 @@ impl PackageAuthoringApp {
             let Ok(donor) = current.donor.item_hash.parse_u32() else {
                 return Ok(current);
             };
+            // An installed weapon is always itself. Authored identities are derived hashes and
+            // nothing stops one from matching a real item, so the game's own tables win rather
+            // than a recipe quietly building on something the reader never chose.
+            if self.donor_summaries.iter().any(|stock| stock.hash == donor) {
+                return Ok(current);
+            }
             let Some(entry) = self
                 .recipe_entries
                 .iter()
@@ -164,10 +170,7 @@ impl PackageAuthoringApp {
             || self.catalog_worker.is_some()
             || self.catalog_reload_pending
         {
-            return Err(
-                "The Sundial weapon catalog must finish loading before package authoring"
-                    .to_owned(),
-            );
+            return Err("Wait for the weapon catalog to finish loading".to_owned());
         }
         BatchBuildSnapshot::new(self.batch_request()?)
     }
@@ -211,6 +214,7 @@ impl PackageAuthoringApp {
         self.recipe_dirty = false;
         self.recipe_baseline.clone_from(&self.recipe);
         self.observed_recipe.clone_from(&self.recipe);
+        self.advance_recipe_revision();
         self.log.push(LogEntry::info(format!(
             "Saved current edits before building: {}",
             path.display()
@@ -231,6 +235,7 @@ impl PackageAuthoringApp {
             self.install_status = build_status::InstallStatus::default();
         }
         self.latest_build = None;
+        self.build_blocker = None;
         self.latest_install = None;
         self.build_status_open = false;
         self.build_dialog_step = BuildDialogStep::Build;
@@ -242,12 +247,19 @@ impl PackageAuthoringApp {
             || self.invalid_weapon_name.is_some();
         if self.recipe != self.observed_recipe {
             self.observed_recipe.clone_from(&self.recipe);
+            self.advance_recipe_revision();
             self.invalidate_results();
         }
     }
 
+    /// Marks every view cached from the recipe as out of date.
+    pub(super) fn advance_recipe_revision(&mut self) {
+        self.recipe_revision = self.recipe_revision.wrapping_add(1);
+    }
+
     pub(super) fn discard_recipe_changes(&mut self) {
         self.recipe = self.recipe_baseline.clone();
+        self.advance_recipe_revision();
         self.behavior_pins.clear();
         self.recipe_dirty = self.recipe_requires_initial_save;
         self.clear_dependent_picker_queries();
@@ -270,7 +282,7 @@ impl PackageAuthoringApp {
                 self.close_approved = true;
                 false
             }
-            PendingRecipeAction::New => self.start_new_recipe(),
+            PendingRecipeAction::New(kind) => self.start_new_recipe(kind),
             PendingRecipeAction::Open(path) => self.open_recipe_path(&path),
             PendingRecipeAction::Import => self.import_recipe(),
         }
@@ -286,6 +298,7 @@ impl PackageAuthoringApp {
                 self.recipe = recipe;
                 self.behavior_pins.clear();
                 self.recipe_baseline = self.recipe.clone();
+                self.advance_recipe_revision();
                 self.recipe_path = Some(path.to_path_buf());
                 self.recipe_requires_initial_save = false;
                 self.recipe_dirty = false;
@@ -325,6 +338,7 @@ impl PackageAuthoringApp {
         self.recipe = copy;
         self.behavior_pins.clear();
         self.recipe_baseline = self.recipe.clone();
+        self.advance_recipe_revision();
         self.recipe_path = None;
         self.recipe_requires_initial_save = true;
         self.recipe_dirty = true;
@@ -334,17 +348,19 @@ impl PackageAuthoringApp {
         true
     }
 
-    pub(super) fn start_new_recipe(&mut self) -> bool {
-        let Ok(recipe) = WeaponRecipe::new_unbound("New Recipe") else {
-            self.log.push(LogEntry::error(
-                "Could not allocate the built-in New Recipe identity",
-            ));
+    pub(super) fn start_new_recipe(&mut self, kind: ItemKind) -> bool {
+        let Ok(recipe) = WeaponRecipe::new_unbound_kind(kind) else {
+            self.log.push(LogEntry::error(format!(
+                "Could not allocate the built-in New {} identity",
+                kind.label()
+            )));
             return false;
         };
         self.recipe = recipe;
         self.behavior_pins.clear();
         self.bind_default_donor();
         self.recipe_baseline = self.recipe.clone();
+        self.advance_recipe_revision();
         self.recipe_path = None;
         self.recipe_requires_initial_save = false;
         self.recipe_dirty = false;
@@ -381,6 +397,23 @@ impl PackageAuthoringApp {
         }
     }
 
+    /// Whether the open recipe already lives in the recipe library, so saving updates its file.
+    pub(super) fn recipe_saves_in_place(&self) -> bool {
+        self.recipe_library
+            .as_ref()
+            .zip(self.recipe_path.as_ref())
+            .is_some_and(|(library, path)| path.starts_with(library.root()))
+    }
+
+    /// Saves the open recipe the way the toolbar's save button does.
+    pub(super) fn save_open_recipe(&mut self) {
+        if self.recipe_saves_in_place() {
+            self.save_library_recipe();
+        } else {
+            self.save_recipe_copy();
+        }
+    }
+
     pub(super) fn save_library_recipe(&mut self) {
         if let Some((_, error)) = &self.invalid_weapon_name {
             self.log.push(LogEntry::error(error));
@@ -394,11 +427,12 @@ impl PackageAuthoringApp {
         };
         match library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe) {
             Ok(()) => {
+                let message = format!("Saved recipe {}", path.display());
                 self.recipe_requires_initial_save = false;
                 self.recipe_dirty = false;
                 self.recipe_baseline = self.recipe.clone();
-                self.log
-                    .push(LogEntry::info(format!("Saved recipe {}", path.display())));
+                self.advance_recipe_revision();
+                self.log.push(LogEntry::info(message));
                 self.refresh_recipe_library();
             }
             Err(error) => self.log.push(LogEntry::error(format!(
@@ -422,6 +456,7 @@ impl PackageAuthoringApp {
                 self.recipe_path = Some(path.clone());
                 self.recipe_dirty = false;
                 self.recipe_baseline = self.recipe.clone();
+                self.advance_recipe_revision();
                 self.log.push(LogEntry::info(format!(
                     "Saved recipe copy {}",
                     path.display()
@@ -437,7 +472,7 @@ impl PackageAuthoringApp {
             return false;
         };
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Parhelion weapon recipe", &["json"])
+            .add_filter("Parhelion Weapon Recipe", &["json"])
             .set_directory(library.root())
             .pick_file()
         else {
@@ -449,6 +484,7 @@ impl PackageAuthoringApp {
                 self.recipe = recipe;
                 self.behavior_pins.clear();
                 self.recipe_baseline = self.recipe.clone();
+                self.advance_recipe_revision();
                 self.recipe_path = Some(destination.clone());
                 self.recipe_dirty = false;
                 self.clear_dependent_picker_queries();
@@ -481,7 +517,7 @@ impl PackageAuthoringApp {
         let suggested = format!("{}.parhelion.json", self.recipe.slug());
         let Some(path) = rfd::FileDialog::new()
             .set_title(format!("Export {}", self.recipe.name))
-            .add_filter("Parhelion weapon recipe", &["json"])
+            .add_filter("Parhelion Weapon Recipe", &["json"])
             .set_file_name(suggested)
             .save_file()
         else {
@@ -525,6 +561,7 @@ impl PackageAuthoringApp {
                 &self.recipe,
             )?;
             self.recipe_baseline = self.recipe.clone();
+            self.advance_recipe_revision();
             self.recipe_dirty = false;
             self.recipe_requires_initial_save = false;
             self.refresh_recipe_library();

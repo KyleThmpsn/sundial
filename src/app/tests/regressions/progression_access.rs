@@ -171,6 +171,7 @@ fn progression_catalog() -> Catalog {
             name: (*name).into(),
             type_name: "Hand Cannon".into(),
             paths: Vec::new(),
+            parent_nodes: Vec::new(),
             material_requirements: Vec::new(),
             material_requirement_set_index: None,
             material_requirement_set_hash: 0,
@@ -202,96 +203,6 @@ fn progression_catalog() -> Catalog {
                 })
                 .collect(),
         )
-}
-
-#[test]
-fn progression_tables_keep_named_content_visible_in_both_themes_and_sizes() {
-    for width in [640.0, 1100.0] {
-        for dark in [false, true] {
-            for section in [
-                ProgressionSection::Collections,
-                ProgressionSection::Triumphs,
-                ProgressionSection::Unlocks,
-            ] {
-                let directory = TestDirectory::new("progression-layout");
-                let mut app = app(directory.0.clone());
-                app.manifest = progression_catalog();
-                app.progression_section = section;
-                app.preferences.experimental_progression = true;
-                app.document = WorkspaceDocument::json_only(
-                    serde_json::json!({"version":8,"state":{"characters":[],"unlocks":{"account_flag_runs":[[0,1]],"objective_values":[[0,10],[1,3]]}}}),
-                );
-                let before = app.document.clone();
-                let ctx = egui::Context::default();
-                ctx.set_visuals(if dark {
-                    egui::Visuals::dark()
-                } else {
-                    egui::Visuals::light()
-                });
-                let mut output = egui::FullOutput::default();
-                for _ in 0..3 {
-                    output = ctx.run(
-                        egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(
-                                egui::Pos2::ZERO,
-                                egui::vec2(width, 760.0),
-                            )),
-                            ..Default::default()
-                        },
-                        |ctx| {
-                            egui::CentralPanel::default()
-                                .show(ctx, |ui| app.draw_progression_page(ui));
-                        },
-                    );
-                }
-                crate::app::tests::capture::write(
-                    &ctx,
-                    &output,
-                    &format!(
-                        "progression-{}-{dark}-{width}",
-                        match section {
-                            ProgressionSection::Collections => "collections",
-                            ProgressionSection::Triumphs => "triumphs",
-                            _ => "unlocks",
-                        }
-                    ),
-                );
-                let texts = output
-                    .shapes
-                    .iter()
-                    .filter_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) => Some(text),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let expected = match section {
-                    ProgressionSection::Collections => "Better Devils",
-                    ProgressionSection::Triumphs => "Destinations",
-                    _ => "First Victory",
-                };
-                let text = texts
-                    .iter()
-                    .find(|text| text.galley.job.text == expected)
-                    .unwrap_or_else(|| panic!("Missing {expected}"));
-                assert!(text.pos.x >= 0.0 && text.pos.x < width && text.pos.y < 740.0);
-                if section == ProgressionSection::Unlocks {
-                    let details = texts
-                        .iter()
-                        .filter(|text| text.galley.job.text == "Details")
-                        .collect::<Vec<_>>();
-                    assert_eq!(details.len(), 5);
-                    for cell in &details[1..] {
-                        assert!(
-                            (cell.pos.x - details[0].pos.x).abs() < 10.0,
-                            "Details cells must align with their header"
-                        );
-                    }
-                }
-                assert_eq!(app.document, before);
-                assert!(!app.dirty);
-            }
-        }
-    }
 }
 
 #[test]

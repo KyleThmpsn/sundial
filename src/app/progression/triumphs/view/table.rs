@@ -111,6 +111,7 @@ impl Table<'_> {
             }
             self.navigation_changed = true;
         }
+        reward_menu(&response, self.catalog, &row.record);
         table_cell(
             ui,
             88.0,
@@ -137,7 +138,7 @@ impl Table<'_> {
                         .small(),
                     )
                     .on_hover_ui(|ui| {
-                        ui.label(if row.status == Status::Completed { "Resets progress and subtracts this Triumph's score. Previously queued or delivered rewards remain. Undo restores the whole completion edit." } else if !self.delivery_supported { "Updates progress, completion, and Triumph score. Triumphs that grant items must be claimed in game because Sundial does not support Dawn progression reward claims." } else { "Updates progress, completion, and Triumph score. Item rewards go to the Reward Queue for the selected character." });
+                        ui.label(if row.status == Status::Completed { "Resets progress and score. Rewards already queued or delivered stay." } else if !self.delivery_supported { "Updates progress, completion and score. Claim item rewards in game." } else { "Updates progress, completion and score. Item rewards go to the Reward Queue." });
                         if let Some(runtime) = &row.record.runtime {
                             let score = if row.record.completion_flag.is_some() {u64::from(runtime.score)} else {runtime.interval_scores.iter().map(|score|u64::from(*score)).sum()};
                             ui.label(format!("{score} Triumph Points"));
@@ -200,6 +201,38 @@ impl Table<'_> {
             table_cell(ui, 132.0, "");
         }
     }
+}
+
+/// Right-click entries that open a Triumph's reward items.
+fn reward_menu(response: &egui::Response, catalog: &Catalog, record: &RecordDefinition) {
+    let Some(runtime) = &record.runtime else {
+        return;
+    };
+    let mut rewards = Vec::new();
+    for hash in runtime
+        .rewards
+        .iter()
+        .map(|(index, _)| *index)
+        .chain(runtime.interval_items.iter().flatten().copied())
+        .filter_map(|index| catalog.item_hash_for_index(index))
+    {
+        if !rewards.contains(&hash) {
+            rewards.push(hash);
+        }
+    }
+    if rewards.is_empty() {
+        return;
+    }
+    response.context_menu(|ui| {
+        for hash in rewards {
+            let name = catalog
+                .inventory_definition(hash)
+                .map(|item| item.name)
+                .filter(|name| !name.trim().is_empty())
+                .map_or_else(|| crate::hash::format_hash_hex(hash), str::to_owned);
+            crate::app::inspector::inspect_menu_button(ui, &format!("Inspect {name}"), hash);
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

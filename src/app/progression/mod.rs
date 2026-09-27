@@ -1,8 +1,3 @@
-#[cfg(test)]
-use super::inspector::{
-    meaningful_definition_contexts, objective_details_tooltip, objective_traits_text,
-    override_meaning,
-};
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
@@ -12,9 +7,7 @@ use eframe::egui;
 use serde_json::Value;
 
 #[cfg(test)]
-use crate::catalog::{
-    ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef, ProgressionContextKind,
-};
+use crate::catalog::ProgressionContextKind;
 use crate::{
     catalog::{
         Catalog, ObjectiveDef, ProgressionContextDef, ProgressionDefinition, ProgressionScope,
@@ -23,8 +16,6 @@ use crate::{
     hash::format_hash_hex,
 };
 
-#[cfg(test)]
-use super::inspector::objective_goal_text;
 use super::{
     glyphs::Glyph,
     inspector::{
@@ -89,3 +80,4 @@ pub(super) use mutations::{set_collection_flag, set_collection_value};
 pub(super) use page::draw_content;
 pub(super) use rank_state::{progression_target, saved_progression_lanes};
 pub(super) use state::{UiState, View};
+pub(super) use triumphs::record_progress;

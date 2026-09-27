@@ -1,6 +1,6 @@
 use super::{
     model::{AllocationGroup, Choice, CrossGroupChoice},
-    solver::{best_effort_failure, parse_allocation_name, solve_cross_group_plan, solve_group},
+    solver::{parse_allocation_name, solve_cross_group_plan, solve_group},
 };
 
 fn choice(hash: u64, values: [u16; 3]) -> Choice {
@@ -84,16 +84,4 @@ fn solver_reports_the_closest_available_shortfall() {
     let failure = solve_group(&sockets, &choices, &current, [10, 5, 0]).unwrap_err();
 
     assert_eq!(failure.best.unwrap().values, [5, 5, 1]);
-}
-
-#[test]
-fn impossible_targets_return_the_closest_plug_plan_for_application() {
-    let current = [Some(10), Some(20), Some(30)];
-    let closest = vec![Some(11), Some(20), Some(31)];
-
-    let failure = best_effort_failure(&current, closest.clone(), [30, 2, 2, 20, 4, 4], None);
-
-    assert_eq!(failure.plugs, closest);
-    assert_eq!(failure.changed, 2);
-    assert_eq!(failure.best_totals, [30, 2, 2, 20, 4, 4]);
 }

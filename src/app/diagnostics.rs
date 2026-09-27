@@ -26,8 +26,6 @@ mod activity;
 mod runtime;
 
 use runtime::append_runtime_files;
-#[cfg(test)]
-use runtime::scan_runtime_folder;
 
 pub(super) struct CatalogSummary<'a> {
     pub cache_path: &'a Path,
@@ -182,6 +180,11 @@ fn append_build_information(report: &mut String) {
         .expect("writing to a String cannot fail");
     writeln!(report, "process_id = {}", std::process::id())
         .expect("writing to a String cannot fail");
+    // The figure a reader is looking at in their task manager when they open an issue.
+    if let Some(bytes) = crate::memory::resident_bytes() {
+        writeln!(report, "resident_memory_mb = {}", bytes / (1024 * 1024))
+            .expect("writing to a String cannot fail");
+    }
     append_optional_path(report, "current_executable", std::env::current_exe());
     append_optional_path(report, "working_directory", std::env::current_dir());
     writeln!(report).expect("writing to a String cannot fail");

@@ -121,7 +121,7 @@ pub(crate) fn install(library: &RecipeLibrary, downloaded: &Downloaded) -> Resul
         None => add(library, downloaded)?,
     };
     save_receipt(library, downloaded, &destination).map_err(|error| format!(
-        "The recipe is saved at {} but its update history could not be saved: {error}. Keep this file and retry Add To Library to recover tracking", destination.display()))?;
+        "The recipe is saved at {} but its update history could not be saved: {error}. Keep this file and retry Add to Library to recover tracking", destination.display()))?;
     Ok(destination)
 }
 

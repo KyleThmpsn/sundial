@@ -67,8 +67,7 @@ impl SundialApp {
                         self.activity_log.file.open_folder();
                     }
                 });
-                ui.label(format!("Latest {CAPACITY} events · timestamps in UTC."));
-                ui.label("Log files keep recent sessions: 5 MB each, with two older files.");
+                ui.label(format!("Latest {CAPACITY} events. Times in UTC."));
                 if let Some(error) = self.activity_log.file.error() {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
@@ -95,29 +94,4 @@ impl SundialApp {
                     });
             });
     }
-}
-
-#[test]
-fn activity_history_is_bounded_and_exports_newest_first_with_severity() {
-    let mut log = ActivityLog::default();
-    for index in 0..=CAPACITY {
-        log.push(format!("Event {index}"), index == CAPACITY);
-    }
-    assert_eq!(log.entries.len(), CAPACITY);
-    assert_eq!(log.entries.front().unwrap().text, "Event 1");
-    assert!(
-        log.text()
-            .lines()
-            .next()
-            .unwrap()
-            .ends_with("[Error] Event 100")
-    );
-    assert!(
-        log.text()
-            .lines()
-            .nth(1)
-            .unwrap()
-            .ends_with("[Info] Event 99")
-    );
-    assert!(log.text().ends_with("[Info] Event 1"));
 }

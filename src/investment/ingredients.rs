@@ -6,15 +6,44 @@ use crate::sandbox_perk::ingredients::AbilitySource;
 pub enum IngredientSource {
     Weapon,
     Armor,
+    Sparrow,
+    Ship,
+    GhostShell,
     Ability,
 }
 impl IngredientSource {
-    pub const ALL: [Self; 3] = [Self::Weapon, Self::Armor, Self::Ability];
+    pub const ALL: [Self; 6] = [
+        Self::Weapon,
+        Self::Armor,
+        Self::Sparrow,
+        Self::Ship,
+        Self::GhostShell,
+        Self::Ability,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Weapon => "Weapon",
             Self::Armor => "Armor",
+            Self::Sparrow => "Sparrow",
+            Self::Ship => "Ship",
+            Self::GhostShell => "Ghost Shell",
             Self::Ability => "Ability",
+        }
+    }
+
+    /// The equipment an inventory bucket holds. Subclasses are read as abilities instead.
+    fn from_bucket_hash(bucket_hash: u64) -> Option<Self> {
+        if ItemWeaponInventorySlot::from_bucket_hash(bucket_hash).is_some() {
+            return Some(Self::Weapon);
+        }
+        match bucket_hash {
+            3_448_274_439 | 3_551_918_588 | 14_239_492 | 20_886_954 | 1_585_787_867 => {
+                Some(Self::Armor)
+            }
+            2_025_709_351 => Some(Self::Sparrow),
+            284_967_655 => Some(Self::Ship),
+            4_023_194_814 => Some(Self::GhostShell),
+            _ => None,
         }
     }
 }
@@ -40,17 +69,7 @@ impl InvestmentCatalog {
         };
         let mut origins = BTreeMap::<u64, BTreeSet<IngredientSource>>::new();
         for item in &self.catalog.items {
-            let source = if ItemWeaponInventorySlot::from_bucket_hash(item.bucket_hash).is_some() {
-                Some(IngredientSource::Weapon)
-            } else if matches!(
-                item.bucket_hash,
-                3_448_274_439 | 3_551_918_588 | 14_239_492 | 20_886_954 | 1_585_787_867
-            ) {
-                Some(IngredientSource::Armor)
-            } else {
-                None
-            };
-            let Some(source) = source else {
+            let Some(source) = IngredientSource::from_bucket_hash(item.bucket_hash) else {
                 continue;
             };
             origins.entry(item.hash).or_default().insert(source);

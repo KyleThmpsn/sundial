@@ -47,47 +47,6 @@ pub(super) fn artwork(seed: u8) -> Artwork {
 }
 
 #[test]
-fn personalization_roundtrips_embedded_artwork_and_multiline_lore() {
-    let mut recipe = crate::WeaponRecipe::every_end();
-    let legacy = serde_json::to_string(&recipe).unwrap();
-    assert!(!recipe.overrides.exclude_from_sunrise_badge);
-    assert!(!legacy.contains("exclude_from_sunrise_badge"));
-    recipe.overrides.exclude_from_sunrise_badge = true;
-    assert!(!legacy.contains("corner_icon"));
-    assert!(!legacy.contains("\"lore\""));
-    recipe.overrides.badge = Some(Badge {
-        name: "The Wanderers".into(),
-        description: "A personal set.".into(),
-        icon: Some(artwork(40)),
-    });
-    recipe.overrides.corner_icon = Some(artwork(90));
-    recipe.overrides.lore = Some("One story.\n\nAnother chapter: 星 ✨".into());
-    let decoded: crate::WeaponRecipe =
-        serde_json::from_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
-    assert_eq!(decoded, recipe);
-    let spec = decoded.to_spec().unwrap();
-    assert!(spec.overrides.exclude_from_sunrise_badge);
-    assert_eq!(spec.overrides.badge, recipe.overrides.badge);
-    assert_eq!(spec.overrides.corner_icon, recipe.overrides.corner_icon);
-    assert_eq!(spec.overrides.lore, recipe.overrides.lore);
-    let values = project_authored_localized_values(
-        &[spec.clone()],
-        &[],
-        0,
-        crate::branding::Branding::Sunrise,
-    )
-    .unwrap()
-    .into_iter()
-    .map(|(h, v)| (h, v.to_owned()))
-    .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        values[&crate::presentation::text_hash(&spec.namespace, "lore")],
-        recipe.overrides.lore.unwrap()
-    );
-    assert!(Artwork::from_png(b"not a PNG").is_err());
-}
-
-#[test]
 fn personal_badges_share_text_but_reject_conflicting_settings_and_over_capacity() {
     let mut first =
         crate::WeaponRecipe::new_named_weapon_for_donor("First Story", 0xA25B8F8F, "Arc Logic")

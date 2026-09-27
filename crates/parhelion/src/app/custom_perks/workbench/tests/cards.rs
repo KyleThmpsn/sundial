@@ -102,14 +102,17 @@ fn validation_reveals_the_incomplete_action_inside_a_collapsed_effect() {
     collapsed(&ctx, &workbench);
     let before = workbench.documents[0].recipe.clone();
     let issue = workbench.validation_issue(&before).unwrap();
+    // Every effect edits as nodes, so the problem points at the node's field as well.
+    let location = issue.location.unwrap();
     assert_eq!(
-        issue.location.unwrap(),
-        validation::Location {
-            document: before.id.clone(),
-            effect: 1178,
-            action: Some(0),
-            native: None,
-        }
+        (&location.document, location.effect, location.action),
+        (&before.id, 1178, Some(0))
+    );
+    assert_eq!(
+        location
+            .native
+            .map(|native| (native.group, native.action, native.field)),
+        Some((0, 0, "Object"))
     );
     let output = render(&ctx, &mut workbench, size);
     let button = label(&output, "Show Problem").unwrap().center();
@@ -370,7 +373,7 @@ fn move_menu_keeps_custom_effect_data() {
     let original = workbench.documents[0].recipe.effects.clone();
     let output = render(&ctx, &mut workbench, size);
     let title = label(&output, "Spawn on Kill").unwrap();
-    let menu = rects(&output, "…")
+    let menu = rects(&output, crate::app::style::MORE)
         .into_iter()
         .find(|rect| (rect.center().y - title.center().y).abs() < 5.0)
         .unwrap()
@@ -552,6 +555,26 @@ fn click_name(ctx: &egui::Context, workbench: &mut Workbench, size: egui::Vec2, 
     pointer(ctx, workbench, size, pos, false);
 }
 
+/// Clicks the first `name` at or below the row labelled `row`.
+fn click_below(
+    ctx: &egui::Context,
+    workbench: &mut Workbench,
+    size: egui::Vec2,
+    row: &str,
+    name: &str,
+) {
+    let output = render(ctx, workbench, size);
+    let top = label(&output, row).expect(row).top();
+    let pos = rects(&output, name)
+        .into_iter()
+        .filter(|rect| rect.top() >= top - 2.0)
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect(name)
+        .center();
+    pointer(ctx, workbench, size, pos, true);
+    pointer(ctx, workbench, size, pos, false);
+}
+
 fn check_or_ending(recovered: bool, trigger: Trigger) {
     use sundial::package_authoring::sandbox_perk::{action, program::native_draft};
     let size = egui::vec2(1320.0, 900.0);
@@ -570,7 +593,16 @@ fn check_or_ending(recovered: bool, trigger: Trigger) {
     }
     workbench.documents[0].recipe.effects[0].program = Some(program);
     let before = workbench.documents[0].recipe.clone();
-    click_name(&ctx, &mut workbench, size, "Add End Condition…");
+    // A card with only its default ending folds the condition rows, and a list that
+    // already holds an ending adds the next one with Or.
+    if label(&render(&ctx, &mut workbench, size), "More Conditions").is_some() {
+        click_name(&ctx, &mut workbench, size, "More Conditions");
+    }
+    if label(&render(&ctx, &mut workbench, size), "Add End Condition…").is_some() {
+        click_name(&ctx, &mut workbench, size, "Add End Condition…");
+    } else {
+        click_below(&ctx, &mut workbench, size, "End Condition", "Or…");
+    }
     click_name(&ctx, &mut workbench, size, "Show All");
     click_name(&ctx, &mut workbench, size, "Search Behaviors");
     frame(
@@ -605,7 +637,8 @@ fn check_or_ending(recovered: bool, trigger: Trigger) {
         }
     );
     assert_eq!(label(&output, "Or").is_some(), trigger != Trigger::Always);
-    assert_eq!(program.native.is_some(), recovered);
+    // An edit adopts the node form the card draws.
+    assert!(program.native.is_some());
     capture::write(
         &ctx,
         &output,
@@ -659,18 +692,21 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
         &ctx,
         &mut workbench,
         size,
-        "When the Effect's Counter Is Reached (Accumulator)",
+        "When the Effect's Counter Is Reached",
     );
     click_name(&ctx, &mut workbench, size, "Use Trigger");
     let program = workbench.documents[0].recipe.effects[0]
         .program
         .as_ref()
         .unwrap();
-    assert_eq!(program.trigger, Trigger::Native);
-    let node = program.native_trigger.as_ref().expect("counter trigger");
+    // The pick adopts the card's node form, so read the trigger back through the draft,
+    // which covers both shapes.
+    let decoded = action::decode(&native_draft(program).unwrap().graph.emit().unwrap()).unwrap();
+    let node = &decoded.groups[0].activation[0];
     assert_eq!(node.kind, 26);
     // 2. A fresh counter starts at the stock norm, not clamped to zero.
-    let at = |offset: usize| f32::from_le_bytes(node.bytes[offset..offset + 4].try_into().unwrap());
+    let at =
+        |offset: usize| f32::from_le_bytes(node.native[offset..offset + 4].try_into().unwrap());
     assert_eq!(
         (at(0x20), at(0x24), at(0x28), at(0x2C)),
         (1.0, -1.0, -9998.0, 100.0)
@@ -678,17 +714,15 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
     // 3. An empty counter says so, and the counter leads with its two decisions.
     let output = render(&ctx, &mut workbench, size);
     assert!(label(&output, "Contributing Conditions").is_some());
-    assert!(label_starting_with(&output, "Nothing counts yet").is_some());
+    assert!(label_starting_with(&output, "No contributing conditions").is_some());
     assert!(label(&output, "After It Fires").is_some());
     capture::write(&ctx, &output, "effect-counter-empty");
-    let choice = label(&output, "Keep counting")
+    let choice = label(&output, "Keep Counting")
         .expect("After It Fires choice")
         .center();
     pointer(&ctx, &mut workbench, size, choice, true);
     pointer(&ctx, &mut workbench, size, choice, false);
-    click_name(&ctx, &mut workbench, size, "Start over");
-    // Editing a native field promotes the program to the complete editor, so read the
-    // trigger back through the draft, which covers both shapes.
+    click_name(&ctx, &mut workbench, size, "Start Over");
     let program = workbench.documents[0].recipe.effects[0]
         .program
         .as_ref()
@@ -699,7 +733,7 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
     assert_eq!(
         (at(0x20), at(0x24)),
         (1.0, 1.0),
-        "Start over resets at Count Needed"
+        "Start Over resets at Count Needed"
     );
     // Adding a contributing condition creates a row that adds 1, shown as Counter Change.
     click_name(&ctx, &mut workbench, size, "Add Condition…");
@@ -712,7 +746,7 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
         size,
         vec![egui::Event::Text("02 kill".into())],
     );
-    click_name(&ctx, &mut workbench, size, "On a Kill");
+    click_name(&ctx, &mut workbench, size, "On Any Credited Kill");
     click_name(&ctx, &mut workbench, size, "Use Condition");
     let program = workbench.documents[0].recipe.effects[0]
         .program
@@ -727,7 +761,7 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
     // 4. The row's header says what it does; opening it shows plain labels, and the failure
     //    side waits under its own Advanced.
     let output = render(&ctx, &mut workbench, size);
-    let header = label(&output, "Counter Change (Accumulator) · adds 1").expect("row header");
+    let header = label(&output, "Counter Change · adds 1").expect("row header");
     pointer(&ctx, &mut workbench, size, header.center(), true);
     pointer(&ctx, &mut workbench, size, header.center(), false);
     let output = render(&ctx, &mut workbench, size);
@@ -739,7 +773,7 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
         "failure side leads"
     );
     assert!(
-        label_starting_with(&output, "Nothing counts yet").is_none(),
+        label_starting_with(&output, "No contributing conditions").is_none(),
         "the empty hint outlived its contribution"
     );
     // 5. The counter itself leads with the count it needs only.
@@ -748,40 +782,4 @@ fn the_effects_counter_trigger_is_findable_and_its_contributions_count() {
         assert!(label(&output, waiting).is_none(), "{waiting} leads");
     }
     capture::write(&ctx, &output, "effect-counter-contribution");
-}
-
-/// A comparison trigger reads as its comparison. The engine rows around it, at their
-/// defaults, wait under Advanced instead of leading a card with "Native Value 0".
-#[test]
-fn a_comparison_trigger_leads_with_its_comparison_only() {
-    let size = egui::vec2(1320.0, 900.0);
-    let (ctx, mut workbench) = setup();
-    workbench.documents[0].recipe.effects.truncate(1);
-    let (title, _, node) = program::compiled_comparisons()
-        .into_iter()
-        .find(|(title, _, _)| title.starts_with("Nearby Enemy"))
-        .expect("a compiled comparison");
-    let effect = workbench.documents[0].recipe.effects[0]
-        .program
-        .as_mut()
-        .unwrap();
-    effect.trigger = Trigger::Native;
-    effect.native_trigger = Some(node);
-    let output = render(&ctx, &mut workbench, size);
-    assert!(label_starting_with(&output, &title).is_some(), "{title}");
-    for leading in ["Compared Value", "Comparison"] {
-        assert!(label(&output, leading).is_some(), "{leading}");
-    }
-    for waiting in [
-        "Player State",
-        "Weapon State",
-        "State",
-        "At Least",
-        "At Most",
-        "Chance Source",
-    ] {
-        assert!(label(&output, waiting).is_none(), "{waiting} leads");
-    }
-    assert!(label_starting_with(&output, "Native Value").is_none());
-    capture::write(&ctx, &output, "comparison-trigger-lead");
 }

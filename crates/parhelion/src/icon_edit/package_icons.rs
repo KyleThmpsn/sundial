@@ -304,40 +304,4 @@ mod tests {
         icon[(1, 1)] = egui::Color32::WHITE;
         assert!(visible_transparency(&icon));
     }
-
-    #[test]
-    #[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES, writes a temporary artwork contact sheet"]
-    fn native_perk_gallery() {
-        let packages = std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap();
-        let manager = sundial::package_authoring::open_shadowkeep_package_manager(
-            std::path::Path::new(&packages),
-        )
-        .unwrap();
-        let mut sheet = image::RgbaImage::from_pixel(800, 640, image::Rgba([35, 35, 35, 255]));
-        let mut count = 0;
-        scan(&manager, |_, _, entry| {
-            if let Some(entry) = entry.filter(|entry| entry.white) {
-                assert_eq!(entry.size, [96, 96]);
-                for y in 0..64 {
-                    for x in 0..64 {
-                        let [r, g, b, a] = entry.thumbnail[(x, y)].to_srgba_unmultiplied();
-                        let blend = |v| {
-                            ((u32::from(v) * u32::from(a) + 35 * (255 - u32::from(a))) / 255) as u8
-                        };
-                        sheet.put_pixel(
-                            (count % 10) * 80 + x as u32 + 8,
-                            (count / 10) * 80 + y as u32 + 8,
-                            image::Rgba([blend(r), blend(g), blend(b), 255]),
-                        );
-                    }
-                }
-                count += 1;
-            }
-            count < 80
-        });
-        assert_eq!(count, 80);
-        let path = std::env::temp_dir().join("parhelion-perk-quality.png");
-        sheet.save(&path).unwrap();
-        eprintln!("Inspected {count} perk candidates: {}", path.display());
-    }
 }

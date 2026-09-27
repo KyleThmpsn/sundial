@@ -1,17 +1,11 @@
+use super::super::item_details::{Cell, ItemRowValue, draw_hash_item_rows, draw_table};
 use super::*;
+use crate::app::inspector::look;
 
 pub(super) fn draw_overview(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
-    if let Some(description) = content
-        .catalog
-        .description(content.hash)
-        .filter(|text| !text.trim().is_empty())
-    {
-        ui.label(crate::app::ui::destiny_text(ui, description));
-    }
     if content.source_context.is_some() && ui.available_width() >= 840.0 {
         ui.columns(2, |columns| {
             draw_overview_source(&mut columns[0], content);
-            columns[1].add_space(6.0);
             draw_overview_stats(&mut columns[1], content);
         });
     } else {
@@ -19,6 +13,7 @@ pub(super) fn draw_overview(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
         draw_overview_stats(ui, content);
     }
     if let Some(metadata) = content.matches.item_package_metadata {
+        draw_plug_summary(ui, content.catalog, content.hash, metadata);
         super::super::item_details::draw_item_traits(ui, content.catalog, content.hash, metadata);
     }
     if let Some(item) = content.matches.item {
@@ -44,23 +39,41 @@ pub(super) fn draw_overview_stats(ui: &mut egui::Ui, content: &ItemInspection<'_
     }
 }
 
+/// The category a plug belongs to, which lists the other plugs in it.
+fn draw_plug_summary(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    hash: u64,
+    metadata: &ItemPackageMetadata,
+) {
+    let Some(category) = metadata
+        .plug_category_hash
+        .filter(|category| *category != 0 && *category != u64::from(u32::MAX))
+        .filter(|_| catalog.item_kind_label(hash) == "Plug")
+    else {
+        return;
+    };
+    ui.add_space(8.0);
+    look::properties(ui, ("item_plug_summary", hash), |p| {
+        p.link(
+            "Plug Category",
+            catalog,
+            category,
+            catalog
+                .display_name(category)
+                .map_or_else(|| format_hash_hex(category), str::to_owned),
+        );
+    });
+}
+
 pub(super) fn draw_hash_inventory_placement_summary(
     ui: &mut egui::Ui,
     metadata: &InventoryMetadata,
 ) {
-    metadata_subsection(ui, "Placement", |ui| {
-        egui::Grid::new("hash_inventory_metadata_placement")
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(ui, "Storage Scope", metadata.scope.label(), false);
-                hash_detail_field(
-                    ui,
-                    "Native Bucket ID",
-                    metadata.native_bucket_id.to_string(),
-                    true,
-                );
-            });
+    look::subheading(ui, "Placement");
+    look::properties(ui, "hash_inventory_metadata_placement", |p| {
+        p.text("Storage Scope", metadata.scope.label());
+        p.mono("Native Bucket ID", metadata.native_bucket_id.to_string());
     });
 }
 
@@ -68,29 +81,15 @@ pub(super) fn draw_hash_inventory_capacity_summary(
     ui: &mut egui::Ui,
     metadata: &InventoryMetadata,
 ) {
-    metadata_subsection(ui, "Capacity", |ui| {
-        egui::Grid::new("hash_inventory_metadata_capacity")
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(ui, "Stackability", metadata.stackability.label(), false);
-                hash_detail_field(
-                    ui,
-                    "Maximum Stack Size",
-                    metadata
-                        .max_stack_size
-                        .map_or_else(|| "<none>".into(), |value| value.to_string()),
-                    true,
-                );
-                hash_detail_field(
-                    ui,
-                    "Inventory Bucket Capacity",
-                    metadata
-                        .bucket_capacity
-                        .map_or_else(|| "<none>".into(), |value| value.to_string()),
-                    true,
-                );
-            });
+    look::subheading(ui, "Capacity");
+    look::properties(ui, "hash_inventory_metadata_capacity", |p| {
+        p.text("Stackability", metadata.stackability.label());
+        if let Some(value) = metadata.max_stack_size {
+            p.mono("Maximum Stack Size", value.to_string());
+        }
+        if let Some(value) = metadata.bucket_capacity {
+            p.mono("Inventory Bucket Capacity", value.to_string());
+        }
     });
 }
 
@@ -103,59 +102,75 @@ pub(super) fn draw_hash_item_investment_stats(
     if metadata.investment_stats.is_empty() {
         return;
     }
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!("Stats ({})", metadata.investment_stats.len()))
-        .id_salt(("hash_item_investment_stats", item_hash))
-        .default_open(true)
-        .show(ui, |ui| {
-            let technical_id = ui.id().with("stat_technical_ids");
-            let mut technical = ui.data_mut(|data| data.get_temp::<bool>(technical_id).unwrap_or(false));
+    look::section(
+        ui,
+        ("hash_item_investment_stats", item_hash),
+        "Stats",
+        Some(metadata.investment_stats.len()),
+        true,
+        |ui| {
+            let technical_id = egui::Id::new(("stat_technical_ids", item_hash));
+            let mut technical =
+                ui.data_mut(|data| data.get_temp::<bool>(technical_id).unwrap_or(false));
             ui.checkbox(&mut technical, "Show Technical IDs");
             ui.data_mut(|data| data.insert_temp(technical_id, technical));
-            egui::ScrollArea::horizontal().id_salt(("stat_columns", item_hash)).show(ui, |ui| {
-            egui::Grid::new(("hash_item_investment_stat_rows", item_hash))
-                .num_columns(if technical { 6 } else { 3 })
-                .spacing([16.0, 3.0])
-                .striped(true)
+            egui::ScrollArea::horizontal()
+                .id_salt(("stat_columns", item_hash))
                 .show(ui, |ui| {
-                    ui.strong("Stat");
-                    ui.strong("Investment Value")
-                        .on_hover_text("Raw value stored in the investment block");
-                    ui.strong("Display Value").on_hover_text(
-                        "Value calculated from this item's decoded stat-group display curve, not a live gameplay measurement",
-                    );
-                    if technical {
-                        ui.strong("Index");
-                        ui.strong("Hex");
-                        ui.strong("Decimal");
-                    }
-                    ui.end_row();
-                    for stat in &metadata.investment_stats {
-                        let definition = catalog.item_stat_definition(stat.definition_index);
-                        let stat_name = definition
-                            .map(|definition| definition.name.as_str())
-                            .filter(|name| !name.trim().is_empty());
-                        if let Some(definition) = definition {
-                            draw_named_catalog_hash_link(ui, catalog, definition.hash, stat_name.unwrap_or("Unnamed Stat"));
-                        } else {
-                            ui.weak("-");
-                        }
-                        ui.monospace(stat.value.to_string());
-                        ui.monospace(catalog.item_in_game_stat_display(item_hash, stat));
-                        if technical {
-                            ui.monospace(stat.definition_index.to_string());
-                            if let Some(definition) = definition {
-                                draw_hash_hex_and_decimal_cells(ui, definition.hash);
-                            } else {
-                                ui.label("-");
-                                ui.label("-");
+                    egui::Grid::new(("hash_item_investment_stat_rows", item_hash))
+                        .num_columns(if technical { 5 } else { 3 })
+                        .spacing([16.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Stat");
+                            ui.strong("Investment Value");
+                            ui.strong("Display Value");
+                            if technical {
+                                ui.strong("Index");
+                                ui.strong("Hash");
                             }
-                        }
-                        ui.end_row();
-                    }
+                            ui.end_row();
+                            for stat in &metadata.investment_stats {
+                                let definition =
+                                    catalog.item_stat_definition(stat.definition_index);
+                                if let Some(definition) = definition {
+                                    let name = definition.name.trim();
+                                    let stat_name = if name.is_empty() {
+                                        format_hash_hex(definition.hash)
+                                    } else {
+                                        name.to_owned()
+                                    };
+                                    draw_named_catalog_hash_link(
+                                        ui,
+                                        catalog,
+                                        definition.hash,
+                                        stat_name,
+                                    );
+                                } else {
+                                    ui.label(format!("Stat #{}", stat.definition_index));
+                                }
+                                ui.monospace(stat.value.to_string());
+                                ui.monospace(catalog.item_in_game_stat_display(item_hash, stat));
+                                if technical {
+                                    ui.monospace(stat.definition_index.to_string());
+                                    if let Some(definition) = definition {
+                                        ui.label(
+                                            egui::RichText::new(format_hash_hex_and_decimal(
+                                                definition.hash,
+                                            ))
+                                            .monospace()
+                                            .color(look::muted(ui)),
+                                        );
+                                    } else {
+                                        ui.label("");
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
-            });
-        });
+        },
+    );
 }
 
 pub(super) fn draw_hash_item_stat_matches(
@@ -166,67 +181,84 @@ pub(super) fn draw_hash_item_stat_matches(
     let Some(definition) = matches.item_stat_definition else {
         return;
     };
-    ui.add_space(8.0);
-    hash_metadata_section(ui, "Investment Stat Definition", true, |ui| {
-        egui::Grid::new(("hash_item_stat_definition", definition.hash))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(
-                    ui,
-                    "Name",
-                    if definition.name.trim().is_empty() {
-                        "<not present>"
-                    } else {
-                        &definition.name
-                    },
-                    false,
-                );
-                hash_detail_field(
-                    ui,
-                    "Definition Index",
-                    definition.definition_index.to_string(),
-                    true,
-                );
-            });
-
-        let references = &matches.investment_stat_references;
-        if references.is_empty() {
-            return;
-        }
-        ui.add_space(8.0);
-        egui::CollapsingHeader::new(format!("Items Using This Stat ({})", references.len()))
-            .id_salt(("hash_item_stat_references", definition.hash))
-            .default_open(references.len() <= 12)
-            .show(ui, |ui| {
-                egui::Grid::new(("hash_item_stat_reference_rows", definition.hash))
-                    .num_columns(5)
-                    .spacing([16.0, 3.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Item");
-                        ui.strong("Hex");
-                        ui.strong("Decimal");
-                        ui.strong("Investment Value")
-                            .on_hover_text("Raw value stored in the investment block");
-                        ui.strong("Display Value").on_hover_text(
-                            "Value produced by each item's decoded stat-group display curve",
-                        );
-                        ui.end_row();
-                        for (item_hash, stat) in references {
-                            ui.label(
-                                catalog
-                                    .package_item_name(*item_hash)
-                                    .unwrap_or("<not present>"),
-                            );
-                            draw_hash_hex_and_decimal_cells(ui, *item_hash);
-                            ui.monospace(stat.value.to_string());
-                            ui.monospace(catalog.item_in_game_stat_display(*item_hash, stat));
-                            ui.end_row();
-                        }
-                    });
-            });
+    look::properties(ui, ("hash_item_stat_definition", definition.hash), |p| {
+        p.mono("Definition Index", definition.definition_index.to_string());
     });
+
+    let groups = catalog.stat_groups_with_stat(definition.definition_index);
+    if !groups.is_empty() {
+        let rows = groups
+            .iter()
+            .filter_map(|&group_index| {
+                let group = catalog.item_stat_group_by_index(u16::try_from(group_index).ok()?)?;
+                let stat = group
+                    .scaled_stats
+                    .iter()
+                    .find(|stat| stat.definition_index == definition.definition_index)?;
+                Some(vec![
+                    Cell::Link(group.hash, format!("Group {group_index}")),
+                    Cell::mono(group.maximum_value),
+                    Cell::text(if stat.is_linear {
+                        "Linear"
+                    } else {
+                        "Interpolated"
+                    }),
+                    Cell::mono(stat.display_interpolation.len()),
+                ])
+            })
+            .collect::<Vec<_>>();
+        look::section(
+            ui,
+            ("hash_item_stat_groups", definition.hash),
+            "Stat Groups",
+            Some(rows.len()),
+            rows.len() <= super::super::HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+            |ui| {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_item_stat_groups", definition.hash),
+                    &[
+                        "Stat Group",
+                        "Maximum Value",
+                        "Interpolation",
+                        "Curve Points",
+                    ],
+                    &rows,
+                );
+            },
+        );
+    }
+
+    let references = &matches.investment_stat_references;
+    if references.is_empty() {
+        return;
+    }
+    look::section(
+        ui,
+        ("hash_item_stat_references", definition.hash),
+        "Items Using This Stat",
+        Some(references.len()),
+        references.len() <= 12,
+        |ui| {
+            let investment = |position: usize| references[position].1.value.to_string();
+            let display = |position: usize| {
+                let (item_hash, stat) = references[position];
+                catalog.item_in_game_stat_display(item_hash, stat)
+            };
+            let values: [ItemRowValue<'_>; 2] = [
+                ("Investment Value", &investment),
+                ("Display Value", &display),
+            ];
+            draw_hash_item_rows(
+                ui,
+                catalog,
+                egui::Id::new(("hash_item_stat_references", definition.hash)),
+                references.iter().map(|(item_hash, _)| *item_hash),
+                &values,
+            );
+        },
+    );
 }
 
 pub(super) fn draw_hash_inventory_bucket(
@@ -242,127 +274,23 @@ pub(super) fn draw_hash_inventory_bucket(
         .collect::<Vec<_>>();
     native_buckets.sort();
     native_buckets.dedup();
-
-    ui.add_space(8.0);
-    hash_metadata_section(ui, "Inventory Bucket", false, |ui| {
-        egui::Grid::new(("hash_inventory_bucket", hash))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(
-                    ui,
-                    "Definition Hash",
-                    format_hash_hex_and_decimal(hash),
-                    true,
-                );
-                hash_detail_field(ui, "Items", items.len().to_string(), true);
-                hash_detail_field(
-                    ui,
-                    "Native Bucket IDs",
-                    if native_buckets.is_empty() {
-                        "<not resolved>".into()
-                    } else {
-                        native_buckets.join(" · ")
-                    },
-                    false,
-                );
-            });
-        egui::CollapsingHeader::new(format!("Items ({})", items.len()))
-            .id_salt(("hash_inventory_bucket_items", hash))
-            .default_open(items.len() <= 20)
-            .show(ui, |ui| {
-                draw_hash_item_rows(
-                    ui,
-                    catalog,
-                    ("bucket_items", hash, 0_usize),
-                    items.iter().map(|item| item.hash),
-                );
-            });
+    look::properties(ui, ("hash_inventory_bucket", hash), |p| {
+        p.text("Native Buckets", native_buckets.join(" · "));
     });
-}
-
-pub(super) fn draw_hash_item_rows(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    id: (&'static str, u64, usize),
-    hashes: impl IntoIterator<Item = u64>,
-) {
-    let hashes = hashes.into_iter().collect::<Vec<_>>();
-    let filter_id = ui.id().with(("item_rows_filter", id));
-    let mut query = ui.data_mut(|data| data.get_temp::<String>(filter_id).unwrap_or_default());
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .hint_text("Filter by Name, Type, or Hash")
-                .desired_width(260.0),
-        );
-        if !query.is_empty() && ui.small_button("Clear").clicked() {
-            query.clear();
-        }
-    });
-    ui.data_mut(|data| data.insert_temp(filter_id, query.clone()));
-    let query = query.trim().to_lowercase();
-    let matching = hashes
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, hash)| {
-            query.is_empty()
-                || format_hash_hex(*hash).to_lowercase().contains(&query)
-                || catalog
-                    .package_item_name(*hash)
-                    .is_some_and(|name| name.to_lowercase().contains(&query))
-                || catalog
-                    .package_item_type_name(*hash)
-                    .is_some_and(|name| name.to_lowercase().contains(&query))
-        })
-        .collect::<Vec<_>>();
-    ui.weak(format!("{} of {} members", matching.len(), hashes.len()));
-    if matching.is_empty() {
-        ui.weak("No members match this filter.");
-        return;
-    }
-    const MAX_VISIBLE_ROWS: usize = 18;
-    let row_height = ui
-        .text_style_height(&egui::TextStyle::Body)
-        .max(ui.spacing().interact_size.y)
-        + 3.0;
-    let visible_rows = matching.len().clamp(1, MAX_VISIBLE_ROWS) + 1;
-    let table_height = row_height * visible_rows as f32;
-    egui::ScrollArea::vertical()
-        .id_salt(("hash_item_rows", id))
-        .min_scrolled_height(table_height)
-        .max_height(table_height)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::Grid::new(("hash_item_row_grid", id))
-                .num_columns(4)
-                .striped(true)
-                .spacing([16.0, 3.0])
-                .show(ui, |ui| {
-                    ui.strong("Row");
-                    ui.strong("Hash");
-                    ui.strong("Name");
-                    ui.strong("Type");
-                    ui.end_row();
-                    for (index, hash) in matching {
-                        ui.monospace((index + 1).to_string());
-                        draw_catalog_hash_link(ui, catalog, hash, format_hash_hex(hash));
-                        let name = catalog
-                            .package_item_name(hash)
-                            .unwrap_or("Name not resolved");
-                        crate::app::item_editor::catalog_item_tooltip(
-                            ui.label(name),
-                            catalog,
-                            hash,
-                        );
-                        ui.label(
-                            catalog
-                                .package_item_type_name(hash)
-                                .unwrap_or("Type not resolved"),
-                        );
-                        ui.end_row();
-                    }
-                });
-        });
+    look::section(
+        ui,
+        ("hash_inventory_bucket_items", hash),
+        "Items",
+        Some(items.len()),
+        true,
+        |ui| {
+            draw_hash_item_rows(
+                ui,
+                catalog,
+                egui::Id::new(("bucket_items", hash)),
+                items.iter().map(|item| item.hash),
+                &[],
+            );
+        },
+    );
 }

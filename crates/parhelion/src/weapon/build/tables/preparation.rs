@@ -42,6 +42,10 @@ impl WeaponTables {
             unlocks: std::mem::take(&mut sources.stock_unlocks),
             unlock_banks: std::mem::take(&mut sources.stock_unlock_banks),
             unlock_displays: std::mem::take(&mut sources.stock_unlock_displays),
+            subclass: sources.subclass_tables.clone(),
+            subclass_records: Vec::new(),
+            subclass_companions: Vec::new(),
+            subclass_path_names: Vec::new(),
             definitions: Vec::with_capacity(weapon_count),
             authored_strings: Vec::with_capacity(weapon_count),
             plans: Vec::with_capacity(weapon_count),
@@ -60,7 +64,7 @@ impl WeaponTables {
             let operation = format!("Authoring {}", donor.weapon.text.name);
             progress.start(&operation);
             self.author_weapon(context, ordinal, donor)
-                .map_err(|error| error.context(donor.weapon.error_context()))?;
+                .map_err(|error| donor.weapon.in_recipe(error))?;
             progress.finish(&operation);
         }
         Ok(())

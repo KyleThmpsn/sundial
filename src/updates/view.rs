@@ -41,10 +41,15 @@ impl UpdateCheck {
         let mut download = false;
         let mut cancel_restart = false;
         let mut action = Action::None;
+        // Wide enough that a note reads in a line or two, and tall enough for a screen of them,
+        // while still fitting Sundial's smallest window.
+        let screen = ctx.screen_rect().size();
+        let width = 720.0_f32.min(screen.x - 48.0);
+        let notes_height = (screen.y - 300.0).clamp(200.0, 440.0);
         egui::Window::new("Update Sundial")
             .open(&mut open)
             .collapsible(false)
-            .default_width(560.0)
+            .default_width(width)
             .show(ctx, |ui| {
                 let UpdateStatus::Available(release) = &self.status else {
                     ui.label(
@@ -60,7 +65,7 @@ impl UpdateCheck {
                 ui.strong("Release Notes");
                 egui::ScrollArea::vertical()
                     .id_salt("update_release_notes")
-                    .max_height(300.0)
+                    .max_height(notes_height)
                     .show(ui, |ui| {
                         ui.style_mut().url_in_tooltip = true;
                         egui_commonmark::CommonMarkViewer::new().show(

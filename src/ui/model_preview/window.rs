@@ -5,7 +5,7 @@ use super::*;
 pub(super) struct Request {
     selection: Selection,
     name: String,
-    access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
+    pub(super) access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
     preserve_camera: bool,
     enabled: bool,
 }
@@ -59,10 +59,20 @@ pub(super) fn launcher(
     if let Some(request) = &mut request {
         request.enabled = enabled;
     }
+    let active = owned_by(ui.ctx(), owner);
+    let label = format!("{}  Model Preview", egui_phosphor::regular::CUBE);
     let response = ui
-        .add_enabled(enabled, egui::Button::new("Model Preview…"))
-        .on_hover_text("Open the selected model in a separate window.")
-        .on_disabled_hover_text("Choose a game installation to preview models.");
+        .add_enabled(
+            enabled,
+            egui::Button::new(label)
+                .selected(active)
+                .min_size(egui::vec2(132.0, 24.0)),
+        )
+        .on_hover_text("Open in a separate window")
+        .on_disabled_hover_text("No preview for this selection");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Model Preview")
+    });
     let shared = shared(ui.ctx());
     let Ok(mut preview) = shared.lock() else {
         return response;
@@ -83,6 +93,7 @@ pub(super) fn launcher(
 
 /// Temporarily disables a source viewport's model reads during package operations.
 pub fn pause_source(ctx: &egui::Context, paused: bool) {
+    super::still::pause(ctx, paused);
     let shared = shared(ctx);
     if let Ok(mut preview) = shared.lock()
         && preview.source_viewport == Some(ctx.viewport_id())
@@ -90,6 +101,16 @@ pub fn pause_source(ctx: &egui::Context, paused: bool) {
     {
         preview.paused = paused;
         ctx.request_repaint_of(viewport_id());
+    }
+}
+
+/// Stops the current model read so suspending package access does not wait for it.
+pub fn stop_reads(ctx: &egui::Context) {
+    let shared = shared(ctx);
+    if let Ok(mut preview) = shared.lock()
+        && let Some(load) = preview.load.take()
+    {
+        load.stop();
     }
 }
 
@@ -109,8 +130,27 @@ pub(super) fn clear_source(ctx: &egui::Context, owner: egui::Id) {
         && preview.owner == Some(owner)
     {
         preview.request = None;
+        preview.source_selection = None;
+        preview.navigation.clear();
+        // The pending receiver still drains, so stopping here only ends an unwanted read sooner.
+        if let Some(load) = preview.load.take() {
+            load.stop();
+        }
+        preview.load_started = None;
+        preview.load_time = None;
+        preview.status = None;
+        preview.particle_page = 0;
+        preview.effect_page = 0;
+        preview.sound_page = 0;
+        preview.child_page = 0;
+        preview.component_page = 0;
+        preview.reference_page = 0;
         preview.model = None;
         preview.texture = None;
+        preview.asset_textures.clear();
+        preview.stop_audio();
+        preview.audio_pending = None;
+        preview.audio_status = None;
         preview.selection = None;
         ctx.request_repaint_of(viewport_id());
     }
@@ -157,7 +197,8 @@ pub fn show(ctx: &egui::Context) {
     ctx.show_viewport_deferred(
         viewport_id(),
         egui::ViewportBuilder::default()
-            .with_title(&title)
+            .with_title(crate::ui::native_title(&title))
+            .with_icon(crate::ui::window_icon())
             .with_inner_size([720.0, 560.0])
             .with_min_inner_size([360.0, 320.0])
             .with_resizable(true),
@@ -196,7 +237,8 @@ pub fn show(ctx: &egui::Context) {
 impl Preview {
     fn draw_request(&mut self, ui: &mut egui::Ui) {
         let Some(mut request) = self.request.clone() else {
-            ui.label("No model is selected.");
+            ui.weak("No model selected");
+            self.discard_closed_result(ui.ctx());
             return;
         };
         if self.paused
@@ -204,7 +246,7 @@ impl Preview {
             || request.access.as_ref().is_some_and(|a| a.is_suspended())
         {
             ui.heading(&request.name);
-            ui.label("Model preview is paused while package access is unavailable.");
+            ui.weak("Paused while packages are unavailable");
             self.last_tick = None;
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(200));
@@ -213,23 +255,58 @@ impl Preview {
         if let Target::Weapon(_, generation) = &mut request.selection.1 {
             *generation = request.access.as_ref().map(|a| a.generation());
         }
+        let (selection, name) = self.resolve_request(&request);
         self.preserve_camera = request.preserve_camera;
-        self.sync_with_access(ui.ctx(), request.selection, request.access);
-        self.draw(ui, &request.name);
+        self.sync_with_access(ui.ctx(), selection, request.access);
+        self.draw(ui, &name);
+    }
+
+    fn resolve_request(&mut self, request: &Request) -> (Selection, String) {
+        if self.source_selection.as_ref() != Some(&request.selection) {
+            self.source_selection = Some(request.selection.clone());
+            self.navigation.clear();
+        }
+        if let Some((tag, name)) = self.navigation.last() {
+            (
+                (request.selection.0.clone(), Target::Object(*tag)),
+                name.clone(),
+            )
+        } else {
+            (request.selection.clone(), request.name.clone())
+        }
     }
 
     fn close(&mut self) {
         self.open = false;
         self.request = None;
+        self.source_selection = None;
+        self.navigation.clear();
+        self.particle_page = 0;
+        self.effect_page = 0;
+        self.sound_page = 0;
+        self.child_page = 0;
+        self.component_page = 0;
+        self.reference_page = 0;
         self.owner = None;
         self.model = None;
         self.texture = None;
+        self.asset_textures.clear();
+        self.stop_audio();
+        self.audio_pending = None;
+        self.audio_status = None;
         self.selection = None;
         self.error = None;
         self.rendered = None;
         self.last_tick = None;
         self.playing = false;
-        // Keep an in-flight reader until it finishes, preventing overlapping reads on reopen.
+        self.status = None;
+        self.load_started = None;
+        self.load_time = None;
+        // Stop the reader rather than paying for an object nobody will look at. The pending
+        // receiver is still drained on later frames so a reopen never overlaps two reads.
+        if let Some(load) = self.load.take() {
+            load.stop();
+        }
     }
 
     fn discard_closed_result(&mut self, ctx: &egui::Context) {

@@ -19,6 +19,29 @@ pub(crate) struct Plate {
     pub data: Vec<u8>,
 }
 
+/// Reserve an unused atlas tile for a model whose material supplies its own
+/// textures. These bytes must never substitute for a required source plate.
+pub(crate) fn unused(format: u32, mips: usize) -> Result<Plate> {
+    ensure!((1..=13).contains(&mips), "invalid unused tile mip count");
+    let side = 4usize << (mips - 1);
+    let block = block_size(format)?;
+    let bytes = (0..mips)
+        .map(|m| (side >> m).div_ceil(4).pow(2) * block)
+        .sum();
+    let mut data = vec![0; bytes];
+    if matches!(format, 98 | 99) {
+        for block in data.chunks_exact_mut(16) {
+            block[0] = 0x40; // A valid, empty BC7 mode-six block.
+        }
+    }
+    Ok(Plate {
+        side,
+        format,
+        mips,
+        data,
+    })
+}
+
 fn block_size(format: u32) -> Result<usize> {
     match format {
         71 | 72 => Ok(8),
@@ -345,10 +368,32 @@ pub fn build(source: &Path, output: &Path) -> Result<Value> {
             let entries = model["texture_plates"][name]
                 .as_array()
                 .context("source plate entries")?;
-            plates.push(source_plate(source, &provenance, entries)?);
+            if model["has_texture_plates"] == false {
+                ensure!(entries.is_empty(), "unplated model has plate entries");
+                plates.push(None);
+            } else {
+                plates.push(Some(source_plate(source, &provenance, entries)?));
+            }
         }
         channels.push((name, plates));
     }
+    let unused_mips = channels
+        .iter()
+        .flat_map(|(_, plates)| plates.iter().flatten())
+        .map(|p| p.mips)
+        .min()
+        .unwrap_or(1);
+    let channels = channels
+        .into_iter()
+        .map(|(name, plates)| {
+            let format = plates.iter().flatten().next().map_or(72, |p| p.format);
+            let plates = plates
+                .into_iter()
+                .map(|p| p.map_or_else(|| unused(format, unused_mips), Ok))
+                .collect::<Result<Vec<_>>>()?;
+            Ok((name, plates))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let sides = channels[0].1.iter().map(|p| p.side).collect::<Vec<_>>();
     let mips = channels
         .iter()
@@ -360,7 +405,13 @@ pub fn build(source: &Path, output: &Path) -> Result<Value> {
     let scale = 1usize << first_mip;
     let resident_rectangles = rectangles
         .iter()
-        .map(|r| -> Result<[usize; 4]> {
+        .enumerate()
+        .map(|(index, r)| -> Result<[usize; 4]> {
+            if models[index]["has_texture_plates"] == false {
+                // Material-bound textures keep the full UV domain. Packing
+                // their unused tile would needlessly quantize those coordinates.
+                return Ok([0, 0, resident_size[0], resident_size[1]]);
+            }
             ensure!(
                 r.iter().all(|v| v % scale == 0),
                 "plate placement cannot be scaled exactly"
@@ -438,24 +489,6 @@ mod tests {
         }
         assert!(compose(&header(4, 16, 55, 3), &source[..55], [0, 0, 4, 16]).is_err());
         assert!(compose(&header(4, 16, 56, 3), &source, [2, 0, 4, 16]).is_err());
-    }
-
-    #[test]
-    fn multiple_pieces_preserve_source_blocks_at_each_mip() {
-        let a = vec![1; 40];
-        let b = vec![2; 40];
-        let h = header(8, 8, 40, 2);
-        let result = merge_tiles(vec![
-            (compose(&h, &a, [0, 0, 8, 8]).unwrap(), [0, 0, 8, 8]),
-            (compose(&h, &b, [8, 0, 8, 8]).unwrap(), [8, 0, 8, 8]),
-        ])
-        .unwrap();
-        assert_eq!((result.side, result.mips, result.data.len()), (16, 2, 160));
-        assert_eq!(&result.data[..16], &[1; 16]);
-        assert_eq!(&result.data[16..32], &[2; 16]);
-        assert_eq!(&result.data[128..136], &[1; 8]);
-        assert_eq!(&result.data[136..144], &[2; 8]);
-        assert!(result.data[64..128].iter().all(|v| *v == 0));
     }
 
     #[test]

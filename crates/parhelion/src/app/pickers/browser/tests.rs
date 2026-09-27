@@ -98,7 +98,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    assert!(!show_all(ui).0);
+                    assert!(!show_all(ui, "test").0);
                     // Keep a result after the old group cap selected and inspectable.
                     ui.data_mut(|state| {
                         state.insert_temp(ui.make_persistent_id("inspected-choice"), 450u64)

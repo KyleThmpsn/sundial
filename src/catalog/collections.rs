@@ -22,7 +22,9 @@ use crate::package_payload::{array_at, bool_at, i64_at, relative_offset, u16_at,
 
 use super::{
     Catalog,
-    progression::{PresentationNodeDef, definition_index_list, presentation_paths},
+    progression::{
+        PresentationNodeDef, definition_index_list, parent_node_hashes, presentation_paths,
+    },
 };
 
 const INSERTION_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET: usize = 0x1E8;
@@ -59,6 +61,9 @@ pub(crate) struct CollectibleDef {
     pub type_name: String,
     pub paths: Vec<Vec<String>>,
     pub conditions: Vec<CollectionConditionDef>,
+    /// Direct parent presentation-node hashes in package order.
+    #[serde(default)]
+    pub parent_nodes: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +113,7 @@ pub(super) struct PendingCollectibleDef {
     pub material_requirements: Vec<PendingMaterialRequirementDef>,
     pub paths: Vec<Vec<String>>,
     pub conditions: Vec<CollectionConditionDef>,
+    pub parent_nodes: Vec<u64>,
 }
 
 pub(super) fn item_material_requirement_set_indices_from_data(
@@ -164,6 +170,7 @@ pub(super) fn materialize_collectibles(
                 type_name: type_names.get(&item_hash).cloned().unwrap_or_default(),
                 paths: collectible.paths,
                 conditions: collectible.conditions,
+                parent_nodes: collectible.parent_nodes,
             })
         })
         .collect()
@@ -294,6 +301,7 @@ fn pending_collectibles_from_data(
                 .map_or_else(Vec::new, |set| set.requirements.clone()),
             paths: presentation_paths(presentation_nodes, &parents),
             conditions,
+            parent_nodes: parent_node_hashes(presentation_nodes, &parents),
         });
     }
     Ok(output)

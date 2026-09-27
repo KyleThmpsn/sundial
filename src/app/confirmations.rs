@@ -20,7 +20,7 @@ impl SundialApp {
                 ui.set_width(500.0);
                 ui.heading("Choose Sunrise Settings");
                 ui.add_space(6.0);
-                ui.label("Multiple settings.json files were found. Choose the one Project Sunrise uses for this installation.");
+                ui.label("Choose the settings.json Project Sunrise uses.");
                 ui.add_space(10.0);
                 for layout in SettingsLayout::ALL {
                     let path = settings_path_for_install(&install_path, layout);
@@ -94,14 +94,14 @@ impl SundialApp {
                 ui.add_space(6.0);
                 ui.label(match account_source {
                     AccountSourceKind::Json => {
-                        "This replaces the entire settings.json with the default bundled in your installed Project Sunrise version."
+                        "Replaces all of settings.json with your Project Sunrise defaults."
                     }
                     AccountSourceKind::Sqlite | AccountSourceKind::Dawn | AccountSourceKind::Blocked => {
-                        "This restores bundled settings.json defaults while preserving its inactive legacy /state/account and /state/characters data. It does not change investment.sqlite3."
+                        "Restores settings.json defaults and keeps its inactive /state/account and /state/characters data. investment.sqlite3 is unchanged."
                     }
                 });
                 ui.add_space(6.0);
-                ui.label("Your current file will be preserved as settings.json.bak and as a timestamped Sundial backup. Unsaved settings.json changes will be discarded.");
+                ui.label("The current file is backed up to settings.json.bak and a Sundial backup. Unsaved changes are discarded.");
                 recovery::draw_parhelion_reset_note(ui, account_source == AccountSourceKind::Json);
                 ui.add_space(6.0);
                 ui.label(
@@ -137,9 +137,9 @@ impl SundialApp {
                         ui.set_width(560.0);
                         ui.heading("Restore This Account Database Backup?");
                         ui.add_space(6.0);
-                        ui.label("Sundial will replace investment.sqlite3 with the selected compatible backup. Before replacement, it creates and integrity-checks a recovery snapshot of the current database.");
+                        ui.label("Replaces investment.sqlite3 with this backup. The current database is saved and checked first.");
                         ui.add_space(6.0);
-                        ui.label("Destiny 2 must be closed. Any unsaved Sundial changes will be discarded after the restored workspace reloads. settings.json is not changed or synchronized.");
+                        ui.label("Close Destiny 2 first. Unsaved changes are discarded. settings.json is unchanged.");
                         ui.add_space(8.0);
                         ui.strong("Selected Backup");
                         ui.label(
@@ -186,21 +186,21 @@ impl SundialApp {
                     "Incompatible plugs can prevent Destiny 2 from loading or cause crashes.",
                 );
                 ui.add_space(8.0);
-                ui.label("All mode makes every discovered plug available in every socket, including combinations the item does not support.");
+                ui.label("All offers every plug in every socket, including unsupported ones.");
                 ui.add_space(8.0);
                 ui.label("Sundial backs up each account file before saving changes.");
                 ui.label(match account_source {
                     AccountSourceKind::Json => {
-                        "If the game no longer loads, use Preferences > Saving & Recovery to restore the installed Sunrise defaults. This resets the account. The current file is backed up first."
+                        "If the game stops loading, restore Sunrise defaults in Preferences > Saving & Recovery. This resets the account after backing it up."
                     }
                     AccountSourceKind::Sqlite => {
-                        "If an account edit prevents loading, use Preferences > Saving & Recovery to restore a verified account database backup. The current database is backed up first."
+                        "If the game stops loading, restore an account backup in Preferences > Saving & Recovery. The current database is backed up first."
                     }
                     AccountSourceKind::Dawn => {
-                        "This install runs Dawn, so account edits are written to player-state.db rather than to settings.json."
+                        "Dawn account edits are saved to player-state.db."
                     }
                     AccountSourceKind::Blocked => {
-                        "Account editing is currently blocked, so Sundial will not write the incompatible investment.sqlite3."
+                        "Account editing is blocked. The incompatible investment.sqlite3 is not written."
                     }
                 });
                 ui.add_space(12.0);
@@ -281,9 +281,7 @@ impl SundialApp {
                     _ => "settings.json".to_owned(),
                 };
                 ui.label(if truncated {
-                    format!(
-                        "Reviewing the first {total} changes that will be written to {source_label}."
-                    )
+                    format!("First {total} changes to {source_label}.")
                 } else {
                     format!(
                         "Sundial will write {total} change{} to {source_label}.",
@@ -297,15 +295,19 @@ impl SundialApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for change in &changes {
-                            ui.add(egui::Label::new(egui::RichText::new(change).monospace().size(13.0)).wrap().selectable(true));
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(change).monospace().size(13.0),
+                                )
+                                .wrap()
+                                .selectable(true),
+                            );
                         }
                     });
                 if truncated {
                     ui.label(
-                        egui::RichText::new(
-                            "The review is capped. Additional changed fields may not be listed.",
-                        )
-                        .color(super::ui::secondary_text_color(ui)),
+                        egui::RichText::new("More changes are not listed.")
+                            .color(super::ui::secondary_text_color(ui)),
                     );
                 }
                 ui.add_space(10.0);
@@ -347,10 +349,10 @@ impl SundialApp {
                     ui.heading(format!("Delete {}?", pending.item_name));
                     ui.add_space(6.0);
                     ui.label(format!(
-                        "This empties the {} slot and does not move the item to inventory.",
+                        "Empties the {} slot. The item is not moved to inventory.",
                         equipment::equipment_slot_label(&pending.slot)
                     ));
-                    ui.label("You can Undo this change until the settings are saved.");
+                    ui.label("Undo works until you save.");
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui.button("Delete Item").clicked() {

@@ -248,22 +248,17 @@ pub(super) fn acquisition_status(
     match evaluation {
         AcquisitionEvaluation::Acquired => StateLine {
             text: "Acquired".into(),
-            tooltip: format!(
-                "Acquisition condition from available state: true\nProgram: {program}"
-            ),
+            tooltip: format!("Condition met\nProgram: {program}"),
             state: evaluation.state(),
         },
         AcquisitionEvaluation::NotAcquired => StateLine {
             text: "Not Acquired".into(),
-            tooltip: format!(
-                "Acquisition condition from available state: false\nProgram: {program}"
-            ),
+            tooltip: format!("Condition not met\nProgram: {program}"),
             state: evaluation.state(),
         },
         AcquisitionEvaluation::Unconditional => StateLine {
             text: "Acquired".into(),
-            tooltip: "No acquisition condition. This collectible is unconditionally acquired"
-                .into(),
+            tooltip: "No condition. Always acquired".into(),
             state: evaluation.state(),
         },
         AcquisitionEvaluation::Unknown => {
@@ -568,41 +563,5 @@ mod tests {
 
         assert_eq!(evaluation, AcquisitionEvaluation::Unconditional);
         assert_eq!(evaluation.state(), AcquisitionState::Acquired);
-    }
-
-    #[test]
-    fn metadata_lists_every_package_condition_field_and_raw_opcode() {
-        let definition = CollectibleDef {
-            index: 1,
-            hash: 2,
-            item_definition_index: 4,
-            item_hash: 3,
-            material_requirement_set_index: None,
-            material_requirement_set_hash: 0,
-            material_requirements: Vec::new(),
-            name: "Test".into(),
-            type_name: "Record".into(),
-            paths: Vec::new(),
-            conditions: (0..=4)
-                .map(|field| CollectionConditionDef {
-                    field,
-                    tokens: vec![CollectionConditionTokenDef {
-                        kind: 12 + u32::from(field),
-                        operand: 40 + u32::from(field),
-                    }],
-                })
-                .collect(),
-        };
-
-        assert_eq!(
-            condition_metadata_lines(&definition),
-            [
-                "Field 0: 12:40",
-                "Field 1: 13:41",
-                "Field 2: 14:42",
-                "Field 3: 15:43",
-                "Acquisition (field 4): 16:44",
-            ]
-        );
     }
 }

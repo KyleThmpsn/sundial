@@ -180,6 +180,101 @@ impl Program {
         *graph = changed;
         Ok(())
     }
+
+    /// The program's result for one input, as the scalar wrapper 3B9FE0 returns it: the input
+    /// fills every lane of input 0 and the result is lane 0 of output 0. Covers the traced
+    /// instructions whose stock results check out: Multikill Clip gives 1/6, 1/3 and 1/2 and
+    /// Swashbuckler 1/15 a stack up to 1/3, the values both perks are known for, and stock
+    /// piecewise cubics meet at their knots. `None` for anything else, such as the comparison
+    /// at 0x0A, whose direction the perk and particle traces disagree on, or a result that is
+    /// not a finite number.
+    #[must_use]
+    pub fn evaluate(&self, input: f32) -> Option<f32> {
+        let rows = self
+            .constants
+            .iter()
+            .map(|row| row.map(f32::from_bits))
+            .collect::<Vec<_>>();
+        if self.fast_path == 1 {
+            // 3B66F0 clamps the input, evaluates the cubic in row 0 and clamps the result.
+            let value = polynomial(*rows.first()?, input.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            return value.is_finite().then_some(value);
+        }
+        let mut stack = Vec::<[f32; 4]>::new();
+        let mut output = None;
+        for instruction in &self.instructions {
+            let at = usize::from(instruction.operand.unwrap_or(0));
+            let row = |offset: usize| rows.get(at + offset).copied();
+            let value = match instruction.opcode {
+                0 => break,
+                1..=3 | 5 | 6 | 8 | 9 | 15 => {
+                    let b = stack.pop()?;
+                    let a = stack.pop()?;
+                    match instruction.opcode {
+                        1 | 6 => lanes(|i| a[i] + b[i]),
+                        2 => lanes(|i| a[i] - b[i]),
+                        3 | 5 => lanes(|i| a[i] * b[i]),
+                        8 => lanes(|i| a[i].min(b[i])),
+                        9 => lanes(|i| a[i].max(b[i])),
+                        // The newer vector holds the coefficients and the older one the input.
+                        _ => a.map(|time| polynomial(b, time)),
+                    }
+                }
+                18 => {
+                    let c = stack.pop()?;
+                    let b = stack.pop()?;
+                    let a = stack.pop()?;
+                    lanes(|i| a[i] * b[i] + c[i])
+                }
+                33 => [stack.pop()?[0]; 4],
+                34 => {
+                    let value = stack.pop()?;
+                    lanes(|i| value[(at >> (6 - 2 * i)) & 3])
+                }
+                35 => stack.pop()?.map(|value| value.clamp(0.0, 1.0)),
+                52 => row(0)?,
+                53 => {
+                    let time = stack.pop()?;
+                    let (start, end) = (row(0)?, row(1)?);
+                    lanes(|i| start[i] + (end[i] - start[i]) * time[i])
+                }
+                55 => {
+                    // Cubic, quadratic, linear and constant rows hold one segment per lane,
+                    // and the fifth row holds where each segment starts.
+                    let time = stack.pop()?[0];
+                    let knots = row(4)?;
+                    if knots.windows(2).any(|pair| pair[0] > pair[1]) {
+                        return None;
+                    }
+                    let segment = (1..4).take_while(|&i| time >= knots[i]).count();
+                    let coefficients = [
+                        row(0)?[segment],
+                        row(1)?[segment],
+                        row(2)?[segment],
+                        row(3)?[segment],
+                    ];
+                    [polynomial(coefficients, time); 4]
+                }
+                60 => [input; 4],
+                62 => {
+                    output = Some(stack.pop()?[0]);
+                    continue;
+                }
+                _ => return None,
+            };
+            stack.push(value);
+        }
+        output.filter(|value| value.is_finite())
+    }
+}
+
+fn lanes(lane: impl FnMut(usize) -> f32) -> [f32; 4] {
+    std::array::from_fn(lane)
+}
+
+/// A cubic whose coefficients run from the highest power down, so `[0, 0, 1, 0]` is identity.
+fn polynomial(coefficients: [f32; 4], time: f32) -> f32 {
+    ((coefficients[0] * time + coefficients[1]) * time + coefficients[2]) * time + coefficients[3]
 }
 
 fn array<'a>(

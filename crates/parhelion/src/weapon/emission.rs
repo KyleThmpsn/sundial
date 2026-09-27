@@ -4,6 +4,7 @@ mod art;
 #[cfg(feature = "d2-model-importer")]
 mod imported;
 mod linking;
+mod ornament;
 mod packages;
 mod reskin;
 
@@ -85,6 +86,10 @@ pub(super) struct PackageEmission {
     pub(super) unlocks: Vec<u8>,
     pub(super) unlock_banks: Vec<u8>,
     pub(super) unlock_displays: Vec<u8>,
+    /// The socket-entry-list and subclass display tables, when a subclass added a list.
+    pub(super) subclass_tables: Option<super::subclass::SubclassTables>,
+    /// The art-dye table, when a shader added custom dyes.
+    pub(super) dye_table: Option<ReplacementSpec>,
     pub(super) plans: Vec<NewWeaponPlan>,
     pub(super) any_sandbox_pattern: bool,
     pub(super) nodes: Vec<u8>,
@@ -99,18 +104,46 @@ pub(super) struct PackageEmission {
     pub(super) host_new_tags: Vec<NewTagSpec>,
 }
 
+/// Wwise finds a medium by the media ID in its entry header, so every appended medium names
+/// itself there, in the asset packages as in the host.
+fn name_audio_media(asset_packages: &mut crate::asset_packages::AssetPackages) {
+    for package in &mut asset_packages.packages {
+        for (ordinal, spec) in package.tags.iter().enumerate() {
+            if spec.storage == crate::NewTagStorageMode::AudioMedia
+                && !package
+                    .references
+                    .iter()
+                    .any(|reference| reference.new_tag_ordinal == ordinal)
+            {
+                package.references.push(crate::NewTagReferenceOverride {
+                    new_tag_ordinal: ordinal,
+                    reference: crate::NewTagReference::Appended(ordinal),
+                });
+            }
+        }
+    }
+}
+
 #[allow(unused_mut)]
 pub(super) fn emit_packages(
     package_directory: &Path,
+    manager: PackageManager,
     mut emission: PackageEmission,
     weapons: &[WeaponCloneSpec],
     progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     #[cfg(feature = "d2-model-importer")]
-    let mut replacements = imported::apply(package_directory, &mut emission, weapons)?;
+    let mut replacements = imported::apply(package_directory, &manager, &mut emission, weapons)?;
     #[cfg(not(feature = "d2-model-importer"))]
     let mut replacements: Vec<ReplacementSpec> = Vec::new();
-    reskin::apply(package_directory, &mut emission, weapons, &mut replacements)?;
+    ornament::apply(&manager, &mut emission, weapons)?;
+    reskin::apply(
+        package_directory,
+        &manager,
+        &mut emission,
+        weapons,
+        &mut replacements,
+    )?;
     let (imported_runtime, imported_strings): (Vec<_>, Vec<_>) = replacements
         .into_iter()
         .partition(|r| r.tag.pkg_id() == emission.entity_assignment_tag.pkg_id());
@@ -167,6 +200,8 @@ pub(super) fn emit_packages(
         unlocks,
         unlock_banks,
         unlock_displays,
+        subclass_tables,
+        dye_table,
         plans,
         any_sandbox_pattern,
         nodes,
@@ -189,20 +224,17 @@ pub(super) fn emit_packages(
     );
     progress.start("Checking Asset Dependencies");
     asset_packages.validate()?;
-    let loading_manager =
-        sundial::package_authoring::open_shadowkeep_package_manager(package_directory)
-            .map_err(invalid)?;
     let stock_loading;
     let loading = if let Some(payload) = runtime_dependencies.as_deref() {
         payload
     } else {
-        stock_loading = loading_manager
+        stock_loading = manager
             .read_tag(RUNTIME_DEPENDENCY_COMPANION)
             .map_err(|error| invalid(error.to_string()))?;
         &stock_loading
     };
     crate::shared_tag_dependency_index::scoped::validate_asset_loading(
-        &loading_manager,
+        &manager,
         asset_packages
             .packages
             .iter()
@@ -213,7 +245,8 @@ pub(super) fn emit_packages(
             companion: RUNTIME_DEPENDENCY_COMPANION,
         },
     )?;
-    drop(loading_manager);
+    // The package writer must not retain the source manager's open file handles.
+    drop(manager);
     // Validate the completed map after every authoring pass, not only the stock source.
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
     progress.finish("Checking Asset Dependencies");
@@ -222,6 +255,15 @@ pub(super) fn emit_packages(
         progress,
         chains: None,
     };
+    let mut host_reference_overrides = watermark_reference_overrides;
+    for (ordinal, spec) in host_new_tags.iter().enumerate() {
+        if spec.storage == crate::NewTagStorageMode::AudioMedia {
+            host_reference_overrides.push(crate::NewTagReferenceOverride {
+                new_tag_ordinal: ordinal,
+                reference: crate::NewTagReference::Appended(ordinal),
+            });
+        }
+    }
     let host = packages.overlay(
         HOST_PACKAGE_ID,
         &[
@@ -239,7 +281,7 @@ pub(super) fn emit_packages(
             },
         ],
         &host_new_tags,
-        &watermark_reference_overrides,
+        &host_reference_overrides,
     )?;
     let expected_host_count = HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len();
     if host.plan.final_entry_count != expected_host_count {
@@ -248,6 +290,8 @@ pub(super) fn emit_packages(
             host.plan.final_entry_count
         )));
     }
+    let mut asset_packages = asset_packages;
+    name_audio_media(&mut asset_packages);
     let mut assets = Vec::new();
     for package in &asset_packages.packages {
         let artifact = packages.standalone(package)?;
@@ -315,25 +359,50 @@ pub(super) fn emit_packages(
             )
         })
         .transpose()?;
-    let investment = packages.overlay(
-        item_table_tag.pkg_id(),
-        &[
+    let mut investment_replacements = vec![
+        ReplacementSpec {
+            tag: item_table_tag,
+            payload: item_table,
+        },
+        ReplacementSpec {
+            tag: collectible_table_tag,
+            payload: collectibles,
+        },
+        ReplacementSpec {
+            tag: collectible_display_table_tag,
+            payload: collectible_displays,
+        },
+    ];
+    // Each subclass table and the dye table join the overlay that already replaces tables in
+    // their package. An imported model's dyes extend the dye table after the custom ones, so its
+    // replacement already holds them.
+    let mut subclass_replacements = subclass_tables.map_or_else(Vec::new, |tables| {
+        vec![
             ReplacementSpec {
-                tag: item_table_tag,
-                payload: item_table,
+                tag: tables.list_table_tag,
+                payload: tables.lists,
             },
             ReplacementSpec {
-                tag: collectible_table_tag,
-                payload: collectibles,
+                tag: tables.display_table_tag,
+                payload: tables.displays,
             },
-            ReplacementSpec {
-                tag: collectible_display_table_tag,
-                payload: collectible_displays,
-            },
-        ],
-        &[],
-        &[],
-    )?;
+        ]
+    });
+    subclass_replacements.extend(dye_table.filter(|table| {
+        !imported_strings
+            .iter()
+            .any(|replacement| replacement.tag == table.tag)
+    }));
+    let mut subclass_tables_in = |package: u16| {
+        let (owned, rest) = std::mem::take(&mut subclass_replacements)
+            .into_iter()
+            .partition::<Vec<_>, _>(|replacement| replacement.tag.pkg_id() == package);
+        subclass_replacements = rest;
+        owned
+    };
+    investment_replacements.extend(subclass_tables_in(item_table_tag.pkg_id()));
+    let investment =
+        packages.overlay(item_table_tag.pkg_id(), &investment_replacements, &[], &[])?;
     let mut string_replacements = vec![
         ReplacementSpec {
             tag: item_string_table_tag,
@@ -368,6 +437,7 @@ pub(super) fn emit_packages(
             payload: finished_sandbox_perks,
         });
     }
+    string_replacements.extend(subclass_tables_in(item_string_table_tag.pkg_id()));
     let lore_definition = if let Some(lore) = lore {
         if lore.strings.tag.pkg_id() != item_string_table_tag.pkg_id()
             || lore.definitions.tag.pkg_id() != unlock_table_tag.pkg_id()
@@ -452,6 +522,14 @@ pub(super) fn emit_packages(
     }
     if let Some(lore) = lore_definition {
         unlock_replacements.push(lore);
+    }
+    unlock_replacements.extend(subclass_tables_in(unlock_table_tag.pkg_id()));
+    if let Some(stray) = subclass_replacements.first() {
+        return Err(invalid(format!(
+            "Subclass table {} is in package {:04x}, which no project overlay replaces",
+            stray.tag,
+            stray.tag.pkg_id()
+        )));
     }
     let unlock = packages.overlay(unlock_table_tag.pkg_id(), &unlock_replacements, &[], &[])?;
     for artifact in [

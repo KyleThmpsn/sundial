@@ -8,6 +8,7 @@ fn comparison_keeps_the_camera_when_the_candidate_model_changes() {
             Target::Weapon(
                 Appearance {
                     arrangement,
+                    dye_textures: Vec::new(),
                     dyes: vec![],
                 },
                 None,
@@ -23,6 +24,7 @@ fn comparison_keeps_the_camera_when_the_candidate_model_changes() {
             yaw: 1.3,
             pitch: 0.4,
             zoom: 1.7,
+            pan: [0.0, 0.0],
         },
         model: Some(Arc::new(Model::default())),
         ..Default::default()
@@ -34,7 +36,8 @@ fn comparison_keeps_the_camera_when_the_candidate_model_changes() {
             == Camera {
                 yaw: 1.3,
                 pitch: 0.4,
-                zoom: 1.7
+                zoom: 1.7,
+                pan: [0.0, 0.0]
             }
     );
 }
@@ -47,6 +50,7 @@ fn package_generation_change_discards_the_previous_model_and_pending_result() {
             Target::Weapon(
                 Appearance {
                     arrangement: 12,
+                    dye_textures: Vec::new(),
                     dyes: vec![],
                 },
                 Some(generation),
@@ -84,9 +88,15 @@ fn native_shader_playback_starts_and_pause_preserves_time() {
     // A native UV-animation dye in all three channels isolates the playback UI.
     let appearance = Appearance {
         arrangement: 930,
+        dye_textures: Vec::new(),
         dyes: vec![(4, 8054), (5, 8054), (6, 8054)],
     };
-    let model = model_preview::weapon::load(&packages, &appearance).unwrap();
+    let model = model_preview::weapon::load_reported(
+        &packages,
+        &appearance,
+        &crate::model_preview::Load::default(),
+    )
+    .unwrap();
     assert!(model.has_shader_animation());
     let selection = (packages, Target::Weapon(appearance, None));
     let (sender, receiver) = mpsc::channel();
@@ -113,10 +123,10 @@ fn native_shader_playback_starts_and_pause_preserves_time() {
     preview.seconds = 0.0;
     draw(&mut preview);
     assert_eq!(preview.rendered_seconds, Some(0.0));
-    let paused = preview.rendered.unwrap().1;
+    let paused = preview.rendered.unwrap().2;
     preview.playing = true;
     draw(&mut preview);
-    let playing = preview.rendered.unwrap().1;
+    let playing = preview.rendered.unwrap().2;
     assert!(playing.into_iter().max().unwrap() <= 320);
     assert!(paused.into_iter().max().unwrap() > playing.into_iter().max().unwrap());
 }
@@ -130,6 +140,7 @@ fn shader_change_invalidates_image_and_preserves_view() {
             Target::Weapon(
                 Appearance {
                     arrangement: 12,
+                    dye_textures: Vec::new(),
                     dyes: vec![(4, dye)],
                 },
                 None,
@@ -144,6 +155,7 @@ fn shader_change_invalidates_image_and_preserves_view() {
             yaw: 1.2,
             pitch: 0.3,
             zoom: 2.0,
+            pan: [0.0, 0.0],
         },
         model: Some(Arc::new(Model::default())),
         ..Default::default()

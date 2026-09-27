@@ -129,7 +129,11 @@ impl Library {
         let refresh = if stale.is_empty() {
             None
         } else {
-            let _lock = self.lock()?;
+            // Another save holding the lock means the workbench is busy, not that the reader
+            // should lose the library. The refresh waits for the next launch.
+            let Ok(_lock) = self.lock() else {
+                return Ok(None);
+            };
             let backup = self.create_restore_backup()?;
             let mut names = Vec::new();
             let mut copies = Vec::new();
@@ -138,10 +142,16 @@ impl Library {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .ok_or("A bundled custom perk has no file name")?;
-                bundled_defaults::back_up(&backup, file_name, &current)?;
+                // A default whose edits cannot be kept is left alone rather than replaced, and
+                // never costs the reader the library: this runs while it opens. See the same
+                // decision for recipes in `materialize_bundled_recipes`.
                 if let Some(edited) = edited {
-                    copies.push(self.save_copy(edited)?);
+                    let Ok(copy) = self.save_copy(edited) else {
+                        continue;
+                    };
+                    copies.push(copy);
                 }
+                bundled_defaults::back_up(&backup, file_name, &current)?;
                 self.replace_restore_target(
                     &path,
                     &Some(current),
@@ -156,7 +166,10 @@ impl Library {
                 backup,
             })
         };
-        versions.save()?;
+        // The record is an optimisation, not the result: failing to write it costs one repeated
+        // comparison next launch, which then finds the defaults already current. Opening the
+        // library is worth more than recording that this ran.
+        let _ = versions.save();
         Ok(refresh)
     }
 
@@ -219,7 +232,12 @@ impl Library {
     }
 
     pub fn save_drafts(&self, bytes: &[u8], expected: Option<&[u8]>) -> Result<(), String> {
-        self.save_checked(&self.root.join("workbench-drafts.json"), bytes, expected)
+        self.save_checked_or(
+            &self.root.join("workbench-drafts.json"),
+            bytes,
+            expected,
+            "The drafts file changed outside the workbench.",
+        )
     }
 
     /// Removes a saved perk. The file must still hold `expected`, so a copy edited outside
@@ -305,6 +323,25 @@ impl Library {
         bytes: &[u8],
         expected: Option<&[u8]>,
     ) -> Result<(), String> {
+        self.save_checked_or(
+            path,
+            bytes,
+            expected,
+            &format!(
+                "{} changed outside the workbench. The existing file was preserved. Refresh Library to take it up, or save this perk as a new perk.",
+                path.display()
+            ),
+        )
+    }
+
+    /// Writes `bytes` when the file still holds `expected`, and otherwise reports `conflict`.
+    fn save_checked_or(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: Option<&[u8]>,
+        conflict: &str,
+    ) -> Result<(), String> {
         let _lock = self.lock()?;
         let current = match fs::read(path) {
             Ok(bytes) => Some(bytes),
@@ -312,10 +349,7 @@ impl Library {
             Err(error) => return Err(error.to_string()),
         };
         if current.as_deref() != expected {
-            return Err(format!(
-                "{} changed outside the workbench. The existing file was preserved. Save your perk as a new copy or export it.",
-                path.display()
-            ));
+            return Err(conflict.to_owned());
         }
         sundial::package_authoring::replace_authoring_file(path, bytes)
             .map_err(|error| error.to_string())

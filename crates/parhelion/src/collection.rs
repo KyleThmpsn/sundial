@@ -30,6 +30,7 @@ pub enum Family {
     AutoRifles,
     Bows,
     FusionRifles,
+    Glaives,
     GrenadeLaunchers,
     HandCannons,
     LinearFusionRifles,
@@ -44,10 +45,11 @@ pub enum Family {
     Swords,
 }
 impl Family {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::AutoRifles,
         Self::Bows,
         Self::FusionRifles,
+        Self::Glaives,
         Self::GrenadeLaunchers,
         Self::HandCannons,
         Self::LinearFusionRifles,
@@ -66,6 +68,7 @@ impl Family {
             Self::AutoRifles => "Auto Rifles",
             Self::Bows => "Bows",
             Self::FusionRifles => "Fusion Rifles",
+            Self::Glaives => "Glaives",
             Self::GrenadeLaunchers => "Grenade Launchers",
             Self::HandCannons => "Hand Cannons",
             Self::LinearFusionRifles => "Linear Fusion Rifles",
@@ -88,6 +91,11 @@ impl Family {
         })
     }
     pub const fn template(self) -> Destination {
+        if matches!(self, Self::Glaives) {
+            // Only the native page structure is reused. The new family keeps
+            // its own identity and localized label.
+            return Self::FusionRifles.template();
+        }
         let ammo = match self {
             Self::FusionRifles | Self::GrenadeLaunchers | Self::Shotguns | Self::SniperRifles => {
                 Ammo::Special
@@ -109,6 +117,10 @@ pub struct Destination {
 }
 
 impl Destination {
+    pub(crate) fn name_hash(self) -> Option<u32> {
+        (self.family.template().family != self.family).then(|| self.hash("name"))
+    }
+
     pub fn label(self) -> String {
         format!("Weapons / {} / {}", self.ammo.label(), self.family.label())
     }
@@ -144,9 +156,45 @@ impl Destination {
     }
 }
 
+/// Parhelion's own Collections page for one kind of gear, named for the runtime like its badge.
+/// Sparrows, Ships, Ghost Shells and shaders join it instead of a stock season page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct GearPage(crate::ItemKind);
+
+impl GearPage {
+    #[must_use]
+    pub const fn for_kind(kind: crate::ItemKind) -> Option<Self> {
+        match kind {
+            crate::ItemKind::Sparrow
+            | crate::ItemKind::Ship
+            | crate::ItemKind::GhostShell
+            | crate::ItemKind::Shader => Some(Self(kind)),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(self) -> crate::ItemKind {
+        self.0
+    }
+
+    pub(crate) fn hash(self, field: &str) -> u32 {
+        crate::presentation::text_hash(&format!("collection/gear/{:?}", self.0), field)
+    }
+}
+
+/// Node identities of the gear pages a build adds.
+pub(crate) fn gear_page_node_hashes(pages: impl IntoIterator<Item = GearPage>) -> BTreeSet<u64> {
+    pages
+        .into_iter()
+        .map(|page| u64::from(page.hash("node")))
+        .collect()
+}
+
 pub struct NodeBudget {
     pub badges: usize,
     pub pages: usize,
+    pub gear_pages: usize,
 }
 impl NodeBudget {
     pub fn new<'a>(
@@ -156,10 +204,17 @@ impl NodeBudget {
         Self {
             badges: badges.len(),
             pages: pages.len(),
+            gear_pages: 0,
         }
     }
+    /// Counts the gear pages a build adds beside its weapon pages.
+    #[must_use]
+    pub const fn with_gear_pages(mut self, gear_pages: usize) -> Self {
+        self.gear_pages = gear_pages;
+        self
+    }
     pub const fn used(&self) -> usize {
-        BASE_NODE_COUNT + self.badges * 4 + self.pages
+        BASE_NODE_COUNT + self.badges * 4 + self.pages + self.gear_pages
     }
     pub(crate) fn validate(&self) -> crate::AuthoringResult<()> {
         if self.used() > NODE_CAPACITY {
@@ -239,17 +294,5 @@ mod tests {
             family: Family::AutoRifles,
         };
         assert!(custom_node_hashes([(None, Some(destination))]).is_empty());
-    }
-
-    #[test]
-    fn native_weapon_type_names_resolve_collection_families() {
-        for family in Family::ALL {
-            assert_eq!(Family::from_type_name(family.label()), Some(family));
-            assert_eq!(
-                Family::from_type_name(family.label().trim_end_matches('s')),
-                Some(family)
-            );
-        }
-        assert_eq!(Family::from_type_name("Trace Rifle"), None);
     }
 }

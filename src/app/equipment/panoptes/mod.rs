@@ -112,9 +112,10 @@ impl SundialApp {
         self.draw_equipped_armor_stat_row(ui, character_index);
         ui.data_mut(|data| data.insert_temp(group_sockets_id, group_sockets));
         if !inventory_editable {
-            let reason = self.document.account_editing_blocked().unwrap_or(
-                "Character inventory editing is unavailable for this settings.json schema.",
-            );
+            let reason = self
+                .document
+                .account_editing_blocked()
+                .unwrap_or("Character inventory editing is unavailable for this settings version.");
             ui.weak(format!("Stored items are read-only. {reason}"));
         }
         if let Some(error) = inventory_error {
@@ -152,7 +153,7 @@ impl SundialApp {
             .count();
         if unmatched_count > 0 {
             ui.weak(format!(
-                    "{unmatched_count} stored item(s) do not map to a loadout slot and remain available in Character inventory."
+                    "{unmatched_count} stored item(s) have no loadout slot. They stay in Character inventory."
                 ));
         }
         ui.add_space(8.0);
@@ -219,7 +220,7 @@ impl SundialApp {
             });
             ui.separator();
             ui.checkbox(group_sockets, "Group Sockets")
-                .on_hover_text("Arrange sockets by their role, matching Panoptes loadout rows");
+                .on_hover_text("Arrange sockets by role, like Panoptes loadouts");
         });
 
         if self.preferences.show_safety_warnings {
@@ -416,7 +417,7 @@ impl SundialApp {
         if overflow > 0
             && ui
                 .small_button(format!("+{overflow} more in Inventory ›"))
-                .on_hover_text("Open the complete character inventory without hiding overflow")
+                .on_hover_text("Open the full character inventory")
                 .clicked()
         {
             self.select_view(ViewMode::CharacterInventory);

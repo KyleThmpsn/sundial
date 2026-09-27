@@ -25,7 +25,7 @@ impl SundialApp {
         }
         ui.add_space(8.0);
         ui.heading("Invalid Items");
-        ui.label("These stored items have no installed definition. Their hashes identify them. Replace or remove them to resolve unknown inventory placement.");
+        ui.label("These stored items have no installed definition. Replace or remove them.");
         let usage = self.inventory_bucket_usage(
             &sources.items,
             sources

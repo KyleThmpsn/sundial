@@ -1,6 +1,20 @@
-//! Add shared weapon-type leaves and their own acquired-count objectives.
+//! Add shared weapon-type leaves, branded gear pages and their own acquired-count objectives.
 use super::*;
 use crate::{badge::SunriseBadgeGraph, progression::presentation::*, progression::*};
+
+/// One page the build adds, cloned from a stock page.
+struct NewPage {
+    index: u16,
+    template: u16,
+    parent: u16,
+    sibling: u16,
+    donor: usize,
+    node_hash: u32,
+    objective_hash: u32,
+    name_hash: Option<u32>,
+    /// Named, described and drawn like the runtime's badge instead of its template page.
+    branded: bool,
+}
 use sundial::package_authoring::investment_schema::{
     OBJECTIVE_STRING_ROW_CLASS, OBJECTIVE_STRING_ROW_SIZE,
 };
@@ -10,12 +24,36 @@ pub(super) fn append(
     plan: &placements::Plan,
     rows: &[ProjectAuthoredRow],
     pools: &[u8],
+    badge_icon_index: u16,
 ) -> AuthoringResult<()> {
-    for page in plan
+    // Indices were allocated weapon pages first, then gear pages, each in key order.
+    let weapon_pages = plan
         .pages
         .values()
         .filter(|page| page.index != page.template)
-    {
+        .map(|page| NewPage {
+            index: page.index,
+            template: page.template,
+            parent: page.parent,
+            sibling: page.sibling,
+            donor: page.donor,
+            node_hash: page.destination.hash("node"),
+            objective_hash: page.destination.hash("objective"),
+            name_hash: page.destination.name_hash(),
+            branded: false,
+        });
+    let gear_pages = plan.gear_pages.values().map(|page| NewPage {
+        index: page.index,
+        template: page.template,
+        parent: page.parent,
+        sibling: page.sibling,
+        donor: page.donor,
+        node_hash: page.page.hash("node"),
+        objective_hash: page.page.hash("objective"),
+        name_hash: None,
+        branded: true,
+    });
+    for page in weapon_pages.chain(gear_pages) {
         let members = rows
             .iter()
             .filter(|row| row.weapon_page == page.index)
@@ -52,7 +90,7 @@ pub(super) fn append(
             &graph.nodes,
             child_rows + child * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
         )?;
-        let objective = append_objective(graph, template_objective, page.destination, pools)?;
+        let objective = append_objective(graph, template_objective, page.objective_hash, pools)?;
         graph.nodes = append_fixed_rows_without_donor_dependencies(
             std::mem::take(&mut graph.nodes),
             count,
@@ -62,7 +100,7 @@ pub(super) fn append(
             &PRESENTATION_NODE_POINTER_FIELDS,
             &[usize::from(page.template)],
             &[template_hash],
-            &[page.destination.hash("node")],
+            &[page.node_hash],
             PRESENTATION_NODE_HASH_OFFSET,
             "Collections nodes",
         )?;
@@ -104,9 +142,55 @@ pub(super) fn append(
             &[],
             &[usize::from(page.template)],
             &[template_hash],
-            &[page.destination.hash("node")],
+            &[page.node_hash],
             0,
             "Collections names and icons",
+        )?;
+        if page.branded {
+            brand_page(graph, usize::from(page.index), badge_icon_index)?;
+        }
+        if let Some(hash) = page.name_hash {
+            let (_, _, rows, _) = array_at(&graph.node_strings, 8)?;
+            write_localized_reference(
+                &mut graph.node_strings,
+                rows + usize::from(page.index) * PRESENTATION_NODE_STRING_ROW_SIZE
+                    + PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
+                LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                hash,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Names, describes and draws a gear page with the strings and artwork of the runtime's badge.
+fn brand_page(
+    graph: &mut SunriseBadgeGraph,
+    index: usize,
+    badge_icon_index: u16,
+) -> AuthoringResult<()> {
+    let (_, _, rows, _) = array_at(&graph.node_strings, 8)?;
+    let row = rows + index * PRESENTATION_NODE_STRING_ROW_SIZE;
+    write_u16(
+        &mut graph.node_strings,
+        row + PRESENTATION_NODE_STRING_ICON_OFFSET,
+        badge_icon_index,
+    )?;
+    for (offset, hash) in [
+        (
+            PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
+            crate::badge::SUNRISE_BADGE_NAME_HASH,
+        ),
+        (
+            PRESENTATION_NODE_STRING_DESCRIPTION_REFERENCE_OFFSET,
+            crate::badge::SUNRISE_BADGE_DESCRIPTION_HASH,
+        ),
+    ] {
+        write_localized_reference(
+            &mut graph.node_strings,
+            row + offset,
+            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            hash,
         )?;
     }
     Ok(())
@@ -141,7 +225,7 @@ fn append_members(
 fn append_objective(
     graph: &mut SunriseBadgeGraph,
     template: usize,
-    destination: crate::collection::Destination,
+    objective_hash: u32,
     pools: &[u8],
 ) -> AuthoringResult<u16> {
     let (count, _, rows, _) = array_at(&graph.objectives, 8)?;
@@ -158,7 +242,7 @@ fn append_objective(
         &fields,
         &[template],
         &[hash],
-        &[destination.hash("objective")],
+        &[objective_hash],
         0,
         "Collections objectives",
     )?;
@@ -171,7 +255,7 @@ fn append_objective(
         &[],
         &[template],
         &[hash],
-        &[destination.hash("objective")],
+        &[objective_hash],
         0,
         "Collections objective text",
     )?;
@@ -224,6 +308,7 @@ pub(super) fn add_counts(
         .pages
         .values()
         .map(|page| page.index)
+        .chain(plan.gear_pages.values().map(|page| page.index))
         .collect::<BTreeSet<_>>();
     let mut additions = BTreeMap::<u16, BTreeSet<u16>>::new();
     for row in rows

@@ -2,7 +2,9 @@
 mod browser;
 #[cfg(test)]
 mod tests;
-pub(crate) use browser::{BrowserList, browser, browser_with_toolbar, search, show_all};
+pub(crate) use browser::{
+    BrowserList, CLEAR_WIDTH, browser, browser_with_toolbar, search, show_all,
+};
 
 /// Give a control the name a screen reader announces before its value.
 ///
@@ -154,9 +156,12 @@ pub(crate) fn results<T>(
     row_height: f32,
     mut row: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
 ) -> Option<T> {
-    ui.label(format!("{count} Results"));
+    ui.label(format!(
+        "{count} {}",
+        if count == 1 { "Result" } else { "Results" }
+    ));
     if count == 0 {
-        ui.label("No matching choices. Try fewer words or clear the filters.");
+        ui.label("No matching choices.");
         return None;
     }
     let mut scroll = egui::ScrollArea::vertical()

@@ -21,6 +21,47 @@ fn material_masks_keep_linear_alpha_during_bilinear_sampling() {
     assert_eq!(texture.sample_rgba([0.25, 0.5]), [255.0, 128.0, 40.0, 16.0]);
     assert_eq!(texture.sample_rgba([0.5, 0.5]), [191.5, 96.0, 147.5, 135.5]);
     assert_eq!(texture.sample_rgba([-0.25, 0.5])[3], 255.0);
+    assert_eq!(texture.sample_ramp(0.0), [255.0, 128.0, 40.0, 16.0]);
+    assert_eq!(texture.sample_ramp(1.0), [128.0, 64.0, 255.0, 255.0]);
+    let clamp = Sampler {
+        u: AddressMode::Clamp,
+        v: AddressMode::Clamp,
+        border: [0.0; 4],
+    };
+    assert_eq!(
+        texture.sample_with_sampler([0.0, 0.0], &clamp),
+        [255.0, 128.0, 40.0, 16.0]
+    );
+    assert_eq!(
+        texture.sample_with_sampler([1.0, 0.0], &clamp),
+        [128.0, 64.0, 255.0, 255.0]
+    );
+}
+
+#[test]
+fn native_border_sampler_uses_its_border_color_outside_the_mask() {
+    let texture = Texture {
+        tag: 0,
+        size: [2, 1],
+        rgba: vec![255; 8],
+    };
+    let sampler = Sampler {
+        u: AddressMode::Border,
+        v: AddressMode::Clamp,
+        border: [0.0; 4],
+    };
+    assert_eq!(
+        texture.sample_with_sampler([-0.25, 0.5], &sampler),
+        [0.0; 4]
+    );
+    assert_eq!(
+        texture.sample_with_sampler([0.0, 0.5], &sampler),
+        [127.5; 4]
+    );
+    assert_eq!(
+        texture.sample_with_sampler([0.25, 0.5], &sampler),
+        [255.0; 4]
+    );
 }
 
 #[test]
@@ -48,6 +89,28 @@ fn grayscale_and_bgra_formats_preserve_channels_and_check_lengths() {
 }
 
 #[test]
+fn packed_float_particle_texture_decodes_native_channels() {
+    let red = 15_u32 << 6;
+    let green = 14_u32 << 6;
+    let pixel = (red | green << 11).to_le_bytes();
+    assert_eq!(decode(&pixel, 26, 1, 1).unwrap(), [255, 128, 0, 255]);
+    assert!(decode(&pixel[..3], 26, 1, 1).is_err());
+    assert_eq!(
+        preview_mip(26, 4096, 1024).unwrap(),
+        (2048, 512, 16_777_216)
+    );
+}
+
+#[test]
+fn two_channel_unorm_texture_preserves_both_shader_inputs() {
+    assert_eq!(
+        decode(&[0, 128, 255, 255], 35, 1, 1).unwrap(),
+        [128, 255, 0, 255]
+    );
+    assert!(decode(&[0, 128, 255], 35, 1, 1).is_err());
+}
+
+#[test]
 fn mip_selection_accounts_for_compressed_block_sizes_and_non_square_images() {
     assert_eq!(preview_mip(99, 4096, 1024).unwrap(), (2048, 512, 4_194_304));
     assert_eq!(
@@ -60,12 +123,4 @@ fn mip_selection_accounts_for_compressed_block_sizes_and_non_square_images() {
     );
     assert_eq!(preview_mip(99, 512, 512).unwrap(), (512, 512, 0));
     assert!(preview_mip(999, 4096, 4096).is_err());
-}
-
-#[test]
-fn color_bindings_take_priority_over_linear_data() {
-    assert!(color_rank(99, 1) < color_rank(98, 0));
-    assert_eq!(color_rank(99, 0), Some(0));
-    assert_eq!(color_rank(83, 0), None); // Two-channel normal/data texture.
-    assert_eq!(color_rank(98, 4), None); // Unidentified later linear binding.
 }

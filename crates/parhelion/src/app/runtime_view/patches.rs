@@ -6,7 +6,7 @@ impl PackageAuthoringApp {
             ui,
             "Raw Payload Patches",
             Some(
-                "Escape hatch for native fields without a decoded name. Final byte replacements are stored in recipes as hexadecimal bytes and applied to the selected finished row or payload. Required identity, index, and graph invariants are still validated.",
+                "Byte edits for unnamed fields, saved as hex in the recipe. Identity and index checks still apply.",
             ),
         );
         let mut remove = None;
@@ -47,10 +47,7 @@ impl PackageAuthoringApp {
             if !valid_hex_patch_text(&patch.bytes) {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    format!(
-                        "Patch {} needs a non-empty even-length hexadecimal byte string.",
-                        index + 1
-                    ),
+                    format!("Patch {} needs an even number of hex digits.", index + 1),
                 );
             }
             if index + 1 < patch_count {
@@ -75,11 +72,11 @@ impl PackageAuthoringApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.weak(
-                        "Advanced same-size edits inside a selected concrete runtime resource.",
+                        "Same-size edits inside one runtime resource.",
                     );
                     draw_authoring_info_icon(
                         ui,
-                        "Offsets are relative to the resource record selected by the binding. Parhelion clones the owning component tag, rebases its self references, and keeps the edit private to this authored weapon. Use raw runtime-entity patches only for entity-map or descriptor bytes.",
+                        "Offsets start at the binding's resource. The edit stays private to this weapon.",
                     );
                 });
                 let mut remove = None;
@@ -127,7 +124,7 @@ impl PackageAuthoringApp {
                                     .desired_width(112.0),
                             )
                             .on_hover_text(
-                                "Any active native binding hash is accepted. Named weapon bindings are available in the menu.",
+                                "Any active binding hash. Named bindings are in the menu.",
                             )
                             .changed()
                         {
@@ -143,7 +140,7 @@ impl PackageAuthoringApp {
                     draw_patch_bytes(ui, &mut patch.bytes);
                     if !patch.graph_values.is_empty() {
                         ui.label(format!("Private Graph: {} edits (weapon-wide)", patch.graph_values.len()))
-                            .on_hover_text("Bytes identify the stock graph. The build links a private edited copy here. This is not gated by the custom perk. Edit graph values in the recipe JSON.");
+                            .on_hover_text("Applies to the whole weapon, not only the custom perk. Edit in the recipe JSON.");
                     }
                     if patch.binding_hash.parse_u32().ok().is_none_or(|hash| {
                         matches!(hash, 0 | u32::MAX)
@@ -151,22 +148,22 @@ impl PackageAuthoringApp {
                         ui.colored_label(
                             ui.visuals().error_fg_color,
                             format!(
-                                "Runtime value patch {} needs a non-reserved canonical binding hash.",
+                                "Binary patch {} needs a valid binding hash.",
+                                index + 1
+                            ),
+                        );
+                    }
+                    if !valid_hex_patch_text(&patch.bytes) {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            format!(
+                                "Binary patch {} needs an even number of hex digits.",
                                 index + 1
                             ),
                         );
                     }
                     if index + 1 < patch_count {
                         ui.separator();
-                    }
-                    if !valid_hex_patch_text(&patch.bytes) {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            format!(
-                                "Runtime value patch {} needs a non-empty even-length hexadecimal byte string.",
-                                index + 1
-                            ),
-                        );
                     }
                 }
                 if let Some(index) = remove {

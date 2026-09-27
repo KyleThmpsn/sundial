@@ -3,11 +3,7 @@ use super::*;
 
 pub(super) fn keeps_stock_identity(perk: &WeaponSandboxPerkRuntimeOverride) -> bool {
     sundial::package_authoring::native_weapon::fixed_damage_marker(perk.source_perk_index).is_some()
-        && perk.program.is_none()
-        && perk.projectiles.is_empty()
-        && perk.activation.is_none()
-        && perk.runtime_values.is_empty()
-        && perk.action_float_values.is_empty()
+        && super::unedited(perk)
 }
 
 #[cfg(test)]

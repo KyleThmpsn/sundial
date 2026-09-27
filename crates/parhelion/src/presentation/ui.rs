@@ -36,6 +36,12 @@ impl Editor {
             self.artwork = None;
         }
     }
+    /// Whether the base item's lore has finished loading, so a capture shows it.
+    #[cfg(test)]
+    pub(crate) fn lore_loaded(&self) -> bool {
+        self.lore.loaded()
+    }
+
     pub(crate) fn editing(&self) -> bool {
         self.artwork.is_some()
     }
@@ -79,11 +85,14 @@ impl Editor {
         }
     }
 
+    /// `class_armor` marks a recipe the Sunrise badge cannot hold: its three class leaves share
+    /// one member list.
     pub(crate) fn draw_badge(
         &mut self,
         ui: &mut egui::Ui,
         draft: &mut crate::WeaponRecipeOverrides,
         badges: &[Badge],
+        class_armor: bool,
     ) {
         ui.horizontal(|ui| {
             ui.strong("Collections Badge");
@@ -97,12 +106,16 @@ impl Editor {
                 ..Default::default()
             };
         }
-        let mut include = !draft.exclude_from_sunrise_badge;
+        let mut include = !draft.exclude_from_sunrise_badge && !class_armor;
         if ui
-            .checkbox(
-                &mut include,
-                format!("Include in {} Badge", self.branding.name()),
+            .add_enabled(
+                !class_armor,
+                egui::Checkbox::new(
+                    &mut include,
+                    format!("Include in {} Badge", self.branding.name()),
+                ),
             )
+            .on_disabled_hover_text("Armor belongs to one class.")
             .changed()
         {
             draft.exclude_from_sunrise_badge = !include;
@@ -188,12 +201,13 @@ impl Editor {
         ui.weak("Release watermarks use the image silhouette. A transparent PNG works best.");
     }
 
+    /// The lore tab: the base item's, none, or a story of its own for an item of `kind`.
     pub(crate) fn draw_lore(
         &mut self,
         ui: &mut egui::Ui,
         draft: &mut crate::WeaponRecipeOverrides,
         packages: &std::path::Path,
-        item_hash: Option<u32>,
+        (item_hash, kind): (Option<u32>, crate::ItemKind),
     ) {
         self.lore.update(ui.ctx(), packages, item_hash);
         ui.strong("Lore Tab");
@@ -218,11 +232,11 @@ impl Editor {
                 egui::TextEdit::multiline(text)
                     .desired_rows(8)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Write this weapon’s story…"),
+                    .hint_text(format!("Write this {}’s story…", kind.noun())),
             );
             ui.weak(format!("{} / 16,384 bytes", text.len()));
         } else if !draft.remove_lore {
-            self.lore.draw(ui);
+            self.lore.draw(ui, kind);
         }
     }
 }

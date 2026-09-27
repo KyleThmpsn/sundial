@@ -18,6 +18,8 @@ pub(super) struct Picker {
     donor: Option<u32>,
     loading: Option<Receiver<Result<Vec<Model>, String>>>,
     notice: String,
+    /// `notice` reports a failure.
+    failed: bool,
 }
 
 pub(super) struct Prepared {
@@ -90,10 +92,12 @@ impl PackageAuthoringApp {
                 }
                 Ok(Err(error)) => {
                     self.importer.models.notice = error;
+                    self.importer.models.failed = true;
                     self.importer.models.loading = None;
                 }
                 Err(TryRecvError::Disconnected) => {
                     self.importer.models.notice = "Model list failed to load.".into();
+                    self.importer.models.failed = true;
                     self.importer.models.loading = None;
                 }
                 Err(TryRecvError::Empty) => {
@@ -120,6 +124,7 @@ impl PackageAuthoringApp {
                 })
             })
             .unwrap_or_default();
+        let catalog_loaded = self.catalog.is_some() && !self.donor_summaries.is_empty();
         let idle = !self.importer.busy()
             && self.build_receiver.is_none()
             && self.install_receiver.is_none();
@@ -267,7 +272,11 @@ impl PackageAuthoringApp {
                     let ready = recipe.overrides.imported_graph.is_some()
                         && carrier.is_some_and(|hash| compatible.contains(&hash));
                     if !ready && recipe.overrides.imported_graph.is_some() {
-                        ui.label("Donor incompatible with this weapon’s gameplay base.");
+                        ui.label(if catalog_loaded {
+                            "Donor incompatible with this weapon’s gameplay base."
+                        } else {
+                            "Catalog loading."
+                        });
                     }
                     apply = ui
                         .add_enabled(ready, egui::Button::new("Apply Model"))
@@ -282,7 +291,12 @@ impl PackageAuthoringApp {
                     }
                 }
                 if !self.importer.models.notice.is_empty() {
-                    ui.label(&self.importer.models.notice);
+                    let color = if self.importer.models.failed {
+                        ui.visuals().error_fg_color
+                    } else {
+                        style::success_color(ui.visuals())
+                    };
+                    ui.colored_label(color, &self.importer.models.notice);
                 }
             });
         self.importer.models.open = open;
@@ -410,7 +424,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn finish_imported_model(&mut self, prepared: Prepared) {
-        match prepared.result {
+        let (notice, failed) = match prepared.result {
             Ok((graph, donor))
                 if self.recipe == prepared.baseline && self.packages == prepared.packages =>
             {
@@ -418,13 +432,20 @@ impl PackageAuthoringApp {
                 self.recipe.overrides.imported_graph = Some(graph);
                 self.recipe_dirty = true;
                 self.invalidate_results();
-                self.importer.models.notice = "Model applied.".into();
+                ("Model applied.".to_owned(), false)
             }
-            Ok(_) => {
-                self.importer.models.notice = "Recipe changed while preparing. Apply again.".into()
-            }
-            Err(error) => self.importer.models.notice = error,
-        }
-        self.importer.notice = self.importer.models.notice.clone();
+            Ok(_) => (
+                "Recipe changed while preparing. Apply again.".to_owned(),
+                true,
+            ),
+            Err(error) => (error, true),
+        };
+        self.importer.notice = if failed {
+            notice.clone()
+        } else {
+            String::new()
+        };
+        self.importer.models.notice = notice;
+        self.importer.models.failed = failed;
     }
 }

@@ -6,11 +6,8 @@ use super::*;
 pub(super) struct ResolvedWeapon {
     pub(super) weapon: WeaponCloneSpec,
     pub(super) donor_item_index: usize,
-    pub(super) collectible_display_template_index: usize,
-    pub(super) collectible_template_index: usize,
-    pub(super) collection_donor_index: usize,
-    pub(super) source_unlock_index: usize,
-    pub(super) source_acquired_flag: u16,
+    /// Where the item lands in Collections. A subclass has no Collections entry.
+    pub(super) collection: Option<ResolvedCollection>,
     pub(super) definition_tag: TagHash,
     pub(super) string_tag: TagHash,
     pub(super) definition: Vec<u8>,
@@ -28,10 +25,27 @@ pub(super) struct ResolvedWeapon {
     pub(super) runtime_component_donors: Vec<ResolvedRuntimeComponentDonor>,
     pub(super) runtime_pattern_source: Option<ResolvedSandboxPatternSource>,
     pub(super) gear_art_pattern_source: Option<ResolvedSandboxPatternSource>,
-    pub(super) weapon_page: u16,
-    pub(super) count_selection: SunriseAcquiredPoolSelection,
+    /// The appearance whose rig and animations are promoted onto the gameplay runtime, set
+    /// only when the two belong to different weapon families and the promotion applies.
+    pub(super) appearance_rig_donor: Option<u32>,
     pub(super) socket_column_indices: Vec<Option<ResolvedSocketColumn>>,
     pub(super) has_authored_shader: bool,
+    /// A subclass's own socket-entry list, when its abilities come from other subclasses.
+    pub(super) subclass_list: Option<super::subclass::ResolvedSubclassList>,
+    /// A shader's dye rows once custom dyes replace the ones it edits.
+    pub(super) dye_rows: Option<[Vec<WeaponDyeReferenceOverride>; 3]>,
+}
+
+/// The stock rows an authored item's collectible copies, and the page it lands on.
+#[derive(Clone)]
+pub(super) struct ResolvedCollection {
+    pub(super) collectible_display_template_index: usize,
+    pub(super) collectible_template_index: usize,
+    pub(super) collection_donor_index: usize,
+    pub(super) source_unlock_index: usize,
+    pub(super) source_acquired_flag: u16,
+    pub(super) weapon_page: u16,
+    pub(super) count_selection: SunriseAcquiredPoolSelection,
 }
 
 #[cfg(test)]
@@ -147,6 +161,19 @@ pub(super) fn resolve_project_weapons_with_progress(
         };
         let definition = read_tag(manager, definition_tag, "donor weapon")?;
         let strings = read_tag(manager, string_tag, "donor item-string")?;
+        if weapon.kind == ItemKind::Subclass {
+            return subclass::resolve(
+                sources,
+                weapon,
+                DonorItem {
+                    item_index: donor_item_index,
+                    definition_tag,
+                    string_tag,
+                },
+                definition,
+                strings,
+            );
+        }
         if matching_u32_offsets(&definition, weapon.donor_item_hash)
             != [ITEM_DEFINITION_HASH_OFFSET]
             || !matching_u32_offsets(&strings, weapon.donor_item_hash).is_empty()
@@ -154,6 +181,21 @@ pub(super) fn resolve_project_weapons_with_progress(
             return Err(invalid(
                 "Donor embeds its item identity at unsupported offsets",
             ));
+        }
+        if !weapon.kind.is_weapon() {
+            return gear::resolve(
+                sources,
+                weapon,
+                placements.gear_page_for(weapon_ordinal),
+                DonorItem {
+                    item_index: donor_item_index,
+                    definition_tag,
+                    string_tag,
+                },
+                donor_collectible_index,
+                definition,
+                strings,
+            );
         }
         if read_i64(&definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)? == 0 {
             return Err(invalid(
@@ -170,35 +212,24 @@ pub(super) fn resolve_project_weapons_with_progress(
         let with_behavior_perks = if weapon.overrides.additional_behaviors.is_empty() {
             None
         } else {
-            // A source weapon's frame plug is written for its own family, so it comes along
-            // only when the source is the same kind of weapon as this host. Family is read
-            // from the item-type string reference both carry, which is what names the type
-            // in game; a source that cannot be read keeps the frame, as it always did.
-            let host_type = item_type_reference(&strings);
-            let mut frame_fits = std::collections::BTreeMap::new();
-            for request in &weapon.overrides.additional_behaviors {
-                let Some(entry) = crate::weapon_behavior::behavior(request) else {
-                    continue;
-                };
-                let source_type = resolve_donor_item(
-                    sources,
-                    entry.source_item_hash,
-                    "Behavior source",
-                )
-                .and_then(|item| read_tag(manager, item.string_tag, "behavior source item-string"))
-                .ok()
-                .and_then(|strings| item_type_reference(&strings));
-                let fits = match (host_type, source_type) {
-                    (Some(host), Some(source)) => host == source,
-                    _ => true,
-                };
-                frame_fits.insert(entry.id, fits);
-            }
             let mut expanded = weapon.clone();
             expanded.overrides = crate::weapon_behavior::expand_socket_columns(
                 &weapon.overrides,
                 &weapon_socket_types(&definition)?,
-                &|entry| frame_fits.get(entry.id).copied().unwrap_or(true),
+            )?;
+            // A borrowed plug's burst change was written for its own weapon type, so each plug
+            // that changes the barrel becomes this weapon's own copy, carrying the firing pattern
+            // the recipe chose. The types come from the item-type text both weapons carry.
+            let item_type = |string_tag| resolve_item_type_name(manager, string_tag).ok();
+            expanded.overrides = crate::weapon_behavior::firing_variants(
+                &expanded.overrides,
+                item_type(string_tag).as_deref(),
+                &|entry| {
+                    resolve_donor_item(sources, entry.source_item_hash, "Behavior source")
+                        .ok()
+                        .and_then(|item| item_type(item.string_tag))
+                },
+                &mut |plug| behavior_plug_firing(sources, plug),
             )?;
             Some(expanded)
         };
@@ -208,10 +239,9 @@ pub(super) fn resolve_project_weapons_with_progress(
         let donor_icon_container =
             stock_item_icon_container(stock_item_icons, donor_icon_index)?;
         read_tag(manager, donor_icon_container, "gameplay donor icon container")?;
+        // The bucket is the donor's slot. Authoring rewrites a disagreeing equipment slot to match.
         let gameplay_inventory_slot = weapon_inventory_slot(&definition)?;
-        if weapon_equipment_slot(&definition)? != gameplay_inventory_slot {
-            return Err(invalid("Weapon inventory bucket and equipment slot disagree"));
-        }
+        weapon_equipment_slot(&definition)?;
         let gameplay_pattern_index = weapon_pattern_index(&definition)?;
         let selected_pattern_index = weapon
             .overrides
@@ -322,19 +352,43 @@ pub(super) fn resolve_project_weapons_with_progress(
                 "Appearance baseline has a gear-art/runtime row, but the gameplay runtime baseline is disabled",
             ));
         }
-        // Geometry from another translation group is pinned to the runtime rig at emission
-        // (`emission::reskin`). The authored pattern row then follows the runtime donor
-        // entirely, so the content group, HUD and first-person attachments stay coherent
-        // with the rig the parts are pinned to.
-        let gear_art_pattern_source = match (gear_art_pattern_source, runtime_pattern_source) {
-            (Some(gear_art), Some(runtime))
-                if gear_art.weapon_translation_group_hash
-                    != runtime.weapon_translation_group_hash =>
-            {
-                Some(runtime)
-            }
-            (gear_art, _) => gear_art,
-        };
+        // Geometry from another weapon family is handled one of two ways, and which one
+        // decides what the authored pattern row has to describe. Promoting the appearance's
+        // rig and animations onto the gameplay runtime keeps the model's own bones, so the
+        // row keeps describing the appearance's family. Failing that, the parts are pinned to
+        // the gameplay rig at emission (`emission::reskin`) and the row has to describe that
+        // family instead, or the client would look up animations the entity no longer has.
+        let (gear_art_pattern_source, appearance_rig_donor) =
+            match (gear_art_pattern_source, runtime_pattern_source) {
+                (Some(gear_art), Some(runtime))
+                    if gear_art.weapon_translation_group_hash
+                        != runtime.weapon_translation_group_hash =>
+                {
+                    let entity = |item_hash, description| {
+                        resolve_runtime_weapon_entity(
+                            manager,
+                            stock_sandbox_patterns,
+                            &sources.stock_entity_assignments,
+                            item_hash,
+                            description,
+                        )
+                        .map(|(_, payload)| payload)
+                    };
+                    let gameplay = entity(runtime.item_hash, "gameplay runtime entity")?;
+                    // Some appearances have gear art but no readable runtime entity. They can
+                    // still use the existing pinned-model path.
+                    if entity(gear_art.item_hash, "appearance runtime entity")
+                        .is_ok_and(|appearance| {
+                            rig::presentation_graft_applies(&gameplay, &appearance)
+                        })
+                    {
+                        (Some(gear_art), Some(gear_art.item_hash))
+                    } else {
+                        (Some(runtime), None)
+                    }
+                }
+                (gear_art, _) => (gear_art, None),
+            };
         let icon_donor = weapon
             .icon_donor
             .as_ref()
@@ -372,30 +426,7 @@ pub(super) fn resolve_project_weapons_with_progress(
             &definition,
             &weapon.overrides.socket_columns,
         )?;
-        let mut has_authored_shader = false;
-        for item in socket_column_indices
-            .iter()
-            .flatten()
-            .flat_map(|column| &column.choices)
-            .copied()
-            .collect::<BTreeSet<_>>()
-        {
-            let row = item_rows + usize::from(item) * ITEM_ROW_SIZE;
-            if read_u32(stock_item_table, row)? == 0xFD36_8D30 {
-                continue; // The empty Default Shader alone does not request shader support.
-            }
-            let plug = read_tag(
-                manager,
-                TagHash(read_u32(stock_item_table, row + 16)?),
-                "authored shader choice",
-            )?;
-            if crate::plug_classification::PlugClassification::category(&plug).ok()
-                == Some(2_973_005_342)
-            {
-                has_authored_shader = true;
-                break;
-            }
-        }
+        let has_authored_shader = selects_authored_shader(sources, &socket_column_indices)?;
         let inherited_icon = presentation_donor.as_ref().map_or(
             ResolvedIconDonor {
                 item_index: donor_item_index,
@@ -412,11 +443,16 @@ pub(super) fn resolve_project_weapons_with_progress(
             Ok(ResolvedWeapon {
                 weapon: weapon.clone(),
                 donor_item_index,
-                collectible_display_template_index: donor_collectible_index.unwrap_or(collectible_template_index),
-                collectible_template_index,
-                collection_donor_index,
-                source_unlock_index,
-                source_acquired_flag,
+                collection: Some(ResolvedCollection {
+                    collectible_display_template_index: donor_collectible_index
+                        .unwrap_or(collectible_template_index),
+                    collectible_template_index,
+                    collection_donor_index,
+                    source_unlock_index,
+                    source_acquired_flag,
+                    weapon_page,
+                    count_selection,
+                }),
                 definition_tag,
                 string_tag,
                 definition,
@@ -436,15 +472,14 @@ pub(super) fn resolve_project_weapons_with_progress(
                 runtime_component_donors,
                 runtime_pattern_source,
                 gear_art_pattern_source,
-                weapon_page,
-                count_selection,
+                appearance_rig_donor,
                 socket_column_indices,
                 has_authored_shader,
+                subclass_list: None,
+                dye_rows: None,
             })
         })()
-        .map_err(|error| {
-            error.context(weapon.error_context())
-        })?;
+        .map_err(|error| weapon.in_recipe(error))?;
         resolved.push(resolved_weapon);
         progress.finish(&operation);
     }
@@ -452,15 +487,55 @@ pub(super) fn resolve_project_weapons_with_progress(
     Ok(resolved)
 }
 
-/// The item-type string reference an item string carries, which is what names the weapon's
-/// kind in game. Two weapons of one family share it. None when the reference is inactive.
-fn item_type_reference(strings: &[u8]) -> Option<[u8; 8]> {
-    use sundial::package_authoring::investment_schema::ITEM_STRING_TYPE_REFERENCE_OFFSET;
-    let reference: [u8; 8] = strings
-        .get(ITEM_STRING_TYPE_REFERENCE_OFFSET..ITEM_STRING_TYPE_REFERENCE_OFFSET + 8)?
-        .try_into()
-        .ok()?;
-    let bank = u32::from_le_bytes(reference[..4].try_into().ok()?);
-    let index = u32::from_le_bytes(reference[4..].try_into().ok()?);
-    (bank != u32::MAX && !matches!(index, 0 | u32::MAX)).then_some(reference)
+/// Whether any authored socket choice is a real shader. The empty Default Shader alone does not
+/// request shader support.
+pub(super) fn selects_authored_shader(
+    sources: &ProjectSources,
+    socket_column_indices: &[Option<ResolvedSocketColumn>],
+) -> AuthoringResult<bool> {
+    for item in socket_column_indices
+        .iter()
+        .flatten()
+        .flat_map(|column| &column.choices)
+        .copied()
+        .collect::<BTreeSet<_>>()
+    {
+        let row = sources.item_rows + usize::from(item) * ITEM_ROW_SIZE;
+        if read_u32(&sources.stock_item_table, row)? == 0xFD36_8D30 {
+            continue;
+        }
+        let plug = read_tag(
+            &sources.manager,
+            TagHash(read_u32(&sources.stock_item_table, row + 16)?),
+            "authored shader choice",
+        )?;
+        if crate::plug_classification::PlugClassification::category(&plug).ok()
+            == Some(2_973_005_342)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The barrel firing changes each stock perk on a borrowed behavior plug makes.
+fn behavior_plug_firing(
+    sources: &ProjectSources,
+    plug: u32,
+) -> AuthoringResult<Vec<crate::weapon_behavior::PerkFiring>> {
+    let item = resolve_donor_item(sources, plug, "Behavior plug")?;
+    let definition = read_tag(
+        &sources.manager,
+        item.definition_tag,
+        "behavior plug definition",
+    )?;
+    let mut firing = Vec::new();
+    for perk in weapon_sandbox_perks(&definition)? {
+        if let Some(perk) =
+            crate::weapon_behavior::perk_firing(&sources.manager, &sources.globals_data, perk)?
+        {
+            firing.push(perk);
+        }
+    }
+    Ok(firing)
 }

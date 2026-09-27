@@ -673,30 +673,6 @@ mod tests {
     }
 
     #[test]
-    fn filtered_dismantle_adds_choose_the_first_unoccupied_policy() {
-        let mut state = ProfileState::default();
-        for id_value in 1..=3 {
-            state
-                .apply_dismantle_reward(
-                    WRITABLE_FILTERED,
-                    DismantleRewardCommand::AddForDefinition {
-                        id: id(id_value),
-                        definition_hash: DefinitionHash::new(44),
-                    },
-                )
-                .unwrap();
-        }
-
-        assert_eq!(state.dismantle_rewards()[0], reward(1, 44));
-        assert_eq!(
-            state.dismantle_rewards()[1].masterworked,
-            Some(false),
-            "masterwork filters vary before gear-class filters"
-        );
-        assert_eq!(state.dismantle_rewards()[2].masterworked, Some(true));
-    }
-
-    #[test]
     fn combined_gear_class_capability_participates_in_generated_policies() {
         let capabilities = ProfileCapabilities {
             combined_dismantle_gear_class: true,

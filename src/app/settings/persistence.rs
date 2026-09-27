@@ -16,11 +16,6 @@ pub(in crate::app) fn load_json(path: &Path) -> Result<Value, String> {
     Ok(document)
 }
 
-#[cfg(test)]
-pub(in crate::app) fn verify_source_unchanged(path: &Path, expected: &Value) -> Result<(), String> {
-    verify_workspace_source_unchanged(path, expected, true)
-}
-
 pub(in crate::app) fn verify_workspace_source_unchanged(
     path: &Path,
     expected: &Value,

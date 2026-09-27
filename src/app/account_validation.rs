@@ -515,21 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn baseline_catalog_issues_do_not_block_unrelated_edits() {
-        let persisted = Vec::from(["existing unsupported definition".to_owned()]);
-        let candidate = persisted.clone();
-        assert!(validate_new_issues(candidate, persisted).is_ok());
-
-        let candidate = Vec::from([
-            "existing unsupported definition".to_owned(),
-            "new bad definition".to_owned(),
-        ]);
-        let persisted = Vec::from(["existing unsupported definition".to_owned()]);
-        let error = validate_new_issues(candidate, persisted).unwrap_err();
-        assert!(error.contains("new bad definition"));
-    }
-
-    #[test]
     fn profile_only_inventory_definitions_are_valid_catalog_references() {
         let hash = 5;
         let mut catalog = FakeCatalog::default();

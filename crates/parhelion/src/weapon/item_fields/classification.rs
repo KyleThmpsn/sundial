@@ -37,15 +37,11 @@ pub(in crate::weapon) fn set_weapon_inventory_slot(
     data: &mut [u8],
     inventory_slot: WeaponInventorySlot,
 ) -> AuthoringResult<()> {
-    // Parse the donor pair before writing so an old-style or ambiguous block is never normalized
-    // into something that merely looks authorable.
-    let donor_inventory_slot = weapon_inventory_slot(data)?;
-    let donor_equipment_slot = weapon_equipment_slot(data)?;
-    if donor_inventory_slot != donor_equipment_slot {
-        return Err(invalid(format!(
-            "Weapon has a {donor_inventory_slot:?} inventory bucket but a {donor_equipment_slot:?} equipment slot"
-        )));
-    }
+    // Parse both fields before writing so an old-style block is never normalized into something
+    // that merely looks authorable. Stock Trust and Polaris Lance keep an Energy bucket with a
+    // Kinetic equipment slot, so the pair may disagree. Writing both makes the result agree.
+    weapon_inventory_slot(data)?;
+    weapon_equipment_slot(data)?;
     let block = relative_target(data, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET)?;
     write_bytes(
         data,
@@ -76,6 +72,22 @@ pub(in crate::weapon) fn item_string_client_classification(
     data: &[u8],
     expected_slot: WeaponInventorySlot,
 ) -> AuthoringResult<[u8; ITEM_STRING_CLIENT_CLASSIFICATION_SIZE]> {
+    let (tuple, slot) = item_string_client_tuple(data)?;
+    if slot != expected_slot {
+        return Err(invalid(format!(
+            "Item-string client classification uses {slot:?}, but the definition uses {expected_slot:?}"
+        )));
+    }
+    Ok(tuple)
+}
+
+/// A donor's tuple may name a different slot than its definition bucket, as stock Trust does.
+fn item_string_client_tuple(
+    data: &[u8],
+) -> AuthoringResult<(
+    [u8; ITEM_STRING_CLIENT_CLASSIFICATION_SIZE],
+    WeaponInventorySlot,
+)> {
     let end = ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET
         .checked_add(ITEM_STRING_CLIENT_CLASSIFICATION_SIZE)
         .ok_or_else(|| invalid("Item-string client classification range overflowed"))?;
@@ -92,11 +104,6 @@ pub(in crate::weapon) fn item_string_client_classification(
             "Item-string client classification uses unknown bucket hash 0x{bucket_hash:08X}"
         ))
     })?;
-    if bucket_hash != expected_slot.bucket_hash() || slot != expected_slot {
-        return Err(invalid(format!(
-            "Item-string client classification uses {slot:?}, but the definition uses {expected_slot:?}"
-        )));
-    }
     let first_type_key = u32::from_le_bytes(
         tuple[4..8]
             .try_into()
@@ -114,17 +121,16 @@ pub(in crate::weapon) fn item_string_client_classification(
             "Item-string client type keys must both be nonzero (0x{first_type_key:08X}, 0x{second_type_key:08X})"
         )));
     }
-    Ok(tuple)
+    Ok((tuple, slot))
 }
 
 /// Slot and weapon type are independent: +B8 is the bucket hash, while +BC/+C0
 /// are type-name hashes (for example FNV-1("sword")), not destination-slot keys.
 pub(in crate::weapon) fn set_item_string_inventory_slot(
     data: &mut [u8],
-    donor_slot: WeaponInventorySlot,
     authored_slot: WeaponInventorySlot,
 ) -> AuthoringResult<()> {
-    item_string_client_classification(data, donor_slot)?;
+    item_string_client_tuple(data)?;
     write_u32(
         data,
         ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET,
@@ -134,13 +140,11 @@ pub(in crate::weapon) fn set_item_string_inventory_slot(
 
 pub(in crate::weapon) fn transplant_item_string_client_classification(
     target: &mut [u8],
-    target_donor_slot: WeaponInventorySlot,
     source: &[u8],
-    source_slot: WeaponInventorySlot,
     authored_slot: WeaponInventorySlot,
 ) -> AuthoringResult<()> {
-    let target_tuple = item_string_client_classification(target, target_donor_slot)?;
-    let mut source_tuple = item_string_client_classification(source, source_slot)?;
+    let (target_tuple, _) = item_string_client_tuple(target)?;
+    let (mut source_tuple, _) = item_string_client_tuple(source)?;
     // Preserve the appearance's type keys, but not its inventory placement.
     source_tuple[..4].copy_from_slice(&authored_slot.bucket_hash().to_le_bytes());
     let before = target.to_vec();

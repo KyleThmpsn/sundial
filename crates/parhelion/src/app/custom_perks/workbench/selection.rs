@@ -13,6 +13,8 @@ struct Choice {
     recipe: PerkRecipe,
     source: String,
     issue: Option<String>,
+    /// A likely mistake that leaves the perk selectable, shown under the row.
+    warning: Option<String>,
 }
 
 pub(super) struct Picker {
@@ -48,17 +50,20 @@ impl Workbench {
         warnings.extend(template_warnings);
         warnings.sort();
         warnings.dedup();
-        let choices = choices::collect(
+        let mut choices = choices::collect(
             &self.entries,
             &self.documents,
             templates.iter().map(|template| {
                 (
                     templates::from_variant(&template.variant, catalog),
-                    format!("Weapon Recipe · {}", template.weapon),
+                    format!("{} Recipe · {}", template.kind.label(), template.weapon),
                 )
             }),
             |recipe| self.perk_issue(recipe),
         );
+        for choice in choices.iter_mut().filter(|choice| choice.issue.is_none()) {
+            choice.warning = validation::perk_warning(&choice.recipe);
+        }
         self.picker = Some(Picker {
             target,
             choices,
@@ -92,7 +97,11 @@ impl Workbench {
                 }
             }
             Some(Action::Create) => {
-                let mut document = Document::new(PerkRecipe::new(), None);
+                let mut recipe = PerkRecipe::new();
+                if let Some(plug) = picker.target.gear_plug() {
+                    recipe.template_plug = plug.into();
+                }
+                let mut document = Document::new(recipe, None);
                 document.target = Some(picker.target);
                 self.add_document(document);
                 self.page = Page::Basics;

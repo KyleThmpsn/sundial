@@ -19,6 +19,15 @@ pub(super) struct WeaponTables {
     pub unlocks: Vec<u8>,
     pub unlock_banks: Vec<u8>,
     pub unlock_displays: Vec<u8>,
+    /// Subclass socket-entry lists and display records, which grow by a row for each subclass
+    /// whose abilities come from other subclasses.
+    pub subclass: crate::weapon::subclass::SubclassTables,
+    /// Those subclasses' lists and display records, and their shared-tag companions, each right
+    /// after its record. They follow the private plugs in the host.
+    pub subclass_records: Vec<NewTagSpec>,
+    pub subclass_companions: Vec<NewTagSpec>,
+    /// Paths with names of their own, by their display record's place in `subclass_records`.
+    pub subclass_path_names: Vec<(usize, Vec<crate::weapon::subclass::PathName>)>,
     pub definitions: Vec<NewTagSpec>,
     pub authored_strings: Vec<NewTagSpec>,
     pub plans: Vec<NewWeaponPlan>,
@@ -27,6 +36,7 @@ pub(super) struct WeaponTables {
 }
 
 pub(super) struct WeaponBuildContext<'a> {
+    pub weapon_count: usize,
     pub stock_item_count: usize,
     pub stock_collectible_count: usize,
     pub authored_weapon_icon_indices: &'a [u16],
@@ -67,7 +77,13 @@ impl WeaponTables {
         );
         let item_index = u16::try_from(context.stock_item_count + ordinal)
             .map_err(|_| invalid("Authored item index does not fit 16 bits"))?;
-        let collectible_index = u16::try_from(context.stock_collectible_count + ordinal)
+        // A subclass has no collectible, so the others are numbered in the order they appear.
+        let collected = self
+            .plans
+            .iter()
+            .filter(|plan| plan.collection.is_some())
+            .count();
+        let collectible_index = u16::try_from(context.stock_collectible_count + collected)
             .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?;
         let (current_unlock_count, _, current_unlock_rows, _) = array_at(&self.unlocks, 8)?;
         let unlock_definition_index = u16::try_from(current_unlock_count)
@@ -82,7 +98,28 @@ impl WeaponTables {
 
         let mut definition = donor.definition.clone();
         let mut strings = donor.strings.clone();
-        let donor_inventory_slot = weapon_inventory_slot(&definition)?;
+        if !donor.weapon.kind.is_weapon() {
+            let author_item = if donor.weapon.kind == ItemKind::Subclass {
+                Self::author_subclass
+            } else {
+                Self::author_gear
+            };
+            let row = WeaponRow {
+                current_unlock_count,
+                identity,
+                definition_tag,
+                string_tag,
+                item_index,
+                collectible_index,
+                unlock_definition_index,
+                unlock_slot,
+                authored_icon_index,
+                authored_icon_container,
+                authored_pattern_index: None,
+                collection_material_set: 0,
+            };
+            return author_item(self, context, ordinal, donor, row, definition, strings);
+        }
         let authored_pattern_index = donor
             .gear_art_pattern_source
             .as_ref()
@@ -132,7 +169,6 @@ impl WeaponTables {
             &mut definition,
             &mut strings,
             donor,
-            donor_inventory_slot,
             authored_icon_index,
         )?;
         validate_authored_payloads(
@@ -172,7 +208,195 @@ impl WeaponTables {
         };
         self.append_presentation(donor, &row, context, ordinal)?;
         self.append_pattern(donor, &row, context, ordinal)?;
+        self.append_item_rows(donor, &row)?;
         self.append_collection(donor, &row)?;
+        self.record_authored(donor, &row, definition, strings);
+        Ok(())
+    }
+
+    /// Armor, Sparrows, Ships and Ghost Shells: the base item's slot, class, geometry and
+    /// runtime stay as they are, so there is no pattern row, damage or slot work.
+    fn author_gear(
+        &mut self,
+        context: &WeaponBuildContext<'_>,
+        ordinal: usize,
+        donor: &resolve::ResolvedWeapon,
+        mut row: WeaponRow,
+        mut definition: Vec<u8>,
+        mut strings: Vec<u8>,
+    ) -> AuthoringResult<()> {
+        write_u32(
+            &mut definition,
+            ITEM_DEFINITION_HASH_OFFSET,
+            row.identity.item_hash,
+        )?;
+        definition::apply_scalar_overrides(&mut definition, &donor.weapon.overrides)?;
+        let expected_socket_columns = definition::apply_socket_overrides(
+            &mut definition,
+            donor,
+            context.custom_plugs,
+            ordinal,
+        )?;
+        let material_set = gear::base_material_set(
+            &self.collectibles,
+            donor
+                .collection
+                .as_ref()
+                .ok_or_else(|| validation("Authored gear has no Collections entry"))?
+                .collectible_display_template_index,
+        )?;
+        row.collection_material_set = gear::apply_presentation(
+            &mut definition,
+            &mut strings,
+            donor,
+            row.authored_icon_index,
+            material_set,
+        )?;
+        gear::validate_payloads(
+            &definition,
+            &strings,
+            (!expected_socket_columns.is_empty()).then_some(expected_socket_columns.as_slice()),
+            &donor.weapon,
+            donor.dye_rows.as_ref(),
+        )?;
+        validate_authored_item_icon(
+            context.authored_item_icons,
+            &strings,
+            row.identity.item_hash,
+            row.authored_icon_index,
+            row.authored_icon_container,
+        )?;
+        self.append_presentation(donor, &row, context, ordinal)?;
+        self.append_item_rows(donor, &row)?;
+        self.append_collection(donor, &row)?;
+        self.record_authored(donor, &row, definition, strings);
+        Ok(())
+    }
+
+    /// A subclass keeps its base's slot and talent grid, or points at a list of its own when its
+    /// abilities come from other subclasses. It has no Collections entry and no unlock.
+    fn author_subclass(
+        &mut self,
+        context: &WeaponBuildContext<'_>,
+        ordinal: usize,
+        donor: &resolve::ResolvedWeapon,
+        row: WeaponRow,
+        mut definition: Vec<u8>,
+        mut strings: Vec<u8>,
+    ) -> AuthoringResult<()> {
+        for offset in subclass::IDENTITY_OFFSETS {
+            write_u32(&mut definition, offset, row.identity.item_hash)?;
+        }
+        let list_index = if let Some(list) = &donor.subclass_list {
+            // The list, its companion, the display record and its companion, then each authored
+            // node's pool and node record, in that order.
+            let first = HOST_EXPECTED_ENTRY_COUNT
+                + 2 * (context.weapon_count
+                    + context.custom_plugs.len()
+                    + self.subclass_records.len());
+            let tag = |offset: usize| -> AuthoringResult<TagHash> {
+                Ok(TagHash::new(
+                    HOST_PACKAGE_ID,
+                    u16::try_from(first + offset)
+                        .map_err(|_| invalid("Subclass list tag index does not fit 16 bits"))?,
+                ))
+            };
+            let (list_tag, display_tag) = (tag(0)?, tag(2)?);
+            let node_tags = (0..list.nodes.len())
+                .map(|node| Ok((tag(4 + 2 * node)?, tag(5 + 2 * node)?)))
+                .collect::<AuthoringResult<Vec<_>>>()?;
+            let (list_payload, display_payload) = subclass::place_nodes(list, &node_tags)?;
+            let index = self.subclass.append(list, list_tag, display_tag)?;
+            subclass::set_list_index(&mut definition, index)?;
+            let pools = node_tags.iter().map(|(pool, _)| pool.0).collect::<Vec<_>>();
+            let records = node_tags
+                .iter()
+                .map(|(_, record)| record.0)
+                .collect::<Vec<_>>();
+            for (record, template, companion, owner, companion_tag, added) in [
+                (
+                    list_payload,
+                    list.template_tag,
+                    &list.companion,
+                    list_tag,
+                    tag(1)?,
+                    pools,
+                ),
+                (
+                    display_payload,
+                    list.display_template_tag,
+                    &list.display_companion,
+                    display_tag,
+                    tag(3)?,
+                    records,
+                ),
+            ] {
+                self.subclass_records.push(NewTagSpec {
+                    template_tag: template,
+                    payload: record,
+                    storage: crate::NewTagStorageMode::InheritTemplate,
+                });
+                self.subclass_companions.push(NewTagSpec {
+                    template_tag: companion.tag,
+                    payload: companion.payload_for(owner, companion_tag, added)?,
+                    storage: crate::NewTagStorageMode::InheritTemplate,
+                });
+            }
+            if !list.path_names.is_empty() {
+                // The display record is the last one pushed.
+                self.subclass_path_names
+                    .push((self.subclass_records.len() - 1, list.path_names.clone()));
+            }
+            for node in &list.nodes {
+                self.subclass_records.push(NewTagSpec {
+                    template_tag: node.pool_template,
+                    payload: node.pool.clone(),
+                    storage: crate::NewTagStorageMode::InheritTemplate,
+                });
+                self.subclass_companions.push(NewTagSpec {
+                    template_tag: node.record_template,
+                    payload: node.record.clone(),
+                    storage: crate::NewTagStorageMode::InheritTemplate,
+                });
+            }
+            index
+        } else {
+            subclass::list_index(&donor.definition)?
+        };
+        gear::apply_presentation(
+            &mut definition,
+            &mut strings,
+            donor,
+            row.authored_icon_index,
+            0,
+        )?;
+        gear::validate_payloads(&definition, &strings, None, &donor.weapon, None)?;
+        if subclass::list_index(&definition)? != list_index {
+            return Err(validation(
+                "Authored subclass did not keep its socket-entry list",
+            ));
+        }
+        validate_authored_item_icon(
+            context.authored_item_icons,
+            &strings,
+            row.identity.item_hash,
+            row.authored_icon_index,
+            row.authored_icon_container,
+        )?;
+        self.append_presentation(donor, &row, context, ordinal)?;
+        self.append_item_rows(donor, &row)?;
+        self.record_authored(donor, &row, definition, strings);
+        Ok(())
+    }
+
+    fn record_authored(
+        &mut self,
+        donor: &resolve::ResolvedWeapon,
+        row: &WeaponRow,
+        definition: Vec<u8>,
+        strings: Vec<u8>,
+    ) {
+        let identity = row.identity;
         self.definitions.push(NewTagSpec {
             template_tag: donor.definition_tag,
             payload: definition,
@@ -184,31 +408,36 @@ impl WeaponTables {
             storage: crate::NewTagStorageMode::InheritTemplate,
         });
         self.plans.push(NewWeaponPlan {
+            kind: donor.weapon.kind,
             item_hash: identity.item_hash,
-            definition_tag,
-            string_tag,
-            icon_definition_tag: authored_icon_container,
+            definition_tag: row.definition_tag,
+            string_tag: row.string_tag,
+            icon_definition_tag: row.authored_icon_container,
             custom_plugs: Vec::new(),
-            item_index,
-            collectible_hash: identity.collectible_hash,
-            collectible_index,
-            unlock_hash: identity.unlock_hash,
-            unlock_definition_index,
-            unlock_bank: ACCOUNT_UNLOCK_BANK,
-            unlock_slot,
+            item_index: row.item_index,
+            collection: donor.collection.as_ref().map(|_| NewCollectionPlan {
+                collectible_hash: identity.collectible_hash,
+                collectible_index: row.collectible_index,
+                unlock_hash: identity.unlock_hash,
+                unlock_definition_index: row.unlock_definition_index,
+                unlock_bank: ACCOUNT_UNLOCK_BANK,
+                unlock_slot: row.unlock_slot,
+            }),
             template_item_hash: donor.weapon.donor_item_hash,
             template_definition_tag: donor.definition_tag,
             template_string_tag: donor.string_tag,
         });
-        self.project_rows.push(ProjectAuthoredRow {
-            donor_collectible_index: donor.collection_donor_index,
-            authored_collectible_index: usize::from(collectible_index),
-            weapon_page: donor.weapon_page,
-            source_acquired_flag: donor.source_acquired_flag,
-            authored_unlock_index: unlock_definition_index,
-            count_selection: donor.count_selection.clone(),
-        });
-        Ok(())
+        // Collections, badges and page counts cover only the items that have an entry.
+        if let Some(collection) = &donor.collection {
+            self.project_rows.push(ProjectAuthoredRow {
+                donor_collectible_index: collection.collection_donor_index,
+                authored_collectible_index: usize::from(row.collectible_index),
+                weapon_page: collection.weapon_page,
+                source_acquired_flag: collection.source_acquired_flag,
+                authored_unlock_index: row.unlock_definition_index,
+                count_selection: collection.count_selection.clone(),
+            });
+        }
     }
 
     fn append_presentation(
@@ -400,22 +629,17 @@ impl WeaponTables {
         Ok(())
     }
 
-    fn append_collection(
+    /// The item's definition and string index rows, which every authored item has.
+    fn append_item_rows(
         &mut self,
         donor: &resolve::ResolvedWeapon,
         row: &WeaponRow,
     ) -> AuthoringResult<()> {
         let WeaponRow {
-            current_unlock_count,
             identity,
             definition_tag,
             string_tag,
             item_index,
-            collectible_index,
-            unlock_definition_index,
-            unlock_slot,
-            authored_icon_index,
-            collection_material_set,
             ..
         } = *row;
         self.item_table = append_index_row(
@@ -452,21 +676,46 @@ impl WeaponTables {
             WeaponRawPayloadTarget::ItemStringIndexRow,
             &donor.weapon.overrides.raw_payload_patches,
         )?;
-        let parents = sunrise_badge_collectible_parents(donor.weapon_page);
-        let collection_parent = [donor.weapon_page];
-        let parents = if donor.weapon.overrides.exclude_from_sunrise_badge {
-            &collection_parent[..]
-        } else {
+        Ok(())
+    }
+
+    fn append_collection(
+        &mut self,
+        donor: &resolve::ResolvedWeapon,
+        row: &WeaponRow,
+    ) -> AuthoringResult<()> {
+        let WeaponRow {
+            current_unlock_count,
+            identity,
+            definition_tag,
+            string_tag,
+            item_index,
+            collectible_index,
+            unlock_definition_index,
+            unlock_slot,
+            authored_icon_index,
+            collection_material_set,
+            ..
+        } = *row;
+        let collection = donor
+            .collection
+            .as_ref()
+            .ok_or_else(|| validation("Authored item has no Collections entry"))?;
+        let parents = sunrise_badge_collectible_parents(collection.weapon_page);
+        let collection_parent = [collection.weapon_page];
+        let parents = if donor.weapon.joins_sunrise_badge() {
             &parents[..]
+        } else {
+            &collection_parent[..]
         };
         self.collectibles = append_collectible(
             std::mem::take(&mut self.collectibles),
-            donor.collectible_template_index,
+            collection.collectible_template_index,
             AuthoredCollectibleSpec {
                 collectible_hash: identity.collectible_hash,
                 item_index,
                 unlock: CollectibleUnlockClone {
-                    source_index: donor.source_unlock_index,
+                    source_index: collection.source_unlock_index,
                     authored_index: unlock_definition_index,
                 },
                 material_set_index: collection_material_set,
@@ -486,7 +735,7 @@ impl WeaponTables {
         validate_authored_collectible_nested_isolation(
             &self.collectibles,
             usize::from(collectible_index),
-            donor.source_unlock_index,
+            collection.source_unlock_index,
             unlock_definition_index,
         )?;
         let mut collectible_identity = identity;
@@ -498,7 +747,7 @@ impl WeaponTables {
         }
         self.collectible_displays = append_collectible_display(
             std::mem::take(&mut self.collectible_displays),
-            donor.collectible_display_template_index,
+            collection.collectible_display_template_index,
             collectible_identity,
             authored_icon_index,
             LOCALIZATION_DONOR_TABLE_INDEX as u32,
@@ -585,7 +834,7 @@ impl WeaponTables {
         )?;
         self.unlock_displays = append_unlock_display(
             std::mem::take(&mut self.unlock_displays),
-            donor.source_unlock_index,
+            collection.source_unlock_index,
             identity.unlock_hash,
             current_unlock_count,
         )?;

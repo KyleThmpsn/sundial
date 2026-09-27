@@ -176,7 +176,12 @@ pub fn build_configured(
         let entries = variant["texture_plates"][name]
             .as_array()
             .context("plate entries")?;
-        let composed = crate::d2_mot::plates::source_plate(source, &provenance, entries)?;
+        let composed = if variant["has_texture_plates"] == false {
+            ensure!(entries.is_empty(), "unplated model has plate entries");
+            crate::d2_mot::plates::unused(72, 1)?
+        } else {
+            crate::d2_mot::plates::source_plate(source, &provenance, entries)?
+        };
         let mut native = r.tag(0x80BA7101, None)?.0.clone();
         let w = composed.side;
         let height = composed.side;
@@ -187,9 +192,11 @@ pub fn build_configured(
         put(&mut native, 16, &u16::try_from(height)?.to_le_bytes())?;
         put(&mut native, 18, &1u16.to_le_bytes())?;
         put(&mut native, 20, &1u16.to_le_bytes())?;
-        let tag = entries[0]["texture"].as_str().context("texture")?;
-        let source_header = Payload(fs::read(source.join("raw").join(format!("{tag}.bin")))?);
-        native[22] = source_header.u8(44)?;
+        if let Some(entry) = entries.first() {
+            let tag = entry["texture"].as_str().context("texture")?;
+            let source_header = Payload(fs::read(source.join("raw").join(format!("{tag}.bin")))?);
+            native[22] = source_header.u8(44)?;
+        }
         native[23] = u8::try_from(composed.mips)?;
         put(&mut native, 36, &u32::MAX.to_le_bytes())?;
         crate::d2_mot::texture::resident(&mut native, data.len())?;
@@ -331,6 +338,34 @@ pub fn build_configured(
         ep.push(patch(slot, "owner"));
     }
     crate::d2_mot::entity::reject_stale_owner(&Payload(entity.clone()), owner_tag)?;
+    // The carrier's marker set says where this weapon aims, fires and ejects, and those
+    // points belong to the donor's geometry rather than the model being installed. Where the
+    // source names the same marker its transform comes across into a private copy, and the
+    // markers only the source names are added to it.
+    let mut marker_report = Value::Null;
+    if let Some((marker_tag, marker_row, marker_payload, plan)) =
+        crate::d2_mot::markers::carry(r, source, &Payload(entity.clone()))?
+    {
+        put(&mut entity, marker_row, &u32::MAX.to_le_bytes())?;
+        ep.push(patch(marker_row, "markers"));
+        add(
+            &out,
+            &mut nodes,
+            "markers",
+            marker_tag,
+            &marker_payload.0,
+            None,
+            vec![],
+        )?;
+        marker_report = json!({
+            "source": format!("{marker_tag:08X}"),
+            "carried": plan.matched.iter().map(|carried| format!("{:08X}", carried.name)).collect::<Vec<_>>(),
+            "turned": plan.matched.iter().filter(|carried| carried.orientation != [0.0, 0.0, 0.0, 1.0]).count(),
+            "carrier_only": plan.carrier_only.iter().map(|name| format!("{name:08X}")).collect::<Vec<_>>(),
+            "added": plan.added.iter().map(|added| format!("{:08X}", added.name)).collect::<Vec<_>>(),
+            "gameplay_verified": false,
+        });
+    }
     add(&out, &mut nodes, "entity", entity_tag, &entity, None, ep)?;
     let mut parent = r.tag(parent_tag, None)?.0.clone();
     put(&mut parent, 16, &u32::MAX.to_le_bytes())?;
@@ -356,7 +391,7 @@ pub fn build_configured(
     let c = nodes.last_mut().unwrap();
     c["shared_owner"] = json!("parent");
     c["source_parent"] = json!(parent_tag);
-    let result = json!({"item_hash":config.and_then(|c|c["item_hash"].as_u64()).unwrap_or(0x50EE7278),"art_key":config.and_then(|c|c["art_key"].as_u64()).unwrap_or(0xE2507278),"nodes":nodes,"parent":"parent","companion":"parent-companion","source_model":variant["model"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"native_item":native_item,"native_assignment":assignment,"model_slot":model_slot,"plates_slot":plates_slot,"native_draw_parts":mapping["native_parts"],"appearance":"Source geometry and plated textures; native material carriers","installable":false});
+    let result = json!({"item_hash":config.and_then(|c|c["item_hash"].as_u64()).unwrap_or(0x50EE7278),"art_key":config.and_then(|c|c["art_key"].as_u64()).unwrap_or(0xE2507278),"nodes":nodes,"parent":"parent","companion":"parent-companion","source_model":variant["model"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"native_item":native_item,"native_assignment":assignment,"model_slot":model_slot,"plates_slot":plates_slot,"native_draw_parts":mapping["native_parts"],"appearance":"Source geometry and plated textures; native material carriers","markers":marker_report,"installable":false});
     write_json(&out.join("asset-graph.json"), &result)?;
     Ok(result)
 }

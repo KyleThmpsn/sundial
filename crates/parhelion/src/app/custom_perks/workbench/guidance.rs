@@ -2,7 +2,7 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::{
     dependencies::Behavior,
-    nodes::{CONDITIONS, EFFECTS},
+    nodes::{CONDITIONS, EFFECTS, condition_title, effect_title},
     program::{Action, KeyCatalog, Program, Trigger},
 };
 
@@ -34,18 +34,25 @@ impl Purpose {
             Self::Patterns => "Weapon Patterns",
             Self::Timers => "Timed Effects",
             Self::Properties => "Properties and Stats",
-            Self::Ammunition => "Ammunition",
+            Self::Ammunition => "Ammo",
         }
     }
 
+    #[cfg(test)]
     pub(super) fn allows(self, behavior: Option<&Behavior>) -> bool {
+        self == Self::All || self.allows_search(behavior.map(behavior_search).as_deref())
+    }
+
+    /// Whether a behavior passes, given its `behavior_search` text, or `None` when there is
+    /// no behavior.
+    pub(super) fn allows_search(self, search: Option<&str>) -> bool {
         if self == Self::All {
             return true;
         }
-        let Some(behavior) = behavior else {
+        let Some(search) = search else {
             return false;
         };
-        let text = behavior_search(behavior).to_lowercase();
+        let text = search.to_lowercase();
         let words: &[&str] = match self {
             Self::All => &[],
             Self::Projectiles => &["entity", "projectile", "emitter", "spawn"],
@@ -58,7 +65,8 @@ impl Purpose {
     }
 }
 
-/// Include the displayed digest and registered operation names in discovery search.
+/// Include the displayed digest, the names the workbench gives each node kind and the
+/// registered operation names in discovery search.
 pub(super) fn behavior_search(behavior: &Behavior) -> String {
     let mut text = behavior.headline.clone();
     for section in &behavior.details {
@@ -74,12 +82,20 @@ pub(super) fn behavior_search(behavior: &Behavior) -> String {
     for node in EFFECTS
         .iter()
         .filter(|node| behavior.effect_kinds.contains(&node.kind))
-        .chain(
-            CONDITIONS
-                .iter()
-                .filter(|node| behavior.condition_kinds.contains(&node.kind)),
-        )
     {
+        text.push(' ');
+        text.push_str(effect_title(node.kind));
+        text.push(' ');
+        text.push_str(node.name);
+        text.push(' ');
+        text.push_str(node.summary);
+    }
+    for node in CONDITIONS
+        .iter()
+        .filter(|node| behavior.condition_kinds.contains(&node.kind))
+    {
+        text.push(' ');
+        text.push_str(condition_title(node.kind));
         text.push(' ');
         text.push_str(node.name);
         text.push(' ');
@@ -88,6 +104,8 @@ pub(super) fn behavior_search(behavior: &Behavior) -> String {
     text
 }
 
+/// Add from Perk opens on every stock effect, since each can be added and the ones that read
+/// as programs then edit in place.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum EditingFilter {
     #[default]
@@ -121,19 +139,21 @@ impl EditingFilter {
 /// hides an effect and never changes which effects can be copied.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum EffectOrder {
-    /// Effects whose own name matches the query come first.
+    /// Effects whose own name matches the query first, then the famous perks in the order
+    /// `EFFECT_LEAD` gives, then what weapons carry, then armor, then abilities, with
+    /// cosmetic sources last.
     #[default]
-    BestMatch,
+    Suggested,
     Name,
     Kind,
 }
 
 impl EffectOrder {
-    pub(super) const ALL: [Self; 3] = [Self::BestMatch, Self::Name, Self::Kind];
+    pub(super) const ALL: [Self; 3] = [Self::Suggested, Self::Name, Self::Kind];
 
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::BestMatch => "Best Match",
+            Self::Suggested => "Suggested",
             Self::Name => "Name",
             Self::Kind => "Item Type",
         }
@@ -141,26 +161,112 @@ impl EffectOrder {
 
     pub(super) fn hint(self) -> &'static str {
         match self {
-            Self::BestMatch => "Effects whose own name matches the search come first.",
+            Self::Suggested => "Search matches, then famous perks, then weapon perks.",
             Self::Name => "Every result by name.",
             Self::Kind => "Grouped by the item type that carries the effect, then by name.",
         }
     }
 }
 
+/// The perks Suggested lists first, by their stock names: famous weapon perks, then exotic
+/// weapon perks.
+pub(super) const EFFECT_LEAD: &[&str] = &[
+    "Rampage",
+    "Outlaw",
+    "Kill Clip",
+    "Firefly",
+    "Explosive Payload",
+    "Dragonfly",
+    "Headseeker",
+    "Swashbuckler",
+    "Demolitionist",
+    "Multikill Clip",
+    "Feeding Frenzy",
+    "Triple Tap",
+    "Fourth Time's the Charm",
+    "Subsistence",
+    "Rapid Hit",
+    "Vorpal Weapon",
+    "Desperado",
+    "Moving Target",
+    "Snapshot Sights",
+    "Quickdraw",
+    "Timed Payload",
+    "Surrounded",
+    "Opening Shot",
+    "Box Breathing",
+    "Killing Wind",
+    "Full Court",
+    "Auto-Loading Holster",
+    "Lightning Rounds",
+    "Reign Havoc",
+    "White Nail",
+    "Arc Conductor",
+    "Cosmology",
+    "Repulsor Force",
+    "The Corruption Spreads",
+    "Memento Mori",
+    "Release the Wolves",
+    "Payday",
+    "Pyrotoxin Rounds",
+    "Judgment",
+    "Lightning Rod",
+    "Poison Arrows",
+    "Sun Blast",
+    "Sunburn",
+    "String of Curses",
+    "Honed Edge",
+    "Compounding Force",
+    "Conserve Momentum",
+    "Transmutation",
+    "The Fundamentals",
+    "Arc Traps",
+    "Last Stand",
+    "MIDA Radar",
+    "Rat Pack",
+];
+
+/// Where Suggested places a stock effect: the famous perks in their order, then by what carries
+/// it. A weapon perk comes before an armor perk, then an ability's, then one only a Sparrow,
+/// Ship or Ghost Shell carries, then one no item is known to carry.
+pub(super) fn effect_rank(
+    name: &str,
+    sources: Option<&BTreeSet<sundial::investment::IngredientSource>>,
+) -> (usize, u8) {
+    use sundial::investment::IngredientSource::{Ability, Armor, Weapon};
+    let lead = EFFECT_LEAD
+        .iter()
+        .position(|lead| lead.eq_ignore_ascii_case(name.trim()))
+        .unwrap_or(usize::MAX);
+    let carrier = sources
+        .into_iter()
+        .flatten()
+        .map(|source| match source {
+            Weapon => 0,
+            Armor => 1,
+            Ability => 2,
+            _ => 3,
+        })
+        .min()
+        .unwrap_or(4);
+    (lead, carrier)
+}
+
 /// The comparable key for one stock effect result. Every order ends with the name, so
-/// results never reshuffle between frames.
+/// results never reshuffle between frames. `rank` is [`effect_rank`], which only Suggested
+/// reads.
 pub(super) fn effect_sort_key(
     order: EffectOrder,
     item_type: &str,
     name: &str,
     direct_match: bool,
-) -> (bool, String, String) {
+    rank: (usize, u8),
+) -> (bool, (usize, u8), String, String) {
     let name = name.to_owned();
     match order {
-        EffectOrder::BestMatch => (!direct_match, String::new(), name),
-        EffectOrder::Name => (false, String::new(), name),
-        EffectOrder::Kind => (false, item_type.to_lowercase(), name),
+        EffectOrder::Suggested => (!direct_match, rank, String::new(), name),
+        EffectOrder::Name => (false, (0, 0), String::new(), name),
+        EffectOrder::Kind => (false, (0, 0), item_type.to_lowercase(), name),
     }
 }
 
@@ -221,6 +327,28 @@ pub(super) fn summary(program: &Program, keys: Option<&KeyCatalog>) -> String {
     summary_with_assets(program, keys, None)
 }
 
+/// A native program's reading, with each object or effect it references named where the
+/// catalog names it rather than by its tag.
+pub(super) fn native_summary(
+    decoded: &sundial::package_authoring::sandbox_perk::action::DecodedAction,
+    labels: Option<&BTreeMap<u32, String>>,
+) -> sundial::package_authoring::sandbox_perk::action::ActionSummary {
+    let mut summary = sundial::package_authoring::sandbox_perk::action::ActionSummary::new(decoded);
+    for line in summary
+        .groups
+        .iter_mut()
+        .flat_map(|group| &mut group.effects)
+    {
+        if let Some((tag, label)) = line
+            .asset
+            .and_then(|tag| labels?.get(&tag).map(|label| (tag, label)))
+        {
+            line.text = line.text.replace(&format!("0x{tag:08X}"), label);
+        }
+    }
+    summary
+}
+
 pub(super) fn summary_with_assets(
     program: &Program,
     keys: Option<&KeyCatalog>,
@@ -231,20 +359,12 @@ pub(super) fn summary_with_assets(
             .graph
             .emit()
             .and_then(|bytes| sundial::package_authoring::sandbox_perk::action::decode(&bytes))
-            .map(|decoded| {
-                sundial::package_authoring::sandbox_perk::action::ActionSummary::new(&decoded)
-                    .render()
-            })
+            .map(|decoded| native_summary(&decoded, labels).render())
             .unwrap_or_else(|error| format!("Complete program needs attention: {error}"));
     }
     let mut sentences = vec![match (program.trigger, &program.native_trigger) {
         (Trigger::Always, _) => "Actions run when the perk is applied.".into(),
-        (Trigger::Native, Some(node)) => {
-            format!(
-                "Actions start when {}.",
-                program::native_condition_text(node)
-            )
-        }
+        (Trigger::Native, Some(node)) => format!("Trigger: {}.", program::condition_title(node)),
         _ => program.trigger.description().to_owned(),
     }];
     if program.trigger.is_event() && program.chance_permyriad != 10_000 {
@@ -276,7 +396,6 @@ pub(super) fn summary_with_assets(
             "{}.",
             if program.trigger.is_event() {
                 text.replace("at the triggering event", "at the defeated enemy")
-                    .replace("at the Event Position", "at the defeated enemy")
             } else {
                 text
             }
@@ -305,7 +424,14 @@ pub(super) fn summary_with_assets(
 impl Workbench {
     pub(super) fn copy_behavior(&mut self, choice: &WeaponSandboxPerkChoice) {
         let mut recipe = PerkRecipe::new();
-        recipe.name = format!("Custom Effect {}", choice.perk_index);
+        // The copy carries its perk's name. The effect number names nothing a reader knows.
+        recipe.name = if choice.representative_name.starts_with("Ability ")
+            || choice.representative_name.starts_with("Effect ")
+        {
+            format!("Custom Effect {}", choice.perk_index)
+        } else {
+            format!("Custom {}", choice.representative_name)
+        };
         if !choice.representative_type_name.starts_with("Ability ·") {
             recipe.template_plug = choice.representative_hash.into();
         }

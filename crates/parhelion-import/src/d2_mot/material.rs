@@ -211,6 +211,89 @@ pub fn inspect(r: &mut Reader, tag: u32, modern: bool) -> Result<Value> {
     Ok(pixel)
 }
 
+fn texture_binding(
+    r: &mut Reader,
+    p: &Payload,
+    row: usize,
+    modern: bool,
+    tag: u32,
+) -> Result<Value> {
+    let slot = p.u32(row)?;
+    let texture = if modern {
+        r.ref64(p, row + 8)
+            .with_context(|| format!("material {tag:08X} texture slot {slot}"))?
+    } else {
+        p.u32(row + 4)?
+    };
+    if [0, u32::MAX, 0x811C9DC5].contains(&texture) {
+        return Ok(json!({"slot":slot,"unbound":true}));
+    }
+    let header = r.tag(texture, None)?;
+    let reference = r.reference(texture)?;
+    r.tag(reference, None)?;
+    let large = if modern { header.u32(60)? } else { u32::MAX };
+    if ![0, u32::MAX, 0x811C9DC5].contains(&large) {
+        r.tag(large, None)?;
+    }
+    Ok(
+        json!({"slot":slot,"tag":format!("{texture:08X}"),"buffer":format!("{reference:08X}"),"large_buffer":large,"header":hex::encode(&header.0)}),
+    )
+}
+
+fn attached_bindings(
+    r: &mut Reader,
+    p: &Payload,
+    tag: u32,
+    modern: bool,
+    vertex: bool,
+    textures: &mut Vec<Value>,
+) -> Result<bool> {
+    let mut implicit_dyes = false;
+    if modern {
+        for row in p.array(0x38, 4, Some(0x80800014))? {
+            let attached = p.u32(row)?;
+            let class = r.reference(attached)?;
+            let scope = r.tag(attached, None)?;
+            match class {
+                0x80806DBA => {
+                    let base = if vertex { 0xD0 } else { 0x48 };
+                    for offset in [0x18, 0x28, 0x38, 0x48] {
+                        ensure!(
+                            scope.u64(base + offset)? == 0,
+                            "attached material scope requires dynamic bindings"
+                        );
+                    }
+                    ensure!(
+                        [0, u32::MAX, 0x811C9DC5].contains(&scope.u32(base + 0x6C)?),
+                        "attached material scope has external constants"
+                    );
+                    for row in scope.array(base, 24, Some(0x80806DCF))? {
+                        let binding = texture_binding(r, &scope, row, true, tag)?;
+                        if !textures.iter().any(|t| t["slot"] == binding["slot"]) {
+                            textures.push(binding);
+                        }
+                    }
+                }
+                0x808022B6 => {
+                    ensure!(
+                        scope.0.len() == 24
+                            && scope.u64(0)? == 24
+                            && [8, 12, 16]
+                                .iter()
+                                .all(|at| scope.u32(*at).ok() == Some(u32::MAX)),
+                        "attached material dye palette overrides need conversion"
+                    );
+                    // A vertex/pixel material with the default palette uses the
+                    // weapon's combined dye bank through its bind mode.
+                    implicit_dyes = p.u32(8)? == 1;
+                }
+                _ => anyhow::bail!("uninspected attached material scope {class:08X}"),
+            }
+        }
+    }
+    Ok(implicit_dyes)
+}
+
 fn inspect_stage(
     r: &mut Reader,
     tag: u32,
@@ -224,28 +307,12 @@ fn inspect_stage(
         (false, true) => 0x48,
         (false, false) => 0x2C8,
     };
-    let mut textures = vec![];
-    for row in p.array(shader + 8, if modern { 24 } else { 8 }, None)? {
-        let slot = p.u32(row)?;
-        let texture = if modern {
-            r.ref64(p, row + 8)
-                .with_context(|| format!("material {tag:08X} texture slot {slot}"))?
-        } else {
-            p.u32(row + 4)?
-        };
-        if [0, u32::MAX, 0x811C9DC5].contains(&texture) {
-            textures.push(json!({"slot":slot,"unbound":true}));
-            continue;
-        }
-        let header = r.tag(texture, None)?;
-        let reference = r.reference(texture)?;
-        r.tag(reference, None)?;
-        let large = if modern { header.u32(60)? } else { u32::MAX };
-        if ![0, u32::MAX, 0x811C9DC5].contains(&large) {
-            r.tag(large, None)?;
-        }
-        textures.push(json!({"slot":slot,"tag":format!("{texture:08X}"),"buffer":format!("{reference:08X}"),"large_buffer":large,"header":hex::encode(&header.0)}));
-    }
+    let mut textures = p
+        .array(shader + 8, if modern { 24 } else { 8 }, None)?
+        .into_iter()
+        .map(|row| texture_binding(r, p, row, modern, tag))
+        .collect::<Result<Vec<_>>>()?;
+    let implicit_dyes = attached_bindings(r, p, tag, modern, vertex, &mut textures)?;
     let mut samplers = vec![];
     for (index, row) in p.array(shader + 0x40, 16, None)?.into_iter().enumerate() {
         let tag = if modern {
@@ -281,7 +348,7 @@ fn inspect_stage(
         vectors(&data, (0..data.0.len()).step_by(16).collect())?
     };
     Ok(
-        json!({"tag":format!("{tag:08X}"),"shader":format!("{:08X}",p.u32(shader)?),"textures":textures,"samplers":samplers,"constants":constants,"external_constants":external,"tfx_bytecode_bytes":p.u64(shader+0x20)?,"gameplay_verified":false}),
+        json!({"tag":format!("{tag:08X}"),"shader":format!("{:08X}",p.u32(shader)?),"textures":textures,"implicit_dyes":implicit_dyes,"samplers":samplers,"constants":constants,"external_constants":external,"tfx_bytecode_bytes":p.u64(shader+0x20)?,"gameplay_verified":false}),
     )
 }
 

@@ -89,19 +89,13 @@ fn every_workbench_control_announces_itself_to_a_screen_reader() {
     }
 }
 
-/// The names a screen reader announces for one native node's editor, drawn the way the
-/// trigger block or the action reader draws it.
+/// The names a screen reader announces for one native node's editor, drawn through the
+/// native reader, which draws a node's fields with the node editor's controls.
 fn editor_names(condition: bool, node: NativeNode) -> Vec<String> {
-    use sundial::package_authoring::sandbox_perk::program::{Program, Trigger};
     let size = egui::vec2(1320.0, 900.0);
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-    let mut program = Program {
-        trigger: Trigger::Native,
-        native_trigger: Some(node.clone()),
-        ..Default::default()
-    };
     let mut output = None;
     for _ in 0..6 {
         output = Some(ctx.run(
@@ -113,14 +107,7 @@ fn editor_names(condition: bool, node: NativeNode) -> Vec<String> {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     crate::app::style::perk_workbench_style(ui);
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        if condition {
-                            program::draw_trigger_block(ui, &mut program, |ui, label, _| {
-                                let _ = ui.button(label);
-                                None
-                            });
-                        } else {
-                            program::read_native(ui, false, &node);
-                        }
+                        program::read_native(ui, condition, &node);
                     });
                 });
             },

@@ -38,6 +38,7 @@ impl PackageAuthoringApp {
             "library-sort",
             &mut self.library_query,
             &mut self.library_state.sort,
+            &mut self.library_state.kind,
             &mut self.recipe_search_focus_pending,
         );
     }
@@ -49,13 +50,11 @@ impl PackageAuthoringApp {
         action: &mut Option<LibraryAction>,
     ) -> usize {
         let query = self.library_query.trim().to_lowercase();
-        let mut shown = self.library_state.matching_entries(
-            &self.recipe_entries,
-            &self.donor_summaries,
-            &query,
-        );
+        let mut shown =
+            self.library_state
+                .matching_entries(&self.recipe_entries, &self.library_donors, &query);
         self.library_state
-            .sort_entries(&mut shown, &self.donor_summaries);
+            .sort_entries(&mut shown, &self.library_donors);
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
                 ui.strong("Choose Recipes to Export");
@@ -115,7 +114,7 @@ impl PackageAuthoringApp {
                     }
                 }
                 if shown.is_empty() {
-                    ui.label("No matching recipes. Try a different search.");
+                    ui.label("No matching recipes.");
                 }
             });
         shown.len()
@@ -134,7 +133,7 @@ impl PackageAuthoringApp {
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(!busy && count > 0, egui::Button::new("Export Bundle…"))
-                    .on_hover_text("Save selected recipes in one bundle, including open edits if that recipe is selected.")
+                    .on_hover_text("Saves the selected recipes, with open edits, in one file.")
                     .clicked()
                 {
                     *action = Some(LibraryAction::ExportSelected);

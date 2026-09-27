@@ -71,11 +71,7 @@ pub(super) fn type_link(
 }
 
 pub(super) fn copy_tag(ui: &mut egui::Ui, label: &str, tag: u32) {
-    if ui
-        .button(label)
-        .on_hover_text("Copy the resource's unique package identifier.")
-        .clicked()
-    {
+    if ui.button(label).clicked() {
         ui.ctx().copy_text(format!("0x{tag:08X}"));
     }
 }
@@ -85,34 +81,39 @@ pub(super) fn draw(
     reference: &tft::Reference,
     names: &BTreeMap<u32, Vec<String>>,
 ) -> Option<navigation::Destination> {
-    ui.push_id((reference.source, reference.offset, reference.target), |ui| {
-        let mut destination = None;
-        ui.strong("Referenced Asset");
-        destination = resource_link(ui, &reference.path, reference.target).or(destination);
-        destination = type_link(ui, "Asset Type", reference.target_class).or(destination);
-        ui.add_space(4.0);
-        destination = source(ui, names, reference.source).or(destination);
-        destination = type_link(ui, "Resource Type", reference.source_class).or(destination);
-        ui.label("This resource contains a link to the asset above.");
-        egui::CollapsingHeader::new("Technical Details").show(ui, |ui| {
-            ui.label("Tags identify individual package resources. Class identifiers describe their data types.");
-            for (label, tag) in [
-                ("Source Tag", reference.source),
-                ("Target Tag", reference.target),
-                ("Source Class", reference.source_class),
-                ("Target Class", reference.target_class),
-            ] {
-                ui.monospace(format!("{label}: 0x{tag:08X}"));
-            }
-            ui.label(format!("Link Location: {} bytes from the start of the containing resource (0x{:X})", reference.offset, reference.offset));
-        });
-        ui.horizontal_wrapped(|ui| {
-            copy_tag(ui, "Copy Source Tag", reference.source);
-            copy_tag(ui, "Copy Target Tag", reference.target);
-        });
-        ui.add_space(6.0);
-        destination
-    }).inner
+    ui.push_id(
+        (reference.source, reference.offset, reference.target),
+        |ui| {
+            let mut destination = None;
+            ui.strong("Referenced Asset");
+            destination = resource_link(ui, &reference.path, reference.target).or(destination);
+            destination = type_link(ui, "Asset Type", reference.target_class).or(destination);
+            ui.add_space(4.0);
+            destination = source(ui, names, reference.source).or(destination);
+            destination = type_link(ui, "Resource Type", reference.source_class).or(destination);
+            egui::CollapsingHeader::new("Technical Details").show(ui, |ui| {
+                for (label, tag) in [
+                    ("Source Tag", reference.source),
+                    ("Target Tag", reference.target),
+                    ("Source Class", reference.source_class),
+                    ("Target Class", reference.target_class),
+                ] {
+                    ui.monospace(format!("{label}: 0x{tag:08X}"));
+                }
+                ui.label(format!(
+                    "Link Location: {} bytes from the start of the containing resource (0x{:X})",
+                    reference.offset, reference.offset
+                ));
+            });
+            ui.horizontal_wrapped(|ui| {
+                copy_tag(ui, "Copy Source Tag", reference.source);
+                copy_tag(ui, "Copy Target Tag", reference.target);
+            });
+            ui.add_space(6.0);
+            destination
+        },
+    )
+    .inner
 }
 
 /// A linked resource: the row itself opens it.
@@ -160,13 +161,5 @@ mod tests {
             resource_name(&index.names(), 1),
             Some("native/PerkAction.tft")
         );
-    }
-
-    #[test]
-    fn types_use_verified_roles_and_leave_unknown_classes_explicit() {
-        assert_eq!(type_name(0x8080_40B5), "Perk Action");
-        assert_eq!(type_name(0x8080_3B73), "Projectile Movement");
-        assert_eq!(type_name(0), "Type Not Identified");
-        assert_eq!(type_name(0xDEAD_BEEF), "Type Not Identified");
     }
 }

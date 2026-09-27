@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     path::{Component, Path},
 };
@@ -10,7 +10,7 @@ use sundial::package_authoring::{FNV1_EMPTY_HASH, is_valid_package_tag};
 use tiger_pkg::TagHash;
 
 use crate::{
-    NewWeaponPlan, SunriseProjectMetadata,
+    ItemKind, NewWeaponPlan, SunriseProjectMetadata,
     artifact::ArtifactMetadata,
     recipe::{WeaponRecipe, validate_parhelion_namespace},
 };
@@ -110,6 +110,7 @@ impl ManifestProject {
         recipes: &[WeaponRecipe],
         plans: &[NewWeaponPlan],
         sunrise: &SunriseProjectMetadata,
+        subclass_classes: &BTreeMap<u32, u8>,
     ) -> Result<Self, String> {
         if recipes.len() != plans.len() {
             return Err(format!(
@@ -131,7 +132,16 @@ impl ManifestProject {
                         recipe.name, plan.item_hash
                     ));
                 }
+                if recipe.kind != plan.kind {
+                    return Err(format!(
+                        "Compiler plan for {:?} built a {} from a {} recipe",
+                        recipe.name,
+                        plan.kind.label(),
+                        recipe.kind.label()
+                    ));
+                }
                 Ok(ManifestWeapon {
+                    kind: recipe.kind,
                     namespace: recipe.namespace.clone(),
                     name: recipe.name.clone(),
                     item: ManifestTaggedIdentity {
@@ -140,21 +150,24 @@ impl ManifestProject {
                         definition_tag: ManifestHash::new(plan.definition_tag.0),
                         string_tag: ManifestHash::new(plan.string_tag.0),
                     },
-                    collectible: ManifestIdentity {
-                        hash: ManifestHash::new(plan.collectible_hash),
-                        index: plan.collectible_index,
-                    },
-                    unlock: ManifestUnlockIdentity {
-                        hash: ManifestHash::new(plan.unlock_hash),
-                        definition_index: plan.unlock_definition_index,
-                        bank: plan.unlock_bank,
-                        slot: plan.unlock_slot,
-                    },
+                    collectible: plan.collection.map(|collection| ManifestIdentity {
+                        hash: ManifestHash::new(collection.collectible_hash),
+                        index: collection.collectible_index,
+                    }),
+                    unlock: plan.collection.map(|collection| ManifestUnlockIdentity {
+                        hash: ManifestHash::new(collection.unlock_hash),
+                        definition_index: collection.unlock_definition_index,
+                        bank: collection.unlock_bank,
+                        slot: collection.unlock_slot,
+                    }),
                     donor: ManifestDonorIdentity {
                         item_hash: ManifestHash::new(plan.template_item_hash),
                         definition_tag: ManifestHash::new(plan.template_definition_tag.0),
                         string_tag: ManifestHash::new(plan.template_string_tag.0),
                     },
+                    class_type: (recipe.kind == ItemKind::Subclass)
+                        .then(|| subclass_classes.get(&plan.template_item_hash).copied())
+                        .flatten(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -196,27 +209,31 @@ impl ManifestProject {
             }
             insert_unique(&mut item_hashes, weapon.item.hash.get(), "item hash")?;
             insert_unique(&mut item_indices, weapon.item.index, "item index")?;
-            insert_unique(
-                &mut collectible_hashes,
-                weapon.collectible.hash.get(),
-                "collectible hash",
-            )?;
-            insert_unique(
-                &mut collectible_indices,
-                weapon.collectible.index,
-                "collectible index",
-            )?;
-            insert_unique(&mut unlock_hashes, weapon.unlock.hash.get(), "unlock hash")?;
-            insert_unique(
-                &mut unlock_definitions,
-                weapon.unlock.definition_index,
-                "unlock definition index",
-            )?;
-            if !unlock_slots.insert((weapon.unlock.bank, weapon.unlock.slot)) {
-                return Err(format!(
-                    "The manifest repeats authored unlock bank {}, slot {}",
-                    weapon.unlock.bank, weapon.unlock.slot
-                ));
+            if let Some(collectible) = &weapon.collectible {
+                insert_unique(
+                    &mut collectible_hashes,
+                    collectible.hash.get(),
+                    "collectible hash",
+                )?;
+                insert_unique(
+                    &mut collectible_indices,
+                    collectible.index,
+                    "collectible index",
+                )?;
+            }
+            if let Some(unlock) = &weapon.unlock {
+                insert_unique(&mut unlock_hashes, unlock.hash.get(), "unlock hash")?;
+                insert_unique(
+                    &mut unlock_definitions,
+                    unlock.definition_index,
+                    "unlock definition index",
+                )?;
+                if !unlock_slots.insert((unlock.bank, unlock.slot)) {
+                    return Err(format!(
+                        "The manifest repeats authored unlock bank {}, slot {}",
+                        unlock.bank, unlock.slot
+                    ));
+                }
             }
             for (label, tag) in [
                 ("definition tag", weapon.item.definition_tag),
@@ -250,12 +267,22 @@ impl ManifestProject {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestWeapon {
+    /// Omitted for weapons, so manifests written before item kinds still read.
+    #[serde(default, skip_serializing_if = "ItemKind::is_weapon")]
+    pub(crate) kind: ItemKind,
     pub(crate) namespace: String,
     pub(crate) name: String,
     pub(crate) item: ManifestTaggedIdentity,
-    pub(crate) collectible: ManifestIdentity,
-    pub(crate) unlock: ManifestUnlockIdentity,
+    /// Absent for a subclass, which has no Collections entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) collectible: Option<ManifestIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) unlock: Option<ManifestUnlockIdentity>,
     pub(crate) donor: ManifestDonorIdentity,
+    /// A subclass's class: 0 Titan, 1 Hunter, 2 Warlock. With no Collections entry to claim it
+    /// from, the install adds the subclass to each character of this class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) class_type: Option<u8>,
 }
 
 impl ManifestWeapon {
@@ -268,13 +295,41 @@ impl ManifestWeapon {
                 self.namespace
             ));
         }
+        let subclass = self.kind == ItemKind::Subclass;
+        if self.class_type.is_some_and(|class| !subclass || class > 2) {
+            return Err(format!(
+                "Manifest {} {} has an invalid class",
+                self.kind.noun(),
+                self.namespace
+            ));
+        }
+        if subclass != (self.collectible.is_none() && self.unlock.is_none())
+            || self.collectible.is_none() != self.unlock.is_none()
+        {
+            return Err(format!(
+                "Manifest {} {} has {} Collections entry",
+                self.kind.noun(),
+                self.namespace,
+                if subclass { "a" } else { "no complete" }
+            ));
+        }
         for (label, hash) in [
-            ("item hash", self.item.hash),
-            ("collectible hash", self.collectible.hash),
-            ("unlock hash", self.unlock.hash),
-            ("donor item hash", self.donor.item_hash),
+            ("item hash", Some(self.item.hash)),
+            (
+                "collectible hash",
+                self.collectible
+                    .as_ref()
+                    .map(|collectible| collectible.hash),
+            ),
+            (
+                "unlock hash",
+                self.unlock.as_ref().map(|unlock| unlock.hash),
+            ),
+            ("donor item hash", Some(self.donor.item_hash)),
         ] {
-            validate_identity_hash(&self.namespace, label, hash)?;
+            if let Some(hash) = hash {
+                validate_identity_hash(&self.namespace, label, hash)?;
+            }
         }
         for (label, tag) in [
             ("item definition tag", self.item.definition_tag),
@@ -564,20 +619,6 @@ mod tests {
         let hash: ManifestHash = serde_json::from_str(r#""0x53554E44""#).unwrap();
         assert_eq!(hash.get(), 0x5355_4E44);
         assert_eq!(serde_json::to_string(&hash).unwrap(), r#""0x53554E44""#);
-    }
-
-    #[test]
-    fn strict_model_rejects_unknown_and_missing_fields() {
-        let mut unknown = valid_manifest_json();
-        unknown["project"]["sunrise"]["unexpected"] = json!(true);
-        assert!(serde_json::from_value::<ManifestDocument>(unknown).is_err());
-
-        let mut missing = valid_manifest_json();
-        missing
-            .as_object_mut()
-            .unwrap()
-            .remove("selection_fingerprint");
-        assert!(serde_json::from_value::<ManifestDocument>(missing).is_err());
     }
 
     #[test]

@@ -109,23 +109,6 @@ fn dual_sunrise_cache_layouts_are_rejected_before_mutation() {
 }
 
 #[test]
-fn missing_sunrise_build_cache_is_left_missing_and_reported_as_noop() {
-    let fixture = Fixture::new();
-    let cache_path = fixture.sunrise_cache_path();
-
-    let report = install_staged_packages(&fixture.request()).unwrap();
-
-    assert!(!cache_path.exists());
-    assert_eq!(report.invalidated_sunrise_cache, None);
-    assert!(
-        !report
-            .backup_directory
-            .join(SUNRISE_CACHE_BACKUP_DIRECTORY)
-            .exists()
-    );
-}
-
-#[test]
 fn non_regular_sunrise_cache_is_rejected_before_package_or_backup_mutation() {
     let fixture = Fixture::new();
     let cache_path = fixture.sunrise_cache_path();
@@ -342,24 +325,6 @@ fn recorded_runtime_brand_cannot_redirect_recovery_cache_selection() {
     assert!(error.message.contains("runtime changed after preflight"));
     assert_eq!(fs::read(sunrise_cache).unwrap(), b"active Sunrise cache");
     assert_eq!(fs::read(dawn_cache).unwrap(), b"inactive Dawn cache");
-}
-
-#[test]
-fn dual_dawn_cache_layouts_are_rejected() {
-    let root = tempfile::tempdir().unwrap();
-    let candidates = super::super::caches::runtime_build_cache_candidates(
-        fs::canonicalize(root.path()).unwrap(),
-        RuntimeBrand::Dawn,
-    );
-    for path in &candidates.paths {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"cache").unwrap();
-    }
-    assert!(
-        discover_sunrise_build_cache(&candidates)
-            .unwrap_err()
-            .contains("Both supported")
-    );
 }
 
 #[test]

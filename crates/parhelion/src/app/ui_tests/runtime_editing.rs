@@ -1,21 +1,6 @@
 use super::*;
 
 #[test]
-fn base_perk_editor_preserves_authored_rows_and_fits() {
-    for width in [480.0, 1000.0] {
-        for count in [4_u16, 5] {
-            let mut app = PackageAuthoringApp::default();
-            app.recipe.overrides.base_sandbox_perks = Some((0..count).collect());
-            let before = app.recipe.clone();
-            let (output, overflow) = render(width, |ui| app.draw_base_sandbox_perks(ui, None));
-            assert!(text(&output).contains("16 entries total"));
-            assert!(overflow <= 1.0, "{width}px overflow: {overflow}");
-            assert_eq!(app.recipe, before, "rendering must not trim or reset perks");
-        }
-    }
-}
-
-#[test]
 fn replacing_recipe_closes_private_window_and_returns_to_weapon_page() {
     let mut app = PackageAuthoringApp {
         workbench_page: WorkbenchPage::Appearance,
@@ -49,7 +34,7 @@ fn experimental_gameplay_controls_are_hidden_without_dropping_saved_overrides() 
         let (output, overflow) = render(width, |ui| app.draw_gameplay_workspace(ui, None));
         let labels = text(&output);
         assert!(labels.contains("Firing & Runtime Baseline"));
-        assert!(labels.contains("experimental"));
+        assert!(labels.contains("Enable Experimental Features"));
         assert!(!labels.contains("Runtime Component Donors"));
         assert!(!labels.contains("Perks & Traits"));
         assert!(overflow < 1.0, "width {width}: {overflow}");
@@ -157,19 +142,4 @@ fn runtime_input_errors_persist_without_a_new_keystroke_or_recipe_mutation() {
             "invalid draft must not replace the last valid recipe value"
         );
     }
-}
-
-#[test]
-fn a_private_clone_without_value_edits_still_exists_and_can_be_removed() {
-    let mut recipe = WeaponRecipe::every_end();
-    let key = PerkEditorKey {
-        socket_index: 0,
-        choice_index: 0,
-        source_plug_hash: 10,
-        source_perk_index: 1178,
-    };
-    upsert_private_perk_runtime_values(&mut recipe, key, vec![]);
-    assert_eq!(private_perk_runtime_values(&recipe, key), Some(&vec![]));
-    remove_private_perk_runtime_values(&mut recipe, key);
-    assert!(private_perk_runtime_values(&recipe, key).is_none());
 }

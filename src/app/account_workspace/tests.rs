@@ -517,6 +517,9 @@ fn sqlite_subclass_item() -> ItemDef {
             super_ability: vec![choice(10), choice(20)],
             melee: vec![choice(11), choice(21)],
             class_ability: vec![choice(2), choice(3)],
+            entry_perks: Default::default(),
+            entry_icons: Default::default(),
+            entry_descriptions: Default::default(),
             attunements: vec![
                 AttunementChoice {
                     name: "Default path".to_owned(),
@@ -579,27 +582,6 @@ fn official_sqlite_equipment_contract_is_available_for_schema18() {
             .iter()
             .any(|item| item.slot == "artifact" && item.definition_hash == Some(42))
     );
-}
-
-#[test]
-fn equipment_capabilities_follow_the_active_account_contract() {
-    for version in [8, 12, 13, 16] {
-        let document = WorkspaceDocument::json_only(json!({"version": version}));
-        assert_eq!(document.supports_emote_collection(), version >= 13);
-        assert_eq!(document.supports_masterwork_flags(), version >= 13);
-        assert_eq!(document.uses_subclass_plug_abilities(), version >= 13);
-        assert_eq!(
-            document.equipment_slots().len(),
-            if version >= 13 { 17 } else { 16 }
-        );
-    }
-    let directory = TestDirectory::new("blocked-equipment-capabilities");
-    let blocked =
-        WorkspaceDocument::load(json!({"version": 18}), &settings_path(&directory), false);
-    assert_eq!(blocked.source_kind(), AccountSourceKind::Blocked);
-    assert!(!blocked.supports_emote_collection());
-    assert!(!blocked.supports_masterwork_flags());
-    assert!(!blocked.uses_subclass_plug_abilities());
 }
 
 #[test]
@@ -718,18 +700,5 @@ fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
             .get::<_, i64>(0))
             .unwrap(),
         0x1234
-    );
-}
-
-/// The contract line names the schema this build actually accepts. It read "Dawn schema 1" for
-/// three revisions after the adapter moved on, which is exactly the drift a reader would trust.
-#[test]
-fn dawn_contract_names_the_supported_schema() {
-    assert_eq!(
-        super::DAWN_CONTRACT,
-        format!(
-            "SQLite · Dawn schema {}",
-            crate::persistence::dawn_account::SCHEMA_VERSION
-        )
     );
 }

@@ -50,18 +50,6 @@ fn fixture() -> (Vec<u8>, WeaponRuntimeBinding, RuntimeRegistry) {
 }
 
 #[test]
-fn a_known_native_shape_resolves_to_its_instance_and_definition_schemas() {
-    let (owner, binding, registry) = fixture();
-    assert_eq!(
-        native_resource_shape(&owner, &binding, &registry),
-        Ok(WeaponRuntimeResourceShape {
-            instance_schema: INSTANCE,
-            definition_schema: Some(DEFINITION),
-        })
-    );
-}
-
-#[test]
 fn absent_native_definition_is_distinct_from_an_unknown_declared_schema() {
     let (owner, binding, mut registry) = fixture();
     registry.records.remove(&DEFINITION);

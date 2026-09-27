@@ -41,12 +41,18 @@ pub(in crate::app) fn draw_content(
             return false;
         }
     };
+    let snapshot = state.cached_snapshot.take().or_else(|| {
+        state
+            .metadata_inspector
+            .is_open()
+            .then(|| collection_state_snapshot(document))
+    });
 
     let hash_inspector_open = state.hash_inspection.is_open();
     let inspector_full_width = draw_progression_metadata_workspace(
         ui,
         catalog,
-        document,
+        snapshot.as_ref().and_then(Option::as_ref),
         &mut state.metadata_inspector,
         hash_inspector_open,
     );
@@ -80,6 +86,7 @@ pub(in crate::app) fn draw_content(
     );
     if !changed {
         state.cached_progression = Some(Ok(policy));
+        state.cached_snapshot = snapshot;
     }
     changed
 }
@@ -111,6 +118,7 @@ fn reveal_metadata_selection(
             } else {
                 InvestmentTable::FlagOverrides
             };
+            state.override_filter = OverrideFilter::All;
         }
         View::Unlocks => {
             state.unlock_browser.reveal(selection.is_value());

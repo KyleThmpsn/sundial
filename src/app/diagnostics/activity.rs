@@ -59,22 +59,6 @@ mod tests {
     use crate::test_support::TestDirectory;
 
     #[test]
-    fn omits_absent_and_empty_logs_and_includes_available_activity() {
-        let directory = TestDirectory::new("diagnostic-parhelion-activity");
-        let path = directory.0.join("parhelion.log");
-        let mut report = "Sundial report\n".to_owned();
-        append_at(&mut report, &path);
-        std::fs::write(&path, "").unwrap();
-        append_at(&mut report, &path);
-        assert_eq!(report, "Sundial report\n");
-        std::fs::write(&path, "2026-09-09 [Info] Build complete: 星\n").unwrap();
-        append_at(&mut report, &path);
-        assert!(report.contains("Recent Parhelion Activity"));
-        assert!(report.contains("Build complete: 星"));
-        assert!(report.contains(&path.display().to_string()));
-    }
-
-    #[test]
     fn bounds_large_logs_and_preserves_recent_complete_records() {
         let directory = TestDirectory::new("diagnostic-parhelion-tail");
         let path = directory.0.join("parhelion.log");

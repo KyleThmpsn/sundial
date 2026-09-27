@@ -43,11 +43,114 @@ pub struct Kinds {
     use_query: String,
     selected_use: Option<u16>,
     sort: (UseColumn, bool),
-    /// Whether the host has a Perk References tab to open examples on.
+    /// Whether the host has a Perk Effects tab to open examples on.
     pub reference_links: bool,
     /// Scroll the list to the selected kind on the next draw.
     reveal: bool,
+    /// Stock use counts for the index they were counted from.
+    counts: Option<Counts>,
+    /// The selected kind's stock uses after the search, in table order.
+    uses: UseRows,
 }
+
+/// An index's address, its perk list's address and its perk count.
+type Identity = (usize, usize, usize);
+
+fn identity(index: &dependencies::Index) -> Identity {
+    (
+        std::ptr::from_ref(index) as usize,
+        index.perks.as_ptr() as usize,
+        index.perks.len(),
+    )
+}
+
+/// Stock use counts per kind, counted once per index.
+struct Counts {
+    index: Identity,
+    /// Stock uses by kind number, effects then conditions.
+    uses: [Vec<usize>; 2],
+    /// Stock perks whose action was not fully decoded.
+    unreadable: usize,
+}
+
+impl Counts {
+    fn new(index: &dependencies::Index) -> Self {
+        Self {
+            index: identity(index),
+            uses: Family::ALL.map(|family| {
+                let mut uses = vec![0; 256];
+                for node in family.nodes() {
+                    uses[usize::from(node.kind)] = users(&index.perks, family, node.kind).len();
+                }
+                uses
+            }),
+            unreadable: index
+                .perks
+                .iter()
+                .filter(|perk| {
+                    perk.error.is_some() || (perk.action.is_some() && perk.behavior.is_none())
+                })
+                .count(),
+        }
+    }
+
+    fn uses(&self, family: Family, kind: u8) -> usize {
+        self.uses[family as usize][usize::from(kind)]
+    }
+}
+
+/// What a kind's stock uses were read from: the index, the kind and the source names.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct UsesSource {
+    index: Identity,
+    kind: (usize, u8),
+    sources: usize,
+}
+
+/// The selected kind's stock uses after the search, in table order.
+#[derive(Default)]
+struct UseRows {
+    /// The source and search the rows were built from.
+    built: Option<(UsesSource, String)>,
+    /// The order the rows are in.
+    sorted: Option<(UseColumn, bool)>,
+    /// Stock uses before the search.
+    total: usize,
+    rows: Vec<StockUse>,
+}
+
+impl UseRows {
+    /// Rebuilds the rows when the source or search changed, then applies the order.
+    fn refresh(
+        &mut self,
+        source: UsesSource,
+        query: &str,
+        sort: (UseColumn, bool),
+        rows: impl FnOnce() -> Vec<StockUse>,
+    ) {
+        if self
+            .built
+            .as_ref()
+            .is_none_or(|(built, search)| *built != source || search != query)
+        {
+            let mut rows = rows();
+            self.total = rows.len();
+            rows.retain(|row| matches_use(row, query));
+            self.rows = rows;
+            self.built = Some((source, query.to_owned()));
+            self.sorted = None;
+        }
+        self.sort(sort);
+    }
+
+    fn sort(&mut self, sort: (UseColumn, bool)) {
+        if self.sorted != Some(sort) {
+            sort_uses(&mut self.rows, sort.0, sort.1);
+            self.sorted = Some(sort);
+        }
+    }
+}
+
 /// A column of the Stock Uses table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum UseColumn {
@@ -91,23 +194,20 @@ fn usage_rows(perks: &[&dependencies::Perk], sources: &PerkSources) -> Vec<Stock
         .collect()
 }
 
-/// The rows for one kind, sorted by the chosen column. The effect column sorts by index,
-/// the others by their text, and the index breaks every tie so the order is stable.
-pub(crate) fn sorted_uses(
-    mut rows: Vec<(u16, String, String)>,
-    column: UseColumn,
-    descending: bool,
-) -> Vec<(u16, String, String)> {
-    rows.sort_by(|a, b| {
-        let order = match column {
-            UseColumn::Effect => a.0.cmp(&b.0),
-            UseColumn::Name => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
-            UseColumn::Description => a.2.to_lowercase().cmp(&b.2.to_lowercase()),
-        }
-        .then(a.0.cmp(&b.0));
-        if descending { order.reverse() } else { order }
+/// Sorts one kind's rows by the chosen column. The effect column sorts by index, the others
+/// by their text, and the index breaks every tie so the order is stable.
+fn sort_uses(rows: &mut [StockUse], column: UseColumn, descending: bool) {
+    rows.sort_by_cached_key(|row| {
+        let text = match column {
+            UseColumn::Effect => String::new(),
+            UseColumn::Name => row.name.to_lowercase(),
+            UseColumn::Description => row.description.to_lowercase(),
+        };
+        (text, row.index)
     });
-    rows
+    if descending {
+        rows.reverse();
+    }
 }
 
 impl Kinds {
@@ -121,7 +221,7 @@ impl Kinds {
         self.reveal = true;
     }
 
-    /// Draws the tab. Returns an effect number the reader asked to open in Perk References.
+    /// Draws the tab. Returns an effect number the reader asked to open in Perk Effects.
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
@@ -132,13 +232,27 @@ impl Kinds {
         ui.horizontal_wrapped(|ui| {
             super::search(ui, &mut self.query, false, 220.0, "Search Kinds");
             ui.checkbox(&mut self.authorable_only, "Authorable Only")
-                .on_hover_text("Kinds supported by the private perk editor. A complete stock action may contain other unsupported kinds.");
-            ui.add_enabled(source.index().is_some(), egui::Checkbox::new(&mut self.installed_only, "With Installed Examples"));
+                .on_hover_text("Supported by the private perk editor");
+            ui.add_enabled(
+                source.index().is_some(),
+                egui::Checkbox::new(&mut self.installed_only, "With Stock Uses"),
+            );
         });
+        self.refresh_counts(source.index());
+        let unreadable = source
+            .index()
+            .and(self.counts.as_ref())
+            .map_or(0, |counts| counts.unreadable);
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.family, None, "All Kinds");
             for family in Family::ALL {
                 ui.selectable_value(&mut self.family, Some(family), family.label());
+            }
+            if unreadable > 0 {
+                ui.weak(format!(
+                    "{unreadable} stock {} not decoded",
+                    if unreadable == 1 { "perk" } else { "perks" }
+                ));
             }
         });
         let rows = self.visible_kinds(source.index());
@@ -208,17 +322,31 @@ impl Kinds {
         open
     }
 
+    /// Counts each kind's stock uses once per index.
+    fn refresh_counts(&mut self, index: Option<&dependencies::Index>) {
+        if let Some(index) = index
+            && self
+                .counts
+                .as_ref()
+                .is_none_or(|counts| counts.index != identity(index))
+        {
+            self.counts = Some(Counts::new(index));
+        }
+    }
+
     fn visible_kinds(
-        &self,
+        &mut self,
         index: Option<&dependencies::Index>,
     ) -> Vec<(Family, &'static NodeKind, Option<usize>)> {
+        self.refresh_counts(index);
+        let counts = index.and(self.counts.as_ref());
         let query = self.query.trim().to_lowercase();
         Family::ALL
             .into_iter()
             .filter(|family| self.family.is_none_or(|selected| selected == *family))
             .flat_map(|family| family.nodes().iter().map(move |node| (family, node)))
             .filter_map(|(family, node)| {
-                let count = index.map(|index| users(&index.perks, family, node.kind).len());
+                let count = counts.map(|counts| counts.uses(family, node.kind));
                 (matches_query(node, &query)
                     && (!self.authorable_only || node.support == Support::Authorable)
                     && (!self.installed_only || count.is_none_or(|count| count > 0)))
@@ -246,8 +374,8 @@ impl Kinds {
                 continue;
             }
             ui.strong(format!("{} · {count}", family.label()));
-            let widths = table_widths(ui, &[40.0, 52.0]);
-            table_header(ui, &widths, &["Kind", "Name", "Uses"], None);
+            let widths = table_widths(ui, &[40.0, 80.0]);
+            table_header(ui, &widths, &["Kind", "Name", "Stock Uses"], None);
             for (_, node, count) in rows
                 .iter()
                 .filter(|(row_family, _, _)| *row_family == family)
@@ -301,10 +429,7 @@ impl Kinds {
         source: Source<'_>,
         actions: &mut Option<&mut UseActions<'_>>,
     ) -> Option<u16> {
-        let Some((family, kind)) = self.selected else {
-            ui.weak("Choose a kind to inspect its behavior and installed examples.");
-            return None;
-        };
+        let (family, kind) = self.selected?;
         let node = family.nodes().iter().find(|node| node.kind == kind)?;
         ui.horizontal_wrapped(|ui| {
             ui.heading(node.name);
@@ -321,7 +446,7 @@ impl Kinds {
             .id_salt((family.label(), kind))
             .show(ui, |ui| {
                 ui.label(format!(
-                    "{} kind {}",
+                    "{} Kind {}",
                     family.label().trim_end_matches('s'),
                     node.kind
                 ));
@@ -335,33 +460,43 @@ impl Kinds {
                 ui.label(node.evidence);
             });
         ui.add_space(8.0);
-        ui.strong("Installed Effect Entries");
         let Some(index) = source.index() else {
+            ui.strong("Stock Uses");
             if matches!(source, Source::Loading) {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Reading Native Content…");
+                    ui.label("Reading native content…");
                 });
             } else {
-                ui.weak("The effect list is unavailable until native content has been read.");
+                ui.weak("Native Content Unavailable");
             }
             return None;
         };
-        let perks = users(&index.perks, family, kind);
-        let unreadable = index
-            .perks
-            .iter()
-            .filter(|perk| {
-                perk.error.is_some() || (perk.action.is_some() && perk.behavior.is_none())
-            })
-            .count();
-        ui.label(format!("{} decoded effect entries contain this kind. {} entries could not be inspected completely.", perks.len(), unreadable));
-        if perks.is_empty() {
-            ui.weak("No decoded installed action contains this kind. Unreadable actions may still contain it.");
+        self.refresh_counts(Some(index));
+        let count = self
+            .counts
+            .as_ref()
+            .map_or(0, |counts| counts.uses(family, kind));
+        ui.strong(match count {
+            0 => "No Stock Uses".to_owned(),
+            1 => "1 Stock Use".to_owned(),
+            count => format!("{count} Stock Uses"),
+        });
+        if count == 0 {
             return None;
         }
-        let rows = usage_rows(&perks, sources);
-        let open = self.draw_uses(ui, rows, sources, actions);
+        let uses = UsesSource {
+            index: identity(index),
+            kind: (family as usize, kind),
+            sources: std::ptr::from_ref(sources) as usize,
+        };
+        let open = self.draw_uses(
+            ui,
+            uses,
+            || usage_rows(&users(&index.perks, family, kind), sources),
+            sources,
+            actions,
+        );
         if let Some(selected) = self.selected_use {
             super::draw_sources(ui, sources, usize::from(selected));
         }
@@ -369,37 +504,40 @@ impl Kinds {
     }
 
     /// The Stock Uses table. Clicking a header sorts by that column and again reverses it.
-    /// Returns an effect the reader asked to open in Perk References.
+    /// Returns an effect the reader asked to open in Perk Effects.
     fn draw_uses(
         &mut self,
         ui: &mut egui::Ui,
-        mut rows: Vec<StockUse>,
+        source: UsesSource,
+        rows: impl FnOnce() -> Vec<StockUse>,
         sources: &PerkSources,
         actions: &mut Option<&mut UseActions<'_>>,
     ) -> Option<u16> {
         let mut open = None;
-        let total = rows.len();
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 65.0).max(120.0);
-            super::search(
-                ui,
-                &mut self.use_query,
-                false,
-                width,
-                "Search Installed Examples",
-            );
+            super::search(ui, &mut self.use_query, false, width, "Search Stock Uses");
         });
-        rows.retain(|row| matches_use(row, &self.use_query));
+        self.uses.refresh(source, &self.use_query, self.sort, rows);
+        let total = self.uses.total;
         self.selected_use = self
             .selected_use
-            .filter(|selected| rows.iter().any(|row| row.index == *selected));
+            .filter(|selected| self.uses.rows.iter().any(|row| row.index == *selected));
         ui.horizontal_wrapped(|ui| {
-            ui.weak(format!("{} of {total} examples", rows.len()));
+            ui.weak(format!(
+                "{} of {total} {}",
+                self.uses.rows.len(),
+                if total == 1 {
+                    "stock use"
+                } else {
+                    "stock uses"
+                }
+            ));
             if self.reference_links
                 && ui
                     .add_enabled(
                         self.selected_use.is_some(),
-                        egui::Button::new("Open Reference"),
+                        egui::Button::new("Open in Perk Effects"),
                     )
                     .clicked()
             {
@@ -409,11 +547,16 @@ impl Kinds {
                 actions(ui, self.selected_use, UseLocation::Footer);
             }
         });
-        if rows.is_empty() {
-            ui.label("No matching examples. Clear the search or try an effect number, source name, or behavior.");
+        if self.uses.rows.is_empty() {
+            ui.label("No Matching Stock Uses");
             return open;
         }
-        if let Some(row) = rows.iter().find(|row| Some(row.index) == self.selected_use) {
+        if let Some(row) = self
+            .uses
+            .rows
+            .iter()
+            .find(|row| Some(row.index) == self.selected_use)
+        {
             ui.strong(format!("Effect {} · {}", row.index, row.name));
             ui.label(&row.description);
         }
@@ -436,51 +579,47 @@ impl Kinds {
         ) {
             let column = UseColumn::ALL[column];
             self.sort = (column, current == column && !descending);
+            self.uses.sort(self.sort);
         }
-        let sorted = sorted_uses(
-            rows.into_iter()
-                .map(|row| (row.index, row.name, row.description))
-                .collect(),
-            self.sort.0,
-            self.sort.1,
-        );
         // The table takes the panel; only the source list below it needs a line.
         let height = (ui.available_height() - 44.0).max(80.0);
-        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        let row_height = ui.spacing().interact_size.y;
         egui::ScrollArea::vertical()
             .id_salt("installed-examples")
             .max_height(height)
             .auto_shrink([false, false])
-            .show_rows(ui, row_height, sorted.len(), |ui, range| {
-                for (index, name, description) in &sorted[range] {
-                    let selected = self.selected_use == Some(*index);
+            .show_rows(ui, row_height, self.uses.rows.len(), |ui, range| {
+                for row in &self.uses.rows[range] {
+                    let index = row.index;
+                    let selected = self.selected_use == Some(index);
                     let response = table_row(
                         ui,
                         &widths,
                         selected,
                         &[
                             egui::RichText::new(index.to_string()),
-                            crate::ui_help::emphasized_text(ui, name),
-                            egui::RichText::new(description).weak(),
+                            crate::ui_help::emphasized_text(ui, &row.name),
+                            egui::RichText::new(&row.description).weak(),
                         ],
                     )
                     .on_hover_text(format!(
-                        "{}\n{description}",
-                        sources.details(usize::from(*index))
+                        "{}\n{}",
+                        sources.details(usize::from(index)),
+                        row.description
                     ));
                     if response.clicked() {
-                        self.selected_use = Some(*index);
+                        self.selected_use = Some(index);
                     }
                     if self.reference_links && response.double_clicked() {
-                        open = Some(*index);
+                        open = Some(index);
                     }
                     response.context_menu(|ui| {
-                        if self.reference_links && ui.button("Open Reference").clicked() {
-                            open = Some(*index);
+                        if self.reference_links && ui.button("Open in Perk Effects").clicked() {
+                            open = Some(index);
                             ui.close_menu();
                         }
                         if let Some(actions) = actions.as_deref_mut() {
-                            actions(ui, Some(*index), UseLocation::Menu);
+                            actions(ui, Some(index), UseLocation::Menu);
                         }
                     });
                 }

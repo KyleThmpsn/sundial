@@ -59,7 +59,7 @@ impl Trigger {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Always => "Always Active",
+            Self::Always => "Always",
             Self::Equipped => "While Equipped",
             Self::Drawn => "While Drawn",
             Self::WeaponKill => "On Weapon Kill",
@@ -99,18 +99,16 @@ impl Trigger {
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Always => {
-                "Actions start as soon as the perk is applied and stay until it is removed."
-            }
-            Self::Equipped => "Actions start when equipped and run their cleanup when unequipped.",
-            Self::Drawn => "Actions start when drawn and run their cleanup when holstered.",
-            Self::WeaponKill => "Actions start on a kill with this weapon.",
-            Self::PrecisionKill => "Actions start on a precision kill with this weapon.",
-            Self::MeleeKill => "Actions start on a melee kill.",
-            Self::GrenadeKill => "Actions start on a grenade kill.",
-            Self::AnyKill => "Actions start on any credited kill.",
+            Self::Always => "Starts when the perk is applied and lasts until it is removed.",
+            Self::Equipped => "Starts when this weapon is equipped and ends when it is unequipped.",
+            Self::Drawn => "Starts when this weapon is drawn and ends when it is holstered.",
+            Self::WeaponKill => "Starts on a kill with this weapon.",
+            Self::PrecisionKill => "Starts on a precision kill with this weapon.",
+            Self::MeleeKill => "Starts on any melee kill, whichever weapon is in hand.",
+            Self::GrenadeKill => "Starts on any grenade kill, whichever weapon is in hand.",
+            Self::AnyKill => "Starts on any credited kill.",
             Self::Native => {
-                "Actions start when the native condition passes. Its fields are carried as the client stores them."
+                "Starts when its condition passes. Its fields are kept as the game stores them."
             }
         }
     }
@@ -265,8 +263,8 @@ impl Position {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Owner => "Owner Position",
-            Self::Event => "Event Position",
+            Self::Owner => "You",
+            Self::Event => "Triggering Event",
         }
     }
 }
@@ -865,49 +863,33 @@ impl Action {
         })
     }
 
+    /// The engine effect kind this action compiles to.
+    #[must_use]
+    pub const fn kind(&self) -> u8 {
+        match self {
+            Self::Attach { .. } => 1,
+            Self::Spawn { .. } => 3,
+            Self::Pattern { .. } => 26,
+            Self::ExtendTimers { .. } => 32,
+            Self::Property { .. } => 10,
+            Self::AdjustComponent { .. } => 8,
+            Self::UpdateAccumulator { .. } => 42,
+            Self::AbilityProperty { .. } => 7,
+            Self::TransmatContext { .. } => 47,
+            Self::OverrideHostKey { .. } => 35,
+            Self::SetDamageType { .. } => 6,
+            Self::WeaponReferenceCount { .. } => 30,
+            Self::AddRounds { .. } => 14,
+            Self::AddFraction { .. } => 15,
+            Self::Native { node } => node.kind,
+        }
+    }
+
+    /// The action's name, which is its effect kind's, so a typed action and the native node
+    /// it compiles to read alike.
     #[must_use]
     pub fn label(&self) -> &'static str {
-        match self {
-            Self::Spawn { .. } => "Spawn Entity",
-            Self::Attach { .. } => "Attach Entity",
-            Self::Pattern { .. } => "Override Weapon Pattern",
-            Self::ExtendTimers { .. } => "Extend Timers",
-            Self::Property { .. } => "Named Property",
-            Self::AdjustComponent { target, .. } => {
-                match crate::sandbox_perk::action::component_target(*target, 0, 0) {
-                    Some("Grenade Energy") => "Adjust Grenade Energy",
-                    Some("Super Energy") => "Adjust Super Energy",
-                    Some("Melee Energy") => "Adjust Melee Energy",
-                    Some("Class Ability Energy") => "Adjust Class Ability Energy",
-                    _ => "Adjust Component Value",
-                }
-            }
-            Self::AbilityProperty { target, .. } => {
-                match crate::sandbox_perk::action::ability_slot(*target) {
-                    Some("Grenade") => "Change a Grenade Property",
-                    Some("Super") => "Change a Super Property",
-                    Some("Melee") => "Change a Melee Property",
-                    Some("Jump") => "Change a Jump Property",
-                    Some("Class Ability") => "Change a Class Ability Property",
-                    _ => "Change an Ability Property",
-                }
-            }
-            Self::TransmatContext { .. } => "Set Transmat Effect",
-            Self::OverrideHostKey { .. } => "Override a Host Key",
-            Self::SetDamageType { mode, .. } => match mode {
-                0 => "Change Damage Type to Kinetic",
-                1 => "Change Damage Type to Solar",
-                2 => "Change Damage Type to Arc",
-                3 => "Change Damage Type to Void",
-                _ => "Change Damage Type",
-            },
-            Self::WeaponReferenceCount { .. } => "Count a Weapon Reference",
-            Self::UpdateAccumulator { .. } => "Update Accumulator",
-            Self::AddRounds { .. } => "Add Rounds",
-            Self::AddFraction { .. } => "Add Ammunition Fraction",
-            Self::Native { node } => crate::sandbox_perk::nodes::effect(node.kind)
-                .map_or("Native Effect", |kind| kind.name),
-        }
+        crate::sandbox_perk::nodes::effect_title(self.kind())
     }
 
     /// The entity graph or pattern this action references, when it references one.
@@ -1238,6 +1220,25 @@ impl Program {
                     .is_some_and(|node| node.kind == 2)
     }
 
+    /// Whether the trigger reports a place to spawn at: a kill or damage dealt, directly or
+    /// nested in a counter, a "while" check or a requirement, as the workbench's card reads it.
+    fn places_event(&self) -> bool {
+        fn places(condition: &crate::sandbox_perk::action::DecodedCondition) -> bool {
+            matches!(condition.kind, 2 | 4)
+                || condition.children.iter().any(places)
+                || condition
+                    .subgroups
+                    .iter()
+                    .any(|subgroup| subgroup.conditions.iter().any(places))
+        }
+        self.trigger.is_event()
+            || self.trigger == Trigger::Native
+                && self.native_trigger.as_ref().is_some_and(|node| {
+                    crate::sandbox_perk::action::decode_condition_node(&node.bytes)
+                        .is_ok_and(|condition| places(&condition))
+                })
+    }
+
     /// Drafts can be empty. Build readiness is checked separately.
     pub fn validate_structure(&self) -> Result<(), String> {
         if self.name.trim().is_empty() || self.name.contains('\0') {
@@ -1373,7 +1374,10 @@ impl Program {
                         .iter()
                         .any(|bits| !f32::from_bits(*bits).is_finite()) =>
                 {
-                    return Err("Attach Entity technical values must be finite numbers.".into());
+                    return Err(format!(
+                        "{} technical values must be finite numbers.",
+                        action.label()
+                    ));
                 }
                 Action::ExtendTimers { extend_ms, cap_ms } => {
                     if *extend_ms == 0 || *cap_ms < *extend_ms || *cap_ms > 3_600_000 {
@@ -1416,28 +1420,29 @@ impl Program {
                     ..
                 } => {
                     if *key == 0 || *key == EMPTY_KEY {
-                        return Err("Named Property needs a property key.".into());
+                        return Err(format!("{} needs a property key.", action.label()));
                     }
                     if !f32::from_bits(*value_bits).is_finite()
                         || !f32::from_bits(*restore_bits).is_finite()
                     {
-                        return Err("Named Property values must be finite numbers.".into());
+                        return Err(format!("{} values must be finite numbers.", action.label()));
                     }
                 }
                 Action::AddRounds { rounds, .. } => {
                     if *rounds == 0 || rounds.unsigned_abs() > 999 {
-                        return Err(
-                            "Add Rounds needs a round count from -999 to 999, not zero.".into()
-                        );
+                        return Err(format!(
+                            "{} needs a round count from -999 to 999, not zero.",
+                            action.label()
+                        ));
                     }
                 }
                 Action::AddFraction { fraction_bits, .. } => {
                     let fraction = f32::from_bits(*fraction_bits);
                     if !fraction.is_finite() || fraction == 0.0 || fraction.abs() > 100.0 {
-                        return Err(
-                            "Add Ammunition Fraction needs a fraction from -100 to 100 capacities, not zero."
-                                .into(),
-                        );
+                        return Err(format!(
+                            "{} needs a fraction from -100 to 100 capacities, not zero.",
+                            action.label()
+                        ));
                     }
                 }
                 Action::Native { node } => {
@@ -1523,7 +1528,7 @@ impl Program {
                 "A native-triggered effect with retained actions and no ending stays active until the perk is removed.",
             );
         }
-        if !self.has_kill_trigger()
+        if !self.places_event()
             && self.actions.iter().any(|action| {
                 matches!(
                     action,
@@ -1534,9 +1539,7 @@ impl Program {
                 )
             })
         {
-            return Some(
-                "Event Position spawns at the triggering event, which only kill triggers supply.",
-            );
+            return Some("Spawning at the triggering event needs a kill or damage trigger.");
         }
         None
     }

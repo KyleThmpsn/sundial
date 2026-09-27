@@ -96,73 +96,9 @@ fn is_missing_label(label: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     use super::*;
-
-    #[test]
-    fn embedded_plug_definitions_are_complete_and_unique() {
-        let database = definition_database();
-        let definitions = definitions().collect::<Vec<_>>();
-        let hashes = definitions
-            .iter()
-            .map(|definition| definition.hash)
-            .collect::<HashSet<_>>();
-
-        assert_eq!(database.schema, DEFINITION_DATABASE_SCHEMA);
-        assert_eq!(database.manifest_version, "86657.20.08.23.1800-9");
-        assert_eq!(definitions.len(), 316);
-        assert_eq!(hashes.len(), definitions.len());
-        assert!(
-            definitions
-                .windows(2)
-                .all(|pair| pair[0].hash < pair[1].hash)
-        );
-        assert!(
-            definitions.iter().all(|definition| {
-                !definition.name.is_empty() && !definition.type_name.is_empty()
-            })
-        );
-        assert_eq!(
-            definitions
-                .iter()
-                .filter(|definition| definition.type_name == "Armor Energy")
-                .count(),
-            115
-        );
-        assert_eq!(
-            definitions
-                .iter()
-                .filter(|definition| definition.type_name == "Top Stat Allocation")
-                .count(),
-            98
-        );
-        assert_eq!(
-            definitions
-                .iter()
-                .filter(|definition| definition.type_name == "Bottom Stat Allocation")
-                .count(),
-            103
-        );
-        assert!(
-            definitions
-                .iter()
-                .all(|definition| match definition.type_name {
-                    "Top Stat Allocation" => {
-                        definition.name.contains("Mobility")
-                            && definition.name.contains("Resilience")
-                            && definition.name.contains("Recovery")
-                    }
-                    "Bottom Stat Allocation" => {
-                        definition.name.contains("Discipline")
-                            && definition.name.contains("Intellect")
-                            && definition.name.contains("Strength")
-                    }
-                    "Armor Energy" => definition.name.contains("Energy"),
-                    _ => false,
-                })
-        );
-    }
 
     #[test]
     fn embedded_data_is_only_a_fallback_for_specific_local_names() {

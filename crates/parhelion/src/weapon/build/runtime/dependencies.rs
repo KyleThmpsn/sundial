@@ -72,12 +72,11 @@ pub(super) fn native_prerequisites<'a>(
             }
         }
     }
-    let mut additions = BTreeSet::new();
-    for graph in graphs {
-        let report = residency::inspect(manager, graph).map_err(invalid)?;
-        additions.extend(report.additions());
-    }
-    Ok(additions.into_iter().map(TagHash).collect())
+    Ok(residency::additions(manager, graphs)
+        .map_err(invalid)?
+        .into_iter()
+        .map(TagHash)
+        .collect())
 }
 
 #[cfg(test)]

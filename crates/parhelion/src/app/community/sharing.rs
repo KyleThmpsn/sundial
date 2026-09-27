@@ -76,38 +76,67 @@ impl Window {
         ctx: &egui::Context,
         current: &WeaponRecipe,
     ) {
-        egui::ScrollArea::vertical().id_salt("community-share").show(ui, |ui| {
-            ui.heading("Share a Recipe");
-            ui.label("Submit a snapshot of your weapon for community review. Your local recipe stays in your library.");
-            if ui.add_enabled(self.worker.is_none(), egui::Button::new("Use Current Workbench Recipe")).clicked() {
-                self.prepare_share(current);
-            }
-            if let Some(recipe) = &self.share.recipe { ui.strong(format!("Recipe: {}", recipe.name)); }
-            ui.separator();
-            ui.add_enabled_ui(self.worker.is_none(), |ui| {
-                field(ui, "Creator Credit", &mut self.share.author);
-                ui.label("Description");
-                ui.add(egui::TextEdit::multiline(&mut self.share.description).desired_rows(3).desired_width(f32::INFINITY));
-                field(ui, "Tags", &mut self.share.tags);
-                ui.small("Separate tags with commas, for example auto-rifle, solar, experimental.");
-                field(ui, "Sundial Version", &mut self.share.sundial);
-                field(ui, "Sunrise Version", &mut self.share.sunrise);
-                ui.checkbox(&mut self.share.tested, "Tested in Game");
-                ui.label("Gameplay Notes and Known Issues");
-                ui.add(egui::TextEdit::multiline(&mut self.share.notes).desired_rows(3).desired_width(f32::INFINITY));
-                ui.checkbox(&mut self.share.permission, "I Have Permission To Share This Contribution Under GPL-3.0-only");
-                ui.small("Include credit and permission for any custom artwork. The submission includes the recipe and the information shown here.");
-                let enabled = self.share.recipe.is_some() && self.share.permission;
-                if ui.add_enabled(enabled, egui::Button::new("Submit Recipe")).clicked() {
-                    match self.share.submission() {
-                        Ok(submission) => {
-                            self.start(ctx, move |client| client.submit(&submission).map(Outcome::Submitted));
-                        }
-                        Err(error) => self.message(error, true),
-                    }
+        egui::ScrollArea::vertical()
+            .id_salt("community-share")
+            .show(ui, |ui| {
+                ui.heading("Share a Recipe");
+                if ui
+                    .add_enabled(
+                        self.worker.is_none(),
+                        egui::Button::new("Use Current Workbench Recipe"),
+                    )
+                    .clicked()
+                {
+                    self.prepare_share(current);
                 }
+                if let Some(recipe) = &self.share.recipe {
+                    ui.strong(format!("Recipe: {}", recipe.name));
+                }
+                ui.separator();
+                ui.add_enabled_ui(self.worker.is_none(), |ui| {
+                    field(ui, "Creator Credit", &mut self.share.author);
+                    ui.label("Description");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.share.description)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.label("Tags");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.share.tags)
+                            .hint_text("auto-rifle, solar")
+                            .desired_width(f32::INFINITY),
+                    );
+                    field(ui, "Sundial Version", &mut self.share.sundial);
+                    field(ui, "Sunrise Version", &mut self.share.sunrise);
+                    ui.checkbox(&mut self.share.tested, "Tested in Game");
+                    ui.label("Gameplay Notes and Known Issues");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.share.notes)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.checkbox(
+                        &mut self.share.permission,
+                        "I Have Permission to Share This under GPL-3.0-only",
+                    );
+                    ui.small("Uploads the recipe and the details above.");
+                    let enabled = self.share.recipe.is_some() && self.share.permission;
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Submit Recipe"))
+                        .clicked()
+                    {
+                        match self.share.submission() {
+                            Ok(submission) => {
+                                self.start(ctx, Job::Submit, move |client| {
+                                    client.submit(&submission).map(Outcome::Submitted)
+                                });
+                            }
+                            Err(error) => self.message(error, true),
+                        }
+                    }
+                });
             });
-        });
     }
 }
 

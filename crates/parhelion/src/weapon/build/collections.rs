@@ -21,6 +21,19 @@ pub(super) fn author(
     custom_icons: &BTreeMap<String, u16>,
     collectibles: &mut Vec<u8>,
 ) -> AuthoringResult<Tables> {
+    // A project of items without an entry, such as subclasses alone, leaves Collections as
+    // they are.
+    if project_rows.is_empty() {
+        return Ok(Tables {
+            nodes: std::mem::take(&mut sources.stock_nodes),
+            node_strings: std::mem::take(&mut sources.stock_node_strings),
+            objective_strings: std::mem::take(&mut sources.stock_objective_strings),
+            records: std::mem::take(&mut sources.stock_records),
+            record_strings: std::mem::take(&mut sources.stock_record_strings),
+            objectives: std::mem::take(&mut sources.stock_objectives),
+            pools: std::mem::take(&mut sources.stock_pools),
+        });
+    }
     let badge_placements = project_rows
         .iter()
         .map(|row| SunriseBadgePlacement {
@@ -45,7 +58,7 @@ pub(super) fn author(
     let sunrise_members = weapons
         .iter()
         .zip(&badge_placements)
-        .filter(|(weapon, _)| !weapon.overrides.exclude_from_sunrise_badge)
+        .filter(|(weapon, _)| weapon.joins_sunrise_badge())
         .map(|(_, placement)| *placement)
         .collect::<Vec<_>>();
     let mut badge = crate::badge::append_custom_badges(
@@ -57,7 +70,13 @@ pub(super) fn author(
         collectibles,
         LOCALIZATION_DONOR_TABLE_INDEX as u32,
     )?;
-    pages::append(&mut badge, plan, project_rows, &sources.stock_pools)?;
+    pages::append(
+        &mut badge,
+        plan,
+        project_rows,
+        &sources.stock_pools,
+        badge_icon_index,
+    )?;
     if sunrise_members.len() != badge_placements.len() {
         crate::badge::set_sunrise_members(&mut badge, &sunrise_members, &sources.stock_pools)?;
     }
@@ -67,11 +86,26 @@ pub(super) fn author(
     let records = badge.records;
     let record_strings = badge.record_strings;
     let mut page_counts = BTreeMap::new();
-    for row in project_rows {
+    let (_, _, node_rows, _) = array_at(&nodes, 8)?;
+    for (weapon, row) in weapons.iter().zip(project_rows) {
+        // Gear sits beside its base, and some stock set pages (Open World armor) keep no
+        // completion count, so there is none to raise. The item is still collected.
+        if !weapon.kind.is_weapon()
+            && read_u16(
+                &nodes,
+                node_rows
+                    + usize::from(row.weapon_page) * crate::progression::PRESENTATION_NODE_ROW_SIZE
+                    + crate::progression::PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
+            )? == u16::MAX
+        {
+            continue;
+        }
         *page_counts.entry(row.weapon_page).or_insert(0usize) += 1;
     }
+    // Every counted row, which leaves out gear on pages that keep no count.
+    let counted = page_counts.values().sum::<usize>();
     let mut objectives =
-        patch_project_collection_objectives(badge.objectives, &nodes, &page_counts, weapons.len())?;
+        patch_project_collection_objectives(badge.objectives, &nodes, &page_counts, counted)?;
     pages::add_counts(
         &mut objectives,
         &nodes,

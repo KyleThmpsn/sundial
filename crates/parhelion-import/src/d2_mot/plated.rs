@@ -36,10 +36,6 @@ fn attributes(old: &[u8], scales: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((bytes, channels))
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 pub fn convert(
     source: &Path,
     native: &Path,
@@ -47,17 +43,55 @@ pub fn convert(
     modern: &Payload,
     mesh: usize,
 ) -> Result<()> {
+    convert_with_plates(source, native, out, modern, mesh, true)
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
+)]
+pub(crate) fn convert_with_plates(
+    source: &Path,
+    native: &Path,
+    out: &Path,
+    modern: &Payload,
+    mesh: usize,
+    has_plates: bool,
+) -> Result<()> {
     let mut report: Value = serde_json::from_slice(&fs::read(out.join("mapping.json"))?)?;
     // The mapper validates the carrier's native input layout. The fixed
     // plated material bank below supplies the resulting 8/24 vertex contract.
-    let provenance: Value =
-        serde_json::from_slice(&fs::read(source.join("source-manifest.json"))?)?;
-    let auxiliary = modern.u32(mesh + 24)?;
-    let reference = provenance["tags"][format!("{auxiliary:08X}")]["reference"]
-        .as_u64()
-        .context("missing detail scale export")?;
-    let scales = fs::read(source.join("raw").join(format!("{reference:08X}.bin")))?;
-    let (attrs, channels) = attributes(&fs::read(out.join("attributes.bin"))?, &scales)?;
+    let original = fs::read(out.join("attributes.bin"))?;
+    let (attrs, channels) = if has_plates {
+        let provenance: Value =
+            serde_json::from_slice(&fs::read(source.join("source-manifest.json"))?)?;
+        let auxiliary = modern.u32(mesh + 24)?;
+        let reference = provenance["tags"][format!("{auxiliary:08X}")]["reference"]
+            .as_u64()
+            .context("missing detail scale export")?;
+        let scales = fs::read(source.join("raw").join(format!("{reference:08X}.bin")))?;
+        attributes(&original, &scales)?
+    } else {
+        // This is only the native vertex envelope. Source shaders reconstruct
+        // their original packed inputs from metadata and bind their own textures.
+        // An unplated auxiliary buffer is not a detail-UV lookup table.
+        ensure!(
+            original.len().is_multiple_of(20),
+            "invalid attribute stream"
+        );
+        let mut attrs = Vec::new();
+        let mut channels = Vec::new();
+        for vertex in original.chunks_exact(20) {
+            let channel = u16::from_le_bytes(vertex[10..12].try_into()?) & 7;
+            ensure!(channel < 6, "unsupported dye selector {channel}");
+            channels.push(channel as u8);
+            attrs.extend_from_slice(vertex);
+            let end = attrs.len();
+            attrs[end - 10..end - 8].fill(0);
+            attrs.extend_from_slice(&[0, 60, 0, 60]);
+        }
+        (attrs, channels)
+    };
     let old_indices = fs::read(out.join("indices.bin"))?;
     let original = Payload(fs::read(out.join("model.unlinked.bin"))?);
     let original_parts = original.array(0xB0 + 24, 32, Some(0x8080737E))?;
@@ -176,6 +210,7 @@ pub fn convert(
     for offset in [0xC8, 0x140] {
         put(&mut model, offset, &(records.len() as u64).to_le_bytes());
     }
+    crate::d2_mot::audit::draws::declare_draw_indices(&mut model, records.len())?;
     for (i, count) in counts.iter().enumerate() {
         put(&mut model, 0xB0 + 40 + i * 2, &count.to_le_bytes());
     }

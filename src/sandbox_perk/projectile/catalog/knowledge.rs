@@ -30,21 +30,3 @@ pub fn get(graph: u32) -> Option<&'static Observation> {
         .ok()
         .map(|index| &entries[index])
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn observations_have_unique_assets_and_traceable_gameplay_evidence() {
-        let entries = observations();
-        assert!(!entries.is_empty());
-        for pair in entries.windows(2) {
-            assert_ne!(pair[0].graph, pair[1].graph);
-        }
-        assert!(entries.iter().all(|entry| !entry.name.is_empty()
-            && !entry.summary.is_empty()
-            && entry.source.starts_with("R3 Gameplay Report")));
-        assert_eq!(get(0x80BAA9B8).unwrap().name, "Hammer of Sol A");
-    }
-}

@@ -36,6 +36,11 @@ impl Card {
         self.list.with(self.effect)
     }
 
+    /// The card's place in the list, which problems and moves refer to it by.
+    pub(super) fn number(self) -> usize {
+        self.position + 1
+    }
+
     pub(super) fn expanded(self, ctx: &egui::Context) -> bool {
         ctx.data(|data| data.get_temp(self.id().with("expanded")).unwrap_or(true))
     }
@@ -59,7 +64,7 @@ impl Card {
         let toggle = ui
             .push_id(self.id().with("toggle"), |ui| {
                 crate::app::style::named_control(
-                    ui.add(egui::Button::new(icon).frame(false)),
+                    ui.add(egui::Button::new(crate::app::style::icon(ui, icon)).frame(false)),
                     label,
                 )
                 .on_hover_text(label)
@@ -84,9 +89,28 @@ impl Card {
                 },
             )
             .response;
-        crate::app::style::named_control(grip, "Reorder Effect").on_hover_text(
-            "Drag to reorder effects. Move Up and Move Down are also in the effect menu.",
-        );
+        crate::app::style::named_control(grip, "Reorder Effect").on_hover_text("Drag to reorder.");
+    }
+
+    /// Whether the effect shows its native structure.
+    pub(super) fn structure(self, ctx: &egui::Context) -> bool {
+        ctx.data(|data| data.get_temp(self.id().with("structure")).unwrap_or(false))
+    }
+
+    /// The effect menu's switch for the native structure.
+    pub(super) fn structure_menu(self, ui: &mut egui::Ui) {
+        let open = self.structure(ui.ctx());
+        let label = if open {
+            "Hide Native Structure"
+        } else {
+            "Show Native Structure"
+        };
+        if ui.button(label).clicked() {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(self.id().with("structure"), !open));
+            self.set_expanded(ui.ctx(), true);
+            ui.close_menu();
+        }
     }
 
     pub(super) fn menu(self, ui: &mut egui::Ui, movement: &mut Option<Move>) {

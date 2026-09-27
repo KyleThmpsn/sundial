@@ -104,6 +104,7 @@ pub struct Bindings {
 struct Expression {
     code: Vec<u8>,
     missing: BTreeSet<String>,
+    matrix: bool,
 }
 
 #[derive(Debug)]
@@ -222,6 +223,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 e.code.extend([0x34, *index, 0x22, i.args[1]]);
             }
             0x4A..=0x4F => {
+                e.matrix = i.op == 0x4C;
                 // Frame dither, time and exposure scale retain their addresses.
                 // Native material programs read exposure scale at float index 7
                 // with 3C 01 07, matching the source Frame +0x1C scalar.
@@ -252,12 +254,35 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                     "TFX output outside constant buffer"
                 );
                 e = pop(&mut stack)?;
+                ensure!(!e.matrix, "matrix consumed by vector output");
                 outputs.insert(i.args[0], e.clone());
                 if e.missing.is_empty() {
                     result.code.extend(e.code);
                     result.code.extend([i.native, i.args[0]]);
                 }
                 result.evidence.push(json!({"output":i.args[0], "translated":e.missing.is_empty(), "unresolved":e.missing}));
+                continue;
+            }
+            0x53 => {
+                let first = usize::from(i.args[0]);
+                ensure!(
+                    first + 4 <= b.output_count,
+                    "TFX matrix outside constant buffer"
+                );
+                e = pop(&mut stack)?;
+                ensure!(
+                    e.matrix && e.code.first() == Some(&0x3E) && e.missing.is_empty(),
+                    "unverified matrix output expression"
+                );
+                result.code.extend(e.code);
+                result.code.extend([i.native, i.args[0]]);
+                for output in first..first + 4 {
+                    // A vector read needs a separately verified row expression.
+                    outputs.remove(&(output as u8));
+                    result
+                        .evidence
+                        .push(json!({"output":output,"translated":true,"unresolved":[]}));
+                }
                 continue;
             }
             0x5B => {
@@ -322,6 +347,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 }
                 ensure!(stack.len() >= i.arity, "TFX expression stack underflow");
                 for value in stack.drain(stack.len() - i.arity..) {
+                    ensure!(!value.matrix, "matrix consumed by vector arithmetic");
                     e.code.extend(value.code);
                     e.missing.extend(value.missing);
                 }

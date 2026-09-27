@@ -128,7 +128,10 @@ pub(crate) fn draw_item_filter_bar(
     let filter_style = ui.style().clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if matches!(scope, ItemFilterScope::Weapon | ItemFilterScope::WeaponDonor) {
+        if matches!(
+            scope,
+            ItemFilterScope::Weapon | ItemFilterScope::WeaponDonor
+        ) {
             draw_filter_group(ui, "Weapon type", |ui| {
                 egui::ComboBox::from_id_salt((id_salt.clone(), "weapon-type"))
                     .selected_text(format!(
@@ -233,7 +236,7 @@ pub(crate) fn draw_item_filter_bar(
         if scope == ItemFilterScope::WeaponDonor {
             option_clicked |= ui
                 .checkbox(&mut filter.include_dummy_weapons, "Include Dummy Weapons")
-                .on_hover_text("Show weapons classified as dummy items by Sundial. Some lack the data needed for weapon authoring.")
+                .on_hover_text("Some lack the data Parhelion needs.")
                 .changed();
         }
         if ui

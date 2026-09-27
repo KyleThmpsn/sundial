@@ -10,19 +10,22 @@ impl PackageAuthoringApp {
             ui,
             "Base Sandbox Perks",
             Some(
-                "Ordered finished sandbox-perk indices emitted by the base item before equipped socket plugs. Elemental damage markers live here too. This does not edit the perks supplied by socket columns.",
+                "Perks the base item applies before socket plugs, including damage type markers. Socket perks are separate.",
             ),
         );
         let inherited = gameplay_donor
             .map(|donor| donor.base_sandbox_perks.as_slice())
             .unwrap_or_default();
-        ui.weak("The replicated weapon bank holds 16 entries total: base perks first, then equipped plugs in socket order. Socket alternatives are not all active at once.");
         if self.recipe.overrides.base_sandbox_perks.is_none() {
             ui.horizontal_wrapped(|ui| {
                 ui.label(if inherited.is_empty() {
-                    "Inheriting an empty base-perk array".to_owned()
+                    "Inheriting no base perks".to_owned()
                 } else {
-                    format!("Inheriting {} base-perk row(s)", inherited.len())
+                    format!(
+                        "Inheriting {} base-perk {}",
+                        inherited.len(),
+                        if inherited.len() == 1 { "row" } else { "rows" }
+                    )
                 });
                 if ui.button("Edit Perk Rows").clicked() {
                     self.recipe.overrides.base_sandbox_perks = Some(inherited.to_vec());
@@ -35,12 +38,17 @@ impl PackageAuthoringApp {
         }
 
         let choices = &self.sandbox_perk_choices;
-        let perk_count = self
+        let can_add = self
             .recipe
             .overrides
             .base_sandbox_perks
             .as_ref()
-            .map_or(0, Vec::len);
+            .is_some_and(|perks| {
+                perks.len() < 64
+                    && choices
+                        .iter()
+                        .any(|choice| !perks.contains(&choice.perk_index))
+            });
         let mut restore = false;
         let mut add = false;
         ui.horizontal_wrapped(|ui| {
@@ -48,7 +56,7 @@ impl PackageAuthoringApp {
                 restore = true;
             }
             if ui
-                .add_enabled(perk_count < 64, egui::Button::new("+ Add Base Perk"))
+                .add_enabled(can_add, egui::Button::new("+ Add Base Perk"))
                 .clicked()
             {
                 add = true;
@@ -77,7 +85,7 @@ impl PackageAuthoringApp {
             ui.horizontal_wrapped(|ui| {
                 ui.monospace(format!("{}.", index + 1));
                 ui.add(egui::DragValue::new(perk).range(0..=u16::MAX - 1).speed(1))
-                    .on_hover_text("Finished sandbox-perk table index");
+                    .on_hover_text("Sandbox perk index");
                 egui::ComboBox::from_id_salt(("base-sandbox-perk", index))
                     .selected_text(sandbox_perk_choice_label(*perk, choices))
                     .width(choice_width)
@@ -102,16 +110,14 @@ impl PackageAuthoringApp {
         if unique.len() != perks.len() {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Base sandbox-perk rows cannot contain duplicate indices.",
+                "Each base perk can appear only once.",
             );
         }
         for &perk in perks.iter() {
             if !choices.iter().any(|choice| choice.perk_index == perk) {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    format!(
-                        "Sandbox-perk index {perk} is not active and referenced in this install."
-                    ),
+                    format!("Sandbox perk {perk} is not used in this install."),
                 );
             }
         }

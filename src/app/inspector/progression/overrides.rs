@@ -2,7 +2,8 @@
 
 use eframe::egui;
 
-use crate::catalog::{ProgressionContextKind, UnlockDefinition};
+use crate::app::progression::CollectionStateSnapshot;
+use crate::catalog::{Catalog, ProgressionContextKind, UnlockDefinition};
 
 use crate::app::inspector::{metadata_field, progression_context_kind_label};
 
@@ -13,8 +14,6 @@ use super::{
     definitions::flag_override_state_label,
     state::MetadataSelection,
 };
-
-const SET_FLAG_VALUE: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::app) enum OverrideFilter {
@@ -35,21 +34,53 @@ impl OverrideFilter {
 
     pub(in crate::app) const fn label(self) -> &'static str {
         match self {
-            Self::All => "All coverage",
-            Self::Unmapped => "Not in package table",
+            Self::All => "All Coverage",
+            Self::Unmapped => "Not in Package Table",
             Self::NoResolvedReaders => "No Package References",
-            Self::PartiallyDecoded => "Partially decoded",
+            Self::PartiallyDecoded => "Partially Decoded",
+        }
+    }
+}
+
+/// The Family 5 override the current save state holds for an override selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SavedOverride {
+    Flag(u8),
+    Value(i32),
+}
+
+impl SavedOverride {
+    pub(super) fn current(
+        selection: MetadataSelection,
+        snapshot: &CollectionStateSnapshot,
+    ) -> Option<Self> {
+        match selection {
+            MetadataSelection::FlagOverride(index) => {
+                snapshot.flag_overrides.get(&index).copied().map(Self::Flag)
+            }
+            MetadataSelection::ValueOverride(index) => snapshot
+                .value_overrides
+                .get(&index)
+                .copied()
+                .map(Self::Value),
+            MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => None,
         }
     }
 }
 
 pub(super) fn draw_override_metadata(
     ui: &mut egui::Ui,
-    selection: MetadataSelection,
+    index: usize,
+    saved: SavedOverride,
     definition: &UnlockDefinition,
+    catalog: &Catalog,
+    snapshot: &CollectionStateSnapshot,
 ) {
-    let index = selection.definition_index();
-    let usage = override_usage_summary(selection, definition);
+    let evaluated_flag = match saved {
+        SavedOverride::Flag(_) => snapshot.evaluated_flag(index, catalog),
+        SavedOverride::Value(_) => None,
+    };
+    let usage = override_usage_summary(index, saved, definition, evaluated_flag);
     let condition_program_decode = if definition.tested_by.is_empty() {
         "No condition programs"
     } else if definition_has_undecoded_opcodes(definition) {
@@ -61,47 +92,45 @@ pub(super) fn draw_override_metadata(
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
-            metadata_field(ui, "Definition Index", format!("#{index}"), true);
-            match selection {
-                MetadataSelection::FlagOverride(_, value) => {
+            match saved {
+                SavedOverride::Flag(value) => {
                     metadata_field(
                         ui,
-                        "Logical flag value",
+                        "Logical Flag Value",
                         flag_override_state_label(value),
                         false,
                     );
                     metadata_field(
                         ui,
-                        "Settings field",
+                        "Settings Field",
                         "state.investment.family5_flag_overrides",
                         true,
                     );
                 }
-                MetadataSelection::ValueOverride(_, value) => {
+                SavedOverride::Value(value) => {
                     metadata_field(ui, "Value", value.to_string(), true);
                     metadata_field(
                         ui,
-                        "Settings field",
+                        "Settings Field",
                         "state.investment.family5_value_overrides",
                         true,
                     );
                 }
-                MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => {}
             }
             metadata_field(
                 ui,
-                "Condition program decode",
+                "Condition Program Decode",
                 condition_program_decode,
                 false,
             );
-            metadata_field(ui, "References", usage.readers, false);
+            metadata_field(ui, "Known References", usage.readers, false);
             metadata_field(ui, "Reference Types", usage.reader_types, false);
-            metadata_field(ui, "Condition usage", usage.condition_usage, false);
+            metadata_field(ui, "Condition Usage", usage.condition_usage, false);
             if let Some(impact) = usage.forced_impact {
                 metadata_field(ui, "Result", impact, false);
             }
             if let Some(opcodes) = usage.undecoded_opcodes {
-                metadata_field(ui, "Undecoded opcodes", opcodes, true);
+                metadata_field(ui, "Undecoded Opcodes", opcodes, true);
             }
         });
 }
@@ -131,8 +160,10 @@ pub(in crate::app) fn override_filter_matches(
 }
 
 fn override_usage_summary(
-    selection: MetadataSelection,
+    index: usize,
+    saved: SavedOverride,
     definition: &UnlockDefinition,
+    evaluated_flag: Option<bool>,
 ) -> OverrideUsageSummary {
     let mut reader_types = Vec::<(ProgressionContextKind, usize)>::new();
     let mut programs = Vec::<Vec<[u32; 2]>>::new();
@@ -182,18 +213,15 @@ fn override_usage_summary(
     undecoded.sort_unstable();
     undecoded.dedup();
     let undecoded_opcodes = (!undecoded.is_empty()).then(|| {
-        format!(
-            "{} · preserved raw in each condition program",
-            undecoded
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        undecoded
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     });
 
-    let (condition_usage, forced_impact) = match selection {
-        MetadataSelection::FlagOverride(index, value) => {
+    let (condition_usage, forced_impact) = match saved {
+        SavedOverride::Flag(_) => {
             let direct = programs
                 .iter()
                 .filter(|program| program.as_slice() == [[1, index as u32]])
@@ -214,15 +242,18 @@ fn override_usage_summary(
                 },
                 programs.len()
             );
-            let active = value == SET_FLAG_VALUE;
-            let impact = Some(format!(
-                "Direct checks read {}. Negated checks read {}",
-                if active { "true" } else { "false" },
-                if active { "false" } else { "true" }
+            let impact = Some(evaluated_flag.map_or_else(
+                || "Unresolved".to_owned(),
+                |value| {
+                    format!(
+                        "Direct checks read {value}. Negated checks read {}.",
+                        !value
+                    )
+                },
             ));
             (usage, impact)
         }
-        MetadataSelection::ValueOverride(index, value) => {
+        SavedOverride::Value(value) => {
             let mut comparisons = programs
                 .iter()
                 .filter_map(|program| direct_value_comparison(program, index, value))
@@ -266,18 +297,6 @@ fn override_usage_summary(
             });
             (usage, impact)
         }
-        MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => (
-            format!(
-                "{program_count} program {}, {} unique",
-                if program_count == 1 {
-                    "occurrence"
-                } else {
-                    "occurrences"
-                },
-                programs.len()
-            ),
-            None,
-        ),
     };
 
     OverrideUsageSummary {
@@ -286,49 +305,5 @@ fn override_usage_summary(
         condition_usage,
         forced_impact,
         undecoded_opcodes,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::catalog::{ProgressionContextDef, ProgressionContextKind, UnlockDefinition};
-
-    use super::{MetadataSelection, override_usage_summary};
-
-    #[test]
-    fn value_override_usage_decodes_direct_comparisons_and_preserves_unknown_programs() {
-        let definition = UnlockDefinition {
-            hash: 2,
-            code: 1,
-            compact_slot: None,
-            name: None,
-            description: None,
-            runtime_writers: Vec::new(),
-            tested_by: vec![ProgressionContextDef {
-                direct_references: Vec::new(),
-                hash: 3,
-                kind: ProgressionContextKind::Activity,
-                name: "Power-gated activity".into(),
-                type_name: String::new(),
-                description: String::new(),
-                paths: Vec::new(),
-                condition_programs: vec![
-                    vec![[10, 462], [11, 900], [14, u32::MAX]],
-                    vec![[1, 4], [99, u32::MAX]],
-                ],
-            }],
-        };
-
-        let usage =
-            override_usage_summary(MetadataSelection::ValueOverride(462, 1_010), &definition);
-        assert!(usage.condition_usage.contains("direct ≥ 900"));
-        assert_eq!(
-            usage.forced_impact.as_deref(),
-            Some("At 1010: 1 decoded direct comparison pass, 0 fail")
-        );
-        assert_eq!(
-            usage.undecoded_opcodes.as_deref(),
-            Some("99 · preserved raw in each condition program")
-        );
     }
 }

@@ -46,7 +46,7 @@ impl Titles {
             picker::thumbnail(ui, catalog, title, 20.0);
         }
         let mut selection = None;
-        egui::ComboBox::from_id_salt(("equipped-title", character))
+        let response = egui::ComboBox::from_id_salt(("equipped-title", character))
             .selected_text(selected)
             .width(ui.available_width().clamp(100.0, 150.0))
             .truncate()
@@ -88,7 +88,17 @@ impl Titles {
                 }
             })
             .response
-            .on_hover_text("Selecting a title unlocks it for your account. Click Save to apply.");
+            .on_hover_text("Selecting a title unlocks it.");
+        if let Some(flag) = selected_title
+            .and_then(|title| title.unlock.as_ref().ok())
+            .and_then(|unlock| catalog.unlock_flag_definition(usize::from(unlock.definition_index)))
+        {
+            crate::app::inspector::definition_context_menu(
+                &response,
+                "Inspect Unlock Flag",
+                flag.hash,
+            );
+        }
         selection
     }
 

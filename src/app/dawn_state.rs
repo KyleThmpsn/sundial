@@ -138,7 +138,7 @@ fn item_label(ui: &mut egui::Ui, catalog: &crate::catalog::Catalog, hash: u32) {
         } else {
             ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::hover());
         }
-        ui.add(
+        let name = ui.add(
             egui::Label::new(
                 catalog
                     .display_name(u64::from(hash))
@@ -147,5 +147,6 @@ fn item_label(ui: &mut egui::Ui, catalog: &crate::catalog::Catalog, hash: u32) {
             )
             .truncate(),
         );
+        super::inspector::definition_context_menu(&name, "Inspect Definition", u64::from(hash));
     });
 }

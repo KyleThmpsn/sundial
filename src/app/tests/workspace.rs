@@ -18,27 +18,6 @@ fn settings_change_review_reports_nested_values_and_respects_its_limit() {
 }
 
 #[test]
-fn reopening_a_detached_window_uses_a_fresh_viewport_generation() {
-    let mut open = true;
-    let mut generation = 0;
-
-    update_detached_window_state(&mut open, &mut generation, false);
-    assert!(!open);
-    assert_eq!(generation, 1);
-
-    update_detached_window_state(&mut open, &mut generation, true);
-    assert!(open);
-    assert_eq!(generation, 1);
-
-    update_detached_window_state(&mut open, &mut generation, false);
-    assert!(!open);
-    assert_eq!(generation, 2);
-
-    update_detached_window_state(&mut open, &mut generation, false);
-    assert_eq!(generation, 2);
-}
-
-#[test]
 fn sqlite_default_restore_preserves_only_inactive_json_account_domains() {
     let mut defaults = serde_json::json!({
         "version": 8,

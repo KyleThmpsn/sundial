@@ -55,11 +55,15 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
     )
     .unwrap();
     let mut stages = vec![];
-    for slot in [RecipeInventorySlot::Kinetic, RecipeInventorySlot::Energy] {
+    // Staging retention keeps one finished run per root, so each stage gets its own root.
+    for (index, slot) in [RecipeInventorySlot::Kinetic, RecipeInventorySlot::Energy]
+        .into_iter()
+        .enumerate()
+    {
         recipe.overrides.inventory_slot = Some(slot);
         let snapshot = BatchBuildSnapshot::new(BatchBuildRequest {
             package_directory: packages.clone(),
-            staging_root: output.clone(),
+            staging_root: output.join(format!("stage-{index}")),
             ignore_installed_authored_overlays: true,
             recipes: vec![recipe.clone()],
         })
@@ -76,7 +80,9 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
     ] {
         let (hashes, _) = generation_identities(&packages, old).unwrap();
         let replacement = with_generation(&packages, old, |installed| {
-            slot_replacement(installed, new, &hashes)
+            with_generation(&packages, new, |incoming| {
+                slot_replacement(installed, incoming, &hashes)
+            })
         })
         .unwrap()
         .unwrap();
@@ -95,9 +101,11 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
                 .all(|capacity| *capacity > 1)
         );
         assert!(
-            with_generation(&packages, old, |installed| slot_replacement(
-                installed, old, &hashes
-            ))
+            with_generation(&packages, old, |installed| {
+                with_generation(&packages, old, |incoming| {
+                    slot_replacement(installed, incoming, &hashes)
+                })
+            })
             .unwrap()
             .is_none()
         );

@@ -81,7 +81,7 @@ impl Workbench {
             document: recipe.id.clone(),
             source,
             worker: thread::spawn(move || {
-                let result = editor::conversion::copy_effect(&packages, &snapshot, name);
+                let result = parameters::conversion::copy_effect(&packages, &snapshot, name);
                 repaint.request_repaint();
                 result
             }),

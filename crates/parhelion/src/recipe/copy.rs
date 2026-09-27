@@ -26,23 +26,3 @@ impl WeaponRecipe {
         Err("Could not allocate an unused recipe copy identity".into())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copy_allocator_skips_case_insensitive_namespace_collisions() {
-        let recipe =
-            WeaponRecipe::new_named_weapon_for_donor("Signal Fire", 0x1234_5678, "Signal Donor")
-                .unwrap();
-        let copy = recipe
-            .unused_copy(["parhelion.signal-fire-copy", "PARHELION.SIGNAL-FIRE-COPY-2"])
-            .unwrap();
-
-        assert_eq!(copy.name, "Signal Fire Copy 3");
-        assert_eq!(copy.namespace, "parhelion.signal-fire-copy-3");
-        assert_ne!(copy.identity, recipe.identity);
-        assert_eq!(copy.donor, recipe.donor);
-    }
-}

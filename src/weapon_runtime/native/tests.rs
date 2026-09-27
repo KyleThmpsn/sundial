@@ -128,11 +128,7 @@ fn player_property_modifiers_expose_exact_fields_and_preserve_adjacent_storage()
         data[0x2C] = 1;
         assert_eq!(changed, data);
         assert_eq!(
-            fields
-                .iter()
-                .find(|f| f.name == "Ability Slot")
-                .unwrap()
-                .value,
+            fields.iter().find(|f| f.name == "Ability").unwrap().value,
             WeaponRuntimeValue::Signed(-1)
         );
     }

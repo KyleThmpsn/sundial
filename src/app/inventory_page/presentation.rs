@@ -112,20 +112,20 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
         SchemaMode::MissingOrInvalid => {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "The settings schema is missing or invalid. Existing items are shown read-only.",
+                "The settings version is missing or invalid. Items are read-only.",
             );
         }
         SchemaMode::Unsupported(version) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "Schema {version} predates the schemas supported by this Sundial release. Existing items are shown read-only."
+                    "Settings v{version} is older than this Sundial release supports. Items are read-only."
                 ),
             );
         }
         SchemaMode::PreInventory(version) if matches!(page, InventoryPageKind::Character) => {
             ui.weak(format!(
-                    "Schema {version} supports profile inventory and equipped loadouts, but stored character inventory requires schema 6. Stored rows are never created or rewritten here."
+                    "Settings v{version} supports profile inventory and loadouts. Stored character inventory needs v6 and is not written."
                 ));
         }
         SchemaMode::PreInventory(_) | SchemaMode::Inventory(_) => {}
@@ -133,7 +133,7 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 format!(
-                    "Schema {version} is newer than this Sundial release. Known item fields remain editable. Unrecognized fields are preserved."
+                    "Settings v{version} is newer than this Sundial release. Known fields stay editable and unknown fields are kept."
                 ),
             );
         }
@@ -147,15 +147,13 @@ pub(super) fn draw_schema_notice(ui: &mut egui::Ui, mode: SchemaMode, page: Inve
             }
         };
     if !editable {
-        ui.weak("Guided controls are disabled. JSON Editor remains available for inspection.");
+        ui.weak("Guided controls are off. Use the JSON Editor to inspect.");
     }
 }
 
 pub(super) fn draw_section_error(ui: &mut egui::Ui, error: &str) {
     ui.colored_label(ui.visuals().error_fg_color, error);
-    ui.weak(
-        "This section was left untouched. Repair it in JSON Editor before using guided controls.",
-    );
+    ui.weak("This section was left untouched. Repair it in the JSON Editor first.");
 }
 
 pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error: &str) {
@@ -163,14 +161,12 @@ pub(super) fn draw_inventory_source_error(ui: &mut egui::Ui, source: &str, error
         ui.visuals().error_fg_color,
         format!("{source} could not be read: {error}"),
     );
-    ui.weak(
-            "The other inventory source remains visible, but additions are disabled until this is repaired in JSON Editor.",
-        );
+    ui.weak("Additions are off until this is repaired in the JSON Editor.");
 }
 
 pub(super) fn draw_unresolved_bucket_warning(ui: &mut egui::Ui) {
     ui.colored_label(
         ui.visuals().warn_fg_color,
-        "Some existing items have no known bucket. They are shown under Invalid Items. Their placement must be resolved before Sundial can confirm space in some buckets, even when the known item count is below the limit.",
+        "Some items have no known bucket and are listed under Invalid Items. Resolve them so Sundial can check space.",
     );
 }

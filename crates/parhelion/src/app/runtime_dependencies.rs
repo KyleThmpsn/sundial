@@ -50,6 +50,18 @@ pub(super) struct Browser {
     progress: (usize, usize),
     job: Option<Job>,
     generation: u64,
+    rows: Option<Rows>,
+}
+
+/// Selector rows, kept until the page, query, filter, index or donor list changes. The index is
+/// held weakly, so a new index cannot reuse its address.
+struct Rows {
+    page: Page,
+    query: String,
+    show_unnamed: bool,
+    index: std::sync::Weak<Index>,
+    donors: (usize, usize),
+    rows: Arc<Vec<(usize, String)>>,
 }
 
 impl Browser {
@@ -63,6 +75,7 @@ impl Browser {
         self.uses.clear();
         self.sources = PerkSources::default();
         self.error = None;
+        self.rows = None;
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -78,9 +91,7 @@ impl Browser {
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
-                        finished = Some(Err(
-                            "The dependency reader stopped without returning a result.".into(),
-                        ));
+                        finished = Some(Err("Reading stopped without a result.".into()));
                         break;
                     }
                 }
@@ -165,8 +176,11 @@ impl PackageAuthoringApp {
         }
         let mut open = true;
         let target = self.recipe.overrides.weapon_pattern_index.or_else(|| {
-            self.current_donor()
-                .and_then(|donor| donor.summary.weapon_pattern_index)
+            let hash = self.recipe.donor.item_hash.parse_u32().ok()?;
+            self.donor_summaries
+                .iter()
+                .find(|donor| donor.hash == hash)?
+                .weapon_pattern_index
         });
         egui::Window::new("Perks & Patterns")
             .id(egui::Id::new("perk-pattern-browser"))
@@ -257,7 +271,10 @@ fn selector_rows(
 impl Browser {
     fn draw_navigation(&mut self, ui: &mut egui::Ui, index: &Index, target: Option<u16>) {
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(!self.history.is_empty(), egui::Button::new("Back")).clicked() {
+            if ui
+                .add_enabled(!self.history.is_empty(), egui::Button::new("Back"))
+                .clicked()
+            {
                 if let Some((page, selected)) = self.history.pop() {
                     self.page = page;
                     self.selected = selected;
@@ -285,16 +302,69 @@ impl Browser {
             if ui.button("Refresh").clicked() {
                 self.index = None;
             }
-            sundial::investment::draw_authoring_info_icon(ui,
-                format!("Patterns contain weapon behavior. Internal effects may add actions or depend on that behavior. Item and plug names identify references, not the effect itself.\n\nItem defaults are examples, not requirements. Package data cannot confirm gameplay compatibility. Recipe component overrides are not included.\n\n{} patterns · {} effects\n{} unreadable patterns · {} effect errors", index.patterns.len(), index.perks.len(), index.patterns.iter().filter(|row| row.error.is_some()).count(), index.perks.iter().filter(|row| row.error.is_some()).count()));
+            sundial::investment::draw_authoring_info_icon(
+                ui,
+                format!(
+                    "{} patterns · {} effects\n{} unreadable patterns · {} effect errors",
+                    index.patterns.len(),
+                    index.perks.len(),
+                    index
+                        .patterns
+                        .iter()
+                        .filter(|row| row.error.is_some())
+                        .count(),
+                    index.perks.iter().filter(|row| row.error.is_some()).count()
+                ),
+            );
         });
         ui.separator();
+    }
+
+    /// The selector rows for the page, query and filter on screen, rebuilt only when one of
+    /// them, the index or the donor list changes.
+    fn selector_labels(
+        &mut self,
+        index: &Arc<Index>,
+        donors: &[WeaponDonorSummary],
+        query: &str,
+    ) -> Arc<Vec<(usize, String)>> {
+        let donor_list = (donors.as_ptr() as usize, donors.len());
+        if let Some(rows) = self.rows.as_ref().filter(|rows| {
+            rows.page == self.page
+                && rows.query == query
+                && rows.show_unnamed == self.show_unnamed
+                && rows.donors == donor_list
+                && std::ptr::eq(rows.index.as_ptr(), Arc::as_ptr(index))
+        }) {
+            return Arc::clone(&rows.rows);
+        }
+        let count = match self.page {
+            Page::Perks => index.perks.len(),
+            Page::Patterns => index.patterns.len(),
+        };
+        let labels = Arc::new(selector_rows(
+            self.page,
+            count,
+            &self.sources,
+            donors,
+            self.show_unnamed,
+            query,
+        ));
+        self.rows = Some(Rows {
+            page: self.page,
+            query: query.to_owned(),
+            show_unnamed: self.show_unnamed,
+            index: Arc::downgrade(index),
+            donors: donor_list,
+            rows: Arc::clone(&labels),
+        });
+        labels
     }
 
     fn draw_selector(
         &mut self,
         ui: &mut egui::Ui,
-        index: &Index,
+        index: &Arc<Index>,
         donors: &[WeaponDonorSummary],
     ) -> bool {
         if self.reveal_selection {
@@ -312,24 +382,20 @@ impl Browser {
                 .hint_text("Search by name or number"),
         );
         ui.checkbox(&mut self.show_unnamed, "Include Unnamed")
-            .on_hover_text("Show internal entries that have no named stock weapon or perk.");
+            .on_hover_text("Shows entries with no named weapon or perk.");
         let query = self.query.trim().to_lowercase();
-        let count = if self.page == Page::Perks {
-            index.perks.len()
-        } else {
-            index.patterns.len()
-        };
-        let labels = selector_rows(
-            self.page,
-            count,
-            &self.sources,
-            donors,
-            self.show_unnamed,
-            &query,
-        );
-        ui.weak(format!("{} Results", labels.len()));
+        let labels = self.selector_labels(index, donors, &query);
+        ui.weak(format!(
+            "{} {}",
+            labels.len(),
+            if labels.len() == 1 {
+                "Result"
+            } else {
+                "Results"
+            }
+        ));
         if labels.is_empty() {
-            ui.weak("No matches. Try another name or number.");
+            ui.weak("No matches.");
             return false;
         }
         if !labels.iter().any(|(value, _)| *value == self.selected) && !self.reveal_selection {
@@ -363,6 +429,7 @@ impl Browser {
                         label.clone()
                     })
                     .clicked()
+                    && self.selected != *value
                 {
                     self.history.push((self.page, self.selected));
                     self.selected = *value;
@@ -440,21 +507,20 @@ impl Browser {
     }
 }
 
-fn perk_explanation(perk: &Perk) -> &'static str {
-    if perk.error.is_some() {
-        "Could not read this effect completely. Requirements are unknown."
-    } else if perk.action.is_none() {
-        "No standalone action was found. This entry may be a marker used by behavior elsewhere."
+/// What the heading does not already say about an effect.
+fn perk_explanation(perk: &Perk) -> Option<&'static str> {
+    if perk.error.is_some() || perk.action.is_none() {
+        None
     } else if perk.graphs.is_empty() {
-        "Has an action, but no direct entity graph. It may use the weapon's resources."
+        Some("No direct entity graph.")
     } else {
-        "The action references entity resources. Those references do not establish which host resources it needs."
+        Some("References entity resources.")
     }
 }
 
 fn draw_entity(ui: &mut egui::Ui, entity: &Entity) {
     egui::CollapsingHeader::new(format!(
-        "Entity {:08X} · {} Component Bindings",
+        "Entity 0x{:08X} · {} Component Bindings",
         entity.tag,
         entity.components.len()
     ))
@@ -462,11 +528,11 @@ fn draw_entity(ui: &mut egui::Ui, entity: &Entity) {
     .show(ui, |ui| {
         for component in &entity.components {
             let name = runtime_component_control(component.binding).map_or_else(
-                || format!("Binding {:08X}", component.binding),
+                || format!("Binding 0x{:08X}", component.binding),
                 |control| control.label.to_owned(),
             );
             ui.label(format!(
-                "{name} · Class {:08X} · Owner {:08X}",
+                "{name} · Class 0x{:08X} · Owner 0x{:08X}",
                 component.class, component.owner
             ));
         }

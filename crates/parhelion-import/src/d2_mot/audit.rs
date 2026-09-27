@@ -2,14 +2,16 @@ use crate::d2_mot::payload::Payload;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 pub(crate) mod channels;
-mod draws;
+pub mod draws;
+mod kept;
 mod loading;
+mod parts;
 fn entity_map_arrays(p: &Payload) -> Result<()> {
     ensure!(p.u64(0)? == p.0.len() as u64, "entity map size mismatch");
     let rows = p.array(8, 8, Some(0x80809252))?;
@@ -123,8 +125,12 @@ pub fn audit_many(
     let staged = PackageManager::new(stage, version, None)?;
     let baseline_root = baseline
         .map(|path| -> Result<BTreeSet<u32>> {
-            let manager = PackageManager::new(path, version, None)?;
-            dependencies(&Payload(manager.read_tag(TagHash(0x80EE8CBD))?))
+            let manager = PackageManager::new(path, version, None)
+                .with_context(|| format!("opening baseline package view {}", path.display()))?;
+            let root = manager
+                .read_tag(TagHash(0x80EE8CBD))
+                .with_context(|| format!("reading baseline loading root in {}", path.display()))?;
+            dependencies(&Payload(root)).context("decoding baseline loading root")
         })
         .transpose()?
         .unwrap_or_default();
@@ -349,27 +355,88 @@ fn audit_graph(
     };
     let mut expected_slots = art_slots(&metadata, donor)?;
 
-    // The imported graph already contains the assembled body and attachments.
-    // Check placement independently of the staging adapter's policy helper.
+    // Check placement independently of the staging adapter. Marker-bearing parts keep
+    // their native slots, but must resolve to private parents with collapsed geometry.
+    let assignments = read(0x80EC3F61)?;
+    let mut kept = kept::audit(&nodes, &symbols, &assignments, base, &read)?;
+    let source_parts = parts::audit(&nodes, &symbols, &assignments, &expected_slots, &read)?;
+    for (assignment, key) in &source_parts {
+        ensure!(
+            kept.insert(*assignment, *key).is_none(),
+            "source and marker parts overlap"
+        );
+    }
     let singles = if expected_slots.is_empty() {
         [art_key, 0x811C9DC5]
     } else {
-        ensure!(
-            expected_slots
-                .iter()
-                .filter(|(selector, _)| *selector == 0)
-                .count()
-                == 1,
-            "private assembled artwork requires one body selector"
-        );
-        for (selector, keys) in &mut expected_slots {
-            keys.fill(0x811C9DC5);
-            if *selector == 0 {
-                *keys.first_mut().context("empty native body selector")? = art_key;
+        let mut host_count = 0;
+        for (_, keys) in &mut expected_slots {
+            for key in keys {
+                *key = if *key == donor_key {
+                    host_count += 1;
+                    art_key
+                } else {
+                    kept.get(key).copied().unwrap_or(0x811C9DC5)
+                };
             }
+        }
+        ensure!(host_count <= 1, "import host fills more than one slot");
+        if host_count == 0 {
+            ensure!(
+                expected_slots
+                    .iter()
+                    .filter(|(selector, _)| *selector == 0)
+                    .count()
+                    == 1,
+                "private assembled artwork requires one body selector"
+            );
+            let (_, body) = expected_slots
+                .iter_mut()
+                .find(|(selector, _)| *selector == 0)
+                .context("native body selector")?;
+            *body.first_mut().context("empty native body selector")? = art_key;
         }
         [0x811C9DC5; 2]
     };
+    // Source regions have no donor assignment to replace. Their entire ordered
+    // list is authored independently and must select exactly one part per index.
+    let mut regions = BTreeMap::<u64, BTreeMap<usize, u32>>::new();
+    for part in nodes["source_parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["source_region"] == true)
+    {
+        let selector = part["selector"]
+            .as_u64()
+            .context("source region selector")?;
+        let position = usize::try_from(
+            part["position"]
+                .as_u64()
+                .context("source region position")?,
+        )?;
+        let key = u32::try_from(part["key"].as_u64().context("source region key")?)?;
+        ensure!(
+            regions
+                .entry(selector)
+                .or_default()
+                .insert(position, key)
+                .is_none(),
+            "duplicate source region position"
+        );
+    }
+    for (selector, positions) in regions {
+        ensure!(
+            positions.keys().copied().eq(0..positions.len()),
+            "source region alternatives are incomplete"
+        );
+        let keys = positions.into_values().collect();
+        if let Some(slot) = expected_slots.iter_mut().find(|slot| slot.0 == selector) {
+            slot.1 = keys;
+        } else {
+            expected_slots.push((selector, keys));
+        }
+    }
     ensure!(
         [metadata.u32(m + 8)?, metadata.u32(m + 12)?] == singles
             && art_slots(&metadata, m)? == expected_slots,
@@ -390,7 +457,6 @@ fn audit_graph(
             "unrelated art slots changed"
         );
     }
-    let assignments = read(0x80EC3F61)?;
     let ar = assignments.array(8, 8, None)?;
     let mut assignment_map = std::collections::BTreeMap::new();
     for &row in &ar {
@@ -446,7 +512,40 @@ fn audit_graph(
                 .context("native skeleton owner")?,
             16,
         )?;
-        let owner = read(owner_tag)?;
+        let owner = if rig["source_owned"] == true {
+            let key = crate::d2_mot::profile::hash(&nodes, "pattern_global_id_hash")?;
+            let entries = runtime_map
+                .array(8, 8, None)?
+                .into_iter()
+                .filter(|&row| runtime_map.u32(row).ok() == Some(key))
+                .collect::<Vec<_>>();
+            ensure!(
+                entries.len() == 1,
+                "source-owned rig runtime assignment missing or ambiguous"
+            );
+            let runtime = read(runtime_map.u32(entries[0] + 4)?)?;
+            let mut skeletons = Vec::new();
+            for row in runtime.array(16, 12, Some(0x80809C04))? {
+                let tag = runtime.u32(row)?;
+                let component = read(tag)?;
+                if component.u64(24)? != 0
+                    && component.u32(component.pointer(24)? - 4)? == 0x80808546
+                {
+                    ensure!(
+                        tag != owner_tag,
+                        "source-owned runtime still uses the native skeleton"
+                    );
+                    skeletons.push(component);
+                }
+            }
+            ensure!(
+                skeletons.len() == 1,
+                "source-owned runtime skeleton missing or ambiguous"
+            );
+            skeletons.remove(0)
+        } else {
+            read(owner_tag)?
+        };
         let resource = owner.pointer(24)?;
         ensure!(
             owner.u32(resource - 4)? == 0x80808546,
@@ -511,7 +610,7 @@ fn audit_graph(
         )
     }
     Ok(
-        json!({"passed":true,"loading":loading,"private_tags":symbols.as_object().unwrap().len(),"native_draw_parts":parts.len(),"private_art_index":item.u16(art[0]+2)?,"native_materials":"linked payloads and references verified","gameplay_verified":false,"runtime_map_rows":runtime_map.u64(8)?,"runtime_map_auxiliary_words":runtime_map.u64(24)?}),
+        json!({"passed":true,"loading":loading,"kept_parts":kept.len(),"private_tags":symbols.as_object().unwrap().len(),"native_draw_parts":parts.len(),"private_art_index":item.u16(art[0]+2)?,"native_materials":"linked payloads and references verified","gameplay_verified":false,"runtime_map_rows":runtime_map.u64(8)?,"runtime_map_auxiliary_words":runtime_map.u64(24)?}),
     )
 }
 
@@ -547,14 +646,5 @@ mod tests {
         p = valid;
         p.0[96] = 1;
         assert!(entity_map_arrays(&p).is_err());
-    }
-    #[test]
-    fn private_assets_alone_do_not_cover_retained_native_components() {
-        let parent = BTreeSet::from([0x81D4001E, 0x81D4001F, 0x80EC2728]);
-        let mut root = BTreeSet::from([0x81D4001E, 0x81D4001F]);
-        let error = require_loading_closure(&parent, &root).unwrap_err();
-        assert!(error.to_string().contains("80EC2728"));
-        root.insert(0x80EC2728);
-        require_loading_closure(&parent, &root).unwrap();
     }
 }

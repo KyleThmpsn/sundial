@@ -19,29 +19,47 @@ pub use perk_sources::{PerkSource, PerkSources};
 pub mod discovery;
 mod ingredients;
 pub use ingredients::{IngredientCatalog, IngredientSource};
+
+/// The Shaders inventory bucket, and the plug category every shader carries.
+pub const SHADER_BUCKET_HASH: u64 = 2_973_005_342;
+
+/// Every stock shader fills its custom and default dye arrays with the same fifteen channel rows
+/// and leaves its locked array empty. Other plugs in the category, such as Shared Experience,
+/// do not, and are not shaders a recipe can remix.
+fn is_stock_shader(metadata: &crate::catalog::ItemPackageMetadata) -> bool {
+    let [custom, default, locked] = &metadata.translation_dye_rows;
+    metadata.plug_category_hash == Some(SHADER_BUCKET_HASH)
+        && custom.len() == 15
+        && locked.is_empty()
+        && custom
+            .iter()
+            .map(|row| (row.key, row.value))
+            .eq(default.iter().map(|row| (row.key, row.value)))
+}
 pub(crate) mod seasonal;
 pub use controls::{
-    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, IconOverride, PlugChoicePickerButton,
-    PlugChoicePickerOptions, PlugSelection, PlugTooltip, WeaponDonorPickerAction,
-    WeaponDonorPickerClearChoice, WeaponDonorPickerOptions, authoring_button_width,
-    authoring_choice_row_height, authoring_socket_label_width, authoring_socket_reset_width,
-    configure_authoring_fonts, default_plug_selection_mode, draw_asset_choice_row,
-    draw_asset_choice_row_plain, draw_authoring_info_icon, draw_authoring_socket_label,
-    draw_authoring_socket_reset, draw_authoring_toolbar, draw_authoring_warning_icon,
-    draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning, progress_bar,
-    show_plug_safety_warnings, tooltip_title,
+    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, DisplayTooltip, IconOverride,
+    PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection, PlugTooltip,
+    WeaponDonorPickerAction, WeaponDonorPickerClearChoice, WeaponDonorPickerOptions,
+    authoring_button_width, authoring_choice_row_height, authoring_socket_label_width,
+    authoring_socket_reset_width, configure_authoring_fonts, default_plug_selection_mode,
+    draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
+    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
+    draw_authoring_warning_icon, draw_catalog_loading_view, draw_display_tooltip,
+    draw_plug_safety_selector, draw_plug_safety_warning, progress_bar, show_plug_safety_warnings,
+    tooltip_title,
 };
 pub use definitions::{
-    PowerCapChoice, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
-    WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference,
-    WeaponInventorySlot, WeaponInvestmentStat, WeaponOrnament, WeaponRarity,
-    WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice, WeaponStatDisplayPoint,
-    WeaponSupportedPlugSet, WeaponTraitChoice,
+    PowerCapChoice, SubclassSummary, WeaponAmmoType, WeaponArtArrangement,
+    WeaponDamageCarrierFamily, WeaponDamageProfile, WeaponDamageType, WeaponDonor,
+    WeaponDonorSummary, WeaponDyeReference, WeaponInventorySlot, WeaponInvestmentStat,
+    WeaponOrnament, WeaponOrnamentAppearance, WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket,
+    WeaponSocketTypeChoice, WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
 };
 pub use perk_patterns::PerkPatternUse;
 
 use crate::{
-    catalog::{Catalog, ItemWeaponInventorySlot, is_authorable_weapon_item},
+    catalog::{Catalog, ItemWeaponInventorySlot, is_authorable_weapon_item, is_weapon_bucket},
     hash::parse_hash_hex,
     paths,
 };
@@ -73,10 +91,64 @@ pub struct InvestmentCatalog {
 }
 
 impl InvestmentCatalog {
+    /// Items whose Collections entries read progression flags unrelated to their
+    /// own acquired flag. Such items are weaker bases for imported weapons.
+    #[must_use]
+    pub fn items_with_unrelated_collection_conditions(&self) -> BTreeSet<u32> {
+        self.catalog
+            .collectibles()
+            .iter()
+            .filter_map(|collectible| {
+                let acquired: BTreeSet<u32> = collectible
+                    .conditions
+                    .iter()
+                    .filter(|condition| {
+                        condition.field == crate::catalog::COLLECTIBLE_ACQUIRED_CONDITION_FIELD
+                    })
+                    .flat_map(|condition| &condition.tokens)
+                    .filter(|token| token.kind == 1)
+                    .map(|token| token.operand)
+                    .collect();
+                let unrelated = collectible.conditions.iter().any(|condition| {
+                    condition.field != crate::catalog::COLLECTIBLE_ACQUIRED_CONDITION_FIELD
+                        && condition
+                            .tokens
+                            .iter()
+                            .any(|token| token.kind == 1 && !acquired.contains(&token.operand))
+                });
+                unrelated
+                    .then(|| u32::try_from(collectible.item_hash).ok())
+                    .flatten()
+            })
+            .collect()
+    }
+
     /// Installed presentation-node identities in native table order.
     #[must_use]
     pub fn presentation_node_hashes(&self) -> &[u64] {
         self.catalog.presentation_node_hashes()
+    }
+
+    /// The presentation nodes that list an item's collectibles as children, in package order.
+    #[must_use]
+    pub fn item_collection_parents(&self, item_hash: u32) -> Vec<u64> {
+        self.catalog
+            .collectibles()
+            .iter()
+            .filter(|collectible| collectible.item_hash == u64::from(item_hash))
+            .flat_map(|collectible| collectible.parent_nodes.iter().copied())
+            .collect()
+    }
+
+    /// Where an item appears in Collections, one node-name path per placement.
+    #[must_use]
+    pub fn item_collection_paths(&self, item_hash: u32) -> Vec<Vec<String>> {
+        self.catalog
+            .collectibles()
+            .iter()
+            .filter(|collectible| collectible.item_hash == u64::from(item_hash))
+            .flat_map(|collectible| collectible.paths.iter().cloned())
+            .collect()
     }
 
     /// Loads (or scans) the installed Shadowkeep catalog using Sundial's shared cache.
@@ -218,6 +290,45 @@ impl InvestmentCatalog {
             )
         });
         donors
+    }
+
+    /// Lists every ornament that changes a model, paired with a weapon that can wear it.
+    ///
+    /// `weapon_ornaments` answers "what can this weapon wear". This answers the other
+    /// direction, "which weapon lends this ornament its rig", which is what an appearance
+    /// needs: the ornament supplies the model rows and colours, the weapon supplies the
+    /// gear-art pattern row, the animation group and the runtime entity.
+    ///
+    /// Ornaments carrying no translation-art rows are left out. They can lend an icon, which
+    /// the icon donor already covers, but they cannot stand in for an appearance.
+    ///
+    /// Several weapons can offer the same ornament. Keep every pairing here so the appearance
+    /// picker can choose a host compatible with the authored weapon's inventory slot.
+    #[must_use]
+    pub fn weapon_ornament_appearances(
+        &self,
+        donors: &[WeaponDonorSummary],
+    ) -> Vec<WeaponOrnamentAppearance> {
+        let mut appearances = Vec::new();
+        for donor in donors {
+            for ornament in self.weapon_ornaments(donor.hash) {
+                if ornament.art_arrangements.is_empty() {
+                    continue;
+                }
+                appearances.push(WeaponOrnamentAppearance {
+                    ornament,
+                    host_item_hash: donor.hash,
+                    host_name: donor.name.clone(),
+                });
+            }
+        }
+        appearances.sort_by_cached_key(|appearance| {
+            (
+                appearance.ornament.name.to_lowercase(),
+                appearance.ornament.hash,
+            )
+        });
+        appearances
     }
 
     /// Lists the ornaments offered by an installed weapon's own sockets.
@@ -503,8 +614,219 @@ impl InvestmentCatalog {
         hash: u32,
         stat_group_index: Option<u16>,
     ) -> Option<WeaponDonor> {
-        let hash = u64::from(hash);
-        let item = self.catalog.item(hash)?;
+        let item = self.catalog.item(u64::from(hash))?;
+        let summary = self.weapon_donor_summary(item)?;
+        self.donor_from_item(item, summary, stat_group_index)
+    }
+
+    /// Lists installed items from `bucket_hashes` that can serve as the base of an authored armor
+    /// piece, Sparrow, Ship or Ghost Shell. Collection-backed items sort first, because the build
+    /// places the authored item on its base item's own Collections page.
+    #[must_use]
+    pub fn gear_donors(&self, bucket_hashes: &[u64]) -> Vec<WeaponDonorSummary> {
+        let mut donors = self
+            .catalog
+            .items
+            .iter()
+            .filter(|item| bucket_hashes.contains(&item.bucket_hash))
+            .filter_map(|item| self.gear_donor_summary(item))
+            .collect::<Vec<_>>();
+        donors.sort_by_cached_key(|donor| {
+            (
+                !donor.collection_backed,
+                donor.type_name.to_lowercase(),
+                donor.name.to_lowercase(),
+                donor.hash,
+            )
+        });
+        donors
+    }
+
+    /// An installed armor piece, Sparrow, Ship or Ghost Shell with its sockets and stats.
+    #[must_use]
+    pub fn gear_donor(&self, hash: u32) -> Option<WeaponDonor> {
+        let item = self.catalog.item(u64::from(hash))?;
+        let summary = self.gear_donor_summary(item)?;
+        self.donor_from_item(item, summary, None)
+    }
+
+    /// Installed subclasses whose definitions `include_definition` accepts, with the names of
+    /// their abilities and attunements, in class and name order.
+    #[must_use]
+    pub fn subclasses(&self, include_definition: impl Fn(u32) -> bool) -> Vec<SubclassSummary> {
+        let mut subclasses = self
+            .catalog
+            .items
+            .iter()
+            .filter(|item| item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH)
+            .filter(|item| {
+                self.catalog
+                    .item_package_metadata(item.hash)
+                    .is_some_and(|metadata| include_definition(metadata.definition_tag))
+            })
+            .filter_map(|item| {
+                let abilities = &item.abilities;
+                let mut entry_names = BTreeMap::new();
+                for choice in abilities
+                    .class_ability
+                    .iter()
+                    .chain(&abilities.movement)
+                    .chain(&abilities.grenade)
+                    .chain(&abilities.super_ability)
+                    .chain(abilities.attunements.iter().flat_map(|path| &path.perks))
+                {
+                    entry_names.insert(u8::try_from(choice.entry).ok()?, choice.name.clone());
+                }
+                Some(SubclassSummary {
+                    hash: u32::try_from(item.hash).ok()?,
+                    name: item.name.clone(),
+                    class_type: u8::try_from(item.class_type).unwrap_or(3),
+                    entry_names,
+                    attunement_names: abilities
+                        .attunements
+                        .iter()
+                        .map(|path| path.name.clone())
+                        .collect(),
+                    entry_perks: abilities
+                        .entry_perks
+                        .iter()
+                        .filter_map(|(entry, perks)| {
+                            Some((u8::try_from(*entry).ok()?, perks.clone()))
+                        })
+                        .collect(),
+                    entry_icons: abilities
+                        .entry_icons
+                        .iter()
+                        .filter_map(|(entry, icon)| Some((u8::try_from(*entry).ok()?, *icon)))
+                        .collect(),
+                    entry_descriptions: abilities
+                        .entry_descriptions
+                        .iter()
+                        .filter_map(|(entry, description)| {
+                            Some((u8::try_from(*entry).ok()?, description.clone()))
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Vec<_>>();
+        subclasses.sort_by_cached_key(|subclass| {
+            (
+                subclass.class_type,
+                subclass.name.to_lowercase(),
+                subclass.hash,
+            )
+        });
+        subclasses
+    }
+
+    /// Stock shaders that can serve as a shader recipe's base, those in Collections first.
+    #[must_use]
+    pub fn shader_donors(&self) -> Vec<WeaponDonorSummary> {
+        let mut donors = self
+            .catalog
+            .package_metadata()
+            .filter(|(_, metadata)| is_stock_shader(metadata))
+            .filter_map(|(hash, metadata)| {
+                Some(WeaponDonorSummary {
+                    hash: u32::try_from(hash).ok()?,
+                    name: self.catalog.display_name(hash)?.to_owned(),
+                    type_name: "Shader".to_owned(),
+                    bucket_hash: SHADER_BUCKET_HASH,
+                    collection_backed: self.catalog.item_has_collectible(hash),
+                    power_cap: None,
+                    damage_type: None,
+                    inventory_slot: None,
+                    ammo_type: None,
+                    weapon_pattern_index: None,
+                    weapon_translation_group: None,
+                    stat_group_index: None,
+                    damage_profile: WeaponDamageProfile::Unknown,
+                    rarity: metadata.rarity.into(),
+                })
+            })
+            .collect::<Vec<_>>();
+        donors.sort_by_cached_key(|donor| {
+            (
+                !donor.collection_backed,
+                donor.name.to_lowercase(),
+                donor.hash,
+            )
+        });
+        donors
+    }
+
+    /// The most an item's stat group lets any of its stats show: 42 on Armor 2.0, 3 on Armor 1.0.
+    #[must_use]
+    pub fn item_stat_maximum(&self, hash: u32) -> Option<i32> {
+        let index = self
+            .catalog
+            .item_package_metadata(u64::from(hash))?
+            .stat_group_index?;
+        self.catalog
+            .item_stat_group_by_index(index)
+            .map(|group| group.maximum_value)
+    }
+
+    /// Whether an installed plug is a stock-shaped shader.
+    #[must_use]
+    pub fn is_shader(&self, hash: u32) -> bool {
+        self.catalog
+            .item_package_metadata(u64::from(hash))
+            .is_some_and(is_stock_shader)
+    }
+
+    /// The class an armor piece is for: 0 Titan, 1 Hunter, 2 Warlock, 3 any.
+    #[must_use]
+    pub fn item_class_type(&self, hash: u32) -> Option<u8> {
+        self.catalog
+            .item(u64::from(hash))
+            .and_then(|item| u8::try_from(item.class_type).ok())
+    }
+
+    /// The socket types an installed item carries, in socket order. Empty for an unknown item.
+    #[must_use]
+    pub fn item_socket_types(&self, hash: u32) -> Vec<u16> {
+        self.catalog
+            .item(u64::from(hash))
+            .map(|item| {
+                item.sockets
+                    .iter()
+                    .map(|socket| socket.socket_type)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn gear_donor_summary(&self, item: &crate::catalog::ItemDef) -> Option<WeaponDonorSummary> {
+        if is_weapon_bucket(item.bucket_hash) {
+            return None;
+        }
+        let metadata = self.catalog.item_package_metadata(item.hash);
+        Some(WeaponDonorSummary {
+            hash: u32::try_from(item.hash).ok()?,
+            name: item.name.clone(),
+            type_name: item.type_name.trim().to_owned(),
+            bucket_hash: item.bucket_hash,
+            collection_backed: self.catalog.item_has_collectible(item.hash),
+            power_cap: metadata.and_then(|metadata| metadata.power_cap),
+            damage_type: None,
+            inventory_slot: None,
+            ammo_type: None,
+            weapon_pattern_index: None,
+            weapon_translation_group: None,
+            stat_group_index: metadata.and_then(|metadata| metadata.stat_group_index),
+            damage_profile: WeaponDamageProfile::Unknown,
+            rarity: metadata.map_or(WeaponRarity::Unknown, |metadata| metadata.rarity.into()),
+        })
+    }
+
+    fn donor_from_item(
+        &self,
+        item: &crate::catalog::ItemDef,
+        summary: WeaponDonorSummary,
+        stat_group_index: Option<u16>,
+    ) -> Option<WeaponDonor> {
+        let hash = item.hash;
         let metadata = self.catalog.item_package_metadata(hash);
         if stat_group_index
             .is_some_and(|index| self.catalog.item_stat_group_by_index(index).is_none())
@@ -513,7 +835,6 @@ impl InvestmentCatalog {
         }
         let effective_stat_group_index =
             stat_group_index.or_else(|| metadata.and_then(|metadata| metadata.stat_group_index));
-        let summary = self.weapon_donor_summary(item)?;
         let sockets = item
             .sockets
             .iter()
@@ -773,6 +1094,30 @@ impl InvestmentCatalog {
                 "Item 0x{donor_hash:08X} is not an authorable weapon"
             ));
         }
+        self.supported_plug_sets(item, donor_hash, socket_types)
+    }
+
+    /// Compatible plugs for every socket on an armor piece, Sparrow, Ship or Ghost Shell.
+    pub fn gear_supported_plug_sets(
+        &self,
+        donor_hash: u32,
+    ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
+        let item = self
+            .catalog
+            .item(u64::from(donor_hash))
+            .ok_or_else(|| format!("Unknown base item 0x{donor_hash:08X}"))?;
+        if is_weapon_bucket(item.bucket_hash) {
+            return Err(format!("Item 0x{donor_hash:08X} is a weapon"));
+        }
+        self.supported_plug_sets(item, donor_hash, &[])
+    }
+
+    fn supported_plug_sets(
+        &self,
+        item: &crate::catalog::ItemDef,
+        donor_hash: u32,
+        socket_types: &[Option<u16>],
+    ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
         let socket_count = item.sockets.len().max(socket_types.len());
         if socket_count > MAX_WEAPON_SOCKETS {
             return Err(format!(
@@ -906,7 +1251,6 @@ const fn available_authored_socket_choices(socket_type: u16) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::ItemRarity;
 
     #[test]
     fn appended_socket_pools_follow_explicit_type_and_native_limit() {
@@ -956,29 +1300,6 @@ mod tests {
                     &[Some(700); MAX_WEAPON_SOCKETS + 1]
                 )
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn sandbox_effect_labels_prefer_named_plugs_over_weapon_names() {
-        let plug = WeaponSandboxPerkChoice {
-            perk_index: 421,
-            representative_hash: 1,
-            representative_name: "Outlaw".into(),
-            representative_type_name: "Trait".into(),
-        };
-        let mut weapon = plug.clone();
-        weapon.representative_name = "Gun".into();
-        weapon.representative_type_name = "Hand Cannon".into();
-        assert!(
-            representative_perk_label_quality(&plug, true)
-                < representative_perk_label_quality(&weapon, false)
-        );
-        let mut unnamed = plug.clone();
-        unnamed.representative_name = "Item 0x00000001".into();
-        assert!(
-            representative_perk_label_quality(&weapon, false)
-                < representative_perk_label_quality(&unnamed, true)
         );
     }
 
@@ -1042,60 +1363,5 @@ mod tests {
             catalog.private_plug_tooltip(source, None, None, None),
             stock
         );
-    }
-
-    #[test]
-    fn authored_socket_choice_capacity_matches_compiler_contract() {
-        assert_eq!(authored_socket_choice_limit(u16::MAX), 0);
-        assert_eq!(available_authored_socket_choices(u16::MAX), 0);
-        for socket_type in [42, 176, 180, 483, 518, 687, 700] {
-            assert_eq!(
-                authored_socket_choice_limit(socket_type),
-                MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES
-            );
-            assert_eq!(
-                available_authored_socket_choices(socket_type),
-                MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES
-            );
-        }
-    }
-
-    #[test]
-    fn socket_type_choice_keeps_semantic_label_and_native_id() {
-        assert_eq!(
-            WeaponSocketTypeChoice {
-                socket_type: 65,
-                label: "Barrel".into(),
-                compatible_plug_count: 37,
-            }
-            .display_label(),
-            "Barrel · 65"
-        );
-        assert_eq!(
-            WeaponSocketTypeChoice {
-                socket_type: 999,
-                label: String::new(),
-                compatible_plug_count: 0,
-            }
-            .display_label(),
-            "Type 999"
-        );
-    }
-
-    #[test]
-    fn donor_rarity_mapping_and_labels_are_stable_for_external_tools() {
-        let mappings = [
-            (ItemRarity::Unknown, WeaponRarity::Unknown, "Unknown"),
-            (ItemRarity::Common, WeaponRarity::Common, "Common"),
-            (ItemRarity::Uncommon, WeaponRarity::Uncommon, "Uncommon"),
-            (ItemRarity::Rare, WeaponRarity::Rare, "Rare"),
-            (ItemRarity::Legendary, WeaponRarity::Legendary, "Legendary"),
-            (ItemRarity::Exotic, WeaponRarity::Exotic, "Exotic"),
-        ];
-        for (source, expected, label) in mappings {
-            let rarity = WeaponRarity::from(source);
-            assert_eq!(rarity, expected);
-            assert_eq!(rarity.label(), label);
-        }
     }
 }

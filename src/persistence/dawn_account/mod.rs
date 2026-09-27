@@ -32,9 +32,6 @@ use sundial_account::{AccountSettingsState, CharacterState, InstanceSoid, Profil
 
 pub(crate) use activity::{ActivityState, VendorProgress, VendorUnlock};
 pub(crate) use contract::PROFILE_ACTION_SOURCE_CAPACITY;
-/// Exposed so the app layer can assert its user-facing contract line still matches.
-#[cfg(test)]
-pub(crate) use contract::SCHEMA_VERSION;
 pub(crate) use document::load;
 pub(crate) use error::DawnAccountIncompatibility;
 pub(crate) use package::{preview_replacement, read as read_snapshot, replace};
@@ -282,6 +279,26 @@ impl crate::persistence::native_account::NativeAccountDocument for DawnAccountDo
 
     fn observe_item_identity(&mut self, identity: InstanceSoid) {
         self.allocators.item = self.allocators.item.max(identity.get().saturating_add(1));
+    }
+    /// Dawn refuses a character whose next inventory serial trails its item count, so every item
+    /// added to a saved character takes the next serial. A character created in this session is
+    /// written with a serial that already counts its items.
+    fn note_new_character_item(
+        &mut self,
+        character_index: usize,
+        identity: InstanceSoid,
+    ) -> Result<(), String> {
+        let saved = self.character_owner(character_index).is_some_and(|owner| {
+            self.carried
+                .characters
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case(&owner))
+        });
+        if saved {
+            self.bump_inventory_serial(character_index, identity.get())
+        } else {
+            Ok(())
+        }
     }
     /// Dawn stores abilities on the character row alone, so no item carries its own selection.
     fn persisted_item_abilities(

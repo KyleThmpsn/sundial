@@ -113,7 +113,13 @@ pub(crate) fn prepare_reusing(
                 "ornament is not an appearance choice on the source weapon"
             );
         }
-        let report = extract::extract_with_progress(&mut r, source, None, progress)?;
+        let report = extract::extract_with_progress(
+            &mut r,
+            source,
+            None,
+            super::geometry::Detail::default(),
+            progress,
+        )?;
         write_json(&modern_out.join("report.json"), &report)?;
         r.finish()?;
         report

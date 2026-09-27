@@ -79,14 +79,17 @@ fn damage(perks: &[u32]) -> Option<&'static str> {
     let kinds = perks
         .iter()
         .filter_map(|hash| match hash {
-            0x8C011E66 | 0x66653D11 | 0x781E5D20 => Some("kinetic"), // Kinetic, Stasis, Strand
+            0x8C011E66 => Some("kinetic"),
+            // The legacy runtime cannot represent Stasis or Strand damage. Keep
+            // the gameplay donor's element instead of authoring a Kinetic marker.
+            0x66653D11 | 0x781E5D20 => Some("unsupported"),
             0xCCC507A5 | 0xB0C2E8FA => Some("arc"),
             0xCFCF0160 | 0x30D3A473 => Some("solar"),
             0x10A9B235 | 0x4F978D3C => Some("void"),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    (kinds.len() == 1).then(|| *kinds.first().unwrap())
+    (kinds.len() == 1 && !kinds.contains("unsupported")).then(|| *kinds.first().unwrap())
 }
 
 fn properties(source: &Value) -> Value {
@@ -136,6 +139,16 @@ fn properties(source: &Value) -> Value {
         }
     }
     result
+}
+
+fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
+    // The initial recipe may have a coarse planned element. Source gameplay
+    // properties are authoritative, including the absence of a supported one.
+    recipe["overrides"]
+        .as_object_mut()
+        .context("recipe overrides")?
+        .remove("modern_damage_type");
+    Ok(())
 }
 
 mod limits;
@@ -370,6 +383,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
     }
     let mut fallbacks = Vec::new();
     let mut mapped = properties(source);
+    reset_planned_damage(recipe)?;
     let stats = retain_authored_stats(
         &recipe["overrides"]["investment_stats"],
         stat_overrides(source, &definitions, &mut fallbacks)?,

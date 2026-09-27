@@ -11,7 +11,9 @@ pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
 use eframe::egui;
 use serde::de::DeserializeOwned;
 
-pub use crate::investment_localization::resolve_item_name;
+pub use crate::catalog::stock_subclass_list_classes;
+pub use crate::class_items::class_from_item_strings;
+pub use crate::investment_localization::{resolve_item_name, resolve_item_type_name};
 
 /// Shared display-only classification used by the native item pickers.
 pub fn is_dummy_item(hash: u32) -> bool {
@@ -25,10 +27,24 @@ pub fn weapon_bucket_capacities(
 ) -> Result<[usize; 3], String> {
     crate::catalog::weapon_bucket_capacities(manager, root)
 }
+/// Rows one native bucket holds, checked to belong to a character or, with `profile`, to the
+/// profile.
+pub fn inventory_bucket_capacity(
+    manager: &PackageManager,
+    root: &[u8],
+    bucket: u8,
+    profile: bool,
+) -> Result<usize, String> {
+    crate::catalog::inventory_bucket_capacity(manager, root, bucket, profile)
+}
 pub use crate::package_runtime::tft;
 pub use crate::package_runtime::{is_valid_package_tag, resolve_live_named_tag};
 
-pub use crate::weapon_dyes::{WeaponDyeColors, load_weapon_dye_colors};
+pub use crate::weapon_dyes::{
+    DYE_TEXTURE_EDGE, DyeFinish, DyeMaterial, DyeSurfaceMaterial, DyeTexture, IridescenceRow,
+    WeaponDyeColors, dye_surfaces, load_dye_materials, load_dye_textures, load_iridescence_rows,
+    load_weapon_dye_colors,
+};
 
 /// Native icon-definition layouts shared by Sundial's reader and package-authoring utilities.
 pub mod icon_schema {
@@ -53,15 +69,15 @@ pub mod investment_schema {
         COLLECTIBLE_HASH_OFFSET, COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET,
         COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET,
         COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET, CONDITION_EXPRESSION_ROW_CLASS,
-        CONDITION_EXPRESSION_ROW_SIZE, ELEMENTAL_DAMAGE_SOCKET_TYPE,
+        CONDITION_EXPRESSION_ROW_SIZE, ELEMENTAL_DAMAGE_SOCKET_TYPE, GLOBALS_ART_DYE_TABLE_SLOT,
         GLOBALS_COLLECTIBLE_DISPLAY_TABLE_SLOT, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT,
         GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT, GLOBALS_ITEM_ICON_TABLE_SLOT,
         GLOBALS_ITEM_METADATA_TABLE_SLOT, GLOBALS_ITEM_STRING_TABLE_SLOT,
         GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT, GLOBALS_OBJECTIVE_STRING_TABLE_SLOT,
         GLOBALS_PRESENTATION_NODE_STRING_TABLE_SLOT, GLOBALS_RECORD_STRING_TABLE_SLOT,
-        GLOBALS_SANDBOX_PATTERN_TABLE_SLOT, GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT,
-        INVESTMENT_GLOBALS_TABLE_TAGS_OFFSET, INVESTMENT_ROOT_CLASS,
-        INVESTMENT_ROOT_TABLE_TAGS_OFFSET, INVESTMENT_TABLE_TAG_STRIDE,
+        GLOBALS_SANDBOX_PATTERN_TABLE_SLOT, GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT,
+        GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT, INVESTMENT_GLOBALS_TABLE_TAGS_OFFSET,
+        INVESTMENT_ROOT_CLASS, INVESTMENT_ROOT_TABLE_TAGS_OFFSET, INVESTMENT_TABLE_TAG_STRIDE,
         ITEM_DEFINITION_HASH_OFFSET, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_EQUIPMENT_BLOCK_CLASS,
         ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET, ITEM_EQUIPMENT_SLOT_OFFSET,
         ITEM_EQUIPMENT_SLOT_SENTINEL_OFFSET, ITEM_HASH_INDEX_ROW_CLASS, ITEM_HASH_INDEX_ROW_SIZE,
@@ -117,18 +133,18 @@ pub mod investment_schema {
         ROOT_MATERIAL_REQUIREMENT_TABLE_SLOT, ROOT_OBJECTIVE_DEFINITION_TABLE_SLOT,
         ROOT_PRESENTATION_NODE_DEFINITION_TABLE_SLOT, ROOT_RECORD_DEFINITION_TABLE_SLOT,
         ROOT_SANDBOX_PATTERN_INDEX_TABLE_SLOT, ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT,
-        ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT, ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT,
-        ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT, SHARED_EXPRESSION_POOL_COUNT,
-        SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS, SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE,
-        SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET, SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS,
-        SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE, SHARED_EXPRESSION_POOL_PARALLEL_ROW_CLASS,
-        SOLAR_DAMAGE_PLUG_ITEM_HASH, SOLAR_DAMAGE_PLUG_ITEM_INDEX,
-        UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DEFINITION_ROW_SIZE,
-        UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS, UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE,
-        UNLOCK_FLAG_DISPLAY_ROW_CLASS, UNLOCK_FLAG_DISPLAY_ROW_SIZE,
-        UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
-        VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX, investment_globals_table_tag,
-        investment_root_table_tag, item_version_array,
+        ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT,
+        ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
+        SHARED_EXPRESSION_POOL_COUNT, SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS,
+        SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE, SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET,
+        SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS, SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE,
+        SHARED_EXPRESSION_POOL_PARALLEL_ROW_CLASS, SOLAR_DAMAGE_PLUG_ITEM_HASH,
+        SOLAR_DAMAGE_PLUG_ITEM_INDEX, UNLOCK_FLAG_DEFINITION_ROW_CLASS,
+        UNLOCK_FLAG_DEFINITION_ROW_SIZE, UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS,
+        UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE, UNLOCK_FLAG_DISPLAY_ROW_CLASS,
+        UNLOCK_FLAG_DISPLAY_ROW_SIZE, UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
+        UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE, VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX,
+        investment_globals_table_tag, investment_root_table_tag, item_version_array,
     };
 }
 
@@ -162,44 +178,54 @@ pub mod sandbox_perk {
 /// Weapon sandbox-pattern and runtime entity graph helpers shared with package authoring tools.
 pub mod weapon_entity {
     pub use crate::weapon_entity::{
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS,
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
-        SANDBOX_PATTERN_GLOBAL_ID_OFFSET, SANDBOX_PATTERN_INDEX_ROW_CLASS,
-        SANDBOX_PATTERN_INDEX_ROW_SIZE, SANDBOX_PATTERN_NESTED_CLASS,
-        SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_ROW_CLASS, SANDBOX_PATTERN_ROW_SIZE,
-        SandboxPatternIdentity, WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
-        WEAPON_ENTITY_CLASS, WEAPON_ENTITY_COMPONENT_ROW_CLASS, WEAPON_ENTITY_COMPONENT_ROW_SIZE,
-        WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS, WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS,
-        WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE, WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
-        WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE, WEAPON_INPUT_COMPONENT_KEY,
-        WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
+        ComponentWiring, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG, SANDBOX_PATTERN_GLOBAL_ID_OFFSET,
+        SANDBOX_PATTERN_INDEX_ROW_CLASS, SANDBOX_PATTERN_INDEX_ROW_SIZE,
+        SANDBOX_PATTERN_NESTED_CLASS, SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_ROW_CLASS,
+        SANDBOX_PATTERN_ROW_SIZE, SandboxPatternIdentity, WEAPON_BARREL_COMPONENT_KEY,
+        WEAPON_CONTROLLER_COMPONENT_KEY, WEAPON_ENTITY_CLASS, WEAPON_ENTITY_COMPONENT_ROW_CLASS,
+        WEAPON_ENTITY_COMPONENT_ROW_SIZE, WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
+        WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS, WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE,
+        WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS, WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE,
+        WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
-        coupled_weapon_component_bindings, graft_weapon_component_binding,
-        graft_weapon_component_bindings, retarget_weapon_component_owner,
-        retarget_weapon_component_owner_payload, sandbox_pattern_identity,
-        sandbox_pattern_identity_at, validate_weapon_entity, weapon_component_binding,
-        weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
+        coupled_weapon_component_bindings, extend_weapon_components,
+        graft_weapon_component_binding, graft_weapon_component_bindings,
+        graft_weapon_component_bindings_or_rewire, graft_weapon_component_bindings_with, owner,
+        retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
+        sandbox_pattern_identity, sandbox_pattern_identity_at, validate_weapon_entity,
+        weapon_component_binding, weapon_component_binding_hashes, weapon_component_bindings,
+        weapon_entity_assignment,
     };
 }
 
 /// Typed, data-driven weapon runtime discovery shared with package authoring tools.
 pub mod weapon_runtime {
     pub use crate::weapon_runtime::{
-        NativeStructure, NativeStructureField, ResolvedWeaponRuntimeField, WeaponRuntimeBinding,
-        WeaponRuntimeEntitySource, WeaponRuntimeField, WeaponRuntimeFieldLocator,
-        WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement,
-        WeaponRuntimeResource, WeaponRuntimeResourceShape, WeaponRuntimeRoot,
-        WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
-        WeaponRuntimeValueOverride, component_binding_label, decode_weapon_runtime_field_value,
-        encode_weapon_runtime_field_value, encode_weapon_runtime_value,
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
+        NativeMember, NativeStructure, NativeStructureField, ResolvedWeaponRuntimeField,
+        WeaponRuntimeBinding, WeaponRuntimeEntitySource, WeaponRuntimeField,
+        WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource, WeaponRuntimeGraph,
+        WeaponRuntimeOwner, WeaponRuntimePathElement, WeaponRuntimeResource,
+        WeaponRuntimeResourceShape, WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue,
+        WeaponRuntimeValueKind, WeaponRuntimeValueOverride, component_binding_label,
+        decode_weapon_runtime_field_value, encode_weapon_runtime_field_value,
+        encode_weapon_runtime_value, load_weapon_runtime_entity_at_pattern_index_with_manager,
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph,
         load_weapon_runtime_graph_for_entity, load_weapon_runtime_graph_with_manager,
-        load_weapon_runtime_resource_shape, native_member_names, native_type_name,
-        resolve_weapon_runtime_field, runtime_fields_share_semantics,
+        load_weapon_runtime_resource_shape, native_holders, native_member_names, native_members,
+        native_type_name, resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
     pub use crate::weapon_runtime::{modifiers, presentation};
+}
+
+/// The named points a weapon's gear art carries, and the names recovered for them.
+pub mod gear_markers {
+    pub use crate::gear_markers::{
+        CANCELLED, Marker, MarkerEntry, MarkerIndex, MarkerObject, MarkerSet, Neighbour,
+        build_index, cached_index, describe, marker_name, nearest_named, read_appearance,
+    };
 }
 
 /// Computes the client's case-insensitive 32-bit FNV-1 name hash.
@@ -258,6 +284,9 @@ pub trait PackageAuthoringUtility: Send {
 
     /// Draws the utility's native child viewport and reports lifecycle events to Sundial.
     fn update(&mut self, context: &egui::Context) -> PackageAuthoringUpdate;
+
+    /// Writes view state that normally saves on focus loss. Sundial can exit with the utility open.
+    fn save_on_exit(&mut self) {}
 }
 
 /// Creates a directory when needed and opens it in the platform file browser.
@@ -409,21 +438,6 @@ pub fn replace_authoring_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     crate::storage::replace_file(path, contents)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn authored_account_flags_are_bounded_by_the_next_native_region() {
-        assert_eq!(SHADOWKEEP_ACCOUNT_FLAG_BANK, 1);
-        assert_eq!(SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY, 12_300);
-        assert_eq!(SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY, 377);
-        assert_eq!(
-            SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET + SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY,
-            SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET
-        );
-    }
-}
 /// Shared bounds-checked native readers. Mutation and authoring policy remain in Parhelion.
 pub mod native_payload {
     pub use crate::package_payload::{bytes_at, native_array_at, relative_offset, write_bytes};

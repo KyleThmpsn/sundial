@@ -54,7 +54,7 @@ impl PackageAuthoringApp {
         else {
             return;
         };
-        self.library_state.notice = Some(format!("Exporting {} recipes…", paths.len()));
+        self.library_state.notice = Some(format!("Exporting {}…", recipe_count(paths.len())));
         self.library_state.errors.clear();
         let ctx = ctx.clone();
         self.library_state.job = Some(thread::spawn(move || {

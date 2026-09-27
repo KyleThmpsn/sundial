@@ -103,9 +103,7 @@ impl SundialApp {
             );
             if ui
                 .button(format!("Open {name}'s Settings"))
-                .on_hover_text(
-                    "Loads the settings and account the installed runtime actually reads.",
-                )
+                .on_hover_text("Loads the settings this runtime reads.")
                 .clicked()
             {
                 let install = self.install_path.clone();
@@ -208,7 +206,7 @@ impl SundialApp {
                     });
                 }
                 ui.add_space(8.0);
-                ui.label("Keeping a copy backs up the other DLL and its Sunrise folder to .sunrise/backups. You can undo this with Restore Runtime Backup in Installation preferences.");
+                ui.label("The other DLL and its Sunrise folder are backed up to .sunrise/backups. Undo with Restore Runtime Backup in Installation preferences.");
                 if let Some(reason) = blocked { ui.colored_label(ui.visuals().warn_fg_color, reason); }
                 if let Some(error) = &self.runtime_choice.error { ui.colored_label(ui.visuals().error_fg_color, error); }
             });
@@ -254,13 +252,13 @@ impl SundialApp {
                     plan.copy().name(), plan.copy().version.as_deref().unwrap_or("Unavailable"), plan.copy().location.label()));
                 ui.add_space(8.0);
                 ui.label(plan.copy().settings_path.display().to_string());
-                ui.label("The current settings.json will be backed up to .sunrise/backups before replacement.");
+                ui.label("The current settings.json is backed up to .sunrise/backups first.");
                 if plan.copy().dawn {
-                    ui.label("This replaces Dawn runtime configuration, player identity and language. Dawn will read the restored file on its next startup.");
+                    ui.label("Replaces Dawn's runtime configuration, player identity and language. Dawn reads it on next start.");
                     ui.label("Existing characters, inventory, equipment, progression and player preferences remain in player-state.db.");
                 } else if plan.schema < 18 {
                     ui.colored_label(ui.visuals().warn_fg_color, "These defaults include the JSON account. Its saved progress and unlocks will return to defaults.");
-                    ui.label("If you have custom Parhelion packages installed, reinstall them afterward to restore their Collections entries and unlocks.");
+                    ui.label("Reinstall custom Parhelion packages afterward to restore their Collections entries and unlocks.");
                 } else {
                     ui.label("The account in investment.sqlite3 is preserved.");
                 }
@@ -350,7 +348,7 @@ impl SundialApp {
                 ui.label(format!("Backup: {}", plan.backup.display()));
                 ui.label("These archived files and folders will move back to their original locations:");
                 for path in &plan.paths { ui.label(path.display().to_string()); }
-                ui.label("Existing files will not be replaced. Restoring a second runtime copy will reopen the runtime comparison.");
+                ui.label("Existing files are not replaced. A second runtime copy reopens the runtime choice.");
                 if let Some(reason) = blocked { ui.colored_label(ui.visuals().warn_fg_color, reason); }
                 if let Some(error) = &self.runtime_choice.error { ui.colored_label(ui.visuals().error_fg_color, error); }
             });

@@ -72,6 +72,34 @@ impl<T> History<T> {
     }
 }
 
+/// Whether the workbench window owns this frame's keyboard shortcuts: the pointer is over
+/// it, or the pointer is over no other window or panel and it is the top window.
+pub(super) fn owns_shortcuts(ctx: &egui::Context, window: egui::LayerId) -> bool {
+    let top = || {
+        ctx.memory(|memory| {
+            memory
+                .layer_ids()
+                .filter(|layer| {
+                    layer.order == egui::Order::Middle
+                        && memory.areas().is_visible(layer)
+                        && memory.areas().parent_layer(*layer).is_none()
+                })
+                .last()
+        }) == Some(window)
+    };
+    let Some(pointer) = ctx.input(|input| input.pointer.latest_pos()) else {
+        return top();
+    };
+    match ctx.layer_id_at(pointer) {
+        Some(layer) if layer == window => true,
+        Some(layer) if matches!(layer.order, egui::Order::Middle | egui::Order::Background) => {
+            false
+        }
+        Some(_) => top(),
+        None => false,
+    }
+}
+
 impl Workbench {
     pub(in crate::app::custom_perks) fn restore_history(&mut self, redo: bool) {
         if let Some(editor) = &mut self.editor {

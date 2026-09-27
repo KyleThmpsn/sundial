@@ -1,53 +1,35 @@
 use super::*;
 
+const RUNTIME_VALUES_HELP: &str =
+    "Raw fields from the runtime and component donors. Patches apply at build time.";
+
 impl PackageAuthoringApp {
     pub(in crate::app) fn draw_runtime_value_column(
         &mut self,
         ui: &mut egui::Ui,
-        graph: Option<&WeaponRuntimeGraph>,
+        graph: Option<&Arc<WeaponRuntimeGraph>>,
     ) {
         if let Some(graph) = graph {
             self.draw_runtime_values(ui, graph);
         } else {
-            draw_donor_section_label(
-                ui,
-                "Runtime Values",
-                Some(
-                    "Raw fields decoded from the selected runtime and component donors. Saved field edits are shown here, but binary patches, automatic ammo and HUD edits, and raw entity patches are applied only during compilation. Field names and types do not establish final in-game behavior or units.",
-                ),
-            );
-            ui.weak("Runtime values appear after the selected runtime row has been decoded.");
+            draw_donor_section_label(ui, "Runtime Values", Some(RUNTIME_VALUES_HELP));
+            ui.weak("Not loaded yet.");
         }
     }
 
     pub(in crate::app) fn draw_runtime_values(
         &mut self,
         ui: &mut egui::Ui,
-        graph: &WeaponRuntimeGraph,
+        graph: &Arc<WeaponRuntimeGraph>,
     ) {
-        let resolved_count = graph
-            .fields()
-            .filter(|field| {
-                field.source != WeaponRuntimeFieldSource::OpaqueNativeType
-                    && runtime_field_is_editable(field)
-            })
-            .count();
-        let technical_count = graph
-            .fields()
-            .filter(|field| {
-                field.source == WeaponRuntimeFieldSource::OpaqueNativeType
-                    && runtime_field_is_editable(field)
-            })
-            .count();
-        draw_donor_section_label(
-            ui,
-            "Runtime Values",
-            Some(
-                "Raw fields decoded from the selected runtime and component donors. Saved field edits are shown here, but binary patches, automatic ammo and HUD edits, and raw entity patches are applied only during compilation. Field names and types do not establish final in-game behavior or units.",
-            ),
-        );
-        ui.weak("Source: Selected runtime and component donors, with saved field edits.");
-        ui.weak("Binary, ammo, HUD and raw entity patches are applied at build time, not shown here. These are raw package fields, not final in-game stats.");
+        // Taken out while the list draws, because drawing a field edits the recipe.
+        let mut cache = match self.runtime_values_cache.take() {
+            Some(cache) if cache.is_for(graph) => cache,
+            _ => RuntimeValuesCache::new(graph),
+        };
+        let resolved_count = cache.resolved;
+        let technical_count = cache.technical;
+        draw_donor_section_label(ui, "Runtime Values", Some(RUNTIME_VALUES_HELP));
         ui.horizontal(|ui| {
             ui.label("Filter");
             named_control(
@@ -63,22 +45,21 @@ impl PackageAuthoringApp {
             if self.show_experimental_options {
                 ui.checkbox(
                     &mut self.show_technical_runtime_values,
-                    format!("Show all native values ({technical_count} additional)"),
+                    format!("Show All Native Values ({technical_count})"),
                 )
-                .on_hover_text(
-                    "Includes unreflected byte ranges from the selected weapon's concrete runtime resources. Some ranges may contain pointers, descriptors, or coupled state.",
-                );
+                .on_hover_text("Adds unnamed byte ranges, which can hold pointers.");
             }
-            ui.add(egui::Label::new(egui::RichText::new(format!(
-                "{resolved_count} resolved · {} customized",
-                self.recipe.overrides.runtime_values.len()
-            )).weak()).wrap_mode(egui::TextWrapMode::Extend));
-        });
-        if self.show_experimental_options && self.show_technical_runtime_values {
-            ui.weak(
-                "Technical ranges are exact package bytes, not guessed gameplay properties. Invalid pointer, descriptor, or coupled values can make the client reject or crash on the weapon.",
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!(
+                        "{resolved_count} resolved · {} customized",
+                        self.recipe.overrides.runtime_values.len()
+                    ))
+                    .weak(),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
             );
-        }
+        });
 
         let list_height = (ui.ctx().screen_rect().height() * 0.52).clamp(300.0, 540.0);
         egui::ScrollArea::vertical()
@@ -89,19 +70,42 @@ impl PackageAuthoringApp {
             // alone lets egui collapse it to its 64px minimum during height measurement.
             .min_scrolled_height(list_height)
             .auto_shrink([false, true])
-            .show(ui, |ui| {
-        let live_locators = graph
-            .fields()
-            .map(|field| &field.locator)
-            .collect::<BTreeSet<_>>();
-        let stale = self
-            .recipe
-            .overrides
-            .runtime_values
+            .show(ui, |ui| self.draw_runtime_value_list(ui, graph, &mut cache));
+        self.runtime_values_cache = Some(cache);
+    }
+
+    fn runtime_values_key(&self, query: &str) -> RuntimeValuesKey {
+        RuntimeValuesKey {
+            query: query.to_owned(),
+            show_experimental_options: self.show_experimental_options,
+            show_all_native_values: self.show_technical_runtime_values,
+            customized: self
+                .recipe
+                .overrides
+                .runtime_values
+                .iter()
+                .map(|value| value.locator.clone())
+                .collect(),
+        }
+    }
+
+    fn draw_runtime_value_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &WeaponRuntimeGraph,
+        cache: &mut RuntimeValuesCache,
+    ) {
+        let query = self.runtime_value_query.trim().to_ascii_lowercase();
+        let stale = cache
+            .view(graph, self.runtime_values_key(&query))
+            .stale
             .iter()
-            .enumerate()
-            .filter(|(_, value)| !live_locators.contains(&value.locator))
-            .map(|(index, value)| (index, value.locator.clone()))
+            .map(|&index| {
+                (
+                    index,
+                    self.recipe.overrides.runtime_values[index].locator.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         let mut remove_stale = None;
         for (index, locator) in stale {
@@ -124,36 +128,17 @@ impl PackageAuthoringApp {
                 .retain(|(locator, _), _| locator != &removed.locator);
         }
 
-        let query = self.runtime_value_query.trim().to_ascii_lowercase();
-        let mut visible_count = 0usize;
-        for resource in &graph.resources {
-            let resource_matches = query.is_empty()
-                || resource.binding_label.to_ascii_lowercase().contains(&query)
-                || format!("0x{:08x}", resource.binding_hash).contains(&query)
-                || format!("0x{:08x}", resource.owner_tag).contains(&query)
-                || format!("0x{:08x}", resource.concrete_class).contains(&query)
-                || resource.definition.as_ref().is_some_and(|definition| {
-                    format!("0x{:08x}", definition.schema).contains(&query)
-                });
-            let roots = std::iter::once(&resource.instance)
-                .chain(resource.definition.iter())
-                .map(|root| {
-                    let fields = root
-                        .fields
-                        .iter()
-                        .filter(|field| {
-                            self.runtime_field_is_visible(field, &query, resource_matches)
-                        })
-                        .collect::<Vec<_>>();
-                    (root, fields)
-                })
-                .filter(|(_, fields)| !fields.is_empty())
-                .collect::<Vec<_>>();
-            let field_count = roots.iter().map(|(_, fields)| fields.len()).sum::<usize>();
+        let view = cache.view(graph, self.runtime_values_key(&query));
+        // Headers are forced open while a filter is active.
+        let open = (!query.is_empty()).then_some(true);
+        for (resource, group) in graph.resources.iter().zip(&view.resources) {
+            let field_count = group.count;
             if field_count == 0 {
                 continue;
             }
-            visible_count += field_count;
+            let roots = std::iter::once(&resource.instance)
+                .chain(resource.definition.iter())
+                .collect::<Vec<_>>();
             let resource_suffix = if resource.resource_count > 1 {
                 format!(
                     " · resource {}/{}",
@@ -177,7 +162,7 @@ impl PackageAuthoringApp {
                 resource.resource_index,
                 resource.concrete_class,
             ))
-            .default_open(!query.is_empty())
+            .open(open)
             .show(ui, |ui| {
                 ui.weak(format!(
                     "Owner 0x{:08X}{}",
@@ -188,7 +173,8 @@ impl PackageAuthoringApp {
                         format!(" · {} alias bindings", resource.alias_bindings.len())
                     },
                 ));
-                for (root, fields) in roots {
+                for (root_position, fields) in &group.roots {
+                    let root = roots[*root_position];
                     egui::CollapsingHeader::new(format!(
                         "{} · schema 0x{:08X} · owner offset 0x{:X} · 0x{:X} bytes · {}",
                         root.kind.label(),
@@ -208,45 +194,23 @@ impl PackageAuthoringApp {
                         root.kind,
                         root.schema,
                     ))
-                    .default_open(!query.is_empty())
+                    .open(open)
                     .show(ui, |ui| {
-                        for field in fields {
-                            self.draw_runtime_value_field(ui, field);
+                        for &field in fields {
+                            self.draw_runtime_value_field(ui, &root.fields[field]);
                         }
                     });
                 }
             });
         }
-        for owner in &graph.owners {
-            let binding_label = graph
-                .bindings
-                .iter()
-                .find(|binding| binding.binding_hash == owner.anchor_binding_hash)
-                .map_or_else(
-                    || format!("Binding 0x{:08X}", owner.anchor_binding_hash),
-                    |binding| binding.binding_label.clone(),
-                );
-            let owner_matches = query.is_empty()
-                || binding_label.to_ascii_lowercase().contains(&query)
-                || format!("0x{:08x}", owner.owner_tag).contains(&query)
-                || format!("0x{:08x}", owner.anchor_binding_hash).contains(&query);
-            let owner_visible = owner.roots.iter().any(|root| {
-                root.fields
-                    .iter()
-                    .any(|field| self.runtime_field_is_visible(field, &query, owner_matches))
-            });
-            if !owner_visible {
+        for (owner, group) in graph.owners.iter().zip(&view.owners) {
+            let owner_field_count = group.count;
+            if owner_field_count == 0 {
                 continue;
             }
-            let owner_field_count = owner
-                .roots
-                .iter()
-                .flat_map(|root| &root.fields)
-                .filter(|field| self.runtime_field_is_visible(field, &query, owner_matches))
-                .count();
-            visible_count += owner_field_count;
+            let binding_label = runtime_owner_label(graph, owner);
             egui::CollapsingHeader::new(format!(
-                "Shared owner state · {} · 0x{:08X} · {} value{}",
+                "Shared Owner State · {} · 0x{:08X} · {} value{}",
                 binding_label,
                 owner.owner_tag,
                 owner_field_count,
@@ -258,17 +222,10 @@ impl PackageAuthoringApp {
                 owner.anchor_binding_hash,
                 owner.anchor_resource_index,
             ))
-            .default_open(!query.is_empty())
+            .open(open)
             .show(ui, |ui| {
-                for root in &owner.roots {
-                    let root_fields = root
-                        .fields
-                        .iter()
-                        .filter(|field| self.runtime_field_is_visible(field, &query, owner_matches))
-                        .collect::<Vec<_>>();
-                    if root_fields.is_empty() {
-                        continue;
-                    }
+                for (root_position, root_fields) in &group.roots {
+                    let root = &owner.roots[*root_position];
                     egui::CollapsingHeader::new(format!(
                         "{} · schema 0x{:08X} · {}",
                         root.kind.label(),
@@ -280,58 +237,18 @@ impl PackageAuthoringApp {
                         }
                     ))
                     .id_salt(("runtime-root", owner.owner_tag, root.kind, root.schema))
-                    .default_open(!query.is_empty())
+                    .open(open)
                     .show(ui, |ui| {
-                        for field in root_fields {
-                            self.draw_runtime_value_field(ui, field);
+                        for &field in root_fields {
+                            self.draw_runtime_value_field(ui, &root.fields[field]);
                         }
                     });
                 }
             });
         }
-        if visible_count == 0 {
+        if view.visible == 0 {
             ui.weak("No runtime values match the current filter.");
         }
-            });
-    }
-
-    pub(in crate::app) fn runtime_field_is_visible(
-        &self,
-        field: &WeaponRuntimeField,
-        query: &str,
-        owner_matches: bool,
-    ) -> bool {
-        let customized = self
-            .recipe
-            .overrides
-            .runtime_values
-            .iter()
-            .any(|value| value.locator == field.locator);
-        if !runtime_field_is_in_editor_scope(
-            field.source,
-            runtime_field_is_editable(field),
-            customized,
-            self.show_experimental_options,
-            self.show_technical_runtime_values,
-        ) {
-            return false;
-        }
-        if query.is_empty() || owner_matches {
-            return true;
-        }
-        field.name.to_ascii_lowercase().contains(query)
-            || field.path_label.to_ascii_lowercase().contains(query)
-            || runtime_value_kind_label(&field.kind)
-                .to_ascii_lowercase()
-                .contains(query)
-            || format!("0x{:08x}", field.locator.root_schema).contains(query)
-            || format!("0x{:08x}", field.locator.type_handle).contains(query)
-            || format!("0x{:x}", field.owner_offset).contains(query)
-            || format!("0x{:x}", field.locator.value_offset).contains(query)
-            || field.locator.path.iter().any(|element| {
-                format!("0x{:08x}", element.name_hash).contains(query)
-                    || format!("0x{:08x}", element.type_handle).contains(query)
-            })
     }
 
     pub(in crate::app) fn draw_runtime_value_field(

@@ -217,7 +217,7 @@ pub(super) fn bucket_add_blocker(
         Some(format!("{label} is full ({occupied} / {capacity})"))
     } else if occupied.saturating_add(usage.unresolved_count) >= capacity {
         Some(format!(
-            "Cannot verify space in {label}: {occupied} / {capacity} known items and {} invalid items with unknown placement. Review Invalid Items to replace or remove them",
+            "Cannot verify space in {label}: {occupied} / {capacity} known items and {} invalid items. Replace or remove them in Invalid Items",
             usage.unresolved_count,
         ))
     } else {
@@ -244,8 +244,7 @@ pub(super) fn bucket_add_tooltip(
     } else if !array_has_room {
         "The inventory array is full".to_owned()
     } else if !occupancy_complete {
-        "Bucket occupancy cannot be established until malformed or unsupported rows are repaired"
-            .to_owned()
+        "Cannot check space until invalid rows are repaired".to_owned()
     } else if let Some(reason) = bucket_blocker {
         reason.to_owned()
     } else {
@@ -333,16 +332,14 @@ pub(super) fn draw_bucket_details<T>(
         ui.colored_label(ui.visuals().error_fg_color, message);
     }
     if group.key.scope == InventoryScope::Unknown {
-        ui.weak(
-                "These items have no installed bucket metadata. Use their hashes to identify them, or replace or remove them here.",
-            );
+        ui.weak("No installed bucket for these items. Replace or remove them here.");
         return;
     }
     if group.key.scope != expected_scope {
         ui.colored_label(
             ui.visuals().warn_fg_color,
             format!(
-                "{} scope · native bucket {} · wrong scope for this page, so this row is not counted toward valid bucket occupancy",
+                "{} scope · bucket {} · wrong page, not counted",
                 group.key.scope.label(),
                 group.key.native_id
             ),

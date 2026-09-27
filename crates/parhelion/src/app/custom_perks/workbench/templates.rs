@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 
 pub(super) struct AuthoredTemplate {
     pub(super) weapon: String,
+    pub(super) kind: crate::ItemKind,
     pub(super) variant: WeaponSocketPlugVariantRecipe,
 }
 
@@ -19,7 +20,7 @@ impl Workbench {
             let recipes = templates.iter().filter_map(|entry| {
                 let hash = entry.variant.source_plug_hash.parse_u32().unwrap_or_default();
                 if !entry.variant.replace_effects && catalog.item_definition_tag(hash).is_none() {
-                    warnings.push(format!("Could not import a custom perk from {} because its stock template {hash:08X} is unavailable. The weapon recipe is unchanged.", entry.weapon));
+                    warnings.push(format!("Could not import a custom perk from {} because its stock template {hash:08X} is unavailable. The recipe is unchanged.", entry.weapon));
                     None
                 } else {
                     Some(from_variant(&entry.variant, catalog))
@@ -30,8 +31,9 @@ impl Workbench {
                     warnings.extend(report.errors);
                     if report.added > 0 {
                         self.message = Some(format!(
-                            "Added {} custom perks from saved weapon recipes to the library.",
-                            report.added
+                            "Added {} custom perk{} from saved recipes to the library.",
+                            report.added,
+                            if report.added == 1 { "" } else { "s" }
                         ));
                     }
                 }
@@ -52,7 +54,7 @@ impl Workbench {
         });
         // The stock rows read a description and an effect list per perk, so they are built
         // once per catalog. The authored rows are few and follow the library, so they are
-        // read each frame.
+        // read each frame the picker is open.
         let stock_rows = self.template_rows.get_or_insert_with(|| {
             stock
                 .iter()
@@ -61,33 +63,39 @@ impl Workbench {
                 .collect()
         });
         let authored = self.authored_templates.as_deref().unwrap_or_default();
-        let authored_rows = authored
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| Row::authored(index, entry, catalog))
-            .collect::<Vec<_>>();
-        // The type list is read off the rows, so it offers only types some perk has.
-        let types = authored_rows
-            .iter()
-            .chain(stock_rows.iter())
-            .map(|row| row.type_name.as_str())
-            .filter(|name| !name.is_empty())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
         let picked = pickers::popup(
             ui,
             "perk-template",
-            "Copy Existing…",
+            "New from Perk…",
             &mut self.template_query,
             |ui, query, reset, height| {
+                let authored_rows = authored
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| Row::authored(index, entry, catalog))
+                    .collect::<Vec<_>>();
+                // The type list is read off the rows, so it offers only types some perk has.
+                let types = authored_rows
+                    .iter()
+                    .chain(stock_rows.iter())
+                    .map(|row| row.type_name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 let mut filters = Filters::load(ui);
                 let (changed, toolbar_height) = filters.toolbar(ui, &types);
                 filters.store(ui);
+                // The query arrives lowercase and each row's search text is stored that way.
                 let mut rows = authored_rows
                     .iter()
                     .chain(stock_rows.iter())
-                    .filter(|row| filters.keeps(row) && pickers::matches(query, &row.search))
+                    .filter(|row| {
+                        filters.keeps(row)
+                            && query
+                                .split_whitespace()
+                                .all(|word| row.search.contains(word))
+                    })
                     .collect::<Vec<_>>();
                 rows.sort_by(|a, b| sort_key(filters.order, a).cmp(&sort_key(filters.order, b)));
                 pickers::results(
@@ -147,7 +155,7 @@ impl Workbench {
     }
 }
 
-/// One row of the Copy Existing picker, with the facts its filters and orders read: the
+/// One row of the New from Perk picker, with the facts its filters and orders read: the
 /// perk's type as the game labels it, whether it carries an effect, and whether the game
 /// shipped it or a saved weapon carries it.
 pub(super) struct Row {
@@ -161,7 +169,7 @@ pub(super) struct Row {
     /// The lowercase name and type, so ordering allocates nothing per frame.
     key: String,
     type_key: String,
-    /// What the search box matches against: the name, the detail line and the hash.
+    /// What the search box matches against, lowercase: the name, the detail line and the hash.
     search: String,
 }
 
@@ -178,7 +186,7 @@ impl Row {
         Self {
             key: name.to_lowercase(),
             type_key: type_name.to_lowercase(),
-            search: format!("{name} {detail} {hash:08X}"),
+            search: format!("{name} {detail} {hash:08X}").to_lowercase(),
             authored,
             index,
             hash,
@@ -260,11 +268,9 @@ impl Origin {
 
     fn hint(self) -> &'static str {
         match self {
-            Self::Any => "Every perk, whether the game shipped it or a saved weapon carries it.",
+            Self::Any => "Every perk, whether the game shipped it or a saved recipe carries it.",
             Self::Stock => "Perks the game ships.",
-            Self::Custom => {
-                "Perks saved with your weapons, and the ones on the weapon being edited."
-            }
+            Self::Custom => "Perks saved with your recipes, and the ones on the item being edited.",
         }
     }
 }
@@ -392,7 +398,9 @@ impl Filters {
             // past the edge starts the next line instead.
             const FILTER_WIDTH: f32 = 150.0;
             let fit = |ui: &mut egui::Ui| {
-                if ui.available_rect_before_wrap().width() < FILTER_WIDTH + ui.spacing().item_spacing.x {
+                if ui.available_rect_before_wrap().width()
+                    < FILTER_WIDTH + ui.spacing().item_spacing.x
+                {
                     ui.end_row();
                 }
             };
@@ -413,7 +421,7 @@ impl Filters {
                         }
                     })
                     .response
-                    .on_hover_text(format!("{type_text}\nShow one type of perk, as the game labels it."));
+                    .on_hover_text(format!("Perk Type: {type_text}"));
                 pickers::name_combo(ui, "perk-template-type", "Perk Type");
             });
             fit(ui);
@@ -430,7 +438,7 @@ impl Filters {
                         }
                     })
                     .response
-                    .on_hover_text(format!("{origin_text}\nFilter by whether the game shipped the perk or a saved weapon carries it."));
+                    .on_hover_text(format!("Origin: {origin_text}"));
                 pickers::name_combo(ui, "perk-template-origin", "Origin");
             });
             fit(ui);
@@ -447,7 +455,7 @@ impl Filters {
                         }
                     })
                     .response
-                    .on_hover_text(format!("{effects_text}\nFilter by whether the perk carries an effect."));
+                    .on_hover_text(format!("Effects: {effects_text}"));
                 pickers::name_combo(ui, "perk-template-effects", "Effects");
             });
             fit(ui);
@@ -464,7 +472,7 @@ impl Filters {
                         }
                     })
                     .response
-                    .on_hover_text(format!("{order_text}\nOrder the results. Sorting never hides a perk."));
+                    .on_hover_text(order_text.clone());
                 pickers::name_combo(ui, "perk-template-order", "Sort Order");
             });
         });
@@ -581,6 +589,7 @@ fn append_templates(templates: &mut Vec<AuthoredTemplate>, recipe: WeaponRecipe)
         if !templates.iter().any(|template| template.variant == variant) {
             templates.push(AuthoredTemplate {
                 weapon: recipe.name.clone(),
+                kind: recipe.kind,
                 variant,
             });
         }
@@ -769,7 +778,7 @@ mod tests {
         for _ in 0..3 {
             output = run(&mut workbench, vec![]);
         }
-        let anchor = text_at(&output, "Copy Existing…").expect("Copy Existing");
+        let anchor = text_at(&output, "New from Perk…").expect("New from Perk");
         for pressed in [true, false] {
             output = run(
                 &mut workbench,
@@ -798,7 +807,7 @@ mod tests {
         super::super::tests::capture::write(&ctx, &output, "copy-existing-open");
         let rows = workbench.template_rows.as_deref().unwrap();
         let with_effects = rows.iter().filter(|row| row.effects).count();
-        let results = text_starting(&output, &format!("{with_effects} Results"));
+        let results = text_starting(&output, &format!("{with_effects} Result"));
         assert!(
             results.is_some() && with_effects < rows.len(),
             "the picker opens on the perks that carry an effect"
@@ -842,13 +851,13 @@ mod tests {
         assert!(text_at(&output, &type_name).is_some());
         let shown = text_starting(&output, "").and_then(|_| {
             output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text.ends_with(" Results") => text
+                egui::Shape::Text(text) => text
                     .galley
                     .job
                     .text
-                    .trim_end_matches(" Results")
-                    .parse::<usize>()
-                    .ok(),
+                    .trim_end_matches('s')
+                    .strip_suffix(" Result")
+                    .and_then(|count| count.parse::<usize>().ok()),
                 _ => None,
             })
         });

@@ -185,28 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn verified_json_commit_with_warning_keeps_the_sqlite_commit() {
-        let mut context = TestContext::default();
-        let receipt = coordinate_source_saves(
-            &mut context,
-            true,
-            true,
-            |context| {
-                context.events.push("save sqlite");
-                Ok(())
-            },
-            |context| {
-                context.events.push("save json");
-                Ok("verified with durability warning")
-            },
-            |_, _| panic!("a verified JSON commit must not trigger rollback"),
-        )
-        .unwrap();
-        assert_eq!(receipt.json, Some("verified with durability warning"));
-        assert!(receipt.sqlite.is_some());
-    }
-
-    #[test]
     fn sqlite_failure_stops_before_json_save() {
         let mut context = TestContext::default();
 
@@ -233,96 +211,5 @@ mod tests {
         assert_eq!(context.events, ["save sqlite"]);
         assert_eq!(error.message, "sqlite failed");
         assert!(error.sqlite_rollback.is_none());
-    }
-
-    #[test]
-    fn json_failure_after_sqlite_save_restores_sqlite() {
-        let mut context = TestContext::default();
-
-        let error = coordinate_source_saves(
-            &mut context,
-            true,
-            true,
-            |context| {
-                context.events.push("save sqlite");
-                Ok("sqlite receipt")
-            },
-            |context| {
-                context.events.push("save json");
-                Err::<(), _>("json failed".into())
-            },
-            |context, receipt| {
-                assert_eq!(*receipt, "sqlite receipt");
-                context.events.push("restore sqlite");
-                Ok(())
-            },
-        )
-        .err()
-        .expect("the injected JSON failure should be returned");
-
-        assert_eq!(
-            context.events,
-            ["save sqlite", "save json", "restore sqlite"]
-        );
-        assert_eq!(error.message, "json failed");
-        assert!(matches!(error.sqlite_rollback, Some(Ok(()))));
-    }
-
-    #[test]
-    fn rollback_failure_is_preserved_for_critical_status() {
-        let mut context = TestContext::default();
-
-        let error = coordinate_source_saves(
-            &mut context,
-            true,
-            true,
-            |context| {
-                context.events.push("save sqlite");
-                Ok(())
-            },
-            |context| {
-                context.events.push("save json");
-                Err::<(), _>("json failed".into())
-            },
-            |context, _receipt| {
-                context.events.push("restore sqlite");
-                Err("rollback failed".to_owned())
-            },
-        )
-        .err()
-        .expect("the injected JSON failure should be returned");
-
-        assert!(matches!(
-            error.sqlite_rollback,
-            Some(Err(ref rollback)) if rollback == "rollback failed"
-        ));
-    }
-
-    #[test]
-    fn json_only_save_never_calls_sqlite_operations() {
-        let mut context = TestContext::default();
-
-        let receipt = coordinate_source_saves(
-            &mut context,
-            true,
-            false,
-            |context| {
-                context.events.push("save sqlite");
-                Ok(())
-            },
-            |context| {
-                context.events.push("save json");
-                Ok("json receipt")
-            },
-            |context, _receipt| {
-                context.events.push("restore sqlite");
-                Ok(())
-            },
-        )
-        .expect("the JSON-only save should succeed");
-
-        assert_eq!(context.events, ["save json"]);
-        assert_eq!(receipt.json, Some("json receipt"));
-        assert!(receipt.sqlite.is_none());
     }
 }

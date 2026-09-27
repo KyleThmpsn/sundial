@@ -172,7 +172,7 @@ pub(in crate::app) fn draw_window(
 }
 
 fn draw_header(ui: &mut egui::Ui, state: &State) {
-    const INTRO: &str = "Choose target stats for equipped armor, then review the proposed changes before applying them.";
+    const INTRO: &str = "Set target stats, then review before applying.";
     ui.horizontal(|ui| {
         let available = ui.available_width();
         if available < 700.0 {
@@ -406,7 +406,7 @@ fn draw_controls(
                 "Use Better Armor from Character Inventory",
             )
             .on_hover_text(
-                "When enabled, the preview may equip unlocked armor stored on this character. The currently equipped piece is moved back to inventory.",
+                "The preview can equip unlocked armor from this character's inventory. The equipped piece moves to inventory.",
             )
             .changed();
         ui.weak("Locked armor is always preserved");
@@ -770,9 +770,9 @@ fn armor_stat_mod_plan(
         "Armor mod: Empty".to_owned()
     };
     let detail = if changed {
-        format!("Package-defined armor stat mod changes from {previous_label} to {selected_label}.")
+        format!("Armor stat mod changes from {previous_label} to {selected_label}.")
     } else if !empty {
-        format!("Package-defined armor stat mod remains {selected_label}.")
+        format!("Armor stat mod stays {selected_label}.")
     } else {
         "No armor stat mod is equipped in this socket.".to_owned()
     };

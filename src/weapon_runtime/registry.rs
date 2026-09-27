@@ -126,16 +126,25 @@ fn build_inferred_names(
     Ok(inferred)
 }
 
-pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistry) -> String {
+/// What to call one component binding. Most binding keys have no recoverable name, so an
+/// unnamed one is identified by the component class it selects instead of by its own hash:
+/// the class is what the binding actually addresses, and bindings that share a class address
+/// the same component. `concrete_class` is the class selected by the resource at hand, or
+/// zero where the caller has no resource in front of it.
+pub(super) fn runtime_binding_label(
+    binding_hash: u32,
+    concrete_class: u32,
+    registry: &RuntimeRegistry,
+) -> String {
     let known = match binding_hash {
         WEAPON_INPUT_COMPONENT_KEY => Some("Input"),
         WEAPON_TRIGGER_COMPONENT_KEY => Some("Trigger"),
         WEAPON_BARREL_COMPONENT_KEY => Some("Barrel"),
-        WEAPON_CONTROLLER_COMPONENT_KEY => Some("Weapon controller"),
+        WEAPON_CONTROLLER_COMPONENT_KEY => Some("Weapon Controller"),
         WEAPON_MAGAZINE_COMPONENT_KEY => Some("Magazine"),
         WEAPON_RELOAD_COMPONENT_KEY => Some("Reload"),
-        WEAPON_TRIGGER_CHARGE_COMPONENT_KEY => Some("Trigger charge"),
-        WEAPON_STAT_TRANSLATOR_COMPONENT_KEY => Some("Weapon stats / translator"),
+        WEAPON_TRIGGER_CHARGE_COMPONENT_KEY => Some("Trigger Charge"),
+        WEAPON_STAT_TRANSLATOR_COMPONENT_KEY => Some("Weapon Stats / Translator"),
         // Paired movement schema 80803B73 and its definition drive the projectile
         // parameters. The modifier bindings use native M Modifiers plus CA2830's
         // target-component dispatch, shared by Micro-Missile and other attached effects.
@@ -149,10 +158,15 @@ pub(super) fn runtime_binding_label(binding_hash: u32, registry: &RuntimeRegistr
             .names
             .get(&binding_hash)
             .and_then(|names| names.first())
-            .map_or_else(
-                || format!("Binding 0x{binding_hash:08X}"),
-                |name| humanize_identifier(name),
-            )
+            .map(|name| humanize_identifier(name))
+            .or_else(|| super::native_type_name(concrete_class).map(str::to_owned))
+            .unwrap_or_else(|| {
+                if concrete_class == 0 {
+                    format!("Binding 0x{binding_hash:08X}")
+                } else {
+                    format!("Component 0x{concrete_class:08X}")
+                }
+            })
     })
 }
 

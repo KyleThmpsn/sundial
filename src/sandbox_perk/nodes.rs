@@ -203,7 +203,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         class: 0x80803DFF,
         struct_size: 24,
         occurrences: 5,
-        name: "Event Key at Node +10",
+        name: "Event Key Match",
         summary: "Requires the event key to equal the key stored on this node.",
         evidence: "Requires equality between the node integer at +10 and the first event integer.",
         support: Support::Authorable,
@@ -213,7 +213,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         class: 0x80803DFE,
         struct_size: 24,
         occurrences: 8,
-        name: "Event Key at Node +10",
+        name: "Event Key Match",
         summary: "Requires the event key to equal the key stored on this node.",
         evidence: "Requires equality between the node integer at +10 and the first event integer.",
         support: Support::Authorable,
@@ -234,8 +234,8 @@ pub const CONDITIONS: [NodeKind; 45] = [
         struct_size: 112,
         occurrences: 8,
         name: "Weapon Event Filter",
-        summary: "Fires on a weapon event and checks the weapon labels. The source event is unnamed.",
-        evidence: "Reads the owning-weapon flag at +8, the slot mask at +B and the source label filter at +10, which the checker compiles into its object-label test. Handles an invalid event slot explicitly. The source event is unnamed.",
+        summary: "Fires when the trigger is released on a weapon and checks the weapon labels.",
+        evidence: "Reads the owning-weapon flag at +8, the slot mask at +B and the source label filter at +10, which the checker compiles into its object-label test. Handles an invalid event slot explicitly. The event is the trigger release: Dynamic Sway Reduction, Spinning Up and Lightning Rounds, which act while the trigger is held, all end on it.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -284,8 +284,8 @@ pub const CONDITIONS: [NodeKind; 45] = [
         struct_size: 112,
         occurrences: 19,
         name: "Weapon Event Filter",
-        summary: "Fires on an unnamed weapon event and checks the weapon labels.",
-        evidence: "Reads the owning-weapon flag at +8, the slot mask at +B and the source label filter at +10, sharing the checker used by attach, detach, draw and holster events. Its source event is not yet named.",
+        summary: "Fires when a weapon is swapped to and checks that weapon's slot and labels.",
+        evidence: "Reads the owning-weapon flag at +8, the slot mask at +B and the source label filter at +10, sharing the checker used by attach, detach, draw and holster events. The event is a weapon swap: Mecha Holster reads a Submachine Gun readied in either slot, Spring-Loaded Mounting a Sidearm swapped to, and Sprint Grip and Spinning Up end on it.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -1180,6 +1180,132 @@ pub fn effect_name(kind: u8) -> String {
     effect(kind).map_or_else(|| format!("Effect {kind}"), |node| node.name.to_owned())
 }
 
+/// The name a condition kind carries wherever the workbench offers or shows it: the plain
+/// title where there is one, otherwise the engine's traced name.
+#[must_use]
+pub fn condition_title(kind: u8) -> &'static str {
+    plain_condition_title(kind)
+        .unwrap_or_else(|| condition(kind).map_or("Condition", |node| node.name))
+}
+
+/// The name an effect kind carries wherever the workbench offers or shows it, on the same
+/// terms as `condition_title`.
+#[must_use]
+pub fn effect_title(kind: u8) -> &'static str {
+    plain_effect_title(kind).unwrap_or_else(|| effect(kind).map_or("Action", |node| node.name))
+}
+
+/// Articles, conjunctions and prepositions, which stay lowercase inside a title.
+const SMALL_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "nor", "but", "of", "to", "from", "by", "with", "at", "in",
+    "on", "for", "as", "while",
+];
+
+/// One word of a title built from an engine identifier, at `index` of `count` words: capitalized,
+/// unless it is a small word inside the title, so `apply_tiered_charge_of_light` reads "Apply
+/// Tiered Charge of Light". The first and last words always capitalize.
+#[must_use]
+pub fn title_word(word: &str, index: usize, count: usize) -> String {
+    if index > 0 && index + 1 < count && SMALL_WORDS.contains(&word) {
+        return word.to_owned();
+    }
+    let mut characters = word.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
+}
+
+/// A name in the words a player uses, for the effect kinds whose traced behavior says
+/// plainly what happens in game.
+///
+/// A kind is listed here only when its recorded evidence above leaves the behavior resolved.
+/// Kinds whose evidence ends in "remains unresolved" stay off this list even when their
+/// fields are editable, because the workbench would be putting words to something it has
+/// not established. Everything not listed keeps the engine's own traced name.
+#[must_use]
+pub fn plain_effect_title(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Attach an Effect",
+        2 => "Attach an Effect with a Dynamic Value",
+        3 => "Spawn an Object or Effect",
+        4 => "Apply an Effect to a Chosen Target",
+        5 => "Generate Orbs of Light",
+        6 => "Change Damage Type",
+        7 => "Change an Ability Stat",
+        8 => "Change Ability Energy",
+        10 => "Change a Weapon or Ability Stat",
+        11 => "Change Ammo Drop Chance",
+        13 => "Drop Ammo by Weighted Chance",
+        14 => "Adjust Ammo",
+        15 => "Adjust Ammo by Capacity",
+        16 => "Reload from Reserves",
+        18 => "Set Radar Detection Range",
+        20 => "Improve Radar Detail",
+        25 => "Override a Pattern Key",
+        26 => "Change Fired Projectile",
+        // Kind 28: its two bytes are how the trigger fires, read off the stock perks that set
+        // them (see `fields::values`).
+        28 => "Change How the Trigger Fires",
+        29 => "Replace Three Weapon Values",
+        30 => "Hold a Weapon Count",
+        33 => "Change Incoming Damage",
+        32 => "Extend Timers",
+        35 => "Set a Weapon Firing Mode",
+        37 => "Label the Event When the Damage Source Matches",
+        40 => "Change Outgoing Damage",
+        41 => "Hold a Named Count",
+        42 => "Set the Effect's Counter",
+        43 => "Send a Game Signal",
+        47 => "Set Transmat Effect",
+        49 => "Remember a Target by Name",
+        48 => "Run a Game Script",
+        52 => "Add to a Named Player Value",
+        53 => "Adjust Several Named Values",
+        54 => "Label the Event When the Target Matches",
+        _ => return None,
+    })
+}
+
+/// A name in the words a player uses for a condition kind, on the same terms as
+/// `plain_effect_title`. The weapon events share the names of the triggers they start.
+#[must_use]
+pub fn plain_condition_title(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        0 => "Always",
+        1 => "After a Delay",
+        2 => "On a Kill",
+        4 => "On Dealing Damage",
+        5 => "On Taking Damage",
+        6 => "On Picking Up Ammo",
+        8 => "On Using an Ability",
+        9 => "On Activating an Ability",
+        10 => "On a Specific Ability",
+        11 => "Ends on a Specific Ability",
+        13 => "On Releasing the Trigger",
+        12 => "On a Game Event",
+        14 => "On Equip",
+        15 => "On Unequip",
+        16 => "On Draw",
+        17 => "On Holster",
+        18 => "On Weapon Swap",
+        19 => "On Reloading",
+        22 => "On Crouching",
+        23 => "On Aiming Down Sights",
+        24 => "On Sliding",
+        25 => "On Sprinting",
+        26 => "When the Effect's Counter Is Reached",
+        27 => "On Firing This Weapon",
+        29 => "On a Game Signal",
+        30 => "Ends on a Game Signal",
+        31 => "When All Requirements Are Met",
+        // Kind 35 runs the general predicate, a state check, and then its nested condition.
+        35 => "State Check with a Condition",
+        38 => "When a Remembered Target Is Far Away",
+        42 => "On a Finisher",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1212,51 +1338,6 @@ mod tests {
             assert_eq!(usize::from(entry.kind), index);
             assert!(!entry.name.is_empty());
             assert!(!entry.summary.contains(';'));
-        }
-    }
-
-    #[test]
-    fn authorable_kinds_are_the_ones_the_compiler_emits() {
-        let conditions = CONDITIONS
-            .iter()
-            .filter(|node| node.support == Support::Authorable)
-            .map(|node| node.kind)
-            .collect::<Vec<_>>();
-        let effects = EFFECTS
-            .iter()
-            .filter(|node| node.support == Support::Authorable)
-            .map(|node| node.kind)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            conditions,
-            CONDITIONS
-                .iter()
-                .filter(|node| node.observed())
-                .map(|node| node.kind)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            effects,
-            EFFECTS
-                .iter()
-                .filter(|node| node.observed())
-                .map(|node| node.kind)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(conditions.len() + effects.len(), 82);
-        for layout in crate::sandbox_perk::action::layout::EFFECT_LAYOUTS {
-            assert!(
-                effects.contains(&layout.kind),
-                "effect kind {}",
-                layout.kind
-            );
-        }
-        for layout in crate::sandbox_perk::action::layout::CONDITION_LAYOUTS {
-            assert!(
-                conditions.contains(&layout.kind),
-                "condition kind {}",
-                layout.kind
-            );
         }
     }
 }

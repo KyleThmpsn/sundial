@@ -14,10 +14,6 @@ impl Workbench {
             // same heading level and the same control sizing.
             crate::app::style::compact_controls(ui);
             ui.heading("Stat Bonuses");
-            sundial::investment::draw_authoring_info_icon(
-                ui,
-                "Applied while the perk is equipped. Effect triggers do not control them.",
-            );
         });
         let source_stats = catalog
             .map(|catalog| {
@@ -33,60 +29,54 @@ impl Workbench {
         table.name = table.name.min(200.0);
         let mut remove = None;
         if !recipe.stats.is_empty() {
-            table.show(
-                ui,
-                "perk-stat-bonuses",
-                "Bonus",
-                "Added to the weapon while this perk is equipped. Negative values reduce the stat.",
-                |ui| {
-                    for stat in &mut recipe.stats {
-                        let name = stats
-                            .iter()
-                            .find(|choice| choice.definition_index == stat.definition_index)
-                            .map_or_else(
-                                || format!("Stat {}", stat.definition_index),
-                                |choice| choice.name.clone(),
-                            );
-                        crate::app::stat_editor::left_cell(
-                            ui,
-                            table.name,
-                            egui::Label::new(&name).truncate().halign(egui::Align::LEFT),
-                        )
-                        .on_hover_text(&name);
-                        // A perk stores a delta, not a weapon's absolute value. Do not apply
-                        // the weapon display curve or its range to a negative bonus.
-                        let response = table.value(ui, &mut stat.value, None, true);
-                        if let Some(original) = source_stats
-                            .iter()
-                            .find(|source| source.definition_index == stat.definition_index)
-                        {
-                            response.context_menu(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        stat.value != original.value,
-                                        egui::Button::new(format!("Reset to {}", original.value)),
-                                    )
-                                    .clicked()
-                                {
-                                    stat.value = original.value;
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                        if crate::app::stat_editor::table::action(
-                            ui,
-                            table.action,
-                            "×",
-                            &format!("Remove {name} Bonus"),
-                        )
-                        .clicked()
-                        {
-                            remove = Some(stat.definition_index);
-                        }
-                        ui.end_row();
+            table.show(ui, "perk-stat-bonuses", "Bonus", "", |ui| {
+                for stat in &mut recipe.stats {
+                    let name = stats
+                        .iter()
+                        .find(|choice| choice.definition_index == stat.definition_index)
+                        .map_or_else(
+                            || format!("Stat {}", stat.definition_index),
+                            |choice| choice.name.clone(),
+                        );
+                    crate::app::stat_editor::left_cell(
+                        ui,
+                        table.name,
+                        egui::Label::new(&name).truncate().halign(egui::Align::LEFT),
+                    )
+                    .on_hover_text(&name);
+                    // A perk stores a delta, not a weapon's absolute value. Do not apply
+                    // the weapon display curve or its range to a negative bonus.
+                    let response = table.value(ui, &mut stat.value, None, true);
+                    if let Some(original) = source_stats
+                        .iter()
+                        .find(|source| source.definition_index == stat.definition_index)
+                    {
+                        response.context_menu(|ui| {
+                            if ui
+                                .add_enabled(
+                                    stat.value != original.value,
+                                    egui::Button::new(format!("Reset to {}", original.value)),
+                                )
+                                .clicked()
+                            {
+                                stat.value = original.value;
+                                ui.close_menu();
+                            }
+                        });
                     }
-                },
-            );
+                    if crate::app::stat_editor::table::action(
+                        ui,
+                        table.action,
+                        "×",
+                        &format!("Remove {name} Bonus"),
+                    )
+                    .clicked()
+                    {
+                        remove = Some(stat.definition_index);
+                    }
+                    ui.end_row();
+                }
+            });
         }
         if let Some(index) = remove {
             recipe.stats.retain(|stat| stat.definition_index != index);

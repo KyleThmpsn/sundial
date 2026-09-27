@@ -1,5 +1,9 @@
 //! Account proposals and synchronization accompanying authored package transactions.
 use std::path::{Path, PathBuf};
+mod grants;
+pub use grants::{
+    AuthoredGrantOutcome, AuthoredGrantReport, AuthoredGrantTarget, AuthoredItemGrant,
+};
 pub(crate) mod placement;
 pub use placement::{
     AuthoredItemMove, AuthoredMoveOutcome, AuthoredSlotChange, AuthoredSlotReplacement,

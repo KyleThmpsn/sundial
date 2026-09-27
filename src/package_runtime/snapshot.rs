@@ -45,6 +45,14 @@ impl Snapshot {
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
+    /// A key for these files alone, not the directory they were read from. A build's stock
+    /// package view hard-links the same files into a new directory each time, and the links
+    /// keep each file's size and modified time.
+    pub(crate) fn files_key(&self) -> Result<String, String> {
+        let bytes = serde_json::to_vec(&self.files).map_err(|error| error.to_string())?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     /// Include every patch and language variant of this package ID. Unknown
     /// filenames conservatively invalidate all shards rather than being ignored.
     pub(crate) fn for_package(&self, package: u16) -> Self {

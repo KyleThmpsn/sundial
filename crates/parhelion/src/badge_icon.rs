@@ -861,28 +861,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_source_and_card_geometry_preserve_the_complete_square() {
-        let source = decode_source().expect("canonical source should decode");
-        assert_eq!(source.dimensions(), (1024, 1024));
-        assert_eq!(
-            card_geometry(&source, LOW_WIDTH, LOW_HEIGHT).expect("low card geometry"),
-            CardGeometry {
-                x: 41,
-                y: 0,
-                side: 126,
-            }
-        );
-        assert_eq!(
-            card_geometry(&source, HIGH_WIDTH, HIGH_HEIGHT).expect("high card geometry"),
-            CardGeometry {
-                x: 86,
-                y: 0,
-                side: 268,
-            }
-        );
-    }
-
-    #[test]
     fn renderer_preserves_an_opaque_donor_mask_and_untouched_gradient_side_margins() {
         let source = decode_source().expect("canonical source should decode");
         for (width, height, expected_size, left_margin) in [

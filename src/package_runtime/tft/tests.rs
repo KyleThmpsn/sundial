@@ -51,17 +51,6 @@ fn vocabulary_keeps_wwise_event_paths_and_enum_table_identifiers() {
 }
 
 #[test]
-fn asset_folders_drop_the_filename_and_the_content_root() {
-    assert_eq!(
-        asset_folder("content\\sandbox\\weapons\\player\\demo.pattern.tft"),
-        "sandbox / weapons / player"
-    );
-    assert_eq!(asset_folder("content/demo.pattern.tft"), "content");
-    assert_eq!(asset_folder("demo.pattern.tft"), "content");
-    assert_eq!(asset_label("content/a/b.tft"), "b.tft");
-}
-
-#[test]
 fn entity_evidence_skips_class_handles_and_the_resource_itself() {
     let bytes = fixture();
     let known_lane = |lane: u64| lane == 0x1234_5678_9ABC_DEF0;

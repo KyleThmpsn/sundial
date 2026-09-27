@@ -12,6 +12,7 @@ use crate::app::inspector::{
 
 use super::{
     conditions::draw_condition_programs,
+    definitions::storage_text,
     state::{MetadataSelection, ProgressionInspectorState},
 };
 
@@ -62,7 +63,7 @@ pub(super) fn draw_unlock_definition_metadata(
                         ui,
                         "Compact Slot",
                         definition.compact_slot.map_or_else(
-                            || "Unbanked".into(),
+                            || storage_text(definition, selection.is_value()),
                             |slot| format!("{slot} · 0x{slot:04X}"),
                         ),
                         true,
@@ -75,7 +76,7 @@ pub(super) fn draw_unlock_definition_metadata(
                         } else {
                             snapshot
                                 .evaluated_flag(index, catalog)
-                                .map(|value| if value { "Set" } else { "Clear" }.to_owned())
+                                .map(|value| if value { "Set" } else { "Unset" }.to_owned())
                         }
                     });
                     metadata_field(
@@ -118,7 +119,11 @@ pub(super) fn draw_unlock_definition_metadata(
             },
         );
         egui::CollapsingHeader::new(label)
-            .id_salt(("progression_context_metadata", context_index))
+            .id_salt((
+                "progression_context_metadata",
+                context.hash,
+                context.kind as u8,
+            ))
             .default_open(context_index == 0)
             .show(ui, |ui| {
                 draw_context_metadata(ui, context, catalog, snapshot, state);

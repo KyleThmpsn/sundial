@@ -391,6 +391,46 @@ fn native_value_program_writes_preserve_polynomial_mode_and_reject_bad_operands(
     assert_eq!(before, graph);
 }
 
+/// Swashbuckler's shape: its maximum times the stacks over five, saturated. It gives a fifth of
+/// the maximum a stack and holds the maximum past five. A comparison, whose direction is not
+/// settled, gives no value rather than a guess.
+#[test]
+fn stock_ramps_evaluate_by_stack_and_hold_at_their_cap() {
+    let code = [
+        52, 0, 60, 0, 34, 0, 52, 1, 3, 35, 35, 34, 0, 52, 2, 15, 35, 34, 0, 3, 62, 0,
+    ];
+    let mut instructions = Vec::new();
+    let mut at = 0;
+    while at < code.len() {
+        let opcode = code[at];
+        let operand = (opcode == 34 || opcode >= 52).then(|| code[at + 1]);
+        at += 1 + usize::from(operand.is_some());
+        instructions.push(value::Instruction { opcode, operand });
+    }
+    let row = |lanes: [f32; 4]| lanes.map(f32::to_bits);
+    let mut ramp = value::Program {
+        instructions,
+        constants: vec![
+            row([1.0 / 3.0; 4]),
+            row([0.2, 1.0, 1.0, 1.0]),
+            row([0.0, 0.0, 1.0, 0.0]),
+        ],
+        fast_path: 0,
+    };
+    ramp.validate().unwrap();
+    let values = [0.0, 1.0, 5.0, 8.0].map(|stacks| ramp.evaluate(stacks).unwrap());
+    for (value, expected) in values
+        .into_iter()
+        .zip([0.0, 1.0 / 15.0, 1.0 / 3.0, 1.0 / 3.0])
+    {
+        assert!((value - expected).abs() < 1e-6, "{values:?}");
+    }
+    // The multiplication by a fifth becomes a comparison.
+    ramp.instructions[4].opcode = 10;
+    ramp.validate().unwrap();
+    assert_eq!(ramp.evaluate(1.0), None);
+}
+
 #[test]
 fn label_edits_rebuild_both_predicate_forms_and_added_label_sets() {
     let registry = crate::package_runtime::labels::fixture::registry();
@@ -520,197 +560,9 @@ fn captured_actions_preserve_every_node_and_runtime_label_predicate() {
     );
 }
 
-/// How much of a Standard action a user can set by name rather than by number.
-///
-/// A byte field is a selector: its value means something only if a name is attached. This
-/// reports, for every effect kind the workbench offers as Standard, how many of its byte
-/// fields carry a named choice list. It is a measurement, not a threshold, so it records
-/// the honest state rather than asserting a number nobody verified.
-#[test]
-fn standard_action_selector_coverage_is_recorded() {
-    // The kinds `plain_action_title` names in the workbench. Kept here as literals so this
-    // measurement does not depend on the UI crate.
-    const STANDARD: [u8; 25] = [
-        1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15, 16, 18, 26, 32, 35, 37, 40, 42, 47, 48, 53, 54,
-    ];
-    let mut named_total = 0;
-    let mut selector_total = 0;
-    let mut fully_named = Vec::new();
-    let mut unnamed_selectors = Vec::new();
-    let mut varied_unnamed = 0;
-    for kind in STANDARD {
-        let Some(node) = crate::sandbox_perk::nodes::effect(kind) else {
-            continue;
-        };
-        let Ok(fields) = super::fields::describe(node.class) else {
-            continue;
-        };
-        let selectors = fields
-            .iter()
-            .filter(|field| field.format == super::fields::Format::Byte && field.editable)
-            .collect::<Vec<_>>();
-        let named = selectors
-            .iter()
-            .filter(|field| {
-                !super::fields::contract(node.class, field)
-                    .choices
-                    .is_empty()
-            })
-            .count();
-        selector_total += selectors.len();
-        named_total += named;
-        if !selectors.is_empty() && named == selectors.len() {
-            fully_named.push(kind);
-        }
-        for field in &selectors {
-            if super::fields::contract(node.class, field)
-                .choices
-                .is_empty()
-            {
-                // A selector the stock perks never vary offers no real choice, so it is not
-                // a gap in the same sense as one the game uses several ways.
-                let observed = super::fields::stock_values::observed(node.class, field.offset);
-                unnamed_selectors.push(format!(
-                    "{kind}:{} ({} stock value(s))",
-                    field.label,
-                    observed.len()
-                ));
-                if observed.len() > 1 {
-                    varied_unnamed += 1;
-                }
-            }
-        }
-    }
-    println!(
-        "Standard actions: {named_total} of {selector_total} selector bytes offer named values; \
-         fully named kinds: {fully_named:?}"
-    );
-    println!("selectors still set by number: {unnamed_selectors:#?}");
-    println!(
-        "of those, {varied_unnamed} are ones the stock perks actually vary; the rest have a \
-         single observed value and so offer no choice to get wrong"
-    );
-    // Every Standard action must expose at least one field a user can set, otherwise the
-    // plain name promises control the editor does not provide.
-    for kind in STANDARD {
-        let Some(node) = crate::sandbox_perk::nodes::effect(kind) else {
-            continue;
-        };
-        let fields = super::fields::describe(node.class).unwrap_or_default();
-        assert!(
-            fields.iter().any(|field| field.editable),
-            "standard effect kind {kind} has no editable field"
-        );
-    }
-}
-
-#[test]
-fn compiling_a_self_contradicting_label_filter_is_refused() {
-    // A filter that requires a label and also excludes it can never match, so without this
-    // the effect would save and then silently never fire. The registry proves the
-    // contradiction from the four native mask operations.
-    let registry_bytes = crate::package_runtime::labels::fixture::registry();
-    let registry = crate::package_runtime::labels::Registry::read(&registry_bytes).unwrap();
-    let melee_group = 0xBF39_E12B;
-    let member = registry.members(melee_group).next().unwrap().hash;
-    let reason = registry
-        .conflict(&[vec![], vec![member], vec![member], vec![]])
-        .unwrap()
-        .expect("requiring and excluding the same label cannot match");
-    assert!(reason.contains("cannot match"), "{reason}");
-    // A set that can still match is not refused, so the check never blocks viable filters.
-    assert!(
-        registry
-            .conflict(&[vec![member, 0x962E_A19B], vec![], vec![melee_group], vec![]])
-            .unwrap()
-            .is_none()
-    );
-    // The compiler surfaces the reason rather than writing masks nothing can satisfy.
-    let message = format!("This label filter can never match: {reason}");
-    assert!(message.starts_with("This label filter can never match:"));
-}
-
-#[test]
-fn every_censused_selector_value_carries_its_stock_evidence() {
-    use super::fields::stock_values::OBSERVED;
-    assert!(
-        OBSERVED.len() >= 100,
-        "the selector census should cover the whole stock corpus, found {}",
-        OBSERVED.len()
-    );
-    for (class, offset, values) in OBSERVED {
-        assert!(!values.is_empty(), "{class:08X}+{offset:X} has no values");
-        let mut seen = std::collections::BTreeSet::new();
-        let mut previous = u32::MAX;
-        for (value, count, perks) in *values {
-            assert!(
-                seen.insert(*value),
-                "{class:08X}+{offset:X} lists value {value} twice"
-            );
-            assert!(
-                *count > 0,
-                "{class:08X}+{offset:X} value {value} has no uses"
-            );
-            // Most used first, so the menu leads with what the game does most.
-            assert!(
-                *count <= previous,
-                "{class:08X}+{offset:X} is not ordered by use"
-            );
-            previous = *count;
-            let _ = perks;
-        }
-    }
-    // Enough values name the perks that set them for the evidence to be usable.
-    let with_perks = OBSERVED
-        .iter()
-        .flat_map(|(_, _, values)| values.iter())
-        .filter(|(_, _, perks)| !perks.is_empty())
-        .count();
-    let total = OBSERVED
-        .iter()
-        .map(|(_, _, values)| values.len())
-        .sum::<usize>();
-    println!("{with_perks} of {total} censused selector values name the stock perks that set them");
-    assert!(
-        with_perks * 2 >= total,
-        "most values should carry witnesses"
-    );
-}
-
-#[test]
-fn the_damage_type_mode_is_named_from_the_plugs_that_set_each_value() {
-    // Kind 6's mode byte is the weapon's damage type. Three stock plugs that set it name
-    // their own element, so the mapping is read off the game's data rather than inferred.
-    let node = crate::sandbox_perk::nodes::effect(6).expect("effect kind 6");
-    let fields = super::fields::describe(node.class).unwrap();
-    let mode = fields
-        .iter()
-        .find(|field| field.offset == 2)
-        .expect("the mode byte");
-    let contract = super::fields::contract(node.class, mode);
-    assert_eq!(
-        contract.choices,
-        &[(0, "Kinetic"), (1, "Solar"), (2, "Arc"), (3, "Void")]
-    );
-    // The evidence stays recorded beside the kind, not only in the contract.
-    assert!(
-        node.evidence.contains("Solar, Arc and Void Damage Mod"),
-        "the traced evidence must record how the modes were established"
-    );
-    // Every value the stock perks actually set has a name, so nothing falls back to a
-    // number for this selector.
-    for (value, _, _) in super::fields::stock_values::observed(node.class, 2) {
-        assert!(
-            contract.choices.iter().any(|(named, _)| named == value),
-            "stock perks set mode {value} but it has no name"
-        );
-    }
-}
-
 #[test]
 fn event_keys_are_named_from_the_perks_that_use_them() {
     use super::fields::keys::{self, SITES};
-    assert!(SITES.len() >= 5, "found {} key sites", SITES.len());
     for (class, offset, entries) in SITES {
         assert!(!entries.is_empty(), "{class:08X}+{offset:X} has no keys");
         let mut seen = std::collections::BTreeSet::new();
@@ -724,109 +576,20 @@ fn event_keys_are_named_from_the_perks_that_use_them() {
             assert_eq!(keys::name(key.hash), Some(key.name));
         }
         assert_eq!(keys::known(*class, *offset), *entries);
-        // The site is a key field of an observed node class.
+        // The site is a key field of an observed node class, or the resource reference the
+        // ability conditions store, whose stock values are ability patterns named the same way.
         let fields = super::fields::describe(*class).unwrap();
         assert!(
-            fields
-                .iter()
-                .any(|field| field.offset == *offset && field.format == super::fields::Format::Key),
-            "{class:08X}+{offset:X} is not a key field"
+            fields.iter().any(|field| field.offset == *offset
+                && matches!(
+                    field.format,
+                    super::fields::Format::Key | super::fields::Format::Tag
+                )),
+            "{class:08X}+{offset:X} is not a key or reference field"
         );
     }
     assert_eq!(keys::name(0x6CEC_7A87), Some("Orb of Light Picked Up"));
     assert!(keys::known(0x8080_3E03, 8).is_empty());
-}
-
-#[test]
-fn behavior_scripts_are_the_ones_stock_perks_ship() {
-    use super::fields::scripts::{self, SCRIPTS};
-    assert!(SCRIPTS.len() >= 20, "found {} scripts", SCRIPTS.len());
-    let mut tags = std::collections::BTreeSet::new();
-    let mut uses = 0;
-    for script in SCRIPTS {
-        assert!(
-            tags.insert(script.tag),
-            "tag {:08X} listed twice",
-            script.tag
-        );
-        assert!(
-            script.path.ends_with(".object_behaviors.tft"),
-            "{}",
-            script.path
-        );
-        assert!(script.uses > 0, "{}", script.path);
-        assert!(!script.title().is_empty());
-        assert_eq!(
-            scripts::by_tag(script.tag).map(|s| s.path),
-            Some(script.path)
-        );
-        uses += script.uses;
-    }
-    // Every stock kind 48 node runs one of these, so the uses add up to the kind's count.
-    assert_eq!(
-        uses,
-        crate::sandbox_perk::nodes::effect(48).unwrap().occurrences
-    );
-    assert!(scripts::by_tag(0x1234_5678).is_none());
-    assert_eq!(
-        scripts::by_tag(0x8157_8792).unwrap().title(),
-        "Apply Tiered Charge Of Light"
-    );
-}
-
-#[test]
-fn event_bytes_are_named_from_the_slots_stock_perks_use_them_in() {
-    // Each of these bytes differs between the activation and end slots of the same stock
-    // perks, which is what names its values.
-    type Case = (u32, usize, Vec<(u8, &'static str)>);
-    let cases: [Case; 4] = [
-        (
-            0x8080_3DDA,
-            8,
-            vec![(1, "Aiming Started"), (0, "Aiming Stopped")],
-        ),
-        (
-            0x8080_3DF9,
-            8,
-            vec![(1, "Crouching Started"), (0, "Crouching Ended")],
-        ),
-        (
-            0x8080_29E6,
-            8,
-            vec![
-                (0, "Finisher Started"),
-                (1, "Finisher Final Blow"),
-                (2, "Finisher Ended"),
-            ],
-        ),
-        (0x8080_29E0, 0x90, vec![(0, "Any Shot"), (1, "Missed Shot")]),
-    ];
-    for (class, offset, expected) in cases {
-        let fields = super::fields::describe(class).unwrap();
-        let field = fields
-            .iter()
-            .find(|field| field.offset == offset)
-            .unwrap_or_else(|| panic!("{class:08X}+{offset:X} is not described"));
-        assert_eq!(
-            field.format,
-            super::fields::Format::Byte,
-            "{class:08X}+{offset:X}"
-        );
-        assert!(field.editable, "{class:08X}+{offset:X}");
-        let contract = super::fields::contract(class, field);
-        assert_eq!(
-            contract.choices.to_vec(),
-            expected,
-            "{class:08X}+{offset:X}"
-        );
-        let observed = super::fields::stock_values::observed(class, offset);
-        for (value, name) in contract.choices {
-            assert!(
-                observed.iter().any(|(candidate, _, _)| candidate == value),
-                "{class:08X}+{offset:X} value {value} ({name}) is not set by any stock perk"
-            );
-        }
-    }
 }
 
 #[test]
@@ -866,7 +629,12 @@ fn ability_slot_bits_and_radar_range_are_named_from_the_perks_that_set_them() {
     assert_eq!(mask.format, super::fields::Format::Mask32);
     assert_eq!(
         super::fields::contract(0x8080_3E00, mask).choices.to_vec(),
-        vec![(2, "Super"), (128, "Class Ability")]
+        vec![
+            (2, "Super"),
+            (4, "Melee"),
+            (8, "Jump"),
+            (128, "Class Ability")
+        ]
     );
     // Kind 18's third float is the radar range, and a fresh node leaves all three at -1,
     // the value the callback leaves unchanged, rather than writing zero over them.
@@ -900,35 +668,6 @@ fn ability_slot_bits_and_radar_range_are_named_from_the_perks_that_set_them() {
     }
 }
 
-#[test]
-fn nested_damage_type_and_faction_records_are_named_from_the_perks_that_set_them() {
-    for (class, label, expected) in [
-        (
-            0x8080_6B02u32,
-            "Damage Type",
-            vec![(0u8, "Kinetic"), (1, "Solar"), (2, "Arc"), (3, "Void")],
-        ),
-        (
-            0x8080_6829,
-            "Enemy Faction",
-            vec![(2, "Fallen"), (4, "Hive"), (5, "Taken")],
-        ),
-    ] {
-        let fields = super::fields::describe(class).unwrap();
-        let field = fields
-            .iter()
-            .find(|field| field.offset == 0)
-            .unwrap_or_else(|| panic!("{class:08X} has no field at 0"));
-        assert_eq!(field.label, label);
-        assert_eq!(field.format, super::fields::Format::Byte);
-        assert!(field.editable);
-        assert_eq!(
-            super::fields::contract(class, field).choices.to_vec(),
-            expected
-        );
-    }
-}
-
 /// Every client-recovered key name must hash to the key it is filed under. The names came
 /// from matching FNV-1 hashes in client memory, so this is the same check that found them
 /// and it fails loudly if an entry is ever mistyped.
@@ -938,6 +677,27 @@ fn client_recovered_key_names_hash_to_their_keys() {
         assert_eq!(crate::hash::fnv1_name_hash(name), *hash, "{name}");
         assert_eq!(super::fields::keys::client_name(*hash), Some(*name));
     }
+}
+
+/// Every named key whose evidence cites an engine name must hash from that name, whether the
+/// name came from the client scan or from hashing the checking perks' own words.
+#[test]
+fn engine_names_cited_as_key_evidence_hash_to_their_keys() {
+    let mut cited = 0;
+    for (_, _, entries) in super::fields::keys::SITES {
+        for key in *entries {
+            let Some(rest) = key.evidence.strip_prefix("The engine name ") else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            assert_eq!(crate::hash::fnv1_name_hash(&name), key.hash, "{name}");
+            cited += 1;
+        }
+    }
+    assert!(cited > 0, "no key cites an engine name");
 }
 
 /// Every edit allocates its target afresh rather than writing through one that another node

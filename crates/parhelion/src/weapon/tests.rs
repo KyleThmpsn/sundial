@@ -7,9 +7,7 @@ use sundial::package_authoring::investment_schema::{
     LEGACY_ARC_DAMAGE_PERK_INDEX, LEGACY_SOLAR_DAMAGE_PERK_INDEX, MODERN_ARC_DAMAGE_PERK_INDEX,
     MODERN_SOLAR_DAMAGE_PERK_INDEX, MODERN_VOID_DAMAGE_PERK_INDEX,
 };
-use sundial::package_authoring::weapon_runtime::{
-    WeaponRuntimeFieldLocator, WeaponRuntimePathElement, WeaponRuntimeRootKind, WeaponRuntimeValue,
-};
+use sundial::package_authoring::weapon_runtime::{WeaponRuntimeRootKind, WeaponRuntimeValue};
 
 mod personalization;
 mod presentation;

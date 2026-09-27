@@ -3,6 +3,7 @@ use super::*;
 use crate::tag_payload::{read_i64, relative_target};
 use sundial::investment::MAX_WEAPON_SOCKETS;
 
+#[cfg(test)]
 pub(in crate::install) fn generation_socket_defaults(
     target: &Path,
     authored_directory: &Path,
@@ -11,48 +12,56 @@ pub(in crate::install) fn generation_socket_defaults(
     if hashes.is_empty() {
         return Ok(BTreeMap::new());
     }
-    with_generation(target, authored_directory, |directory| {
-        let manager = open_shadowkeep_package_manager(directory)?;
-        let read = |tag| manager.read_tag(TagHash(tag)).map_err(|e| e.to_string());
-        let globals = resolve_live_named_tag(&manager, "investment_globals", None)?;
-        let globals = read(globals.0)?;
-        let root = read(investment_globals_table_tag(&globals, 0)?)?;
-        let table = read(investment_root_table_tag(
-            &root,
-            ROOT_ITEM_DEFINITION_TABLE_SLOT,
-        )?)?;
-        let rows = rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)?;
-        let indices = rows
-            .iter()
-            .map(|row| read_u32(row, 0).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut result = BTreeMap::new();
-        for (row, hash) in rows.iter().zip(&indices) {
-            if !hashes.contains(hash) {
-                continue;
-            }
-            let item = read(read_u32(row, 16).map_err(|e| e.to_string())?)?;
-            if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != *hash {
-                return Err(format!(
-                    "Authored item 0x{hash:08X} has an inconsistent native definition"
-                ));
-            }
-            let defaults = decode_defaults(&item, &indices).map_err(|error| {
-                format!("Cannot read native sockets for authored item 0x{hash:08X}: {error}")
-            })?;
-            if result.insert(*hash, defaults).is_some() {
-                return Err(format!(
-                    "Authored item 0x{hash:08X} has duplicate native definitions"
-                ));
-            }
-        }
-        if result.len() != hashes.len() {
-            return Err(
-                "A retained authored definition is missing from its native generation".into(),
-            );
-        }
-        Ok(result)
+    with_generation(target, authored_directory, |generation| {
+        socket_defaults(generation, hashes)
     })
+}
+
+pub(in crate::install) fn socket_defaults(
+    generation: &Generation,
+    hashes: &BTreeSet<u32>,
+) -> Result<BTreeMap<u32, Vec<Option<u32>>>, String> {
+    if hashes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let manager = &generation.manager;
+    let read = |tag| manager.read_tag(TagHash(tag)).map_err(|e| e.to_string());
+    let globals = resolve_live_named_tag(manager, "investment_globals", None)?;
+    let globals = read(globals.0)?;
+    let root = read(investment_globals_table_tag(&globals, 0)?)?;
+    let table = read(investment_root_table_tag(
+        &root,
+        ROOT_ITEM_DEFINITION_TABLE_SLOT,
+    )?)?;
+    let rows = rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)?;
+    let indices = rows
+        .iter()
+        .map(|row| read_u32(row, 0).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut result = BTreeMap::new();
+    for (row, hash) in rows.iter().zip(&indices) {
+        if !hashes.contains(hash) {
+            continue;
+        }
+        let item = read(read_u32(row, 16).map_err(|e| e.to_string())?)?;
+        if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != *hash {
+            return Err(format!(
+                "Authored item 0x{hash:08X} has an inconsistent native definition"
+            ));
+        }
+        let defaults = decode_defaults(&item, &indices).map_err(|error| {
+            format!("Cannot read native sockets for authored item 0x{hash:08X}: {error}")
+        })?;
+        if result.insert(*hash, defaults).is_some() {
+            return Err(format!(
+                "Authored item 0x{hash:08X} has duplicate native definitions"
+            ));
+        }
+    }
+    if result.len() != hashes.len() {
+        return Err("A retained authored definition is missing from its native generation".into());
+    }
+    Ok(result)
 }
 
 fn decode_defaults(item: &[u8], indices: &[u32]) -> Result<Vec<Option<u32>>, String> {

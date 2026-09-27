@@ -4,8 +4,14 @@
 pub(in crate::app) enum MetadataSelection {
     FlagDefinition(usize),
     ValueDefinition(usize),
-    FlagOverride(usize, u8),
-    ValueOverride(usize, i32),
+    FlagOverride(usize),
+    ValueOverride(usize),
+}
+
+impl Default for MetadataSelection {
+    fn default() -> Self {
+        Self::FlagDefinition(0)
+    }
 }
 
 impl MetadataSelection {
@@ -13,13 +19,13 @@ impl MetadataSelection {
         match self {
             Self::FlagDefinition(index)
             | Self::ValueDefinition(index)
-            | Self::FlagOverride(index, _)
-            | Self::ValueOverride(index, _) => index,
+            | Self::FlagOverride(index)
+            | Self::ValueOverride(index) => index,
         }
     }
 
     pub(in crate::app) const fn is_value(self) -> bool {
-        matches!(self, Self::ValueDefinition(_) | Self::ValueOverride(_, _))
+        matches!(self, Self::ValueDefinition(_) | Self::ValueOverride(_))
     }
 }
 

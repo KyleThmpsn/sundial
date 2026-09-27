@@ -2,11 +2,11 @@
 
 use super::*;
 
-const EVENTS_DESCRIPTOR: usize = 0x20;
-const EVENT_ROW_CLASS: u32 = 0x8080_9BC9;
-const EVENT_ROW_SIZE: usize = 0x48;
+pub(super) const EVENTS_DESCRIPTOR: usize = 0x20;
+pub(super) const EVENT_ROW_CLASS: u32 = 0x8080_9BC9;
+pub(super) const EVENT_ROW_SIZE: usize = 0x48;
 
-fn event_rows(entity: &[u8]) -> Result<Vec<usize>, String> {
+pub(super) fn event_rows(entity: &[u8]) -> Result<Vec<usize>, String> {
     if read_u64(entity, EVENTS_DESCRIPTOR)? == 0 {
         return Ok(Vec::new());
     }
@@ -100,6 +100,23 @@ fn events_for_owner(
     Ok(result)
 }
 
+/// How an event endpoint that names a replaced component owner is re-pointed at the donor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventPolicy {
+    /// Pair the target's and donor's event sets and copy the donor's endpoint verbatim. Every
+    /// endpoint into the replaced owner must address a bound resource, and both entities must
+    /// declare the same connections around it. This is the only policy safe for an arbitrary
+    /// donor, because it never assumes two unrelated payloads agree about an interior offset.
+    Paired,
+    /// Re-point each endpoint that names the replaced owner on its own, without pairing whole
+    /// events. A bound endpoint still follows its binding identity, which survives the graft.
+    /// An unbound one keeps its class and interior offset and changes only the owner tag, and
+    /// only where the donor's own event graph proves it addresses that same class at that same
+    /// offset. Use this when the two entities wire the same component differently because the
+    /// rest of their components differ, which is what separates two weapon families.
+    Retarget,
+}
+
 /// Only rewrite endpoints proven to address corresponding bound resources. Nested objects and
 /// different event programs require explicit mappings, never a guessed owner-tag substitution.
 pub(super) fn graft_event_updates(
@@ -107,7 +124,11 @@ pub(super) fn graft_event_updates(
     donor: &[u8],
     target_owner: u32,
     donor_owner: u32,
+    policy: EventPolicy,
 ) -> Result<Vec<(usize, [u8; 16])>, String> {
+    if policy == EventPolicy::Retarget {
+        return retarget_event_updates(target, donor, target_owner, donor_owner);
+    }
     let moving = target_owner != donor_owner;
     let target_events = events_for_owner(target, target_owner, moving)?;
     let donor_events = events_for_owner(donor, donor_owner, moving)?;
@@ -128,6 +149,84 @@ pub(super) fn graft_event_updates(
                 bytes.copy_from_slice(&donor[donor_row + relative..donor_row + relative + 16]);
                 updates.push((target_row + relative, bytes));
             }
+        }
+    }
+    Ok(updates)
+}
+
+/// Every endpoint the entity's own event graph addresses inside one owner, as (class, offset).
+/// The client authored these, so an entry is evidence that the owner really does carry a
+/// receiver of that class at that offset.
+fn owner_event_endpoints(entity: &[u8], owner: u32) -> Result<BTreeSet<(u32, u64)>, String> {
+    let mut endpoints = BTreeSet::new();
+    for row in event_rows(entity)? {
+        for offset in [row + 8, row + 0x28] {
+            if read_u32(entity, offset)? == owner {
+                endpoints.insert((read_u32(entity, offset + 4)?, read_u64(entity, offset + 8)?));
+            }
+        }
+    }
+    Ok(endpoints)
+}
+
+fn retarget_event_updates(
+    target: &[u8],
+    donor: &[u8],
+    target_owner: u32,
+    donor_owner: u32,
+) -> Result<Vec<(usize, [u8; 16])>, String> {
+    if target_owner == donor_owner {
+        return Ok(Vec::new());
+    }
+    let target_aliases = weapon_component_aliases(target)?;
+    let donor_aliases = weapon_component_aliases(donor)?;
+    let donor_endpoints = owner_event_endpoints(donor, donor_owner)?;
+    let mut updates = Vec::new();
+    for row in event_rows(target)? {
+        for offset in [row + 8, row + 0x28] {
+            if read_u32(target, offset)? != target_owner {
+                continue;
+            }
+            let class = read_u32(target, offset + 4)?;
+            let position = read_u64(target, offset + 8)?;
+            let identities = target_aliases
+                .iter()
+                .filter(|alias| {
+                    alias.owner_tag == target_owner
+                        && alias.concrete_class == class
+                        && alias.resource_offset == position
+                })
+                .map(|alias| (alias.binding_hash, alias.resource_index))
+                .collect::<BTreeSet<_>>();
+            let mut bytes = [0; 16];
+            if identities.is_empty() {
+                if !donor_endpoints.contains(&(class, position)) {
+                    return Err(format!(
+                        "The donor component has no event connection of class 0x{class:08X} at offset {position:#X}, so this one cannot follow it."
+                    ));
+                }
+                bytes.copy_from_slice(&target[offset..offset + 16]);
+                bytes[..4].copy_from_slice(&donor_owner.to_le_bytes());
+            } else {
+                let resolved = donor_aliases
+                    .iter()
+                    .filter(|alias| {
+                        alias.owner_tag == donor_owner
+                            && identities.contains(&(alias.binding_hash, alias.resource_index))
+                    })
+                    .map(|alias| (alias.concrete_class, alias.resource_offset))
+                    .collect::<BTreeSet<_>>();
+                let [(donor_class, donor_position)] = resolved.into_iter().collect::<Vec<_>>()[..]
+                else {
+                    return Err(
+                        "A bound event connection does not resolve to one donor resource".into(),
+                    );
+                };
+                bytes[..4].copy_from_slice(&donor_owner.to_le_bytes());
+                bytes[4..8].copy_from_slice(&donor_class.to_le_bytes());
+                bytes[8..16].copy_from_slice(&donor_position.to_le_bytes());
+            }
+            updates.push((offset, bytes));
         }
     }
     Ok(updates)
@@ -175,6 +274,33 @@ pub(super) fn self_reference_owner_fields(data: &[u8], owner_tag: u32) -> BTreeS
         }
         fields.insert(offset);
         fields.insert(target);
+    }
+    fields
+}
+
+/// Callbacks can address an entity-bound instance without a reciprocal link.
+/// The caller has already validated every target's class and paired definition.
+pub(super) fn bound_reference_owner_fields(
+    data: &[u8],
+    owner_tag: u32,
+    targets: &BTreeMap<usize, u32>,
+) -> BTreeSet<usize> {
+    let mut fields = BTreeSet::new();
+    for offset in (0..data.len().saturating_sub(15)).step_by(8) {
+        if read_u32(data, offset) != Ok(owner_tag) {
+            continue;
+        }
+        let Ok(target) = read_u64(data, offset + 8).and_then(|value| {
+            usize::try_from(value).map_err(|_| "Bound reference offset is too large".to_owned())
+        }) else {
+            continue;
+        };
+        if targets
+            .get(&target)
+            .is_some_and(|class| read_u32(data, offset + 4) == Ok(*class))
+        {
+            fields.insert(offset);
+        }
     }
     fields
 }

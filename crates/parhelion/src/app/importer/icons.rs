@@ -1,30 +1,45 @@
 use super::*;
 use parhelion_import::d2_mot::{icon, reader::Reader};
 
-type Loaded = (usize, Result<egui::ColorImage, String>);
+enum Loaded {
+    Icon(usize, Result<egui::ColorImage, String>),
+    /// Indices of a batch a newer request replaced before it was read.
+    Dropped(Vec<usize>),
+}
 
 #[derive(Default)]
 pub(super) struct Icons {
     cache: BTreeMap<usize, Result<egui::TextureHandle, String>>,
     requests: Option<mpsc::SyncSender<Vec<usize>>>,
     results: Option<Receiver<Loaded>>,
-    last_requested: Vec<usize>,
+    /// Indices sent to the worker and not yet answered.
+    pending: BTreeSet<usize>,
 }
 
 impl Icons {
     pub fn poll(&mut self, ctx: &egui::Context) {
         if let Some(results) = &self.results {
-            while let Ok((index, result)) = results.try_recv() {
-                self.cache.insert(
-                    index,
-                    result.map(|image| {
-                        ctx.load_texture(
-                            format!("d2-importer-icon-{index}"),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        )
-                    }),
-                );
+            while let Ok(loaded) = results.try_recv() {
+                match loaded {
+                    Loaded::Icon(index, result) => {
+                        self.pending.remove(&index);
+                        self.cache.insert(
+                            index,
+                            result.map(|image| {
+                                ctx.load_texture(
+                                    format!("d2-importer-icon-{index}"),
+                                    image,
+                                    egui::TextureOptions::LINEAR,
+                                )
+                            }),
+                        );
+                    }
+                    Loaded::Dropped(indices) => {
+                        for index in indices {
+                            self.pending.remove(&index);
+                        }
+                    }
+                }
             }
         }
     }
@@ -33,9 +48,9 @@ impl Icons {
         let missing: Vec<_> = visible
             .iter()
             .copied()
-            .filter(|index| !self.cache.contains_key(index))
+            .filter(|index| !self.cache.contains_key(index) && !self.pending.contains(index))
             .collect();
-        if missing.is_empty() || missing == self.last_requested {
+        if missing.is_empty() {
             return;
         }
         // Bound GPU memory while retaining the current viewport. Package IO stays on the worker.
@@ -61,7 +76,11 @@ impl Icons {
                 while let Ok(mut indices) = incoming.recv() {
                     // Prioritize the latest viewport after fast scrolling.
                     for latest in incoming.try_iter() {
-                        indices = latest;
+                        let mut dropped = std::mem::replace(&mut indices, latest);
+                        dropped.retain(|index| !indices.contains(index));
+                        if sender.send(Loaded::Dropped(dropped)).is_err() {
+                            return;
+                        }
                     }
                     for index in indices {
                         let path = cache
@@ -73,7 +92,7 @@ impl Icons {
                                 [image.width() as usize, image.height() as usize],
                                 image.as_raw(),
                             );
-                            if sender.send((index, Ok(image))).is_err() {
+                            if sender.send(Loaded::Icon(index, Ok(image))).is_err() {
                                 return;
                             }
                             ctx.request_repaint();
@@ -103,7 +122,7 @@ impl Icons {
                                 }
                                 egui::ColorImage::from_rgba_unmultiplied(size, &rgba)
                             });
-                        if sender.send((index, result)).is_err() {
+                        if sender.send(Loaded::Icon(index, result)).is_err() {
                             return;
                         }
                         ctx.request_repaint();
@@ -116,7 +135,7 @@ impl Icons {
             .as_ref()
             .is_some_and(|sender| sender.try_send(missing.clone()).is_ok())
         {
-            self.last_requested = missing;
+            self.pending.extend(missing);
         }
     }
 

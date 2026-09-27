@@ -179,7 +179,6 @@ pub(super) fn build(c: &mut Effect) -> Result<()> {
             );
         }
     }
-    let usage = load(&c.refs.join("emission-native-usage/usage.json"))?;
     let shell = Payload(fs::read(
         c.refs.join("native-stage-09-bindings/raw/80BFB12B.bin"),
     )?);
@@ -190,22 +189,6 @@ pub(super) fn build(c: &mut Effect) -> Result<()> {
     let mut evidence = vec![];
     let mut created = BTreeMap::new();
     for render_stage in [7, 9] {
-        let native_material = if render_stage == 7 {
-            "80EC271F"
-        } else {
-            "80BFB12B"
-        };
-        let donor = usage["matches"]
-            .as_array()
-            .context("native effect draws")?
-            .iter()
-            .find(|v| v["material"] == native_material)
-            .context("inspected native effect draw")?;
-        ensure!(
-            donor["stage"] == render_stage && donor["layout"] == 139,
-            "native effect stage or vertex layout differs"
-        );
-        let donor = hex::decode(donor["record"].as_str().context("native effect record")?)?;
         for draw in c.source.draws(render_stage)? {
             let material = c.source.raw(&draw.material)?;
             let ps = material.u32(0x2B0)?;
@@ -321,7 +304,7 @@ pub(super) fn build(c: &mut Effect) -> Result<()> {
             }
             for (channel, faces) in &draw.groups {
                 c.draws
-                    .add(render_stage, &donor, &draw, *channel, faces, &created[&key])?;
+                    .add(render_stage, &draw, *channel, faces, &created[&key])?;
             }
         }
         c.draws.layout(render_stage)?;

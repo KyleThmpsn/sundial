@@ -9,9 +9,10 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub mod animation;
+pub mod owned;
 mod sections;
 
-fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
+pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let report = load(&root.join("report.json"))?;
     ensure!(
         &report["item_tag"] == item,
@@ -94,10 +95,36 @@ pub fn compatible_map(
     source_item_tag: &Value,
     native_item_tag: &Value,
 ) -> Result<Value> {
+    if config["source_owned"] == true {
+        return owned::mapping(config, source_item_tag, native_item_tag);
+    }
     let source =
         load(&Path::new(config["source"].as_str().context("source rig path")?).join("rig.json"))?;
     let native =
         load(&Path::new(config["native"].as_str().context("native rig path")?).join("rig.json"))?;
+    let required = config["source_geometry"]
+        .as_str()
+        .map(|geometry| used_bones(Path::new(geometry), source_item_tag))
+        .transpose()?;
+    compatible_map_loaded(
+        config,
+        source_item_tag,
+        native_item_tag,
+        &source,
+        &native,
+        required.as_ref(),
+    )
+}
+
+/// Match a source against several native rigs without rereading its geometry.
+pub(crate) fn compatible_map_loaded(
+    config: &Value,
+    source_item_tag: &Value,
+    native_item_tag: &Value,
+    source: &Value,
+    native: &Value,
+    required: Option<&BTreeSet<usize>>,
+) -> Result<Value> {
     ensure!(
         &source["item_tag"] == source_item_tag && &native["item_tag"] == native_item_tag,
         "rig item identity mismatch"
@@ -112,8 +139,8 @@ pub fn compatible_map(
         ensure!(matches.len() == 1, "skeleton owner missing or ambiguous");
         Ok(matches[0]["bones"].as_array().context("bones")?.clone())
     };
-    let from = bones(&source, &config["source_owner"])?;
-    let to = bones(&native, &config["native_owner"])?;
+    let from = bones(source, &config["source_owner"])?;
+    let to = bones(native, &config["native_owner"])?;
     for set in [&from, &to] {
         ensure!(
             set.iter()
@@ -122,11 +149,9 @@ pub fn compatible_map(
             "skeleton indices are not dense"
         );
     }
-    let mut required = if let Some(geometry) = config["source_geometry"].as_str() {
-        used_bones(Path::new(geometry), source_item_tag)?
-    } else {
-        (0..from.len()).collect()
-    };
+    let mut required = required
+        .cloned()
+        .unwrap_or_else(|| (0..from.len()).collect());
     // Unused bones may be absent from an older rig. Every used bone and all its
     // ancestors must still match by name and hierarchy. Unmapped slots remain
     // invalid, so later conversion cannot accidentally use a substitute bone.
@@ -252,6 +277,10 @@ fn unlink_owner(payload: &mut Payload, owner: u32) -> Result<Vec<usize>> {
 /// Convert the complete source FK arrays into a native component envelope.
 /// The result is unlinked. Animation/controller and entity connections must be
 /// converted before a package may use it.
+pub fn validate_native_instance(bytes: &[u8]) -> Result<()> {
+    sections::validate_instance(&Payload(bytes.to_vec()))
+}
+
 pub fn skeleton(source: &[u8], native: &[u8], native_owner: u32) -> Result<(Payload, Value)> {
     let modern = Payload(source.to_vec());
     let mut old = Payload(native.to_vec());
@@ -606,6 +635,19 @@ mod tests {
         fs::write(source.join("raw/00000012.bin"), &positions).unwrap();
         let config = json!({"source":source,"source_geometry":source,"native":native,"source_owner":"A","native_owner":"B"});
         let result = compatible_map(&config, &json!("SOURCE"), &json!("NATIVE")).unwrap();
+        let required = used_bones(&source, &json!("SOURCE")).unwrap();
+        assert_eq!(
+            compatible_map_loaded(
+                &config,
+                &json!("SOURCE"),
+                &json!("NATIVE"),
+                &from,
+                &to,
+                Some(&required),
+            )
+            .unwrap(),
+            result
+        );
         assert_eq!(result["bone_map"], json!([0, 65535, 1]));
         assert_eq!(result["required_source_bones"], json!([0, 2]));
         assert!(convert::split_mapped(&positions, &[0; 8], &[0, u16::MAX, 1]).is_ok());

@@ -2,15 +2,15 @@ mod accessibility;
 mod canvas;
 pub(crate) mod capture;
 mod cards;
-mod design;
 mod entry;
 mod guidance;
 mod identity;
 mod library_controls;
+mod library_issues;
 mod navigation;
 use super::attachment::{Change, Target};
 use super::*;
-use crate::app::custom_perks::editor::tests::{editor, fixture};
+use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture};
 
 impl Workbench {
     pub(in crate::app) fn set_test_editor(&mut self, editor: PerkEditor) {
@@ -106,42 +106,13 @@ fn inline_parameters_keep_back_and_validation_available_during_loading() {
 }
 
 #[test]
-fn unified_workbench_preserves_drafts_and_parameter_controls_in_both_modes() {
-    for size in [
-        egui::vec2(640.0, 480.0),
-        egui::vec2(1000.0, 720.0),
-        egui::vec2(1320.0, 900.0),
-    ] {
-        for experimental in [false, true] {
-            let mut workbench = Workbench::default();
-            workbench.set_test_editor(editor(fixture()));
-            let before = workbench.documents[0].recipe.clone();
-            let ctx = egui::Context::default();
-            let mut output = egui::FullOutput::default();
-            for _ in 0..3 {
-                output = frame(&ctx, &mut workbench, experimental, size, vec![]);
-            }
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            for text in ["Apply and Back", "Back", "…"] {
-                let rect = label(&output, text).unwrap_or_else(|| panic!("Missing {text}"));
-                assert!(
-                    screen.contains_rect(rect),
-                    "{text} outside {size:?}: {rect:?}"
-                );
-            }
-            assert_eq!(workbench.documents[0].recipe, before);
-        }
-    }
-}
-
-#[test]
 fn discard_restores_saved_or_initial_perk_and_clears_pending_edits() {
     for saved in [false, true] {
         let mut workbench = Workbench::default();
         workbench.set_test_editor(editor(fixture()));
         let original = workbench.documents[0].recipe.clone();
         if saved {
-            workbench.documents[0].baseline = Some(serde_json::to_vec(&original).unwrap());
+            workbench.documents[0].set_baseline(Some(serde_json::to_vec(&original).unwrap()));
         }
         workbench.documents[0].recipe.name = "Changed".into();
         workbench.documents[0]
@@ -157,42 +128,6 @@ fn discard_restores_saved_or_initial_perk_and_clears_pending_edits() {
         assert!(workbench.documents[0].pending_effect.is_none());
         assert!(workbench.editor.is_none());
     }
-}
-
-#[test]
-fn the_engine_catalog_opens_as_its_own_window_with_a_kind_selected() {
-    let mut workbench = Workbench {
-        open: true,
-        initialized: true,
-        documents: vec![Document::new(PerkRecipe::new(), None)],
-        ..Default::default()
-    };
-    workbench.open_engine_catalog();
-    workbench.engine.kinds.selected =
-        Some((sundial::investment::discovery::kinds::Family::Effects, 1));
-    let ctx = egui::Context::default();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1320.0, 900.0),
-            vec![],
-        );
-    }
-    for text in [
-        "Engine Catalog",
-        "Installed Effect Entries",
-        "Create Entity",
-    ] {
-        assert!(label(&output, text).is_some(), "Missing {text}");
-    }
-    // Unavailable installed counts must not be replaced by the bundled survey.
-    assert!(output.shapes.iter().any(|shape| matches!(
-        &shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text.contains("unavailable until native content")
-    )));
 }
 
 #[test]

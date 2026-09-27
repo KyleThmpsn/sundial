@@ -175,7 +175,12 @@ impl PackageAuthoringApp {
         if self.importer.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        if !self.importer.open || !self.importer.enabled {
+        let closed = !self.importer.open || !self.importer.enabled;
+        // A pending search is written when this window or Parhelion closes.
+        if closed || ctx.input(|input| input.viewport().close_requested()) {
+            self.importer.save_view();
+        }
+        if closed {
             return;
         }
         self.importer.icons.poll(ctx);
@@ -189,6 +194,7 @@ impl PackageAuthoringApp {
             self.importer.weapons.clear();
             self.importer.selected.clear();
             self.importer.browser.dirty = true;
+            self.importer.browser.reset_scroll = true;
         }
         if !self.importer.read_requested
             && !self.importer.busy()
@@ -303,6 +309,7 @@ impl PackageAuthoringApp {
                             }
                             self.importer.browser.types = types;
                             self.importer.browser.dirty = true;
+                            self.importer.browser.reset_scroll = true;
                             self.importer.browser.anchor = None;
                             self.importer.scan_error = None;
                             self.importer.notice.clear();
@@ -328,7 +335,7 @@ impl PackageAuthoringApp {
                                 source,
                                 status::Record {
                                     working: false,
-                                    note: "Untested.".into(),
+                                    note: String::new(),
                                 },
                             );
                         }
@@ -602,7 +609,7 @@ impl PackageAuthoringApp {
         let mut status_change = None;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(idle && has_catalog, |ui| {
-                ui.label(format!("{} shown · {} selected", shown, selected));
+                ui.label(format!("{shown} shown · {selected} selected"));
                 if ui
                     .add_enabled(shown > 0, egui::Button::new("Select Shown"))
                     .clicked()
@@ -626,7 +633,7 @@ impl PackageAuthoringApp {
                     self.importer.browser.anchor = None;
                 }
                 ui.add_enabled_ui(selected > 0, |ui| {
-                    style::more_menu(ui, |ui| {
+                    style::more_menu(ui, "Selection", |ui| {
                         if ui.button("Mark Working").clicked() {
                             status_change = Some(true);
                             ui.close_menu();
@@ -825,6 +832,7 @@ impl PackageAuthoringApp {
                 self.importer.settings.modern_packages = Some(path);
                 self.importer.weapons.clear();
                 self.importer.browser.dirty = true;
+                self.importer.browser.reset_scroll = true;
                 self.importer.browser.types.clear();
                 self.importer.browser.anchor = None;
                 self.importer.selected.clear();
@@ -877,7 +885,7 @@ impl PackageAuthoringApp {
         let existing: Vec<_> = self
             .recipe_entries
             .iter()
-            .map(|entry| entry.path.clone())
+            .map(|entry| (entry.path.clone(), entry.identity_hash))
             .collect();
         let Some(modern) = self.importer.settings.modern_packages.clone() else {
             return;
@@ -889,8 +897,21 @@ impl PackageAuthoringApp {
         let native = PathBuf::from(&self.packages);
         let selected: Arc<Vec<Weapon>> =
             Arc::new(self.importer.selected_weapons().cloned().collect());
+        let risky_donors = self
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.items_with_unrelated_collection_conditions())
+            .unwrap_or_default();
+        // Weapons Parhelion installed are not donors: their definitions are authored, and
+        // checking them only slows every import.
+        let stock = |hash: u32| {
+            self.catalog
+                .as_ref()
+                .and_then(|catalog| catalog.item_definition_tag(hash))
+                .is_none_or(crate::package_profile::is_stock_item_definition)
+        };
         let donors = Arc::new(
-            serde_json::json!({"weapons":self.donor_summaries.iter().map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"weapon_type":donor.type_name,"present_in_native":true})).collect::<Vec<_>>()}),
+            serde_json::json!({"weapons":self.donor_summaries.iter().filter(|donor| stock(donor.hash)).map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"weapon_type":donor.type_name,"present_in_native":true,"bucket_hash":donor.bucket_hash,"collection_backed":donor.collection_backed,"unrelated_collection_condition":risky_donors.contains(&donor.hash)})).collect::<Vec<_>>()}),
         );
         let workers = import_workers(selected.len());
         let (sender, receiver) = mpsc::channel();
@@ -1002,12 +1023,15 @@ fn import_workers(weapons: usize) -> usize {
 /// authored gameplay and narrative edits, or saves it as a new entry.
 fn save_imported_recipe(
     library: &RecipeLibrary,
-    existing: &[PathBuf],
+    existing: &[(PathBuf, u32)],
     recipe: &Path,
 ) -> Result<PathBuf, String> {
     let recipe = WeaponRecipe::load_json(recipe).map_err(|error| error.to_string())?;
-    for path in existing {
-        let baseline = WeaponRecipe::load_json(path).map_err(|error| error.to_string())?;
+    let identity = recipe.identity.item_hash.parse_u32().unwrap_or_default();
+    for (path, _) in existing.iter().filter(|(_, hash)| *hash == identity) {
+        let Ok(baseline) = WeaponRecipe::load_json(path) else {
+            continue;
+        };
         if baseline.identity.item_hash != recipe.identity.item_hash {
             continue;
         }

@@ -216,7 +216,7 @@ impl SundialApp {
                         } else if matches!(snapshot.plugs, ItemPlugs::Authored(ref plugs) if !plugs.is_empty())
                         {
                             ui.weak(
-                                    "Plugs are preserved but cannot be guided without an installed item definition.",
+                                    "Plugs are kept but cannot be edited without an installed definition.",
                                 );
                         }
                     }

@@ -390,5 +390,5 @@ fn incompatible_saved_values_show_the_donor_without_silently_replacing_the_saved
     });
     assert_eq!(overrides, before);
     assert_eq!(drafts[&(field.locator, 0)], "0x3F800000");
-    assert!(text(&output).contains("invalid for this field's type, size, or range"));
+    assert!(text(&output).contains("Saved value is invalid."));
 }

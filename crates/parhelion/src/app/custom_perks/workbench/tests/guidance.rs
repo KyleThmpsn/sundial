@@ -17,7 +17,7 @@ fn copying_one_effect_keeps_its_identity_separate_from_the_template_plug() {
     };
     workbench.copy_behavior(&choice);
     let recipe = &workbench.documents[workbench.selected].recipe;
-    assert_eq!(recipe.name, "Custom Effect 453");
+    assert_eq!(recipe.name, "Custom Thorn Catalyst");
     assert!(
         recipe.description.is_empty(),
         "No decoded summary is available"
@@ -47,6 +47,10 @@ fn discovery_matches_displayed_behavior_and_operation_names() {
     assert!(!EditingFilter::Stock.allows(Some(&behavior)));
     assert!(!EditingFilter::Programs.allows(None));
     assert!(EditingFilter::All.allows(None));
+    assert!(
+        EditingFilter::default() == EditingFilter::All,
+        "Add from Perk opens on every stock effect"
+    );
 }
 
 #[test]
@@ -87,14 +91,20 @@ fn effect_orders_keep_the_same_results_and_only_change_their_order() {
     let order_by = |order| {
         let mut sorted = rows.to_vec();
         sorted.sort_by_cached_key(|(name, kind, direct)| {
-            guidance::effect_sort_key(order, kind, name, *direct)
+            guidance::effect_sort_key(
+                order,
+                kind,
+                name,
+                *direct,
+                guidance::effect_rank(name, None),
+            )
         });
         sorted.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
     };
-    // Best Match puts the effect whose own name matched the search first.
+    // Suggested puts the effect whose own name matched the search first, then a famous perk.
     assert_eq!(
-        order_by(EffectOrder::BestMatch),
-        ["outlaw", "absolution", "rampage"]
+        order_by(EffectOrder::Suggested),
+        ["outlaw", "rampage", "absolution"]
     );
     assert_eq!(
         order_by(EffectOrder::Name),

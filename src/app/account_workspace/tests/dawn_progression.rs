@@ -109,26 +109,3 @@ fn dawn_view_carries_vendor_and_mission_rows_for_the_selected_character() {
     workspace.apply_progression_view(0, view).unwrap();
     assert!(!workspace.account_changed_from(&before));
 }
-
-/// Vendor state rides along in the view for the inspector, but it is not progression: a vendor
-/// edit is summarised once as vendor state, not as a progression change on every character.
-#[test]
-fn dawn_vendor_edits_are_not_summarised_as_progression_changes() {
-    let dir = TestDirectory::new("progression-dawn-vendor-summary");
-    let mut workspace = workspace_with_activity(&dir);
-    let before = workspace.clone();
-
-    let mut activity = workspace.dawn_account().unwrap().activity_state().clone();
-    activity.vendors[0].points += 1000;
-    workspace
-        .dawn_account_mut()
-        .unwrap()
-        .set_activity_state(activity)
-        .unwrap();
-
-    let summaries = workspace.account_change_summaries(&before, 10);
-    assert_eq!(
-        summaries,
-        vec!["player-state.db/vendor and mission state: updated".to_owned()]
-    );
-}

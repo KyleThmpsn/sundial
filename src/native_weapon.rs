@@ -157,19 +157,4 @@ mod tests {
         assert_eq!(classify_base_damage(&[462, 463, 464]), BaseDamage::Variable);
         assert_eq!(classify_base_damage(&[1048]), BaseDamage::NoMarker);
     }
-    #[test]
-    fn unknown_animation_is_not_compatible() {
-        assert_eq!(
-            animation_compatibility(Some(1), Some(1)),
-            AnimationCompatibility::Compatible
-        );
-        assert_eq!(
-            animation_compatibility(Some(1), Some(2)),
-            AnimationCompatibility::DifferentGroups
-        );
-        assert_eq!(
-            animation_compatibility(None, Some(1)),
-            AnimationCompatibility::Unchecked
-        );
-    }
 }

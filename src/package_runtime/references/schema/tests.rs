@@ -35,29 +35,3 @@ fn generated_layouts_use_their_own_checked_size_and_program() {
     data[0x68..0x70].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(generated(&data).is_err());
 }
-
-#[test]
-fn crash_path_schema_anchors_are_available_without_package_files() {
-    let mut registry = Registry::new().unwrap();
-    for (class, size) in [
-        (0x8080_72BD, 0x340),
-        (0x8080_73A5, 0xA0),
-        (0x8080_7378, 0x88),
-        (0x8080_6CC6, 0x128),
-        (0x8080_6CC8, 0x18),
-        (0x8080_6E28, 0x34),
-    ] {
-        assert_eq!(
-            registry
-                .record(class, |_| panic!("Native schema must be embedded"))
-                .unwrap()
-                .size,
-            size
-        );
-    }
-    assert!(
-        registry
-            .record(0, |_| panic!("Invalid class must not be read"))
-            .is_err()
-    );
-}

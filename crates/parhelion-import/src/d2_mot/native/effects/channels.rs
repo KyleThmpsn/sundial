@@ -1,6 +1,7 @@
 //! Preserve named, live object inputs when a source model needs additional controls.
 use super::*;
 use std::collections::BTreeSet;
+mod scoped;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Channel {
@@ -178,7 +179,11 @@ fn declarations(
             )));
         }
         // Storage allocation and dependency pointers belong to the native bank.
-        declaration[72..96].fill(0);
+        // The numeric input index is a ushort. The following flags belong to
+        // the channel procedure, not to the allocation. Native computed rows
+        // legitimately encode 0x0001_FFFF here (no input, procedure flag 1).
+        declaration[72..74].fill(0);
+        declaration[80..96].fill(0);
         let mut dependencies = vec![];
         ensure!(deps.len() <= 1, "channel dependency mask is too wide");
         if let Some(at) = deps.first() {
@@ -263,13 +268,14 @@ fn required_source_channels(source: &Source, model: &Value) -> Result<BTreeSet<S
 fn source_channels(
     source: &Source,
     objects: &BTreeMap<String, u8>,
-) -> Result<(BTreeMap<String, Channel>, Option<String>)> {
-    let mut result = BTreeMap::new();
+) -> Result<(BTreeMap<String, Channel>, Option<String>, Value)> {
+    let mut models = Vec::new();
     let mut variable = None;
     for model in source.report["models"]
         .as_array()
         .context("source models")?
     {
+        let mut result = BTreeMap::new();
         let owner_tag = tag(&model["owner"])?;
         let owner = source.raw(model["owner"].as_str().unwrap())?;
         let entity = source.raw(model["entity"].as_str().context("source entity")?)?;
@@ -355,7 +361,7 @@ fn source_channels(
                 merge_source_channel(&mut result, hash.clone(), channel)?;
                 continue;
             }
-            if bank.u32(row + 72)? == 0xFFFF {
+            if bank.u16(row + 72)? == u16::MAX {
                 let provider = procedural::validate_source(source, &bank, &entity)
                     .with_context(|| format!("source channel {hash}"))?;
                 ensure!(
@@ -407,8 +413,16 @@ fn source_channels(
             channel.resting_procedure = resting_procedure;
             merge_source_channel(&mut result, hash.clone(), channel)?;
         }
+        models.push((
+            model["model"]
+                .as_str()
+                .context("source model tag")?
+                .to_owned(),
+            result,
+        ));
     }
-    Ok((result, variable))
+    let (channels, aliases) = scoped::merge(models, objects)?;
+    Ok((channels, variable, aliases))
 }
 
 /// Run source channel/provider checks and the donor's minimum channel-bank
@@ -416,7 +430,7 @@ fn source_channels(
 pub(super) fn preflight(source: &Path, native: &Path, owner_tag: u32) -> Result<()> {
     let source = Source::read(source)?;
     let objects = program::native_channels(native, Some(owner_tag))?;
-    let (extra, _) = source_channels(&source, &objects)?;
+    let (extra, _, _) = source_channels(&source, &objects)?;
     if extra.is_empty() {
         return Ok(());
     }
@@ -464,7 +478,7 @@ fn vector_allocation(old_bank: &Payload) -> Result<()> {
     let old_rows = old_bank.array(old_schema + 0xD8, 112, Some(0x808097A1))?;
     let storage = old_rows
         .iter()
-        .map(|at| old_bank.u32(*at + 72))
+        .map(|at| old_bank.u16(*at + 72))
         .collect::<Result<BTreeSet<_>>>()?;
     ensure!(
         channels.len() == old_rows.len()
@@ -472,7 +486,7 @@ fn vector_allocation(old_bank: &Payload) -> Result<()> {
                 .into_iter()
                 .filter(|i| *i != 0xFFFF)
                 .collect::<BTreeSet<_>>()
-                == (0..old_bank.u64(old_bank.pointer(16)? + 0x90)? as u32).collect(),
+                == (0..u16::try_from(old_bank.u64(old_bank.pointer(16)? + 0x90)?)?).collect(),
         "native channel bank has nonvector allocation"
     );
     Ok(())
@@ -571,7 +585,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         c.objects = program::object_channel_map(&c.graph.read("owner")?.0)?;
         return Ok(());
     }
-    let (mut extra, variable) = source_channels(&c.source, &c.objects)?;
+    let (mut extra, variable, aliases) = source_channels(&c.source, &c.objects)?;
     let deferred = extra
         .iter()
         .filter_map(|(hash, channel)| {
@@ -647,7 +661,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let mut storage = old_rows
         .iter()
-        .map(|at| old_bank.u32(*at + 72))
+        .map(|at| old_bank.u16(*at + 72))
         .collect::<Result<Vec<_>>>()?;
     vector_allocation(&old_bank)?;
     ensure!(
@@ -673,7 +687,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
                 "additional source channel {hash} has no public name"
             );
             storage.push(if channel.name.is_some() {
-                storage.iter().filter(|i| **i != 0xFFFF).count() as u32
+                u16::try_from(storage.iter().filter(|i| **i != u16::MAX).count())?
             } else {
                 0xFFFF
             });
@@ -719,7 +733,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     // The input-state slots are ordered by the two-part property name. Preserve
     // the declaration ordinal separately because connections use that ordinal.
     for (slot, (_, ordinal)) in sorted_names.iter().enumerate() {
-        storage[*ordinal] = slot as u32;
+        storage[*ordinal] = u16::try_from(slot)?;
     }
     let first_global = sorted_names
         .iter()
@@ -1150,7 +1164,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     c.graph.write("entity", &entity_bytes)?;
     c.graph.node_mut("entity")?["patches"] = json!(entity_patches);
     c.objects = program::object_channel_map(&owner_bytes)?;
-    c.graph.manifest["object_channel_adapter"] = json!({"template":format!("{bank_tag:08X}"),"inputs":c.objects,"native_input_order_preserved":true,"source_names_and_authored_initial_values_preserved":true,"binding":"live native float4 channel bank","gameplay_verified":false});
+    c.graph.manifest["object_channel_adapter"] = json!({"template":format!("{bank_tag:08X}"),"inputs":c.objects,"model_aliases":aliases,"native_input_order_preserved":true,"source_names_and_authored_initial_values_preserved":aliases.as_object().is_none_or(|m|m.is_empty()),"binding":"live native float4 channel bank","gameplay_verified":false});
     Ok(())
 }
 

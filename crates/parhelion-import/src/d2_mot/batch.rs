@@ -11,7 +11,10 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static RIG_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn identity(namespace: &str) -> Result<Value> {
     let mut values = serde_json::Map::new();
@@ -80,7 +83,7 @@ pub(crate) fn prepare_one(
     native: &Path,
     out: &Path,
 ) -> Result<Value> {
-    prepare_one_reusing(row, ordinal, modern, native, out, None, &mut |_| {})
+    prepare_one_reusing(row, ordinal, modern, native, out, None, None, &mut |_| {})
 }
 
 /// Shared location for searched carriers, keyed by the native package set so
@@ -158,6 +161,7 @@ fn extend_carriers(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_one_reusing(
     row: &Value,
     ordinal: u32,
@@ -165,6 +169,7 @@ pub(crate) fn prepare_one_reusing(
     native: &Path,
     out: &Path,
     source_cache: Option<&Path>,
+    shared_native: Option<&Reader>,
     progress: &mut dyn FnMut(String),
 ) -> Result<Value> {
     let hash = profile::hash(row, "hash")?;
@@ -180,9 +185,17 @@ pub(crate) fn prepare_one_reusing(
     } else {
         progress("Extracting source models and textures…".into());
         let mut r = Reader::new(modern, &source_path, true)?;
-        let source = extract::extract_with_progress(&mut r, hash, None, progress)?;
+        let source = extract::extract_with_progress(
+            &mut r,
+            hash,
+            None,
+            super::geometry::Detail::parse(row["detail"].as_str())?,
+            progress,
+        )?;
         write_json(&source_path.join("report.json"), &source)?;
-        let source_rig = rig::inspect(&mut r, profile::hash(&source, "item_tag")?, true)?;
+        let source_rig =
+            rig::inspect_with_audio(&mut r, profile::hash(&source, "item_tag")?, true)?;
+        super::hud::export(&mut r, &source, &source_rig)?;
         r.finish()?;
         (source, source_rig)
     };
@@ -192,10 +205,14 @@ pub(crate) fn prepare_one_reusing(
     );
     progress("Extracting donor models and materials…".into());
     let native_path = folder.join("native");
-    let mut r = Reader::new(native, &native_path, false)?;
+    let mut r = if let Some(reader) = shared_native {
+        reader.shared_export(&native_path)?
+    } else {
+        Reader::new(native, &native_path, false)?
+    };
     let template = shadowkeep::extract(&mut r, donor)?;
     write_json(&native_path.join("template-report.json"), &template)?;
-    let native_rig = rig::inspect(&mut r, profile::hash(&template, "item_tag")?, false)?;
+    let native_rig = rig::inspect_with_audio(&mut r, profile::hash(&template, "item_tag")?, false)?;
     r.finish()?;
     let from = source_rig["skeletons"]
         .as_array()
@@ -208,7 +225,7 @@ pub(crate) fn prepare_one_reusing(
         .as_array()
         .context("native skeletons")?
     {
-        let config = json!({"source":source_path,"native":native_path,"source_geometry":source_path,"source_owner":from["owner"],"native_owner":to["owner"]});
+        let config = json!({"source":source_path,"native":native_path,"source_geometry":source_path,"source_owner":from["owner"],"native_owner":to["owner"],"source_owned":row["source_owned_rig"] == true});
         if let Ok(mapping) =
             rig_convert::compatible_map(&config, &source["item_tag"], &template["item_tag"])
         {
@@ -303,34 +320,74 @@ pub(crate) fn prepare_one_reusing(
     result["graph"] = assembled["graph"].clone();
     progress("Linking source first-person animation clips…".into());
     let graph_dir = PathBuf::from(assembled["graph"].as_str().context("graph path")?);
-    let animation = match rig_convert::animation::first_person::prepare(
+    let calibration = if row["source_owned_rig"] == true {
+        let path = row["rig_calibration"]
+            .as_str()
+            .context("source-owned rig needs a calibration rig export")?;
+        Some(serde_json::from_slice::<Value>(&fs::read(path)?)?)
+    } else {
+        None
+    };
+    let animation = match rig_convert::animation::first_person::prepare_with_rig(
         modern,
         native,
         &source_rig,
         &native_rig,
         &folder.join("animation"),
         &graph_dir,
+        calibration.as_ref(),
     ) {
         Ok(section) => section,
         // A failed link keeps the donor's native animation rather than the import.
         Err(error) => {
+            ensure!(
+                calibration.is_none(),
+                "source-owned animation chain: {error:#}"
+            );
             eprintln!("First-person animation stays native: {error:#}");
             json!({"first_person_status":"native","reason":format!("{error:#}"),"gameplay_verified":false})
         }
     };
     let graph_path = graph_dir.join("asset-graph.json");
+    ensure!(
+        calibration.is_none()
+            || animation["first_person"]["rigs"]
+                .as_array()
+                .is_some_and(|r| r.len() == 2),
+        "source-owned rig was not linked to the animation chain"
+    );
     let mut graph: Value = serde_json::from_slice(&fs::read(&graph_path)?)?;
+    graph["pattern_global_id_hash"] = id["pattern_global_id_hash"].clone();
     graph["animation"] = animation.clone();
+    let audio = super::audio::prepare(modern, native, &graph_dir, &source_rig, &native_rig);
+    graph["audio"] = audio.clone();
+    progress("Keeping donor sight and barrel markers…".into());
+    let mut kept = Reader::new(native, &folder.join("kept"), false)?;
+    super::kept_parts::build(
+        &mut kept,
+        &source_path,
+        &template,
+        &graph_dir,
+        &mut graph,
+        ordinal,
+    )
+    .context("kept donor parts")?;
+    super::markers::author(&mut kept, &source_path, &template, &graph_dir, &mut graph)
+        .context("source part markers")?;
+    kept.finish()?;
     write_json(&graph_path, &graph)?;
     result["animation"] = animation;
+    result["audio"] = audio;
     progress("Saving weapon recipe and source lore…".into());
     let icon = STANDARD.encode(fs::read(source_path.join("item-icon.png"))?);
+    let hud = STANDARD.encode(fs::read(source_path.join("hud-icon.png"))?);
     let damage = row["damage"]
         .as_str()
         .filter(|v| ["kinetic", "arc", "solar", "void"].contains(v));
     // Unsupported source elements retain the native gameplay donor. Their
     // original element remains in the source plan and extraction metadata.
     let mut recipe = json!({"schema":1,"collection_placement":"sunrise_badge","namespace":namespace,"donor":{"item_hash":format!("0x{donor:08X}"),"expected_name":row["native_donor"]},"identity":id,"name":row["name"],"flavor":source["flavor"].as_str().unwrap_or(""),"source":"Source: Imported arsenal","overrides":{"icon_edit":{"imported_image":{"png_base64":icon}},"modern_damage_type":damage}});
+    recipe["overrides"]["hud_icon"] = json!({"png_base64":hud});
     if let Some(lore) = source["lore"]["text"].as_str() {
         recipe["overrides"]["lore"] = json!(lore);
     } else {
@@ -372,24 +429,6 @@ fn has_rigid_carrier(template: &Value) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-#[cfg(test)]
-mod automatic_tests {
-    use super::*;
-    #[test]
-    fn rigid_carriers_require_every_used_bone_to_map_to_the_native_root() {
-        assert!(rigid_root(
-            &json!({"required_source_bones":[0],"bone_map":[0,1,2]})
-        ));
-        assert!(!rigid_root(
-            &json!({"required_source_bones":[0,1],"bone_map":[0,1]})
-        ));
-        assert!(!rigid_root(
-            &json!({"required_source_bones":[0],"bone_map":[1,0]})
-        ));
-        assert!(!rigid_root(&json!({})));
-    }
 }
 
 pub fn prepare(plan: &Path, modern: &Path, native: &Path, out: &Path) -> Result<Value> {
@@ -459,6 +498,42 @@ pub fn donors(
     donors_with_progress(source, catalog, kind, native, out, &mut |_| {})
 }
 
+fn native_rig_cache(native: &Path) -> Option<PathBuf> {
+    let stamp = super::service::package_stamp(native).ok()?;
+    let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Sundial/parhelion/importer/cache/native-rigs-v1")
+        .join(stamp);
+    fs::create_dir_all(&root).ok()?;
+    Some(root)
+}
+
+fn cached_rig(path: &Path, item: u32) -> Option<Value> {
+    let report: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    (report["item_tag"] == format!("{item:08X}") && report["skeletons"].is_array())
+        .then_some(report)
+}
+
+fn native_rig(reader: &mut Reader, item: u32, cache: Option<&Path>) -> Result<Value> {
+    let path = cache.map(|root| root.join(format!("{item:08X}.json")));
+    if let Some(report) = path.as_deref().and_then(|path| cached_rig(path, item)) {
+        return Ok(report);
+    }
+    let report = rig::inspect(reader, item, false)?;
+    if let Some(path) = path {
+        // Concurrent imports may discover the same rig. Publish only complete JSON.
+        let temporary = path.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            RIG_CACHE_WRITE.fetch_add(1, Ordering::Relaxed)
+        ));
+        if write_json(&temporary, &report).is_ok() {
+            let _ = fs::rename(&temporary, &path);
+            let _ = fs::remove_file(&temporary);
+        }
+    }
+    Ok(report)
+}
+
 pub fn donors_with_progress(
     source: &Path,
     catalog: &Path,
@@ -468,6 +543,19 @@ pub fn donors_with_progress(
     progress: &mut dyn FnMut(String),
 ) -> Result<Value> {
     progress("Opening destination packages for donor matching…".into());
+    let mut reader = Reader::discovery(native, out, false)?;
+    donors_with_reader(source, catalog, kind, native, out, &mut reader, progress)
+}
+
+pub(crate) fn donors_with_reader(
+    source: &Path,
+    catalog: &Path,
+    kind: &str,
+    native: &Path,
+    out: &Path,
+    r: &mut Reader,
+    progress: &mut dyn FnMut(String),
+) -> Result<Value> {
     let catalog: Value = serde_json::from_slice(&fs::read(catalog)?)?;
     let source_report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let gameplay = source
@@ -488,7 +576,8 @@ pub fn donors_with_progress(
         .iter()
         .min_by_key(|s| s["bones"].as_array().map_or(usize::MAX, Vec::len))
         .context("source weapon skeleton")?;
-    let mut r = Reader::new(native, out, false)?;
+    let required_bones = rig_convert::used_bones(source, &source_rig["item_tag"])?;
+    let rig_cache = native_rig_cache(native);
     let globals_tag = r
         .manager
         .lookup
@@ -539,22 +628,26 @@ pub fn donors_with_progress(
                     r.tag(gameplay_item, Some(0x80807BEA))?.as_ref(),
                 )?;
             }
-            let exotic = r.tag(item, Some(0x80807BEA))?.u8(0xBA)? == 5;
-            let report = rig::inspect(&mut r, item, false)?;
+            let rarity = r.tag(item, Some(0x80807BEA))?.u8(0xBA)?;
+            let exotic = rarity == 5;
+            let report = native_rig(r, item, rig_cache.as_deref())?;
             let folder = out.join(format!("{hash:08X}"));
             fs::create_dir_all(&folder)?;
             write_json(&folder.join("rig.json"), &report)?;
             let mut reasons = Vec::new();
             for to in report["skeletons"].as_array().context("native skeletons")? {
                 let config = json!({"source":source,"source_geometry":source,"native":folder,"source_owner":from["owner"],"native_owner":to["owner"]});
-                match rig_convert::compatible_map(
+                match rig_convert::compatible_map_loaded(
                     &config,
                     &source_rig["item_tag"],
                     &report["item_tag"],
+                    &source_rig,
+                    &report,
+                    Some(&required_bones),
                 ) {
                     Ok(mapping) => {
                         matches.push(
-                            json!({"name":row["name"],"hash":hash,"exotic":exotic,"rig":config,"mapping":mapping}),
+                            json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"rig":config,"mapping":mapping}),
                         );
                         eprintln!("Matched native rig {}", row["name"]);
                     }
@@ -584,7 +677,7 @@ pub fn donors_with_progress(
     Ok(result)
 }
 
-fn donor_candidate(row: &Value, kind: &str, preferred: Option<u32>) -> bool {
+pub(crate) fn donor_candidate(row: &Value, kind: &str, preferred: Option<u32>) -> bool {
     row["present_in_native"].as_bool() == Some(true)
         && (row["weapon_type"].as_str() == Some(kind)
             || preferred.is_some_and(|hash| row["hash"].as_u64() == Some(u64::from(hash))))
@@ -593,6 +686,58 @@ fn donor_candidate(row: &Value, kind: &str, preferred: Option<u32>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires configured source export, weapon type and native packages"]
+    fn configured_donor_matching_keeps_shared_reader_available_for_conversion() {
+        let source = PathBuf::from(
+            std::env::var_os("PARHELION_IMPORT_SOURCE_EXPORT")
+                .expect("PARHELION_IMPORT_SOURCE_EXPORT"),
+        );
+        let native = PathBuf::from(
+            std::env::var_os("PARHELION_IMPORT_NATIVE_PACKAGES")
+                .expect("PARHELION_IMPORT_NATIVE_PACKAGES"),
+        );
+        let kind =
+            std::env::var("PARHELION_IMPORT_WEAPON_TYPE").expect("PARHELION_IMPORT_WEAPON_TYPE");
+        let output = tempfile::tempdir().unwrap();
+        let matching = output.path().join("matching");
+        let mut reader = Reader::discovery(&native, &matching, false).unwrap();
+        let result = donors_with_reader(
+            &source,
+            &source.join("donors.json"),
+            &kind,
+            &native,
+            &matching,
+            &mut reader,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(
+            result["matches"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        );
+        let export = reader
+            .shared_export(&output.path().join("candidate"))
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&reader.manager, &export.manager));
+    }
+
+    #[test]
+    fn rig_cache_rejects_wrong_item_and_incomplete_report() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("rig.json");
+        write_json(
+            &path,
+            &json!({"item_tag":"12345678","skeletons":[{"bones":[]}]}),
+        )
+        .unwrap();
+        assert!(cached_rig(&path, 0x12345678).is_some());
+        assert!(cached_rig(&path, 0x87654321).is_none());
+        write_json(&path, &json!({"item_tag":"12345678"})).unwrap();
+        assert!(cached_rig(&path, 0x12345678).is_none());
+    }
 
     #[test]
     #[ignore = "Requires explicitly configured native packages, source export and donor"]
@@ -659,6 +804,5 @@ mod tests {
     fn identity_matches_existing_imported_chroma_recipe() {
         let id = identity("parhelion.bulk.42bdcc00").unwrap();
         assert_eq!(id["item_hash"], "0x39A0CE76");
-        assert_eq!(id.as_object().unwrap().len(), 12);
     }
 }

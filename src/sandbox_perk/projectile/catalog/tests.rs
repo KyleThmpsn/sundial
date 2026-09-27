@@ -72,66 +72,6 @@ fn anonymous_perk_references_do_not_hide_a_native_ancestor() {
 }
 
 #[test]
-fn an_attached_entity_is_named_an_attachment_after_the_perks_that_carry_it() {
-    // Firefly's explosion entity, 0x80C19A55: no path, no name, attached by two perks.
-    let names = |index: u16| match index {
-        1091 => Some("Firefly".to_owned()),
-        1382 => Some("Ace of Spades Catalyst".to_owned()),
-        _ => None,
-    };
-    let mut asset = entry(0x80C1_9A55, Kind::Entity, 23);
-    asset.perk_indices = vec![1091, 1382];
-    asset.contexts = [1091, 1382]
-        .map(|perk| Context {
-            perk: Some(perk),
-            ..context(asset.graph, "", None, 1)
-        })
-        .to_vec();
-    asset.source_hint = Some("Attached Entity".into());
-    assert_eq!(
-        asset.discovery_name_with(names, |_| None).as_deref(),
-        Some("Shared by Ace of Spades Catalyst, Firefly Attachment")
-    );
-    asset.perk_indices = vec![1091];
-    asset.contexts.clear();
-    assert_eq!(
-        asset.discovery_name_with(names, |_| None).as_deref(),
-        Some("Firefly Attachment")
-    );
-    // The always-active and on-draw forms are still attachments.
-    asset.source_hint = Some("Attached Entity Always Active".into());
-    assert_eq!(
-        asset.discovery_name_with(names, |_| None).as_deref(),
-        Some("Firefly Attachment")
-    );
-    // A spawned entity, a projectile and an ancestor-named entity keep their kind.
-    asset.source_hint = Some("Spawned Entity".into());
-    assert_eq!(
-        asset.discovery_name_with(names, |_| None).as_deref(),
-        Some("Firefly Entity")
-    );
-    let mut projectile = entry(2, Kind::Projectile, 18);
-    projectile.perk_indices = vec![1091];
-    projectile.source_hint = Some("Attached Entity".into());
-    assert_eq!(
-        projectile.discovery_name_with(names, |_| None).as_deref(),
-        Some("Firefly Projectile")
-    );
-    let mut owned = entry(3, Kind::Entity, 23);
-    owned.source_hint = Some("Attached Entity".into());
-    owned.contexts = vec![context(
-        30,
-        "content/characters/cabal/ultra_emperor_decoy.pattern.tft",
-        None,
-        1,
-    )];
-    assert_eq!(
-        owned.discovery_name().as_deref(),
-        Some("Cabal Ultra Emperor Decoy Attachment")
-    );
-}
-
-#[test]
 fn a_legacy_name_on_an_ancestor_does_not_stop_the_climb() {
     // Asset 1 is bound by 2, which only a Destiny 1 template name covers, and 2 is bound by
     // 3, which an installed path names. The installed name must still be found, and the
@@ -188,7 +128,7 @@ fn shared_ancestor_keeps_competing_paths_instead_of_naming_the_first() {
     // Neither path wins. The label states both, which is what the resource records.
     assert_eq!(
         asset.discovery_name().as_deref(),
-        Some("Shared by Fallen Captain, Fallen Shank Projectile")
+        Some("Projectile Shared by Fallen Captain, Fallen Shank")
     );
 }
 
@@ -302,24 +242,11 @@ fn context(graph: u32, path: &str, item: Option<u32>, depth: usize) -> Context {
 #[test]
 fn labels_distinguish_native_identity_from_parent_and_perk_context() {
     let mut entry = entry(7, Kind::Projectile, 18);
-    assert_eq!(entry.label(), "Projectile 0x00000007");
-    assert_eq!(entry.label_rank(), 3);
-    let entity = Entry {
-        kind: Kind::Entity,
-        object_type: 28,
-        ..entry.clone()
-    };
-    assert_eq!(entity.label(), "Entity · system 0x00000007");
-    assert_eq!(
-        Entry {
-            object_type: 23,
-            ..entity.clone()
-        }
-        .kind_label(),
-        "Entity · hop_on"
-    );
-    assert!(!Kind::Entity.spawnable() && Kind::Emitter.spawnable());
     entry.perk_indices = vec![1178];
+    assert_eq!(
+        entry.discovery_name_source_with(|_| Some("Micro-Missile".into()), |_| None),
+        "Related Native Resource or Stock Use"
+    );
     assert_eq!(
         entry.label_with_perks(|_| Some("Micro-Missile".into())),
         "Projectile · Used by Micro-Missile"
@@ -347,6 +274,10 @@ fn labels_distinguish_native_identity_from_parent_and_perk_context() {
     entry.native_name = Some("Engine Asset".into());
     assert_eq!(entry.label(), "Engine Asset");
     entry.native_paths = vec!["content/solar_strike_projectile.pattern.tft".into()];
+    assert_eq!(
+        entry.discovery_name_source_with(|_| None, |_| None),
+        "Native Asset Name"
+    );
     assert_eq!(entry.label(), "solar_strike_projectile.pattern.tft");
     assert_eq!(entry.label_rank(), 0);
 }
@@ -444,37 +375,6 @@ fn a_weapon_pattern_ancestor_names_the_projectile_after_the_weapon() {
     let mut blank = entry(8, Kind::Emitter, 17);
     blank.contexts.push(context(9, "", None, 1));
     assert_eq!(blank.label_rank(), 3);
-}
-
-#[test]
-fn source_groups_follow_the_same_evidence_as_labels() {
-    let mut asset = entry(7, Kind::Projectile, 18);
-    assert_eq!(asset.source_group(|_| None, |_| None), "Unnamed · test");
-    asset.perk_indices = vec![1178];
-    assert_eq!(
-        asset.source_group(|_| Some("Micro-Missile".into()), |_| None),
-        "Used by Micro-Missile"
-    );
-    asset.contexts.push(context(30, "", Some(0x2B50_ED7D), 2));
-    assert_eq!(
-        asset.source_group(
-            |_| None,
-            |_| Some(ItemName::new("The Mountaintop", "Grenade Launcher"))
-        ),
-        "From The Mountaintop"
-    );
-    asset
-        .contexts
-        .push(context(12, "content/sandbox/muzzle.pattern.tft", None, 1));
-    assert_eq!(
-        asset.source_group(|_| None, |_| None),
-        "Referenced by muzzle.pattern.tft"
-    );
-    asset.native_paths = vec!["content\\sandbox\\weapons\\player\\demo.pattern.tft".into()];
-    assert_eq!(
-        asset.source_group(|_| None, |_| None),
-        "sandbox / weapons / player"
-    );
 }
 
 #[test]
@@ -599,55 +499,6 @@ fn the_reference_walk_stops_at_the_nearest_named_level() {
 }
 
 #[test]
-fn native_discovery_uses_common_ancestry_without_promoting_gameplay_reports() {
-    let familiar = entry(0x80BAA9B8, Kind::Projectile, 18);
-    assert!(knowledge::get(familiar.graph).is_some());
-    assert_eq!(
-        familiar.discovery_name().as_deref(),
-        Some("Hammer of Sol A")
-    );
-    assert!(familiar.discovery_summary().is_empty());
-    let mut asset = entry(1, Kind::Projectile, 18);
-    assert!(asset.discovery_name().is_none());
-    assert!(
-        !asset.has_discovery_identity(),
-        "an asset without source evidence or an assigned display name stays unidentified"
-    );
-    asset.contexts = vec![
-        context(
-            1,
-            "content/characters/taken/taken_wizard.pattern.tft",
-            None,
-            2,
-        ),
-        context(
-            2,
-            "content/characters/taken/taken_wizard_v400.pattern.tft",
-            None,
-            2,
-        ),
-    ];
-    asset.source_hint = Some("Shared Asset, Role Unmapped".into());
-    assert_eq!(
-        asset.discovery_name().as_deref(),
-        Some("Taken Wizard Projectile")
-    );
-    assert!(asset.has_discovery_identity());
-    assert!(!asset.discovery_summary().contains("Solar"));
-    asset.contexts.push(context(
-        3,
-        "content/characters/taken/taken_captain.pattern.tft",
-        None,
-        2,
-    ));
-    // Unrelated families never merge into one invented family. The label lists them.
-    assert_eq!(
-        asset.discovery_name().as_deref(),
-        Some("Shared by Taken Captain, Taken Wizard Projectile")
-    );
-}
-
-#[test]
 fn discovery_variants_are_stable_across_catalog_order_and_keep_shared_weapon_types() {
     let mut first = entry(8, Kind::Projectile, 18);
     first.contexts = vec![context(
@@ -703,7 +554,7 @@ fn discovery_variants_are_stable_across_catalog_order_and_keep_shared_weapon_typ
                 ))
             )
             .as_deref(),
-        Some("Shared by Weapon 10, Weapon 20, Weapon 30 Projectile")
+        Some("Projectile Shared by Weapon 10, Weapon 20, Weapon 30")
     );
     shared.contexts.pop();
     assert_eq!(

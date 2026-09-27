@@ -22,8 +22,17 @@ pub(super) fn plan(
     custom_plugs: &mut [ResolvedCustomPlug],
     branding: crate::branding::Branding,
 ) -> AuthoringResult<Plan> {
+    // Each item and private plug takes a pair, definition and strings. A subclass list takes
+    // two: the list and its companion, then the display record and its companion. Each authored
+    // path node takes one more: its pool and its node record.
+    let subclass_pairs = resolved
+        .iter()
+        .filter_map(|donor| donor.subclass_list.as_ref())
+        .map(|list| 2 + list.nodes.len())
+        .sum::<usize>();
     let weapon_tag_ordinal_base = weapon_count
         .checked_add(custom_plugs.len())
+        .and_then(|count| count.checked_add(subclass_pairs))
         .ok_or_else(|| invalid("Authored host-tag count overflowed"))?
         .checked_mul(2)
         .ok_or_else(|| invalid("Authored host-tag count overflowed"))?;
@@ -37,8 +46,18 @@ pub(super) fn plan(
                     .weapon
                     .overrides
                     .rarity
-                    .map_or_else(|| weapon_rarity(&donor.definition), Ok)
-                    .map_err(|error| error.context(donor.weapon.error_context()))?,
+                    .map_or_else(
+                        || {
+                            if donor.weapon.kind.is_weapon() {
+                                weapon_rarity(&donor.definition)
+                            } else {
+                                gear::rarity(&donor.definition)
+                            }
+                        },
+                        Ok,
+                    )
+                    .map_err(|error| donor.weapon.in_recipe(error))?,
+                plain: donor.weapon.kind == crate::ItemKind::Subclass,
             })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
@@ -75,7 +94,11 @@ pub(super) fn plan(
                         donor.donor_icon_container
                     ))
                 })
-                .map_err(|error| error.context(donor.weapon.icon_error_context()))
+                .map_err(|error| {
+                    donor
+                        .weapon
+                        .in_recipe_as(error, donor.weapon.icon_error_context())
+                })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
     let default_badge = branding.badge()?;
@@ -230,7 +253,11 @@ pub(super) fn author_icon_rows(
             authored_weapon_icon_indices.push(icon_index);
             Ok(())
         })()
-        .map_err(|error| error.context(donor.weapon.icon_error_context()))?;
+        .map_err(|error| {
+            donor
+                .weapon
+                .in_recipe_as(error, donor.weapon.icon_error_context())
+        })?;
     }
     let mut custom_badges = BTreeMap::new();
     for (name, &container) in &assets.custom_badges {

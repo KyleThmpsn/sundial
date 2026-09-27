@@ -428,36 +428,37 @@ impl SundialApp {
                 if let Some(plugs) = plugs {
                     plugs.draw_header(ui);
                 }
-                if !is_empty && current_hash.is_some_and(|hash| self.manifest.item_has_power_stat(hash)) {
-                        ui.add_enabled_ui(guided_editable, |ui| {
-                            if let Some(level) = current_level {
-                                for action in item_editor::draw_level_and_quantity(
-                                    ui,
-                                    ("equipment-numeric", character_index, slot),
-                                    NumericItemFields {
-                                        level: Some(level),
-                                        power_max: current_hash
-                                            .and_then(|hash| self.manifest.item_power_cap(hash)),
-                                        allow_power_above_cap: self
-                                            .preferences
-                                            .experimental_power_above_cap,
-                                        quantity: None,
-                                        quantity_max: None,
-                                    },
-                                ) {
-                                    if let ItemEditorAction::SetLevel { level } = action {
-                                        self.select_equipment_level(character_index, slot, level);
-                                    }
+                if !is_empty
+                    && current_hash.is_some_and(|hash| self.manifest.item_has_power_stat(hash))
+                {
+                    ui.add_enabled_ui(guided_editable, |ui| {
+                        if let Some(level) = current_level {
+                            for action in item_editor::draw_level_and_quantity(
+                                ui,
+                                ("equipment-numeric", character_index, slot),
+                                NumericItemFields {
+                                    level: Some(level),
+                                    power_max: current_hash
+                                        .and_then(|hash| self.manifest.item_power_cap(hash)),
+                                    allow_power_above_cap: self
+                                        .preferences
+                                        .experimental_power_above_cap,
+                                    quantity: None,
+                                    quantity_max: None,
+                                },
+                            ) {
+                                if let ItemEditorAction::SetLevel { level } = action {
+                                    self.select_equipment_level(character_index, slot, level);
                                 }
-                            } else {
-                                ui.label("Power");
-                                ui.weak("<invalid or missing>");
                             }
-                        });
+                        } else {
+                            ui.label("Power");
+                            ui.weak("<invalid or missing>");
+                        }
+                    });
 
-                        ui.add_space(8.0);
-                    }
-
+                    ui.add_space(8.0);
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
@@ -468,7 +469,7 @@ impl SundialApp {
                             "Delete equipped item",
                         )
                         .on_hover_text(format!(
-                            "Delete this item and set the {} slot to empty. This does not move it to inventory (use Unequip).",
+                            "Delete this item and empty the {} slot. Use Unequip to keep it.",
                             equipment_slot_label(slot)
                         ));
                         empty_requested = response.clicked();
@@ -484,7 +485,7 @@ impl SundialApp {
                                 equipment_slot_label(slot)
                             )
                         } else {
-                            "Unequipping to inventory requires settings schema 6".to_owned()
+                            "Unequipping to inventory requires settings v6".to_owned()
                         };
                         let response = ui
                             .add_enabled(

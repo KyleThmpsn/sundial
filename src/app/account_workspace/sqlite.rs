@@ -299,6 +299,10 @@ pub(super) fn add_inventory_item<D: NativeAccountDocument>(
         )
         .map_err(domain_inventory_error::<D>)?;
     document.observe_item_identity(instance_soid);
+    // Only once the item is in, so a refused add leaves the account as it was.
+    document
+        .note_new_character_item(character_index, instance_soid)
+        .map_err(app_inventory_error::<D>)?;
     Ok(InventoryItemLocation {
         character_index,
         item_index,

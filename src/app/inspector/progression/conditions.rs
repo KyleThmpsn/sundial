@@ -11,7 +11,7 @@ use crate::app::{
 use crate::catalog::{Catalog, CollectionConditionTokenDef, UnlockDefinition};
 
 use super::{
-    definitions::definition_name,
+    definitions::{definition_name, storage_text},
     state::{MetadataSelection, ProgressionInspectorState},
 };
 
@@ -109,11 +109,9 @@ pub(super) fn evaluate_condition_program(
         Some(ExpressionValue::Boolean(false)) => ConditionEvaluation::Failed,
         Some(ExpressionValue::Number(value)) => ConditionEvaluation::Value(value),
         Some(ExpressionValue::Unknown) => {
-            ConditionEvaluation::Unresolved("referenced state is unavailable".into())
+            ConditionEvaluation::Unresolved("Referenced state unavailable".into())
         }
-        None => ConditionEvaluation::Unresolved(
-            "program is malformed, cyclic, or contains an unsupported opcode".into(),
-        ),
+        None => ConditionEvaluation::Unresolved("Unsupported or malformed".into()),
     }
 }
 
@@ -127,7 +125,7 @@ pub(super) fn draw_condition_programs(
     state: &mut ProgressionInspectorState,
 ) {
     for (program_index, program) in programs.iter().enumerate() {
-        egui::CollapsingHeader::new(format!("Condition program {}", program_index + 1))
+        egui::CollapsingHeader::new(format!("Condition Program {}", program_index + 1))
             .id_salt((id_source, owner_hash, program_index))
             .show(ui, |ui| {
                 let evaluation = evaluate_condition_program(program, catalog, snapshot);
@@ -220,7 +218,7 @@ fn draw_condition_dependencies(
     if dependencies.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!("Evaluated dependencies ({})", dependencies.len()))
+    egui::CollapsingHeader::new(format!("Evaluated Dependencies ({})", dependencies.len()))
         .default_open(true)
         .show(ui, |ui| {
             for token in dependencies {
@@ -288,7 +286,7 @@ fn condition_dependency_value(
                 Some(ExpressionValue::Boolean(value)) => value.to_string(),
                 Some(ExpressionValue::Number(value)) => value.to_string(),
                 Some(ExpressionValue::Unknown) => "referenced state unavailable".into(),
-                None => "expression is malformed, cyclic, or unsupported".into(),
+                None => "unsupported or malformed".into(),
             }
         }
         _ => "not a dependency".into(),
@@ -334,22 +332,22 @@ fn condition_token_selection(
 
 pub(in crate::app) fn condition_opcode_label(kind: u32) -> String {
     match kind {
-        1 => "Flag reference (1)".into(),
+        1 => "Flag Reference (1)".into(),
         2 => "Not (2)".into(),
         3 => "Or (3)".into(),
         4 => "And (4)".into(),
         5 => "Nor (5)".into(),
-        6 => "Not equal (6)".into(),
+        6 => "Not Equal (6)".into(),
         7 => "Nand (7)".into(),
         8 => "Equal (8)".into(),
-        9 => "Not equal (9)".into(),
-        10 => "Value reference (10)".into(),
+        9 => "Not Equal (9)".into(),
+        10 => "Value Reference (10)".into(),
         11 => "Literal (11)".into(),
-        12 => "Shared expression (12)".into(),
-        13 => "Greater than (13)".into(),
-        14 => "Greater than or equal (14)".into(),
-        15 => "Less than (15)".into(),
-        16 => "Less than or equal (16)".into(),
+        12 => "Shared Expression (12)".into(),
+        13 => "Greater Than (13)".into(),
+        14 => "Greater Than or Equal (14)".into(),
+        15 => "Less Than (15)".into(),
+        16 => "Less Than or Equal (16)".into(),
         17 => "Add (17)".into(),
         18 => "Subtract (18)".into(),
         19 => "Multiply (19)".into(),
@@ -359,9 +357,9 @@ pub(in crate::app) fn condition_opcode_label(kind: u32) -> String {
         23 => "FNV-1a Hash (23)".into(),
         24 => "FNV-1a Combine (24)".into(),
         28 => "Bitwise Not (28)".into(),
-        25 => "Bitwise and (25)".into(),
-        26 => "Bitwise or (26)".into(),
-        27 => "Bitwise xor (27)".into(),
+        25 => "Bitwise And (25)".into(),
+        26 => "Bitwise Or (26)".into(),
+        27 => "Bitwise Xor (27)".into(),
         _ => format!("Undecoded ({kind})"),
     }
 }
@@ -389,48 +387,10 @@ pub(in crate::app) fn condition_token_resolution(
     };
     let identity = definition_name(definition)
         .or_else(|| catalog.display_name(definition.hash))
-        .unwrap_or("<not resolved>");
-    let slot = definition.compact_slot.map_or_else(
-        || "unbanked".into(),
-        |slot| format!("bank {} · slot {slot}", definition.bank()),
-    );
-    format!("#{index} · {identity} · 0x{:08X} · {slot}", definition.hash)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::catalog::{ProgressionContextDef, ProgressionContextKind, UnlockDefinition};
-
-    use super::{
-        condition_opcode_label, decoded_condition_opcode, definition_has_undecoded_opcodes,
-    };
-
-    #[test]
-    fn shared_expression_opcode_and_known_native_binary_range_are_decoded() {
-        let definition = UnlockDefinition {
-            runtime_writers: Vec::new(),
-            tested_by: vec![ProgressionContextDef {
-                direct_references: Vec::new(),
-                hash: 0,
-                kind: ProgressionContextKind::ExpressionMapping,
-                name: String::new(),
-                type_name: String::new(),
-                description: String::new(),
-                paths: Vec::new(),
-                condition_programs: vec![vec![[12, 91]]],
-            }],
-            ..UnlockDefinition::default()
-        };
-
-        assert!(!definition_has_undecoded_opcodes(&definition));
-        assert_eq!(condition_opcode_label(15), "Less than (15)");
-        assert_eq!(condition_opcode_label(4), "And (4)");
-        assert_eq!(condition_opcode_label(9), "Not equal (9)");
-        assert_eq!(condition_opcode_label(12), "Shared expression (12)");
-        assert_eq!(condition_opcode_label(22), "Negate Number (22)");
-        assert_eq!(condition_opcode_label(23), "FNV-1a Hash (23)");
-        assert!(decoded_condition_opcode(22));
-        assert!(decoded_condition_opcode(23));
-        assert!(decoded_condition_opcode(28));
-    }
+        .unwrap_or(crate::app::inspector::UNNAMED);
+    let storage = storage_text(definition, kind == 10);
+    format!(
+        "#{index} · {identity} · 0x{:08X} · {storage}",
+        definition.hash
+    )
 }

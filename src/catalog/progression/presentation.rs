@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalog::PresentationNodeChildren;
 
 pub(in crate::catalog) fn scan_presentation_nodes(
     package: &mut ProgressionPackageData<'_>,
@@ -228,4 +229,186 @@ pub(in crate::catalog) fn definition_index_list(
             }
         })
         .collect()
+}
+
+/// Converts scanned nodes to their cached form, with parent indices resolved to hashes.
+pub(in crate::catalog) fn presentation_node_models(
+    nodes: &[PresentationNodeDef],
+) -> Vec<PresentationNode> {
+    nodes
+        .iter()
+        .map(|node| PresentationNode {
+            hash: node.hash,
+            name: node.name.clone(),
+            parents: parent_node_hashes(nodes, &node.parents),
+        })
+        .collect()
+}
+
+/// Resolves parent node indices to hashes in package order, without repeats.
+pub(in crate::catalog) fn parent_node_hashes(
+    nodes: &[PresentationNodeDef],
+    parents: &[usize],
+) -> Vec<u64> {
+    let mut hashes = Vec::with_capacity(parents.len());
+    for node in parents.iter().filter_map(|&parent| nodes.get(parent)) {
+        if !hashes.contains(&node.hash) {
+            hashes.push(node.hash);
+        }
+    }
+    hashes
+}
+
+/// Presentation-node lookups, built on first use and never serialized.
+#[derive(Default)]
+pub(in crate::catalog) struct PresentationIndex {
+    nodes: HashMap<u64, usize>,
+    collectibles: HashMap<u64, usize>,
+    records: HashMap<u64, usize>,
+    children: HashMap<u64, ChildPositions>,
+}
+
+/// Table positions of the definitions listing one node as a parent.
+#[derive(Default)]
+struct ChildPositions {
+    nodes: Vec<usize>,
+    collectibles: Vec<usize>,
+    records: Vec<usize>,
+}
+
+impl PresentationIndex {
+    fn build(catalog: &Catalog) -> Self {
+        let mut index = Self::default();
+        for (position, node) in catalog.presentation_nodes.iter().enumerate() {
+            index.nodes.entry(node.hash).or_insert(position);
+            for parent in &node.parents {
+                index
+                    .children
+                    .entry(*parent)
+                    .or_default()
+                    .nodes
+                    .push(position);
+            }
+        }
+        for (position, collectible) in catalog.collectibles.iter().enumerate() {
+            index
+                .collectibles
+                .entry(collectible.hash)
+                .or_insert(position);
+            for parent in &collectible.parent_nodes {
+                index
+                    .children
+                    .entry(*parent)
+                    .or_default()
+                    .collectibles
+                    .push(position);
+            }
+        }
+        for (position, record) in catalog.records.iter().flatten().enumerate() {
+            index.records.entry(record.hash).or_insert(position);
+            for parent in &record.parent_nodes {
+                index
+                    .children
+                    .entry(*parent)
+                    .or_default()
+                    .records
+                    .push(position);
+            }
+        }
+        for children in index.children.values_mut() {
+            children.nodes.dedup();
+            children.collectibles.dedup();
+            children.records.dedup();
+        }
+        index
+    }
+}
+
+impl Catalog {
+    /// Every presentation node in table order.
+    #[cfg(test)]
+    pub(crate) fn presentation_nodes(&self) -> &[PresentationNode] {
+        &self.presentation_nodes
+    }
+
+    pub(crate) fn presentation_node(&self, hash: u64) -> Option<&PresentationNode> {
+        let position = *self.presentation_index().nodes.get(&hash)?;
+        self.presentation_nodes.get(position)
+    }
+
+    /// The nodes, collectibles and records listing this node as a parent, in table order.
+    pub(crate) fn presentation_node_children(&self, hash: u64) -> PresentationNodeChildren<'_> {
+        let Some(children) = self.presentation_index().children.get(&hash) else {
+            return PresentationNodeChildren::default();
+        };
+        let records = self.records.as_deref().unwrap_or_default();
+        PresentationNodeChildren {
+            nodes: children
+                .nodes
+                .iter()
+                .filter_map(|&position| self.presentation_nodes.get(position))
+                .collect(),
+            collectibles: children
+                .collectibles
+                .iter()
+                .filter_map(|&position| self.collectibles.get(position))
+                .collect(),
+            records: children
+                .records
+                .iter()
+                .filter_map(|&position| records.get(position))
+                .collect(),
+        }
+    }
+
+    /// Root-first chain of first parents above `hash` (the node, collectible or record itself
+    /// excluded). Empty when unknown.
+    pub(crate) fn presentation_path(&self, hash: u64) -> Vec<&PresentationNode> {
+        let index = self.presentation_index();
+        let records = self.records.as_deref().unwrap_or_default();
+        let first_parent = if let Some(node) = self.presentation_node(hash) {
+            node.parents.first()
+        } else if let Some(collectible) = index
+            .collectibles
+            .get(&hash)
+            .and_then(|&position| self.collectibles.get(position))
+        {
+            collectible.parent_nodes.first()
+        } else {
+            index
+                .records
+                .get(&hash)
+                .and_then(|&position| records.get(position))
+                .and_then(|record| record.parent_nodes.first())
+        };
+        self.presentation_chain(hash, first_parent.copied())
+    }
+
+    /// Follows first parents up from `parent` and returns the chain root first. Stops at a
+    /// repeated node or at `start`, so cyclic tables still end.
+    pub(in crate::catalog) fn presentation_chain(
+        &self,
+        start: u64,
+        parent: Option<u64>,
+    ) -> Vec<&PresentationNode> {
+        let mut chain = Vec::<&PresentationNode>::new();
+        let mut next = parent;
+        while let Some(hash) = next {
+            if hash == start || chain.iter().any(|node| node.hash == hash) {
+                break;
+            }
+            let Some(node) = self.presentation_node(hash) else {
+                break;
+            };
+            chain.push(node);
+            next = node.parents.first().copied();
+        }
+        chain.reverse();
+        chain
+    }
+
+    fn presentation_index(&self) -> &PresentationIndex {
+        self.presentation_index
+            .get_or_init(|| PresentationIndex::build(self))
+    }
 }

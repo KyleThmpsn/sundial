@@ -32,7 +32,9 @@ impl Browser {
         if let Some(error) = &perk.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        ui.label(perk_explanation(perk));
+        if let Some(explanation) = perk_explanation(perk) {
+            ui.label(explanation);
+        }
         if let Some(behavior) = &perk.behavior {
             ui.add_space(8.0);
             ui.strong("Decoded Behavior");
@@ -48,11 +50,11 @@ impl Browser {
             .id_salt(("perk-technical", perk.index))
             .show(ui, |ui| {
                 ui.monospace(format!(
-                    "Effect {} · Hash {:08X}\nRuntime Key {:08X}",
+                    "Effect {} · Hash 0x{:08X}\nRuntime Key 0x{:08X}",
                     perk.index, perk.hash, perk.runtime_key
                 ));
                 if let Some(action) = perk.action {
-                    ui.monospace(format!("Action {action:08X}"));
+                    ui.monospace(format!("Action 0x{action:08X}"));
                 }
                 for graph in &perk.graphs {
                     draw_entity(ui, graph);
@@ -64,7 +66,7 @@ impl Browser {
         let uses = default_uses(&self.uses, perk, pattern);
         if pattern.is_none() {
             ui.strong("Referenced in Item Defaults");
-            ui.small("Base items and default socket plugs that reference this effect. This does not establish activation or compatibility. Optional socket choices are excluded.");
+            ui.small("Base items and default plugs only.");
         }
         if uses.is_empty() {
             ui.weak("No item default references found.");
@@ -79,7 +81,7 @@ impl Browser {
                         .iter()
                         .find(|source| source.hash == hash)
                         .map_or("Unnamed Plug", |source| source.name.as_str());
-                    format!("Default Plug: {name} · {hash:08X}")
+                    format!("Default Plug: {name} · 0x{hash:08X}")
                 },
             );
             if ui
@@ -87,7 +89,7 @@ impl Browser {
                     "{} · Pattern {}",
                     usage.weapon_name, usage.pattern_index
                 ))
-                .on_hover_text(format!("Item {:08X}\n{source}", usage.weapon_hash))
+                .on_hover_text(format!("Item 0x{:08X}\n{source}", usage.weapon_hash))
                 .clicked()
             {
                 self.navigate(Page::Patterns, usize::from(usage.pattern_index));
@@ -109,11 +111,12 @@ impl Browser {
             .as_ref()
             .filter(|caster| caster.perk_index == perk.index)
         else {
-            ui.label("Host requirements have not been established. Test with your weapon in game.");
+            ui.label("Not established.");
             return;
         };
-        ui.label("In the stock Temptation's Hook setup, the sword component supplies the projectile resources. The Frame marker has no standalone action.");
-        ui.label("This is one observed setup. Other combinations need a gameplay test.");
+        ui.label(
+            "In stock Temptation's Hook, the sword component supplies the projectile resources.",
+        );
         if ui
             .link(pattern_label(caster.pattern_index, donors))
             .clicked()
@@ -206,7 +209,7 @@ impl Browser {
         }
         ui.add_space(12.0);
         ui.strong("Effects in Item Defaults");
-        ui.small("These effects occur on individual items that share this pattern. They are not defaults of the pattern itself.");
+        ui.small("From items that share this pattern.");
         let perks = self
             .uses
             .iter()
@@ -231,7 +234,7 @@ impl Browser {
             .id_salt(("pattern-technical", pattern.index))
             .show(ui, |ui| {
                 ui.monospace(format!(
-                    "Item {:08X}\nRuntime Key {:08X}\nTranslation Group {:08X}",
+                    "Item 0x{:08X}\nRuntime Key 0x{:08X}\nTranslation Group 0x{:08X}",
                     pattern.item_hash, pattern.runtime_key, pattern.translation_group
                 ));
                 if let Some(entity) = &pattern.entity {

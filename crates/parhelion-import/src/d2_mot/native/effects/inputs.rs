@@ -79,6 +79,15 @@ pub(super) fn dye_inputs(
     material: &Payload,
     root: &Path,
 ) -> Result<BTreeMap<usize, Option<usize>>> {
+    dye_inputs_with_palette(text, material, root, false)
+}
+
+pub(super) fn dye_inputs_with_palette(
+    text: &str,
+    material: &Payload,
+    root: &Path,
+    implicit_combined: bool,
+) -> Result<BTreeMap<usize, Option<usize>>> {
     let context = load(&root.join("tfx-modern/context.json"))?;
     let mut inputs = BTreeMap::new();
     for scope in context["scopes"].as_array().context("source scopes")? {
@@ -91,7 +100,7 @@ pub(super) fn dye_inputs(
         };
         let index = scope["index"].as_u64().context("source dye scope index")?;
         ensure!(index < 64, "source dye scope exceeds material mask");
-        if material.u64(0x20)? & (1 << index) == 0 {
+        if material.u64(0x20)? & (1 << index) == 0 && !(implicit_combined && bank.is_none()) {
             continue;
         }
         let p = Payload(fs::read(root.join(format!(
@@ -195,6 +204,13 @@ pub(super) fn model_constants(text: &str, scale: f32) -> Result<String> {
 }
 
 pub(super) fn pixel(text: &str, rect: [usize; 4], size: [usize; 2]) -> Result<String> {
+    pixel_with_plates(text, Some((rect, size)))
+}
+
+pub(super) fn pixel_with_plates(
+    text: &str,
+    atlas: Option<([usize; 4], [usize; 2])>,
+) -> Result<String> {
     let mut text = text.to_owned();
     if cb_count(&text, 12)? == Some(15) {
         text = replace_once(&text, &cb_decl(12, 15), &cb_decl(12, 14))?;
@@ -205,8 +221,9 @@ pub(super) fn pixel(text: &str, rect: [usize; 4], size: [usize; 2]) -> Result<St
             )));
         }
     }
-    let [x, y, w, h] = rect;
-    let [aw, ah] = size;
+    let Some(([x, y, w, h], [aw, ah])) = atlas else {
+        return Ok(text);
+    };
     let mut helpers = String::new();
     for slot in slots(&text, 't')?.into_iter().filter(|v| *v < 3) {
         if text.contains(&format!("t{slot}.Sample(")) {

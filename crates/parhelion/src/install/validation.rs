@@ -128,6 +128,7 @@ pub(super) fn validate_request_with_progress(
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
         authored_unlocks: manifest.authored_unlocks,
+        authored_grants: manifest.authored_grants,
         package_backup_retention: request.package_backup_retention,
         limit_package_backups: request.limit_package_backups,
         backup_recipe_snapshots: request.backup_recipe_snapshots,
@@ -211,6 +212,7 @@ pub(super) fn validate_manifest_and_staged_files(
     validate_manifest_source(&manifest, target_packages_directory)?;
     validate_staged_recipe_snapshots(staged_run_directory, &manifest)?;
     let authored_unlocks = validate_manifest_unlocks(&manifest.project)?;
+    let authored_grants = manifest_grants(&manifest.project);
     let source_artifacts = validate_source_artifact_records(manifest.source_artifacts)?;
     let artifacts = validate_artifact_records(manifest.artifacts)?;
     let selected_recipe_files = manifest.selected_recipe_files;
@@ -222,7 +224,29 @@ pub(super) fn validate_manifest_and_staged_files(
         artifacts,
         selected_recipe_files,
         authored_unlocks,
+        authored_grants,
     })
+}
+
+/// The authored items the install adds to the account: each subclass whose class the manifest
+/// records, on the characters of that class, and a stack of each shader.
+fn manifest_grants(project: &ManifestProject) -> Vec<identities::GrantedItem> {
+    project
+        .weapons
+        .iter()
+        .filter_map(|weapon| {
+            let class_type = match weapon.kind {
+                crate::ItemKind::Subclass => Some(weapon.class_type?),
+                crate::ItemKind::Shader => None,
+                _ => return None,
+            };
+            Some(identities::GrantedItem {
+                item_hash: weapon.item.hash.get(),
+                definition_tag: tiger_pkg::TagHash(weapon.item.definition_tag.get()),
+                class_type,
+            })
+        })
+        .collect()
 }
 
 pub(super) fn validate_manifest_unlocks(
@@ -231,17 +255,22 @@ pub(super) fn validate_manifest_unlocks(
     let mut definitions = BTreeSet::new();
     let mut slots = BTreeSet::new();
     let mut unlocks = Vec::with_capacity(project.weapons.len());
-    for weapon in &project.weapons {
-        if weapon.unlock.bank != ACCOUNT_UNLOCK_BANK {
+    // A subclass has no Collections entry, so it has no unlock to enroll.
+    for (weapon, manifest_unlock) in project
+        .weapons
+        .iter()
+        .filter_map(|weapon| Some((weapon, weapon.unlock.as_ref()?)))
+    {
+        if manifest_unlock.bank != ACCOUNT_UNLOCK_BANK {
             return Err(InstallError::validation(format!(
                 "Manifest weapon {:?} uses unlock bank {}; the authored package profile requires bank {ACCOUNT_UNLOCK_BANK}",
-                weapon.namespace, weapon.unlock.bank
+                weapon.namespace, manifest_unlock.bank
             )));
         }
         let unlock = AuthoredCollectionUnlock {
-            definition_index: weapon.unlock.definition_index,
-            bank: weapon.unlock.bank,
-            slot: weapon.unlock.slot,
+            definition_index: manifest_unlock.definition_index,
+            bank: manifest_unlock.bank,
+            slot: manifest_unlock.slot,
         };
         if !definitions.insert(unlock.definition_index) {
             return Err(InstallError::validation(format!(
@@ -323,8 +352,15 @@ pub(super) fn validate_staged_recipe_snapshots(
         let matches_manifest = weapon.namespace == recipe.namespace
             && weapon.name == recipe.name
             && weapon.item.hash.get() == identity.item_hash
-            && weapon.collectible.hash.get() == identity.collectible_hash
-            && weapon.unlock.hash.get() == identity.unlock_hash
+            && weapon.collectible.is_none() == (spec.kind == crate::ItemKind::Subclass)
+            && weapon
+                .collectible
+                .as_ref()
+                .is_none_or(|collectible| collectible.hash.get() == identity.collectible_hash)
+            && weapon
+                .unlock
+                .as_ref()
+                .is_none_or(|unlock| unlock.hash.get() == identity.unlock_hash)
             && weapon.donor.item_hash.get() == spec.donor_item_hash;
         if !matches_manifest {
             return Err(InstallError::validation(format!(

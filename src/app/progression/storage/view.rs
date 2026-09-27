@@ -85,7 +85,7 @@ fn navigation(ui: &mut egui::Ui, cache: &mut State, state: &mut UiState, mode: M
             !state.read_only,
             egui::Checkbox::new(&mut cache.edit_extra, "Edit Extra Rank Values"),
         )
-        .on_hover_text("The meanings of rank values 1 and 2 are not decoded");
+        .on_hover_text("Rank values 1 and 2 have unknown meanings");
     }
 }
 
@@ -176,13 +176,8 @@ fn table(
                                 state
                                     .metadata_inspector
                                     .open(match (row.key.family, value) {
-                                        (true, true) => MetadataSelection::ValueOverride(
-                                            index,
-                                            row.value as i32,
-                                        ),
-                                        (true, false) => {
-                                            MetadataSelection::FlagOverride(index, row.value as u8)
-                                        }
+                                        (true, true) => MetadataSelection::ValueOverride(index),
+                                        (true, false) => MetadataSelection::FlagOverride(index),
                                         (false, true) => MetadataSelection::ValueDefinition(index),
                                         (false, false) => MetadataSelection::FlagDefinition(index),
                                     });

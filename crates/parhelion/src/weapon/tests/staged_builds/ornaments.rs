@@ -29,6 +29,7 @@ fn red_dwarf_dye_rows() -> [Vec<WeaponDyeReferenceOverride>; 3] {
 
 fn ornament_appearance_spec(namespace: &str) -> WeaponCloneSpec {
     WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
         donor_item_hash: SUNSHOT,
         expected_donor_name: Some("Sunshot".to_owned()),

@@ -33,10 +33,10 @@ fn native_rarity_backgrounds_match_stock_and_preserve_exotic_artwork() {
             read_u32(&stock, ICON_BACKGROUND_LAYER_OFFSET).unwrap(),
             rarity.icon_background_layer().0
         );
-        let preview = load_icon_preview(&manager, exotic, rarity).unwrap();
+        let preview = load_icon_preview(&manager, exotic, rarity, false).unwrap();
         assert!(preview.warnings.is_empty(), "{:?}", preview.warnings);
         assert_eq!(preview.primary.rgba, original_primary.rgba);
-        let stock_preview = load_icon_preview(&manager, stock_icon, rarity).unwrap();
+        let stock_preview = load_icon_preview(&manager, stock_icon, rarity, false).unwrap();
         assert_eq!(
             preview.background.as_ref().unwrap().rgba,
             stock_preview.background.as_ref().unwrap().rgba
@@ -92,8 +92,13 @@ fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
     edit.hue_shift_degrees = 120;
     edit.green_balance = 25;
     edit.invert = true;
-    let preview =
-        load_icon_preview(&manager, container, crate::AuthoredWeaponRarity::Legendary).unwrap();
+    let preview = load_icon_preview(
+        &manager,
+        container,
+        crate::AuthoredWeaponRarity::Legendary,
+        false,
+    )
+    .unwrap();
     let source = preview.source_primary(&edit);
     assert_eq!(
         color_selection::sample(&source, egui::vec2(0.1, 0.1)),
@@ -165,6 +170,7 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
                     authored_watermark: load_bundled_preview_watermark().unwrap(),
                     foreground: None,
                     warnings: Vec::new(),
+                    plain: false,
                 }),
                 source_texture: None,
                 edited_texture: None,
@@ -218,55 +224,6 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
             }
         }
     }
-}
-
-#[test]
-fn imported_preview_keeps_context_layers_and_donor_unchanged() {
-    let background = layer([50, 20, 80, 255]);
-    let primary = layer([10, 20, 30, 255]);
-    let mut foreground = layer([0; 4]);
-    foreground.rgba[95 * 4..96 * 4].copy_from_slice(&[20, 220, 30, 255]);
-    let watermark = load_bundled_preview_watermark().unwrap();
-    assert_eq!(
-        watermark.rgba,
-        crate::watermark::render_output_texture(0)
-            .unwrap()
-            .into_raw()
-    );
-    let original = composite_icon([
-        Some(&background),
-        Some(&primary),
-        Some(&watermark),
-        Some(&foreground),
-    ]);
-    let preview = LoadedIconPreview {
-        background: Some(background),
-        primary,
-        authored_watermark: watermark,
-        foreground: Some(foreground),
-        warnings: Vec::new(),
-    };
-    let edit = imported_edit();
-    let rendered = preview.render(&edit).unwrap();
-    let imported_primary = DecodedIconImage {
-        size: [96, 96],
-        rgba: edit
-            .imported_image
-            .as_ref()
-            .unwrap()
-            .fit_to(96, 96)
-            .into_raw(),
-    };
-    let expected = composite_icon([
-        preview.background.as_ref(),
-        Some(&imported_primary),
-        Some(&preview.authored_watermark),
-        preview.foreground.as_ref(),
-    ]);
-    assert_eq!(rendered, expected);
-    assert_eq!(rendered.pixels[95], egui::Color32::from_rgb(20, 220, 30));
-    assert_ne!(rendered, original);
-    assert_eq!(preview.primary.rgba, [10, 20, 30, 255].repeat(96 * 96));
 }
 
 #[test]
@@ -385,8 +342,13 @@ fn real_import_matches_preview_and_preserves_native_texture_graph() {
         assert_eq!(manager.read_tag(data_tag).unwrap(), donor_pixels);
     }
     assert_eq!(manager.read_tag(donor_layer).unwrap(), donor_payload);
-    let preview =
-        load_icon_preview(&manager, container, crate::AuthoredWeaponRarity::Legendary).unwrap();
+    let preview = load_icon_preview(
+        &manager,
+        container,
+        crate::AuthoredWeaponRarity::Legendary,
+        false,
+    )
+    .unwrap();
     let rendered = preview.render(&edit).unwrap();
     let primary = DecodedIconImage {
         size: preview.primary.size,

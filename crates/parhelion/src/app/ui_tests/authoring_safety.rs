@@ -161,7 +161,7 @@ fn trace_rifle_rarity_choices_reject_unsupported_tiers_without_coercing_imports(
         draw_rarity_control(ui, &mut overrides, Some(&donor))
     });
     assert_eq!(overrides, before);
-    assert!(text(&output).contains("Choose Exotic rarity"));
+    assert!(text(&output).contains("Choose Exotic."));
 
     overrides.rarity = Some(RecipeRarity::Exotic);
     let ctx = egui::Context::default();

@@ -16,11 +16,14 @@ mod cache;
 mod collections;
 mod icons;
 mod items;
-pub(crate) use items::weapon_bucket_capacities;
+pub use items::stock_subclass_list_classes;
+pub(crate) use items::{inventory_bucket_capacity, weapon_bucket_capacities};
 pub(crate) mod package;
 mod package_access;
 mod progression;
+mod reverse;
 mod scan;
+mod search;
 
 use crate::investment_localization::resolve_string;
 pub(crate) use cache::cache_is_current;
@@ -48,17 +51,19 @@ use items::{
     GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
     intern_socket_pools, sort_plug_options,
 };
-pub(crate) use items::{is_authorable_weapon_item, is_weapon_ornament_type_name};
+pub(crate) use items::{
+    SUBCLASS_BUCKET_HASH, is_authorable_weapon_item, is_weapon_bucket, is_weapon_ornament_type_name,
+};
 use package::install_fingerprint;
 pub(crate) use package::validate_install;
 pub(crate) use package_access::PackageInspectionAccess;
-use progression::unlock_state_indices;
 pub(crate) use progression::{
-    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
+    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef, PresentationNode,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
     ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope, RecordDefinition,
     RecordProgress, RecordRuntime, UnlockDefinition, UnlockWriter,
 };
+use progression::{PresentationIndex, unlock_state_indices};
 use scan::scan_packages;
 
 #[derive(Clone, Copy, Debug)]
@@ -125,6 +130,52 @@ impl CatalogSearchQuery {
     }
 }
 
+/// The nodes, collectibles and records listing one presentation node as a parent.
+#[derive(Debug, Default)]
+pub(crate) struct PresentationNodeChildren<'a> {
+    pub nodes: Vec<&'a PresentationNode>,
+    pub collectibles: Vec<&'a CollectibleDef>,
+    pub records: Vec<&'a RecordDefinition>,
+}
+
+/// One item socket that defaults to or offers a plug.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlugOffer {
+    pub item_hash: u64,
+    pub socket_index: usize,
+    pub is_default: bool,
+}
+
+/// Which of an item's material requirement set references names a set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MaterialSetUse {
+    Insertion,
+    Enabled,
+}
+
+/// One record reward row granting an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecordRewardUse {
+    /// Position in [`Catalog::records`].
+    pub record_index: usize,
+    /// The interval position for an interval item, `None` for a completion reward.
+    pub interval: Option<usize>,
+    pub quantity: i32,
+}
+
+/// One definition found by [`Catalog::search_definitions`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DefinitionSearchHit {
+    pub hash: u64,
+    pub name: String,
+    /// Title Case singular kind, such as "Item" or "Presentation Node".
+    pub kind: &'static str,
+    /// Item type name, parent path "A › B", or empty.
+    pub detail: String,
+    /// The item whose icon stands for the result, such as a collectible's item.
+    pub icon: Option<u64>,
+}
+
 impl CatalogProgress {
     const fn stage(message: &'static str) -> Self {
         Self {
@@ -185,7 +236,11 @@ pub(crate) struct Catalog {
     icon_runtime: Mutex<IconRuntime>,
     inventory_metadata: HashMap<u64, InventoryMetadata>,
     objectives: Vec<ObjectiveDef>,
+    presentation_nodes: Vec<PresentationNode>,
     presentation_node_hashes: Vec<u64>,
+    presentation_index: OnceLock<PresentationIndex>,
+    reverse: reverse::ReverseIndexes,
+    search_index: OnceLock<search::SearchIndex>,
     records: Option<Vec<RecordDefinition>>,
     unlock_flag_definitions: Vec<UnlockDefinition>,
     unlock_value_definitions: Vec<UnlockDefinition>,
@@ -404,6 +459,7 @@ impl Catalog {
         self.unlock_flag_definitions = flags;
         self.unlock_value_definitions = values;
         self.progression_definitions = progressions;
+        self.reset_lazy_indexes();
         self
     }
 
@@ -411,12 +467,22 @@ impl Catalog {
     pub(crate) fn with_test_objectives(mut self, objectives: Vec<ObjectiveDef>) -> Self {
         self.objectives_by_unlock_value = objectives_by_unlock_value(&objectives);
         self.objectives = objectives;
+        self.reset_lazy_indexes();
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_test_collectibles(mut self, collectibles: Vec<CollectibleDef>) -> Self {
         self.collectibles = collectibles;
+        self.reset_lazy_indexes();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_presentation_nodes(mut self, nodes: Vec<PresentationNode>) -> Self {
+        self.presentation_node_hashes = nodes.iter().map(|node| node.hash).collect();
+        self.presentation_nodes = nodes;
+        self.reset_lazy_indexes();
         self
     }
 
@@ -432,12 +498,14 @@ impl Catalog {
     #[cfg(test)]
     pub(crate) fn with_test_records(mut self, records: Vec<RecordDefinition>) -> Self {
         self.records = Some(records);
+        self.reset_lazy_indexes();
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_test_stat_groups(mut self, groups: Vec<ItemStatGroup>) -> Self {
         self.item_stat_groups = groups;
+        self.reset_lazy_indexes();
         self
     }
 
@@ -454,7 +522,17 @@ impl Catalog {
         metadata: ItemPackageMetadata,
     ) -> Self {
         self.item_package_metadata.insert(hash, metadata);
+        self.reset_lazy_indexes();
         self
+    }
+
+    /// Drops indexes derived from test data that a builder replaced.
+    #[cfg(test)]
+    fn reset_lazy_indexes(&mut self) {
+        self.item_structure_index = OnceLock::new();
+        self.presentation_index = OnceLock::new();
+        self.reverse = reverse::ReverseIndexes::default();
+        self.search_index = OnceLock::new();
     }
 
     #[cfg(test)]
@@ -559,12 +637,10 @@ impl Catalog {
             completed: 1,
             total: 1,
         });
-        Ok(Self::finish(
-            cache.contents,
-            cache_path,
-            install.to_path_buf(),
-            false,
-        ))
+        let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), false);
+        drop(encoded);
+        crate::memory::release_free_memory();
+        Ok(catalog)
     }
 
     fn finish(
@@ -593,7 +669,7 @@ impl Catalog {
             package_names,
             inventory_metadata,
             objectives,
-            presentation_node_hashes,
+            presentation_nodes,
             records,
             unlock_flag_definitions,
             unlock_value_definitions,
@@ -675,6 +751,7 @@ impl Catalog {
                 .or_insert_with(|| record.name.clone());
         }
         let objectives_by_unlock_value = objectives_by_unlock_value(&objectives);
+        let presentation_node_hashes = presentation_nodes.iter().map(|node| node.hash).collect();
         Self {
             items: items.into_iter().map(Arc::new).collect(),
             names,
@@ -701,7 +778,11 @@ impl Catalog {
             icon_runtime: Mutex::new(IconRuntime::default()),
             inventory_metadata,
             objectives,
+            presentation_nodes,
             presentation_node_hashes,
+            presentation_index: OnceLock::new(),
+            reverse: reverse::ReverseIndexes::default(),
+            search_index: OnceLock::new(),
             records,
             unlock_flag_definitions,
             unlock_value_definitions,
@@ -746,6 +827,35 @@ impl Catalog {
             .get(&hash)
             .and_then(|index| self.items.get(*index))
             .map(Arc::as_ref)
+    }
+
+    /// What kind of item a hash names, from its inventory bucket: Weapon, Armor, a bucket's own
+    /// label such as Emblem or Ghost, Plug for socket plugs, or Item.
+    pub(crate) fn item_kind_label(&self, hash: u64) -> &'static str {
+        if let Some(item) = self.item(hash) {
+            if items::is_weapon_bucket(item.bucket_hash) {
+                return if is_weapon_ornament_type_name(&item.type_name) {
+                    "Plug"
+                } else {
+                    "Weapon"
+                };
+            }
+            match crate::account_contract::EQUIPMENT_SLOTS
+                .iter()
+                .find(|(_, _, bucket)| *bucket == item.bucket_hash)
+            {
+                Some(("helmet" | "gauntlets" | "chest" | "legs" | "class_item", _, _)) => {
+                    return "Armor";
+                }
+                Some((_, label, _)) => return label,
+                None => {}
+            }
+        }
+        if self.plug_hashes.contains(&hash) {
+            "Plug"
+        } else {
+            "Item"
+        }
     }
 
     pub(crate) fn item_has_collectible(&self, hash: u64) -> bool {
@@ -870,6 +980,13 @@ impl Catalog {
 
     pub(crate) fn item_package_metadata(&self, hash: u64) -> Option<&ItemPackageMetadata> {
         self.item_package_metadata.get(&hash)
+    }
+
+    /// Package metadata for every item and plug, keyed by item hash.
+    pub(crate) fn package_metadata(&self) -> impl Iterator<Item = (u64, &ItemPackageMetadata)> {
+        self.item_package_metadata
+            .iter()
+            .map(|(hash, metadata)| (*hash, metadata))
     }
 
     /// The stat group carrying this hash, with its table index.
@@ -1020,6 +1137,11 @@ impl Catalog {
                     .filter(|name| !name.trim().is_empty())
             })
             .or_else(|| self.progression_names.get(&hash).map(String::as_str))
+            .or_else(|| {
+                self.presentation_node(hash)
+                    .map(|node| node.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            })
     }
 
     pub(crate) fn stats(&self) -> CatalogStats {

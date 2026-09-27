@@ -43,16 +43,16 @@ fn choices(
     ui.set_width(340.0_f32.min(ui.ctx().screen_rect().width() - 40.0));
     let mut hashes = Vec::new();
     ui.horizontal(|ui| {
-        let search = ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .hint_text("Search Labels")
-                .desired_width((ui.available_width() - 150.0).max(80.0)),
+        super::search(
+            ui,
+            &mut query,
+            false,
+            ui.available_width() - 60.0,
+            "Search Labels",
         );
-        search.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search Labels")
-        });
-        ui.checkbox(&mut show_all, "Show All")
-            .on_hover_text("Include registered labels whose names are still unknown.");
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut show_all, "Include Unidentified");
         hashes = candidates(registry, observed, current, &query, show_all);
         ui.weak(hashes.len().to_string())
             .on_hover_text("Matching labels");
@@ -93,16 +93,13 @@ fn choices(
                     }
                     match (registry, entry) {
                         (Some(registry), Some(entry)) if entry.group => {
-                            let members = registry.members(hash).map(|entry| entry.title()).collect::<Vec<_>>();
+                            let members = registry
+                                .members(hash)
+                                .map(|entry| entry.title())
+                                .collect::<Vec<_>>();
                             ui.label(format!("Group Members: {}", members.join(", ")));
-                            ui.label("The filter applies to the group's member labels.");
                         }
-                        (Some(_), Some(_)) => {
-                            ui.label("Registered label. Whether it can match depends on this field's event or object.");
-                        }
-                        (Some(_), None) => {
-                            ui.label("Not in the active registry. Remove or replace this value before building.");
-                        }
+                        (Some(_), _) => {}
                         (None, _) => {
                             ui.label("The active label registry is not available yet.");
                         }
@@ -129,7 +126,7 @@ fn candidates(
         },
         |registry| registry.entries().iter().map(|entry| entry.hash).collect(),
     );
-    // Unknown current values stay removable, even with Show All off.
+    // Unknown current values stay removable, even with Include Unidentified off.
     hashes.extend_from_slice(current);
     hashes.sort_unstable();
     hashes.dedup();

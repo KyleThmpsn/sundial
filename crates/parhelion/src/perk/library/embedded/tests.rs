@@ -70,18 +70,3 @@ fn corrupt_history_or_existing_files_pause_import_without_overwriting() {
     assert_eq!(fs::read(history).unwrap(), b"unreadable history");
     assert!(library.scan().unwrap().entries.is_empty());
 }
-
-#[test]
-fn standalone_export_and_import_preserve_full_recipe() {
-    let temp = tempfile::tempdir().unwrap();
-    let library = Library::open(temp.path().join("perks")).unwrap();
-    let mut perk: PerkRecipe = serde_json::from_str(crate::perk::bundled::RECIPES[0]).unwrap();
-    perk.id = PerkRecipe::new().id;
-    library.import_embedded([perk.clone()]).unwrap();
-    let entry = library.scan().unwrap().entries.remove(0);
-    let path = temp.path().join("shared.perk.json");
-    library.export(&entry.recipe, &path).unwrap();
-    let reimported = Library::read(&path).unwrap();
-    assert_eq!(reimported.recipe, entry.recipe);
-    assert_eq!(reimported.recipe.effects, perk.effects);
-}

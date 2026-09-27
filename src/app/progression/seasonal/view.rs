@@ -55,6 +55,7 @@ pub(in crate::app) fn draw(
     let changed = draw_season(ui, document, catalog, &mut state.seasonal, state.read_only);
     if changed {
         state.cached_progression = None;
+        state.cached_snapshot = None;
     }
     if let Some(hash) = super::super::take_hash_inspection_request(ui.ctx()) {
         let context = super::super::take_hash_inspection_context(ui.ctx(), hash);
@@ -90,7 +91,7 @@ fn draw_season(
     };
     if document.get("_native_progression").is_none() {
         ui.heading("Seasonal Progression");
-        ui.label("Seasonal authoring requires a supported Sunrise database account. The existing JSON account controls remain available in Unlocks and Investment.");
+        ui.label("Seasonal editing needs a Sunrise database account. JSON accounts can use Unlocks and Investment.");
         return false;
     }
     let Some(snapshot) = collection_state_snapshot(document) else {
@@ -185,7 +186,7 @@ fn draw_experience(
     editable: bool,
     requested: &mut Option<Edit>,
 ) {
-    ui.label("One XP total updates the season pass, HUD bar, artifact Power, and earned points together. XP above rank 100 continues to count toward the artifact.");
+    ui.label("One XP total sets the season pass, HUD bar, artifact Power and earned points. XP past rank 100 still counts toward the artifact.");
     let changed = ui
         .horizontal(|ui| {
             ui.strong("Seasonal XP");

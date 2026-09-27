@@ -78,22 +78,25 @@ pub fn read(graph: &Graph, index: usize) -> Option<Comparison> {
         5 => ">",
         _ => return None,
     };
-    let name = variable
-        .split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars).collect()
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    let name = title(variable);
     Some(Comparison {
         name,
         operation,
         threshold: right.constants[0][0],
         constant_block: *block.links.get(&112)?,
     })
+}
+
+/// An engine variable in title case, small words kept lowercase inside the title, so
+/// bloom_catalyst_on_cooldown reads "Bloom Catalyst on Cooldown".
+fn title(variable: &str) -> String {
+    let words = variable.split('_').collect::<Vec<_>>();
+    words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| crate::sandbox_perk::nodes::title_word(word, index, words.len()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The plain name of a compared engine variable, where the stock perks that compare it
@@ -111,7 +114,7 @@ pub fn plain_variable(name: &str) -> &str {
         "Is Thermal" => "Subclass Is Solar",
         "Is Void" => "Subclass Is Void",
         "Equipped Item Magazine Fraction" => "Magazine Fraction",
-        "Is Guarding With Sword" => "Guarding with a Sword",
+        "Is Guarding with Sword" => "Guarding with a Sword",
         // "Bauble" is the engine's word for a Warmind Cell: Blessing of Rasputin reads
         // "collecting a Warmind Cell increases the chances that your next final blow with a
         // Seraph weapon will create a Warmind Cell", which is warmind_cells_increase_bauble_
@@ -120,6 +123,18 @@ pub fn plain_variable(name: &str) -> &str {
         "Rasputin Weapon Equipped" => "Seraph Weapon Equipped",
         "Solar Splash Spawn Baubles" => "Solar Splash Spawns Warmind Cells",
         "Warmind Cells Increase Bauble Chance" => "Warmind Cells Increase Cell Chance",
+        // Ionic Return pairs each of these with the state it mirrors, so each reads as
+        // that state with a recency the traced code does not pin down.
+        "Super Active Recent" => "Super Recently Active",
+        "Is Arc Recent" => "Subclass Recently Arc",
+        "Is Thermal Recent" => "Subclass Recently Solar",
+        "Is Void Recent" => "Subclass Recently Void",
+        // Judgment ("envelops the target in a field that weakens and disrupts them") is
+        // the only perk comparing this, and cage is the engine's word for that field.
+        "Siphon Gun Overload No Cage" => "Weakening Field Not Formed",
+        // Surrounded compares this on both sides of 1 beside its enemy count, so it picks
+        // between two paths rather than counting anything.
+        "Support Nearby Enemy" => "Nearby Enemy Count Supported",
         other => other,
     }
 }
@@ -231,6 +246,73 @@ pub const VARIABLES: &[Variable] = &[
         plain: "Solar Splash Spawns Warmind Cells",
         evidence: "The engine name solar_splash_spawn_baubles, compared on > 0 by the Seraph weapon perks. Bauble is the engine's word for a Warmind Cell, and this is Wrath of Rasputin's \"Solar splash damage final blows have a chance to spawn Warmind Cells\".",
         operation: ">",
+        threshold: 0.0,
+    },
+    Variable {
+        name: "super_active",
+        plain: "Super Active",
+        evidence: "Compared by Vorpal Weapon (\"Guardians with their Super active\") on = 1, and by Ionic Return on > 0.1.",
+        operation: "=",
+        threshold: 1.0,
+    },
+    // Ionic Return compares each of these beside the plain state it mirrors, so each is
+    // that state again with a recency the traced code does not pin down.
+    Variable {
+        name: "super_active_recent",
+        plain: "Super Recently Active",
+        evidence: "The engine name super_active_recent, compared by Ionic Return on > 0.1 beside its super_active check. How recent is not established.",
+        operation: ">",
+        threshold: 0.1,
+    },
+    Variable {
+        name: "is_arc_recent",
+        plain: "Subclass Recently Arc",
+        evidence: "The engine name is_arc_recent, compared by Ionic Return on > 0.1 beside its is_arc check. How recent is not established.",
+        operation: ">",
+        threshold: 0.1,
+    },
+    Variable {
+        name: "is_thermal_recent",
+        plain: "Subclass Recently Solar",
+        evidence: "The engine name is_thermal_recent, compared by Ionic Return on > 0.1 beside its is_thermal check. Thermal is the engine's word for Solar.",
+        operation: ">",
+        threshold: 0.1,
+    },
+    Variable {
+        name: "is_void_recent",
+        plain: "Subclass Recently Void",
+        evidence: "The engine name is_void_recent, compared by Ionic Return on > 0.1 beside its is_void check. How recent is not established.",
+        operation: ">",
+        threshold: 0.1,
+    },
+    Variable {
+        name: "siphon_gun_overload_no_cage",
+        plain: "Weakening Field Not Formed",
+        evidence: "The engine name siphon_gun_overload_no_cage, compared only by Judgment (\"envelops the target in a field that weakens and disrupts them. Strong against Overload Champions\"), on >= 1 for one path and < 0.5 for the other. Cage is the engine's word for that field.",
+        operation: ">=",
+        threshold: 1.0,
+    },
+    Variable {
+        name: "support_nearby_enemy",
+        plain: "Nearby Enemy Count Supported",
+        evidence: "The engine name support_nearby_enemy, compared by Surrounded on >= 1 and on < 1 for its other path, beside its nearby_enemy_count check. It selects between two paths rather than counting enemies.",
+        operation: ">=",
+        threshold: 1.0,
+    },
+    // Bloom is an engine codename. The one perk comparing these carries no description, so
+    // the rows keep the engine's own words rather than guessing at a catalyst.
+    Variable {
+        name: "bloom_catalyst_active",
+        plain: "Bloom Catalyst Active",
+        evidence: "The engine name bloom_catalyst_active, compared on = 0 by one stock perk that carries no description. Which catalyst bloom names is not established.",
+        operation: "=",
+        threshold: 0.0,
+    },
+    Variable {
+        name: "bloom_catalyst_on_cooldown",
+        plain: "Bloom Catalyst on Cooldown",
+        evidence: "The engine name bloom_catalyst_on_cooldown, compared on = 0 by the same undescribed stock perk, beside its bloom_catalyst_active check.",
+        operation: "=",
         threshold: 0.0,
     },
     Variable {
@@ -395,17 +477,7 @@ mod tests {
 
     /// The variable name as `read` renders it, so the expected description can be built.
     fn rendered(name: &str) -> String {
-        let words = name
-            .split('_')
-            .map(|word| {
-                let mut chars = word.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_uppercase().chain(chars).collect()
-                })
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        plain_variable(&words).to_owned()
+        plain_variable(&title(name)).to_owned()
     }
 
     #[test]

@@ -6,9 +6,6 @@ use sundial::package_authoring::sandbox_perk::action::native::fields::scripts::{
 pub(super) const CLASS: u32 = 0x80802D0A;
 const PATH: usize = 0x8;
 const TAG: usize = 0x10;
-/// A script reads by its file name, which is longer than the shared value column holds, so
-/// this control is given the extra room rather than eliding most of every name.
-const SCRIPT_WIDTH: f32 = 260.0;
 
 pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
     use sundial::investment::discovery::scripts::Choice;
@@ -20,68 +17,161 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
         .flatten();
     let tag = current_tag(graph, index)?;
     let mut chosen = tag;
-    super::super::super::properties::field(
-        ui,
-        "Game Script",
-        "Object-behavior scripts found across the installed packages. Search by name, path or known stock perk. Some scripts need specific game state or an owning object.",
-        |ui| {
-            let current = scripts::by_tag(tag);
-            let resolved = installed
-                .as_ref()
-                .and_then(|choices| choices.iter().find(|choice| choice.tag == tag));
-            let title = resolved
-                .map(|choice| choice.title.clone())
-                .or_else(|| current.map(Script::title))
-                .unwrap_or_else(|| format!("Script 0x{tag:08X}"));
-            // A combo takes the width of its selected text and `width` only sets a floor, so
-            // a long script name would run to the edge of the pane. The allocation bounds it
-            // and the file path stays on hover.
-            let hover = resolved
-                .map(|script| format!("{title}\n{}", script.path))
-                .unwrap_or_else(|| {
-                    current.map_or_else(
-                        || title.clone(),
-                        |script| format!("{title}\n{}", script.path),
-                    )
-                });
-            sized(ui, SCRIPT_WIDTH, |ui| {
-                egui::ComboBox::from_id_salt("behavior-script")
-                    .width(SCRIPT_WIDTH)
-                    .truncate()
-                    .selected_text(title)
-                    .show_ui(ui, |ui| {
-                        let query_id = ui.make_persistent_id("script-query");
-                        let mut query = ui.data(|data| data.get_temp::<String>(query_id).unwrap_or_default());
-                        let search = ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search Game Scripts"));
-                        pickers::name_response(ui, &search, "Search Game Scripts");
-                        ui.data_mut(|data| data.insert_temp(query_id, query.clone()));
-                        if let Some(choices) = &installed {
-                            let matches = choices.iter().filter(|script| pickers::matches(&query.to_lowercase(), &format!("{} {} {} {:08X}", script.title, script.path, script.stock_perks, script.tag))).collect::<Vec<_>>();
-                            ui.weak(format!("{} Scripts", matches.len()));
-                            for script in matches {
-                                let detail = if script.stock_perks.is_empty() {
-                                    "No stock perk example recorded. May require specific game state.".to_owned()
-                                } else { format!("Stock perks: {}", script.stock_perks) };
-                                ui.selectable_value(&mut chosen, script.tag, &script.title)
-                                    .on_hover_text(format!("{}\n{detail}\n0x{:08X}", script.path, script.tag));
-                            }
-                        } else {
-                            ui.weak("Reading installed scripts. Known stock examples are shown meanwhile.");
-                            for script in scripts::SCRIPTS {
-                                if pickers::matches(&query.to_lowercase(), &format!("{} {}", script.path, script.perks)) {
-                                    ui.selectable_value(&mut chosen, script.tag, script.title())
-                                        .on_hover_text(format!("{}\nStock perks: {}", script.path, script.perks));
+    // A script neither list names is typed under the list as its path and tag, once Other
+    // Value… is chosen or while the node already runs one.
+    let listed = installed
+        .as_ref()
+        .is_some_and(|choices| choices.iter().any(|choice| choice.tag == tag))
+        || scripts::by_tag(tag).is_some();
+    let typed = super::super::Typed::new(ui, "behavior-script", listed);
+    let stored_path = current_path(graph, index);
+    let mut typed_path = stored_path.clone();
+    let mut typed_tag = tag;
+    let mut chose_listed = false;
+    crate::app::style::tiles(ui, |ui, width| {
+        crate::app::style::tile(
+            ui,
+            width,
+            "game-script",
+            "Game Script",
+            "Scripts in the installed packages. Some need specific game state.",
+            false,
+            |ui| {
+                let current = scripts::by_tag(tag);
+                let resolved = installed
+                    .as_ref()
+                    .and_then(|choices| choices.iter().find(|choice| choice.tag == tag));
+                let title = resolved
+                    .map(|choice| choice.title.clone())
+                    .or_else(|| current.map(Script::title))
+                    .unwrap_or_else(|| format!("Script 0x{tag:08X}"));
+                // A combo takes the width of its selected text and `width` only sets a floor, so
+                // a long script name would run to the edge of the pane. The allocation bounds it
+                // and the file path stays on hover.
+                let hover = resolved
+                    .map(|script| format!("{title}\n{}", script.path))
+                    .unwrap_or_else(|| {
+                        current.map_or_else(
+                            || title.clone(),
+                            |script| format!("{title}\n{}", script.path),
+                        )
+                    });
+                sized(ui, ui.available_width(), |ui| {
+                    // The list holds a search box, so only a choice or a click outside closes it.
+                    egui::ComboBox::from_id_salt("behavior-script")
+                        .width(ui.available_width())
+                        .truncate()
+                        .selected_text(title)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            let query_id = ui.make_persistent_id("script-query");
+                            let mut query = ui
+                                .data(|data| data.get_temp::<String>(query_id).unwrap_or_default());
+                            let search = ui.add(
+                                egui::TextEdit::singleline(&mut query)
+                                    .hint_text("Search Game Scripts"),
+                            );
+                            pickers::name_response(ui, &search, "Search Game Scripts");
+                            ui.data_mut(|data| data.insert_temp(query_id, query.clone()));
+                            if let Some(choices) = &installed {
+                                let matches = choices
+                                    .iter()
+                                    .filter(|script| {
+                                        pickers::matches(
+                                            &query.to_lowercase(),
+                                            &format!(
+                                                "{} {} {} {:08X}",
+                                                script.title,
+                                                script.path,
+                                                script.stock_perks,
+                                                script.tag
+                                            ),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                ui.weak(if matches.len() == 1 {
+                                    "1 Script".to_owned()
+                                } else {
+                                    format!("{} Scripts", matches.len())
+                                });
+                                for script in matches {
+                                    let detail = if script.stock_perks.is_empty() {
+                                        "No stock perk uses it.".to_owned()
+                                    } else {
+                                        format!("Stock perks: {}", script.stock_perks)
+                                    };
+                                    chose_listed |= ui
+                                        .selectable_value(&mut chosen, script.tag, &script.title)
+                                        .on_hover_text(format!(
+                                            "{}\n{detail}\n0x{:08X}",
+                                            script.path, script.tag
+                                        ))
+                                        .clicked();
+                                }
+                            } else {
+                                ui.weak("Reading installed scripts…");
+                                for script in scripts::SCRIPTS {
+                                    if pickers::matches(
+                                        &query.to_lowercase(),
+                                        &format!("{} {}", script.path, script.perks),
+                                    ) {
+                                        chose_listed |= ui
+                                            .selectable_value(
+                                                &mut chosen,
+                                                script.tag,
+                                                script.title(),
+                                            )
+                                            .on_hover_text(format!(
+                                                "{}\nStock perks: {}",
+                                                script.path, script.perks
+                                            ))
+                                            .clicked();
+                                    }
                                 }
                             }
-                        }
-                    })
-                    .response
-                    .on_hover_text(hover);
-                pickers::name_combo(ui, "behavior-script", "Game Script");
+                            chose_listed |= typed.row(ui);
+                        })
+                        .response
+                        .on_hover_text(hover);
+                    if chose_listed {
+                        ui.memory_mut(egui::Memory::close_popup);
+                    }
+                    pickers::name_combo(ui, "behavior-script", "Game Script");
+                });
+            },
+        );
+        if typed.shown {
+            crate::app::style::tile(ui, width, "script-path", "Script Path", "", false, |ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut typed_path)
+                        .desired_width(ui.available_width())
+                        .hint_text("content\\…\\name.object_behaviors.tft"),
+                );
+                pickers::name_response(ui, &response, "Script Path");
             });
-            Ok::<(), String>(())
-        },
-    )?;
+            crate::app::style::tile(ui, width, "script-tag", "Script Tag", "", false, |ui| {
+                let response = crate::app::custom_perks::workbench::controls::hex_key(
+                    ui,
+                    "script-tag",
+                    &mut typed_tag,
+                );
+                pickers::name_response(ui, &response, "Script Tag");
+            });
+        }
+    });
+    if chose_listed && chosen != tag {
+        typed.listed(ui);
+    }
+    // A typed script is written once both its path and tag are there.
+    if chosen == tag
+        && typed.shown
+        && typed_tag != 0
+        && !typed_path.trim().is_empty()
+        && (typed_tag != tag || typed_path.trim() != stored_path)
+    {
+        set_reference(graph, index, typed_path.trim(), typed_tag)?;
+        return Ok(());
+    }
     if chosen != tag {
         if let Some(script) = installed
             .as_ref()
@@ -93,6 +183,20 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
         }
     }
     Ok(())
+}
+
+/// The path the node stores beside its tag, or nothing when it has none.
+fn current_path(graph: &Graph, index: usize) -> String {
+    graph.blocks[index]
+        .links
+        .get(&PATH)
+        .and_then(|target| graph.blocks.get(*target))
+        .map(|block| {
+            String::from_utf8_lossy(&block.bytes)
+                .trim_end_matches('\0')
+                .to_owned()
+        })
+        .unwrap_or_default()
 }
 
 fn current_tag(graph: &Graph, index: usize) -> Result<u32, String> {

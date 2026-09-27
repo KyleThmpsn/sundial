@@ -70,9 +70,14 @@ pub(crate) const GROUP_REARM: usize = 0x38;
 const SUBGROUP_ROW_SIZE: usize = 0x20;
 const SUBGROUP_HOLD: usize = 0x00;
 const SUBGROUP_CONDITIONS: usize = 0x08;
+/// Event mask over a subgroup's conditions and their children, derived by the compiler.
+pub(crate) const SUBGROUP_EVENT_MASK: usize = 0x18;
 const LABEL_ROW_SIZE: usize = 0x18;
 
 const ACCUMULATOR_CHILDREN: usize = 0x08;
+/// Event mask over a counter's contributing conditions and their children, derived by the
+/// compiler. 141 of 142 stock counters store it, and the one without contributions stores 1.
+pub(crate) const ACCUMULATOR_EVENT_MASK: usize = 0x18;
 const ACCUMULATOR_ROW_CLASS: u32 = 0x8080_3E32;
 const ACCUMULATOR_ROW_SIZE: usize = 0x20;
 const NESTED_PREDICATE_POINTER: usize = 0x100;
@@ -168,6 +173,8 @@ pub struct AccumulatorRow {
 /// One subgroup of an `All Subgroups` condition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subgroup {
+    /// Byte offset of the subgroup row inside the action payload.
+    pub offset: usize,
     /// Hold value stored when the subgroup passes. A positive hold can keep it satisfied.
     pub hold: f32,
     /// Alternatives inside this subgroup. The first one that passes satisfies it.
@@ -686,6 +693,7 @@ fn subgroup_lists(payload: &[u8], node: usize, depth: usize) -> Result<Vec<Subgr
                 .checked_add(index * SUBGROUP_ROW_SIZE)
                 .ok_or("Action subgroup row offset overflowed")?;
             Ok(Subgroup {
+                offset: row,
                 hold: f32::from_bits(u32_at(payload, row + SUBGROUP_HOLD)?),
                 conditions: condition_list(payload, row + SUBGROUP_CONDITIONS, depth)?,
             })

@@ -403,7 +403,10 @@ fn validate_native_entity(
     if block.class == 0x80803E12
         && projectile::kind(&payload)? != Some(projectile::Kind::Projectile)
     {
-        return Err("Override Weapon Pattern requires a projectile.".into());
+        return Err(format!(
+            "{} requires a projectile.",
+            crate::sandbox_perk::nodes::effect_title(26)
+        ));
     }
     Ok(())
 }
@@ -1559,6 +1562,48 @@ mod tests {
         }
     }
 
+    /// A requirement the workbench adds starts with no event mask. Every stock requirement
+    /// row stores the mask of its own conditions, so a kill requirement carries the kill bit.
+    #[test]
+    fn requirement_rows_carry_the_event_mask_of_their_own_conditions() {
+        use crate::sandbox_perk::action;
+        let class = |kind| nodes::condition(kind).unwrap().class;
+        let template = NativeNode::condition(31).unwrap();
+        let mut graph = Graph::read(&template.bytes, 0, class(31)).unwrap();
+        // The template requires two General Predicates. The first requirement becomes a kill.
+        let rows = graph.blocks[0].links[&0x10];
+        let first = graph.blocks[rows].links[&0x10];
+        let kill = NativeNode::condition(2).unwrap();
+        let kill = graph
+            .append(&Graph::read(&kill.bytes, 0, class(2)).unwrap())
+            .unwrap();
+        graph.blocks[first].links.insert(0, kill);
+        for row in 0..2 {
+            let at = row * 0x20 + action::SUBGROUP_EVENT_MASK;
+            graph.blocks[rows].bytes[at..at + 8].fill(0);
+        }
+        let program = Program {
+            trigger: Trigger::Native,
+            native_trigger: Some(NativeNode {
+                kind: 31,
+                bytes: graph.emit().unwrap(),
+            }),
+            actions: vec![Action::add_rounds(1)],
+            ..Default::default()
+        };
+        let compiled = assemble(&program, None).unwrap();
+        let decoded = action::decode(&compiled.payload).unwrap();
+        let masks = decoded.groups[0].activation[0]
+            .subgroups
+            .iter()
+            .map(|subgroup| {
+                let at = subgroup.offset + action::SUBGROUP_EVENT_MASK;
+                u64::from_le_bytes(compiled.payload[at..at + 8].try_into().unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(masks, [1 << 2, 1 << 20]);
+    }
+
     #[test]
     fn native_nodes_are_written_verbatim_under_a_compiler_owned_header() {
         let mut trigger = NativeNode::condition(6).unwrap();
@@ -1599,7 +1644,7 @@ mod tests {
             &[43, 0, 0, 0, 0xFC, 0x66, 0xE2, 0x5E]
         );
         let count = effects[0];
-        assert_eq!(&out.bytes[count..count + 3], &[30, 1, 0]);
+        assert_eq!(&out.bytes[count..count + 3], &[30, 1, 1]);
         out.nodes(0x38, EFFECT_ROWS, &effects);
         assert!(out.removal_and_rearm(&program).unwrap());
         assert_eq!(

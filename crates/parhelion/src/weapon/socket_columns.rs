@@ -247,7 +247,8 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
         let maximum = authored_socket_choice_limit(socket_type);
         if maximum == 0 {
             return Err(invalid(format!(
-                "Randomized socket lane {lane} cannot be represented as a curated column"
+                "Socket {} rolls its perks in a way the workbench cannot list. Choose its perks, or build on another weapon.",
+                lane + 1
             )));
         }
 
@@ -262,7 +263,8 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
                 || member_class != ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS
             {
                 return Err(invalid(format!(
-                    "Randomized socket lane {lane} has an invalid embedded default list"
+                    "Socket {} rolls its perks at random from a default list the workbench cannot read. Choose its perks, or build on another weapon.",
+                    lane + 1
                 )));
             }
             validate_socket_member_segment(donor_definition, member_rows, member_count)?;
@@ -270,7 +272,8 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
                 let member = member_rows + index * ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE;
                 if canonical_socket_member_template(donor_definition, member).is_none() {
                     return Err(invalid(format!(
-                        "Randomized socket lane {lane} has a conditional embedded default"
+                        "Socket {} rolls its perks at random from defaults that depend on conditions. Choose its perks, or build on another weapon.",
+                        lane + 1
                     )));
                 }
                 let plug = read_u16(donor_definition, member)?;
@@ -281,7 +284,8 @@ pub(super) fn normalize_inherited_randomized_socket_columns(
         }
         if choices.is_empty() {
             return Err(invalid(format!(
-                "Randomized socket lane {lane} has no native default or embedded plug"
+                "Socket {} rolls its perks at random and names no default to keep. Choose its perks, or build on another weapon.",
+                lane + 1
             )));
         }
         *column = Some(choices);

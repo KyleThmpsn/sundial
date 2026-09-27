@@ -1,4 +1,7 @@
+use super::item_details::{Cell, draw_table, item_name};
+use super::progression::property_link;
 use super::*;
+use crate::app::inspector::look;
 
 pub(super) fn draw_hash_material_requirements(
     ui: &mut egui::Ui,
@@ -9,62 +12,70 @@ pub(super) fn draw_hash_material_requirements(
     if requirements.is_empty() {
         return;
     }
+    look::section(
+        ui,
+        (id, "material_requirements"),
+        "Material Requirements",
+        Some(requirements.len()),
+        false,
+        |ui| draw_material_requirement_rows(ui, catalog, id, requirements),
+    );
+}
+
+fn draw_material_requirement_rows(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    id: egui::Id,
+    requirements: &[MaterialRequirementDef],
+) {
     super::super::requests::request_owned_quantities(ui.ctx());
-    let owned = super::super::requests::owned_quantities(ui.ctx());
-    if owned.is_none() {
-        // The app answers on its next pass; make sure there is one.
+    let answer = super::super::requests::owned_quantities(ui.ctx());
+    if answer.is_none() {
+        // The app answers on its next pass. Make sure there is one.
         ui.ctx().request_repaint();
     }
-    egui::CollapsingHeader::new(format!("Material Requirements ({})", requirements.len()))
-        .id_salt((id, "material_requirements"))
-        .default_open(false)
+    let owned = answer.flatten();
+    egui::Grid::new(("hash_material_requirements", id))
+        .num_columns(6)
+        .spacing([16.0, 4.0])
+        .striped(true)
         .show(ui, |ui| {
-            egui::Grid::new(("hash_material_requirements", id))
-                .num_columns(8)
-                .spacing([16.0, 3.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Index");
-                    ui.strong("Name");
-                    ui.strong("Hash");
-                    ui.strong("Quantity");
-                    ui.strong("Owned").on_hover_text("What the loaded account's shared inventory holds of this material, summed across stacks.");
-                    ui.strong("Consume on Action").on_hover_text("Whether the package marks this material for deletion when the action succeeds.");
-                    ui.strong("Omit Requirement").on_hover_text("Whether the package omits this row from the requirements check.");
-                    ui.strong("Condition");
-                    ui.end_row();
-                    for requirement in requirements {
-                        ui.monospace(requirement.item_definition_index.to_string());
-                        item_definition_name_cell(ui, catalog, requirement.item_hash, 190.0);
-                        draw_catalog_hash_link(
-                            ui,
-                            catalog,
-                            requirement.item_hash,
-                            format_hash_hex(requirement.item_hash),
-                        );
-                        ui.monospace(requirement.quantity.to_string());
-                        match owned.as_deref() {
-                            Some(owned) => {
-                                let held = owned.get(&requirement.item_hash).copied().unwrap_or(0);
-                                let short = held < i64::from(requirement.quantity);
-                                let text = egui::RichText::new(held.to_string()).monospace();
-                                if short {
-                                    ui.label(text.color(ui.visuals().warn_fg_color))
-                                        .on_hover_text("Fewer than the requirement.");
-                                } else {
-                                    ui.label(text);
-                                }
-                            }
-                            None => {
-                                ui.weak("-");
-                            }
+            ui.strong("Item");
+            ui.strong("Quantity");
+            ui.strong("Owned");
+            ui.strong("Consumed");
+            ui.strong("Omitted");
+            ui.strong("Condition");
+            ui.end_row();
+            for requirement in requirements {
+                draw_named_catalog_hash_link(
+                    ui,
+                    catalog,
+                    requirement.item_hash,
+                    item_name(catalog, requirement.item_hash),
+                );
+                ui.monospace(requirement.quantity.to_string());
+                match owned.as_deref() {
+                    Some(owned) => {
+                        let held = owned.get(&requirement.item_hash).copied().unwrap_or(0);
+                        let short = held < i64::from(requirement.quantity);
+                        let text = egui::RichText::new(held.to_string()).monospace();
+                        if short {
+                            ui.label(text.color(ui.visuals().warn_fg_color))
+                                .on_hover_text("Fewer than the requirement.");
+                        } else {
+                            ui.label(text);
                         }
-                        ui.label(yes_no(requirement.delete_on_action));
-                        ui.label(yes_no(requirement.omit_from_requirements));
-                        ui.monospace(format!("0x{:04X}", requirement.condition));
-                        ui.end_row();
                     }
-                });
+                    None => {
+                        ui.label("");
+                    }
+                }
+                ui.label(yes_no(requirement.delete_on_action));
+                ui.label(yes_no(requirement.omit_from_requirements));
+                ui.monospace(format!("0x{:04X}", requirement.condition));
+                ui.end_row();
+            }
         });
 }
 
@@ -74,42 +85,83 @@ pub(super) fn draw_hash_material_requirement_set(
     set: &crate::catalog::MaterialRequirementSetDef,
     inspected_hash: u64,
 ) {
-    metadata_subsection(
+    let own_page = set.hash == inspected_hash;
+    if !own_page {
+        look::subheading(ui, &format!("Material Requirement Set #{}", set.index));
+    }
+    look::properties(ui, ("hash_material_requirement_set", set.index), |p| {
+        if !own_page {
+            p.text("Matched As", "Required Item");
+            property_link(
+                p,
+                "Set",
+                catalog,
+                set.hash,
+                inspected_hash,
+                format!("Set #{}", set.index),
+            );
+        }
+        p.mono("Set Index", set.index.to_string());
+    });
+    let id = egui::Id::new(("hash_material_requirement_set_detail", set.index, set.hash));
+    if own_page {
+        look::section(
+            ui,
+            (id, "material_requirements"),
+            "Material Requirements",
+            Some(set.requirements.len()),
+            true,
+            |ui| {
+                if set.requirements.is_empty() {
+                    look::empty_state(ui, "No Requirements");
+                } else {
+                    draw_material_requirement_rows(ui, catalog, id, &set.requirements);
+                }
+            },
+        );
+        draw_material_set_users(ui, catalog, set);
+    } else {
+        draw_hash_material_requirements(ui, catalog, id, &set.requirements);
+    }
+}
+
+/// Items whose insertion or enabled requirement is this set.
+fn draw_material_set_users(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    set: &crate::catalog::MaterialRequirementSetDef,
+) {
+    let users = catalog.items_using_material_requirement_set(set.index);
+    if users.is_empty() {
+        return;
+    }
+    let rows = users
+        .iter()
+        .map(|(item_hash, usage)| {
+            vec![
+                Cell::link_unless(*item_hash, set.hash, item_name(catalog, *item_hash)),
+                Cell::muted(
+                    catalog
+                        .package_item_type_name(*item_hash)
+                        .unwrap_or_default(),
+                ),
+                Cell::text(format!("{usage:?}")),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
         ui,
-        &format!("Material Requirement Set #{}", set.index),
+        ("hash_material_set_users", set.index),
+        "Used by Items",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
         |ui| {
-            egui::Grid::new(("hash_material_requirement_set", set.index))
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    hash_detail_field(
-                        ui,
-                        "Matched As",
-                        if set.hash == inspected_hash {
-                            "Material Requirement Set Hash"
-                        } else {
-                            "Item Definition Hash"
-                        },
-                        false,
-                    );
-                    hash_detail_field(
-                        ui,
-                        "Material Requirement Set Index",
-                        set.index.to_string(),
-                        true,
-                    );
-                    catalog_hash_hex_and_decimal_field(
-                        ui,
-                        catalog,
-                        "Material Requirement Set Hash",
-                        set.hash,
-                    );
-                });
-            draw_hash_material_requirements(
+            draw_table(
                 ui,
                 catalog,
-                egui::Id::new(("hash_material_requirement_set_detail", set.index, set.hash)),
-                &set.requirements,
+                ("hash_material_set_users", set.index),
+                &["Item", "Type", "Requirement"],
+                &rows,
             );
         },
     );

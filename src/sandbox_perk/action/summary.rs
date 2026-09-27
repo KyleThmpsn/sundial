@@ -119,18 +119,34 @@ fn render_section(out: &mut Vec<String>, heading: &str, lines: &[SummaryLine]) {
 }
 
 fn summarize_group(index: usize, group: &DecodedGroup) -> GroupSummary {
+    // Named as the card names them.
     let label = if index == 0 {
-        "Main Program".to_owned()
+        "Main Behavior".to_owned()
     } else {
-        format!("Additional Program {}", index + 1)
+        format!("Behavior {}", index + 1)
     };
     GroupSummary {
         label,
         activation: condition_lines(&group.activation, 0),
-        effects: group.effects.iter().map(effect_line).collect(),
-        removal: condition_lines(&group.removal, 0),
+        // Decoding keeps native storage order, and dispatch runs from last to first. The card
+        // numbers actions in dispatch order, so the reading lists them the same way.
+        effects: group.effects.iter().rev().map(effect_line).collect(),
+        removal: ending_lines(&group.removal),
         rearm: condition_lines(&group.rearm, 0),
     }
+}
+
+/// An ending that is only the Unconditional Check ends the effect as it starts, which reads as
+/// that rather than as a condition that always holds.
+fn ending_lines(conditions: &[DecodedCondition]) -> Vec<SummaryLine> {
+    let mut lines = condition_lines(conditions, 0);
+    if let ([condition], [line]) = (conditions, lines.as_mut_slice())
+        && condition.kind == 0
+        && condition.probability.describe().is_none()
+    {
+        line.text = "At once".to_owned();
+    }
+    lines
 }
 
 fn condition_lines(conditions: &[DecodedCondition], depth: usize) -> Vec<SummaryLine> {
@@ -345,6 +361,7 @@ fn predicate_description(condition: &DecodedCondition) -> Option<String> {
         .ok()
         .and_then(|graph| super::native::predicate::describe(&graph))
         .or_else(|| state_description(condition.class, &condition.native))
+        .or_else(|| range_description(condition.class, &condition.native))
         .or_else(|| empty_predicate_description(condition.class, &condition.native))
         .or_else(|| unnamed_state_description(&condition.native))?;
     if condition.kind != 35 {
@@ -387,6 +404,51 @@ fn unnamed_state_description(native: &[u8]) -> Option<String> {
     })
 }
 
+/// A predicate that checks only ranges, read by what they bound: health and shields (0 to 1
+/// is unbounded), the living fireteam share (0 to 1) and fireteam size (0 to 32), and the
+/// three magazine fractions (0 to 1). Spring-Loaded Mounting ends on health and shields alone,
+/// which read as Always before the ranges were checked.
+fn range_description(class: u32, native: &[u8]) -> Option<String> {
+    if !matches!(class, 0x8080_3DCE | 0x8080_3DCC) {
+        return None;
+    }
+    let bounded = |offset: usize, most: f32| {
+        native.get(offset..offset + 8).is_some_and(|pair| {
+            let least = f32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
+            let highest = f32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+            least != 0.0 || highest != most
+        })
+    };
+    let mut bounds = Vec::new();
+    if bounded(0x18, 1.0) {
+        bounds.push("health");
+    }
+    if bounded(0x20, 1.0) {
+        bounds.push("shield");
+    }
+    if bounded(0x28, 1.0) || bounded(0x30, 32.0) {
+        bounds.push("fireteam");
+    }
+    if [0x9C, 0xA4, 0xAC]
+        .into_iter()
+        .any(|offset| bounded(offset, 1.0))
+    {
+        bounds.push("ammo");
+    }
+    let (last, rest) = bounds.split_last()?;
+    let listed = if rest.is_empty() {
+        (*last).to_owned()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let mut text = format!("{listed} check");
+    text[..1].make_ascii_uppercase();
+    if native.get(0xF8) == Some(&1) {
+        text.push_str(" fails");
+    }
+    Some(text)
+}
+
 /// A predicate with no key, no player or weapon state and no labels checks nothing, so it
 /// passes, or never passes when inverted. Stock always-active perks are built this way: an
 /// empty activation with an inverted empty removal, so the effect lasts until the perk goes.
@@ -412,69 +474,52 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
     let key = native
         .get(0xD4..0xD8)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))?;
-    let inverted = native.get(0xF8) == Some(&1);
-    let state = super::native::fields::keys::known(class, 0xD4)
+    let named = super::native::fields::keys::known(class, 0xD4)
         .iter()
-        .find(|entry| entry.hash == key)
-        .map(|entry| entry.name.to_owned())
-        .or_else(|| {
-            // The inline player and weapon states, named the same way (see `values.rs`).
-            let player_bits = native.get(0x38).copied().unwrap_or(0);
-            let player = super::native::fields::describe(class)
-                .ok()
-                .and_then(|fields| {
-                    let field = fields.iter().find(|field| field.offset == 0x38)?;
-                    let contract = super::native::fields::contract(class, field);
-                    let mut states = Vec::new();
-                    let mut remaining = player_bits;
-                    for &(bit, name) in contract.choices {
-                        if player_bits & bit != 0 {
-                            states.push(name.to_owned());
-                            remaining &= !bit;
-                        }
-                    }
-                    if remaining != 0 {
-                        states.push(format!("Player State 0x{remaining:02X}"));
-                    }
-                    (!states.is_empty()).then(|| states.join(" and "))
-                });
-            // The weapon byte is a bit set. Bit 4 is aiming down sights. Bit 1 holds in every
-            // weapon perk and weapon mod whose effect applies while that weapon is in hand
-            // (Anti-Barrier Rounds, Celerity, Eye of the Storm, Black Talon Catalyst) and
-            // combines with 4 in Split Electron, whose text says "aiming down sights".
-            let weapon_bits = native.get(0x81).copied().unwrap_or(0);
-            let weapon = match (weapon_bits & 1 != 0, weapon_bits & 4 != 0) {
-                (true, true) => Some("Holding the Weapon and Aiming Down Sights"),
-                (true, false) => Some("Holding the Weapon"),
-                (false, true) => Some("Aiming Down Sights"),
-                (false, false) => None,
-            };
-            match (player.as_deref(), weapon) {
-                (Some(player), Some(weapon)) => Some(format!("{player} and {weapon}")),
-                (Some(one), None) | (None, Some(one)) => Some(one.to_owned()),
-                (None, None) => None,
-            }
+        .find(|entry| entry.hash == key);
+    // A switch reads 1 while its state holds and 0 while it does not, so a range that takes 0
+    // but not 1 holds while the state does not. Six stock exotic armor perk checks test 0 to
+    // 0 and Killing Tally ends on 0 to 0.5, so each reads the way an inverted check does.
+    let off = named.is_some()
+        && !super::native::fields::keys::NUMERIC.contains(&key)
+        && native.get(0xD8..0xE0).is_some_and(|pair| {
+            let least = f32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
+            let most = f32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+            let takes = |value: f32| least <= value && value <= most;
+            takes(0.0) && !takes(1.0)
         });
-    let weapons = equipped_weapon_labels(class, native);
-    let mut text = String::new();
-    if let Some(state) = state {
+    let inverted = (native.get(0xF8) == Some(&1)) != off;
+    // The player and weapon states hold beside the key, as Queen's Wrath requires aiming
+    // down sights with its bow drawn, so a named key does not replace them.
+    let inline = inline_state_description(class, native);
+    let mut text = match named {
         // A numeric key names a requirement, not the threshold it tests. The compiled
         // comparison above supplies that threshold when its program is understood.
-        let numeric_key = matches!(
-            key,
-            0x59E3_47ED | 0x32CC_5402 | 0x748A_92CC | 0xA43A_8C2E | 0xD9C4_6BC4 | 0x58A9_CB99
-        );
-        text = if numeric_key {
-            format!(
-                "{} the {state} requirement",
-                if inverted { "Does not meet" } else { "Meets" }
-            )
-        } else if inverted {
-            format!("While not {state}")
-        } else {
-            format!("While {state}")
-        };
-    }
+        Some(entry) if super::native::fields::keys::NUMERIC.contains(&key) => {
+            let met = if inverted { "Does not meet" } else { "Meets" };
+            match inline {
+                Some(inline) => format!("{met} the {} requirement while {inline}", entry.name),
+                None => format!("{met} the {} requirement", entry.name),
+            }
+        }
+        Some(entry) => {
+            let state = inline.map_or_else(
+                || entry.name.to_owned(),
+                |inline| format!("{} and {inline}", entry.name),
+            );
+            if inverted {
+                format!("While not {state}")
+            } else {
+                format!("While {state}")
+            }
+        }
+        None => match inline {
+            Some(inline) if inverted => format!("While not {inline}"),
+            Some(inline) => format!("While {inline}"),
+            None => String::new(),
+        },
+    };
+    let weapons = equipped_weapon_labels(class, native);
     if !weapons.is_empty() {
         let list = weapons.join(" or ");
         if text.is_empty() {
@@ -484,6 +529,47 @@ pub fn state_description(class: u32, native: &[u8]) -> Option<String> {
         }
     }
     (!text.is_empty()).then_some(text)
+}
+
+/// The inline player and weapon states a predicate requires, named the same way as their
+/// fields (see `values.rs`).
+fn inline_state_description(class: u32, native: &[u8]) -> Option<String> {
+    let player_bits = native.get(0x38).copied().unwrap_or(0);
+    let player = super::native::fields::describe(class)
+        .ok()
+        .and_then(|fields| {
+            let field = fields.iter().find(|field| field.offset == 0x38)?;
+            let contract = super::native::fields::contract(class, field);
+            let mut states = Vec::new();
+            let mut remaining = player_bits;
+            for &(bit, name) in contract.choices {
+                if player_bits & bit != 0 {
+                    states.push(name.to_owned());
+                    remaining &= !bit;
+                }
+            }
+            if remaining != 0 {
+                states.push(format!("Player State 0x{remaining:02X}"));
+            }
+            (!states.is_empty()).then(|| states.join(" and "))
+        });
+    // The weapon byte is a bit set. Bit 4 is aiming down sights. Bit 1 holds in every
+    // weapon perk and weapon mod whose effect applies while that weapon is in hand
+    // (Anti-Barrier Rounds, Celerity, Eye of the Storm, Black Talon Catalyst) and
+    // combines with 4 in Split Electron, whose text says "aiming down sights".
+    let weapon_bits = native.get(0x81).copied().unwrap_or(0);
+    let weapon = match (weapon_bits & 1 != 0, weapon_bits & 4 != 0) {
+        (true, true) => Some("Holding the Weapon and Aiming Down Sights"),
+        (true, false) => Some("Holding the Weapon"),
+        (false, true) => Some("Aiming Down Sights"),
+        (false, false) => None,
+    };
+    match (player, weapon) {
+        (Some(player), Some(weapon)) => Some(format!("{player} and {weapon}")),
+        (Some(player), None) => Some(player),
+        (None, Some(weapon)) => Some(weapon.to_owned()),
+        (None, None) => None,
+    }
 }
 
 /// The weapon type labels of the equipped weapon records a predicate carries. Every stock
@@ -558,7 +644,13 @@ fn describe_kill(condition: &DecodedCondition) -> String {
         .map(|hash| label_name(*hash).map_or_else(|| format!("label 0x{hash:08X}"), str::to_owned))
         .collect::<Vec<_>>()
         .join(" or ");
-    format!("A {names} kill from {source}")
+    // No recovered label name starts with a consonant sound spelled with a vowel.
+    let article = if names.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "An"
+    } else {
+        "A"
+    };
+    format!("{article} {names} kill from {source}")
 }
 
 pub(super) fn describe_effect(effect: &DecodedEffect) -> String {
@@ -569,16 +661,16 @@ pub(super) fn describe_effect(effect: &DecodedEffect) -> String {
         .or_else(|| effect.referenced_tag.map(|tag| format!("0x{tag:08X}")));
     match (effect.kind, asset) {
         (1, Some(name)) => format!("Attach {name}"),
-        (1, None) => "Attach an entity".to_owned(),
+        (1, None) => "Attach an object or effect".to_owned(),
         (2, Some(name)) => format!("Attach {name} and drive one of its values"),
         (3, Some(name)) => format!("Spawn {name} once"),
-        (3, None) => "Spawn an entity once".to_owned(),
+        (3, None) => "Spawn an object or effect once".to_owned(),
         (8, _) if component_role(effect).is_some() => {
             let target = component_role(effect).unwrap().to_lowercase();
             let scale = fact_value(&effect.facts, "Scale").map(FactValue::render);
             match scale {
-                Some(scale) => format!("Adjust {target} using a scale of {scale}"),
-                None => format!("Adjust {target}"),
+                Some(scale) => format!("Change {target} with a multiplier of {scale}"),
+                None => format!("Change {target}"),
             }
         }
         (26, Some(name)) => format!("Replace the weapon projectile pattern with {name}"),
@@ -736,11 +828,12 @@ fn headline(action: &DecodedAction) -> String {
         .activation
         .first()
         .map_or_else(|| "It runs from the start".to_owned(), describe_condition);
-    let effects = group.effects.len();
-    let count = match effects {
-        0 => "no effects".to_owned(),
-        1 => "one effect".to_owned(),
-        value => format!("{value} effects"),
+    // The card calls what a trigger starts actions, so the count does too.
+    let actions = group.effects.len();
+    let count = match actions {
+        0 => "no actions".to_owned(),
+        1 => "one action".to_owned(),
+        value => format!("{value} actions"),
     };
     format!("{trigger}, then applies {count}.")
 }
@@ -753,13 +846,13 @@ fn notes(action: &DecodedAction) -> Vec<String> {
         .is_some_and(|group| group.activation.len() > 1)
     {
         notes.push(
-            "Conditions in one list are alternatives. The first one that passes starts the action."
+            "Conditions in one list are alternatives. The first one that passes starts the effect."
                 .to_owned(),
         );
     }
     if action.groups.len() > 1 {
         notes.push(
-            "This perk has more than one program. Each program keeps its own conditions and effects."
+            "This effect has more than one behavior. Each keeps its own conditions and actions."
                 .to_owned(),
         );
     }

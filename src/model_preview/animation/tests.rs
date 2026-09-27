@@ -184,6 +184,7 @@ fn chicken_idle_decodes_and_deforms_without_changing_topology() {
             let image = render::animated_image(
                 &model,
                 render::Camera::default(),
+                render::Scene::default(),
                 [400, 400],
                 frame as f32 / 10.0,
             );
@@ -217,4 +218,62 @@ fn load_model(packages: &Path) -> Model {
         model.animation_notice
     );
     model
+}
+
+/// The skeleton and animation-definition resources of one entity, the same two component
+/// classes the preview's own load collects before it reads a clip.
+fn animation_resources(manager: &PackageManager, entity: u32) -> Vec<Vec<u8>> {
+    let bytes = checked(manager, entity, ENTITY).unwrap();
+    let (count, rows) = array(&bytes, 0x10, 0x8080_9C04, 12, 4096).unwrap();
+    (0..count)
+        .filter_map(|index| {
+            let resource = u32_at(&bytes, rows + index * 12).ok()?;
+            let bytes = checked(manager, resource, RESOURCE).ok()?;
+            let data = pointer(&bytes, 0x18).ok()?;
+            let class = u32_at(&bytes, data.checked_sub(4)?).ok()?;
+            matches!(class, 0x8080_8546 | 0x8080_344B).then_some(bytes)
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
+#[allow(clippy::cognitive_complexity)]
+fn chicken_bank_enumerates_playable_clips_and_loads_each_one() {
+    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let model = load_model(Path::new(&packages));
+    let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
+    let resources = animation_resources(&manager, 0x80BC90E3);
+    let found = clips(&manager, &resources);
+    for clip in &found {
+        eprintln!("{} 0x{:08X}", clip.name, clip.tag);
+    }
+    // The bank holds nine clip references; one with an unsupported codec is left out rather
+    // than emptying the list.
+    assert!(!found.is_empty() && found.len() <= 9, "{}", found.len());
+    assert_eq!(found[0].tag, 0x80BC90D2, "the idle clip leads the list");
+    assert!(!found[0].name.is_empty());
+    let tags: BTreeSet<_> = found.iter().map(|clip| clip.tag).collect();
+    assert_eq!(tags.len(), found.len(), "clip tags are unique");
+    let names: BTreeSet<_> = found.iter().map(|clip| clip.name.as_str()).collect();
+    assert_eq!(names.len(), found.len(), "clip labels are unique");
+    // Choosing the default clip gives exactly what the default path already plays.
+    let idle = model.animation.as_ref().unwrap();
+    let chosen = load_clip(&manager, &resources, &model, found[0].tag).unwrap();
+    assert_eq!(
+        (chosen.tag, chosen.frames, chosen.fps),
+        (idle.tag, idle.frames, idle.fps)
+    );
+    assert_eq!(chosen.vertices(&model, 1.0), idle.vertices(&model, 1.0));
+    // Every clip the walk kept loads on its own, and nothing outside the bank does.
+    for clip in &found {
+        let animation = load_clip(&manager, &resources, &model, clip.tag).unwrap();
+        assert_eq!(animation.tag, clip.tag);
+        assert!(animation.frames >= 2 && animation.duration() > 0.0);
+        let vertices = animation.vertices(&model, 0.0);
+        assert_eq!(vertices.len(), model.vertices.len());
+        assert!(vertices.iter().flatten().all(|v| v.is_finite()));
+    }
+    assert!(load_clip(&manager, &resources, &model, 0).is_err());
+    assert!(clips(&manager, &[]).is_empty());
 }

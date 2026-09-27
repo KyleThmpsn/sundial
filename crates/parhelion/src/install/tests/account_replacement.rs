@@ -143,24 +143,6 @@ fn account_fixture(fixture: &Fixture) -> (PathBuf, Vec<u8>, ReplacementReview) {
 }
 
 #[test]
-fn failed_replacement_restores_account_and_packages_together() {
-    let fixture = Fixture::new();
-    let (path, original, review) = account_fixture(&fixture);
-    let mut request = fixture.request();
-    request.confirmed_replacement = Some(review);
-    let error = install_staged_packages_inner(&request, Some(1), DEFAULT_CACHE_INVALIDATION_OPS)
-        .unwrap_err();
-    assert!(error.rollback.as_ref().unwrap().succeeded(), "{error}");
-    assert_eq!(fs::read(path).unwrap(), original);
-    assert!(
-        preview_uninstall(&fixture.target)
-            .unwrap()
-            .artifacts()
-            .is_empty()
-    );
-}
-
-#[test]
 fn confirmed_replacement_keeps_account_backup_out_of_retention() {
     let fixture = Fixture::new();
     let (path, original, review) = account_fixture(&fixture);

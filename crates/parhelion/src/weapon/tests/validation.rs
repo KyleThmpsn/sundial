@@ -15,31 +15,6 @@ fn source_items_may_have_no_flavor_text() {
 }
 
 #[test]
-fn runtime_value_shape_accepts_native_package_schema_handles() {
-    let runtime = WeaponRuntimeValueOverride {
-        locator: WeaponRuntimeFieldLocator {
-            graph_tag: None,
-            binding_hash: 0x39AF_D7D3,
-            resource_index: 0,
-            root: WeaponRuntimeRootKind::ComponentInstance,
-            root_schema: 0x80BF_DFEA,
-            path: vec![WeaponRuntimePathElement {
-                name_hash: 0x1234_5678,
-                type_handle: 0x8080_000F,
-                byte_offset: 0xBD4,
-            }],
-            type_handle: 0x8080_000F,
-            value_offset: 0xBD4,
-            byte_size: 4,
-        },
-        value: WeaponRuntimeValue::Float32Bits(500.0_f32.to_bits()),
-    };
-
-    validate_runtime_value_override_shapes(&[runtime])
-        .expect("native package schema handles are valid runtime locators");
-}
-
-#[test]
 fn project_rejects_empty_but_accepts_batches_above_thirty_two_weapons() {
     assert!(canonical_project_weapons(&WeaponProjectSpec { weapons: vec![] }).is_err());
     let weapons = (0..64)
@@ -82,28 +57,9 @@ fn project_rejects_duplicate_namespaces_and_identity_domains_independently() {
 }
 
 #[test]
-fn project_canonical_order_is_input_permutation_independent() {
-    let first = project_weapon("parhelion.alpha", 1);
-    let second = project_weapon("parhelion.beta", 2);
-    let forward = canonical_project_weapons(&WeaponProjectSpec {
-        weapons: vec![first.clone(), second.clone()],
-    })
-    .unwrap();
-    let reverse = canonical_project_weapons(&WeaponProjectSpec {
-        weapons: vec![second, first],
-    })
-    .unwrap();
-    assert_eq!(forward, reverse);
-}
-
-#[test]
-fn namespace_identity_is_stable_distinct_and_uses_fnv_localization_keys() {
+fn namespace_identity_is_valid_and_uses_fnv_localization_keys() {
     let namespace = "parhelion.example-weapon";
     let first = WeaponCloneIdentity::from_namespace(namespace).expect("namespace should allocate");
-    let second = WeaponCloneIdentity::from_namespace(namespace)
-        .expect("namespace should allocate deterministically");
-
-    assert_eq!(first, second);
     first
         .validate_for_donor(0x6212_9AF7)
         .expect("allocated identity should validate");

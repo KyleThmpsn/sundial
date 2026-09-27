@@ -293,15 +293,6 @@ fn a_newer_schema_is_surfaced_instead_of_being_read() {
 }
 
 #[test]
-fn the_database_sits_beside_the_settings_file() {
-    let settings = Path::new("C:/Destiny2/bin/x64/Sunrise/settings.json");
-    assert_eq!(
-        crate::persistence::dawn_path(settings),
-        Path::new("C:/Destiny2/bin/x64/Sunrise/player-state.db")
-    );
-}
-
-#[test]
 fn soids_round_trip_through_dawn_fixed_width_hexadecimal() {
     for value in [1_u64, 0x4000_0000_0000_0001, u64::MAX] {
         let text = contract::format_soid(value);

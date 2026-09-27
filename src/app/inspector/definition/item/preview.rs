@@ -1,5 +1,7 @@
 //! Read-only appearance assembled from the inspected definition and its saved plugs.
+use super::super::item_details::item_name;
 use super::ItemInspection;
+use crate::app::inspector::look;
 use crate::{
     catalog::{ItemArtArrangement, ItemPackageMetadata, ItemRenderOverride},
     hash::parse_hash_hex,
@@ -9,11 +11,13 @@ use eframe::egui;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: bool) {
+pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: bool, button: bool) {
     let Some(base) = content.matches.item_package_metadata else {
-        model_preview::inspected_unavailable(ui);
+        if button {
+            model_preview::inspected_unavailable(ui);
+        }
         if details {
-            ui.label("No model is available for this definition.");
+            look::empty_state(ui, "No Model");
         }
         return;
     };
@@ -41,54 +45,46 @@ pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: boo
     let geometry = ornament.map_or(base, |(_, metadata)| metadata);
     let rows: Vec<_> = valid_art(geometry).collect();
     if rows.is_empty() {
-        model_preview::inspected_unavailable(ui);
+        if button {
+            model_preview::inspected_unavailable(ui);
+        }
         if details {
-            ui.label("No model is available for this definition.");
+            look::empty_state(ui, "No Model");
         }
         return;
     }
     if details {
-        ui.label(if saved.is_some_and(Value::is_array) {
-            "Saved Appearance"
-        } else {
-            "Catalog Appearance"
-        });
-        if saved.is_some_and(Value::is_array) {
-            ui.weak("Uses the plugs captured when this inspector was opened.");
-        }
-        if let Some((hash, _)) = ornament {
-            ui.label(format!(
-                "Ornament: {}",
-                content.catalog.package_item_name(hash).unwrap_or("Unnamed")
-            ));
-        }
-        for (hash, metadata) in &plugs {
-            if !content.catalog.is_weapon_ornament(*hash)
-                && metadata
-                    .translation_dye_rows
-                    .iter()
-                    .any(|rows| !rows.is_empty())
-            {
-                ui.label(format!(
-                    "Colors: {}",
-                    content
-                        .catalog
-                        .package_item_name(*hash)
-                        .unwrap_or("Unnamed")
-                ));
+        let catalog = content.catalog;
+        look::properties(ui, ("preview-appearance", content.hash), |p| {
+            p.text(
+                "Appearance",
+                if saved.is_some_and(Value::is_array) {
+                    "Saved Plugs"
+                } else {
+                    "Catalog Defaults"
+                },
+            );
+            if let Some((hash, _)) = ornament {
+                p.link("Ornament", catalog, hash, item_name(catalog, hash));
             }
-        }
-        if base.weapon_inventory_slot.is_none() && !content.catalog.is_weapon_ornament(content.hash)
-        {
-            ui.weak("Non-weapon models use base textures. Shader colors are currently supported for weapons.");
-        }
+            for (hash, metadata) in &plugs {
+                if !catalog.is_weapon_ornament(*hash)
+                    && metadata
+                        .translation_dye_rows
+                        .iter()
+                        .any(|rows| !rows.is_empty())
+                {
+                    p.link("Colors", catalog, *hash, item_name(catalog, *hash));
+                }
+            }
+        });
     }
     let colors = if geometry.translation_dye_rows.iter().all(Vec::is_empty) {
         base
     } else {
         geometry
     };
-    let variant_id = ui.id().with(("preview-art-variant", content.hash));
+    let variant_id = egui::Id::new(("preview-art-variant", content.hash, ui.ctx().viewport_id()));
     let mut index = ui
         .data(|data| data.get_temp::<usize>(variant_id))
         .filter(|&index| index < rows.len())
@@ -98,29 +94,36 @@ pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: boo
                 .unwrap_or(0)
         });
     if details && rows.len() > 1 {
-        egui::ComboBox::from_id_salt("preview-model-variant")
-            .selected_text(variant_label(rows[index]))
-            .show_ui(ui, |ui| {
-                for (i, row) in rows.iter().enumerate() {
-                    ui.selectable_value(&mut index, i, variant_label(row));
-                }
+        look::properties(ui, ("preview-model-variant", content.hash), |p| {
+            p.custom("Model", |ui| {
+                egui::ComboBox::from_id_salt("preview-model-variant")
+                    .selected_text(variant_label(rows[index]))
+                    .show_ui(ui, |ui| {
+                        for (i, row) in rows.iter().enumerate() {
+                            ui.selectable_value(&mut index, i, variant_label(row));
+                        }
+                    });
             });
+        });
         ui.data_mut(|data| data.insert_temp(variant_id, index));
     }
     let dyes = effective_dyes(
         &colors.translation_dye_rows,
         plugs.iter().map(|(_, metadata)| *metadata),
     );
-    model_preview::inspected_weapon(
-        ui,
-        &content.catalog.install_path().join("packages"),
-        Appearance {
-            arrangement: rows[index].arrangement,
-            dyes,
-        },
-        content.resolved_name.as_deref().unwrap_or("Model Preview"),
-        content.catalog.inspection_access(),
-    );
+    if button {
+        model_preview::inspected_weapon(
+            ui,
+            &content.catalog.install_path().join("packages"),
+            Appearance {
+                arrangement: rows[index].arrangement,
+                dye_textures: Vec::new(),
+                dyes,
+            },
+            content.resolved_name.as_deref().unwrap_or("Model Preview"),
+            content.catalog.inspection_access(),
+        );
+    }
 }
 
 fn valid_art(metadata: &ItemPackageMetadata) -> impl Iterator<Item = &ItemArtArrangement> {

@@ -2,6 +2,9 @@ use super::*;
 mod order;
 pub(super) use order::Order;
 
+/// Saved perks checked for problems per frame, so opening a large library never stalls a frame.
+const ISSUE_CHECKS_PER_FRAME: usize = 16;
+
 /// Where a Custom Perks row comes from: an open document, or a saved perk not opened yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PerkSource {
@@ -16,11 +19,13 @@ enum RowAction {
     Delete,
 }
 
-/// A perk the reader asked to delete, shown in a confirmation before anything is removed.
+/// A perk the reader asked to delete, shown in a confirmation before anything is removed. It
+/// is found again by id when the reader confirms, since the list can be rescanned meanwhile.
 #[derive(Clone, Debug)]
 pub(super) struct PendingDelete {
     name: String,
-    source: PerkSource,
+    id: String,
+    saved: bool,
 }
 
 /// The name a row shows for a recipe, with a stand-in for an empty one.
@@ -32,6 +37,55 @@ fn display_name(name: &str) -> &str {
     }
 }
 
+/// A perk's name as a file name: the characters no file system takes are replaced, and a
+/// name that is only those falls back to the stand-in.
+fn file_stem(name: &str) -> String {
+    let stem = name
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            control if control.is_control() => ' ',
+            other => other,
+        })
+        .collect::<String>();
+    let stem = stem.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stem = stem.trim_end_matches('.').trim().to_owned();
+    if stem.is_empty() {
+        "Untitled Perk".to_owned()
+    } else {
+        stem
+    }
+}
+
+/// "1 draft" or "N drafts".
+fn drafts(count: usize) -> String {
+    if count == 1 {
+        "1 draft".to_owned()
+    } else {
+        format!("{count} drafts")
+    }
+}
+
+/// The documents in a drafts file that still open, and the entries that no longer do. A file
+/// that is not a list of drafts at all is one rejected entry, so it is set aside whole.
+fn read_drafts(bytes: &[u8]) -> (Vec<Document>, Vec<serde_json::Value>) {
+    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(bytes) else {
+        let whole = serde_json::from_slice::<serde_json::Value>(bytes)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(bytes).into()));
+        return (Vec::new(), vec![whole]);
+    };
+    let mut documents = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        match serde_json::from_value::<Document>(entry.clone()) {
+            Ok(document) if document.recipe.validate_draft().is_ok() => documents.push(document),
+            _ => rejected.push(entry),
+        }
+    }
+    (documents, rejected)
+}
+
 /// The right-click menu of one Custom Perks row.
 fn draw_row_menu(
     response: &egui::Response,
@@ -41,16 +95,12 @@ fn draw_row_menu(
     let mut action = None;
     response.context_menu(|ui| {
         crate::app::style::perk_workbench_style(ui);
-        if ui
-            .button("Duplicate")
-            .on_hover_text("Open a copy as a new draft. Save to Library keeps it in Custom Perks.")
-            .clicked()
-        {
+        if ui.button("Duplicate").clicked() {
             action = Some((source, RowAction::Duplicate));
             ui.close_menu();
         }
         let delete = if saved {
-            "Delete…"
+            "Delete Perk…"
         } else {
             "Delete Draft…"
         };
@@ -67,22 +117,57 @@ impl Workbench {
         if self.initialized {
             return;
         }
+        self.initialize_from(Library::open_default());
+    }
+
+    /// Opens the workbench on `library`: its saved perks, and the drafts file beside them.
+    pub(super) fn initialize_from(&mut self, library: Result<Library, String>) {
         self.initialized = true;
-        match Library::open_default() {
+        match library {
             Ok(library) => {
                 let draft_path = library.root().join("workbench-drafts.json");
                 match std::fs::read(&draft_path) {
-                    Ok(bytes) => match serde_json::from_slice::<Vec<Document>>(&bytes) {
-                        Ok(documents) if documents.iter().all(|document| document.recipe.validate_draft().is_ok()) => {
-                            self.documents = documents;
-                            for document in &mut self.documents { if document.origin.is_none() { document.origin = Some(document.recipe.clone()); } }
-                            self.draft_baseline = Some(bytes);
-                            self.drafts_writable = true;
+                    Ok(bytes) => {
+                        let (documents, rejected) = read_drafts(&bytes);
+                        self.documents = documents;
+                        for document in &mut self.documents {
+                            if document.origin.is_none() {
+                                document.origin = Some(document.recipe.clone());
+                            }
+                            document.read_baseline();
                         }
-                        _ => self.error = Some("Saved workbench drafts could not be read. The original file is preserved and draft autosave is paused. Save to Library or Export keeps your new work.".into()),
-                    },
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.drafts_writable = true,
-                    Err(error) => self.error = Some(format!("Could not read workbench drafts: {error}. Draft autosave is paused.")),
+                        self.draft_baseline = Some(bytes);
+                        self.drafts_writable = true;
+                        // A draft the workbench cannot read is set aside, so the ones it
+                        // can read open and autosave carries on.
+                        if !rejected.is_empty() {
+                            let aside = library.root().join("workbench-drafts.rejected.json");
+                            let kept = serde_json::to_vec_pretty(&rejected)
+                                .map_err(|error| error.to_string())
+                                .and_then(|bytes| {
+                                    std::fs::write(&aside, bytes).map_err(|error| error.to_string())
+                                });
+                            self.error = Some(match kept {
+                                Ok(()) => format!(
+                                    "{} could not be opened. Kept in {}.",
+                                    drafts(rejected.len()),
+                                    aside.display().to_string().trim_start_matches(r"\\?\")
+                                ),
+                                Err(error) => format!(
+                                    "{} could not be opened or set aside: {error}",
+                                    drafts(rejected.len())
+                                ),
+                            });
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.drafts_writable = true
+                    }
+                    Err(error) => {
+                        self.error = Some(format!(
+                            "Could not read workbench drafts: {error}. Draft autosave is paused."
+                        ))
+                    }
                 }
                 let refresh = library.defaults_refresh().cloned();
                 self.library = Some(library);
@@ -105,6 +190,32 @@ impl Workbench {
         if !warnings.is_empty() {
             self.error = Some(warnings.join("\n"));
         }
+        self.adopt_library_changes();
+    }
+
+    /// Brings open documents up to date with their files after a rescan. A document with no
+    /// edits takes the file as it is now. One with edits keeps them and measures them
+    /// against the file as it is now, so it can be saved in place or discarded to it.
+    fn adopt_library_changes(&mut self) {
+        let on_disk = self
+            .entries
+            .iter()
+            .map(|entry| (entry.recipe.id.as_str(), entry))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for document in &mut self.documents {
+            let Some(entry) = on_disk.get(document.recipe.id.as_str()) else {
+                continue;
+            };
+            if document.baseline.as_deref() == Some(entry.baseline.as_slice()) {
+                continue;
+            }
+            if document.unchanged() {
+                document.recipe = entry.recipe.clone();
+                document.origin = Some(entry.recipe.clone());
+                document.modified = entry.modified;
+            }
+            document.set_baseline(Some(entry.baseline.clone()));
+        }
     }
 
     /// A failed refresh must not offer stale saved versions as current library entries.
@@ -112,10 +223,7 @@ impl Workbench {
         self.authored_templates = None;
         self.entries.clear();
         let Some(library) = &self.library else {
-            return vec![
-                "Custom Perks is unavailable. Workbench drafts and weapon recipes are still available."
-                    .into(),
-            ];
+            return vec!["Custom Perks is unavailable.".into()];
         };
         match library.scan() {
             Ok(scan) => {
@@ -133,17 +241,29 @@ impl Workbench {
         let Some(library) = &self.library else {
             return;
         };
-        let result = serde_json::to_vec_pretty(&self.documents)
+        let documents = self
+            .documents
+            .iter()
+            .filter(|document| !document.untouched_copy())
+            .collect::<Vec<_>>();
+        let result = serde_json::to_vec_pretty(&documents)
             .map_err(|error| error.to_string())
             .and_then(|bytes| {
                 library.save_drafts(&bytes, self.draft_baseline.as_deref())?;
                 Ok(bytes)
             });
         match result {
-            Ok(bytes) => self.draft_baseline = Some(bytes),
+            Ok(bytes) => {
+                self.draft_baseline = Some(bytes);
+                self.drafts_error = None;
+            }
             Err(error) => {
-                self.drafts_writable = false;
-                self.error = Some(format!("Draft autosave paused: {error}"));
+                // A failed write is tried again on the next edit rather than pausing autosave
+                // for the session. The drafts file is this reader's scratch, so whatever
+                // another instance wrote there is taken as the baseline for that next write.
+                self.drafts_error = Some(error);
+                self.draft_baseline =
+                    std::fs::read(library.root().join("workbench-drafts.json")).ok();
             }
         }
     }
@@ -151,6 +271,7 @@ impl Workbench {
     pub(super) fn add_document(&mut self, document: Document) {
         self.message = None;
         self.message_path = None;
+        self.error = None;
         self.query.clear();
         if let Some(index) = self
             .documents
@@ -170,7 +291,6 @@ impl Workbench {
         &mut self,
         ui: &mut egui::Ui,
         catalog: Option<&InvestmentCatalog>,
-        experimental: bool,
         weapon: Option<(&WeaponRecipe, &WeaponDonor)>,
     ) {
         ui.horizontal(|ui| {
@@ -179,25 +299,29 @@ impl Workbench {
         });
         ui.horizontal_wrapped(|ui| {
             crate::app::style::compact_controls(ui);
-            self.draw_library_actions(ui, catalog, experimental);
+            self.draw_library_actions(ui, catalog);
         });
         self.draw_library_search(ui);
         if let (Some(catalog), Some((weapon, donor))) = (catalog, weapon) {
-            egui::CollapsingHeader::new("Current Weapon Perks").show(ui, |ui| {
-                self.draw_weapon_perks(ui, weapon, donor, catalog);
-            });
+            egui::CollapsingHeader::new(format!("Current {} Perks", weapon.kind.label())).show(
+                ui,
+                |ui| {
+                    self.draw_weapon_perks(ui, weapon, donor, catalog);
+                },
+            );
         }
         if !self.drafts_writable {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Draft autosave is paused. Use Save to Library or Export to keep your changes.",
-            );
+            ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave is paused.");
+        } else if let Some(error) = &self.drafts_error {
+            ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave failed.")
+                .on_hover_text(error);
         }
         let query = self.query.trim().to_lowercase();
         let mut picked = None;
         let mut selected = None;
         let mut action = None;
         let order = self.library_rows();
+        let issues = self.row_issues(ui.ctx(), &order);
         egui::ScrollArea::vertical()
             .id_salt("perk-library")
             .max_height(ui.available_height().max(80.0))
@@ -205,23 +329,20 @@ impl Workbench {
             .show(ui, |ui| {
                 let mut visible = 0;
                 ui.add_enabled_ui(self.editor.is_none(), |ui| {
-                    for source in order {
+                    for (source, issue) in order.into_iter().zip(&issues) {
                         match source {
                             PerkSource::Document(index) => {
                                 let document = &self.documents[index];
                                 if !document.recipe.name.to_lowercase().contains(&query) {
                                     continue;
                                 }
-                                let unchanged = document
-                                    .baseline
-                                    .as_ref()
-                                    .and_then(|bytes| {
-                                        serde_json::from_slice::<PerkRecipe>(bytes).ok()
-                                    })
-                                    .is_some_and(|saved| saved == document.recipe);
                                 let name = display_name(&document.recipe.name);
-                                let label =
-                                    format!("{name}{}", if unchanged { "" } else { " · Draft" });
+                                let draft = if document.unchanged() {
+                                    ""
+                                } else {
+                                    " · Draft"
+                                };
+                                let label = format!("{name}{draft}");
                                 visible += 1;
                                 let response = perk_row(
                                     ui,
@@ -229,6 +350,7 @@ impl Workbench {
                                     &document.recipe,
                                     self.selected == index,
                                     &label,
+                                    issue.as_deref(),
                                 );
                                 if self.reveal_document && self.selected == index {
                                     response.scroll_to_me(Some(egui::Align::Min));
@@ -248,8 +370,14 @@ impl Workbench {
                                     continue;
                                 }
                                 visible += 1;
-                                let response =
-                                    perk_row(ui, catalog, &entry.recipe, false, &entry.recipe.name);
+                                let response = perk_row(
+                                    ui,
+                                    catalog,
+                                    &entry.recipe,
+                                    false,
+                                    &entry.recipe.name,
+                                    issue.as_deref(),
+                                );
                                 if response.clicked() {
                                     picked = Some(Document::new(
                                         entry.recipe.clone(),
@@ -266,7 +394,11 @@ impl Workbench {
                     }
                 });
                 if visible == 0 {
-                    ui.weak("No perks match this search.");
+                    ui.weak(if query.is_empty() {
+                        "No custom perks yet."
+                    } else {
+                        "No perks match this search."
+                    });
                 }
             });
         self.reveal_document = false;
@@ -290,37 +422,81 @@ impl Workbench {
         self.draw_restore_defaults_confirmation(ui.ctx());
     }
 
+    /// Each row's problem or warning, the one the status bar names when the perk is open. Open
+    /// drafts are checked on every frame. Saved perks are checked a few at a time and kept until
+    /// the file changes, or until discovery, whose results the check reads, finishes or restarts.
+    fn row_issues(&mut self, ctx: &egui::Context, order: &[PerkSource]) -> Vec<Option<String>> {
+        let ready = !self.discovery.busy();
+        if ready != self.library_issues_ready {
+            self.library_issues.clear();
+            self.library_issues_ready = ready;
+        }
+        let mut budget = ISSUE_CHECKS_PER_FRAME;
+        let mut issues = Vec::with_capacity(order.len());
+        for source in order {
+            let issue = match *source {
+                PerkSource::Document(index) => {
+                    let recipe = &self.documents[index].recipe;
+                    self.perk_issue(recipe)
+                        .or_else(|| validation::perk_warning(recipe))
+                }
+                PerkSource::Entry(index) => {
+                    let entry = &self.entries[index];
+                    let key = (entry.modified, entry.baseline.len());
+                    match self.library_issues.get(&entry.path) {
+                        Some((modified, size, issue)) if (*modified, *size) == key => issue.clone(),
+                        _ if budget == 0 => {
+                            ctx.request_repaint();
+                            None
+                        }
+                        _ => {
+                            budget -= 1;
+                            let issue = self
+                                .perk_issue(&entry.recipe)
+                                .or_else(|| validation::perk_warning(&entry.recipe));
+                            self.library_issues
+                                .insert(entry.path.clone(), (key.0, key.1, issue.clone()));
+                            issue
+                        }
+                    }
+                }
+            };
+            issues.push(issue);
+        }
+        if self.library_issues.len() > self.entries.len() {
+            let paths = self
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<BTreeSet<_>>();
+            self.library_issues.retain(|path, _| paths.contains(path));
+        }
+        issues
+    }
+
     /// Compact actions alongside the Custom Perks heading.
-    fn draw_library_actions(
-        &mut self,
-        ui: &mut egui::Ui,
-        catalog: Option<&InvestmentCatalog>,
-        experimental: bool,
-    ) {
+    fn draw_library_actions(&mut self, ui: &mut egui::Ui, catalog: Option<&InvestmentCatalog>) {
         let editing = self.editor.is_some();
         ui.add_enabled_ui(!editing, |ui| {
-            if ui
-                .button("New Perk")
-                .on_hover_text("Start an empty perk.")
-                .clicked()
-            {
-                let mut recipe = PerkRecipe::new();
-                if experimental {
-                    recipe.effects.push(program::new_effect(421));
-                }
-                self.add_document(Document::new(recipe, None));
-                self.page = Page::Effects;
+            if ui.button("New Perk").clicked() {
+                self.add_document(Document::new(PerkRecipe::new(), None));
+                self.page = Page::Basics;
             }
             if let Some(catalog) = catalog {
                 self.draw_templates(ui, catalog);
             }
-            crate::app::style::more_menu(ui, |ui| {
+            crate::app::style::more_menu(ui, "Library", |ui| {
                 crate::app::style::perk_workbench_style(ui);
                 if ui.button("Import…").clicked() {
                     self.import();
                     ui.close_menu();
                 }
-                if ui.button("Export…").clicked() {
+                let edit_issue = self.edit_issue();
+                if ui
+                    .add_enabled(edit_issue.is_none(), egui::Button::new("Export…"))
+                    .on_disabled_hover_text(edit_issue.unwrap_or_default())
+                    .clicked()
+                {
                     self.export();
                     ui.close_menu();
                 }
@@ -335,10 +511,10 @@ impl Workbench {
                         self.library.is_some() && !has_edits,
                         egui::Button::new("Restore Default Custom Perks…"),
                     )
-                    .on_hover_text(if has_edits {
-                        "Save or discard open edits to a default custom perk first."
+                    .on_disabled_hover_text(if has_edits {
+                        "Save or discard edits to default perks first."
                     } else {
-                        "Back up changed defaults, restore missing defaults, and leave your custom perks unchanged."
+                        "Custom Perks is unavailable."
                     })
                     .clicked()
                 {
@@ -364,14 +540,9 @@ impl Workbench {
         let Ok(ids) = library.bundled_ids() else {
             return false;
         };
-        self.documents.iter().any(|document| {
-            ids.contains(&document.recipe.id)
-                && document
-                    .baseline
-                    .as_deref()
-                    .and_then(|bytes| serde_json::from_slice::<PerkRecipe>(bytes).ok())
-                    .is_none_or(|saved| saved != document.recipe)
-        })
+        self.documents
+            .iter()
+            .any(|document| ids.contains(&document.recipe.id) && !document.unchanged())
     }
 
     fn draw_restore_defaults_confirmation(&mut self, ctx: &egui::Context) {
@@ -385,11 +556,11 @@ impl Workbench {
             crate::app::style::perk_workbench_style(ui);
             ui.set_width(400.0);
             ui.heading("Restore Default Custom Perks?");
-            ui.label("This replaces saved edits to bundled custom perks and restores missing defaults. Changed files are backed up first. Your other custom perks and weapon recipes stay unchanged.");
+            ui.label("Replaces edited default custom perks and restores missing ones.");
             if has_edits {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "Save or discard open edits to a default custom perk first.",
+                    "Save or discard edits to default perks first.",
                 );
             }
             ui.add_space(8.0);
@@ -415,9 +586,7 @@ impl Workbench {
                     self.error = None;
                     self.message_path = backup.clone();
                     self.message = Some(match backup {
-                        Some(path) => {
-                            format!("Default custom perks restored. Backup: {}", path.display())
-                        }
+                        Some(_) => "Default custom perks restored.".into(),
                         None => "Default custom perks are already up to date.".into(),
                     });
                 }
@@ -450,9 +619,21 @@ impl Workbench {
             let Some((recipe, baseline)) = restored.get(&document.recipe.id) else {
                 continue;
             };
+            // Edits that were never saved go on as a draft copy under a new id, the way the
+            // library keeps a saved edit as a copy, rather than vanishing under the new
+            // default.
+            if document.changed() || document.pending_effect.is_some() {
+                document.recipe.id = PerkRecipe::new().id;
+                document.recipe.name = format!("{} Copy", display_name(&document.recipe.name));
+                document.origin = Some(document.recipe.clone());
+                document.set_baseline(None);
+                document.target = None;
+                document.from_socket = false;
+                continue;
+            }
             document.recipe = recipe.clone();
             document.origin = Some(recipe.clone());
-            document.baseline = Some(baseline.clone());
+            document.set_baseline(Some(baseline.clone()));
             document.pending_effect = None;
             document.modified = None;
         }
@@ -484,25 +665,41 @@ impl Workbench {
     }
 
     pub(super) fn confirm_delete(&mut self, source: PerkSource) {
-        if let Some(recipe) = self.recipe_at(source) {
-            self.pending_delete = Some(PendingDelete {
-                name: display_name(&recipe.name).to_owned(),
-                source,
-            });
-        }
-    }
-
-    fn draw_delete_confirmation(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.pending_delete.clone() else {
-            return;
-        };
-        let saved = match pending.source {
+        let saved = match source {
             PerkSource::Document(index) => self
                 .documents
                 .get(index)
                 .is_some_and(|document| document.baseline.is_some()),
             PerkSource::Entry(_) => true,
         };
+        if let Some(recipe) = self.recipe_at(source) {
+            self.pending_delete = Some(PendingDelete {
+                name: display_name(&recipe.name).to_owned(),
+                id: recipe.id.clone(),
+                saved,
+            });
+        }
+    }
+
+    /// Where the perk with this id is now: its open document first, then its saved entry.
+    pub(super) fn source_of(&self, id: &str) -> Option<PerkSource> {
+        self.documents
+            .iter()
+            .position(|document| document.recipe.id == id)
+            .map(PerkSource::Document)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .position(|entry| entry.recipe.id == id)
+                    .map(PerkSource::Entry)
+            })
+    }
+
+    fn draw_delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_delete.clone() else {
+            return;
+        };
+        let saved = pending.saved;
         let mut confirm = false;
         let mut cancel = false;
         let response = egui::Modal::new("perk-workbench-delete".into()).show(ctx, |ui| {
@@ -515,9 +712,9 @@ impl Workbench {
             });
             ui.strong(&pending.name);
             ui.label(if saved {
-                "The saved copy in Custom Perks is removed. Weapon recipes that already carry this perk keep their own copy."
+                "Removes the saved copy. Recipes that carry this perk keep their own."
             } else {
-                "This draft was never saved to Custom Perks, so it cannot be brought back."
+                "This draft was never saved, so it cannot be brought back."
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -528,7 +725,9 @@ impl Workbench {
         cancel |= response.should_close();
         if confirm {
             self.pending_delete = None;
-            self.delete(pending.source);
+            if let Some(source) = self.source_of(&pending.id) {
+                self.delete(source);
+            }
         } else if cancel {
             self.pending_delete = None;
         }
@@ -553,9 +752,7 @@ impl Workbench {
         };
         if let Some(baseline) = baseline {
             let Some(library) = &self.library else {
-                self.error = Some(
-                    "Custom Perks is unavailable, so the saved copy cannot be deleted.".into(),
-                );
+                self.error = Some("Custom Perks is unavailable.".into());
                 return;
             };
             if let Err(error) = library.delete(&recipe, &baseline) {
@@ -605,6 +802,9 @@ impl Workbench {
             return;
         };
         let mut recipe = document.recipe;
+        // A draft that was never saved has no original to keep, so a copy of it is the draft
+        // itself saved, not a second document beside it.
+        let copy = copy && document.baseline.is_some();
         if copy {
             recipe.id = PerkRecipe::new().id;
         }
@@ -622,7 +822,7 @@ impl Workbench {
                         .push(Document::new(entry.recipe, Some(entry.baseline)));
                     self.select_document(self.documents.len() - 1);
                 } else {
-                    self.documents[self.selected].baseline = Some(entry.baseline);
+                    self.documents[self.selected].set_baseline(Some(entry.baseline));
                     self.documents[self.selected].origin = Some(recipe.clone());
                     self.documents[self.selected].modified = entry.modified;
                 }
@@ -655,7 +855,13 @@ impl Workbench {
         if let Some(issue) = self.edit_issue() {
             Some(issue)
         } else if self.library.is_none() {
-            Some("Custom Perks is unavailable, so this perk cannot be saved to the library.")
+            Some("Custom Perks is unavailable.")
+        } else if self
+            .documents
+            .get(self.selected)
+            .is_some_and(|document| document.recipe.name.trim().is_empty())
+        {
+            Some("Name the perk first.")
         } else {
             None
         }
@@ -677,7 +883,12 @@ impl Workbench {
         else {
             return;
         };
-        match Library::read(&path) {
+        self.import_from(&path);
+    }
+
+    /// Opens the perk in `path` as a new draft under its own id.
+    pub(super) fn import_from(&mut self, path: &Path) {
+        match Library::read(path) {
             Ok(mut entry) => {
                 entry.recipe.id = PerkRecipe::new().id;
                 self.add_document(Document::new(entry.recipe, None));
@@ -687,23 +898,34 @@ impl Workbench {
     }
 
     pub(super) fn export(&mut self) {
+        let Some(document) = self.documents.get(self.selected) else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!(
+                "{}.perk.json",
+                file_stem(display_name(&document.recipe.name))
+            ))
+            .save_file()
+        else {
+            return;
+        };
+        self.export_to(&path);
+    }
+
+    /// Writes the open perk to `path`, outside the library.
+    pub(super) fn export_to(&mut self, path: &Path) {
         let Some(library) = &self.library else {
             return;
         };
         let Some(document) = self.documents.get(self.selected) else {
             return;
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_file_name(format!("{}.perk.json", document.recipe.id))
-            .save_file()
-        else {
-            return;
-        };
-        let result = library.export(&document.recipe, &path);
-        match result {
+        match library.export(&document.recipe, path) {
             Ok(()) => {
                 self.message = Some(format!("Exported {}.", document.recipe.name));
-                self.message_path = Some(path);
+                self.message_path = Some(path.to_owned());
+                self.error = None;
             }
             Err(error) => self.error = Some(error),
         }
@@ -711,6 +933,36 @@ impl Workbench {
 }
 
 fn perk_row(
+    ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
+    recipe: &PerkRecipe,
+    selected: bool,
+    label: &str,
+    issue: Option<&str>,
+) -> egui::Response {
+    let Some(issue) = issue else {
+        return perk_row_body(ui, catalog, recipe, selected, label);
+    };
+    // The icon keeps its own room at the end of the row, so a long name truncates before it.
+    let icon = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.x;
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - icon).max(0.0);
+        let row = ui
+            .allocate_ui_with_layout(
+                egui::vec2(width, 0.0),
+                egui::Layout::top_down_justified(egui::Align::Min),
+                |ui| perk_row_body(ui, catalog, recipe, selected, label),
+            )
+            .inner;
+        let color = crate::app::style::secondary(ui.visuals());
+        ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(color))
+            .on_hover_text(issue);
+        row
+    })
+    .inner
+}
+
+fn perk_row_body(
     ui: &mut egui::Ui,
     catalog: Option<&InvestmentCatalog>,
     recipe: &PerkRecipe,

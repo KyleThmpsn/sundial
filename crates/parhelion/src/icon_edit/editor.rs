@@ -108,9 +108,10 @@ impl WeaponIconEditor {
         donor_container_tag: TagHash,
         rarity: crate::AuthoredWeaponRarity,
         current: WeaponIconEdit,
+        plain: bool,
     ) -> Self {
         let preview = open_shadowkeep_package_manager(package_directory)
-            .and_then(|manager| load_icon_preview(&manager, donor_container_tag, rarity))
+            .and_then(|manager| load_icon_preview(&manager, donor_container_tag, rarity, plain))
             .and_then(|mut preview| {
                 preview.set_branding(crate::branding::Branding::for_packages(package_directory))?;
                 Ok(preview)
@@ -133,6 +134,9 @@ impl WeaponIconEditor {
     pub(crate) fn with_corner(mut self, corner: Option<&crate::presentation::Artwork>) -> Self {
         if let Some(corner) = corner {
             self.preview = self.preview.and_then(|mut preview| {
+                if preview.plain {
+                    return Ok(preview);
+                }
                 preview.authored_watermark.rgba = crate::watermark::render_custom_corner(corner, 0)
                     .map_err(|error| error.to_string())?;
                 Ok(preview)

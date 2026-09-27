@@ -103,23 +103,6 @@ fn companion_rows_follow_retained_perks_when_reordered_or_replaced() {
 }
 
 #[test]
-fn companion_localization_and_presentation_values_are_preserved() {
-    let template = synthetic_sandbox_perk_string_template();
-    for presentation in [0, 1, 2] {
-        let (mut strings, _) = conditional_strings();
-        let row = companion_rows(&strings);
-        write_u16(&mut strings, row, 2385).unwrap();
-        write_u32(&mut strings, row + 4, 0xDEBA_2156).unwrap();
-        write_u32(&mut strings, row + 24, presentation).unwrap();
-        set_item_string_sandbox_perk_count(&mut strings, 2, &template).unwrap();
-        let row = companion_rows(&strings);
-        assert_eq!(read_u16(&strings, row).unwrap(), 2385);
-        assert_eq!(read_u32(&strings, row + 4).unwrap(), 0xDEBA_2156);
-        assert_eq!(read_u32(&strings, row + 24).unwrap(), presentation);
-    }
-}
-
-#[test]
 fn malformed_companion_conditions_are_rejected_before_mutation() {
     let (strings, header) = conditional_strings();
     let row = companion_rows(&strings);

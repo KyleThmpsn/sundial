@@ -39,7 +39,7 @@ impl PackageAuthoringApp {
         if donor.is_none() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "The selected gameplay donor is not available in the currently loaded Sundial catalog.",
+                "Gameplay donor not found in the catalog.",
             );
         }
 
@@ -77,7 +77,7 @@ impl PackageAuthoringApp {
         }
     }
 
-    pub(super) fn draw_weapon_name(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn draw_weapon_name(&mut self, ui: &mut egui::Ui, label_width: f32) {
         let mut edited_name = self
             .invalid_weapon_name
             .as_ref()
@@ -85,8 +85,8 @@ impl PackageAuthoringApp {
         let response = ui
             .horizontal(|ui| {
                 let label = ui.add_sized(
-                    [90.0, ui.spacing().interact_size.y],
-                    egui::Label::new("Weapon Name"),
+                    [label_width, ui.spacing().interact_size.y],
+                    egui::Label::new(format!("{} Name", self.recipe.kind.label())),
                 );
                 ui.add_sized(
                     [ui.available_width(), ui.spacing().interact_size.y],
@@ -117,23 +117,30 @@ impl PackageAuthoringApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Namespace");
             if !self.recipe.identity_is_name_derived() {
-                draw_authoring_info_icon(ui,
-                    "This recipe has custom identity hashes. Renaming generates new hashes from the new parhelion.* namespace.");
+                draw_authoring_info_icon(ui, "Custom identity hashes. Renaming replaces them.");
             }
         });
         let mut namespace = self.recipe.namespace.clone();
         ui.add_sized(
             [ui.available_width(), ui.spacing().interact_size.y],
             egui::TextEdit::singleline(&mut namespace).interactive(false),
-        ).on_hover_text("Derived from the weapon name. Renaming updates all generated identity hashes together.");
+        )
+        .on_hover_text("Set by the weapon name. Renaming changes every hash.");
     }
 
     pub(super) fn draw_definition_panel(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
+        self.draw_item_text(ui, donor.map(|donor| donor.summary.type_name.as_str()));
+        self.draw_weapon_profile(ui, donor);
+    }
+
+    /// Name, flavor text and the folded text presentation every kind shares.
+    pub(super) fn draw_item_text(&mut self, ui: &mut egui::Ui, inherited_type: Option<&str>) {
         let panel_scope = self.recipe_panel_scope();
-        self.draw_weapon_name(ui);
+        let label_width = text_label_width(ui, self.recipe.kind);
+        self.draw_weapon_name(ui, label_width);
         ui.horizontal_top(|ui| {
             let label = ui.add_sized(
-                [90.0, ui.spacing().interact_size.y],
+                [label_width, ui.spacing().interact_size.y],
                 egui::Label::new("Flavor Text"),
             );
             ui.add(
@@ -144,63 +151,69 @@ impl PackageAuthoringApp {
             .labelled_by(label.id);
         });
 
+        let noun = self.recipe.kind.noun();
         egui::CollapsingHeader::new("Text Presentation")
             .id_salt(("parhelion-text-presentation", panel_scope.as_str()))
             .default_open(false)
             .show(ui, |ui| {
-            ui.weak("Turning off optional text also removes its translations.");
-            let mut custom_type = self.recipe.type_name.is_some();
-            if ui
-                .checkbox(&mut custom_type, "Custom Item-Type Label")
-                .on_hover_text(
-                    "Writes the independent item-type localization reference at item-string offset 0x90. Disable this to preserve the gameplay donor's label.",
-                )
-                .changed()
-            {
-                let value = custom_type.then(|| {
-                    donor
-                        .map(|donor| donor.summary.type_name.clone())
-                        .unwrap_or_default()
-                });
-                text_fields::set(&mut self.recipe, OptionalText::TypeName, value);
-            }
-            if let Some(type_name) = &mut self.recipe.type_name {
-                ui.add(
-                    egui::TextEdit::singleline(type_name)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Item type shown by the game"),
-                );
-            } else if let Some(donor) = donor {
-                ui.label(format!("Inherited: {}", donor.summary.type_name));
-            }
+                let mut custom_type = self.recipe.type_name.is_some();
+                if ui
+                    .checkbox(&mut custom_type, "Custom Item-Type Label")
+                    .on_hover_text("Off keeps the gameplay donor's item type.")
+                    .changed()
+                {
+                    let value = custom_type.then(|| inherited_type.unwrap_or_default().to_owned());
+                    text_fields::set(&mut self.recipe, OptionalText::TypeName, value);
+                }
+                if let Some(type_name) = &mut self.recipe.type_name {
+                    ui.add(
+                        egui::TextEdit::singleline(type_name)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Item type shown by the game"),
+                    );
+                } else if let Some(inherited_type) = inherited_type {
+                    ui.label(format!("Inherited: {inherited_type}"));
+                }
 
-            ui.separator();
-            let mut inventory_hint = self.recipe.inventory_hint.is_some();
-            if ui
-                .checkbox(&mut inventory_hint, "Inventory Acquisition Hint")
-                .on_hover_text(
-                    "Optional inventory tooltip acquisition text, separate from Collections Source. This is display text only: authored weapons can be reacquired from Collections.",
-                )
-                .changed()
-            {
-                let value = inventory_hint.then(|| {
-                    "Curated roll: This weapon can be reacquired from Collections.".to_owned()
-                });
-                text_fields::set(&mut self.recipe, OptionalText::InventoryHint, value);
-            }
-            if let Some(value) = &mut self.recipe.inventory_hint {
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Inventory tooltip acquisition line"),
-                );
-            }
-            ui.separator();
-            self.presentation_editor.draw_lore(ui, &mut self.recipe.overrides, &self.packages, self.recipe.donor.item_hash.parse_u32().ok());
-            ui.separator();
-            self.draw_locale_text_overrides(ui, TextSection::Weapon);
+                ui.separator();
+                let mut inventory_hint = self.recipe.inventory_hint.is_some();
+                if ui
+                    .checkbox(&mut inventory_hint, "Inventory Acquisition Hint")
+                    .on_hover_text("Inventory tooltip text only. Separate from Collections Source.")
+                    .changed()
+                {
+                    let value = inventory_hint.then(|| {
+                        format!("Curated roll: This {noun} can be reacquired from Collections.")
+                    });
+                    text_fields::set(&mut self.recipe, OptionalText::InventoryHint, value);
+                }
+                if let Some(value) = &mut self.recipe.inventory_hint {
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Inventory tooltip acquisition line"),
+                    );
+                }
+                ui.separator();
+                // Gear shows its lore tab in a section of its own, and a shader has none.
+                if matches!(self.recipe.kind, ItemKind::Weapon | ItemKind::Subclass) {
+                    self.presentation_editor.draw_lore(
+                        ui,
+                        &mut self.recipe.overrides,
+                        &self.packages,
+                        (
+                            self.recipe.donor.item_hash.parse_u32().ok(),
+                            self.recipe.kind,
+                        ),
+                    );
+                    ui.separator();
+                }
+                self.draw_locale_text_overrides(ui, TextSection::Weapon);
             });
+    }
 
+    /// Slot, damage, ammo, rarity, power cap and any unique behavior for a weapon.
+    fn draw_weapon_profile(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
         ui.add_space(4.0);
         // A behavior copied from Hard Light or Borealis owns the damage type.
         let damage_locked = self
@@ -252,8 +265,12 @@ impl PackageAuthoringApp {
                                 &behaviors,
                                 self.catalog.as_ref(),
                                 &self.donor_summaries,
-                                donor.map(|donor| donor.summary.type_name.as_str()),
                                 &mut self.behavior_query,
+                                donor.is_some_and(|gameplay| {
+                                    crate::app::donor_view::has_unique_behavior(
+                                        gameplay.summary.hash,
+                                    )
+                                }),
                             );
                             // What the choice brings with it belongs under the choice. Drawn
                             // below the whole row it started at the panel's left edge, a column
@@ -286,7 +303,7 @@ impl PackageAuthoringApp {
             ui.heading("Gameplay Properties");
             draw_authoring_info_icon(
                 ui,
-                "Customize behavior from the selected base weapon and runtime source. Components from different weapons may not work together. Test the complete combination in game.",
+                "Components from different weapons can conflict. Test in game.",
             );
         });
         self.draw_runtime_source_summary(ui);
@@ -326,8 +343,10 @@ impl PackageAuthoringApp {
                 if self.show_experimental_options {
                     self.draw_runtime_component_donors(ui);
                 } else {
-                    ui.label("Component mixing, runtime values, and base-item perk or trait rows are experimental. Enable advanced technical controls in Preferences to edit them.");
-                    ui.label("Saved overrides remain active when these controls are hidden.");
+                    ui.label(
+                        "Enable Experimental Features to mix components and edit runtime values.",
+                    );
+                    ui.label("Saved overrides stay active.");
                     if ui.button("Open Preferences…").clicked() {
                         self.preferences_page = preferences_view::PreferencesPage::EditorLibrary;
                         self.preferences_open = true;
@@ -354,6 +373,7 @@ impl PackageAuthoringApp {
             .collect::<Vec<_>>();
         badges.sort_by(|a, b| a.name.cmp(&b.name));
         badges.dedup();
+        let class_armor = self.recipe.kind == ItemKind::Armor;
         ui.scope(|ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Collections");
@@ -383,6 +403,7 @@ impl PackageAuthoringApp {
                                 ui,
                                 &mut self.recipe.overrides,
                                 &badges,
+                                class_armor,
                             );
                         });
                 });
@@ -402,6 +423,7 @@ impl PackageAuthoringApp {
                             ui,
                             &mut self.recipe.overrides,
                             &badges,
+                            class_armor,
                         );
                     });
                 ui.add_space(8.0);
@@ -431,70 +453,71 @@ impl PackageAuthoringApp {
             .id_salt(("collection-custom-text", self.recipe_panel_scope()))
             .default_open(custom_text)
             .show(ui, |ui| {
-        let mut custom_collection_name = self.recipe.collection_name.is_some();
-        if ui
-            .checkbox(&mut custom_collection_name, "Separate Collections Name")
-            .changed()
-        {
-            let value = custom_collection_name.then(|| self.recipe.name.clone());
-            text_fields::set(&mut self.recipe, OptionalText::CollectionName, value);
-        }
-        if let Some(value) = &mut self.recipe.collection_name {
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Name shown only in Collections"),
-            );
-        }
-        let mut custom_collection_description = self.recipe.collection_description.is_some();
-        if ui
-            .checkbox(
-                &mut custom_collection_description,
-                "Separate Collections Description",
-            )
-            .changed()
-        {
-            let value = custom_collection_description.then(|| self.recipe.flavor.clone());
-            text_fields::set(&mut self.recipe, OptionalText::CollectionDescription, value);
-        }
-        if let Some(value) = &mut self.recipe.collection_description {
-            ui.add(
-                egui::TextEdit::multiline(value)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(2)
-                    .hint_text("Description shown only in Collections"),
-            );
-        }
-        let mut collection_requirement = self.recipe.collection_requirement.is_some();
-        if ui
-                .checkbox(&mut collection_requirement, "Collections Requirement Line")
-                .on_hover_text(
-                    "Writes the collectible-display requirement/warning text. Reacquisition remains enabled. Leave this disabled for the normal blank line.",
-                )
-                .changed()
-            {
-                let value = collection_requirement.then(|| "Collection requirement".to_owned());
-                text_fields::set(&mut self.recipe, OptionalText::CollectionRequirement, value);
-            }
-        if let Some(value) = &mut self.recipe.collection_requirement {
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Collections requirement or warning"),
-            );
-        }
-        })
-        .header_response
-        .on_hover_text("Turning off optional text also removes its translations.");
+                let mut custom_collection_name = self.recipe.collection_name.is_some();
+                if ui
+                    .checkbox(&mut custom_collection_name, "Separate Collections Name")
+                    .changed()
+                {
+                    let value = custom_collection_name.then(|| self.recipe.name.clone());
+                    text_fields::set(&mut self.recipe, OptionalText::CollectionName, value);
+                }
+                if let Some(value) = &mut self.recipe.collection_name {
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Name shown only in Collections"),
+                    );
+                }
+                let mut custom_collection_description =
+                    self.recipe.collection_description.is_some();
+                if ui
+                    .checkbox(
+                        &mut custom_collection_description,
+                        "Separate Collections Description",
+                    )
+                    .changed()
+                {
+                    let value = custom_collection_description.then(|| self.recipe.flavor.clone());
+                    text_fields::set(&mut self.recipe, OptionalText::CollectionDescription, value);
+                }
+                if let Some(value) = &mut self.recipe.collection_description {
+                    ui.add(
+                        egui::TextEdit::multiline(value)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(2)
+                            .hint_text("Description shown only in Collections"),
+                    );
+                }
+                let mut collection_requirement = self.recipe.collection_requirement.is_some();
+                if ui
+                    .checkbox(&mut collection_requirement, "Collections Requirement Line")
+                    .on_hover_text("Display text only. Reacquisition stays enabled.")
+                    .changed()
+                {
+                    let value = collection_requirement.then(|| "Collection requirement".to_owned());
+                    text_fields::set(&mut self.recipe, OptionalText::CollectionRequirement, value);
+                }
+                if let Some(value) = &mut self.recipe.collection_requirement {
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Collections requirement or warning"),
+                    );
+                }
+            })
+            .header_response
+            .on_hover_text("Turning off optional text also removes its translations.");
         ui.add_space(5.0);
         self.draw_locale_text_overrides(ui, TextSection::Collections);
     }
 
     pub(super) fn draw_appearance_workspace(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Appearance");
+        ui.horizontal_wrapped(|ui| {
+            ui.heading("Appearance");
+            self.draw_appearance_preview(ui);
+        });
         #[cfg(feature = "d2-model-importer")]
         self.draw_imported_model_picker(ui);
-        ui.label("These follow the appearance on the Weapon tab unless you choose another source.");
         ui.add_space(8.0);
         self.draw_appearance_ornaments(ui);
         if ui.available_width() >= 880.0 {
@@ -509,13 +532,39 @@ impl PackageAuthoringApp {
         }
         ui.add_space(12.0);
         ui.separator();
-        self.draw_appearance_preview(ui);
-        ui.add_space(12.0);
-        ui.separator();
-        self.presentation_editor
-            .draw_corner(ui, &mut self.recipe.overrides);
-        ui.add_space(12.0);
-        ui.separator();
+        ui.add_space(8.0);
+        if ui.available_width() >= 880.0 {
+            ui.columns(2, |columns| {
+                self.presentation_editor
+                    .draw_corner(&mut columns[0], &mut self.recipe.overrides);
+                self.draw_appearance_hud_icon(&mut columns[1]);
+            });
+        } else {
+            self.presentation_editor
+                .draw_corner(ui, &mut self.recipe.overrides);
+            ui.add_space(12.0);
+            ui.separator();
+            self.draw_appearance_hud_icon(ui);
+        }
+        if self.show_experimental_options {
+            let geometry_donor = self.current_geometry_donor();
+            let render_gear_donor = self.current_render_gear_donor();
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(5.0);
+            egui::CollapsingHeader::new("Technical Appearance Data")
+                .id_salt(("appearance-data", self.recipe_panel_scope()))
+                .show(ui, |ui| {
+                    self.draw_translation_overrides(
+                        ui,
+                        geometry_donor.as_ref(),
+                        render_gear_donor.as_ref(),
+                    );
+                });
+        }
+    }
+
+    fn draw_appearance_hud_icon(&mut self, ui: &mut egui::Ui) {
         let appearance = self
             .recipe
             .presentation_donor
@@ -537,27 +586,10 @@ impl PackageAuthoringApp {
                 name,
             },
         );
-        if self.show_experimental_options {
-            let geometry_donor = self.current_geometry_donor();
-            let render_gear_donor = self.current_render_gear_donor();
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(5.0);
-            egui::CollapsingHeader::new("Technical Appearance Data")
-                .id_salt(("appearance-data", self.recipe_panel_scope()))
-                .show(ui, |ui| {
-                    self.draw_translation_overrides(
-                        ui,
-                        geometry_donor.as_ref(),
-                        render_gear_donor.as_ref(),
-                    );
-                });
-        }
     }
 
     pub(super) fn draw_identity_workspace(&mut self, ui: &mut egui::Ui) {
         ui.heading("Recipe Identity");
-        ui.weak("Identifiers stay the same when you rename a weapon. Use Duplicate to create a separate weapon.");
         ui.add_space(6.0);
         self.draw_recipe_namespace(ui);
         ui.separator();
@@ -619,15 +651,7 @@ impl PackageAuthoringApp {
                             .find(|weapon| weapon.item_hash == item_hash)
                     })
             });
-        let game_fields = [
-            IdentityField::new("Item", self.recipe.identity.item_hash.to_string()),
-            IdentityField::new(
-                "Collectible",
-                self.recipe.identity.collectible_hash.to_string(),
-            ),
-            IdentityField::new("Unlock", self.recipe.identity.unlock_hash.to_string()),
-            IdentityField::new("Pattern Global ID", pattern_global_id_hash.to_string()),
-        ];
+        let game_fields = game_identity_fields(&self.recipe, &pattern_global_id_hash);
         let text_fields = [
             IdentityField::new("Name String", self.recipe.identity.name_hash.to_string()),
             IdentityField::new("Type String", type_hash.to_string()),
@@ -650,51 +674,7 @@ impl PackageAuthoringApp {
                 collection_requirement_hash.to_string(),
             ),
         ];
-        let package_fields = build.map_or_else(
-            || {
-                [
-                    "Item Definition Tag",
-                    "Item String Tag",
-                    "Icon Definition Tag",
-                    "Item Table Index",
-                    "Collectible Table Index",
-                    "Unlock Definition Index",
-                    "Unlock Flag",
-                ]
-                .into_iter()
-                .map(IdentityField::assigned_during_build)
-                .collect()
-            },
-            |build| {
-                vec![
-                    IdentityField::new(
-                        "Item Definition Tag",
-                        format!("0x{:08X}", build.item_definition_hash),
-                    ),
-                    IdentityField::new(
-                        "Item String Tag",
-                        format!("0x{:08X}", build.item_string_hash),
-                    ),
-                    IdentityField::new(
-                        "Icon Definition Tag",
-                        format!("0x{:08X}", build.icon_definition_hash),
-                    ),
-                    IdentityField::new("Item Table Index", build.item_index.to_string()),
-                    IdentityField::new(
-                        "Collectible Table Index",
-                        build.collectible_index.to_string(),
-                    ),
-                    IdentityField::new(
-                        "Unlock Definition Index",
-                        build.unlock_definition_index.to_string(),
-                    ),
-                    IdentityField::new(
-                        "Unlock Flag",
-                        format!("Bank {} · Slot {}", build.unlock_bank, build.unlock_slot),
-                    ),
-                ]
-            },
-        );
+        let package_fields = package_identity_fields(self.recipe.kind, build);
         let mut presentation_fields = Vec::new();
         if self.recipe.overrides.lore.is_some() {
             presentation_fields.extend([
@@ -857,7 +837,7 @@ impl PackageAuthoringApp {
                 }
             } else {
                 let pending = [IdentityField::assigned_during_build(
-                    "Private Perk Identities",
+                    "Custom Perk Identities",
                 )];
                 draw_identity_group(ui, "Build Required", pending.iter());
             }
@@ -988,11 +968,11 @@ impl PackageAuthoringApp {
                 ui.heading("Weapon Stats");
                 draw_authoring_info_icon(
                     ui,
-                    "Raw Value is saved to the weapon. Preview shows the scaled value, such as RPM. Added stats only appear in game when the weapon and its stat group support them.",
+                    "Preview shows the in-game value, such as RPM. Added stats need stat group support.",
                 );
                 if ui
                     .add_enabled(!donor_exact, egui::Button::new("Reset Stats"))
-                    .on_hover_text("Reset every investment value to the gameplay donor")
+                    .on_hover_text("Reset to the gameplay donor's stats")
                     .clicked()
                 {
                     self.recipe.overrides.investment_stats.clear();
@@ -1000,11 +980,13 @@ impl PackageAuthoringApp {
                 }
             });
             ui.add_space(4.0);
-            egui::CollapsingHeader::new("Stat Options · Scaling and Internal Values")
+            egui::CollapsingHeader::new("Stat Options")
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.checkbox(&mut self.show_internal_stats, "Show Internal Stats")
-                        .on_hover_text("Show package-level Attack, Power and unnamed rows. Hidden rows are preserved.");
+                        .on_hover_text(
+                            "Shows Attack, Power and unnamed stats. Hidden stats are kept.",
+                        );
                     self.draw_stat_group_picker(ui, Some(donor));
                 });
             draw_investment_stats(
@@ -1016,7 +998,7 @@ impl PackageAuthoringApp {
             );
         } else {
             ui.heading("Weapon Stats");
-            ui.label("Load the donor catalog to edit definition-aware stats.");
+            ui.label("Load the catalog to edit stats.");
         }
     }
 
@@ -1028,19 +1010,10 @@ impl PackageAuthoringApp {
         if let Some(donor) = donor {
             // A chosen behavior claims its sockets here rather than at build time, so the list
             // below is the weapon that gets built.
-            let catalog = self.catalog.as_ref();
             super::socket_editor::sync_behavior_socket_pins(
                 &mut self.recipe,
                 &mut self.behavior_pins,
                 donor,
-                &|entry| {
-                    crate::weapon_behavior::same_family(
-                        Some(&donor.summary.type_name),
-                        catalog
-                            .and_then(|catalog| catalog.item_type_name(entry.source_item_hash))
-                            .as_deref(),
-                    )
-                },
             );
             let show_experimental_options = self.show_experimental_options;
             let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
@@ -1048,10 +1021,10 @@ impl PackageAuthoringApp {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Perks & Sockets");
                 draw_authoring_info_icon(ui,
-                    "The first choice starts equipped. Right-click an extra choice to make it the default. Use separate sockets for perks that should work together. Click a socket role to change its native type. Existing inventory copies retain their saved choices.");
+                    "The first choice starts equipped. Right-click a choice to make it the default. Click a role to change it. Perks that work together need separate sockets. Saved copies keep their choices.");
                 if ui
-                    .button("Use Custom Perk…")
-                    .on_hover_text("Create a custom perk, or add one you already saved, to this weapon.")
+                    .button("Custom Perks…")
+                    .on_hover_text("Open the Custom Perk Workbench.")
                     .clicked()
                 {
                     self.perk_workbench.open = true;
@@ -1095,7 +1068,7 @@ impl PackageAuthoringApp {
             }
         } else {
             ui.heading("Perks & Sockets");
-            ui.label("Load the donor catalog to use Sundial's compatible-plug picker.");
+            ui.label("Load the catalog to edit sockets.");
         }
     }
 
@@ -1106,20 +1079,171 @@ impl PackageAuthoringApp {
             &mut self.plug_selection_mode,
         );
         ui.menu_button("Socket Options", |ui| {
-                    if self.show_experimental_options {
-                        ui.checkbox(&mut self.show_technical_socket_rows, "Show Socket Details")
-                            .on_hover_text("Show additional socket settings beneath each plug column.");
-                        ui.separator();
-                    }
-                    if ui.add_enabled(has_authored_columns, egui::Button::new("Restore All Base Sockets"))
-                        .on_hover_text("Remove every explicit socket and custom perk override, then return to the base weapon's collection roll")
-                        .clicked() {
-                        self.recipe.overrides.socket_columns.clear();
-                        self.recipe.overrides.socket_plug_variants.clear();
-                        self.perk_request = None;
-                        self.plug_queries.clear();
-                        ui.close_menu();
-                    }
-                });
+            // Gear keeps its base's sockets, so their native fields stay as they are.
+            if self.show_experimental_options && self.recipe.kind.is_weapon() {
+                ui.checkbox(&mut self.show_technical_socket_rows, "Show Socket Details")
+                    .on_hover_text("Shows extra settings under each socket.");
+                ui.separator();
+            }
+            if ui
+                .add_enabled(
+                    has_authored_columns,
+                    egui::Button::new("Restore All Base Sockets"),
+                )
+                .on_hover_text("Remove every socket change and custom perk.")
+                .clicked()
+            {
+                if self.recipe.overrides.socket_plug_variants.is_empty() {
+                    self.restore_base_sockets();
+                } else {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(restore_base_sockets_id(), true));
+                }
+                ui.close_menu();
+            }
+        });
+        self.draw_restore_base_sockets_confirmation(ui.ctx());
     }
+
+    fn restore_base_sockets(&mut self) {
+        self.recipe.overrides.socket_columns.clear();
+        self.recipe.overrides.socket_plug_variants.clear();
+        self.perk_request = None;
+        self.plug_queries.clear();
+    }
+
+    fn draw_restore_base_sockets_confirmation(&mut self, ctx: &egui::Context) {
+        let id = restore_base_sockets_id();
+        if !ctx.data(|data| data.get_temp::<bool>(id)).unwrap_or(false) {
+            return;
+        }
+        let count = self.recipe.overrides.socket_plug_variants.len();
+        let mut restore = false;
+        let mut cancel = false;
+        let response = egui::Modal::new(id.with("modal")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            workbench_style(ui);
+            ui.heading("Restore All Base Sockets?");
+            ui.label(format!(
+                "Removes {count} custom perk {}.",
+                if count == 1 { "choice" } else { "choices" }
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                restore = ui.button("Restore").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        cancel |= response.should_close();
+        if restore {
+            self.restore_base_sockets();
+        }
+        if restore || cancel {
+            ctx.data_mut(|data| data.remove::<bool>(id));
+        }
+    }
+}
+
+/// Holds the pending Restore All Base Sockets confirmation.
+fn restore_base_sockets_id() -> egui::Id {
+    egui::Id::new("parhelion-restore-base-sockets")
+}
+
+/// Wide enough for the longest name label, "Ghost Shell Name", and never narrower than the 90
+/// points the weapon rows have always used.
+fn text_label_width(ui: &egui::Ui, kind: crate::ItemKind) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let width = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(format!("{} Name", kind.label()), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    (width + 6.0).max(90.0)
+}
+
+/// The game identities a recipe carries. A subclass has no Collections entry, so it has no
+/// collectible or unlock.
+fn game_identity_fields(
+    recipe: &WeaponRecipe,
+    pattern_global_id_hash: &HexHash,
+) -> Vec<IdentityField> {
+    let mut fields = vec![IdentityField::new(
+        "Item",
+        recipe.identity.item_hash.to_string(),
+    )];
+    if recipe.kind != ItemKind::Subclass {
+        fields.extend([
+            IdentityField::new("Collectible", recipe.identity.collectible_hash.to_string()),
+            IdentityField::new("Unlock", recipe.identity.unlock_hash.to_string()),
+        ]);
+    }
+    fields.push(IdentityField::new(
+        "Pattern Global ID",
+        pattern_global_id_hash.to_string(),
+    ));
+    fields
+}
+
+/// The package rows the latest build assigned to the recipe's item, or placeholders before one.
+fn package_identity_fields(
+    kind: ItemKind,
+    build: Option<&crate::workflow::WeaponBuildReport>,
+) -> Vec<IdentityField> {
+    let Some(build) = build else {
+        let collection = [
+            "Collectible Table Index",
+            "Unlock Definition Index",
+            "Unlock Flag",
+        ];
+        return [
+            "Item Definition Tag",
+            "Item String Tag",
+            "Icon Definition Tag",
+            "Item Table Index",
+        ]
+        .into_iter()
+        .chain(
+            collection
+                .into_iter()
+                .filter(|_| kind != ItemKind::Subclass),
+        )
+        .map(IdentityField::assigned_during_build)
+        .collect();
+    };
+    let mut fields = vec![
+        IdentityField::new(
+            "Item Definition Tag",
+            format!("0x{:08X}", build.item_definition_hash),
+        ),
+        IdentityField::new(
+            "Item String Tag",
+            format!("0x{:08X}", build.item_string_hash),
+        ),
+        IdentityField::new(
+            "Icon Definition Tag",
+            format!("0x{:08X}", build.icon_definition_hash),
+        ),
+        IdentityField::new("Item Table Index", build.item_index.to_string()),
+    ];
+    if let Some(collection) = &build.collection {
+        fields.extend([
+            IdentityField::new(
+                "Collectible Table Index",
+                collection.collectible_index.to_string(),
+            ),
+            IdentityField::new(
+                "Unlock Definition Index",
+                collection.unlock_definition_index.to_string(),
+            ),
+            IdentityField::new(
+                "Unlock Flag",
+                format!(
+                    "Bank {} · Slot {}",
+                    collection.unlock_bank, collection.unlock_slot
+                ),
+            ),
+        ]);
+    }
+    fields
 }

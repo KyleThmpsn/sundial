@@ -28,8 +28,9 @@ fn link_index_keeps_direction_and_groups_unique_resources_by_nonzero_type() {
         ..Default::default()
     };
     let navigation = Navigation::new(&index);
-    assert_eq!(navigation.outgoing[&1], [0, 1]);
-    assert_eq!(navigation.incoming[&2], [0, 1]);
+    assert_eq!(navigation.outgoing[&1], [(2, 0, 2)]);
+    assert_eq!(navigation.incoming[&2], [(1, 0, 2)]);
+    assert_eq!(navigation.outgoing[&2], [(3, 2, 1)]);
     assert_eq!(navigation.classes[&20], BTreeSet::from([2]));
     assert!(!navigation.classes.contains_key(&0));
     assert_eq!(navigation.types[&2], BTreeSet::from([20]));

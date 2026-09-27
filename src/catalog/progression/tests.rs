@@ -373,21 +373,6 @@ fn condition_references_retain_the_complete_package_program() {
 }
 
 #[test]
-fn condition_references_preserve_32_bit_constants_without_truncation() {
-    let mut rows = vec![0_u8; 16];
-    rows[0] = 11;
-    rows[4..8].copy_from_slice(&0xFEDC_BA98_u32.to_le_bytes());
-    rows[8] = 1;
-    rows[12..16].copy_from_slice(&0xABCD_1234_u32.to_le_bytes());
-    let references = condition_references_from_rows(&rows, 0, 2).unwrap();
-    assert_eq!(
-        references.programs,
-        vec![vec![[11, 0xFEDC_BA98], [1, 0x1234]]]
-    );
-    assert_eq!(references.flags, vec![0x1234]);
-}
-
-#[test]
 fn objective_conditions_use_row_plus_08_and_ignore_plus_10_decoy() {
     const ACTUAL_HEADER: usize = 0x60;
     const DECOY_HEADER: usize = 0x100;

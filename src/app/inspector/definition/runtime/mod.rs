@@ -89,9 +89,7 @@ impl RuntimeInspectionState {
                 ctx.request_repaint_after(Duration::from_millis(100));
                 return;
             }
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("The package reader stopped before returning a result. You can retry.".into())
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Err("Package reader stopped.".into()),
         };
         let pending = self.pending.take().expect("pending load was checked");
         if self.scope.as_ref() == Some(&pending.scope) && self.generation == pending.generation {
@@ -201,17 +199,24 @@ pub(super) fn draw_item_runtime(
         .weapon_pattern_index
         .filter(|index| *index != u16::MAX)
     {
-        egui::CollapsingHeader::new("Weapon Runtime")
-            .id_salt(("inspector-weapon-runtime", item_hash))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.weak("Installed package values, not live game state or final stats after equipped perks.");
-                ui.weak(format!("Weapon pattern row {pattern}"));
+        crate::app::inspector::look::section(
+            ui,
+            ("inspector-weapon-runtime", item_hash),
+            "Weapon Runtime",
+            None,
+            true,
+            |ui| {
+                crate::app::inspector::look::properties(
+                    ui,
+                    ("inspector-weapon-runtime", item_hash),
+                    |p| p.mono("Weapon Pattern Row", pattern.to_string()),
+                );
                 let loaded = state.draw_request(ui, RuntimeTarget::Weapon(pattern));
                 if let Some(Ok(LoadedDetails::Weapon(graph))) = loaded.as_deref() {
                     view::draw_graph(ui, graph, &mut state.view);
                 }
-            });
+            },
+        );
     }
     perks::draw_perks(ui, catalog, item_hash, metadata, state);
 }

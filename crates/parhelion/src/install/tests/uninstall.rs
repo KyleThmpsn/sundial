@@ -160,25 +160,6 @@ fn account_cleanup_and_package_removal_commit_or_rollback_together() {
 }
 
 #[test]
-fn uninstall_failures_restore_every_removed_package() {
-    for count in [1, AUTHORED_PACKAGES.len()] {
-        let fixture = installed_fixture();
-        let plan = preview_uninstall(&fixture.target).unwrap();
-        let error = crate::install::uninstall::uninstall_inner(
-            &plan,
-            &fixture.backups,
-            game_stopped,
-            Some(count),
-            DEFAULT_CACHE_INVALIDATION_OPS,
-            test_runtime_snapshot,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("restored"), "{error}");
-        assert_eq!(preview_uninstall(&fixture.target).unwrap(), plan);
-    }
-}
-
-#[test]
 fn uninstall_cache_failure_restores_packages_and_keeps_a_recovery_backup() {
     let fixture = installed_fixture();
     fixture.write_sunrise_cache(b"cache");

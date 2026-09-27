@@ -107,7 +107,7 @@ pub(super) fn draw_add_investment_window(
                 ui.label(if is_value {
                     "Value"
                 } else {
-                    "Logical flag value"
+                    "Logical Flag Value"
                 });
                 let drag = egui::DragValue::new(&mut state.add_value).speed(1.0);
                 ui.add(if is_value {

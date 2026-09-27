@@ -69,8 +69,43 @@ pub(crate) fn resolve(catalog: &Catalog, loadout: &Loadout) -> Appearance {
         .map(dye_rows);
     Appearance {
         arrangement,
+        dye_textures: Vec::new(),
         dyes: compose_dyes(&base, plugs),
     }
+}
+
+/// An item wearing a shader, for previewing the shader on it. The item's own dyes name its gear
+/// type, and only the shader's dyes for that gear type apply, as in the game.
+pub(crate) fn with_shader(
+    catalog: &Catalog,
+    hash: u64,
+    shader: &[Vec<(i8, u16)>; 3],
+) -> Option<Appearance> {
+    let metadata = catalog.item_package_metadata(hash)?;
+    let base = dye_rows(metadata);
+    let gear_types: Vec<_> = base
+        .iter()
+        .flatten()
+        .filter_map(|&(key, _)| gear_type(key))
+        .collect();
+    let shader = shader.clone().map(|rows| {
+        rows.into_iter()
+            .filter(|&(key, _)| gear_type(key).is_some_and(|first| gear_types.contains(&first)))
+            .collect()
+    });
+    Some(Appearance {
+        arrangement: arrangement(metadata)?,
+        dye_textures: Vec::new(),
+        dyes: compose_dyes(&base, std::iter::once(shader)),
+    })
+}
+
+/// The first dye key of the gear type a key paints. Armor, weapons, ships, Sparrows and Ghost
+/// Shells each have an armor, a cloth and a suit key, starting at 0, 4, 7, 10 and 13.
+fn gear_type(key: i8) -> Option<i8> {
+    [0, 4, 7, 10, 13]
+        .into_iter()
+        .find(|&first| (first..first + 3).contains(&key))
 }
 
 fn compose_dyes(
@@ -147,7 +182,7 @@ pub(super) fn browser(
             if let Some(default) = snapshot
                 .native_default
                 .filter(|default| default.value() != snapshot.current_hash)
-                && ui.button("Reset to Native Default").clicked()
+                && ui.button("Reset to Default").clicked()
             {
                 return Some(Some(ItemEditorAction::SetPlug {
                     socket_index: snapshot.socket_index,
@@ -292,6 +327,7 @@ mod tests {
             resolve(&catalog, &candidate),
             Appearance {
                 arrangement: 42,
+                dye_textures: Vec::new(),
                 dyes: vec![(4, 200), (5, 2), (6, 3)]
             }
         );

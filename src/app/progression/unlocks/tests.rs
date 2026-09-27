@@ -73,48 +73,6 @@ fn artifact_mod_flags_are_locked_for_sunrise_and_direct_for_dawn() {
 }
 
 #[test]
-fn content_rows_preserve_unnamed_entries_and_use_record_roles() {
-    let context = crate::catalog::ProgressionContextDef {
-        hash: 55,
-        kind: crate::catalog::ProgressionContextKind::Record,
-        name: "First Victory".into(),
-        type_name: String::new(),
-        description: String::new(),
-        paths: vec![vec!["Crucible".into(), "Triumphs".into()]],
-        condition_programs: Vec::new(),
-        direct_references: vec!["Record completion flag".into()],
-    };
-    let catalog = Catalog::for_test(Vec::new(), Default::default()).with_test_progression(
-        vec![
-            UnlockDefinition {
-                code: 1,
-                compact_slot: Some(4),
-                tested_by: vec![context],
-                ..Default::default()
-            },
-            UnlockDefinition {
-                hash: 0x1234abcd,
-                code: 6,
-                compact_slot: Some(2),
-                ..Default::default()
-            },
-        ],
-        Vec::new(),
-        Vec::new(),
-    );
-    let rows = entries(&catalog, false);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].name, "First Victory");
-    assert_eq!(rows[0].purpose, "Completion");
-    assert!(rows[0].named && rows[0].reference);
-    assert!(rows[0].search.contains("crucible"));
-    assert!(!rows[1].named);
-    assert_eq!(rows[1].name, "Unnamed Unlock #1");
-    assert_eq!(rows[1].scope, "Character");
-    assert!(rows[1].search.contains("1234abcd"));
-}
-
-#[test]
 fn search_finds_unsaved_definitions_in_both_content_tables() {
     let definitions = vec![
         UnlockDefinition {

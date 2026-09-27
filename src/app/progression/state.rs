@@ -22,6 +22,8 @@ pub(in crate::app) struct UiState {
     pub(super) add_query: String,
     pub(super) add_value: i32,
     pub(super) cached_progression: Option<Result<Progression, String>>,
+    /// Inspector save-state snapshot of the same document, invalidated with `cached_progression`.
+    pub(super) cached_snapshot: Option<Option<CollectionStateSnapshot>>,
     pub(super) cached_view: Option<(usize, Value)>,
     pub(super) metadata_inspector: ProgressionInspectorState,
     pub(super) hash_inspection: HashInspectionState,
@@ -82,7 +84,12 @@ impl UiState {
         self.add_query.clear();
         self.metadata_inspector.reset();
 
-        self.hash_inspection.close();
+        self.hash_inspection.reset();
+    }
+
+    /// Opens the progression inspector on an unlock definition chosen elsewhere.
+    pub(in crate::app) fn open_definition(&mut self, selection: MetadataSelection) {
+        self.metadata_inspector.open(selection);
     }
 
     pub(in crate::app) fn invalidate_document(&mut self) {
@@ -97,6 +104,7 @@ impl UiState {
         self.cached_view = None;
         self.triumphs.invalidate();
         self.cached_progression = None;
+        self.cached_snapshot = None;
         self.unlock_browser.invalidate();
     }
 

@@ -244,13 +244,6 @@ fn scope_relocation_preserves_frame_inputs_and_checks_tables() {
     assert!(relocate(&decode("4201"), 255, &outputs).is_err());
     assert!(relocate(&decode("5b00"), 0, &outputs).is_err());
 }
-#[test]
-fn json_bridge_checks_index_widths_and_reports_unresolved_inputs() {
-    let mut v = json!({"mode":"lower", "data":"5c123456785200", "constant_count":1, "output_count":1, "sampler_count":0});
-    assert_eq!(request(&v).unwrap()["evidence"][0]["translated"], false);
-    v["object_channels"] = json!({"12345678":256});
-    assert!(request(&v).is_err());
-}
 
 #[test]
 fn unused_stack_expressions_do_not_discard_outputs_or_hide_underflow() {

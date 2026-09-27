@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 
 type ArrayField = (usize, usize, u32, u32);
 mod events;
+pub use events::library::Library as EventLibrary;
+pub mod slots;
 mod vectors;
 
 fn word(data: &mut Payload, at: usize, value: u32) {
@@ -96,6 +98,17 @@ fn stream(source: &Payload, native: &mut Payload, at: usize) -> Result<Value> {
                 (0x40, 4, 0x8080000F, 0x8080000F),
             ],
         ),
+        0x80808B4E => (
+            0x80808F7E,
+            1,
+            &[
+                (0x10, 2, 0x80800006, 0x80800006),
+                (0x20, 2, 0x80800006, 0x80800006),
+                (0x30, 1, 0x80800009, 0x80800009),
+                (0x40, 1, 0x80800009, 0x80800009),
+                (0x50, 2, 0x80800006, 0x80800006),
+            ],
+        ),
         _ => anyhow::bail!("clip stream {class:08X} at {at:X} requires a codec converter"),
     };
     ensure!(
@@ -162,16 +175,38 @@ fn position(source: &Payload, native: &mut Payload, at: usize, start: usize) -> 
 /// Convert only independently validated codec layouts. This payload is still
 /// unlinked until its clip bank, controller, skeleton and events are resolved.
 pub fn convert(bytes: &[u8]) -> Result<(Payload, Value)> {
-    lower(bytes, None)
+    lower(bytes, None, None, None)
 }
 
 /// Convert a clip whose events are carried on the name-matched native
 /// counterpart's event block. See `events` for the shape checks that gate it.
 pub fn convert_with_events(bytes: &[u8], counterpart: &[u8]) -> Result<(Payload, Value)> {
-    lower(bytes, Some(&Payload(counterpart.to_vec())))
+    lower(bytes, Some(&Payload(counterpart.to_vec())), None, None)
 }
 
-fn lower(bytes: &[u8], counterpart: Option<&Payload>) -> Result<(Payload, Value)> {
+/// Convert a new source clip using a verified subset of an existing event pair.
+pub fn convert_with_event_subset(
+    bytes: &[u8],
+    source_template: &Payload,
+    native_template: &Payload,
+) -> Result<(Payload, Value)> {
+    lower(bytes, Some(native_template), Some(source_template), None)
+}
+
+/// Preserve the complete source event sequence using independently validated formats.
+pub fn convert_with_event_library(
+    bytes: &[u8],
+    library: &EventLibrary,
+) -> Result<(Payload, Value)> {
+    lower(bytes, None, None, Some(library))
+}
+
+fn lower(
+    bytes: &[u8],
+    counterpart: Option<&Payload>,
+    source_template: Option<&Payload>,
+    library: Option<&EventLibrary>,
+) -> Result<(Payload, Value)> {
     let source = Payload(bytes.to_vec());
     ensure!(
         bytes.len() >= 0x190 && source.u64(0)? == bytes.len() as u64,
@@ -181,7 +216,7 @@ fn lower(bytes: &[u8], counterpart: Option<&Payload>) -> Result<(Payload, Value)
         source.u64(8)? == 0 && source.u64(0x68)? == 0,
         "clip has an unsupported stream extension"
     );
-    if counterpart.is_none() {
+    if counterpart.is_none() && library.is_none() {
         ensure!(
             source.u64(0x160)? == 0 && source.u64(0x168)? == 0,
             "clip event records need native event conversion"
@@ -204,7 +239,7 @@ fn lower(bytes: &[u8], counterpart: Option<&Payload>) -> Result<(Payload, Value)
     for at in [0x90, 0x150] {
         array(&source, &mut native, at, 8, 0x80800070, 0x80800070)?;
     }
-    if counterpart.is_none() {
+    if counterpart.is_none() && library.is_none() {
         array(&source, &mut native, 0x170, 8, 0x80808C5F, 0x8080907F)?;
     }
     // The modern fixed header has an additional four-byte build field. The
@@ -223,8 +258,15 @@ fn lower(bytes: &[u8], counterpart: Option<&Payload>) -> Result<(Payload, Value)
     let mut report = json!({"source_class":"80808BE0","native_class":"80808F49",
         "name_hash":format!("{:08X}",source.u32(0x120)?),"streams":streams,
         "encoded_tracks_preserved":preserved,"event_count":0,"runtime_ready":false});
-    if let Some(counterpart) = counterpart {
-        report["events"] = events::carry(&source, &mut native, counterpart)?;
+    if let Some(library) = library {
+        report["events"] = library.carry(&source, &mut native)?;
+        report["event_count"] = report["events"]["event_count"].clone();
+    } else if let Some(counterpart) = counterpart {
+        report["events"] = if let Some(template) = source_template {
+            events::carry_subset(&source, &mut native, template, counterpart)?
+        } else {
+            events::carry(&source, &mut native, counterpart)?
+        };
         report["event_count"] = report["events"]["event_count"].clone();
     }
     Ok((native, report))

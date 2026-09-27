@@ -47,7 +47,7 @@ fn introduction(ctx: &egui::Context) -> Option<bool> {
         egui::ScrollArea::vertical()
             .max_height((ctx.screen_rect().height() - 180.0).max(120.0))
             .show(ui, |ui| {
-                ui.label("Parhelion combines weapon stats, perks, behavior, and appearance into custom weapons. It is experimental. A successful build still needs an in-game test.");
+                ui.label("Parhelion builds custom weapons from stock stats, perks, behavior and appearances. It is experimental. Test every build in game.");
                 ui.add_space(10.0);
                 ui.label("Custom weapons use additional packages. Stock packages are preserved.");
                 ui.strong("To remove custom packages, open Parhelion Preferences > Builds & Backups > Uninstall Custom Packages.");
@@ -57,9 +57,7 @@ fn introduction(ctx: &egui::Context) -> Option<bool> {
                     ui.hyperlink_to("GitHub Issues", format!("{}/issues", super::super::PROJECT_URL));
                 });
                 ui.add_space(10.0);
-                ui.label("Custom perk editing is planned for a future release. Existing custom perks can be reused from saved recipes.");
-                ui.add_space(10.0);
-                ui.label("Advanced technical controls expose experimental game data. Invalid combinations can freeze or crash the game.");
+                ui.label("Experimental Features can freeze or crash the game with invalid combinations.");
             });
         ui.add_space(14.0);
         ui.horizontal(|ui| {

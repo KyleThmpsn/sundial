@@ -1,5 +1,6 @@
 //! On-demand component-donor screening using the compiler's actual owner-partition graft.
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::Arc,
@@ -11,11 +12,11 @@ use sundial::{
     package_authoring::{
         open_shadowkeep_package_manager,
         weapon_entity::{
-            WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
+            ComponentWiring, WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
             WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
             WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
             WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding,
-            coupled_weapon_component_bindings, graft_weapon_component_bindings,
+            coupled_weapon_component_bindings, graft_weapon_component_bindings_or_rewire,
             weapon_component_binding_hashes, weapon_component_bindings,
         },
         weapon_runtime::{
@@ -72,7 +73,15 @@ struct ScanCache<'a> {
     manager: &'a PackageManager,
     entities: BTreeMap<EntityKey, Result<Arc<WeaponRuntimeEntitySource>, String>>,
     shapes: BTreeMap<(u32, u32, u64), Result<WeaponRuntimeResourceShape, String>>,
+    /// Component owner payloads a rewired graft reads, shared by every candidate.
+    owners: RefCell<BTreeMap<u32, Result<Vec<u8>, String>>>,
+    /// Composed candidates by donor runtime entity, and whether the donor is the baseline's own
+    /// row. Weapons sharing a runtime compose the same entity within one assessment.
+    composed: BTreeMap<(u32, bool), Composed>,
 }
+
+/// A composed entity and how its donors were connected, or why they could not be.
+type Composed = Result<(Vec<u8>, ComponentWiring), String>;
 
 impl<'a> ScanCache<'a> {
     fn new(manager: &'a PackageManager) -> Self {
@@ -80,7 +89,17 @@ impl<'a> ScanCache<'a> {
             manager,
             entities: BTreeMap::new(),
             shapes: BTreeMap::new(),
+            owners: RefCell::new(BTreeMap::new()),
+            composed: BTreeMap::new(),
         }
+    }
+
+    fn owner(&self, tag: u32) -> Result<Vec<u8>, String> {
+        self.owners
+            .borrow_mut()
+            .entry(tag)
+            .or_insert_with(|| self.manager.read_tag(tag))
+            .clone()
     }
 
     fn entity(
@@ -147,7 +166,7 @@ pub(crate) fn assess_component_donors(
     let baseline_hash = baseline_summary.map_or(baseline.item_hash, |summary| summary.hash);
     let current = requested_donors(&mut cache, key, &[]);
     let (current_sources, current_error) = match current.and_then(|requested| {
-        compose(&baseline, &requested)?;
+        compose(&baseline, &requested, &|tag| cache.owner(tag))?;
         effective_sources(
             &baseline_bindings,
             baseline_hash,
@@ -240,7 +259,8 @@ fn affected_bindings(bindings: &Bindings, selected: u32) -> Result<Vec<u32>, Str
 fn compose(
     baseline: &WeaponRuntimeEntitySource,
     requested: &[RequestedDonor],
-) -> Result<Vec<u8>, String> {
+    read_owner: &dyn Fn(u32) -> Result<Vec<u8>, String>,
+) -> Composed {
     let mut active = requested
         .iter()
         .filter(|request| request.source.item_hash != baseline.item_hash)
@@ -253,8 +273,8 @@ fn compose(
     let mut authored = baseline.payload.clone();
     // This is the same atomic implementation used by the package compiler, with all retained
     // selections included. Assessing the candidate in isolation would miss shared-owner conflicts.
-    graft_weapon_component_bindings(&mut authored, &grafts)?;
-    Ok(authored)
+    let wiring = graft_weapon_component_bindings_or_rewire(&mut authored, &grafts, read_owner)?;
+    Ok((authored, wiring))
 }
 
 fn effective_sources(
@@ -355,8 +375,17 @@ fn assess_candidate(
         item_hash: donor.hash,
         source: Arc::clone(&source),
     }));
-    let authored = match compose(baseline, &requested) {
-        Ok(authored) => authored,
+    let key = (source.entity_tag, source.item_hash == baseline.item_hash);
+    let composed = match cache.composed.get(&key) {
+        Some(composed) => composed.clone(),
+        None => {
+            let composed = compose(baseline, &requested, &|tag| cache.owner(tag));
+            cache.composed.insert(key, composed.clone());
+            composed
+        }
+    };
+    let (authored, wiring) = match composed {
+        Ok(composed) => composed,
         Err(error) => return incompatible(error, affected),
     };
     let effective = match collect_bindings(&authored).and_then(|bindings| {
@@ -372,6 +401,10 @@ fn assess_candidate(
         Err(error) => return incompatible(error, affected),
     };
     let mut reasons = Vec::new();
+    // A rewired table is never Lower Risk.
+    if wiring == ComponentWiring::Rewired {
+        reasons.push("Rewired for this weapon".into());
+    }
     let effective_donors = affected
         .iter()
         .filter_map(|binding| effective.1.get(binding))

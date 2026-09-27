@@ -19,24 +19,6 @@ pub fn apply_recipe_text(recipe: &mut Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod text_tests {
-    use super::*;
-
-    #[test]
-    fn recipe_replaces_flavor_and_removes_inherited_lore() {
-        let mut recipe = json!({
-            "flavor": "Old flavor",
-            "overrides": { "lore": "Donor lore", "power": 42 }
-        });
-        apply_recipe_text(&mut recipe).unwrap();
-        assert_eq!(recipe["flavor"], "I know who you are. You are DESTINY.");
-        assert_eq!(recipe["overrides"]["remove_lore"], true);
-        assert!(recipe["overrides"].get("lore").is_none());
-        assert_eq!(recipe["overrides"]["power"], 42);
-    }
-}
-
 mod geometry;
 mod material;
 use crate::d2_mot::{

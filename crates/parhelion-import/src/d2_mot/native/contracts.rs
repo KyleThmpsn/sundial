@@ -17,10 +17,15 @@ pub(super) enum Role {
     Emission,
     Shadow,
     Depth,
+    OpticStencil,
+    Reticle,
 }
 
 impl Role {
-    const ALL: [Self; 8] = [
+    fn accepts_layout(self, layout: i16) -> bool {
+        layout == 139 || (layout == 137 && matches!(self, Self::Reticle | Self::OpticStencil))
+    }
+    const ALL: [Self; 10] = [
         Self::Surface,
         Self::Decal,
         Self::AdditiveDecal,
@@ -29,6 +34,8 @@ impl Role {
         Self::Emission,
         Self::Shadow,
         Self::Depth,
+        Self::OpticStencil,
+        Self::Reticle,
     ];
 
     fn stage(self) -> usize {
@@ -39,6 +46,8 @@ impl Role {
             Self::Emission => 9,
             Self::Shadow => 3,
             Self::Depth => 12,
+            Self::OpticStencil => 14,
+            Self::Reticle => 16,
         }
     }
 
@@ -55,6 +64,8 @@ impl Role {
             Self::Emission => mode == 1 && scopes == 0x2083 && state == 0x88,
             Self::Shadow => mode == 2 && scopes == 0x8083 && state == 0 && pixel == u32::MAX,
             Self::Depth => mode == 2 && scopes == 0x83 && state == 0 && pixel == u32::MAX,
+            Self::OpticStencil => mode == 1 && scopes == 0x83 && state == 0,
+            Self::Reticle => mode == 1 && scopes == 0x04002083 && state == 0x88,
         };
         if !valid || p.u32(0x48)? == u32::MAX {
             return Ok(false);
@@ -69,6 +80,8 @@ impl Role {
             Self::Decal => Some([0, 0x1000, 0x400000, 0x86000483, 0x7F7F80]),
             Self::Emission => Some([0, 0, 0, 0x02006083, 0x7F7F00]),
             Self::Shadow | Self::Depth => Some([0, 0, 0, 0x82008083, 0x10180]),
+            Self::OpticStencil => Some([0, 0, 0, 0x02000083, 0x7F7F00]),
+            Self::Reticle => Some([4, 0, 0x10000200, 0x06002083, 0x7F7F00]),
             _ => None,
         };
         if let Some(expected) = envelope {
@@ -117,7 +130,7 @@ pub(super) struct Catalog {
 }
 
 impl Catalog {
-    const SCHEMA: u32 = 1;
+    const SCHEMA: u32 = 2;
 
     pub fn read(root: &Path) -> Result<Self> {
         let catalog: Self = serde_json::from_value(load(&root.join("contracts.json"))?)?;
@@ -168,7 +181,8 @@ impl Catalog {
             )?;
             ensure!(
                 carrier.stage == role.stage()
-                    && carrier.layout == 139
+                    && role.accepts_layout(carrier.layout)
+                    && current.layout == carrier.layout
                     && current.record == carrier.record,
                 "Cached native draw changed"
             );
@@ -179,7 +193,7 @@ impl Catalog {
 
 fn draw(model: &Payload, tag: u32, mesh: usize, stage: usize, material: u32) -> Result<Carrier> {
     ensure!(
-        stage < 23 && model.i16(mesh + 88 + stage * 2)? == 139,
+        stage < 23 && matches!(model.i16(mesh + 88 + stage * 2)?, 137 | 139),
         "Native draw layout differs"
     );
     let rows = model.array(mesh + 24, 32, Some(0x8080737E))?;
@@ -197,7 +211,7 @@ fn draw(model: &Payload, tag: u32, mesh: usize, stage: usize, material: u32) -> 
         model: tag,
         mesh,
         stage,
-        layout: 139,
+        layout: model.i16(mesh + 88 + stage * 2)?,
         record: model.0[at..at + 32].to_vec(),
     })
 }
@@ -217,7 +231,10 @@ fn select_model(
                 continue;
             }
             let stage = role.stage();
-            if model.i16(mesh + 88 + stage * 2).ok() != Some(139) {
+            if !model
+                .i16(mesh + 88 + stage * 2)
+                .is_ok_and(|layout| role.accepts_layout(layout))
+            {
                 continue;
             }
             let start = model.u16(mesh + 40 + stage * 2)? as usize;
@@ -347,6 +364,29 @@ fn resources(reader: &Reader) -> Result<(Value, Vec<Value>)> {
     Ok((cube, samplers))
 }
 
+fn reusable_carriers(cache: &Path, current: &Path, reader: &Reader) -> Option<Catalog> {
+    let mut candidates = fs::read_dir(cache)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            (path != current
+                && path.extension().is_some_and(|ext| ext == "json")
+                && path
+                    .file_name()?
+                    .to_str()?
+                    .starts_with(&format!("{}-", Catalog::SCHEMA)))
+            .then_some((entry.metadata().ok()?.modified().ok()?, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().find_map(|(_, path)| {
+        let bytes = fs::read(path).ok()?;
+        let catalog: Catalog = serde_json::from_slice(&bytes).ok()?;
+        (catalog.schema == Catalog::SCHEMA && catalog.validate(reader).is_ok()).then_some(catalog)
+    })
+}
+
 pub(super) fn export(
     reader: &mut Reader,
     packages: &Path,
@@ -374,6 +414,16 @@ pub(super) fn export(
         .filter(|c| c.schema == Catalog::SCHEMA && c.stamp == stamp && c.validate(reader).is_ok());
     let catalog = if let Some(catalog) = cached {
         progress("Using cached native rendering compatibility…".into());
+        catalog
+    } else if let Some(mut catalog) = reusable_carriers(&cache, &path, reader) {
+        progress("Reusing validated native rendering passes and refreshing resources…".into());
+        (catalog.cube, catalog.samplers) = resources(reader)?;
+        catalog.stamp = stamp.clone();
+        ensure!(
+            crate::d2_mot::service::package_stamp(packages)? == stamp,
+            "Native packages changed during discovery"
+        );
+        fs::write(&path, serde_json::to_vec(&catalog)?)?;
         catalog
     } else {
         let catalog = scan(reader, stamp.clone(), progress)?;

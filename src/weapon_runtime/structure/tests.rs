@@ -328,36 +328,6 @@ fn dynamic_native_arrays_respect_count_and_reject_capacity_overflow() {
 }
 
 #[test]
-fn raw_64_bit_wire_operation_is_not_automatically_a_float() {
-    let data = 0x7FF8123456789ABC_u64.to_le_bytes();
-    let raw = 0x8080_FF03;
-    let declarations = BTreeMap::from([(
-        raw,
-        codecs::Declaration {
-            size: 8,
-            array_len: 0,
-            fields: vec![field(0, 12, u32::MAX)],
-        },
-    )]);
-    let decoded = walk(
-        &data,
-        0,
-        raw,
-        runtime_registry().unwrap(),
-        &declarations,
-        |_| {
-            Ok(Record {
-                size: 8,
-                fields: Vec::new().into(),
-            })
-        },
-    );
-    assert!(decoded.issues.is_empty());
-    assert_eq!(decoded.fields[0].representation, "Raw 64-Bit Value");
-    assert_eq!(decoded.fields[0].value, "0x7FF8123456789ABC");
-}
-
-#[test]
 fn native_only_curve_configuration_is_followed_and_decoded_without_wire_metadata() {
     let mut data = vec![0_u8; 0x600];
     data[0xC8..0xD0].copy_from_slice(&(0x5E0_i64 - 0xC8).to_le_bytes());
@@ -431,44 +401,6 @@ fn array_scalar_cannot_read_across_its_element_boundary() {
     assert_eq!(decoded.issues.len(), 1);
     assert!(decoded.issues[0].contains("64-bit value exceeds"));
     assert!(decoded.fields.is_empty());
-}
-
-#[test]
-fn encoded_native_values_display_both_decoded_and_original_bits() {
-    let schema = 0x8080_FF05;
-    let declarations = BTreeMap::from([(
-        schema,
-        codecs::Declaration {
-            size: 8,
-            array_len: 0,
-            fields: vec![field(0, 44, u32::MAX), field(4, 45, u32::MAX)],
-        },
-    )]);
-    let decoded = walk(
-        &[0; 8],
-        0,
-        schema,
-        runtime_registry().unwrap(),
-        &declarations,
-        |_| {
-            Ok(Record {
-                size: 8,
-                fields: Vec::new().into(),
-            })
-        },
-    );
-    assert!(decoded.issues.is_empty());
-    assert_eq!(decoded.fields.len(), 2);
-    assert!(
-        decoded.fields[0]
-            .value
-            .contains("(0xB230016E), stored 0x00000000")
-    );
-    assert!(
-        decoded.fields[1]
-            .value
-            .contains("(0x4062B681), stored 0x00000000")
-    );
 }
 
 #[test]

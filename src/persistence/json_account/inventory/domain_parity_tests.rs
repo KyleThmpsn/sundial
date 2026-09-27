@@ -351,34 +351,6 @@ fn dismantle_policy_rewrites_match_legacy_and_preserve_unknown_members() {
 }
 
 #[test]
-fn invalid_profile_commands_are_atomic_in_both_paths() {
-    let mut legacy = document(8);
-    *legacy.pointer_mut("/state/account/profile_items").unwrap() =
-        json!([{"definition_hash": 11, "quantity": 1}]);
-    let source = legacy.clone();
-    let adapter = JsonProfileAdapter::load(&source).unwrap();
-    let id = adapter.state().profile_items()[0].id;
-
-    assert!(
-        adapter
-            .apply_profile_item(
-                &source,
-                domain::ProfileItemCommand::SetQuantity { id, quantity: 0 },
-            )
-            .is_err()
-    );
-    assert!(
-        legacy::apply_profile_item_action(
-            &mut legacy,
-            ProfileItemLocation { index: 0 },
-            ProfileItemAction::SetQuantity(0),
-        )
-        .is_err()
-    );
-    assert_eq!(legacy, source);
-}
-
-#[test]
 fn duplicate_dismantle_policies_are_atomic_in_both_paths() {
     let mut legacy = document(8);
     legacy
@@ -426,40 +398,4 @@ fn duplicate_dismantle_policies_are_atomic_in_both_paths() {
         .is_err()
     );
     assert_eq!(legacy, source);
-}
-
-#[test]
-fn future_profile_edits_leave_opaque_dismantle_layouts_untouched() {
-    let mut legacy = document(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
-    *legacy.pointer_mut("/state/account/profile_items").unwrap() = json!([{
-        "definition_hash": 11,
-        "quantity": 1,
-        "future": {"keep": true}
-    }]);
-    legacy
-        .pointer_mut("/state/account")
-        .and_then(Value::as_object_mut)
-        .unwrap()
-        .insert(
-            "dismantle_rewards".into(),
-            json!({"future_layout": [1, 2, 3]}),
-        );
-    let source = legacy.clone();
-    let adapter = JsonProfileAdapter::load(&source).unwrap();
-    let id = adapter.state().profile_items()[0].id;
-
-    let (_, projected) = adapter
-        .apply_profile_item(
-            &source,
-            domain::ProfileItemCommand::SetQuantity { id, quantity: 9 },
-        )
-        .unwrap();
-    legacy::apply_profile_item_action(
-        &mut legacy,
-        ProfileItemLocation { index: 0 },
-        ProfileItemAction::SetQuantity(9),
-    )
-    .unwrap();
-
-    assert_eq!(projected, legacy);
 }

@@ -83,7 +83,7 @@ impl SundialApp {
         let equipment_editable = account::can_mutate_equipment(&self.document);
         ui.horizontal(|ui| {
             ui.heading("Character Inventory");
-            crate::ui_help::info(ui, "Items stored separately for each character, with equipped items shown in their native buckets.");
+            crate::ui_help::info(ui, "Each character's stored and equipped items.");
         });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Character);
@@ -291,9 +291,9 @@ impl SundialApp {
     ) {
         if !editable {
             let message = if equipment_editable {
-                "Stored character-inventory editing requires Sunrise settings schema 6. Equipped loadout items remain editable."
+                "Editing stored items requires settings v6. Equipped items stay editable."
             } else {
-                "Stored character-inventory editing requires Sunrise settings schema 6. Equipped loadout editing is also disabled for this schema."
+                "Editing stored items requires settings v6. Equipped items are also locked."
             };
             ui.weak(message);
         } else if sources.items.len() >= account::character_inventory_capacity(&self.document) {

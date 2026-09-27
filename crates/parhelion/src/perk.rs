@@ -156,7 +156,12 @@ impl PerkRecipe {
             }),
             icon: self.icon.clone(),
             classification_donor_hash: self.classification.clone(),
-            investment_stats: self.stats.clone(),
+            // Saved recipes keep stats in index order, so an applied perk equals its saved form.
+            investment_stats: {
+                let mut stats = self.stats.clone();
+                stats.sort_unstable_by_key(|stat| stat.definition_index);
+                stats
+            },
             additional_sandbox_perks: Vec::new(),
             sandbox_perks: self.effects.clone(),
         }

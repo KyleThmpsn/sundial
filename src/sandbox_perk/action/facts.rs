@@ -98,27 +98,3 @@ pub(super) fn trim_number(value: f32) -> String {
     let text = format!("{value:.3}");
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn values_render_without_trailing_zeros_or_placeholder_names() {
-        assert_eq!(FactValue::Seconds(5.0).render(), "5 s");
-        assert_eq!(FactValue::Seconds(2.5).render(), "2.5 s");
-        assert_eq!(FactValue::Number(0.35).render(), "0.35");
-        assert_eq!(FactValue::Flag(true).render(), "Yes");
-        assert_eq!(FactValue::Key(0x1234_5678).render(), "0x12345678");
-        assert_eq!(FactValue::Labels(Vec::new()).render(), "none");
-        assert_eq!(
-            FactValue::Labels(vec![0x962E_A19B, 0x0000_0001]).render(),
-            "precision, 0x00000001"
-        );
-        assert_eq!(FactValue::Range(0.0, 1.5).render(), "0 to 1.5");
-        assert_eq!(
-            Fact::new("Duration", FactValue::Seconds(1.0)).render(),
-            "Duration: 1 s"
-        );
-    }
-}

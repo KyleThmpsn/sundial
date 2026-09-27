@@ -3,6 +3,7 @@ use super::*;
 
 mod actions;
 mod browser;
+mod delete;
 mod restore;
 mod sharing;
 mod state;
@@ -114,6 +115,7 @@ impl LibraryIcons {
                             .map(|donor| donor.rarity),
                     )?,
                     edit: entry.icon_edit.clone(),
+                    plain: entry.kind == crate::ItemKind::Subclass,
                 };
                 let cached = self.previews.get(&entry.path).map(|preview| match preview {
                     AuthoredIconPreview::Ready { key, .. }
@@ -142,6 +144,7 @@ impl LibraryIcons {
                         &key.edit,
                         key.corner_icon.as_ref(),
                         branding,
+                        key.plain,
                     )
                 });
                 if sender.send((path, key, result)).is_err() {
@@ -162,7 +165,7 @@ fn library_entry_type<'a>(
         .type_name
         .as_deref()
         .or_else(|| donor.map(|donor| donor.type_name.as_str()))
-        .unwrap_or("Weapon")
+        .unwrap_or(entry.kind.label())
 }
 
 fn library_entry_details(entry: &RecipeLibraryEntry, donor: Option<&WeaponDonorSummary>) -> String {
@@ -201,6 +204,11 @@ fn library_entry_matches(entry: &RecipeLibraryEntry, details: &str, query: &str)
     query
         .split_whitespace()
         .all(|term| searchable.contains(term))
+}
+
+/// "1 recipe", "2 recipes".
+fn recipe_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "recipe" } else { "recipes" })
 }
 
 /// Height a vertical `egui::Separator` allocates for itself.
@@ -252,7 +260,7 @@ fn draw_select_all_shown<'a>(
     let response = ui
         .add_enabled(
             total > 0,
-            egui::Checkbox::new(&mut all, "Select all shown")
+            egui::Checkbox::new(&mut all, "Select All Shown")
                 .indeterminate(count > 0 && count < total),
         )
         .on_hover_text("Selects or clears every recipe this search shows.");
@@ -276,6 +284,7 @@ fn draw_recipe_search(
     id: &str,
     query: &mut String,
     sort: &mut SortOrder,
+    kind: &mut Option<ItemKind>,
     focus: &mut bool,
 ) {
     ui.horizontal(|ui| {
@@ -283,14 +292,23 @@ fn draw_recipe_search(
             ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text("Search Recipes…")
-                    .desired_width((ui.available_width() - 175.0).max(100.0)),
+                    .desired_width((ui.available_width() - 315.0).max(100.0)),
             ),
             "Search recipes",
         )
-        .on_hover_text("Search by name, weapon type, element or ammo.");
+        .on_hover_text("Search by name, item type, element or ammo.");
         if std::mem::take(focus) {
             search.request_focus();
         }
+        egui::ComboBox::from_id_salt((id, "kind"))
+            .width(132.0)
+            .selected_text(kind.map_or("All Items", ItemKind::plural))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(kind, None, "All Items");
+                for option in ItemKind::ALL {
+                    ui.selectable_value(kind, Some(option), option.plural());
+                }
+            });
         egui::ComboBox::from_id_salt(id)
             .width(155.0)
             .selected_text(format!(
@@ -407,9 +425,15 @@ fn draw_library_row(
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if inclusion.is_none() {
-                        let menu = ui.menu_button(egui::RichText::new("...").size(16.0), |ui| {
-                            menu_action = actions::entry_menu(ui, entry, state.can_restore);
-                        });
+                        let menu = ui
+                            .scope(|ui| {
+                                crate::app::style::quiet(ui);
+                                let icon = crate::app::style::more_icon(ui);
+                                ui.menu_button(icon, |ui| {
+                                    menu_action = actions::entry_menu(ui, entry, state.can_restore);
+                                })
+                            })
+                            .inner;
                         named_control(menu.response, format!("Recipe Actions for {}", entry.name))
                             .on_hover_text("Recipe actions");
                     }
@@ -437,7 +461,7 @@ fn draw_library_row(
                     }
                     if entry.bundled {
                         ui.add(
-                            egui::Label::new(egui::RichText::new("Built-in").weak())
+                            egui::Label::new(egui::RichText::new("Default").weak())
                                 .selectable(false),
                         );
                     }
@@ -512,11 +536,18 @@ fn draw_bundled_recipe_selection(
         .filter(|entry| selected.contains(&entry.path))
         .count();
     let mut all = !bundled.is_empty() && count == bundled.len();
-    if ui.add_enabled(
-        !bundled.is_empty(),
-        egui::Checkbox::new(&mut all, format!("Include default Parhelion weapons ({}/{})", count, bundled.len()))
+    if ui
+        .add_enabled(
+            !bundled.is_empty(),
+            egui::Checkbox::new(
+                &mut all,
+                format!("Include Default Weapons ({}/{})", count, bundled.len()),
+            )
             .indeterminate(count > 0 && count < bundled.len()),
-    ).on_hover_text("Select or clear every bundled recipe, including recipes hidden by the search. Your custom weapons stay unchanged. Defaults are selected in a new library. Apply Selection saves your choice.").changed() {
+        )
+        .on_hover_text("Includes recipes hidden by the search.")
+        .changed()
+    {
         for entry in bundled {
             if all {
                 selected.insert(entry.path.clone());
@@ -566,7 +597,7 @@ impl PackageAuthoringApp {
                     if ui
                         .add_enabled(
                             self.invalid_weapon_name.is_none(),
-                            egui::Button::new("Open Recipe…"),
+                            egui::Button::new("Current Recipe…"),
                         )
                         .clicked()
                     {
@@ -607,9 +638,13 @@ impl PackageAuthoringApp {
                     !busy && !self.recipe_dirty && self.recipe_library.is_some(),
                     egui::Button::new("Restore Default Recipes…").small(),
                 )
-                .on_hover_text(
-                    "Restore bundled recipes from this version. Save or discard open edits first.",
-                )
+                .on_disabled_hover_text(if self.recipe_dirty {
+                    "Save or discard open edits first."
+                } else if self.recipe_library.is_none() {
+                    "Recipe library unavailable."
+                } else {
+                    "Recipe library busy."
+                })
                 .clicked()
             {
                 match self
@@ -628,7 +663,7 @@ impl PackageAuthoringApp {
         }
         ui.group(|ui| {
             ui.label("Restore Default Recipes?");
-            ui.label("This replaces saved edits to all bundled recipes and restores missing defaults. Changed files are backed up first. Custom recipes, build selection and installed game files stay unchanged.");
+            ui.label("Replaces your edits to default recipes and restores missing ones. Changed files are backed up first. Custom recipes and installed files are unchanged.");
             ui.horizontal(|ui| {
                 if ui.add_enabled(!busy && !self.recipe_dirty, egui::Button::new("Restore Defaults")).clicked() {
                     let preview = self.restore_defaults_preview.take().unwrap();
@@ -661,6 +696,7 @@ impl PackageAuthoringApp {
         // Escape abandons an uncommitted selection before closing library navigation.
         if (self.build_selection_draft.is_some() || self.library_open)
             && self.library_state.restore.is_none()
+            && self.library_state.delete.is_none()
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             if self.library_state.export_selection.is_some() && !self.library_state.busy() {
@@ -680,12 +716,13 @@ impl PackageAuthoringApp {
                 ctx,
                 &self.packages,
                 catalog,
-                &self.donor_summaries,
+                &self.library_donors,
                 &self.recipe_entries,
             );
         }
         self.draw_library_browser(ctx, busy);
         self.draw_recipe_restore(ctx, busy);
+        self.draw_recipe_delete(ctx, busy);
 
         let Some(mut draft) = self.build_selection_draft.take() else {
             return;
@@ -693,7 +730,7 @@ impl PackageAuthoringApp {
         let mut open = true;
         let mut apply = false;
         let mut cancel = false;
-        egui::Window::new("Weapons in This Build")
+        egui::Window::new("Items in This Build")
             .open(&mut open)
             .default_width(620.0)
             .default_height(720.0)
@@ -706,16 +743,17 @@ impl PackageAuthoringApp {
                     "build-selection-sort",
                     &mut self.build_selection_query,
                     &mut self.library_state.sort,
+                    &mut self.library_state.kind,
                     &mut self.recipe_search_focus_pending,
                 );
                 let query = self.build_selection_query.trim().to_lowercase();
                 let mut shown = self.library_state.matching_entries(
                     &self.recipe_entries,
-                    &self.donor_summaries,
+                    &self.library_donors,
                     &query,
                 );
                 self.library_state
-                    .sort_entries(&mut shown, &self.donor_summaries);
+                    .sort_entries(&mut shown, &self.library_donors);
                 ui.separator();
                 draw_select_all_shown(ui, shown.iter().map(|(entry, _)| &entry.path), &mut draft);
                 let footer_height = build_selection_footer_height(ui, &self.build_selection_error);
@@ -746,7 +784,7 @@ impl PackageAuthoringApp {
                             }
                         }
                         if shown.is_empty() {
-                            ui.label("No matching recipes. Try a different search.");
+                            ui.label("No matching recipes.");
                         }
                     });
                 ui.separator();

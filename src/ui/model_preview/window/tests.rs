@@ -19,6 +19,22 @@ fn request(tag: u32) -> Request {
 }
 
 #[test]
+fn linked_resource_navigation_follows_the_source_selection() {
+    let mut preview = Preview::default();
+    let root = request(1);
+    let (selection, _) = preview.resolve_request(&root);
+    assert_eq!(selection.1, Target::Object(1));
+    preview.browse(2, Some("Linked Sound"));
+    let (selection, name) = preview.resolve_request(&root);
+    assert_eq!(selection.1, Target::Object(2));
+    assert_eq!(name, "Linked Sound");
+    let (selection, name) = preview.resolve_request(&request(3));
+    assert_eq!(selection.1, Target::Object(3));
+    assert_eq!(name, "Selected Model");
+    assert!(preview.navigation.is_empty());
+}
+
+#[test]
 fn launcher_is_compact_lazy_and_only_its_owner_follows_selection() {
     let ctx = egui::Context::default();
     let owner = egui::Id::new("source");
@@ -38,7 +54,11 @@ fn launcher_is_compact_lazy_and_only_its_owner_follows_selection() {
         rect
     };
     let rect = draw(vec![]);
-    assert!(rect.height() < 40.0);
+    assert!(
+        rect.height() <= 26.0,
+        "launcher was {} pixels high",
+        rect.height()
+    );
     assert!(!shared(&ctx).lock().unwrap().open);
     assert!(shared(&ctx).lock().unwrap().pending.is_none());
     let click = |pressed| egui::Event::PointerButton {
@@ -95,7 +115,14 @@ fn viewer_survives_the_source_tab_and_escape_closes_without_reopening() {
     for _ in 0..2 {
         let _ = ctx.run(egui::RawInput::default(), show);
     }
-    assert!(state.lock().unwrap().texture.is_some());
+    {
+        let preview = state.lock().unwrap();
+        assert!(preview.open && preview.model.is_some() && preview.request.is_some());
+        assert!(
+            preview.texture.is_none(),
+            "a model without geometry has no texture"
+        );
+    }
     let _ = ctx.run(
         egui::RawInput {
             events: vec![egui::Event::Key {

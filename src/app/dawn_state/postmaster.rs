@@ -133,7 +133,7 @@ fn discard_button(ui: &mut egui::Ui, id: egui::Id, unlocked: bool) -> bool {
         .is_some_and(|(previous, armed)| armed && previous.saturating_add(1) >= pass);
     armed &= unlocked;
     let response = ui.add_enabled(unlocked, egui::Button::new(if armed { "Confirm Discard" } else { "Discard" }))
-        .on_hover_text("Removes the entire stack without granting dismantle rewards. Undo is available before and after saving.");
+        .on_hover_text("Removes the whole stack with no dismantle rewards. Undo works before and after saving.");
     let discard = response.clicked() && armed;
     if response.clicked() {
         armed = !armed;

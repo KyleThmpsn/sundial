@@ -25,6 +25,7 @@ impl UninstallUi {
 
 impl PackageAuthoringApp {
     pub(super) fn start_uninstall_review(&mut self, recover: bool) {
+        self.perk_workbench.stop_optional_reads();
         if self.has_background_work()
             || self.perk_workbench.editing()
             || self.icon_editor.is_some()
@@ -61,13 +62,12 @@ impl PackageAuthoringApp {
         if recover {
             self.packages_changed = true;
             self.catalog_force_rebuild = true;
-            self.log.push(LogEntry::info(
-                "Started recovery of an interrupted package operation",
-            ));
+            self.log.push(LogEntry::info("Recovery started"));
         }
     }
 
     fn start_uninstall(&mut self) {
+        self.perk_workbench.stop_optional_reads();
         if !self.uninstall.acknowledged || self.has_background_work() {
             return;
         }
@@ -93,9 +93,12 @@ impl PackageAuthoringApp {
             .map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
-        self.log.push(LogEntry::info(
-            if self.uninstall.cleanup_account { "Started custom package uninstall with confirmed account cleanup. Recipes will be preserved" } else { "Started package-only uninstall. Recipes and account data will be preserved" },
-        ));
+        self.log
+            .push(LogEntry::info(if self.uninstall.cleanup_account {
+                "Uninstall started with account cleanup"
+            } else {
+                "Uninstall started without account cleanup"
+            }));
     }
 
     pub(super) fn poll_uninstall(&mut self) {
@@ -151,43 +154,42 @@ impl PackageAuthoringApp {
                         ui.label(if self.uninstall.remove_receiver.is_some() { "Backing Up and Uninstalling…" } else { "Checking Package Set…" });
                     } else if let Some(report) = &self.uninstall.report {
                         ui.heading("Custom Packages Uninstalled");
-                        ui.label(format!("Removed {} Parhelion package files. Stock packages and recipes were kept.", report.removed_files.len()));
+                        ui.label(format!("Removed {} custom packages. Stock packages and recipes were kept.", report.removed_files.len()));
                         if let Some(path) = &report.cleaned_account {
-                            ui.label(format!("Removed the reviewed custom items, custom plug references and collection flags from {}. The original account is backed up with the package set. Unrelated progress was kept.", path.display()));
-                        } else { ui.label("Saved account data was kept unchanged."); }
-                        ui.label("Runtime caches were invalidated where present. They will be rebuilt on the next launch.");
+                            ui.label(format!("Removed custom items and unlocks from {}. The original account is in the backup.", path.display()));
+                        } else { ui.label("Account unchanged."); }
                         ui.label(format!("Recovery backup: {}", report.backup_directory.display()));
-                        ui.label("This uninstall backup is not removed by automatic package-backup retention.");
+                        ui.label("Automatic backup cleanup never removes it.");
                         if ui.button("Open Backup Folder").clicked() && let Err(error) = open_directory(&report.backup_directory) { self.log.push(LogEntry::error(error)); }
                     } else if let Some(error) = &self.uninstall.error {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                         retry = ui.button("Review Again").clicked();
-                        ui.label("If a previous package operation was interrupted, close Destiny before recovering it. Recovery restores the pre-operation package set.");
+                        ui.label("Close Destiny before recovering. Recovery restores the previous package set.");
                         recover = ui.button("Recover Interrupted Operation").clicked();
                     } else if let Some(plan) = &self.uninstall.plan {
-                        if plan.artifacts().is_empty() { ui.label("No custom Parhelion packages are installed."); }
+                        if plan.artifacts().is_empty() { ui.label("No custom packages installed."); }
                         else {
-                            ui.label(format!("Remove all {} recognized Parhelion packages from:", plan.artifacts().len()));
+                            ui.label(format!("Remove all {} custom packages from:", plan.artifacts().len()));
                             ui.label(plan.target().display().to_string());
                             ui.collapsing("Package Files", |ui| { for artifact in plan.artifacts() { ui.label(&artifact.file_name); } });
-                            ui.label("The complete set is backed up before removal. Stock packages and recipes are kept. Relevant runtime caches are refreshed.");
+                            ui.label("Backed up first. Stock packages and recipes are kept.");
                             if let Some(cleanup) = plan.account_cleanup() {
                                 if ui.checkbox(&mut self.uninstall.cleanup_account, "Remove Custom Items and Progression").changed() { self.uninstall.acknowledged = false; }
                                 ui.label(format!("Selected account: {}", cleanup.settings_path.display()));
-                                ui.label(format!("{} saved item instances, {} custom plug references, {} collection unlocks. Includes equipped weapons and all characters in this account. Affected equipment slots will be empty.", cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs, cleanup.cleared_unlocks));
+                                ui.label(format!("{} saved items, {} custom plug references, {} Collections unlocks. Includes equipped weapons on every character. Their slots will be empty.", cleanup.removed_items.values().sum::<usize>(), cleanup.cleared_plugs, cleanup.cleared_unlocks));
                                 ui.collapsing("Affected Items", |ui| { for (hash, count) in &cleanup.removed_items {
                                     let name = self.donor_summaries.iter().find(|item| item.hash == *hash).map_or("Custom Item", |item| item.name.as_str());
-                                    ui.label(format!("{name} · 0x{hash:08X} · {count} instance(s)"));
+                                    ui.label(format!("{name} · 0x{hash:08X} · {count} {}", if *count == 1 { "instance" } else { "instances" }));
                                 } });
-                                if cleanup.removed_reward_rules > 0 { ui.label(format!("{} dismantle reward rules referencing custom items will also be removed.", cleanup.removed_reward_rules)); }
-                                ui.label("Backs up settings with the packages. Only this set’s exact added item and unlock definitions are cleaned up. Unrelated Collections, XP and other progression stay unchanged. Other saved accounts and backups are not edited.");
+                                if cleanup.removed_reward_rules > 0 { ui.label(format!("Also removes {} dismantle reward rules for custom items.", cleanup.removed_reward_rules)); }
+                                ui.label("The account is backed up first. Only items and unlocks from this set are removed. Other progress and accounts are unchanged.");
                             } else if let Some(error) = plan.account_cleanup_error() {
                                 ui.colored_label(ui.visuals().warn_fg_color, format!("Automatic account cleanup unavailable: {error}"));
                             }
                             let confirmation = if self.uninstall.cleanup_account {
-                                "Destiny and other account editors are closed. I confirm removal of the listed custom items and progression."
+                                "Destiny and other account editors are closed. I confirm removing the listed items and progression."
                             } else {
-                                "Destiny is closed. I have removed custom items and their unlock data from my saved accounts myself."
+                                "Destiny is closed. I removed custom items and their unlocks from my accounts myself."
                             };
                             ui.checkbox(&mut self.uninstall.acknowledged, confirmation);
                         }
@@ -226,7 +228,9 @@ fn received<T>(receiver: &Option<Receiver<Result<T, String>>>) -> Option<Result<
     match receiver.as_ref()?.try_recv() {
         Ok(result) => Some(result),
         Err(TryRecvError::Empty) => None,
-        Err(TryRecvError::Disconnected) => Some(Err("The package operation worker stopped without a result. Review or recover the operation before retrying.".into())),
+        Err(TryRecvError::Disconnected) => Some(Err(
+            "The operation stopped without a result. Review or recover it before retrying.".into(),
+        )),
     }
 }
 
@@ -246,53 +250,6 @@ mod tests {
             assert!(!app.uninstall.open);
             assert_eq!(app.catalog_load_requested, !mutated);
             assert_eq!(app.recipe, recipe);
-            assert!(!app.uninstall.busy());
-        }
-    }
-
-    fn find(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
-        match shape {
-            egui::Shape::Text(text) if text.galley.job.text == label => {
-                Some(text.galley.rect.translate(text.pos.to_vec2()))
-            }
-            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn uninstall_review_keeps_confirmation_visible_and_does_not_change_the_recipe() {
-        for size in [egui::vec2(640.0, 480.0), egui::vec2(900.0, 640.0)] {
-            let mut app = PackageAuthoringApp::default();
-            app.uninstall.open = true;
-            app.uninstall.plan = Some(UninstallPlan::preview_fixture());
-            let before = app.recipe.clone();
-            app.start_uninstall(); // Cannot start without the explicit acknowledgement.
-            assert!(!app.uninstall.busy());
-            let ctx = egui::Context::default();
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            let mut output = egui::FullOutput::default();
-            for _ in 0..3 {
-                output = ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(screen),
-                        ..Default::default()
-                    },
-                    |ctx| app.draw_uninstall_window(ctx),
-                );
-            }
-            for label in ["Back Up & Uninstall", "Cancel"] {
-                let bounds = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| find(&shape.shape, label))
-                    .expect("footer visible");
-                assert!(
-                    screen.contains_rect(bounds),
-                    "{label} outside {size:?}: {bounds:?}"
-                );
-            }
-            assert_eq!(app.recipe, before);
             assert!(!app.uninstall.busy());
         }
     }

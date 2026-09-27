@@ -4,15 +4,21 @@
 use crate::{package_payload::*, package_runtime::reader::PackageManager};
 use std::{collections::BTreeSet, path::Path};
 pub(crate) mod animation;
+pub(crate) mod assets;
 mod decode;
+pub(crate) mod export;
 pub(crate) mod gpu;
+mod light;
+mod particle_material;
+mod particles;
 #[cfg(test)]
 mod projectile_tests;
 pub(crate) mod render;
 mod shader;
+mod statics;
 #[cfg(test)]
 mod tests;
-mod texture;
+pub(crate) mod texture;
 pub(crate) mod weapon;
 
 #[derive(Default)]
@@ -22,11 +28,23 @@ pub(crate) struct Model {
     pub tags: Vec<u32>,
     pub uvs: Vec<[f32; 2]>,
     pub triangle_textures: Vec<Option<usize>>,
+    /// Emitter shape triangles are shown only in solid and wireframe inspection modes.
+    pub triangle_emitter: Vec<bool>,
+    /// Light volume outlines are kept for direct light previews, but excluded from mesh framing.
+    pub triangle_light: Vec<bool>,
+    pub particle_sources: Vec<particles::Source>,
     pub textures: Vec<texture::Texture>,
     pub notices: Vec<String>,
     pub weights: Vec<Option<animation::Weights>>,
     pub animation: Option<animation::Animation>,
     pub animation_notice: Option<String>,
+    /// Every clip the object can play, for the viewer's picker.
+    pub clips: Vec<animation::Clip>,
+    pub assets: assets::Assets,
+    /// The recovered emitter shape is a static mesh, not simulated particle output.
+    pub particle_geometry: bool,
+    /// Outlines of native light volumes, without the game's illumination shader.
+    pub light_geometry: bool,
     pub triangle_dyes: Vec<u8>,
     /// Parts flagged alpha-clipped: the gearstack blue channel is coverage, not emission.
     pub triangle_clip: Vec<bool>,
@@ -39,11 +57,70 @@ pub(crate) struct Model {
     pub iridescence: Option<texture::Texture>,
     dyes: [Option<shader::Dye>; 6],
     dye_animations: Vec<(usize, crate::weapon_dyes::material::Animation)>,
+    /// Surfaces drawn with an editor's colors instead of their dyes'. A shown model takes new
+    /// ones in place, so a color edit never reads the model again.
+    surface_overrides: std::sync::Mutex<Vec<SurfaceOverride>>,
+}
+
+/// A surface drawn with other values than its dye's, for a dye an editor has not built yet.
+/// `slot` counts surfaces: armor primary, armor secondary, cloth primary, cloth secondary, suit
+/// primary and suit secondary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceOverride {
+    pub slot: usize,
+    /// Values written into the dye's 27 material vectors where a build writes them: a vector,
+    /// its lane and the value.
+    pub writes: Vec<(usize, usize, f32)>,
 }
 
 impl Model {
+    /// Draws surfaces with an editor's colors.
+    pub(crate) fn set_surface_overrides(&self, overrides: &[SurfaceOverride]) {
+        let mut current = self
+            .surface_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.as_slice() != overrides {
+            *current = overrides.to_vec();
+        }
+    }
+
     pub(crate) fn has_shader_animation(&self) -> bool {
         !self.dye_animations.is_empty()
+    }
+
+    pub(crate) fn has_particle_material_study(&self) -> bool {
+        self.particle_geometry
+            && self.assets.particles.len() == 1
+            && self.assets.particles.iter().any(|particle| {
+                particle.pixel_kind.is_some()
+                    && particle.material_samplers.len() >= 3
+                    && particle
+                        .program
+                        .as_ref()
+                        .and_then(|program| program.lifetime_default())
+                        .is_some()
+                    && [0, 1, 2].into_iter().all(|slot| {
+                        particle
+                            .material_textures
+                            .iter()
+                            .any(|(index, _)| *index == slot)
+                    })
+            })
+    }
+
+    pub(crate) fn has_surface_mesh(&self) -> bool {
+        self.triangles
+            .iter()
+            .enumerate()
+            .any(|(index, _)| !self.triangle_light.get(index).copied().unwrap_or(false))
+    }
+
+    pub(crate) fn has_object_mesh(&self) -> bool {
+        self.triangles.iter().enumerate().any(|(index, _)| {
+            !self.triangle_light.get(index).copied().unwrap_or(false)
+                && !self.triangle_emitter.get(index).copied().unwrap_or(false)
+        })
     }
 }
 
@@ -54,18 +131,90 @@ const MAX_VERTICES: usize = 500_000;
 const MAX_TRIANGLES: usize = 500_000;
 const MAX_TEXTURES: usize = 24;
 
-pub(crate) fn load(packages: &Path, tag: u32) -> Result<Model, String> {
-    let manager = crate::investment::discovery::open_packages(packages)?;
-    load_with_manager(&manager, tag)
+/// What the reader is doing right now, for the waiting viewer.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct Stage {
+    pub message: String,
+    /// Steps finished and expected. Both zero while the size of the job is still unknown.
+    pub done: usize,
+    pub total: usize,
 }
 
-fn load_with_manager(manager: &PackageManager, tag: u32) -> Result<Model, String> {
+/// Shared handle between a preview and the thread reading its model. Reading a whole object
+/// takes seconds, so the reader publishes what it is doing and checks whether the viewer has
+/// gone away, instead of running to completion in silence for a window nobody is watching.
+#[derive(Clone, Default)]
+pub(crate) struct Load {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stage: std::sync::Arc<std::sync::Mutex<Stage>>,
+}
+
+/// Returned when a load stops early. Callers discard it rather than showing it.
+pub(crate) const CANCELLED: &str = "The model load was cancelled.";
+
+impl Load {
+    pub fn stop(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn stopped(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// The latest stage, or an empty one if a reader panicked while holding the lock.
+    pub fn stage(&self) -> Stage {
+        self.stage.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+    pub(crate) fn say(&self, message: impl Into<String>, done: usize, total: usize) {
+        if let Ok(mut stage) = self.stage.lock() {
+            *stage = Stage {
+                message: message.into(),
+                done,
+                total,
+            };
+        }
+    }
+    fn check(&self) -> Result<(), String> {
+        if self.stopped() {
+            return Err(CANCELLED.into());
+        }
+        Ok(())
+    }
+}
+
+/// The whole object with its default clip, for tests that do not watch progress.
+#[cfg(test)]
+pub(crate) fn load(packages: &Path, tag: u32) -> Result<Model, String> {
+    load_reported(packages, tag, &Load::default(), None)
+}
+
+/// `clip` names an animation to play instead of the object's default one.
+pub(crate) fn load_reported(
+    packages: &Path,
+    tag: u32,
+    load: &Load,
+    clip: Option<u32>,
+) -> Result<Model, String> {
+    load.say("Opening packages", 0, 0);
+    let manager = crate::investment::discovery::open_packages(packages)?;
+    load_with_manager(&manager, tag, load, clip)
+}
+
+fn load_with_manager(
+    manager: &PackageManager,
+    tag: u32,
+    cancel: &Load,
+    clip: Option<u32>,
+) -> Result<Model, String> {
+    cancel.check()?;
+    cancel.say("Reading object", 0, 0);
     let entry = manager
         .get_entry(tag)
         .ok_or("The selected resource is missing")?;
     let mut tags = BTreeSet::new();
     let mut resources = Vec::new();
     let mut components = Vec::new();
+    let mut inventory = Inventory::default();
+    let mut emitter_only = false;
     match entry.reference {
         0x8080_744A => {
             let relation = checked(manager, tag, 0x8080_744A)?;
@@ -76,7 +225,7 @@ fn load_with_manager(manager: &PackageManager, tag: u32) -> Result<Model, String
             {
                 return Err("This assignment does not point to a renderable object".into());
             }
-            return load_with_manager(manager, entity);
+            return load_with_manager(manager, entity, cancel, clip);
         }
         MODEL => {
             tags.insert(tag);
@@ -84,113 +233,263 @@ fn load_with_manager(manager: &PackageManager, tag: u32) -> Result<Model, String
         RESOURCE => {
             let bytes = checked(manager, tag, RESOURCE)?;
             collect_component(&bytes, &mut tags, &mut resources)?;
+            inventory.record_component(tag, &bytes);
+            inventory.scan(manager, &bytes);
             components.push(bytes);
         }
         ENTITY => {
-            let mut inventory = Inventory::default();
-            collect_entity(
+            emitter_only = collect_entity_preview(
                 manager,
                 tag,
+                cancel,
                 &mut tags,
                 &mut resources,
                 &mut components,
                 &mut inventory,
             )?;
-            if tags.is_empty() {
-                // Effects, sequences and animation patterns keep their visible parts in child
-                // entities. Walk those before giving up on the object.
-                let mut visited = BTreeSet::from([tag]);
-                let mut queue = vec![(tag, 0usize)];
-                while let Some((parent, depth)) = queue.pop() {
-                    for child in child_entities(manager, parent, &mut inventory) {
-                        if !visited.insert(child) || depth >= MAX_CHILD_DEPTH {
-                            continue;
-                        }
-                        let mut child_tags = BTreeSet::new();
-                        if collect_entity(
-                            manager,
-                            child,
-                            &mut child_tags,
-                            &mut resources,
-                            &mut components,
-                            &mut inventory,
-                        )
-                        .is_err()
-                        {
-                            continue;
-                        }
-                        if child_tags.is_empty() {
-                            queue.push((child, depth + 1));
-                        } else if tags.len() < MAX_CHILD_MODELS {
-                            tags.extend(child_tags);
-                        }
-                    }
-                }
-            }
-            if tags.is_empty() {
-                return Err(inventory.describe());
-            }
         }
-        _ => return Err("This resource does not have a supported entity model.".into()),
+        // Map and prop geometry sits outside the entity family and reads its own tables.
+        class if statics::is_static(class) => {
+            cancel.say("Reading static mesh", 0, 0);
+            return statics::load(manager, tag);
+        }
+        light::SHADOWING_LIGHT | light::LIGHT_COLLECTION => {
+            return light::load(manager, tag);
+        }
+        PARTICLE_SYSTEM => {
+            inventory.particle_systems.insert(tag);
+            tags.extend(assets::emitter_models(manager, &inventory));
+            emitter_only = !tags.is_empty();
+        }
+        SOUND | SOUND_COLLECTION => {
+            inventory.sounds.insert(tag);
+        }
+        SOUND_BANK => {
+            inventory.scan_sound_bank(manager, tag);
+        }
+        _ => {
+            return Ok(Model {
+                assets: assets::generic(manager, tag)?,
+                ..Default::default()
+            });
+        }
     }
     if tags.is_empty() {
-        return Err("This resource has no mesh geometry to draw.".into());
+        let mut model = Model {
+            assets: if inventory.particle_systems.is_empty()
+                && inventory.sounds.is_empty()
+                && inventory.lights.is_empty()
+                && inventory.children.is_empty()
+                && inventory.components.is_empty()
+            {
+                assets::generic(manager, tag)?
+            } else {
+                assets::read(manager, tag, &inventory, cancel)?
+            },
+            ..Default::default()
+        };
+        model.clips = animation::clips(manager, &resources);
+        particles::collect_points(&mut model);
+        light::append(manager, &inventory.lights, &mut model);
+        return Ok(model);
     }
-    let mut model = Model::default();
-    for tag in tags {
+    let mut model = Model {
+        assets: assets::read(manager, tag, &inventory, cancel)?,
+        ..Default::default()
+    };
+    let total = tags.len();
+    for (done, tag) in tags.into_iter().enumerate() {
+        cancel.check()?;
+        cancel.say(
+            if total > 1 {
+                format!("Decoding mesh {} of {total}", done + 1)
+            } else {
+                "Decoding mesh".to_owned()
+            },
+            done,
+            total,
+        );
         let component = components.iter().find(|bytes| {
             pointer(bytes, 0x18)
                 .ok()
                 .and_then(|data| u32_at(bytes, data + 0x1DC).ok())
                 == Some(tag)
         });
-        decode::append(manager, tag, component.map(Vec::as_slice), &mut model)?;
-        model.tags.push(tag);
+        let first_triangle = model.triangles.len();
+        match decode::append(manager, tag, component.map(Vec::as_slice), &mut model) {
+            Ok(()) => {
+                model.tags.push(tag);
+                if emitter_only {
+                    model.triangle_emitter.resize(model.triangles.len(), false);
+                    model.triangle_emitter[first_triangle..].fill(true);
+                }
+            }
+            Err(error) if emitter_only => model.notices.push(format!(
+                "Particle geometry 0x{tag:08X} could not be drawn: {error}"
+            )),
+            Err(error) => return Err(error),
+        }
     }
     if model.triangles.is_empty() {
+        model.clips = animation::clips(manager, &resources);
+        light::append(manager, &inventory.lights, &mut model);
+        if !model.triangles.is_empty() {
+            return Ok(model);
+        }
+        if emitter_only {
+            return Ok(model);
+        }
         return Err("The model contains no supported triangles.".into());
     }
-    match animation::load(manager, &resources, &model) {
-        Ok(animation) => model.animation = animation,
-        Err(error) => model.animation_notice = Some(error),
+    if emitter_only {
+        model.particle_geometry = true;
     }
+    particles::collect_points(&mut model);
+    cancel.say("Reading animation", total, total);
+    model.clips = animation::clips(manager, &resources);
+    match clip {
+        Some(tag) => match animation::load_clip(manager, &resources, &model, tag) {
+            Ok(animation) => model.animation = Some(animation),
+            Err(error) => model.animation_notice = Some(error),
+        },
+        None => match animation::load(manager, &resources, &model) {
+            Ok(animation) => model.animation = animation,
+            Err(error) => model.animation_notice = Some(error),
+        },
+    }
+    light::append(manager, &inventory.lights, &mut model);
     Ok(model)
+}
+
+fn collect_entity_preview(
+    manager: &PackageManager,
+    tag: u32,
+    cancel: &Load,
+    tags: &mut BTreeSet<u32>,
+    resources: &mut Vec<Vec<u8>>,
+    components: &mut Vec<Vec<u8>>,
+    inventory: &mut Inventory,
+) -> Result<bool, String> {
+    collect_entity(manager, tag, tags, resources, components, inventory)?;
+    let has_own_model = !tags.is_empty();
+    // Effects, sequences and animation patterns can keep their visible parts in child entities.
+    let mut visited = BTreeSet::from([tag]);
+    let mut queue = vec![(tag, 0usize)];
+    cancel.say("Looking in child objects", 0, 0);
+    while let Some((parent, depth)) = queue.pop() {
+        cancel.check()?;
+        for child in child_entities(manager, parent, inventory) {
+            if visited.len() >= MAX_CHILD_ENTITIES {
+                break;
+            }
+            if !visited.insert(child) || depth >= MAX_CHILD_DEPTH {
+                continue;
+            }
+            let mut child_tags = BTreeSet::new();
+            if collect_entity(
+                manager,
+                child,
+                &mut child_tags,
+                resources,
+                components,
+                inventory,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            if !has_own_model && tags.len() < MAX_CHILD_MODELS {
+                tags.extend(child_tags);
+            }
+            queue.push((child, depth + 1));
+        }
+    }
+    if tags.is_empty() {
+        tags.extend(assets::emitter_models(manager, inventory));
+        return Ok(!tags.is_empty());
+    }
+    Ok(false)
 }
 
 const MAX_CHILD_DEPTH: usize = 3;
 const MAX_CHILD_MODELS: usize = 16;
+const MAX_CHILD_ENTITIES: usize = 64;
 const PARTICLE_SYSTEM: u32 = 0x8080_6E28;
 const SOUND: u32 = 0x8080_9802;
+const SOUND_COLLECTION: u32 = 0x8080_9738;
+const SOUND_BANK: u32 = 0x8080_8D54;
 
 /// What a model-less object is made of, for the message when nothing can be drawn.
 #[derive(Default)]
 struct Inventory {
     particle_systems: BTreeSet<u32>,
     sounds: BTreeSet<u32>,
+    sound_banks: BTreeSet<u32>,
+    lights: BTreeSet<u32>,
     children: BTreeSet<u32>,
+    components: Vec<assets::Component>,
 }
 
 impl Inventory {
-    fn describe(&self) -> String {
-        let mut parts = Vec::new();
-        for (count, noun) in [
-            (self.particle_systems.len(), "particle system"),
-            (self.sounds.len(), "sound"),
-            (self.children.len(), "child object"),
-        ] {
-            match count {
-                0 => {}
-                1 => parts.push(format!("1 {noun}")),
-                n => parts.push(format!("{n} {noun}s")),
-            }
+    fn scan_sound_bank(&mut self, manager: &PackageManager, tag: u32) {
+        if !self.sound_banks.insert(tag) {
+            return;
         }
-        if parts.is_empty() {
-            "This object has no mesh geometry to draw.".into()
-        } else {
-            format!(
-                "This object has no mesh geometry to draw. It holds {}.",
-                parts.join(", ")
-            )
+        let Some(entry) = manager.get_entry(tag) else {
+            return;
+        };
+        if entry.reference != SOUND_BANK || entry.file_type != 8 || entry.file_size > 1024 * 1024 {
+            return;
+        }
+        let Ok(bytes) = manager.read_tag(tag) else {
+            return;
+        };
+        if u64_at(&bytes, 0).ok() != Some(bytes.len() as u64) {
+            return;
+        }
+        self.scan(manager, &bytes);
+    }
+
+    fn record_component(&mut self, tag: u32, bytes: &[u8]) {
+        let header = pointer(bytes, 0x10)
+            .ok()
+            .and_then(|at| at.checked_sub(4))
+            .and_then(|at| u32_at(bytes, at).ok());
+        let data = pointer(bytes, 0x18)
+            .ok()
+            .and_then(|at| at.checked_sub(4))
+            .and_then(|at| u32_at(bytes, at).ok());
+        if !self.components.iter().any(|component| component.tag == tag) {
+            self.components
+                .push(assets::Component { tag, header, data });
+        }
+    }
+
+    fn scan(&mut self, manager: &PackageManager, bytes: &[u8]) {
+        for word in bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        {
+            if word & 0xFF00_0000 != 0x8000_0000 {
+                continue;
+            }
+            if let Some(entry) = manager.get_entry(word) {
+                match entry.reference {
+                    PARTICLE_SYSTEM if entry.file_type == 8 => {
+                        self.particle_systems.insert(word);
+                    }
+                    SOUND | SOUND_COLLECTION if entry.file_type == 8 => {
+                        self.sounds.insert(word);
+                    }
+                    SOUND_BANK if entry.file_type == 8 => {
+                        self.scan_sound_bank(manager, word);
+                    }
+                    light::SHADOWING_LIGHT if entry.file_type == 8 => {
+                        self.lights.insert(word);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -215,26 +514,9 @@ fn collect_entity(
             continue;
         }
         let bytes = checked(manager, resource, RESOURCE)?;
+        inventory.record_component(resource, &bytes);
         collect_component(&bytes, tags, resources)?;
-        for word in bytes
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-        {
-            if word & 0xFF00_0000 != 0x8000_0000 {
-                continue;
-            }
-            if let Some(entry) = manager.get_entry(word) {
-                match entry.reference {
-                    PARTICLE_SYSTEM => {
-                        inventory.particle_systems.insert(word);
-                    }
-                    SOUND => {
-                        inventory.sounds.insert(word);
-                    }
-                    _ => {}
-                }
-            }
-        }
+        inventory.scan(manager, &bytes);
         components.push(bytes);
     }
     Ok(())

@@ -1,7 +1,6 @@
 //! Objective labels and metadata semantics shared by progression inspectors and tables.
 
-#[cfg(test)]
-use crate::catalog::ObjectiveOwnerTraitDef;
+use std::collections::HashSet;
 
 use crate::{
     catalog::{
@@ -10,12 +9,6 @@ use crate::{
     },
     hash::format_hash_hex,
 };
-
-#[cfg(test)]
-use crate::app::inspector::progression_context_kind_label;
-
-#[cfg(test)]
-use super::definitions::definition_name;
 
 pub(in crate::app) fn progression_type_label(type_name: &str) -> &str {
     let type_name = type_name.trim();
@@ -53,34 +46,9 @@ pub(in crate::app) fn objective_owner_label(owner: &ObjectiveOwnerDef) -> Option
     (!type_name.is_empty()).then_some(type_name)
 }
 
-#[cfg(test)]
-pub(in crate::app) fn objective_owner_trait_label(
-    trait_definition: &ObjectiveOwnerTraitDef,
-) -> String {
-    let name = trait_definition.name.trim();
-    if name.is_empty() {
-        format_hash_hex(trait_definition.hash)
-    } else {
-        name.to_owned()
-    }
-}
-
 pub(in crate::app) fn objective_owner_display_label(owner: &ObjectiveOwnerDef) -> Option<String> {
     let label = objective_owner_label(owner)?;
     Some(label.to_owned())
-}
-
-#[cfg(test)]
-pub(in crate::app) fn objective_traits_text(objective: &ObjectiveDef) -> Option<String> {
-    let owner = preferred_objective_owner(objective)?;
-    (!owner.traits.is_empty()).then(|| {
-        owner
-            .traits
-            .iter()
-            .map(objective_owner_trait_label)
-            .collect::<Vec<_>>()
-            .join(", ")
-    })
 }
 
 const fn objective_owner_priority(kind: ObjectiveOwnerKind) -> u8 {
@@ -102,7 +70,7 @@ pub(in crate::app) fn objective_owner_type(owner: &ObjectiveOwnerDef) -> &str {
             ObjectiveOwnerKind::Milestone => "Milestone",
             ObjectiveOwnerKind::Metric => "Metric",
             ObjectiveOwnerKind::Record => "Record",
-            ObjectiveOwnerKind::PresentationNode => "Presentation node",
+            ObjectiveOwnerKind::PresentationNode => "Presentation Node",
         }
     }
 }
@@ -142,72 +110,6 @@ pub(in crate::app) fn meaningful_definition_contexts(
                         .any(|path| path.iter().any(|component| !component.trim().is_empty())))
         })
         .collect()
-}
-
-#[cfg(test)]
-pub(in crate::app) fn override_meaning_contexts(
-    definition: &UnlockDefinition,
-) -> Vec<&ProgressionContextDef> {
-    definition
-        .tested_by
-        .iter()
-        .filter(|context| {
-            !context.name.trim().is_empty()
-                || !progression_type_label(&context.type_name).is_empty()
-                || !context.description.trim().is_empty()
-                || context
-                    .paths
-                    .iter()
-                    .any(|path| path.iter().any(|component| !component.trim().is_empty()))
-        })
-        .collect()
-}
-
-#[cfg(test)]
-pub(in crate::app) fn override_meaning(definition: &UnlockDefinition) -> String {
-    if let Some(name) = definition_name(definition) {
-        return name.trim().to_owned();
-    }
-
-    let contexts = override_meaning_contexts(definition);
-    let mut labels = contexts
-        .iter()
-        .filter_map(|context| definition_context_label(context))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    labels.sort_by_cached_key(|label| label.to_lowercase());
-    labels.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
-    match labels.len() {
-        1 => return labels.remove(0),
-        2 => return labels.join(" · "),
-        count if count > 2 => {
-            return format!("{} · {} · +{} more", labels[0], labels[1], count - 2);
-        }
-        _ => {}
-    }
-    if contexts.is_empty() {
-        return "No Known References".to_owned();
-    }
-
-    let mut kinds = contexts
-        .iter()
-        .map(|context| context.kind)
-        .collect::<Vec<_>>();
-    kinds.sort_by_key(|kind| objective_context_priority(*kind));
-    kinds.dedup();
-    if kinds.len() == 1 {
-        format!("{} conditions", progression_context_kind_label(kinds[0]))
-    } else {
-        let mut labels = kinds
-            .iter()
-            .take(2)
-            .map(|kind| progression_context_kind_label(*kind).to_owned())
-            .collect::<Vec<_>>();
-        if kinds.len() > 2 {
-            labels.push(format!("+{} more", kinds.len() - 2));
-        }
-        labels.join(" · ")
-    }
 }
 
 const fn objective_context_priority(kind: ProgressionContextKind) -> u8 {
@@ -269,7 +171,8 @@ pub(in crate::app) fn resolved_objective_table_text(
         .map(|target| objective_table_text(target, None))
         .filter(|label| !label.starts_with("Objective 0x"))
         .collect::<Vec<_>>();
-    labels.dedup();
+    let mut seen = HashSet::new();
+    labels.retain(|label| seen.insert(label.clone()));
     if let Some(label) = labels.first() {
         return if labels.len() == 1 {
             format!("{label} · linked objective")
@@ -303,56 +206,6 @@ pub(in crate::app) fn objective_table_text(
     } else {
         format!("Objective 0x{:08X}", objective.hash)
     }
-}
-
-#[cfg(test)]
-pub(in crate::app) fn objective_details_tooltip(objective: &ObjectiveDef) -> String {
-    let mut lines = vec![
-        format!("Objective: {}", objective_description(objective)),
-        format!("Objective hash: 0x{:08X}", objective.hash),
-    ];
-    for (label, value) in [
-        ("Name", objective.name.as_str()),
-        (
-            "Display description",
-            objective.display_description.as_str(),
-        ),
-        (
-            "Progress description",
-            objective.progress_description.as_str(),
-        ),
-    ] {
-        let value = value.trim();
-        if !value.is_empty() && !value.eq_ignore_ascii_case(objective.description.trim()) {
-            lines.push(format!("{label}: {value}"));
-        }
-    }
-    if objective
-        .owners
-        .iter()
-        .any(|owner| objective_owner_label(owner).is_some())
-    {
-        lines.push("Package owners:".into());
-        for owner in objective
-            .owners
-            .iter()
-            .filter(|owner| objective_owner_label(owner).is_some())
-        {
-            let owner_type = objective_owner_type(owner);
-            let owner_label = objective_owner_label(owner).unwrap_or(owner_type);
-            if owner_type.eq_ignore_ascii_case(owner_label) {
-                lines.push(owner_label.to_owned());
-            } else {
-                lines.push(format!("{owner_type}: {owner_label}"));
-            }
-            lines.push(format!("{owner_type} hash: 0x{:08X}", owner.hash));
-            let description = owner.description.trim();
-            if !description.is_empty() && !description.eq_ignore_ascii_case(owner_label) {
-                lines.push(format!("Description: {description}"));
-            }
-        }
-    }
-    lines.join("\n")
 }
 
 pub(in crate::app) fn objective_target_text(objective: &crate::catalog::ObjectiveDef) -> String {

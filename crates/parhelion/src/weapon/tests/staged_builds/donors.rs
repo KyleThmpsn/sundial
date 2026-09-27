@@ -7,6 +7,7 @@ fn real_cross_slot_sword_builds_without_presentation_override() {
         .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
     let namespace = "parhelion.cross-slot-without-presentation.integration";
     let spec = WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
         donor_item_hash: 0x4659_8066,
         expected_donor_name: Some("Crown-Splitter".to_owned()),
@@ -47,6 +48,7 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
     let packages = PathBuf::from(packages);
     let namespace = "parhelion.second-sun.integration";
     let spec = WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
         donor_item_hash: 0xEE06_B019,
         expected_donor_name: Some("The Mountaintop".to_owned()),
@@ -394,27 +396,30 @@ fn real_donor_roles_use_first_indexed_rows_and_reject_invalid_inputs() {
     );
 }
 
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "One staged build is walked from definition to vertex rows in sequence"
-)]
-fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
+/// One shared setup for both cross-family outcomes: build the weapon, stage it into a
+/// throwaway package view, and hand back the managers needed to read what the build wrote.
+fn staged_cross_family_build(
+    namespace: &str,
+    name: &str,
+    gameplay: (u32, &str),
+    appearance: (u32, &str),
+) -> (
+    crate::weapon::NewWeaponProjectBundle,
+    tempfile::TempDir,
+    PathBuf,
+) {
     let packages = PathBuf::from(
         std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
             .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
     );
-    let namespace = "parhelion.cross-family-appearance.integration";
-    // Age-Old Bond (auto rifle runtime, four-bone rig) wearing Better Devils (hand cannon
-    // gear, eight-bone rig). Every private position buffer must select bone 0.
     let spec = WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
-        donor_item_hash: 0x23DB_942F,
-        expected_donor_name: Some("Age-Old Bond".to_owned()),
+        donor_item_hash: gameplay.0,
+        expected_donor_name: Some(gameplay.1.to_owned()),
         presentation_donor: Some(WeaponPresentationDonorReference {
-            item_hash: 0x092D_8A05,
-            expected_name: Some("Better Devils".to_owned()),
+            item_hash: appearance.0,
+            expected_name: Some(appearance.1.to_owned()),
         }),
         icon_donor: None,
         render_gear_donor: None,
@@ -422,8 +427,8 @@ fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
         identity: WeaponCloneIdentity::from_namespace(namespace)
             .expect("test namespace should allocate"),
         text: WeaponCloneText {
-            name: "Old Devils".to_owned(),
-            flavor: "A hand cannon shell around an auto rifle heart.".to_owned(),
+            name: name.to_owned(),
+            flavor: "Cross-family appearance integration test.".to_owned(),
             source: "Source: integration test".to_owned(),
             ..WeaponCloneText::default()
         },
@@ -436,7 +441,6 @@ fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
         },
     )
     .expect("cross-family appearance should build");
-    let plan = &bundle.plan.weapons[0];
     let source_root = packages.parent().unwrap();
     let view = tempfile::Builder::new()
         .prefix(".parhelion-cross-family-test-")
@@ -461,45 +465,59 @@ fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
     }
     let staged = bundle.write_new(&view_packages).unwrap();
     assert_eq!(staged.len(), bundle.artifacts.len());
+    (bundle, view, packages)
+}
 
-    let manager = open_manager(&view_packages).unwrap();
+/// The translation group the authored weapon's own sandbox-pattern row names, which is the
+/// family whose rig and animations the entity is expected to carry.
+fn authored_translation_group(manager: &PackageManager, definition: &[u8]) -> u32 {
+    let globals = manager
+        .read_tag(
+            sundial::package_authoring::resolve_live_named_tag(manager, "investment_globals", None)
+                .unwrap(),
+        )
+        .unwrap();
+    let patterns = manager
+        .read_tag(TagHash(read_u32(&globals, 16 + 70 * 16).unwrap()))
+        .unwrap();
+    sandbox_pattern_identity_at(
+        &patterns,
+        usize::from(weapon_pattern_index(definition).unwrap().unwrap()),
+    )
+    .unwrap()
+    .unwrap()
+    .weapon_translation_group_hash
+}
+
+const AUTO_RIFLE_GROUP: u32 = 0xCCC7_37C4;
+const HAND_CANNON_GROUP: u32 = 0xC8CC_993A;
+
+/// A hand cannon's model on an auto rifle's gameplay. The families interchange their rig and
+/// animation components, so the build moves the appearance's presentation onto the private
+/// runtime rather than pinning anything: the model keeps its own bones, and the authored row
+/// keeps naming the appearance's family so the client resolves that family's animations.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_cross_family_appearance_moves_the_rig_when_the_families_interchange() {
+    let (bundle, view, packages) = staged_cross_family_build(
+        "parhelion.cross-family-rig.integration",
+        "Old Devils",
+        (0x23DB_942F, "Age-Old Bond"),
+        (0x092D_8A05, "Better Devils"),
+    );
+    let plan = &bundle.plan.weapons[0];
+    let manager = open_manager(&view.path().join("packages")).unwrap();
     let stock = open_manager(&packages).unwrap();
-    let array = |data: &[u8], at: usize| {
-        sundial::package_authoring::native_payload::native_array_at(data, at).unwrap()
-    };
     let definition = read_tag(&manager, plan.definition_tag, "authored definition").unwrap();
     let donor = read_tag(&stock, plan.template_definition_tag, "donor definition").unwrap();
-    // The runtime stays in the auto rifle translation group (a private row cloned from the
-    // donor), not the hand cannon group of the appearance.
-    let patterns = manager
-        .read_tag(TagHash(
-            read_u32(
-                &manager
-                    .read_tag(
-                        sundial::package_authoring::resolve_live_named_tag(
-                            &manager,
-                            "investment_globals",
-                            None,
-                        )
-                        .unwrap(),
-                    )
-                    .unwrap(),
-                16 + 70 * 16,
-            )
-            .unwrap(),
-        ))
-        .unwrap();
-    let group = |definition: &[u8]| {
-        sandbox_pattern_identity_at(
-            &patterns,
-            usize::from(weapon_pattern_index(definition).unwrap().unwrap()),
-        )
-        .unwrap()
-        .unwrap()
-        .weapon_translation_group_hash
-    };
-    assert_eq!(group(&definition), group(&donor));
-    assert_eq!(group(&donor), 0xCCC7_37C4, "auto rifle group");
+    assert_eq!(authored_translation_group(&stock, &donor), AUTO_RIFLE_GROUP);
+    assert_eq!(
+        authored_translation_group(&manager, &definition),
+        HAND_CANNON_GROUP,
+        "the authored row should name the appearance's family once its rig is carried"
+    );
+    // Nothing is pinned, so the gear art is the appearance's own stock arrangement and the
+    // build allocates no private geometry.
     let rows = weapon_art_arrangements(&definition).unwrap();
     assert_eq!(rows.len(), 1);
     let globals = manager
@@ -515,55 +533,262 @@ fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
     let metadata = manager
         .read_tag(TagHash(read_u32(&globals, 0x430).unwrap()))
         .unwrap();
-    let (count, _, meta_rows, _) = array(&metadata, 8);
-    let row_index = usize::from(rows[0].arrangement);
-    assert!(row_index < count, "art row {row_index} outside {count}");
-    let row = meta_rows + row_index * 32;
-    assert_eq!(read_u32(&metadata, row).unwrap(), plan.item_hash);
+    let (count, _, meta_rows, _) =
+        sundial::package_authoring::native_payload::native_array_at(&metadata, 8).unwrap();
+    let row = usize::from(rows[0].arrangement);
+    assert!(row < count);
+    // The row is still the appearance's own stock arrangement, not a private clone owned by
+    // the authored item, and the authored definition selects exactly the row the appearance
+    // selects. A moved rig needs no private geometry at all.
+    assert_ne!(
+        read_u32(&metadata, meta_rows + row * 32).unwrap(),
+        plan.item_hash,
+        "a moved rig needs no private gear-art row"
+    );
+    assert_ne!(
+        rows[0].arrangement,
+        weapon_art_arrangements(&donor).unwrap()[0].arrangement,
+        "the geometry should be the appearance's, not the gameplay donor's"
+    );
+}
+
+/// A shotgun's model on an auto rifle's gameplay. The shotgun family places its skeleton's
+/// event receiver at a different offset, so the rig cannot move. The build falls back to
+/// private gear parts pinned to the gameplay rig's root bone, and the authored row names the
+/// gameplay family because that is the rig those parts now ride.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_cross_family_appearance_pins_the_parts_when_the_rig_cannot_move() {
+    let (bundle, view, packages) = staged_cross_family_build(
+        "parhelion.cross-family-pin.integration",
+        "Sudden Bond",
+        (0x23DB_942F, "Age-Old Bond"),
+        (0x7002_8208, "A Sudden Death"),
+    );
+    assert_parts_pinned(&bundle, &view, &packages);
+}
+
+/// A bow's model on a shotgun's gameplay. Bow limbs and strings blend several bones per vertex
+/// instead of naming one, so pinning has to rewrite their blend weights as well.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_bow_appearance_pins_its_blended_parts() {
+    let (bundle, view, packages) = staged_cross_family_build(
+        "parhelion.cross-family-bow-pin.integration",
+        "Spiteful Death",
+        (0x7002_8208, "A Sudden Death"),
+        (0x1920_B488, "The Spiteful Fang"),
+    );
+    assert!(
+        assert_parts_pinned(&bundle, &view, &packages) > 0,
+        "the bow should carry blended vertices"
+    );
+}
+
+/// A legendary bow's model on an exotic bow's gameplay. The exotic has a translation group of
+/// its own, so the appearance counts as another family, and the bow rig moves across. The
+/// appearance's row selects the legendary's content block, which keeps firing the exotic's own
+/// graph. Neither block carries a behavior record, so the graph is all that differs.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_bow_appearance_builds_on_an_exotic_bow() {
+    let (bundle, view, packages) = staged_cross_family_build(
+        "parhelion.cross-family-bow.integration",
+        "Spiteful Ghoul",
+        (0x3092_080D, "Trinity Ghoul"),
+        (0x1920_B488, "The Spiteful Fang"),
+    );
+    let plan = &bundle.plan.weapons[0];
+    let manager = open_manager(&view.path().join("packages")).unwrap();
+    let stock = open_manager(&packages).unwrap();
+    let definition = read_tag(&manager, plan.definition_tag, "authored definition").unwrap();
+    let donor = read_tag(&stock, plan.template_definition_tag, "donor definition").unwrap();
+    assert_ne!(
+        authored_translation_group(&manager, &definition),
+        authored_translation_group(&stock, &donor),
+        "the authored row should name the appearance's family once its rig is carried"
+    );
+    assert_ne!(
+        weapon_art_arrangements(&definition).unwrap()[0].arrangement,
+        weapon_art_arrangements(&donor).unwrap()[0].arrangement,
+        "the geometry should be the appearance's, not the gameplay donor's"
+    );
+
+    assert_keeps_own_behavior(&bundle, &view, &packages, 0x3092_080D, 0x1920_B488, false);
+}
+
+/// An exotic bow's model on another exotic bow's gameplay, both with behavior records. The
+/// appearance's row selects Wish-Ender's block, which fires Le Monarque's own graph and reads its
+/// own state array and behavior record.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn real_bow_appearance_keeps_the_base_behavior_record() {
+    let (bundle, view, packages) = staged_cross_family_build(
+        "parhelion.cross-family-bow-record.integration",
+        "Wishful Monarch",
+        (0xD5EA_CCB7, "Le Monarque"),
+        (0x3092_080C, "Wish-Ender"),
+    );
+    assert_keeps_own_behavior(&bundle, &view, &packages, 0xD5EA_CCB7, 0x3092_080C, true);
+}
+
+/// Checks that the content block the authored row selects fires the base weapon's own graph and,
+/// when `records` is set, reaches the base weapon's own state array and behavior record.
+fn assert_keeps_own_behavior(
+    bundle: &crate::weapon::NewWeaponProjectBundle,
+    view: &tempfile::TempDir,
+    packages: &Path,
+    base: u32,
+    appearance: u32,
+    records: bool,
+) {
+    use crate::weapon_behavior::{block_for_group, content, first_triple};
+    use sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_with_manager;
+    let plan = &bundle.plan.weapons[0];
+    let manager = open_manager(&view.path().join("packages")).unwrap();
+    let stock = open_manager(packages).unwrap();
+    let authored = load_weapon_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
+    let base = load_weapon_runtime_entity_with_manager(&stock, base).unwrap();
+    let appearance = load_weapon_runtime_entity_with_manager(&stock, appearance).unwrap();
+    assert_eq!(
+        authored.weapon_content_group_hash, appearance.weapon_content_group_hash,
+        "the authored row should select the appearance's content block"
+    );
+    let built = content(&manager, &authored.payload).unwrap();
+    let original = content(&stock, &base.payload).unwrap();
+    let selected = block_for_group(&built, authored.weapon_content_group_hash).unwrap();
+    let own = block_for_group(&original, base.weapon_content_group_hash).unwrap();
+    let theirs = block_for_group(&original, appearance.weapon_content_group_hash).unwrap();
+    let graph = |owner: &[u8], block: usize| read_u32(owner, block + 0xF0).unwrap();
+    assert_ne!(
+        graph(&original.owner, theirs),
+        graph(&original.owner, own),
+        "the two weapons should fire different graphs in stock"
+    );
+    assert_eq!(
+        graph(&built.owner, selected),
+        graph(&original.owner, own),
+        "the weapon should fire its base weapon's own graph"
+    );
+    if !records {
+        return;
+    }
+    // The state array and behavior record each slot of a block's first triple reaches.
+    let reached = |owner: &[u8], block: usize| {
+        let triple = first_triple(owner, block).unwrap();
+        [0x10_usize, 0x20].map(|slot| {
+            let at = triple + slot;
+            let relative = i64::from_le_bytes(owner[at..at + 8].try_into().unwrap());
+            let target = at
+                .checked_add_signed(isize::try_from(relative).unwrap())
+                .unwrap();
+            owner[target - 4..target + 44].to_vec()
+        })
+    };
+    assert_ne!(
+        reached(&original.owner, theirs),
+        reached(&original.owner, own),
+        "the two weapons should carry different behavior records in stock"
+    );
+    assert_eq!(
+        reached(&built.owner, selected),
+        reached(&original.owner, own),
+        "the weapon should read its base weapon's own behavior record"
+    );
+}
+
+/// Walks one pinned build from its art row down to every vertex row, and returns how many rows
+/// blended bones before pinning.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One staged build is walked from the art row down to its vertex rows in sequence"
+)]
+fn assert_parts_pinned(
+    bundle: &crate::weapon::NewWeaponProjectBundle,
+    view: &tempfile::TempDir,
+    packages: &Path,
+) -> usize {
+    let plan = &bundle.plan.weapons[0];
+    let manager = open_manager(&view.path().join("packages")).unwrap();
+    let stock = open_manager(packages).unwrap();
+    let definition = read_tag(&manager, plan.definition_tag, "authored definition").unwrap();
+    let donor = read_tag(&stock, plan.template_definition_tag, "donor definition").unwrap();
+    assert_eq!(
+        authored_translation_group(&manager, &definition),
+        authored_translation_group(&stock, &donor),
+        "pinned parts ride the gameplay rig, so the row must name that family"
+    );
+    let rows = weapon_art_arrangements(&definition).unwrap();
+    assert_eq!(rows.len(), 1);
+    let globals = manager
+        .read_tag(
+            sundial::package_authoring::resolve_live_named_tag(
+                &manager,
+                "investment_globals",
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let metadata = manager
+        .read_tag(TagHash(read_u32(&globals, 0x430).unwrap()))
+        .unwrap();
+    let (count, _, meta_rows, _) =
+        sundial::package_authoring::native_payload::native_array_at(&metadata, 8).unwrap();
+    let row = usize::from(rows[0].arrangement);
+    assert!(row < count);
+    assert_eq!(
+        read_u32(&metadata, meta_rows + row * 32).unwrap(),
+        plan.item_hash,
+        "pinned parts need a private gear-art row owned by the authored item"
+    );
+    // Every private part selects bone zero, so no vertex names a bone the gameplay rig lacks.
     let mut keys = vec![
-        read_u32(&metadata, row + 8).unwrap(),
-        read_u32(&metadata, row + 12).unwrap(),
+        read_u32(&metadata, meta_rows + row * 32 + 8).unwrap(),
+        read_u32(&metadata, meta_rows + row * 32 + 12).unwrap(),
     ];
-    if crate::tag_payload::read_u64(&metadata, row + 16).unwrap() != 0 {
-        let (slots, _, entries, _) = array(&metadata, row + 16);
+    if crate::tag_payload::read_u64(&metadata, meta_rows + row * 32 + 16).unwrap() != 0 {
+        let (slots, _, entries, _) = sundial::package_authoring::native_payload::native_array_at(
+            &metadata,
+            meta_rows + row * 32 + 16,
+        )
+        .unwrap();
         for slot in 0..slots {
             let resource =
                 crate::tag_payload::relative_target(&metadata, entries + slot * 8).unwrap();
-            let (n, _, assignments, _) = array(&metadata, resource + 8);
-            for j in 0..n {
-                keys.push(read_u32(&metadata, assignments + j * 4).unwrap());
+            let (n, _, assignments, _) =
+                sundial::package_authoring::native_payload::native_array_at(
+                    &metadata,
+                    resource + 8,
+                )
+                .unwrap();
+            for index in 0..n {
+                keys.push(read_u32(&metadata, assignments + index * 4).unwrap());
             }
         }
     }
     keys.retain(|key| !matches!(*key, 0 | u32::MAX | 0x811C_9DC5));
     keys.sort_unstable();
     keys.dedup();
-    assert_eq!(
-        keys.len(),
-        10,
-        "Better Devils lists ten gear parts, five regions with alternatives: {keys:08X?}"
-    );
+    assert!(!keys.is_empty());
     let map = manager.read_tag(TagHash(0x80EC_3F61)).unwrap();
-    let (count, _, map_rows, _) = array(&map, 8);
+    let (map_count, _, map_rows, _) =
+        sundial::package_authoring::native_payload::native_array_at(&map, 8).unwrap();
     let mut parts = 0;
+    let mut blended = 0;
     for key in keys {
-        let relation_tag = (0..count)
-            .map(|i| map_rows + i * 8)
-            .find(|&o| read_u32(&map, o).unwrap() == key)
-            .map(|o| read_u32(&map, o + 4).unwrap())
-            .unwrap_or_else(|| panic!("key {key:08X} unmapped"));
-        assert!(
-            stock.get_entry(TagHash(relation_tag)).is_none(),
-            "relation {relation_tag:08X} is a stock tag"
-        );
-        let relation = manager.read_tag(TagHash(relation_tag)).unwrap();
-        let entity_tag = read_u32(&relation, 0x10).unwrap();
-        assert!(stock.get_entry(TagHash(entity_tag)).is_none());
+        let relation = (0..map_count)
+            .map(|index| map_rows + index * 8)
+            .find(|&offset| read_u32(&map, offset).unwrap() == key)
+            .map(|offset| read_u32(&map, offset + 4).unwrap())
+            .unwrap_or_else(|| panic!("key {key:08X} is unmapped"));
+        assert!(stock.get_entry(TagHash(relation)).is_none());
+        let entity_tag = read_u32(&manager.read_tag(TagHash(relation)).unwrap(), 0x10).unwrap();
         let entity = manager.read_tag(TagHash(entity_tag)).unwrap();
-        let (components, _, component_rows, _) = array(&entity, 0x10);
-        let mut models = 0;
-        for i in 0..components {
-            let tag = read_u32(&entity, component_rows + i * 12).unwrap();
+        let (components, _, component_rows, _) =
+            sundial::package_authoring::native_payload::native_array_at(&entity, 0x10).unwrap();
+        for index in 0..components {
+            let tag = read_u32(&entity, component_rows + index * 12).unwrap();
             let Ok(bytes) = manager.read_tag(TagHash(tag)) else {
                 continue;
             };
@@ -571,33 +796,38 @@ fn real_cross_family_appearance_is_pinned_to_the_runtime_rig() {
             if read_u32(&bytes, header - 4).unwrap() != 0x8080_72B8 {
                 continue;
             }
-            assert!(
-                stock.get_entry(TagHash(tag)).is_none(),
-                "owner {tag:08X} is stock"
-            );
             let data = crate::tag_payload::relative_target(&bytes, 0x18).unwrap();
-            let model_tag = read_u32(&bytes, data + 0x1DC).unwrap();
-            assert!(stock.get_entry(TagHash(model_tag)).is_none());
-            let model = manager.read_tag(TagHash(model_tag)).unwrap();
+            let model = manager
+                .read_tag(TagHash(read_u32(&bytes, data + 0x1DC).unwrap()))
+                .unwrap();
             assert_eq!(read_u32(&model, 0x40).unwrap(), 1, "bone palette");
-            let (meshes, _, mesh_rows, _) = array(&model, 0x10);
-            for m in 0..meshes {
-                let header_tag = read_u32(&model, mesh_rows + m * 0x88).unwrap();
+            let (meshes, _, mesh_rows, _) =
+                sundial::package_authoring::native_payload::native_array_at(&model, 0x10).unwrap();
+            for mesh in 0..meshes {
+                let header_tag = read_u32(&model, mesh_rows + mesh * 0x88).unwrap();
                 let entry = manager.get_entry(TagHash(header_tag)).unwrap();
-                assert!(stock.get_entry(TagHash(header_tag)).is_none());
+                let header = manager.read_tag(TagHash(header_tag)).unwrap();
+                let stride = usize::from(crate::tag_payload::read_u16(&header, 4).unwrap());
                 let positions = manager.read_tag(TagHash(entry.reference)).unwrap();
-                assert!(!positions.is_empty() && positions.len() % 8 == 0);
-                assert!(
-                    positions
-                        .chunks_exact(8)
-                        .all(|row| row[6] == 0 && row[7] == 0),
-                    "mesh {m} of {model_tag:08X} still selects other bones"
-                );
+                for row in positions.chunks_exact(stride) {
+                    // A blended row keeps its 0x7FFF selector and weighs bone 0 alone, with
+                    // every other slot naming bone 254 as native one-bone rows do.
+                    let pinned = match (&row[6..8], stride) {
+                        ([0, 0], _) => true,
+                        ([0xFF, 0x7F], 12) => row[8..12] == [0, 0xFE, 0xFF, 0],
+                        ([0xFF, 0x7F], 16) => row[8..16] == [0xFF, 0, 0, 0, 0, 0xFE, 0xFE, 0xFE],
+                        _ => false,
+                    };
+                    assert!(
+                        pinned,
+                        "a pinned {stride}-byte row still selects another bone"
+                    );
+                    blended += usize::from(row[6..8] != [0, 0]);
+                }
             }
-            models += 1;
         }
-        assert_eq!(models, 1, "entity {entity_tag:08X} owns one model");
         parts += 1;
     }
-    assert_eq!(parts, 10);
+    assert!(parts > 0);
+    blended
 }

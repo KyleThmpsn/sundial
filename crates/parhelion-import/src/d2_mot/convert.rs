@@ -173,7 +173,14 @@ pub fn convert_mapped(
         crate::d2_mot::mapping::map(source, native, &output, &model, mesh, &template)?
     };
     if plated {
-        crate::d2_mot::plated::convert(source, native, &output, &model, mesh)?;
+        crate::d2_mot::plated::convert_with_plates(
+            source,
+            native,
+            &output,
+            &model,
+            mesh,
+            modern["has_texture_plates"] != false,
+        )?;
         mapping = read_json(&output.join("mapping.json"))?;
     }
     let result = json!({"source_model":tag,"native_template_mesh":compatible,"vertices":count,"native_strides":[8,if plated{24}else{20}],"indices_preserved":!plated,"plated":plated,"model_transform_bytes":hex::encode(model.0.get(0x50..0x80).context("model transforms missing")?),"parts":part_plan,"mapping":mapping,"installable":false,"remaining":["in-game material and equipped-model verification","modern transparent effect mapping"]});

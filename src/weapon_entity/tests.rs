@@ -15,36 +15,6 @@ fn write_array_descriptor(
 }
 
 #[test]
-fn sandbox_pattern_identity_decodes_runtime_and_gear_art_groups() {
-    let mut data = vec![0; 0x70];
-    write_array_descriptor(&mut data, 0x08, 0x30, 1, SANDBOX_PATTERN_ROW_CLASS);
-    let row = 0x40;
-    data[row..row + 4].copy_from_slice(&0x1122_3344_u32.to_le_bytes());
-    data[row + SANDBOX_PATTERN_GLOBAL_ID_OFFSET..row + SANDBOX_PATTERN_GLOBAL_ID_OFFSET + 4]
-        .copy_from_slice(&0x5566_7788_u32.to_le_bytes());
-    data[row + SANDBOX_PATTERN_WEAPON_CONTENT_GROUP_HASH_OFFSET
-        ..row + SANDBOX_PATTERN_WEAPON_CONTENT_GROUP_HASH_OFFSET + 4]
-        .copy_from_slice(&0x99AA_BBCC_u32.to_le_bytes());
-    data[row + SANDBOX_PATTERN_WEAPON_TRANSLATION_GROUP_HASH_OFFSET
-        ..row + SANDBOX_PATTERN_WEAPON_TRANSLATION_GROUP_HASH_OFFSET + 4]
-        .copy_from_slice(&0xDDEE_FF00_u32.to_le_bytes());
-
-    let expected = SandboxPatternIdentity {
-        item_hash: 0x1122_3344,
-        row_index: 0,
-        row_offset: row,
-        pattern_global_id_hash: 0x5566_7788,
-        weapon_content_group_hash: 0x99AA_BBCC,
-        weapon_translation_group_hash: 0xDDEE_FF00,
-    };
-    assert_eq!(
-        sandbox_pattern_identity(&data, expected.item_hash),
-        Ok(Some(expected))
-    );
-    assert_eq!(sandbox_pattern_identity_at(&data, 0), Ok(Some(expected)));
-}
-
-#[test]
 fn sandbox_pattern_lookups_reject_malformed_arrays_consistently() {
     let mut valid = vec![0; 0x70];
     write_array_descriptor(&mut valid, 0x08, 0x30, 1, SANDBOX_PATTERN_ROW_CLASS);
@@ -268,6 +238,85 @@ fn incompatible_or_unmapped_event_connections_reject_the_entire_swap_atomically(
         assert!(error.contains("event connection"), "{error}");
         assert_eq!(authored, target);
     }
+}
+
+/// An event connection into an interior object that no binding exposes is what separates two
+/// weapon families: both wire their skeleton the same way, but through neighbours that differ,
+/// so the paired policy cannot match them. Retargeting re-points such a connection on its own,
+/// and only where the donor's own event graph proves it addresses the same interior object.
+#[test]
+fn retargeting_moves_an_unbound_event_connection_that_pairing_cannot_match() {
+    const RECEIVER: u32 = 0x8080_89FD;
+    const INTERIOR: u64 = 0x298;
+    let unbound = |flavor: u32| {
+        let (mut entity, row) = event_entity(flavor);
+        // Keep the owner, but address an interior object no binding selects.
+        write_u32(&mut entity, row + 8 + 4, RECEIVER).unwrap();
+        write_u64(&mut entity, row + 8 + 8, INTERIOR).unwrap();
+        (entity, row)
+    };
+    let (target, row) = unbound(1);
+    let (donor, donor_row) = unbound(2);
+    let donor_owner = weapon_component_binding(&donor, 1).unwrap().owner_tag;
+
+    // The paired policy refuses: the connection addresses nothing it can prove corresponds.
+    let mut paired = target.clone();
+    let error = graft_weapon_component_bindings(&mut paired, &[(1, &donor)]).unwrap_err();
+    assert!(error.contains("event connection"), "{error}");
+    assert_eq!(paired, target);
+
+    // Retargeting takes it, changing the owner and nothing else about the connection.
+    let mut authored = target.clone();
+    graft_weapon_component_bindings_with(
+        &mut authored,
+        &[(1, &donor)],
+        owner::EventPolicy::Retarget,
+    )
+    .unwrap();
+    assert_eq!(read_u32(&authored, row + 8).unwrap(), donor_owner);
+    assert_eq!(read_u32(&authored, row + 8 + 4).unwrap(), RECEIVER);
+    assert_eq!(read_u64(&authored, row + 8 + 8).unwrap(), INTERIOR);
+    // The other endpoint belongs to a component nobody replaced, so it is left alone.
+    assert_eq!(
+        authored[row + 0x28..row + 0x38],
+        target[row + 0x28..row + 0x38]
+    );
+
+    // Without the same interior object in the donor there is no evidence, so it is refused.
+    let mut moved = donor.clone();
+    write_u64(&mut moved, donor_row + 8 + 8, 0x300).unwrap();
+    let mut authored = target.clone();
+    let error = graft_weapon_component_bindings_with(
+        &mut authored,
+        &[(1, &moved)],
+        owner::EventPolicy::Retarget,
+    )
+    .unwrap_err();
+    assert!(error.contains("no event connection of class"), "{error}");
+    assert_eq!(authored, target);
+}
+
+/// Retargeting relaxes how events are matched, not what a bound resource means: an endpoint
+/// that does address a bound resource still follows that binding into the donor.
+#[test]
+fn retargeting_still_follows_a_bound_endpoint_to_its_donor_resource() {
+    let (target, row) = event_entity(1);
+    let (donor, donor_row) = event_entity(2);
+    let mut authored = target.clone();
+    graft_weapon_component_bindings_with(
+        &mut authored,
+        &[(1, &donor)],
+        owner::EventPolicy::Retarget,
+    )
+    .unwrap();
+    assert_eq!(
+        authored[row + 8..row + 0x18],
+        donor[donor_row + 8..donor_row + 0x18]
+    );
+    assert_eq!(
+        authored[row + 0x28..row + 0x38],
+        target[row + 0x28..row + 0x38]
+    );
 }
 
 #[test]

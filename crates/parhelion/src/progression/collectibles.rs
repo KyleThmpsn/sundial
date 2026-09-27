@@ -62,6 +62,32 @@ pub(crate) fn collectible_clone_template(
     Ok((template, unlock))
 }
 
+/// The collectible indices a presentation node lists as children, in package order.
+pub(crate) fn node_collectible_children(nodes: &[u8], node: u16) -> AuthoringResult<Vec<usize>> {
+    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
+    if usize::from(node) >= node_count {
+        return Err(invalid("Presentation node is outside the table"));
+    }
+    let descriptor = node_rows
+        + usize::from(node) * PRESENTATION_NODE_ROW_SIZE
+        + PRESENTATION_NODE_COLLECTIBLES_OFFSET;
+    let (count, _, rows, class) = array_at(nodes, descriptor)?;
+    if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS {
+        return Err(invalid(
+            "Presentation node has incompatible collectible children",
+        ));
+    }
+    (0..count)
+        .map(|position| {
+            read_u16(
+                nodes,
+                rows + position * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
+            )
+            .map(usize::from)
+        })
+        .collect()
+}
+
 pub(crate) fn template_presentation_parents(
     nodes: &[u8],
     collectibles: &[u8],
@@ -122,6 +148,70 @@ pub(crate) fn template_presentation_parents(
         presentation_parents.push(parent);
     }
     Ok(presentation_parents)
+}
+
+/// The stock Collections root, "Items". Every item page in Collections descends from it.
+const COLLECTIONS_ROOT_NODE_HASH: u32 = 0xE1EA_9713;
+
+/// Every presentation node under the stock node `root_hash`, the root included.
+fn node_descendants(nodes: &[u8], root_hash: u32) -> AuthoringResult<BTreeSet<usize>> {
+    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
+    let root = (0..node_count)
+        .find(|index| {
+            read_u32(
+                nodes,
+                node_rows + index * PRESENTATION_NODE_ROW_SIZE + PRESENTATION_NODE_HASH_OFFSET,
+            )
+            .ok()
+                == Some(root_hash)
+        })
+        .ok_or_else(|| {
+            invalid(format!(
+                "Stock presentation node 0x{root_hash:08X} is unavailable"
+            ))
+        })?;
+    let mut found = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if !found.insert(node) {
+            continue;
+        }
+        let descriptor =
+            node_rows + node * PRESENTATION_NODE_ROW_SIZE + PRESENTATION_NODE_CHILD_NODES_OFFSET;
+        if read_u64(nodes, descriptor)? == 0 {
+            continue;
+        }
+        let (count, _, children, class) = array_at(nodes, descriptor)?;
+        if class != PRESENTATION_NODE_CHILD_NODE_ROW_CLASS {
+            return Err(invalid(format!(
+                "Presentation node {node} has an incompatible child-node array"
+            )));
+        }
+        for position in 0..count {
+            let child = usize::from(read_u16(
+                nodes,
+                children + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
+            )?);
+            if child >= node_count {
+                return Err(invalid(
+                    "A presentation hierarchy names an invalid child node",
+                ));
+            }
+            pending.push(child);
+        }
+    }
+    Ok(found)
+}
+
+/// The page an authored gear item joins: its base's first parent under Collections. A base can
+/// also sit in seasonal badges and set lists, which the authored item leaves alone.
+pub(crate) fn gear_collection_page(nodes: &[u8], donor_parents: &[u16]) -> AuthoringResult<u16> {
+    let collections = node_descendants(nodes, COLLECTIONS_ROOT_NODE_HASH)?;
+    donor_parents
+        .iter()
+        .copied()
+        .find(|parent| collections.contains(&usize::from(*parent)))
+        .ok_or_else(|| invalid("The base item has no page in Collections. Choose another base."))
 }
 
 pub(crate) fn donor_weapon_collection_page(

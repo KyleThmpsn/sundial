@@ -3,15 +3,20 @@ use super::*;
 use sundial::investment::PerkSources;
 
 use sundial::ui::catalog::{content, kinds};
+mod components;
+mod scripts;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 enum View {
-    #[default]
     Kinds,
     Assets,
     Perks,
     Paths,
     References,
+    Markers,
+    #[default]
+    Scripts,
+    Components,
 }
 
 #[derive(Default)]
@@ -21,13 +26,23 @@ pub(super) struct EngineCatalog {
     view: View,
     asset_query: String,
     content: content::Browser,
-    export_error: Option<String>,
+    /// The last native-map export: where it was written, or why it was not.
+    export_status: Option<Result<std::path::PathBuf, String>>,
     pub(super) scan_details: bool,
     pub(super) kinds: kinds::Kinds,
     pub(super) copy_requested: Option<u16>,
+    pub(super) markers: super::markers::Markers,
+    scripts: scripts::Browser,
+    components: components::Browser,
 }
 
 impl EngineCatalog {
+    /// Whether the marker index is worth reading. It opens every object in the game, so it is
+    /// only started once the view asking for it is on screen.
+    pub(super) fn wants_markers(&self) -> bool {
+        self.open && self.view == View::Markers
+    }
+
     pub(super) fn show(
         &mut self,
         ctx: &egui::Context,
@@ -55,19 +70,32 @@ impl EngineCatalog {
                     self.view = View::Kinds;
                 }
                 let previous = self.view;
+                // Most used first. Markers read every object in the game, so they come last.
                 ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.view, View::Kinds, "Kinds");
                     if experimental {
-                        for (view, label) in [
-                            (View::Assets, "Objects and Effects"),
-                            (View::Perks, "Perk References"),
-                            (View::Paths, "TFT Paths"),
-                            (View::References, "TFT References"),
-                        ] {
-                            ui.selectable_value(&mut self.view, view, label);
+                        if ui
+                            .selectable_label(
+                                matches!(
+                                    self.view,
+                                    View::Scripts
+                                        | View::Components
+                                        | View::Paths
+                                        | View::References
+                                ),
+                                "Native Resources",
+                            )
+                            .clicked()
+                        {
+                            self.view = View::Scripts;
                         }
-                        crate::app::style::more_menu(ui, |ui| {
-                            if ui.button("Scan Details").clicked() {
+                        ui.selectable_value(&mut self.view, View::Assets, "Objects and Effects");
+                        ui.selectable_value(&mut self.view, View::Perks, "Perk Effects");
+                    }
+                    ui.selectable_value(&mut self.view, View::Kinds, "Behavior Kinds");
+                    if experimental {
+                        ui.selectable_value(&mut self.view, View::Markers, "Markers");
+                        crate::app::style::more_menu(ui, "Catalog", |ui| {
+                            if ui.button("Scan Details…").clicked() {
                                 self.scan_details = true;
                                 ui.close_menu();
                             }
@@ -84,19 +112,48 @@ impl EngineCatalog {
                         });
                     }
                 });
+                if matches!(
+                    self.view,
+                    View::Scripts | View::Components | View::Paths | View::References
+                ) {
+                    ui.horizontal_wrapped(|ui| {
+                        for (view, label) in [
+                            (View::Scripts, "Object Behaviors"),
+                            (View::Components, "Component Types"),
+                            (View::Paths, "Paths"),
+                            (View::References, "Links"),
+                        ] {
+                            ui.selectable_value(&mut self.view, view, label);
+                        }
+                    });
+                }
                 if browser.discovery.error.is_some()
                     && !browser.discovery.busy()
                     && ui.button("Retry Scan").clicked()
                 {
                     self.retry_requested = true;
                 }
-                if let Some(error) = &self.export_error {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                match &self.export_status {
+                    Some(Ok(path)) => {
+                        ui.weak(format!("Exported to {}", path.display()))
+                            .on_hover_text(path.display().to_string());
+                    }
+                    Some(Err(error)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                    None => {}
                 }
-                if self.view != View::Assets
+                if !matches!(self.view, View::Assets | View::Markers)
                     && let Some(error) = &browser.discovery.error
                 {
                     ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                if browser.discovery.busy() {
+                    if let Some((current, total)) = browser.discovery.progress {
+                        ui.weak(format!("Reading {current} of {total}"));
+                    } else {
+                        ui.weak("Reading…");
+                    }
                 }
                 ui.separator();
                 ui.push_id(self.view, |ui| match self.view {
@@ -109,6 +166,14 @@ impl EngineCatalog {
                             self.view = View::Perks;
                         }
                     }
+                    View::Markers => {
+                        // A marker's object is often one the asset browser also knows, so
+                        // "Find in Objects and Effects" hands its name straight to that view.
+                        if let Some(query) = self.markers.draw(ui, browser.discovery) {
+                            self.asset_query = query;
+                            self.view = View::Assets;
+                        }
+                    }
                     View::Assets => {
                         browser.draw(
                             ui,
@@ -116,7 +181,28 @@ impl EngineCatalog {
                             &mut self.asset_query,
                             previous != self.view,
                             None,
+                            None,
                         );
+                    }
+                    View::Scripts => {
+                        if let Some(data) = &browser.discovery.data {
+                            if let Some(tag) = self.scripts.draw(ui, data) {
+                                self.content.open_resource(tag);
+                                self.view = View::References;
+                            }
+                        } else {
+                            Self::loading(ui, browser.discovery);
+                        }
+                    }
+                    View::Components => {
+                        if let Some(data) = &browser.discovery.data {
+                            if let Some(tag) = self.components.draw(ui, data) {
+                                self.content.open_resource(tag);
+                                self.view = View::References;
+                            }
+                        } else {
+                            Self::loading(ui, browser.discovery);
+                        }
                     }
                     _ => {
                         if let Some(content::Jump::Kind(family, kind)) = self.draw_content(
@@ -141,7 +227,7 @@ impl EngineCatalog {
                     crate::app::style::perk_workbench_style(ui);
                     if browser.discovery.busy() {
                         ui.spinner();
-                        ui.label("Scanning Resources…");
+                        ui.label("Scanning resources…");
                     }
                     if let Some((current, total)) = browser.discovery.progress {
                         ui.label(format!("Scan Progress: {current} of {total}"));
@@ -174,13 +260,29 @@ impl EngineCatalog {
             "perks": &*data.perks,
             "perk_assets": &data.perk_assets,
         });
-        self.export_error = serde_json::to_vec_pretty(&value)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                sundial::package_authoring::replace_authoring_file(&path, &bytes)
-                    .map_err(|error| error.to_string())
-            })
-            .err();
+        // Writing a file with no word either way reads as nothing having happened, and the
+        // reader chose the location, so naming it back is what confirms the export ran.
+        self.export_status = Some(
+            serde_json::to_vec_pretty(&value)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    sundial::package_authoring::replace_authoring_file(&path, &bytes)
+                        .map_err(|error| error.to_string())
+                })
+                .map(|()| path),
+        );
+    }
+
+    fn loading(ui: &mut egui::Ui, discovery: &discovery::Discovery) {
+        if discovery.busy() {
+            ui.spinner();
+            ui.label("Reading game content…");
+            if let Some((current, total)) = discovery.progress {
+                ui.small(format!("{current} of {total} resources"));
+            }
+        } else {
+            ui.label("No game content.");
+        }
     }
 
     fn draw(
@@ -208,8 +310,7 @@ impl EngineCatalog {
                     .is_some_and(|index| choices.iter().any(|choice| choice.perk_index == index));
                 if ui
                     .add_enabled(available, egui::Button::new("Copy as New Perk"))
-                    .on_hover_text("Open a new draft containing only the selected internal effect.")
-                    .on_disabled_hover_text("Select an effect that is available to copy.")
+                    .on_disabled_hover_text("Select an available effect.")
                     .clicked()
                 {
                     copy = selected;
@@ -268,14 +369,8 @@ impl EngineCatalog {
                 sources,
                 catalog,
             );
-        } else if discovery.busy() {
-            ui.spinner();
-            ui.label("Reading Native Content…");
-            if let Some((current, total)) = discovery.progress {
-                ui.small(format!("{current} of {total} resources"));
-            }
         } else {
-            ui.label("Native content is unavailable. Choose a game installation to browse its references.");
+            Self::loading(ui, discovery);
         }
         None
     }

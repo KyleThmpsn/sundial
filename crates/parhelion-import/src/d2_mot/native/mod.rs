@@ -1,5 +1,6 @@
 //! Native material and geometry conversion for every prepared source model.
 pub(crate) mod automatic;
+pub use automatic::refresh_optics;
 pub mod collection;
 mod contracts;
 pub mod effects;

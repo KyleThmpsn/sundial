@@ -4,6 +4,7 @@ mod lore;
 pub(crate) mod perk_bank;
 mod placements;
 mod resolve;
+pub(crate) mod rig;
 mod sources;
 #[cfg(test)]
 mod tests;
@@ -32,6 +33,10 @@ use validation::*;
 mod donors;
 use donors::*;
 
+mod dyes;
+mod gear;
+pub(crate) mod subclass;
+
 mod build;
 #[cfg(test)]
 pub(crate) use build::build_weapon_project_after_catalog_validation;
@@ -57,12 +62,13 @@ use sundial::package_authoring::{
     FNV1_EMPTY_HASH, SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY, fnv1_name_hash,
     investment_schema::{
         ARC_DAMAGE_PLUG_ITEM_HASH, ARC_DAMAGE_PLUG_ITEM_INDEX, ELEMENTAL_DAMAGE_SOCKET_TYPE,
-        GLOBALS_COLLECTIBLE_DISPLAY_TABLE_SLOT, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT,
-        GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT, GLOBALS_ITEM_ICON_TABLE_SLOT,
-        GLOBALS_ITEM_METADATA_TABLE_SLOT, GLOBALS_ITEM_STRING_TABLE_SLOT,
-        GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT, GLOBALS_OBJECTIVE_STRING_TABLE_SLOT,
-        GLOBALS_PRESENTATION_NODE_STRING_TABLE_SLOT, GLOBALS_RECORD_STRING_TABLE_SLOT,
-        GLOBALS_SANDBOX_PATTERN_TABLE_SLOT, GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT,
+        GLOBALS_ART_DYE_TABLE_SLOT, GLOBALS_COLLECTIBLE_DISPLAY_TABLE_SLOT,
+        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT,
+        GLOBALS_ITEM_ICON_TABLE_SLOT, GLOBALS_ITEM_METADATA_TABLE_SLOT,
+        GLOBALS_ITEM_STRING_TABLE_SLOT, GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT,
+        GLOBALS_OBJECTIVE_STRING_TABLE_SLOT, GLOBALS_PRESENTATION_NODE_STRING_TABLE_SLOT,
+        GLOBALS_RECORD_STRING_TABLE_SLOT, GLOBALS_SANDBOX_PATTERN_TABLE_SLOT,
+        GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT, GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT,
         INVESTMENT_ROOT_CLASS, ITEM_DEFINITION_HASH_OFFSET, ITEM_DEFINITION_INDEX_ROW_CLASS,
         ITEM_EQUIPMENT_BLOCK_CLASS, ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET,
         ITEM_EQUIPMENT_SLOT_OFFSET, ITEM_EQUIPMENT_SLOT_SENTINEL_OFFSET, ITEM_HASH_INDEX_ROW_CLASS,
@@ -110,12 +116,13 @@ use sundial::package_authoring::{
         ROOT_MATERIAL_REQUIREMENT_TABLE_SLOT, ROOT_OBJECTIVE_DEFINITION_TABLE_SLOT,
         ROOT_PRESENTATION_NODE_DEFINITION_TABLE_SLOT, ROOT_RECORD_DEFINITION_TABLE_SLOT,
         ROOT_SANDBOX_PATTERN_INDEX_TABLE_SLOT, ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT,
-        ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT, ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT,
-        ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT, SOLAR_DAMAGE_PLUG_ITEM_HASH,
-        SOLAR_DAMAGE_PLUG_ITEM_INDEX, UNLOCK_FLAG_DEFINITION_ROW_CLASS,
-        UNLOCK_FLAG_DISPLAY_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
-        UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE, VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX,
-        investment_globals_table_tag, investment_root_table_tag, item_version_array,
+        ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT,
+        ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
+        SOLAR_DAMAGE_PLUG_ITEM_HASH, SOLAR_DAMAGE_PLUG_ITEM_INDEX,
+        UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DISPLAY_ROW_CLASS,
+        UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
+        VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX, investment_globals_table_tag,
+        investment_root_table_tag, item_version_array,
     },
     is_valid_package_tag,
     sandbox_perk::{
@@ -135,7 +142,7 @@ use sundial::package_authoring::{
         SANDBOX_PATTERN_INDEX_ROW_SIZE, SANDBOX_PATTERN_NESTED_CLASS,
         SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_ROW_CLASS, SANDBOX_PATTERN_ROW_SIZE,
         SandboxPatternIdentity, WEAPON_ENTITY_CLASS, append_weapon_entity_assignment,
-        graft_weapon_component_bindings, retarget_weapon_component_owner,
+        graft_weapon_component_bindings_or_rewire, retarget_weapon_component_owner,
         retarget_weapon_component_owner_payload, sandbox_pattern_identity,
         sandbox_pattern_identity_at, validate_weapon_entity, weapon_component_bindings,
         weapon_entity_assignment,
@@ -152,7 +159,8 @@ use sundial::{
         WeaponDamageType, authored_socket_choice_limit,
     },
     package_authoring::{
-        open_shadowkeep_package_manager, resolve_item_name, resolve_live_named_tag,
+        open_shadowkeep_package_manager, resolve_item_name, resolve_item_type_name,
+        resolve_live_named_tag,
     },
 };
 
@@ -199,12 +207,12 @@ use crate::tag_payload::{
     write_u64,
 };
 use crate::{
-    AuthoringError, AuthoringResult, ExtendedOverlayArtifact, NewTagSpec, ReplacementSpec,
-    SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES,
-    SunriseBadgePlacement, SunriseProjectMetadata, SupportedPlugSet, WeaponIconRequest,
-    append_badge_icon_row, author_sunrise_badge_graph, item_icon_row_with_container,
-    sunrise_badge_collectible_parents, validate_socket_column_overrides_with_variants,
-    validate_stat_overrides,
+    AuthoringError, AuthoringResult, ExtendedOverlayArtifact, ItemKind, NewTagSpec,
+    ReplacementSpec, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH,
+    SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement, SunriseProjectMetadata, SupportedPlugSet,
+    WeaponIconRequest, append_badge_icon_row, author_sunrise_badge_graph,
+    item_icon_row_with_container, sunrise_badge_collectible_parents,
+    validate_socket_column_overrides_with_variants, validate_stat_overrides,
 };
 
 const ITEM_ROW_SIZE: usize = ITEM_INDEX_ROW_SIZE;
@@ -684,6 +692,8 @@ pub struct WeaponCloneOverrides {
     pub additional_behaviors: Vec<String>,
     /// Leave each grafted behavior's own intrinsic and trait plugs out of the graft.
     pub skip_behavior_perks: bool,
+    /// Whose firing pattern the weapon uses when a borrowed plug changes its burst.
+    pub behavior_firing: crate::weapon_behavior::BehaviorFiring,
     /// Raises a grafted projectile's launch speed on a weapon that fires none of its own, and
     /// caps how far it is raised.
     pub behavior_projectile_speed: Option<f32>,
@@ -701,6 +711,12 @@ pub struct WeaponCloneOverrides {
     pub art_arrangements: Option<Vec<WeaponArtArrangementOverride>>,
     /// Complete ordered custom, default, and locked dye-reference rows.
     pub render_dye_rows: Option<[Vec<WeaponDyeReferenceOverride>; 3]>,
+    /// A subclass's abilities and attunements taken from other stock subclasses.
+    pub subclass_abilities: Option<crate::subclass::SubclassAbilities>,
+    /// A shader's custom surface values, by gear type, channel and surface.
+    pub dye_edits: Vec<crate::dye::DyeEdit>,
+    /// A shader's custom detail textures and tiling, by gear type and channel.
+    pub dye_texture_edits: Vec<crate::dye::DyeTextureEdit>,
     /// Positional donor overrides followed by any added sockets, up to the native lane limit.
     /// Inherited rows preserve their content, with relative pointers rebased if the array grows.
     /// Each added socket requires an explicit type and at least one plug choice.
@@ -979,6 +995,9 @@ pub struct WeaponRuntimeComponentDonorReference {
 /// corresponding fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeaponCloneSpec {
+    /// Weapons take the full weapon path. Every other kind builds through the gear path, which
+    /// keeps the base item's slot, class and geometry and skips weapon runtime authoring.
+    pub kind: ItemKind,
     pub namespace: String,
     pub donor_item_hash: u32,
     pub expected_donor_name: Option<String>,
@@ -997,10 +1016,35 @@ impl WeaponCloneSpec {
             .expected_donor_name
             .as_deref()
             .unwrap_or("Unnamed Item");
+        let role = if self.kind.is_weapon() {
+            "Gameplay Donor"
+        } else {
+            "Base Item"
+        };
         format!(
-            "Recipe: {:?} ({})\nItem: 0x{:08X}\nGameplay Donor: {donor:?} (0x{:08X})",
+            "Recipe: {:?} ({})\nItem: 0x{:08X}\n{role}: {donor:?} (0x{:08X})",
             self.text.name, self.namespace, self.identity.item_hash, self.donor_item_hash
         )
+    }
+
+    /// An error raised while authoring this recipe, labeled with it and naming it for the app.
+    pub(super) fn in_recipe(&self, error: AuthoringError) -> AuthoringError {
+        self.in_recipe_as(error, self.error_context())
+    }
+
+    /// As [`Self::in_recipe`], with a label that adds detail to the recipe's own.
+    pub(super) fn in_recipe_as(
+        &self,
+        error: AuthoringError,
+        context: impl Into<String>,
+    ) -> AuthoringError {
+        error.in_recipe(self.namespace.clone(), context)
+    }
+
+    /// Class armor stays out of the Sunrise badge: its three class leaves share one member list,
+    /// so a Hunter helmet would count toward the Titan and Warlock leaves too.
+    pub(crate) fn joins_sunrise_badge(&self) -> bool {
+        !self.overrides.exclude_from_sunrise_badge && self.kind != ItemKind::Armor
     }
 
     pub(super) fn icon_error_context(&self) -> String {
@@ -1020,6 +1064,15 @@ impl WeaponCloneSpec {
 
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
+        if !self.kind.is_weapon() {
+            gear::validate_spec(self)?;
+        } else if self.overrides.subclass_abilities.is_some() {
+            return Err(invalid("Weapon recipes cannot set subclass abilities"));
+        } else if !self.overrides.dye_edits.is_empty()
+            || !self.overrides.dye_texture_edits.is_empty()
+        {
+            return Err(invalid("Weapon recipes cannot set dyes"));
+        }
         validate_weapon_donor_references(self)?;
         variable_damage::validate_spec(self)?;
         validate_weapon_clone_text(&self.text)?;
@@ -1042,21 +1095,30 @@ impl WeaponCloneSpec {
 
 #[derive(Clone, Debug)]
 pub struct NewWeaponPlan {
+    pub kind: ItemKind,
     pub item_hash: u32,
     pub definition_tag: TagHash,
     pub string_tag: TagHash,
     pub icon_definition_tag: TagHash,
     pub custom_plugs: Vec<NewCustomPlugPlan>,
     pub item_index: u16,
+    /// The item's Collections entry and the unlock that marks it acquired. A subclass has
+    /// neither, as no stock subclass does.
+    pub collection: Option<NewCollectionPlan>,
+    pub template_item_hash: u32,
+    pub template_definition_tag: TagHash,
+    pub template_string_tag: TagHash,
+}
+
+/// An authored item's collectible and the account unlock flag that marks it acquired.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NewCollectionPlan {
     pub collectible_hash: u32,
     pub collectible_index: u16,
     pub unlock_hash: u32,
     pub unlock_definition_index: u16,
     pub unlock_bank: u8,
     pub unlock_slot: u16,
-    pub template_item_hash: u32,
-    pub template_definition_tag: TagHash,
-    pub template_string_tag: TagHash,
 }
 
 /// Build-assigned identities for one private socket choice used by a weapon.

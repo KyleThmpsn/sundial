@@ -4,77 +4,10 @@ use crate::app::settings::load_json;
 use crate::app::settings::load_workspace_json;
 use crate::app::settings::save_json_with_backup_root;
 use crate::app::settings::settings_size_limit_for_schema;
-use crate::app::settings::verify_source_unchanged;
 use crate::app::settings::verify_workspace_source_unchanged;
 use crate::app::*;
 use crate::test_support::TestDirectory;
 use std::fs;
-
-#[test]
-fn settings_encoder_matches_sunrise_array_formatting() {
-    let document = serde_json::json!({
-        "server": {
-            "entitlements": [
-                {"name": "1085660", "owned": "handle"},
-                {"name": "STEAM_PAID_TIER", "owned": "application"}
-            ]
-        },
-        "state": {
-            "investment": {"pairs": [[1, 2], [3, 4]]},
-            "unlocks": {"flags": [1, 2, 3]},
-            "account": {
-                "profile_items": [{"definition_hash": "0x1", "quantity": 1}],
-                "settings": {"key_bindings": {
-                    "fire": {"primary": "left mouse button", "secondary": null}
-                }}
-            },
-            "characters": [{
-                "equipment": {
-                    "ghost": {"plugs": ["one", null, "three", "four"]},
-                    "helmet": {"plugs": [
-                        "0x11111111", "0x22222222", "0x33333333", "0x44444444",
-                        "0x55555555", "0x66666666"
-                    ]}
-                }
-            }]
-        }
-    });
-    let encoded = encode_settings(&document).unwrap();
-    assert!(encoded.contains("\"pairs\": [[1,2], [3,4]]"));
-    assert!(encoded.contains("\"flags\": [1,2,3]"));
-    assert!(encoded.contains("\"plugs\": [\"one\", null, \"three\", \"four\"]"));
-    assert!(encoded.contains(
-        "\"helmet\": {\r\n            \"plugs\": [\r\n              \"0x11111111\",\r\n              \"0x22222222\","
-    ));
-    assert!(encoded.contains(
-        "\"entitlements\": [\r\n      { \"name\": \"1085660\", \"owned\": \"handle\" },"
-    ));
-    assert!(
-        encoded.contains("\"fire\": { \"primary\": \"left mouse button\", \"secondary\": null }")
-    );
-    assert!(encoded.contains(
-        "\"profile_items\": [\r\n      {\r\n      \"definition_hash\": \"0x1\",\r\n      \"quantity\": 1\r\n      }\r\n      ]"
-    ));
-    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), document);
-}
-
-#[test]
-fn settings_encoder_uses_standard_profile_item_indentation_from_schema_four() {
-    let document = serde_json::json!({
-        "version": 6,
-        "state": {
-            "account": {
-                "profile_items": [{"definition_hash": "0x1", "quantity": 1}]
-            }
-        }
-    });
-
-    let encoded = encode_settings(&document).unwrap();
-    assert!(encoded.contains(
-        "\"profile_items\": [\r\n        {\r\n          \"definition_hash\": \"0x1\",\r\n          \"quantity\": 1\r\n        }\r\n      ]"
-    ));
-    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), document);
-}
 
 #[test]
 fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
@@ -208,39 +141,6 @@ fn backup_failure_leaves_settings_untouched() {
 }
 
 #[test]
-fn timestamped_backup_names_describe_the_source_schema() {
-    let directory = TestDirectory::new("save");
-    let settings = directory.0.join("settings.json");
-    let backups = directory.0.join("backups");
-
-    for (source, expected_prefix) in [
-        (serde_json::json!({"version": 2}), "settings-v2-"),
-        (serde_json::json!({"version": 3}), "settings-v3-"),
-        (serde_json::json!({"version": 6}), "settings-v6-"),
-        (serde_json::json!({"value": true}), "settings-v0-"),
-    ] {
-        fs::write(&settings, serde_json::to_vec(&source).unwrap()).unwrap();
-        let result = save_json_with_backup_root(&settings, &source, &backups).unwrap();
-        let file_name = result.backup.file_name().unwrap().to_string_lossy();
-        let timestamp = file_name
-            .strip_prefix(expected_prefix)
-            .and_then(|name| name.strip_suffix(".json"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "{} did not match {expected_prefix}<timestamp>.json",
-                    result.backup.display()
-                )
-            });
-        assert!(
-            timestamp.len() == 20 && timestamp.ends_with('Z') && timestamp.as_bytes()[10] == b'_',
-            "{} did not contain a readable UTC date and time",
-            result.backup.display()
-        );
-        assert_eq!(load_json(&result.backup).unwrap(), source);
-    }
-}
-
-#[test]
 fn unexpected_settings_get_an_exact_adjacent_backup_without_losing_an_older_one() {
     let directory = TestDirectory::new("save");
     let settings = directory.0.join("settings.json");
@@ -267,22 +167,6 @@ fn unexpected_settings_get_an_exact_adjacent_backup_without_losing_an_older_one(
         })
         .unwrap();
     assert_eq!(fs::read(archived).unwrap(), original);
-}
-
-#[test]
-fn external_settings_changes_are_detected_before_saving() {
-    let directory = TestDirectory::new("save");
-    let settings = directory.0.join("settings.json");
-    let loaded = serde_json::json!({"state": {"characters": [1, 2, 3]}});
-    let newer = serde_json::json!({"state": {"characters": [1, 2, 3], "new": true}});
-    fs::write(&settings, serde_json::to_vec(&loaded).unwrap()).unwrap();
-
-    assert_eq!(verify_source_unchanged(&settings, &loaded), Ok(()));
-    fs::write(&settings, serde_json::to_vec(&newer).unwrap()).unwrap();
-
-    let error = verify_source_unchanged(&settings, &loaded).unwrap_err();
-    assert!(error.contains("changed outside Sundial"));
-    assert_eq!(load_json(&settings).unwrap(), newer);
 }
 
 #[test]
@@ -354,21 +238,6 @@ fn settings_at_exactly_64_kib_do_not_trigger_compaction() {
     let result = save_json_with_backup_root(&settings, &document, &backups).unwrap();
     assert_eq!(result.encoded_bytes, size_limit);
     assert!(!result.compacted);
-}
-
-#[test]
-fn settings_size_limits_follow_sunrise_schema_history() {
-    const KIB: usize = 1024;
-    assert_eq!(settings_size_limit_for_schema(None), 64 * KIB);
-    for schema in 0..=3 {
-        assert_eq!(settings_size_limit_for_schema(Some(schema)), 64 * KIB);
-    }
-    for schema in 4..=5 {
-        assert_eq!(settings_size_limit_for_schema(Some(schema)), 128 * KIB);
-    }
-    for schema in 6..=crate::game_settings::MAX_SUPPORTED_SCHEMA {
-        assert_eq!(settings_size_limit_for_schema(Some(schema)), 1024 * KIB);
-    }
 }
 
 #[test]

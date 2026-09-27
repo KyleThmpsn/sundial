@@ -69,7 +69,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
             text.galley
                 .job
                 .text
-                .contains("Sunrise's Reward Queue doesn’t support granting consumables.")
+                .contains("The Reward Queue cannot grant consumables.")
         }));
         let text = texts
             .iter()

@@ -1,5 +1,6 @@
 //! Catalog, runtime, build and install background job coordination.
 use super::*;
+use sundial::package_authoring::account::{AuthoredGrantReport, AuthoredProfileSyncReport};
 
 #[cfg(test)]
 mod tests;
@@ -7,7 +8,7 @@ mod tests;
 /// Keep the request identity with its worker, including when it exits without a result.
 pub(super) struct RuntimeGraphJob {
     key: RuntimeGraphKey,
-    receiver: Receiver<Result<WeaponRuntimeGraph, String>>,
+    receiver: Receiver<Result<(WeaponRuntimeGraph, bool), String>>,
     worker: thread::JoinHandle<()>,
 }
 
@@ -38,7 +39,9 @@ impl PackageAuthoringApp {
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.replacement_review = Some(Err("Account review stopped unexpectedly. Return to the build and review installation again.".into()));
+                self.replacement_review = Some(Err(
+                    "Account review stopped unexpectedly. Review the installation again.".into(),
+                ));
                 self.replacement_receiver = None;
             }
         }
@@ -112,31 +115,11 @@ impl PackageAuthoringApp {
                         drop(result);
                     } else {
                         match *result {
-                            Ok(catalog) => {
-                                self.donor_summaries = catalog.weapon_donors();
-                                self.library_state.refresh_donors(&self.donor_summaries);
-                                self.sandbox_perk_choices = catalog
-                                    .weapon_sandbox_perk_choices_from(
-                                        crate::package_profile::is_stock_item_definition,
-                                    );
-                                self.trait_choices = catalog.weapon_trait_choices();
-                                let supported = self
-                                    .donor_summaries
-                                    .iter()
-                                    .filter(|donor| donor.collection_backed)
-                                    .count();
-                                self.log.push(LogEntry::info(format!(
-                                    "Loaded {} weapon donors from Sundial ({} collection-backed)",
-                                    self.donor_summaries.len(),
-                                    supported
-                                )));
-                                self.catalog = Some(catalog);
-                                self.bind_default_donor();
-                            }
+                            Ok(catalog) => self.install_catalog(catalog),
                             Err(error) => {
                                 self.drop_loaded_catalog();
                                 self.log.push(LogEntry::error(format!(
-                                    "Could not load Sundial's investment catalog: {error}"
+                                    "Could not load the weapon catalog: {error}"
                                 )));
                             }
                         }
@@ -150,13 +133,11 @@ impl PackageAuthoringApp {
             if let Some(worker) = self.catalog_worker.take()
                 && worker.join().is_err()
             {
-                self.log
-                    .push(LogEntry::error("The Sundial catalog worker panicked"));
+                self.log.push(LogEntry::error("Catalog loading crashed"));
             }
             if disconnected && !worker_finished {
-                self.log.push(LogEntry::error(
-                    "The Sundial catalog worker stopped without a result",
-                ));
+                self.log
+                    .push(LogEntry::error("Catalog loading stopped without a result"));
             }
             if self.catalog_reload_pending {
                 self.catalog_reload_pending = false;
@@ -166,6 +147,10 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn runtime_graph_key(&self) -> Option<RuntimeGraphKey> {
+        // Gear keeps its base item's runtime unchanged, so there is no weapon graph to read.
+        if !self.recipe.kind.is_weapon() {
+            return None;
+        }
         let fallback_item_hash = self
             .recipe
             .donor
@@ -179,30 +164,61 @@ impl PackageAuthoringApp {
                 .find(|donor| donor.hash == fallback_item_hash)
                 .and_then(|donor| donor.weapon_pattern_index)
         });
-        Some(RuntimeGraphKey::new(
-            pattern_index,
-            fallback_item_hash,
-            self.recipe
-                .runtime_component_donors
+        // An appearance from another weapon family makes the build move that family's rig and
+        // animations onto this runtime, so the editor has to read the same entity the build
+        // will write rather than the untouched gameplay one.
+        let group = |item_hash: u32| {
+            self.donor_summaries
                 .iter()
-                .filter_map(|component| {
-                    let donor_item_hash = component.donor.item_hash.parse_u32().ok()?;
-                    Some((
-                        component.binding_hash.parse_u32().ok()?,
-                        self.donor_summaries
-                            .iter()
-                            .find(|donor| donor.hash == donor_item_hash)
-                            .and_then(|donor| donor.weapon_pattern_index),
-                        donor_item_hash,
-                    ))
-                })
-                .filter(|(binding_hash, _, donor_hash)| {
-                    !matches!(*binding_hash, 0 | u32::MAX) && *donor_hash != 0
-                }),
-        ))
+                .find(|donor| donor.hash == item_hash)
+                .and_then(|donor| donor.weapon_translation_group)
+        };
+        let appearance_rig = self
+            .recipe
+            .presentation_donor
+            .as_ref()
+            .and_then(|donor| donor.item_hash.parse_u32().ok())
+            .filter(|hash| *hash != 0 && group(*hash) != group(fallback_item_hash))
+            .map(|hash| {
+                (
+                    self.donor_summaries
+                        .iter()
+                        .find(|donor| donor.hash == hash)
+                        .and_then(|donor| donor.weapon_pattern_index),
+                    hash,
+                )
+            });
+        Some(
+            RuntimeGraphKey::new(
+                pattern_index,
+                fallback_item_hash,
+                self.recipe
+                    .runtime_component_donors
+                    .iter()
+                    .filter_map(|component| {
+                        let donor_item_hash = component.donor.item_hash.parse_u32().ok()?;
+                        Some((
+                            component.binding_hash.parse_u32().ok()?,
+                            self.donor_summaries
+                                .iter()
+                                .find(|donor| donor.hash == donor_item_hash)
+                                .and_then(|donor| donor.weapon_pattern_index),
+                            donor_item_hash,
+                        ))
+                    })
+                    .filter(|(binding_hash, _, donor_hash)| {
+                        !matches!(*binding_hash, 0 | u32::MAX) && *donor_hash != 0
+                    }),
+            )
+            .with_appearance_rig(appearance_rig),
+        )
     }
 
     pub(super) fn ensure_runtime_graph(&mut self, ctx: &egui::Context) {
+        // The installer replaces the packages a runtime read would open.
+        if self.install_receiver.is_some() {
+            return;
+        }
         let key = self.runtime_graph_key();
         if self.runtime_graph_target != key {
             self.runtime_graph_target = key.clone();
@@ -249,7 +265,7 @@ impl PackageAuthoringApp {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
-                Err("The runtime-data worker stopped without a result".to_owned())
+                Err("Weapon data loading stopped without a result".to_owned())
             }
         };
         let RuntimeGraphJob { key, worker, .. } =
@@ -260,16 +276,20 @@ impl PackageAuthoringApp {
             return;
         }
         let result = if completion.is_err() {
-            Err("The runtime-data worker panicked while reading packages".to_owned())
+            Err("Weapon data loading crashed".to_owned())
         } else {
             result
         };
         match result {
-            Ok(graph) => {
+            Ok((graph, carries_appearance_rig)) => {
+                self.runtime_rig_appearance = carries_appearance_rig
+                    .then(|| key.appearance_rig.map(|(_, item_hash)| item_hash))
+                    .flatten();
                 self.runtime_graph = Some((key, Arc::new(graph)));
                 self.runtime_graph_error = None;
             }
             Err(error) => {
+                self.runtime_rig_appearance = None;
                 self.runtime_graph = None;
                 self.runtime_graph_error = Some((key, error));
             }
@@ -277,6 +297,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn reset_catalog_load(&mut self) {
+        self.perk_workbench.stop_optional_reads();
         self.drop_loaded_catalog();
         if self.catalog_receiver.is_some() || self.catalog_worker.is_some() {
             self.catalog_reload_pending = true;
@@ -286,6 +307,53 @@ impl PackageAuthoringApp {
             self.catalog_load_requested = false;
             self.catalog_reload_pending = false;
         }
+    }
+
+    /// Makes a loaded catalog the app's: bases for every item kind, perk choices, then a default
+    /// base for the open recipe.
+    pub(super) fn install_catalog(&mut self, catalog: InvestmentCatalog) {
+        self.donor_summaries = catalog.weapon_donors();
+        // Only stock subclasses can be a base or an ability source, not ones a build installed.
+        self.subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+        self.gear_donors = ItemKind::ALL
+            .into_iter()
+            .filter(|kind| !kind.is_weapon())
+            .map(|kind| {
+                // Shaders are plugs, not inventory items, so their bases come from plug metadata.
+                let donors = match kind {
+                    ItemKind::Shader => catalog.shader_donors(),
+                    ItemKind::Subclass => catalog
+                        .gear_donors(kind.bucket_hashes())
+                        .into_iter()
+                        .filter(|donor| {
+                            self.subclasses
+                                .iter()
+                                .any(|subclass| subclass.hash == donor.hash)
+                        })
+                        .collect(),
+                    _ => catalog.gear_donors(kind.bucket_hashes()),
+                };
+                (kind, donors)
+            })
+            .collect();
+        self.ornament_appearances = catalog.weapon_ornament_appearances(&self.donor_summaries);
+        self.library_donors = self
+            .donor_summaries
+            .iter()
+            .chain(self.gear_donors.values().flatten())
+            .cloned()
+            .collect();
+        self.library_state.refresh_donors(&self.library_donors);
+        self.sandbox_perk_choices = catalog
+            .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition);
+        self.trait_choices = catalog.weapon_trait_choices();
+        self.log.push(LogEntry::info(format!(
+            "Loaded {} weapon donors",
+            self.donor_summaries.len()
+        )));
+        self.catalog = Some(catalog);
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        self.bind_default_donor();
     }
 
     pub(super) fn bind_default_donor(&mut self) {
@@ -301,21 +369,38 @@ impl PackageAuthoringApp {
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
-        let default = self
-            .donor_summaries
-            .iter()
-            .filter(|summary| summary.collection_backed)
-            .find_map(|summary| {
-                let donor = catalog.weapon_donor(summary.hash)?;
-                weapon_authoring_capabilities(&donor)
-                    .is_authorable()
-                    .then(|| (summary.hash, summary.name.clone()))
-            });
+        let default = if self.recipe.kind.is_weapon() {
+            self.donor_summaries
+                .iter()
+                .filter(|summary| summary.collection_backed)
+                .find_map(|summary| {
+                    let donor = catalog.weapon_donor(summary.hash)?;
+                    weapon_authoring_capabilities(&donor)
+                        .is_authorable()
+                        .then(|| (summary.hash, summary.name.clone()))
+                })
+        } else if self.recipe.kind == ItemKind::Subclass {
+            // No subclass is in Collections, so the first stock one serves.
+            self.gear_donors_for(ItemKind::Subclass)
+                .first()
+                .map(|summary| (summary.hash, summary.name.clone()))
+        } else {
+            // A Legendary base from Collections, so the new item has a Collections page and a
+            // rarity the reader can raise or lower.
+            let donors = self.gear_donors_for(self.recipe.kind);
+            donors
+                .iter()
+                .filter(|summary| summary.collection_backed)
+                .find(|summary| summary.rarity == sundial::investment::WeaponRarity::Legendary)
+                .or_else(|| donors.iter().find(|summary| summary.collection_backed))
+                .map(|summary| (summary.hash, summary.name.clone()))
+        };
         if let Some((hash, name)) = default {
             self.recipe.set_donor(hash, name);
             if !self.recipe_dirty && self.recipe_path.is_none() {
                 self.recipe_baseline = self.recipe.clone();
             }
+            self.advance_recipe_revision();
         }
     }
 
@@ -324,21 +409,24 @@ impl PackageAuthoringApp {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.latest_build = Some(Err(error.clone()));
+                self.build_blocker = None;
                 self.build_status_open = true;
                 self.log
                     .push(LogEntry::error(format!("Build blocked: {error}")));
                 return;
             }
         };
+        self.perk_workbench.stop_optional_reads();
         let (sender, receiver) = mpsc::channel();
         let started = Instant::now();
         self.build_invalidated = false;
         self.observed_recipe.clone_from(&self.recipe);
+        self.advance_recipe_revision();
         self.build_started = Some(started);
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
         thread::spawn(move || {
-            let result = build_and_stage_snapshot_with_progress(&snapshot, |progress| {
+            let result = build_and_stage_snapshot_reporting(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
                     TimedBuildProgress::from_progress(progress, started.elapsed()),
                 ));
@@ -356,6 +444,7 @@ impl PackageAuthoringApp {
             elapsed: Duration::ZERO,
         });
         self.latest_build = None;
+        self.build_blocker = None;
         self.latest_install = None;
         self.replacement_review = None;
         self.replacement_receiver = None;
@@ -373,12 +462,9 @@ impl PackageAuthoringApp {
                 Some(Ok(event)) => event,
                 Some(Err(TryRecvError::Empty)) | None => return,
                 Some(Err(TryRecvError::Disconnected)) => {
-                    self.log.push(LogEntry::error(
-                        "The package build worker stopped without a result",
-                    ));
-                    self.latest_build = Some(Err(
-                        "The package build worker stopped without a result".to_owned(),
-                    ));
+                    self.log
+                        .push(LogEntry::error("The build stopped without a result"));
+                    self.latest_build = Some(Err("The build stopped without a result".to_owned()));
                     let elapsed = self.build_elapsed(Instant::now());
                     if let Some(progress) = &mut self.build_progress {
                         progress.elapsed = elapsed;
@@ -434,7 +520,9 @@ impl PackageAuthoringApp {
                         report.run_directory.display()
                     )));
                     self.latest_build = Some(if std::mem::take(&mut self.build_invalidated) {
-                        let error = "Recipes or build options changed while this build was running. Build & Stage again before installing.".to_owned();
+                        let error =
+                            "Recipes changed during the build. Build & Stage again before installing."
+                                .to_owned();
                         self.build_activity.push(elapsed, error.clone());
                         self.log.push(LogEntry::error(&error));
                         Err(error)
@@ -446,12 +534,14 @@ impl PackageAuthoringApp {
                     return;
                 }
                 BuildWorkerEvent::Finished {
-                    result: Err(error),
+                    result: Err(failure),
                     elapsed,
                 } => {
                     if let Some(progress) = &mut self.build_progress {
                         progress.elapsed = elapsed;
                     }
+                    self.build_blocker = failure.recipe;
+                    let error = failure.message;
                     self.build_activity
                         .push(elapsed, format!("Build failed: {error}"));
                     self.log
@@ -486,29 +576,42 @@ impl PackageAuthoringApp {
         if self.install_receiver.is_some() {
             return;
         }
+        if self.account_resync_receiver.is_some() {
+            self.log.push(LogEntry::error(
+                "Wait for the account resync to finish before installing",
+            ));
+            return;
+        }
         if self.catalog_receiver.is_some()
             || self.catalog_worker.is_some()
             || self.catalog_reload_pending
         {
             self.log.push(LogEntry::error(
-                "Installation is waiting for the Sundial catalog scan to finish",
+                "Wait for the catalog scan to finish before installing",
             ));
             return;
         }
+        self.perk_workbench.stop_optional_reads();
         if self.runtime_graph_job.is_some()
             || self.runtime_donors.busy()
             || self.runtime_dependencies.busy()
             || self.perk_workbench.busy()
+            || self.technical_markers_busy()
         {
             self.log.push(LogEntry::error(
-                "Installation is waiting for the runtime-data scan to finish",
+                "Wait for weapon data to finish loading before installing",
+            ));
+            return;
+        }
+        if self.importer_busy() {
+            self.log.push(LogEntry::error(
+                "Wait for the D2 Importer to finish before installing",
             ));
             return;
         }
         let Some(Ok(build)) = self.latest_build.as_ref() else {
-            self.log.push(LogEntry::error(
-                "Installation requires a successfully validated staged build",
-            ));
+            self.log
+                .push(LogEntry::error("Build & Stage before installing"));
             return;
         };
         let staged_run_directory = build.run_directory.clone();
@@ -553,6 +656,125 @@ impl PackageAuthoringApp {
         ));
     }
 
+    fn log_profile_sync(
+        &mut self,
+        context: &str,
+        sync: Option<&Result<AuthoredProfileSyncReport, String>>,
+    ) {
+        match sync {
+            Some(Ok(sync)) => {
+                self.log.push(LogEntry::info(format!(
+                    "Synchronized {}/{} authored collection unlocks in {}. Backup: {}",
+                    sync.newly_set_unlocks,
+                    sync.total_unlocks,
+                    sync.settings_path.display(),
+                    sync.backup_path.as_ref().map_or_else(
+                        || "not needed".to_owned(),
+                        |path| path.display().to_string()
+                    ),
+                )));
+            }
+            Some(Err(error)) => {
+                self.log.push(LogEntry::error(format!(
+                    "{context}Collections could not be updated: {error}"
+                )));
+            }
+            None => {}
+        }
+    }
+
+    fn log_item_grants(
+        &mut self,
+        context: &str,
+        grants: Option<&Result<AuthoredGrantReport, String>>,
+    ) {
+        fn item_count(count: usize) -> String {
+            format!("{count} {}", if count == 1 { "item" } else { "items" })
+        }
+        match grants {
+            Some(Ok(grants)) => {
+                if let Some(backup) = &grants.backup_path {
+                    self.log.push(LogEntry::info(format!(
+                        "Added {} to {}. Backup: {}",
+                        item_count(grants.added.len()),
+                        grants.account_path.display(),
+                        backup.display()
+                    )));
+                }
+                if !grants.full.is_empty() {
+                    self.log.push(LogEntry::error(format!(
+                        "{} not added because a bucket is full",
+                        item_count(grants.full.len())
+                    )));
+                }
+                if !grants.equipped.is_empty() {
+                    self.log.push(LogEntry::info(format!(
+                        "Equipped the authored subclass on {} {}",
+                        grants.equipped.len(),
+                        if grants.equipped.len() == 1 {
+                            "character"
+                        } else {
+                            "characters"
+                        }
+                    )));
+                }
+            }
+            Some(Err(error)) => {
+                self.log.push(LogEntry::error(format!(
+                    "{context}authored items could not be added: {error}"
+                )));
+            }
+            None => {}
+        }
+    }
+
+    /// Runs the install's account step again for the installed generation, in a worker.
+    pub(super) fn start_account_resync(&mut self) {
+        if self.account_resync_receiver.is_some() || self.install_receiver.is_some() {
+            return;
+        }
+        let target = self.packages.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(crate::install::resync_account(
+                &target,
+                sundial::package_authoring::destiny_is_running,
+            ));
+        });
+        self.account_resync_receiver = Some(receiver);
+        self.log.push(LogEntry::info(
+            "Started the account resync in a background worker",
+        ));
+    }
+
+    pub(super) fn poll_account_resync(&mut self) {
+        let Some(receiver) = &self.account_resync_receiver else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                Err("The account resync stopped without a result".to_owned())
+            }
+        };
+        self.account_resync_receiver = None;
+        match result {
+            Ok(report) => {
+                self.log.push(LogEntry::info(format!(
+                    "Resynced the account from the installed packages: {} authored unlocks",
+                    report.authored_unlocks
+                )));
+                self.log_profile_sync("Account resync: ", Some(&report.profile_sync));
+                self.log_item_grants("Account resync: ", report.item_grants.as_ref());
+            }
+            Err(error) => {
+                self.log
+                    .push(LogEntry::error(format!("Account resync failed: {error}")));
+            }
+        }
+    }
+
     pub(super) fn poll_install(&mut self) {
         self.install_status.poll(&mut self.log);
         let Some(receiver) = &self.install_receiver else {
@@ -563,29 +785,14 @@ impl PackageAuthoringApp {
         match receiver.try_recv() {
             Ok(Ok(report)) => {
                 if let Some(path) = &report.cleaned_account {
-                    self.log.push(LogEntry::info(format!("Applied the reviewed account changes to {}. Original account and packages are backed up in {} (excluded from automatic pruning)", path.display(), report.backup_directory.display())));
+                    self.log.push(LogEntry::info(format!(
+                        "Applied the reviewed account changes to {}. Original account and packages are backed up in {} (excluded from automatic pruning)",
+                        path.display(),
+                        report.backup_directory.display()
+                    )));
                 }
-                match &report.profile_sync {
-                    Some(Ok(sync)) => {
-                        self.log.push(LogEntry::info(format!(
-                            "Synchronized {}/{} authored collection unlocks in {}. Backup: {}",
-                            sync.newly_set_unlocks,
-                            sync.total_unlocks,
-                            sync.settings_path.display(),
-                            sync.backup_path.as_ref().map_or_else(
-                                || "not needed".to_owned(),
-                                |path| path.display().to_string()
-                            ),
-                        )));
-                    }
-                    Some(Err(error)) => {
-                        let error = format!(
-                            "Packages were installed, but authored collection unlocks were not synchronized: {error}"
-                        );
-                        self.log.push(LogEntry::error(&error));
-                    }
-                    None => {}
-                }
+                self.log_profile_sync("Packages installed, but ", report.profile_sync.as_ref());
+                self.log_item_grants("Packages installed, but ", report.item_grants.as_ref());
                 let cache_status = report.invalidated_sunrise_cache.as_ref().map_or_else(
                     || "no Sunrise build-data cache was present".to_owned(),
                     |cache| {
@@ -633,13 +840,18 @@ impl PackageAuthoringApp {
                 }
                 if !report.pruned_backup_directories.is_empty() {
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} old automatic package backup(s)",
-                        report.pruned_backup_directories.len()
+                        "Removed {} old automatic package {}",
+                        report.pruned_backup_directories.len(),
+                        if report.pruned_backup_directories.len() == 1 {
+                            "backup"
+                        } else {
+                            "backups"
+                        }
                     )));
                 }
                 if let Some(error) = &report.backup_prune_warning {
                     self.log.push(LogEntry::error(format!(
-                        "Packages were installed, but old backup pruning failed: {error}"
+                        "Packages installed, but old backups could not be removed: {error}"
                     )));
                 }
                 self.latest_install = Some(Ok(report));
@@ -656,7 +868,7 @@ impl PackageAuthoringApp {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                let error = "The package installation worker stopped without a result".to_owned();
+                let error = "The installation stopped without a result".to_owned();
                 self.log.push(LogEntry::error(&error));
                 self.latest_install = Some(Err(error));
                 self.install_receiver = None;

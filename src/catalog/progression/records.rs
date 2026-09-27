@@ -70,6 +70,7 @@ pub(in crate::catalog) fn scan_records(
             .find(|value| !value.trim().is_empty())
             .unwrap_or_default();
         let paths = presentation_paths(presentation_nodes, &parents);
+        let parent_nodes = parent_node_hashes(presentation_nodes, &parents);
         let mut condition_references = ConditionReferences::default();
         for offset in RECORD_CONDITION_OFFSETS {
             merge_condition_references(
@@ -165,6 +166,7 @@ pub(in crate::catalog) fn scan_records(
                 .then_some(redeemed_intervals),
             interval_count,
             runtime: Some(runtime),
+            parent_nodes,
         });
         for objective_index in objective_indices {
             add_objective_owner(

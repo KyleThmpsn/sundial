@@ -107,26 +107,15 @@ fn preview_for_runtime_with_progress(
         return Ok(review);
     }
     report(progress, "Reading Installed Weapon Identities", 4);
-    let (old, old_unlocks) = identities::installed_identities(&target)?;
-    report(progress, "Reading Staged Weapon Identities", 5);
-    let (new, new_unlocks) = identities::generation_identities(&target, &staged)?;
-    review.removed_hashes = old.difference(&new).copied().collect();
-    let retained = old.intersection(&new).copied().collect();
-    report(progress, "Reading Installed Socket Choices", 6);
-    let previous = identities::generation_socket_defaults(&target, &target, &retained)?;
-    report(progress, "Reading Staged Socket Choices", 7);
-    let incoming = identities::generation_socket_defaults(&target, &staged, &retained)?;
-    review.socket_changes = socket_changes(previous, incoming)?;
-    report(progress, "Comparing Equipment Slots", 8);
-    review.slots = identities::slot_replacement(&target, &staged, &retained)?;
-    review.removed_unlocks = old_unlocks
-        .into_iter()
-        .filter(|old| {
-            !new_unlocks
-                .iter()
-                .any(|new| (new.bank, new.slot) == (old.bank, old.slot))
-        })
-        .collect();
+    let installed = identities::Generation::open(&target, &target)?;
+    let compared = (|| {
+        let old = identities::read_identities(&installed)?;
+        report(progress, "Reading Staged Weapon Identities", 5);
+        let incoming = identities::Generation::open(&target, &staged)?;
+        let compared = compare_generations(&installed, &incoming, old, &mut review, progress);
+        incoming.finish(compared)
+    })();
+    installed.finish(compared)?;
     if !review.removed_hashes.is_empty()
         || !review.removed_unlocks.is_empty()
         || !review.socket_changes.is_empty()
@@ -141,6 +130,35 @@ fn preview_for_runtime_with_progress(
         }
     }
     Ok(review)
+}
+
+/// Compares the installed and staged generations, each opened once for every comparison.
+fn compare_generations(
+    installed: &identities::Generation,
+    staged: &identities::Generation,
+    (old, old_unlocks): (BTreeSet<u32>, Vec<AuthoredCollectionUnlock>),
+    review: &mut ReplacementReview,
+    progress: progress::Observer<'_>,
+) -> Result<(), String> {
+    let (new, new_unlocks) = identities::read_identities(staged)?;
+    review.removed_hashes = old.difference(&new).copied().collect();
+    let retained = old.intersection(&new).copied().collect();
+    report(progress, "Reading Installed Socket Choices", 6);
+    let previous = identities::socket_defaults(installed, &retained)?;
+    report(progress, "Reading Staged Socket Choices", 7);
+    let incoming = identities::socket_defaults(staged, &retained)?;
+    review.socket_changes = socket_changes(previous, incoming)?;
+    report(progress, "Comparing Equipment Slots", 8);
+    review.slots = identities::slot_replacement(installed, staged, &retained)?;
+    review.removed_unlocks = old_unlocks
+        .into_iter()
+        .filter(|old| {
+            !new_unlocks
+                .iter()
+                .any(|new| (new.bank, new.slot) == (old.bank, old.slot))
+        })
+        .collect();
+    Ok(())
 }
 
 fn socket_changes(

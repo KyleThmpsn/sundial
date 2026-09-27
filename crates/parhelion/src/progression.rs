@@ -24,7 +24,8 @@ mod collectibles;
 use collectibles::*;
 pub(crate) use collectibles::{
     append_collectible, append_collectible_display, collectible_clone_template,
-    collection_unlock_index, donor_weapon_collection_page, template_presentation_parents,
+    collection_unlock_index, donor_weapon_collection_page, gear_collection_page,
+    node_collectible_children, template_presentation_parents,
     validate_authored_collectible_display_row, validate_authored_collectible_nested_isolation,
     validate_weapon_material_sets,
 };

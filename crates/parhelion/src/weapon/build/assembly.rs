@@ -2,6 +2,8 @@
 use super::*;
 
 pub(super) struct Output {
+    /// The art-dye table with a row for each custom shader dye.
+    pub dye_table: Option<ReplacementSpec>,
     pub lore: Option<lore::Plan>,
     pub assets: assets::Plan,
     pub icons: assets::IconRows,
@@ -37,6 +39,8 @@ impl Output {
             &mut self.tables.unlocks,
             &mut self.tables.unlock_banks,
             &mut self.tables.unlock_displays,
+            &mut self.tables.subclass.lists,
+            &mut self.tables.subclass.displays,
             &mut self.runtime.entity_assignments,
             &mut self.runtime.finished_sandbox_perks,
             &mut self.runtime.sandbox_perk_indices,
@@ -65,9 +69,10 @@ impl Output {
 pub(super) fn prepare(
     sources: sources::ProjectSources,
     mut output: Output,
-) -> AuthoringResult<emission::PackageEmission> {
+) -> AuthoringResult<(emission::PackageEmission, PackageManager)> {
     output.synchronize_payloads()?;
     let Output {
+        dye_table,
         lore,
         assets,
         icons,
@@ -89,8 +94,7 @@ pub(super) fn prepare(
     }
     let runtime_dependencies =
         runtime.dependencies(&sources.manager, &assets, sources.entity_assignment_tag)?;
-    // The package writer must not retain the source manager's open file handles.
-    drop(sources.manager);
+    let subclass_lists_added = tables.subclass.count()? != sources.subclass_tables.count()?;
 
     let mut host_new_tags = Vec::new();
     for (definition, strings) in tables.definitions.into_iter().zip(tables.authored_strings) {
@@ -109,7 +113,7 @@ pub(super) fn prepare(
         ));
     }
     host_new_tags.extend(runtime.weapon_tags);
-    Ok(emission::PackageEmission {
+    let emission = emission::PackageEmission {
         lore,
         hud_table: assets.hud_table,
         item_table_tag: sources.item_table_tag,
@@ -142,10 +146,7 @@ pub(super) fn prepare(
         watermarked_icon_containers: assets.watermark.icon_container_tags,
         watermark_reference_overrides: assets.watermark.reference_overrides,
         badge_icon_tag: assets.badge.container_tag,
-        asset_packages: crate::asset_packages::AssetPackages::primary(
-            assets.badge.new_tags,
-            assets.badge.reference_overrides,
-        )?,
+        asset_packages: runtime.asset_packages,
         private_perk_runtime_append_start: runtime.private_perk_append_start,
         private_perk_runtime_new_tags: runtime.private_perk_tags,
         entity_assignments: runtime.entity_assignments,
@@ -165,6 +166,8 @@ pub(super) fn prepare(
         unlocks: tables.unlocks,
         unlock_banks: tables.unlock_banks,
         unlock_displays: tables.unlock_displays,
+        subclass_tables: subclass_lists_added.then_some(tables.subclass),
+        dye_table,
         plans: tables.plans,
         any_sandbox_pattern: tables.any_sandbox_pattern,
         nodes: collections.nodes,
@@ -177,5 +180,7 @@ pub(super) fn prepare(
         item_icons: icons.payload,
         runtime_dependencies,
         host_new_tags,
-    })
+    };
+    // Emission reads the same packages, and releases them before writing its own.
+    Ok((emission, sources.manager))
 }

@@ -2,6 +2,10 @@
 use super::*;
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::weapon) mod animation;
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::weapon) mod audio;
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::weapon) mod extensions;
 #[cfg(test)]
 mod tests;
 
@@ -44,7 +48,10 @@ pub(crate) fn preflight_runtime_edits(
         &mut entity.to_vec(),
         overrides,
         hud_key,
-        content_group,
+        crate::weapon_behavior::ContentGroups {
+            selected: content_group,
+            own: None,
+        },
         allocator,
         &mut Vec::new(),
     )
@@ -55,7 +62,7 @@ pub(super) fn author_runtime_edits(
     entity: &mut [u8],
     overrides: &WeaponCloneOverrides,
     hud_key: Option<u32>,
-    content_group: Option<u32>,
+    groups: crate::weapon_behavior::ContentGroups,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -66,7 +73,7 @@ pub(super) fn author_runtime_edits(
     let grafts = crate::weapon_behavior::patches(
         manager,
         entity,
-        content_group,
+        groups,
         &overrides.additional_behaviors,
         overrides
             .behavior_projectile_speed

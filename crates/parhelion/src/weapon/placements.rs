@@ -1,6 +1,6 @@
 //! Resolve semantic collection destinations against the immutable native tree.
 use super::*;
-use crate::collection::{Ammo, Destination, Family, NodeBudget};
+use crate::collection::{Ammo, Destination, Family, GearPage, NodeBudget};
 use crate::progression::{
     PRESENTATION_NODE_CHILD_NODE_ROW_SIZE, PRESENTATION_NODE_CHILD_NODES_OFFSET,
     PRESENTATION_NODE_ROW_SIZE,
@@ -14,9 +14,23 @@ pub(super) struct Page {
     pub sibling: u16,
     pub donor: usize,
 }
+/// A branded page for one kind of gear, added under the category that holds its base's page.
+pub(super) struct GearPagePlan {
+    pub page: GearPage,
+    pub index: u16,
+    /// A stock page in the same category, whose rows the new page clones.
+    pub template: u16,
+    pub parent: u16,
+    pub sibling: u16,
+    /// A collectible under `template`, whose child row the members copy.
+    pub donor: usize,
+}
+
 pub(super) struct Plan {
     pub pages: BTreeMap<Destination, Page>,
+    pub gear_pages: BTreeMap<GearPage, GearPagePlan>,
     weapon_destinations: Vec<Option<Destination>>,
+    gear_destinations: Vec<Option<GearPage>>,
 }
 
 impl Plan {
@@ -27,7 +41,20 @@ impl Plan {
         let mut family_hashes = None;
         let mut destinations = BTreeSet::new();
         let mut weapon_destinations = Vec::with_capacity(weapons.len());
+        let mut gear_destinations = Vec::with_capacity(weapons.len());
+        // The first base of each kind names the category its branded page joins.
+        let mut gear_bases = BTreeMap::new();
         for weapon in weapons {
+            let gear_page = GearPage::for_kind(weapon.kind);
+            gear_destinations.push(gear_page);
+            if let Some(page) = gear_page {
+                gear_bases.entry(page).or_insert(weapon.donor_item_hash);
+            }
+            // Other gear lands on its base item's own page, resolved with the base collectible.
+            if !weapon.kind.is_weapon() {
+                weapon_destinations.push(None);
+                continue;
+            }
             let item = item_index(sources, weapon.donor_item_hash)?;
             let definition_tag = TagHash(read_u32(
                 &sources.stock_item_table,
@@ -49,7 +76,10 @@ impl Plan {
                 let Some(family_hashes) = family_hashes.as_ref() else {
                     return Err(invalid("Collections family templates were not initialized"));
                 };
-                Some(automatic_destination(sources, weapon, item, family_hashes)?)
+                Some(
+                    automatic_destination(sources, weapon, item, family_hashes)
+                        .map_err(|error| weapon.in_recipe(error))?,
+                )
             };
             if let Some(destination) = destination {
                 destinations.insert(destination);
@@ -71,7 +101,8 @@ impl Plan {
                     *destination,
                 )
             },
-        ));
+        ))
+        .with_gear_pages(gear_bases.len());
         budget.validate()?;
         let mut next = crate::collection::BASE_NODE_COUNT + badges.len() * 4;
         let mut pages = BTreeMap::new();
@@ -112,9 +143,18 @@ impl Plan {
                 },
             );
         }
+        let mut gear_pages = BTreeMap::new();
+        for (page, base) in gear_bases {
+            let index = u16::try_from(next)
+                .map_err(|_| invalid("Collections page index exceeds capacity"))?;
+            next += 1;
+            gear_pages.insert(page, gear_page(sources, page, base, index)?);
+        }
         Ok(Self {
             pages,
+            gear_pages,
             weapon_destinations,
+            gear_destinations,
         })
     }
 
@@ -125,6 +165,91 @@ impl Plan {
             .flatten()
             .and_then(|destination| self.pages.get(&destination))
     }
+
+    pub fn gear_page_for(&self, index: usize) -> Option<&GearPagePlan> {
+        self.gear_destinations
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|page| self.gear_pages.get(&page))
+    }
+}
+
+/// Places a gear kind's branded page beside the stock page that holds `base`, under that page's
+/// one parent: a season page's parent is its Ships, Sparrows or Ghosts category.
+fn gear_page(
+    sources: &sources::ProjectSources,
+    page: GearPage,
+    base: u32,
+    index: u16,
+) -> AuthoringResult<GearPagePlan> {
+    let item = item_index(sources, base)?;
+    let own = (0..sources.stock_collectible_count).find(|&collectible| {
+        read_u16(
+            &sources.stock_collectibles,
+            sources.collectible_rows
+                + collectible * COLLECTIBLE_ROW_SIZE
+                + COLLECTIBLE_ITEM_INDEX_OFFSET,
+        )
+        .ok()
+            == u16::try_from(item).ok()
+    });
+    let donor = match own {
+        Some(donor) => donor,
+        None => {
+            let strings = read_tag(
+                &sources.manager,
+                TagHash(read_u32(
+                    &sources.stock_item_strings,
+                    sources.string_rows + item * ITEM_ROW_SIZE + 16,
+                )?),
+                "Collections base strings",
+            )?;
+            super::gear::stand_in_collectible(sources, &strings)?.ok_or_else(|| {
+                invalid(
+                    "Neither this base item nor another version of it is in Collections. Choose a base from Collections.",
+                )
+            })?
+        }
+    };
+    let parents =
+        template_presentation_parents(&sources.stock_nodes, &sources.stock_collectibles, donor)?;
+    let template = crate::progression::gear_collection_page(&sources.stock_nodes, &parents)?;
+    let (_, _, rows, _) = array_at(&sources.stock_nodes, 8)?;
+    let (count, _, parent_rows, _) = array_at(
+        &sources.stock_nodes,
+        rows + usize::from(template) * PRESENTATION_NODE_ROW_SIZE + 0x18,
+    )?;
+    if count != 1 {
+        return Err(invalid(format!(
+            "The base's Collections page must have one parent to hold a {} page",
+            page.kind().label()
+        )));
+    }
+    let parent = read_u16(&sources.stock_nodes, parent_rows)?;
+    let (count, _, children, _) = array_at(
+        &sources.stock_nodes,
+        rows + usize::from(parent) * PRESENTATION_NODE_ROW_SIZE
+            + PRESENTATION_NODE_CHILD_NODES_OFFSET,
+    )?;
+    let sibling = count
+        .checked_sub(1)
+        .map(|last| {
+            read_u16(
+                &sources.stock_nodes,
+                children + last * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
+            )
+        })
+        .transpose()?
+        .ok_or_else(|| invalid("The base's Collections category has no pages"))?;
+    Ok(GearPagePlan {
+        page,
+        index,
+        template,
+        parent,
+        sibling,
+        donor,
+    })
 }
 
 fn automatic_destination(
@@ -142,11 +267,13 @@ fn automatic_destination(
         string_tag,
         "Collections weapon classification",
     )?;
+    // A donor with no ammo type of its own, such as Rose, files under Primary unless the
+    // recipe chooses an Ammo Type.
     let ammo = weapon
         .overrides
         .ammo_type
         .or(item_string_ammo_type(&strings)?)
-        .ok_or_else(|| invalid("Collections weapon has no ammunition classification"))?;
+        .unwrap_or(WeaponAmmoType::Primary);
     let family_hash = read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
     let family = family_hashes.get(&family_hash).copied().ok_or_else(|| {
         invalid(
@@ -168,6 +295,9 @@ fn stock_family_hashes(
 ) -> AuthoringResult<BTreeMap<u32, Family>> {
     let mut hashes = BTreeMap::new();
     for family in Family::ALL {
+        if family.template().family != family {
+            continue;
+        }
         let exemplar = family
             .template()
             .stock_exemplar()

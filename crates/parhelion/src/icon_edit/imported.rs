@@ -56,6 +56,14 @@ impl ImportedIcon {
     pub(crate) fn fit_to(&self, width: u32, height: u32) -> RgbaImage {
         fit(&self.0.rgba, width, height)
     }
+
+    /// Artwork drawn by Parhelion, such as a shader's icon from its dyes.
+    pub(crate) fn from_drawn(rgba: RgbaImage) -> Result<Self, String> {
+        if rgba.dimensions() != (ICON_EDGE, ICON_EDGE) {
+            return Err("Drawn icons must be 96×96".to_owned());
+        }
+        Self::from_normalized(rgba)
+    }
 }
 
 #[derive(Serialize, Deserialize)]

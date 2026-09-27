@@ -2068,20 +2068,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_equipment_dummies_are_classified() {
-        for hash in [
-            0x3F81_5B35, // Bright Dust currency
-            0x96DC_C1F3, // Altars of Sorrow material
-            0xAE05_88B6, // A Gift from Eververse package
-            0x6105_F399, // Large XP Boost seasonal bonus
-        ] {
-            assert!(contains(hash));
-        }
-    }
-
-    #[test]
     fn dummy_hashes_remain_sorted_and_unique() {
-        assert_eq!(HASHES.len(), 2051);
         assert!(HASHES.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

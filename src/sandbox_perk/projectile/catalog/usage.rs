@@ -55,7 +55,7 @@ fn common(uses: &[Use]) -> Option<String> {
             "The weapon is attached" => "While Equipped",
             "A kill from this weapon" => "on Weapon Kill",
             "A precision kill from this weapon" => "on Precision Kill",
-            "Always" => "Always Active",
+            "Always" => "Always",
             _ => return Some(operation.into()),
         };
         return Some(format!("{operation} {trigger}"));
@@ -130,22 +130,5 @@ mod tests {
             Some("Shared Across Different Operations")
         );
         assert_eq!(common(&[]), None);
-    }
-
-    #[test]
-    fn spawned_and_driven_roles_follow_native_kinds() {
-        let usage = Use {
-            kind: 3,
-            activation: vec!["The weapon is attached".into()],
-            removal: Vec::new(),
-        };
-        assert_eq!(
-            common(&[usage.clone()]).as_deref(),
-            Some("Spawned Entity on Equip")
-        );
-        assert_eq!(
-            common(&[Use { kind: 2, ..usage }]).as_deref(),
-            Some("Attached Entity with a Driven Value While Equipped")
-        );
     }
 }

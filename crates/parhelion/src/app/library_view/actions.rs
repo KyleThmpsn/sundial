@@ -20,6 +20,7 @@ pub(super) enum EntryAction {
     OpenFolder,
     CopyPath,
     Restore,
+    Delete,
 }
 
 pub(super) fn entry_menu(
@@ -54,14 +55,17 @@ pub(super) fn entry_menu(
         ui.separator();
         if ui
             .add_enabled(can_restore, egui::Button::new("Restore This Recipe…"))
-            .on_hover_text(
-                "Restore this bundled recipe with a backup. Save or discard its open edits first.",
-            )
+            .on_disabled_hover_text("Save or discard open edits first.")
             .clicked()
         {
             action = Some(EntryAction::Restore);
             ui.close_menu();
         }
+    }
+    ui.separator();
+    if ui.button("Delete…").clicked() {
+        action = Some(EntryAction::Delete);
+        ui.close_menu();
     }
     action
 }
@@ -114,6 +118,17 @@ impl PackageAuthoringApp {
                     .and_then(|library| library.prepare_restore_recipe(&path));
                 match result {
                     Ok(preview) => self.library_state.restore = Some(preview),
+                    Err(error) => self.report_library_error(error),
+                }
+            }
+            LibraryAction::Entry(path, EntryAction::Delete) => {
+                let result = self
+                    .recipe_library
+                    .as_ref()
+                    .ok_or("Recipe library is unavailable".to_owned())
+                    .and_then(|library| library.prepare_delete_recipe(&path));
+                match result {
+                    Ok(preview) => self.library_state.delete = Some(preview),
                     Err(error) => self.report_library_error(error),
                 }
             }

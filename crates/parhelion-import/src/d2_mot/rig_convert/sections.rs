@@ -1,6 +1,41 @@
 //! Preserve the source rig's animation sections and their bind transforms.
 use super::*;
 
+/// Relative pointers in the live instance must stay inside the copied image.
+pub(super) fn validate_instance(native: &Payload) -> Result<()> {
+    let instance = native.pointer(16)?;
+    let resource = native.pointer(24)?;
+    ensure!(
+        instance >= 4 && native.u32(instance - 4)? == 0x80808545,
+        "native FK instance type differs"
+    );
+    let end = instance
+        .checked_add(usize::try_from(native.u64(0x48)?)?)
+        .context("native FK instance size overflow")?;
+    ensure!(
+        end > instance && end <= resource && resource <= native.0.len(),
+        "native FK instance image is outside its owner"
+    );
+    let inside = |descriptor, stride, class| -> Result<()> {
+        ensure!(
+            descriptor >= instance && descriptor + 16 <= end,
+            "native FK instance descriptor is outside its copied image"
+        );
+        let range = native.array_range(descriptor, stride, Some(class))?;
+        ensure!(
+            range.is_empty() || (range.start >= instance && range.end <= end),
+            "native FK instance array escapes its copied image"
+        );
+        Ok(())
+    };
+    inside(instance + 0x30, 64, 0x80808544)?;
+    inside(instance + 0x40, 8, 0x80808A06)?;
+    for section in native.array(instance + 0x30, 64, Some(0x80808544))? {
+        inside(section + 32, 32, 0x80809F75)?;
+    }
+    Ok(())
+}
+
 pub(super) fn convert(source: &Payload, native: &mut Payload) -> Result<usize> {
     let si = source.pointer(16)?;
     let ni = native.pointer(16)?;
@@ -68,25 +103,22 @@ pub(super) fn convert(source: &Payload, native: &mut Payload) -> Result<usize> {
                 .all(|b| f32::from_le_bytes(b.try_into().unwrap()).is_finite()),
             "FK section has a nonfinite bind transform"
         );
-        write_array(
-            &mut native.0,
-            target + 32,
-            0x80809F75,
-            bytes.len() / 32,
-            bytes,
-        )?;
+        let target_transforms = native.array_range(target + 32, 32, Some(0x80809F75))?;
+        ensure!(
+            target_transforms.len() == bytes.len(),
+            "FK section size requires relocation of the native instance image"
+        );
+        // These arrays belong to the copied instance image, unlike the bone
+        // tables in the resource. Appending them to the file leaves relative
+        // pointers outside that image and corrupts the live pose allocation.
+        native.0[target_transforms].copy_from_slice(bytes);
         native.0[target + 24..target + 32].copy_from_slice(&source.0[row + 24..row + 32]);
         native.0[target + 48..target + 64].copy_from_slice(&source.0[row + 48..row + 64]);
         native.0[target_schema + 16..target_schema + 24]
             .copy_from_slice(&source.0[schema + 16..schema + 24]);
     }
-    write_array(
-        &mut native.0,
-        ni + 0x40,
-        0x80808A06,
-        sections.len(),
-        &source.0[ranges],
-    )?;
+    let target_ranges = native.array_range(ni + 0x40, 8, Some(0x80808A06))?;
+    native.0[target_ranges].copy_from_slice(&source.0[ranges]);
     Ok(sections.len())
 }
 
@@ -140,7 +172,7 @@ mod tests {
     #[test]
     fn sections_keep_native_connections_and_source_bind_transforms() {
         let source = fixture(true, [3, 2]);
-        let mut native = fixture(false, [1, 1]);
+        let mut native = fixture(false, [3, 2]);
         let rows = native.array(0xB0, 64, Some(0x80808544)).unwrap();
         let connections = rows
             .iter()
@@ -157,5 +189,6 @@ mod tests {
         let row = invalid.array(0xB0, 64, None).unwrap()[1];
         invalid.0[row + 8..row + 16].fill(0);
         assert!(convert(&invalid, &mut native).is_err());
+        assert!(convert(&fixture(true, [3, 2]), &mut fixture(false, [1, 1])).is_err());
     }
 }

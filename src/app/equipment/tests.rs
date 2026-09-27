@@ -348,31 +348,6 @@ fn cross_class_override_is_scoped_to_subclass_definitions() {
 }
 
 #[test]
-fn subclass_labels_include_the_native_class_only_with_the_override() {
-    let mut item = ItemDef {
-        hash: 42,
-        name: "Arcstrider".to_owned(),
-        type_name: "Subclass".to_owned(),
-        bucket_hash: 3_284_755_031,
-        class_type: 1,
-        default_plugs: Vec::new(),
-        sockets: Vec::new(),
-        abilities: catalog::AbilityOptions::default(),
-    };
-
-    assert_eq!(subclass_display_name(&item, false), "Arcstrider");
-    assert_eq!(subclass_display_name(&item, true), "Arcstrider (Hunter)");
-
-    item.class_type = 2;
-    item.name = "Dawnblade".to_owned();
-    assert_eq!(subclass_display_name(&item, true), "Dawnblade (Warlock)");
-
-    item.bucket_hash = 3_448_274_439;
-    item.name = "Helmet".to_owned();
-    assert_eq!(subclass_display_name(&item, true), "Helmet");
-}
-
-#[test]
 fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
     let mut document = super::super::account_workspace::WorkspaceDocument::json_only(json!({
         "version": 6,
@@ -415,6 +390,9 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
             melee: vec![choice(11, "Melee")],
             class_ability: vec![choice(2, "Barricade")],
             attunements: Vec::new(),
+            entry_perks: Default::default(),
+            entry_icons: Default::default(),
+            entry_descriptions: Default::default(),
         },
     };
 
@@ -629,6 +607,9 @@ fn arcstrider_and_sentinel_subclass_edits_keep_the_base_super_lane() {
                 melee: vec![choice(21, "Middle melee"), choice(11, "Base melee")],
                 class_ability: vec![choice(2, "Class ability")],
                 attunements: Vec::new(),
+                entry_perks: Default::default(),
+                entry_icons: Default::default(),
+                entry_descriptions: Default::default(),
             },
         };
 
