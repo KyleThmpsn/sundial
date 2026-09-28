@@ -2,7 +2,7 @@
 //! bundled Everything at Once perk opened from the Custom Perks list with every card expanded
 //! and paged through, the trigger and end condition pickers searched for the promoted
 //! conditions, the super energy multiplier hovered for its hint, Resync Account found on the
-//! Tools menu, and the spawn picker searched for an ability and for a Warmind Cell effect.
+//! Tools menu, and the spawn picker searched for a movement ability and for a Warmind Cell effect.
 //! Every screen is captured and its text scanned for a number standing in for a name.
 //!
 //! Opt in with `PARHELION_WORKBENCH_INSTALL` and `PARHELION_WORKBENCH_CATALOG` (a copy of the
@@ -627,7 +627,6 @@ fn the_new_rows_read_by_name_on_every_screen() {
         )
         .unwrap();
         for wanted in [
-            "Arc Soul",
             "Devour",
             "Truesight",
             "Firefly",
@@ -696,7 +695,7 @@ fn the_new_rows_read_by_name_on_every_screen() {
             .as_ref()
             .map(|(_, _, ingredients)| &ingredients.sources),
     };
-    for (query, expected) in [("vortex grenade", 0usize), ("cellular suppression", 1)] {
+    for (query, expected) in [("strafe glide", 0usize), ("cellular suppression", 1)] {
         let listed = browser.listing(assets::AssetScope::Spawnable, query);
         writeln!(
             report,
@@ -720,7 +719,7 @@ fn the_new_rows_read_by_name_on_every_screen() {
             problems.push(format!("a spawn search for \"{query}\" lists nothing"));
         }
     }
-    let mut query = String::from("vortex grenade");
+    let mut query = String::from("strafe glide");
     let mut output = None;
     for _ in 0..3 {
         output = Some(ctx.run(
@@ -752,7 +751,7 @@ fn the_new_rows_read_by_name_on_every_screen() {
         .collect::<Vec<_>>();
     writeln!(
         report,
-        "{}. The spawn picker searched for \"vortex grenade\" (`{capture}`)\n\n    {}\n",
+        "{}. The spawn picker searched for \"strafe glide\" (`{capture}`)\n\n    {}\n",
         step + 1,
         shown.join(" | ")
     )

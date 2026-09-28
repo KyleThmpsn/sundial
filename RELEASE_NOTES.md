@@ -36,9 +36,10 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Builds after the first are much faster, because Parhelion now keeps what it learns about stock game data between builds.
 - **Tools** adds **Resync Account**, which sets the installed weapons' Collections unlocks and adds the installed Subclasses and Shaders to the current account again, for example after switching between Sunrise and Dawn, without a rebuild or a reinstall.
 - **Everything at Once** joins the bundled perks. It does it all, the opposite of what a balanced sandbox would allow, and is a good example of the different effects you can use in your own custom perks.
-  - Final blows and finishers refill every ability, drop Orbs of Light, reload, set off Firefly, Arc, and Void blasts, and grant invisibility, Truesight, an Arc Soul, and Devour. It also adds an extra grenade, melee, and class ability charge.
+  - Final blows and finishers refill every ability, drop Orbs of Light, reload, set off Firefly, Arc, and Void blasts, and grant invisibility and Devour. It also carries an extra grenade charge.
 - **On Releasing the Trigger**, **On Weapon Swap**, and **Ends on a Specific Ability** now appear in the condition picker without turning on **Show All**.
 - **On a Specific Ability** and **Ends on a Specific Ability** now let you pick a supported grenade or Super by name.
+- **Spawn an Object or Effect** now offers hop-on entities, the kind the stock Ionic Trace, Shadowshot and Guiding Flame place. These have not been thoroughly tested, so they may or may not work. Stay tuned.
 - Recipes can now be deleted from the library.
 - When one recipe stops a build, **Build Blocked** offers **Remove from Build** and **Open Recipe** for it.
 - Restoring base sockets now asks before removing custom perks.
@@ -53,6 +54,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed a borrowed intrinsic frame removing a custom perk placed in the same socket.
 - Fixed new **On Picking Up Ammo** and **On Sliding** conditions never passing, and a new **Hold a Weapon Count** removing a count instead of adding one. Some less common conditions and actions also start with the settings stock perks use.
 - Fixed effects that could never work building without a warning, such as ones missing a key, target, or object, or a counter with nothing to count. The **Custom Perk Workbench** now points them out.
+- Fixed **On a Specific Ability**, shown with **Show All**, asking for a resource it gave no way to choose, which left the effect unable to build.
 - Fixed **Unique Weapon Behavior** refusing to build with some sources, including Arbalest, Traveler's Chosen, and Warden's Law.
 - Fixed builds failing for weapons the game lists in one slot but equips in another, such as "dummy" copies of Trust and Polaris Lance.
 - Fixed appearances with moving parts or an empty model part, such as The Spiteful Fang and Whispering Slab, failing to build on another weapon type.
@@ -79,6 +81,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed each update leaving its workspace folder beside Sundial. Startup now removes the finished ones.
 - Fixed items added to a Dawn character not advancing that character's inventory counter, which could stop Dawn from loading the character.
 - Fixed game symbols in text, such as the Solar glyph in an objective's description, drawing as unrelated icons. The game's symbol fonts now lead the text fonts everywhere.
+- Fixed the model preview possibly drawing a newly loaded object with the previous object's mesh order, which could crash on an animated object.
 - Fixed the Definition Inspector, JSON Editor and model preview windows showing a scaled-down copy of the large Sundial icon. They carry the window icon at title-bar size, and their titles leave out symbols the desktop cannot draw.
 
 Sundial v0.4.1 and newer can update to v0.5.2 in the app. Older releases should install v0.5.2 manually.

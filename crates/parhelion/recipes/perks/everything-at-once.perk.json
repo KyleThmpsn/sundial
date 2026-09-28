@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "95d153d0-633d-4fe2-873a-6879d1f07b10",
   "name": "Everything at Once",
-  "description": "Any final blow or finisher refills every ability, drops Orbs of Light, reloads, adds rounds, explodes the target with Firefly's blast and a burst of suppressing Void energy, sends a concussive blast and a burst of chaining Arc energy out from you, cloaks you and grants Truesight for 20 seconds, summons an Arc Soul and grants Devour. Carries an extra grenade, melee and class ability charge.",
+  "description": "Any final blow or finisher refills every ability, drops Orbs of Light, reloads, adds rounds, explodes the target with Firefly's blast and a burst of suppressing Void energy, and sends a concussive blast and a burst of chaining Arc energy out from you. Every kill cloaks you and grants Devour again, and firing, dealing damage or using an ability cloaks you again. Carries an extra grenade charge and Truesight.",
   "template_plug": "0xDD5CB37A",
   "icon": {
     "source": "image",
@@ -1439,10 +1439,10 @@
                   0,
                   0,
                   0,
-                  255,
-                  255,
-                  255,
-                  255,
+                  2,
+                  174,
+                  239,
+                  128,
                   0,
                   0,
                   0,
@@ -2390,6 +2390,9 @@
           "assets": [
             {
               "graph": 2163166097
+            },
+            {
+              "graph": 2163191298
             }
           ]
         }
@@ -2400,7 +2403,7 @@
     },
     {
       "program": {
-        "name": "Extra Charges",
+        "name": "Extra Charge and Truesight",
         "trigger": "equipped",
         "duration_ms": 250,
         "cooldown_ms": 0,
@@ -2430,6 +2433,13 @@
             "operation": "ability_property",
             "target": 7,
             "key": "0x83549A10"
+          },
+          {
+            "operation": "attach",
+            "asset": {
+              "graph": 2160171639
+            },
+            "mode": 1
           }
         ]
       },
@@ -2439,48 +2449,12 @@
     },
     {
       "program": {
-        "name": "Vanish, Truesight, Arc Soul, Devour and Blasts",
+        "name": "Blasts and Devour",
         "trigger": "any_kill",
-        "duration_ms": 20000,
+        "duration_ms": 0,
         "cooldown_ms": 0,
         "chance_permyriad": 10000,
         "actions": [
-          {
-            "operation": "attach",
-            "asset": {
-              "graph": 2159826891
-            },
-            "mode": 1,
-            "keys": [
-              "0x02B4C507",
-              "0x811C9DC5"
-            ]
-          },
-          {
-            "operation": "attach",
-            "asset": {
-              "graph": 2160171639
-            },
-            "mode": 1
-          },
-          {
-            "operation": "attach",
-            "asset": {
-              "graph": 2159805836
-            },
-            "mode": 1
-          },
-          {
-            "operation": "attach",
-            "asset": {
-              "graph": 2159544992
-            },
-            "mode": 1,
-            "keys": [
-              "0x41136E32",
-              "0x811C9DC5"
-            ]
-          },
           {
             "operation": "spawn",
             "asset": {
@@ -2501,10 +2475,72 @@
               "graph": 2175178811
             },
             "position": "owner"
+          },
+          {
+            "operation": "attach",
+            "asset": {
+              "graph": 2159544992
+            },
+            "mode": 1,
+            "keys": [
+              "0x41136E32",
+              "0x811C9DC5"
+            ]
+          }
+        ],
+        "native_removal": {
+          "kind": 0,
+          "bytes": "0x0000803FFF000001"
+        }
+      },
+      "source_perk_index": 1178,
+      "runtime_values": [],
+      "action_float_values": []
+    },
+    {
+      "program": {
+        "name": "Vanish",
+        "trigger": "any_kill",
+        "duration_ms": 0,
+        "cooldown_ms": 0,
+        "chance_permyriad": 10000,
+        "actions": [
+          {
+            "operation": "attach",
+            "asset": {
+              "graph": 2159826891
+            },
+            "mode": 1,
+            "keys": [
+              "0x02B4C507",
+              "0x811C9DC5"
+            ]
+          }
+        ],
+        "native_removal": {
+          "kind": 0,
+          "bytes": "0x0000803FFF000001"
+        },
+        "alternative_triggers": [
+          {
+            "kind": 27,
+            "bytes": "0x0000803FFF1B00010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004800000000000000A10CC78000000000FF00000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000636F6E74656E742F636F6D6D6F6E2F6E61746976652F73616E64626F782F6C6162656C5F676C6F62616C732E6C6162656C5F676C6F62616C732E74667400"
+          },
+          {
+            "kind": 13,
+            "bytes": "0x0000803FFF0D00000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000A10CC78000000000FF000000000000000000000000000000636F6E74656E742F636F6D6D6F6E2F6E61746976652F73616E64626F782F6C6162656C5F676C6F62616C732E6C6162656C5F676C6F62616C732E74667400"
+          },
+          {
+            "kind": 8,
+            "bytes": "0x0000803FFF080000870000000000000000000000000000000000000000000000"
+          },
+          {
+            "kind": 4,
+            "bytes": "0x0000803FFF0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006800000000000000A10CC780000000000000000000000000FF0000000000000000000000000000000101000000000000000000008377DC740AD7233C0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000636F6E74656E742F636F6D6D6F6E2F6E61746976652F73616E64626F782F6C6162656C5F676C6F62616C732E6C6162656C5F676C6F62616C732E74667400"
           }
         ]
       },
-      "source_perk_index": 1178,
+      "source_perk_index": 338,
       "runtime_values": [],
       "action_float_values": []
     }

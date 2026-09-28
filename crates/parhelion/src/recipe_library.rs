@@ -432,15 +432,21 @@ impl RecipeLibrary {
                     let Ok(copy) = self.duplicate(&edited) else {
                         continue;
                     };
-                    Some(WeaponRecipe::load_json(&copy).map_or(edited.name, |copy| copy.name))
+                    let name = WeaponRecipe::load_json(&copy).map_or(edited.name, |copy| copy.name);
+                    Some((copy, name))
                 } else {
                     None
                 };
                 if atomic_write_replace(&self.root.join(file_name), encoded.as_bytes()).is_err() {
+                    // The copy was made for a refresh that did not happen. Left behind, the next
+                    // launch would set another beside it.
+                    if let Some((copy, _)) = &edited_copy {
+                        let _ = std::fs::remove_file(copy);
+                    }
                     continue;
                 }
-                if let Some(copy) = edited_copy {
-                    copies.push(copy);
+                if let Some((_, name)) = edited_copy {
+                    copies.push(name);
                 }
                 versions.record(file_name, digest);
                 names.push(recipe.name);

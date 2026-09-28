@@ -353,7 +353,12 @@ pub(crate) fn prepare_one_reusing(
         calibration.is_none()
             || animation["first_person"]["rigs"]
                 .as_array()
-                .is_some_and(|r| r.len() == 2),
+                .is_some_and(|rigs| {
+                    rigs.iter()
+                        .filter(|rig| rig.get("kind").is_none() || rig["kind"] == "skeleton")
+                        .count()
+                        == 2
+                }),
         "source-owned rig was not linked to the animation chain"
     );
     let mut graph: Value = serde_json::from_slice(&fs::read(&graph_path)?)?;

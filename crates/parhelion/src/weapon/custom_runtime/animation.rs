@@ -46,7 +46,14 @@ pub(in crate::weapon) struct ImportedRig {
     original: (u32, Vec<u8>),
     converted: Vec<u8>,
     first_person: bool,
-    controls: bool,
+    kind: RigKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RigKind {
+    Skeleton,
+    Controls,
+    Markers,
 }
 
 pub(in crate::weapon) struct ImportedStates {
@@ -192,9 +199,10 @@ pub(in crate::weapon) fn load(
             .flatten()
             .map(|rig| {
                 Ok(ImportedRig {
-                    controls: match rig.get("kind").and_then(Value::as_str) {
-                        None | Some("skeleton") => false,
-                        Some("controls") => true,
+                    kind: match rig.get("kind").and_then(Value::as_str) {
+                        None | Some("skeleton") => RigKind::Skeleton,
+                        Some("controls") => RigKind::Controls,
+                        Some("markers") => RigKind::Markers,
                         Some(_) => return Err(invalid("Imported rig owner kind is unsupported")),
                     },
                     original: (tag(rig, "native")?, payload(graph, &rig["template_file"])?),
@@ -283,18 +291,23 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
     if animation.rigs.is_empty() {
         return Ok(());
     }
-    if animation.rigs.iter().filter(|rig| !rig.controls).count() != 2
+    if animation
+        .rigs
+        .iter()
+        .filter(|rig| rig.kind == RigKind::Skeleton)
+        .count()
+        != 2
         || animation
             .rigs
             .iter()
-            .filter(|rig| !rig.controls && rig.first_person)
+            .filter(|rig| rig.kind == RigKind::Skeleton && rig.first_person)
             .count()
             != 1
         || [false, true].into_iter().any(|first_person| {
             animation
                 .rigs
                 .iter()
-                .filter(|rig| rig.controls && rig.first_person == first_person)
+                .filter(|rig| rig.kind == RigKind::Controls && rig.first_person == first_person)
                 .count()
                 > 1
         })
@@ -306,14 +319,33 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
         ));
     }
     for rig in &animation.rigs {
-        if rig.controls {
-            parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
-                &rig.converted,
-            )
-            .map_err(|error| invalid(format!("Imported rig controls: {error:#}")))?;
-        } else {
-            parhelion_import::d2_mot::rig_convert::validate_native_instance(&rig.converted)
-                .map_err(|error| invalid(format!("Imported skeleton instance: {error:#}")))?;
+        match rig.kind {
+            RigKind::Controls => {
+                parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
+                    &rig.converted,
+                )
+                .map_err(|error| invalid(format!("Imported rig controls: {error:#}")))?;
+            }
+            RigKind::Skeleton => {
+                parhelion_import::d2_mot::rig_convert::validate_native_instance(&rig.converted)
+                    .map_err(|error| invalid(format!("Imported skeleton instance: {error:#}")))?;
+            }
+            RigKind::Markers => {
+                if rig.first_person
+                    || animation
+                        .rigs
+                        .iter()
+                        .filter(|r| r.kind == RigKind::Markers)
+                        .count()
+                        != 1
+                {
+                    return Err(invalid("Imported runtime marker owner is ambiguous"));
+                }
+                parhelion_import::d2_mot::rig_convert::animation::first_person::markers::validate(
+                    &rig.converted,
+                )
+                .map_err(|error| invalid(format!("Imported runtime markers: {error:#}")))?;
+            }
         }
         stock(manager, &rig.original, RESOURCE_OWNER_CLASS, "rig owner")?;
     }

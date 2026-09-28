@@ -137,7 +137,8 @@ pub(super) fn relocate(payload: &mut Payload, owner: u32, symbol: &str) -> Resul
     Ok(patches)
 }
 
-fn replace(template: &Payload, markers: &[Marker]) -> Result<Payload> {
+/// Replace a native component's complete marker set while preserving its registrations.
+pub fn replace(template: &Payload, markers: &[Marker]) -> Result<Payload> {
     read_native(template)?;
     let mut payload = template.clone();
     let descriptor = payload

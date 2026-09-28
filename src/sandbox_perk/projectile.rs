@@ -24,6 +24,19 @@ const EMITTER_OBJECT_TYPE: u8 = 17;
 /// whether or not a stock perk references it.
 pub const ATTACHED_OBJECT_TYPES: [u8; 8] = [14, 17, 22, 23, 24, 25, 26, 28];
 
+/// Entity object types that stock Spawn Entity at Selected Transform nodes place, over the
+/// same surveyed actions: only type 23 (hop_on), six times, by Ionic Trace and Shadowshot at
+/// the event, Guiding Flame at the owner and two Warmind Cell drops. An entity of that type
+/// is what the spawn picker offers beside emitters, projectiles and world objects.
+pub const SPAWNED_ENTITY_OBJECT_TYPES: [u8; 1] = [23];
+
+/// Whether a spawn action may place an object of this kind and native object type: every
+/// kind the compiler spawns, and an entity whose object type a stock spawn places.
+#[must_use]
+pub fn spawnable_object(kind: Kind, object_type: u8) -> bool {
+    kind.spawnable() || (kind == Kind::Entity && SPAWNED_ENTITY_OBJECT_TYPES.contains(&object_type))
+}
+
 /// The client's object-type names from its placed-content table.
 #[must_use]
 pub const fn object_type_name(object_type: u8) -> Option<&'static str> {
@@ -94,7 +107,8 @@ impl Kind {
         }
     }
 
-    /// Whether the compiler accepts this kind for a spawn action.
+    /// Whether the compiler accepts this kind for a spawn action on its own. An entity
+    /// qualifies by its object type instead, through `spawnable_object`.
     #[must_use]
     pub const fn spawnable(self) -> bool {
         !matches!(self, Self::Entity)

@@ -71,12 +71,27 @@ struct Document {
     pending_effect: Option<EffectDraft>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified: Option<SystemTime>,
+    /// The last problem and warning check. The checks compile every effect, so they run again
+    /// only when the recipe or the discovery they read changes, not on every frame.
+    #[serde(skip)]
+    issues: Option<IssueCache>,
+}
+
+/// A document's checked recipe with what the check found.
+#[derive(Clone)]
+struct IssueCache {
+    recipe: PerkRecipe,
+    /// Whether discovery was idle at the check. Its results feed the problem check.
+    ready: bool,
+    problem: Option<String>,
+    warning: Option<String>,
 }
 
 impl Document {
     fn new(recipe: PerkRecipe, baseline: Option<Vec<u8>>) -> Self {
         Self {
             history: history::History::default(),
+            issues: None,
             modified: baseline.is_none().then(SystemTime::now),
             origin: Some(recipe.clone()),
             recipe,
@@ -159,6 +174,8 @@ enum Page {
 #[derive(Default)]
 pub(in crate::app) struct Workbench {
     pub open: bool,
+    /// The installed runtime, named by warnings about what it reads.
+    pub(in crate::app) branding: crate::branding::Branding,
     initialized: bool,
     draft_baseline: Option<Vec<u8>>,
     drafts_writable: bool,

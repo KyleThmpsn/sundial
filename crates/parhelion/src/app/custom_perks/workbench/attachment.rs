@@ -415,7 +415,8 @@ impl Workbench {
         donor: Option<&WeaponDonor>,
         catalog: Option<&InvestmentCatalog>,
     ) -> Option<Change> {
-        let issue = self.validation_issue(&self.documents.get(self.selected)?.recipe);
+        self.documents.get(self.selected)?;
+        let issue = self.selected_issue();
         if let Some(issue) = &issue {
             self.draw_issue(ui, issue);
         }

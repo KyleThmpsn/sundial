@@ -62,7 +62,7 @@ impl Workbench {
             |recipe| self.perk_issue(recipe),
         );
         for choice in choices.iter_mut().filter(|choice| choice.issue.is_none()) {
-            choice.warning = validation::perk_warning(&choice.recipe);
+            choice.warning = validation::perk_warning(&choice.recipe, self.branding.runtime());
         }
         self.picker = Some(Picker {
             target,

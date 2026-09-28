@@ -476,6 +476,17 @@ pub fn resync_account(
         return Err("Close Destiny 2 before resyncing the account".to_owned());
     }
     let _lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
+    // An interrupted install leaves its transaction record until the next install or uninstall
+    // repairs the package set. The account is not written against a half-committed generation.
+    if target_packages_directory
+        .join(INSTALL_TRANSACTION_FILE_NAME)
+        .exists()
+    {
+        return Err(
+            "An interrupted package install needs recovery first. Install or uninstall to repair it, then resync."
+                .to_owned(),
+        );
+    }
     let game_root = target_packages_directory
         .parent()
         .ok_or_else(|| "Installed package directory has no game root".to_owned())?;

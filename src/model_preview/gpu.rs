@@ -97,7 +97,9 @@ struct Uniforms {
 }
 
 struct Uploaded {
-    key: usize,
+    /// The model these buffers hold. Kept alive so no later model can take its address and
+    /// be drawn with this upload's triangle order.
+    model: Arc<Model>,
     vao: glow::VertexArray,
     positions: glow::Buffer,
     attributes: glow::Buffer,
@@ -154,14 +156,17 @@ impl State {
             let Some((program, uniforms)) = self.program.as_ref() else {
                 return;
             };
-            let key = Arc::as_ptr(&frame.model) as usize;
-            if self.model.as_ref().is_some_and(|m| m.key != key) {
+            if self
+                .model
+                .as_ref()
+                .is_some_and(|m| !Arc::ptr_eq(&m.model, &frame.model))
+            {
                 if let Some(old) = self.model.take() {
                     old.delete(gl);
                 }
             }
             if self.model.is_none() {
-                self.model = Some(upload(gl, &frame.model, key));
+                self.model = Some(upload(gl, &frame.model));
             }
             let Some(uploaded) = self.model.as_ref() else {
                 return;
@@ -408,7 +413,9 @@ fn bounds(model: &Model, hide_light: bool) -> ([f32; 3], f32) {
     (center, radius)
 }
 
-unsafe fn upload(gl: &glow::Context, model: &Model, key: usize) -> Uploaded {
+unsafe fn upload(gl: &glow::Context, model: &Arc<Model>) -> Uploaded {
+    let held = Arc::clone(model);
+    let model: &Model = model;
     // SAFETY: called from the paint callback with the live context; buffers are sized from
     // the slices uploaded and stay owned by the returned `Uploaded`.
     unsafe {
@@ -599,7 +606,7 @@ unsafe fn upload(gl: &glow::Context, model: &Model, key: usize) -> Uploaded {
         gl.bind_texture(glow::TEXTURE_2D, None);
 
         Uploaded {
-            key,
+            model: held,
             vao,
             positions: position_buffer,
             attributes: attribute_buffer,

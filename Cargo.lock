@@ -2877,7 +2877,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "parhelion"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64 0.23.1",
  "bcdec_rs",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "parhelion-import"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3850,7 +3850,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sundial"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bcdec_rs",
  "directories",
@@ -3883,11 +3883,11 @@ dependencies = [
 
 [[package]]
 name = "sundial-account"
-version = "0.5.1"
+version = "0.5.2"
 
 [[package]]
 name = "sundial-suite"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "parhelion",
  "sundial",

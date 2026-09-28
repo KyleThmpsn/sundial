@@ -435,11 +435,7 @@ impl Workbench {
         let mut issues = Vec::with_capacity(order.len());
         for source in order {
             let issue = match *source {
-                PerkSource::Document(index) => {
-                    let recipe = &self.documents[index].recipe;
-                    self.perk_issue(recipe)
-                        .or_else(|| validation::perk_warning(recipe))
-                }
+                PerkSource::Document(index) => self.document_issue(index),
                 PerkSource::Entry(index) => {
                     let entry = &self.entries[index];
                     let key = (entry.modified, entry.baseline.len());
@@ -451,9 +447,9 @@ impl Workbench {
                         }
                         _ => {
                             budget -= 1;
-                            let issue = self
-                                .perk_issue(&entry.recipe)
-                                .or_else(|| validation::perk_warning(&entry.recipe));
+                            let issue = self.perk_issue(&entry.recipe).or_else(|| {
+                                validation::perk_warning(&entry.recipe, self.branding.runtime())
+                            });
                             self.library_issues
                                 .insert(entry.path.clone(), (key.0, key.1, issue.clone()));
                             issue
@@ -954,9 +950,23 @@ fn perk_row(
                 |ui| perk_row_body(ui, catalog, recipe, selected, label),
             )
             .inner;
-        let color = crate::app::style::secondary(ui.visuals());
-        ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(color))
-            .on_hover_text(issue);
+        // Painted rather than laid out as a label: the icon font's line is taller than the
+        // text's, and a label of it pushed the row out of line with its neighbors.
+        let height = crate::app::style::list_row_height(ui);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(icon, height), egui::Sense::hover());
+        let font = egui::FontId::new(
+            egui::TextStyle::Body.resolve(ui.style()).size,
+            egui::FontFamily::Proportional,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::WARNING,
+            font,
+            crate::app::style::secondary(ui.visuals()),
+        );
+        response.on_hover_text(issue);
         row
     })
     .inner

@@ -252,6 +252,10 @@ fn line(model: &mut Model, a: [f32; 3], b: [f32; 3], width: f32) {
     let second = cross(direction, first);
     for side in [first, second] {
         let base = model.vertices.len() as u32;
+        // Every lane beside the vertices and triangles stays as long as them. A weapon merges
+        // its parts lane by lane, so a short lane on a part with a light would shift every
+        // later part's dyes, flags and normals.
+        model.normals.resize(model.vertices.len(), [0.0; 3]);
         model.vertices.extend([
             std::array::from_fn(|axis| a[axis] - side[axis] * width),
             std::array::from_fn(|axis| a[axis] + side[axis] * width),
@@ -260,12 +264,26 @@ fn line(model: &mut Model, a: [f32; 3], b: [f32; 3], width: f32) {
         ]);
         model.uvs.extend([[0.0; 2]; 4]);
         model.weights.extend([None, None, None, None]);
+        model.normals.extend([side; 4]);
         for triangle in [[base, base + 1, base + 2], [base + 2, base + 1, base + 3]] {
-            model.triangle_light.resize(model.triangles.len(), false);
+            let count = model.triangles.len();
+            model.triangle_light.resize(count, false);
+            model.triangle_emitter.resize(count, false);
+            model.triangle_textures.resize(count, None);
+            model.triangle_constant.resize(count, None);
+            model.triangle_dyes.resize(count, 0);
+            model.triangle_clip.resize(count, false);
+            model.triangle_gearstacks.resize(count, None);
+            model.triangle_normals.resize(count, None);
             model.triangles.push(triangle);
             model.triangle_light.push(true);
+            model.triangle_emitter.push(false);
             model.triangle_textures.push(None);
             model.triangle_constant.push(Some([1.0, 0.58, 0.13]));
+            model.triangle_dyes.push(0);
+            model.triangle_clip.push(false);
+            model.triangle_gearstacks.push(None);
+            model.triangle_normals.push(None);
         }
     }
 }

@@ -632,8 +632,15 @@ impl PackageAuthoringApp {
                     let mut value = row.value();
                     // A base already past the cap keeps its own value.
                     let upper = cap.map_or(999, |cap| cap.max(row.base()));
+                    // Plugs can carry a total past the cap. The value is shown as it is: a
+                    // ranged DragValue otherwise clamps it on draw and reports a change, which
+                    // would rewrite the item's own stat with no edit made.
                     if ui
-                        .add(egui::DragValue::new(&mut value).range(0..=upper))
+                        .add(
+                            egui::DragValue::new(&mut value)
+                                .range(0..=upper)
+                                .clamp_existing_to_range(false),
+                        )
                         .changed()
                     {
                         edits.push((row.definition_index, Some(value - row.plugs)));

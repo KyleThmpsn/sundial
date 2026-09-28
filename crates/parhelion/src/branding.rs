@@ -33,6 +33,14 @@ impl Branding {
         }
     }
 
+    /// The runtime's plain name, for a sentence about what it does.
+    pub(crate) fn runtime(self) -> &'static str {
+        match self {
+            Self::Sunrise => "Sunrise",
+            Self::Dawn => "Dawn",
+        }
+    }
+
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Sunrise => crate::badge::SUNRISE_BADGE_DESCRIPTION,

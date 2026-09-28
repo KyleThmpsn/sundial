@@ -69,10 +69,10 @@ impl AssetScope {
         }
     }
 
-    fn allows(self, kind: projectile::Kind) -> bool {
+    fn allows(self, kind: projectile::Kind, object_type: u8) -> bool {
         match self {
             Self::Projectiles => kind == projectile::Kind::Projectile,
-            Self::Spawnable => kind.spawnable(),
+            Self::Spawnable => projectile::spawnable_object(kind, object_type),
             Self::Any | Self::DropEffect => true,
         }
     }
@@ -509,7 +509,7 @@ struct Selection {
 
 impl Selection {
     fn allows(self, entry: &projectile::catalog::Entry) -> bool {
-        if !self.scope.allows(entry.kind) {
+        if !self.scope.allows(entry.kind, entry.object_type) {
             return false;
         }
         if self.scope == AssetScope::Projectiles {

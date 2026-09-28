@@ -18,13 +18,57 @@ pub(super) struct Issue {
 }
 
 impl Workbench {
-    /// The perk's first problem, or its first warning when it has no problem.
+    /// The perk's first problem, or its first warning when it has no problem. The workbench reads
+    /// the cached `selected_issue`, so only tests check a recipe directly.
+    #[cfg(test)]
     pub(super) fn validation_issue(&self, recipe: &PerkRecipe) -> Option<Issue> {
         if let Some(message) = self.perk_issue(recipe) {
             return Some(self.locate(recipe, message, true));
         }
-        let message = perk_warning(recipe)?;
+        let message = perk_warning(recipe, self.branding.runtime())?;
         Some(self.locate(recipe, message, false))
+    }
+
+    /// The open perk's issue, as `validation_issue` reads it, from the document's cache.
+    pub(super) fn selected_issue(&mut self) -> Option<Issue> {
+        let index = self.selected;
+        let (problem, warning) = self.document_issues(index)?;
+        let recipe = &self.documents[index].recipe;
+        if let Some(message) = problem {
+            return Some(self.locate(recipe, message, true));
+        }
+        Some(self.locate(recipe, warning?, false))
+    }
+
+    /// A document's problem, or its warning when it has no problem, from its cache.
+    pub(super) fn document_issue(&mut self, index: usize) -> Option<String> {
+        let (problem, warning) = self.document_issues(index)?;
+        problem.or(warning)
+    }
+
+    /// The cached checks of one document, run again when its recipe or discovery changed.
+    fn document_issues(&mut self, index: usize) -> Option<(Option<String>, Option<String>)> {
+        let ready = !self.discovery.busy();
+        let document = self.documents.get(index)?;
+        if let Some(cache) = &document.issues
+            && cache.ready == ready
+            && cache.recipe == document.recipe
+        {
+            return Some((cache.problem.clone(), cache.warning.clone()));
+        }
+        let recipe = document.recipe.clone();
+        let problem = self.perk_issue(&recipe);
+        let warning = match problem {
+            Some(_) => None,
+            None => perk_warning(&recipe, self.branding.runtime()),
+        };
+        self.documents[index].issues = Some(IssueCache {
+            recipe,
+            ready,
+            problem: problem.clone(),
+            warning: warning.clone(),
+        });
+        Some((problem, warning))
     }
 
     /// The effect, action and native field an issue belongs to, so Show Problem can open it.
@@ -158,13 +202,29 @@ pub(super) fn event_fired(
             .any(|condition| LASTING_TRIGGERS.contains(&condition.kind))
 }
 
+/// How many of a plug's effects the runtime reads: `items::kSandboxPerkCapacity` in the
+/// Sunrise package reader, which Dawn shares, keeps four sandbox-perk entries per item or
+/// plug and `read_sandbox_perks` returns at that count (`docs/sunrise-contracts.md`, and
+/// `perk_bank::project` counts the same four). Everything at Once's fifth and sixth effects
+/// never fired in game on 2026-09-27 while its first four did. A warning, not a problem:
+/// the package and the game accept it.
+pub(super) const RUNNING_EFFECT_LIMIT: usize = 4;
+
 /// A likely mistake the game still runs, the first one in the perk. It is shown wherever a
-/// problem is, but it never keeps the perk from being applied or chosen.
-pub(super) fn perk_warning(recipe: &PerkRecipe) -> Option<String> {
+/// problem is, but it never keeps the perk from being applied or chosen. `runtime` names the
+/// installed runtime, Sunrise or Dawn.
+pub(super) fn perk_warning(recipe: &PerkRecipe, runtime: &str) -> Option<String> {
     recipe
         .effects
         .iter()
         .find_map(|effect| ending_issue(effect.program.as_ref()))
+        .or_else(|| {
+            (recipe.effects.len() > RUNNING_EFFECT_LIMIT).then(|| {
+                format!(
+                    "{runtime} reads a plug's first {RUNNING_EFFECT_LIMIT} effects. The rest never run."
+                )
+            })
+        })
 }
 
 /// A behavior that never ends runs once. The compiler accepts it, since the game can run it,

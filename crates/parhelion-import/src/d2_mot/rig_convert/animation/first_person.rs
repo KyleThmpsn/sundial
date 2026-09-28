@@ -14,6 +14,7 @@ mod bank;
 pub mod consumers;
 pub mod controls;
 pub mod dispatch;
+pub mod markers;
 mod poses;
 pub mod profile;
 mod states;
@@ -788,6 +789,11 @@ pub fn prepare_with_rig(
             rigs.as_array_mut()
                 .context("source rig owners")?
                 .push(controls);
+        }
+        if let Some(markers) = markers::prepare(&mut sr, &mut nr, source_rig, native_rig, graph)? {
+            rigs.as_array_mut()
+                .context("source rig owners")?
+                .push(markers);
         }
     }
     let slot_markers = slots

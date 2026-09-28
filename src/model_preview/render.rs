@@ -361,8 +361,10 @@ fn draw_particles(
             -0.4
         };
         let (sin, cos) = angle.sin_cos();
-        let sprite_width =
-            (source.width * scale * (0.7 + age * 0.5)).clamp(3.0, width.min(height) as f32 * 0.6);
+        // The upper bound never drops under the lower one: an image a few pixels tall, which
+        // a squeezed viewport produces, would otherwise make the clamp panic.
+        let widest = (width.min(height) as f32 * 0.6).max(3.0);
+        let sprite_width = (source.width * scale * (0.7 + age * 0.5)).clamp(3.0, widest);
         let aspect = texture.size[0] as f32 / texture.size[1].max(1) as f32;
         let sprite_height = sprite_width / aspect.clamp(1.0, 16.0);
         let radius = (sprite_width + sprite_height) * 0.5;

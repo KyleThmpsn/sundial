@@ -781,7 +781,10 @@ impl Preview {
 
     /// Transport controls and the timeline for animated, particle and shader-driven objects.
     fn draw_playback(&mut self, ui: &mut egui::Ui, model: &Model) {
+        // An object with clips but no idle clip has no animation until one is picked, so the
+        // picker shows for it too.
         if model.animation.is_some()
+            || !model.clips.is_empty()
             || model.has_shader_animation()
             || !model.particle_sources.is_empty()
             || model.has_particle_material_study()
@@ -842,7 +845,7 @@ impl Preview {
                         .fixed_decimals(2),
                 )
                 .on_hover_text("Playback speed");
-                if model.clips.len() > 1 {
+                if model.clips.len() > 1 || (model.animation.is_none() && !model.clips.is_empty()) {
                     let playing = self.clip.or(model.animation.as_ref().map(|a| a.tag));
                     let selected = model
                         .clips

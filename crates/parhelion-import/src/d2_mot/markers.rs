@@ -15,6 +15,7 @@ mod author;
 mod bindings;
 mod optics;
 pub use author::author;
+pub use author::replace;
 
 /// Where a marker row keeps its transform and its name, and how far apart the rows are.
 #[derive(Clone, Copy, Debug)]

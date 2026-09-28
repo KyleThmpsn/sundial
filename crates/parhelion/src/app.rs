@@ -291,6 +291,7 @@ impl PackageAuthoringUtility for Parhelion {
     ) -> Result<(), String> {
         let packages = install_directory.join("packages");
         let branding = crate::branding::Branding::detect(install_directory);
+        self.app.perk_workbench.branding = branding;
         if self.app.presentation_editor.branding() != branding {
             self.app.presentation_editor.set_branding(branding);
             self.app.invalidate_results();
